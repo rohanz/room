@@ -11,6 +11,9 @@ import { idleClaimsDue, type WorkerRecord } from '../src/worker-status.js'
 import { RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { memoryFile, saveMemory } from '../../relay/src/memory.js'
 
+/** No release notices to send here. */
+const ignore = () => {}
+
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const openRegistry = (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => WorkerRegistry.open(dir, { ...options, watch: false })
@@ -329,7 +332,7 @@ describe('WorkerRegistry durable store', () => {
     const oldId = 'lead/tests#1'
     const old = new RoomDoc()
     old.setWorker({ id: oldId, tag: 'tests', name: 'lead+tests', lead: 'lead', host: 'claude', task: 'old task',
-      dir: workerDir, branch: 'room/tests', pid: 1, startedAt: 1, status: 'done', summary: 'old summary' })
+      dir: workerDir, branch: 'room/tests', pid: 1, startedAt: 1, status: 'done', summary: 'old summary' }, ignore)
     const snapshotDir = path.join(commonDir, 'room-local')
     fs.mkdirSync(snapshotDir, { recursive: true })
     fs.writeFileSync(path.join(snapshotDir, `${encodeURIComponent('local/repo/main')}.ydoc`), Y.encodeStateAsUpdate(old.doc))

@@ -8,8 +8,10 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, formatMsg } from '@room/shared'
 import type { Identity, ClaimMsg, NoteMsg, PlanMsg, ReleaseMsg, ScopeMsg } from '@room/shared'
 import { Bridge } from '../src/bridge.js'
-import { markHistorySeenOnJoin } from '../src/tools/join.js'
+import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 let dir: string, base: string
@@ -29,7 +31,7 @@ function fakeSession(room: RoomDoc, me: Identity, roomName: string, local: boole
   return {
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
     shareMax: 'full', shareRequested: 'full',
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
@@ -45,6 +47,9 @@ beforeAll(() => {
   base = git('rev-parse', 'HEAD').trim()
 })
 
+/** Let the bridge's posts reach the in-process hub. */
+const settle = () => new Promise(r => setTimeout(r, 5))
+
 function setup() {
   const team = pair(), local = pair()
   team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
@@ -57,22 +62,20 @@ function setup() {
 }
 
 describe('Bridge: a lead in a team room with a local workers room', () => {
-  it('keeps an addressed team interrupt relayed between spawn and worker join', () => {
+  it('keeps an addressed team interrupt relayed between spawn and worker join', async () => {
     const t = setup()
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(100)
-    const old = t.local.a.post<NoteMsg>(lead, { type: 'note', text: 'before spawn', priority: 'notify' })
+    const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })
     t.local.a.updateWorker('money', { startedAt: 150, spawnedAfter: old.id })
-    clock.mockReturnValue(200)
-    t.team.b.post<NoteMsg>(kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
+    hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
+    await settle()
     const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!
+    // The worker's cursor starts at its spawn marker; the relayed copy is addressed, so it is owed regardless.
     const workerSession = fakeSession(t.local.b, worker, 'local/x/main', true)
-    const seen = new Set<string>()
-    markHistorySeenOnJoin(workerSession, seen)
-    clock.mockRestore()
-    expect(seen.has(old.id)).toBe(true)
-    expect(seen.has(relayed.id)).toBe(false)
+    const owed = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) }).candidates(workerSession).map(m => m.id)
+    expect(owed).not.toContain(old.id)
+    expect(owed).toContain(relayed.id)
   })
-  it("the lead's team scope is the union of its workers' declared and changed paths", () => {
+  it("the lead's team scope is the union of its workers' declared and changed paths", async () => {
     const t = setup()
     expect(t.team.a.scope('rohanz')).toBeUndefined()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py', 'api/handlers.py'] })
@@ -83,33 +86,40 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     t.local.b.setOverlay(worker.name, 'tests/test_money.py', 'x\n')
     expect(t.team.b.scope('rohanz')!.paths).toContain('tests/test_money.py')
     // the team room hears the scope as a message from the lead, never from the worker
+    await settle()
     const scopeMsgs = t.team.b.messages().filter(m => m.type === 'scope')
     expect(scopeMsgs.length).toBeGreaterThan(0)
     expect(scopeMsgs.every(m => m.from === 'rohanz')).toBe(true)
+    await settle()
     expect(t.team.b.messages().some(m => m.from === worker.name)).toBe(false)
   })
 
-  it('updates the scope map immediately without reposting unchanged area/summary chatter', () => {
+  it('updates the scope map immediately without reposting unchanged area/summary chatter', async () => {
     const t = setup()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/models.py'] })
     const scopeMessages = () => t.team.b.messages().filter(m => m.type === 'scope')
+    await settle()
     expect(scopeMessages()).toHaveLength(1)
     t.local.b.setOverlay(worker.name, 'tests/test_money.py', 'x\n')
     expect(t.team.b.scope('rohanz')!.paths).toContain('tests/test_money.py')
+    await settle()
     expect(scopeMessages()).toHaveLength(1)
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'billing', summary: 'cents complete', paths: ['api/models.py'] })
+    await settle()
     expect(scopeMessages()).toHaveLength(2)
   })
 
-  it('renders the bridge union as history after restoring the lead scope without a new event', () => {
+  it('renders the bridge union as history after restoring the lead scope without a new event', async () => {
     const t = setup()
     const own = { by: lead.name, byKind: lead.kind, area: 'api', summary: 'lead work', paths: ['api/lead.py'] }
     t.team.a.setScope(own)
-    t.team.a.post<ScopeMsg>(lead, { type: 'scope', area: own.area, summary: own.summary, paths: own.paths })
+    hubAppend<ScopeMsg>(t.team.a, lead, { type: 'scope', area: own.area, summary: own.summary, paths: own.paths })
     t.local.b.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'worker work', paths: ['api/worker.py'] })
+    await settle()
     const events = t.team.b.messages().filter((m): m is ScopeMsg => m.type === 'scope')
     expect(events).toHaveLength(2)
     t.bridge.stop()
+    await settle()
     const context = { scopes: t.team.b.allScopes(), messages: t.team.b.messages() }
     expect(formatMsg(events[0], context)).toContain('is on api: lead work')
     expect(formatMsg(events[1], context)).toContain('earlier:')
@@ -126,35 +136,41 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(t.team.b.openClaims()).toEqual([])
   })
 
-  it('a team message touching a worker path is re-posted to that worker locally: claims at notify, plans as interrupts', () => {
+  it('a team message touching a worker path is re-posted to that worker locally: claims at notify, plans as interrupts', async () => {
     const t = setup()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
     // Kieran, in the team room, claims a file under the worker's scope
-    t.team.b.post<ClaimMsg>(kieran, { type: 'claim', claimId: 'c_k', path: 'api/handlers.py', from_line: 1, to_line: 5, intent: 'renaming validate' })
+    hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c_k', path: 'api/handlers.py', from_line: 1, to_line: 5, intent: 'renaming validate' })
+    await settle()
     const relayed = t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)
     expect(relayed).toHaveLength(1)
     expect(relayed[0].priority).toBe('notify')
     expect((relayed[0] as { text: string }).text).toContain('[team room]')
     expect((relayed[0] as { text: string }).text).toContain('renaming validate')
     // unrelated team traffic is not relayed
-    t.team.b.post<ClaimMsg>(kieran, { type: 'claim', claimId: 'c_k2', path: 'web/index.ts', from_line: 1, to_line: 5, intent: 'css' })
+    hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c_k2', path: 'web/index.ts', from_line: 1, to_line: 5, intent: 'css' })
+    await settle()
     expect(t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)).toHaveLength(1)
     // the lead's own team messages are never relayed to its workers
-    t.team.a.post<ClaimMsg>(lead, { type: 'claim', claimId: 'c_me', path: 'api/x.py', from_line: 1, to_line: 1, intent: 'mine' })
+    hubAppend<ClaimMsg>(t.team.a, lead, { type: 'claim', claimId: 'c_me', path: 'api/x.py', from_line: 1, to_line: 1, intent: 'mine' })
+    await settle()
     expect(t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)).toHaveLength(1)
   })
 
-  it('relays each team broadcast notify or interrupt to every worker once, without fyi or echoes', () => {
+  it('relays each team broadcast notify or interrupt to every worker once, without fyi or echoes', async () => {
     const t = setup()
     t.local.b.setWorker({ tag: 'tax', name: 'rohanz+tax', host: 'codex', task: 'tax', dir, branch: 'room/tax', pid: 2, startedAt: 2, status: 'running', lead: lead.name })
-    const send = (priority: 'fyi' | 'notify' | 'interrupt') => t.team.b.post<NoteMsg>(kieran, { type: 'note', priority, text: priority })
+    const send = (priority: 'fyi' | 'notify' | 'interrupt') => hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority, text: priority })
     send('fyi'); send('notify'); send('interrupt')
+    await settle()
     const notes = t.local.b.messages().filter((m): m is NoteMsg => m.type === 'note')
     expect(notes.map(m => [m.to, m.priority])).toEqual([
       [worker.name, 'notify'], ['rohanz+tax', 'notify'], [worker.name, 'interrupt'], ['rohanz+tax', 'interrupt'],
     ])
+    await settle()
     expect(t.team.b.messages().filter(m => m.type === 'note')).toHaveLength(3)
-    t.team.a.post<NoteMsg>(lead, { type: 'note', priority: 'notify', text: 'self' })
+    hubAppend<NoteMsg>(t.team.a, lead, { type: 'note', priority: 'notify', text: 'self' })
+    await settle()
     expect(t.local.b.messages().filter(m => m.type === 'note')).toHaveLength(4)
   })
 
@@ -194,30 +210,35 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 })
 
 describe('Bridge hardening', () => {
-  it('unmirroring a claim posts a release to the team, carrying unfulfilled plans', () => {
+  it('unmirroring a claim posts a release to the team, carrying unfulfilled plans', async () => {
     const t = setup()
     t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'rename x', plans: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
     const teamId = t.team.b.openClaims()[0].id
-    t.local.b.post<ReleaseMsg>(worker, { type: 'release', claimId: c.id, path: 'app.py', summary: 'gave up', unfulfilled: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
+    hubAppend<ReleaseMsg>(t.local.b, worker, { type: 'release', claimId: c.id, path: 'app.py', summary: 'gave up', unfulfilled: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
     t.local.b.removeClaim(c.id)
+    await settle()
     const rel = t.team.b.messages().filter((m): m is ReleaseMsg => m.type === 'release')
     expect(rel).toHaveLength(1)
     expect(rel[0]).toMatchObject({ from: 'rohanz', claimId: teamId, path: 'app.py', summary: '[money] gave up' })
     expect(rel[0].unfulfilled).toEqual([{ kind: 'rename', symbol: 'x', detail: 'y' }])
   })
 
-  it('plans interrupt, repeated chatter about the same path is delivered once a minute', () => {
+  it('plans interrupt, repeated chatter about the same path is delivered once a minute', async () => {
     const t = setup()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })
     const notes = () => t.local.b.messages().filter(m => m.type === 'note' && m.to === worker.name)
-    t.team.b.post<PlanMsg>(kieran, { type: 'plan', status: 'cancelled', claimId: 'c1', path: 'api/handlers.py', plan: { kind: 'rename', symbol: 'validate' }, text: 'plan cancelled' })
+    hubAppend<PlanMsg>(t.team.b, kieran, { type: 'plan', status: 'cancelled', claimId: 'c1', path: 'api/handlers.py', plan: { kind: 'rename', symbol: 'validate' }, text: 'plan cancelled' })
+    await settle()
     expect(notes()).toHaveLength(1)
+    await settle()
     expect(notes()[0].priority).toBe('interrupt')
-    t.team.b.post<ClaimMsg>(kieran, { type: 'claim', claimId: 'c2', path: 'api/handlers.py', from_line: 1, to_line: 2, intent: 'a' })
-    t.team.b.post<ClaimMsg>(kieran, { type: 'claim', claimId: 'c3', path: 'api/handlers.py', from_line: 3, to_line: 4, intent: 'b' })
-    t.team.b.post<ClaimMsg>(kieran, { type: 'claim', claimId: 'c4', path: 'api/handlers.py', from_line: 5, to_line: 6, intent: 'c' })
+    hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c2', path: 'api/handlers.py', from_line: 1, to_line: 2, intent: 'a' })
+    hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c3', path: 'api/handlers.py', from_line: 3, to_line: 4, intent: 'b' })
+    hubAppend<ClaimMsg>(t.team.b, kieran, { type: 'claim', claimId: 'c4', path: 'api/handlers.py', from_line: 5, to_line: 6, intent: 'c' })
+    await settle()
     expect(notes()).toHaveLength(2) // one claim notice for that path within the window
+    await settle()
     expect(notes()[1].priority).toBe('notify')
   })
 })
@@ -285,7 +306,7 @@ describe("Bridge: sharing stays the lead's own (B1)", () => {
 })
 
 describe('Bridge: mirrored claims survive the lead\'s own cleanup (B2)', () => {
-  it('mirrors carry mirrorOf and are put back when someone other than the bridge removes them', () => {
+  it('mirrors carry mirrorOf and are put back when someone other than the bridge removes them', async () => {
     const t = setup()
     t.local.b.setOverlay(worker.name, 'app.py', 'x = 2\n')
     const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'bump x' })
@@ -300,6 +321,7 @@ describe('Bridge: mirrored claims survive the lead\'s own cleanup (B2)', () => {
     // the worker releasing its claim still removes the mirror for good, with one release notice
     t.local.b.removeClaim(c.id)
     expect(t.team.b.openClaims()).toEqual([])
+    await settle()
     expect(t.team.b.messages().filter((m): m is ReleaseMsg => m.type === 'release')).toHaveLength(1)
     // a mirror whose local claim is already gone is not resurrected
     t.bridge.stop()

@@ -19,7 +19,7 @@ vi.mock('@room/roomd', async importOriginal => ({
   startRoomd: vi.fn(async options => {
     const roomDoc = new RoomDoc(), awareness = new Awareness(roomDoc.doc)
     awareness.setLocalState({ user: { name: options.name, kind: 'agent' } })
-    return { name: options.name, roomDoc, provider: { awareness }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
+    return { name: options.name, roomDoc, provider: { awareness, messageHandlers: [], on() {}, off() {}, wsconnected: false }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
   }),
 }))
 
@@ -57,7 +57,6 @@ function hub(names: string[], ownName = 'name', stale = new Set<string>(), work 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), 'auto-tag-'))
   execFileSync('git', ['init', '-q'], { cwd: dir })
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ host: 'claude' }))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   vi.stubEnv('ROOM_HOST', 'claude')
   vi.stubEnv('ROOM_WORKER_HOST', '')
@@ -196,13 +195,12 @@ describe('automatic session tags', () => {
     expect(await readChoice(dir)).toBeUndefined()
   })
   it('resolves environment hints and falls back for unknown or missing hosts', () => {
-    const dir = repo()
-    expect(resolveSessionHost(dir, { ROOM_HOST: 'codex' }, () => 'claude')).toBe('codex')
-    expect(resolveSessionHost(dir, {}, () => '/usr/bin/codex')).toBe('codex')
-    expect(resolveSessionHost(dir, {}, () => '/usr/bin/claude')).toBe('claude')
-    expect(resolveSessionHost(dir, {}, () => 'node')).toBe('claude')
-    expect(resolveSessionHost(dir, {}, () => { throw new Error('ps denied') })).toBe('claude')
-    writeFileSync(join(dir, '.git/room-session.json'), '{bad json')
-    expect(resolveSessionHost(dir, {}, () => 'node')).toBe('agent')
+    expect(resolveSessionHost({ ROOM_HOST: 'codex' }, () => 'claude')).toBe('codex')
+    expect(resolveSessionHost({}, () => '/usr/bin/codex')).toBe('codex')
+    expect(resolveSessionHost({}, () => '/usr/bin/claude')).toBe('claude')
+    expect(resolveSessionHost({ CLAUDE_CODE_SESSION_ID: 'abc' }, () => 'node')).toBe('claude')
+    // No per-worktree session file decides the host any more: it is the bound session's (registry §17).
+    expect(resolveSessionHost({}, () => 'node')).toBe('agent')
+    expect(resolveSessionHost({}, () => { throw new Error('ps denied') })).toBe('agent')
   })
 })

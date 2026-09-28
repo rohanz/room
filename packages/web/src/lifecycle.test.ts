@@ -50,7 +50,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
   room.workers.set('running', worker('running'))
   room.workers.set('failed', worker('failed', 'failed'))
   room.scopes.set('Away', { by: 'Away', byKind: 'agent', area: 'api', summary: 'Away', paths: [], at: 1 })
-  room.retireParticipant('Lead+old', retired('old'))
+  room.retireParticipant('Lead+old', retired('old'), () => {})
   const focus = createFocusState()
   const people = participantsPanel(conn, focus), board = boardPanel(conn, vi.fn()), top = header(conn)
   document.body.append(people, board, top)
@@ -67,7 +67,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
     expect(details.textContent).toContain('61 files')
     expect(details.textContent).toContain('Finished the task')
   }
-  room.retireParticipant('Lead+running', retired('running'))
+  room.retireParticipant('Lead+running', retired('running'), () => {})
   renderScheduler.flushNow()
   expect(top.textContent).toContain('2 active')
   expect(people.textContent).toContain("Lead's agent · 0 running · 2 finished")
@@ -76,7 +76,7 @@ it('nests active and failed workers, collapses archives, and counts active in bo
 
 it('bounds timeline and merge controls while retaining older filters and scope context', () => {
   const { room, conn } = setup()
-  room.retireParticipant('Lead+archived', retired('archived'))
+  room.retireParticipant('Lead+archived', retired('archived'), () => {})
   for (const name of ['Lead', 'Old', 'Recent']) room.setOverlay(name, 'a.ts', name)
   room.bus.push([{ id: 'old', type: 'scope', from: 'Old', fromKind: 'agent', at: 1, priority: 'fyi', area: 'old-area', summary: 'Old task', paths: [] },
     { id: 'recent', type: 'scope', from: 'Recent', fromKind: 'agent', at: 2, priority: 'fyi', area: 'current-area', summary: 'Current task', paths: [] }])
@@ -108,7 +108,7 @@ it('bounds timeline and merge controls while retaining older filters and scope c
 
 it('shows dismissed uncommitted files in the archive row', () => {
   const { room, conn } = setup()
-  room.retireParticipant('Lead+dirty', { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 })
+  room.retireParticipant('Lead+dirty', { ...retired('dirty'), outcome: 'dismissed', uncommitted: 2 }, () => {})
   expect(participantsPanel(conn, createFocusState()).textContent).toContain('dismissed with 2 uncommitted files left in its worktree')
 })
 

@@ -3,11 +3,12 @@ import { RoomDoc } from './doc.js'
 import { formatMsg } from './messages.js'
 import { shouldWakeOnMsg } from './wake.js'
 import type { BaseMsg } from './types.js'
+import { hubAppend } from './testing.js'
 
 describe('base catch-up guidance', () => {
   it('gives the safe command and refusal path in the base message', () => {
     const room = new RoomDoc()
-    const message = room.post<BaseMsg>({ name: 'Alice', kind: 'agent' }, {
+    const message = hubAppend<BaseMsg>(room, { name: 'Alice', kind: 'agent' }, {
       type: 'base', prev: 'old', base: 'new', commits: 1, paths: [], summary: 'change',
     })
     const text = formatMsg(message)
@@ -18,7 +19,7 @@ describe('base catch-up guidance', () => {
 
   it('wakes for same-name human base messages only with uncommitted work', () => {
     const room = new RoomDoc()
-    const human = room.post<BaseMsg>({ name: 'Alice', kind: 'human' }, {
+    const human = hubAppend<BaseMsg>(room, { name: 'Alice', kind: 'human' }, {
       type: 'base', prev: 'old', base: 'new', commits: 1, paths: [], summary: 'change',
     })
     const me = { name: 'Alice', kind: 'agent' } as const

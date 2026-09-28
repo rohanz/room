@@ -1,5 +1,6 @@
 import type * as Y from 'yjs'
 import { formatMsg, type ChatItem, type Claim, type Identity, type Msg, type ReleaseMsg, RoomDoc, isAgentic } from '@room/shared'
+import type { Post } from '@room/room-mcp'
 import type { AgentBackend, AgentItem } from './backend.js'
 import { claimToMsg, shouldWakeOnClaim, shouldWakeOnMsg } from './wake.js'
 import { preamble } from './prompt.js'
@@ -9,6 +10,8 @@ export interface AwarenessLike { setLocalStateField(field: string, value: unknow
 export interface RunnerOptions {
   name: string
   room: RoomDoc
+  /** Posts through the room's hub (room-mcp post.ts). */
+  post: Post
   awareness: AwarenessLike
   backend: AgentBackend
   preamble?: string
@@ -168,7 +171,7 @@ export class Runner {
     const mine = this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
     for (const c of mine) {
       this.room.removeClaim(c.id, this)
-      this.room.post<ReleaseMsg>(this.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released by /stop' }, this)
+      void this.opts.post<ReleaseMsg>(this.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released by /stop' })
     }
     this.room.say(this.me.name, { role: 'status', text: `stopped by you; released ${mine.length} ${mine.length === 1 ? 'claim' : 'claims'}; paused until /resume` })
     this.setStatus('paused')

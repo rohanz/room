@@ -4,7 +4,7 @@ import { claudeWakeAvailable } from './wake-path.js'
 import { BASE_CATCH_UP } from '@room/shared'
 
 /** The exported inbox socket (Claude Code 2.1.224+) or an admitted channel enables wakes. */
-export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(dir), parentArgs?: string): boolean {
+export function claudeWakeUnavailable(dir: string, host = resolveSessionHost(), parentArgs?: string): boolean {
   if (host !== 'claude') return false
   return !claudeWakeAvailable({ host, parentArgs })
 }

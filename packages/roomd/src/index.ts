@@ -27,7 +27,7 @@ import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from '
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, participantRecord, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -133,6 +133,11 @@ export interface RoomdOptions {
   totalBudget?: number
   /** Immutable requested/effective policy supplied by the local PolicyStore. */
   policy: SharingPolicy
+  /**
+   * Posts through the room's hub, the sole appender of its bus (room-mcp post.ts). This daemon's posts are
+   * automatic (released claims, `pushed`). Without one (the standalone CLI has no hub client) they are only logged.
+   */
+  post?: (from: Identity, body: PostBody<Msg>, opts: { id?: string; auto: true }) => unknown
   /** Settles durable departing grants after a successful full scan. */
   onFullScan?: (policy: SharingPolicy, entries: ReadonlyMap<string, PlannedEntry>, unsettled: readonly string[]) => Promise<void>
   /** In-memory transport override for tests that cannot open loopback sockets. */
@@ -274,6 +279,7 @@ class Daemon implements Roomd {
   private reconcileQueued = false
   private readonly beforeWatcherReady?: () => void
   readonly onFullScan?: RoomdOptions['onFullScan']
+  private readonly poster?: RoomdOptions['post']
   readonly sizeCap: number
   readonly totalBudget: number
   private readonly connectTimeoutMs: number
@@ -358,6 +364,7 @@ class Daemon implements Roomd {
     })
     this.beforeWatcherReady = options.beforeWatcherReady
     this.onFullScan = options.onFullScan
+    this.poster = options.post
     this.sizeCap = options.sizeCap ?? 512 * 1024
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.inputs = { policy: options.policy, rules: rulesFromText('', this.sizeCap, this.totalBudget), head: '' }
@@ -399,16 +406,7 @@ class Daemon implements Roomd {
     this.tracked = tracked
 
     await this.step('sync', () => this.waitForSync())
-    // The daemon owns base receipts. Observe before the initial sweep so a notice
-    // cannot arrive between the sweep and subscription.
-    const onBaseNotice = (event: Y.YArrayEvent<Msg>) => {
-      const notices = event.changes.delta.flatMap(change => (change.insert ?? []) as Msg[])
-      this.markIntegratedBaseNotices(notices)
-    }
-    this.roomDoc.bus.observe(onBaseNotice)
-    this.unobserveBus = () => this.roomDoc.bus.unobserve(onBaseNotice)
     this.observeOwnedData()
-    this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.phase = 'base'
     this.choosePublisher()
     this.roomDoc.assignColor(this.name, this)
@@ -488,7 +486,6 @@ class Daemon implements Roomd {
   async stop(reason = 'requested'): Promise<void> {
     if (this.stopped) return
     this.stopped = true
-    this.unobserveBus?.()
     this.unobserveOwnedData?.()
     this.remoteRepairTimer?.()
     this.publisher.stop()
@@ -638,7 +635,6 @@ class Daemon implements Roomd {
 
   // ---- base commit tracking ---------------------------------------------
 
-  private unobserveBus?: () => void
 
   /** A live owner can restore a peer's mistaken eviction from its current disk and sharing policy. */
   private observeOwnedData(): void {
@@ -676,24 +672,6 @@ class Daemon implements Roomd {
       this.roomDoc.sweepOrphanedBaseTexts(this)
       await this.enqueue(async () => { await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending) })
     })
-  }
-
-  /** Record receipts before any synchronous delivery observer sees a new bus entry. */
-  private markIntegratedBaseNotices(notices: readonly Msg[]): void {
-    if (this.stopped) return
-    const seen = this.roomDoc.seen(this.name)
-    const ids: string[] = []
-    for (const notice of notices) {
-      const sha = notice.type === 'base' ? notice.base : notice.type === 'pushed' ? notice.toSha : undefined
-      if (!sha || seen.has(notice.id)) continue
-      try {
-        execFileSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], {
-          cwd: this.dir, stdio: 'ignore', timeout: 2000,
-        })
-        ids.push(notice.id)
-      } catch { /* A missing commit or Git error leaves the notice deliverable. */ }
-    }
-    this.roomDoc.markSeen(this.name, ids, this)
   }
 
   /** The worktree's publisher alone writes base facts and posts `pushed` (invariant 11); wave 4 gates this on the publisher lease. */
@@ -748,7 +726,6 @@ class Daemon implements Roomd {
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
     this.transitionPending = false
     this.setStatus(resolved.status)
-    if (headMoved) this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.appliedHead = head
     this.appliedRefs = refsKey(inputs)
     this.appliedAsPublisher = publishing
@@ -779,6 +756,8 @@ class Daemon implements Roomd {
    */
   private commitTransition({ head }: BaseInputs, claims: ClaimChanges, { next, pushed }: TransitionFacts, publication: PreparedPublication, anchored: boolean): boolean {
     if (!this.publisher.valid(publication)) return false
+    // Notices are posted after the transaction commits: the hub appends them (hub §8), by id where retried.
+    const notices: { from: Identity; body: PostBody<Msg>; id?: string }[] = []
     this.roomDoc.doc.transact(() => {
       this.publisher.apply(publication, anchored)
       if (next) this.roomDoc.participants.set(`${this.name}\u0000git`, next)
@@ -791,16 +770,22 @@ class Daemon implements Roomd {
         if (current?.by !== this.name || current.mirrorOf) continue
         this.roomDoc.removeClaim(release.id, this)
         const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
-        this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
-        this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
+        notices.push({ from: { name: this.name, kind: this.kind }, body: { type: 'release', claimId: release.id, path: release.path, summary: text } as PostBody<ReleaseMsg> })
+        notices.push({ from: { name: 'room', kind: 'bot' }, body: { type: 'note', to: this.name, priority: 'notify', text } as PostBody<NoteMsg> })
         this.log(text)
       }
-      if (pushed) {
-        this.roomDoc.post<PushedMsg>({ name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, pushed, this, { id: `pushed:${this.name}:${pushed.fromSha}:${pushed.toSha}` })
-      }
     }, this)
+    // A deterministic id: a retry after a crash posts nothing twice (hub §2.3).
+    if (pushed) notices.push({ from: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }, body: pushed as PostBody<PushedMsg>, id: `pushed:${this.name}:${pushed.fromSha}:${pushed.toSha}` })
+    for (const n of notices) this.post(n.from, n.body, n.id)
     if (pushed) this.log(`${pushed.upstream} now has ${pushed.fromSha.slice(0, 10)}..${pushed.toSha.slice(0, 10)} (+${pushed.commits})`)
     return true
+  }
+
+  /** An automatic post through the hub; without a poster (the CLI) the notice is only logged. */
+  private post(from: Identity, body: PostBody<Msg>, id?: string): void {
+    if (this.poster) this.poster(from, body, { ...(id ? { id } : {}), auto: true })
+    else this.log(`not posted (no hub client): ${body.type}`)
   }
 
   private isWorkerWorktree(): boolean { return !!this.label && this.branch === `room/${this.label}` }

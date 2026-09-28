@@ -10,6 +10,8 @@ import type { JoinOptions, Session } from '../session.js'
 import type { CwdProcessLister, ProcessInfo, Spawner } from '../worker-process.js'
 import type { ResolvedConfig } from '../config.js'
 import type { CompanyState } from '../company.js'
+import type { Batch, Ledger } from '../ledger.js'
+import type { SessionBinding } from '../binding.js'
 
 export interface ToolDef {
   name: string
@@ -54,9 +56,15 @@ export interface ToolCtx {
   probe?: (pid: number) => ProcessInfo | undefined
   /** Processes with a cwd; injectable for tests (default: OS process list). */
   listCwdProcesses?: CwdProcessLister
+  /** This MCP's host session (receipts, session directory); tests default to an unbound synthetic session. */
+  binding?: SessionBinding
+  /** How long a hook's selection stays reserved without a confirm; injectable for tests. */
+  hookLeaseMs?: number
 }
 
 export type Handler = (args: Record<string, unknown>) => Promise<string>
+/** Internal argument supplied by the tool wrapper, never by MCP callers: the reply's ledger batch. */
+export const REPLY_BATCH = Symbol('reply batch')
 
 /** Explicit shared state passed to every concern's handlers factory. */
 export interface HandlerState {
@@ -66,7 +74,8 @@ export interface HandlerState {
   doJoin: (o: JoinOptions) => Promise<Session>
   doLeave: (s: Session) => Promise<void>
   doClose: (s: Session) => Promise<string[]>
-  seen: Set<string>
+  /** The session's delivery ledger: the only selector and receipt writer. */
+  ledger: Ledger
   rooms: Rooms
   S: () => Session
   isMe: (s: Session, p: { name: string; kind: string }) => boolean
@@ -98,7 +107,8 @@ export interface HandlerState {
   ownerHints: (s: Session, areas: string[]) => string[]
   msgInMyAreas: (s: Session, msg: Msg) => boolean
   forMe: (s: Session, msg: Msg) => boolean
-  inbox: (s: Session) => string
+  /** Select what `s` (and its workers room) is owed into `batch`, rendered as the reply's inbox prefix. */
+  inbox: (s: Session, batch: Batch) => string
   waitingOn: (s: Session) => Promise<string[]>
   describeUsers: (s: Session, files: string[]) => string
   planChanged: (s: Session, claim: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan) => string[]
@@ -123,6 +133,7 @@ export interface HandlerState {
   startConflictWatcher: (s: Session) => ConflictWatcher
   startWorkersBridge: (lead: Session, workers: Session) => Bridge
   workerPaths: () => string[]
+  /** Rewrite the hook's state.json (counts only) after a delivery changed what is owed. */
   scheduleInboxWrite: () => void
   upgraded: Set<string>
   conflictPairs: Set<string>

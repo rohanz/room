@@ -16,6 +16,11 @@ import { GraphIndex } from '../src/graph-index.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 let root: string
 let originalPath: string | undefined
@@ -100,6 +105,8 @@ describe('carry and discard safety', () => {
     })
     await registry.beginStop(record.id, 'lead-session-ended')
     expect(registry.read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
+    // §6 row 8 holds a stopped run as running until its exit; row 11 (stopped) needs the exit.
+    await registry.writeExit(record.id, { run: 1, code: null, witnessed: true, at: Date.now() })
     const resumed = await registry.resume(record.id, 2, { nonce: 'resume-2', logStart: 0 })
     expect(resumed.runs.at(-1)?.n).toBe(2)
     expect(registry.status(record.id)?.status).toBe('starting')
@@ -218,8 +225,8 @@ describe('carry and discard safety', () => {
     run(branchDir, 'add', '-A'); run(branchDir, 'commit', '-qm', 'odd path')
     const b = run(branchDir, 'rev-parse', 'HEAD')
     const room = new RoomDoc(); room.setMeta({ base: a })
-    const caller = { me: { name: 'lead' }, dir: root, room, local: false } as Session
-    const participant = { me: { name: 'peer' }, dir: branchDir, room, local: false } as Session
+    const caller = { ...hubSeam(room), policyStore: testPolicyStore(), me: { name: 'lead' }, dir: root, room, local: false } as Session
+    const participant = { ...hubSeam(room), policyStore: testPolicyStore(), me: { name: 'peer' }, dir: branchDir, room, local: false } as Session
     const state = { rooms: { holding: () => participant }, liveText: async () => undefined,
       baseFor: (_s: Session, person: string) => person === 'peer' ? b : a, shareOf: () => 'full' } as unknown as HandlerState
     const preview = await buildCombinedTree(state, caller, [{ person: 'peer', session: participant }])
@@ -232,7 +239,7 @@ describe('carry and discard safety', () => {
     const room = new RoomDoc(); room.setMeta({ base })
     room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', host: 'codex', task: 't', dir: root,
       branch: 'room/w', base, pid: 1, startedAt: 1, status: 'running', lead: 'lead',
-      carriedUntracked: [{ path: 'api.py', sha: '1'.repeat(40) }] } as Worker)
+      carriedUntracked: [{ path: 'api.py', sha: '1'.repeat(40) }] } as Worker, ignore)
     room.setOverlay('lead+w', 'api.py', 'def rate(x, year):\n    return x\n')
     const logs: string[] = []
     const graph = new GraphIndex(room, 'lead+w', root, line => logs.push(line), { random: () => 0, minPublishMs: 0 })

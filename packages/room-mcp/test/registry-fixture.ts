@@ -4,7 +4,7 @@ import { gitCommonDir } from '@room/roomd'
 import type { Worker } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
-import { mirrorRegistryWorkerRecord } from '../src/tools/workers.js'
+import { mirrorRegistryWorkerRecord } from '../src/worker-mirror.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { probeProcess } from '../src/worker-process.js'
 

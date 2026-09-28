@@ -17,6 +17,9 @@ import { LOCAL, NoRoom, joinSession, leaveSession, type Session } from '../src/s
 import { createTools } from '../src/tools.js'
 import type { ResolvedConfig } from '../src/config.js'
 import { workerProcessEnv } from '../src/worker-config.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { seedRegistryWorker } from './registry-fixture.js'
+import { hubAppend } from '@room/shared/testing'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const cleanups: (() => Promise<void> | void)[] = []
@@ -80,18 +83,25 @@ describe('automatic join (real room-mcp processes)', () => {
     const room = 'local/demo/main'
     const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
     cleanups.push(() => leaveSession(lead))
-    const old = lead.room.post(lead.me, { type: 'note', text: 'OLD-NOTIFY', priority: 'notify' })
-    const id = 'Ada/q#1'
-    lead.room.setWorker({ id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
-      branch: 'main', pid: process.pid, startedAt: Date.now(), spawnedAfter: old.id, status: 'running' })
-    const early = lead.room.post(lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
+    const old = hubAppend(lead.room, lead.me, { type: 'note', text: 'OLD-NOTIFY', priority: 'notify' })
+    // The launcher's write-ahead record (registry §3): the worker process is admitted against it (§4).
+    const launcher = (await registryForDir(dir)).instance
+    cleanups.push(() => closeRegistryForDir(dir))
+    const { registry, record } = await seedRegistryWorker(dir, 'q', {
+      name: 'Ada+q', room, lead: { participant: 'Ada', room, instance: launcher }, host: 'codex', task: 'room_wait once', dir, branch: 'main',
+      runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'auto-join-run-1', busFrontier: [old.id], promptMsgIds: [], launcher, logStart: 0 }],
+    })
+    const run = record.runs[0]
+    lead.room.setWorker({ id: record.id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
+      branch: 'main', pid: process.pid, startedAt: record.createdAt, spawnedAfter: old.id, status: 'running' }, () => {})
+    const early = hubAppend(lead.room, lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
-      tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', gen: 1, id, logDir: dir, isWorker: false })
+      tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false })
     const mcp = await startMcp(dir, env)
     await mcp.waitFor(/Ada\+q joined/, 30_000)
     const waiting = mcp.call('room_wait', { timeoutMs: 3000 })
     await new Promise(r => setTimeout(r, 100))
-    const late = lead.room.post(lead.me, { type: 'note', text: 'BROADCAST-INTERRUPT-2', priority: 'interrupt' })
+    const late = hubAppend(lead.room, lead.me, { type: 'note', text: 'BROADCAST-INTERRUPT-2', priority: 'interrupt' })
     const result = await waiting
     expect(result).toContain('BROADCAST-INTERRUPT-2')
     expect(result).toContain('BROADCAST-NOTIFY-1')

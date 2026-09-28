@@ -4,7 +4,7 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -21,7 +21,8 @@ import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, assertValidParticipantName, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
+import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
+import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 import { acquireOwnedFile } from './owned-file.js'
@@ -29,6 +30,8 @@ import { probeProcess, type ProcessProbe } from './worker-process.js'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment } from './worker-registry.js'
+import { HubClient, hubTransport } from './hub-client.js'
+import { createPost, greet, type Post } from './post.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -68,6 +71,10 @@ export interface Session {
   policyStore: PolicyStore
   /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
   refreshRuntime?: () => void
+  /** The room's hub over this connection (hub §9): posts, and whether coordination is paused. */
+  hub: HubClient
+  /** The only way to post: through the hub, the sole appender of `bus` (post.ts). */
+  post: Post
 }
 
 /** SessionStart owns session.json; the same session's hooks own runtime.json. */
@@ -462,7 +469,7 @@ async function reserveAutoName(dir: string, room: string, name: string, worktree
 }
 
 /** Resolve identity before roomd can publish any overlays under it. The probe never publishes a user. */
-export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel }, explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; policyStore: PolicyStore; autoTagNote?: string; refreshRuntime: () => void }> {
+export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof startRoomd>[0], 'policy'> & { requested: ShareLevel; requestedExplicit?: boolean; ceiling?: ShareLevel }, explicitTag?: string): Promise<{ daemon: Roomd; me: Identity; policyStore: PolicyStore; autoTagNote?: string; refreshRuntime: () => void; hub: HubClient; post: Post }> {
   assertValidParticipantName(options.name)
   if (options.owner) assertValidParticipantName(options.owner)
   if (options.label) assertValidParticipantName(options.label)
@@ -502,7 +509,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       const reserved = new Set<string>()
       let ownPreviousLock = false
       const worktree = await worktreePath(options.dir)
-      const host = resolveSessionHost(options.dir)
+      const host = resolveSessionHost()
       for (let candidate = rememberedTag === undefined ? 0 : -1; ; candidate++) {
         const tag = candidate === -1 ? rememberedTag! : candidate === 0 ? '' : candidate === 1 ? host : `${host}-${candidate}`
         const candidateName = tag ? `${options.name}+${tag}` : options.name
@@ -533,42 +540,48 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     onChange: policy => { if (daemon) daemon.applyInputs({ ...daemon.inputs, policy: { ...policy, publisher: !daemon.publishUnder, ...(daemon.publishUnder ? { publisherName: daemon.publishUnder } : {}) } }) } })
   if (options.requestedExplicit) await policyStore.setRequested(options.requested)
   const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options
+  const binding = createSessionBinding(options.dir)
+  // The daemon's automatic posts go through this connection's hub, which exists once the daemon's provider does.
+  let seam: Pick<Session, 'hub' | 'post'> | undefined
   try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy,
+    post: (from, body, opts) => { if (seam) void seam.post(from, body, opts); else options.log?.(`not posted before the hub connection: ${body.type}`) },
     onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
-    host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
+    host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }) }
   catch (e) { releaseName?.(); throw e }
   if (releaseName) {
     const stop = daemon.stop.bind(daemon)
     daemon.stop = async () => { try { await stop() } finally { releaseName?.(); releaseName = undefined } }
   }
-  const file = sessionMetadataPath(options.dir)
-  const refreshTranscriptModel = createClaudeTranscriptModelRefresh()
-  const publishRuntime = (transcriptModel?: string) => {
+  seam = connectHub(daemon, !!options.localKey, binding.id())
+  // The bound session's records (ledger SF3): SessionStart's session.json, the before-edit hook's runtime.json
+  // and hook-activity.json. Polled, since a new binding (Claude /clear) moves them to another directory.
+  const publishRuntime = () => {
     const current = daemon.provider.awareness.getLocalState()
-    const runtime = resolveSessionRuntime(options.dir)
-    runtime.model = transcriptModel ?? runtime.model
-    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(options.dir), ...runtime })
+    const runtime = resolveSessionRuntime(binding.dir())
+    if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime })
     const worker = daemon.roomDoc.workerOf(name)
     if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime.model && worker.model !== runtime.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime.model }, worker.id)
   }
-  const refresh = () => publishRuntime(refreshTranscriptModel(options.dir))
-  const activityFile = resolve(dirname(file), 'room-hook-activity.json')
+  let published = ''
   let lastActivity = Date.now() // do not replay activity left by an earlier session
-  const refreshActivity = () => {
+  const watchRecords = () => {
+    const dir = binding.dir()
+    if (!dir) return
+    const stamp = ['session.json', 'runtime.json'].map(f => { try { return `${statSync(join(dir, f)).mtimeMs}` } catch { return '-' } }).join(`\0${dir}\0`)
+    if (stamp !== published) { published = stamp; publishRuntime() }
     try {
-      const activity = JSON.parse(readFileSync(activityFile, 'utf8'))
-      const session = JSON.parse(readFileSync(file, 'utf8'))
-      if (activity.session_id !== session.session_id || typeof activity.at !== 'number' || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return
+      const activity = JSON.parse(readFileSync(join(dir, 'hook-activity.json'), 'utf8'))
+      if (typeof activity.at !== 'number' || !Number.isFinite(activity.at) || activity.at <= lastActivity || activity.at > Date.now()) return
       lastActivity = activity.at
       daemon.touch()
-    } catch { /* absent or partially written hook state; retry on next change */ }
+    } catch { /* absent or partially written hook state; retry on the next poll */ }
   }
-  watchFile(file, { interval: 500, persistent: false }, refresh)
-  watchFile(activityFile, { interval: 500, persistent: false }, refreshActivity)
-  publishRuntime() // cover a metadata rewrite during initial connection without reading the transcript on startup
+  const watcher = setInterval(watchRecords, 500)
+  watcher.unref?.()
+  publishRuntime()
   const stop = daemon.stop.bind(daemon)
-  daemon.stop = async () => { unwatchFile(file, refresh); unwatchFile(activityFile, refreshActivity); await stop() }
-  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, policyStore, autoTagNote, refreshRuntime: refresh }
+  daemon.stop = async () => { clearInterval(watcher); await stop() }
+  return { daemon, me: { name, kind: options.kind ?? 'agent', owner: options.owner, ...(label ? { label } : {}) }, policyStore, autoTagNote, refreshRuntime: publishRuntime, ...seam }
 }
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
@@ -623,7 +636,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await serverShareMax(server, shareRequested)
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
+  const { daemon, me, policyStore, autoTagNote, refreshRuntime, hub, post } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag)
   const view = await viewToken(server, roomName, creds)
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
@@ -645,6 +658,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     shareWarning: config.shareWarning,
     ...(token ? { token } : {}),
     ...(config.room ? { pinnedRoom: true } : {}),
+    hub, post,
   }
   const untrackShare = ceilingFor(server, shareMax).subscribe(policyStore)
   trackConnection(session)
@@ -687,9 +701,9 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, policyStore: PolicyStore, autoTagNote: string | undefined, refreshRuntime: () => void
+  let daemon: Roomd, me: Identity, policyStore: PolicyStore, autoTagNote: string | undefined, refreshRuntime: () => void, hub: HubClient, post: Post
   try {
-    ;({ daemon, me, policyStore, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, autoTagNote, refreshRuntime, hub, post } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
@@ -714,9 +728,19 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     shareRequested: policyStore.requested,
     local,
     pinnedRoom: true,
+    hub, post,
   }
   trackConnection(session)
   return session
+}
+
+/** One HubClient per joined connection: hello now and on every reconnect (the client's own), closed with the daemon. */
+function connectHub(daemon: Roomd, local: boolean, sessionId: string): Pick<Session, 'hub' | 'post'> {
+  const hub = new HubClient({ transport: hubTransport(daemon.provider), client: 'room-mcp', sessionId, local })
+  greet(hub) // paused until a hello succeeds (hub §7)
+  const stop = daemon.stop.bind(daemon)
+  daemon.stop = async () => { hub.close(); await stop() }
+  return { hub, post: createPost(daemon.roomDoc, hub) }
 }
 
 /** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */

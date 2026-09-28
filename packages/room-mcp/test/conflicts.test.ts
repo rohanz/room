@@ -10,6 +10,8 @@ import type { Identity } from '@room/shared'
 import { createTools, type Tools } from '../src/tools.js'
 import { changedRanges, ConflictWatcher, type ConflictDeps } from '../src/conflicts.js'
 import type { Session } from '../src/session.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -29,7 +31,7 @@ function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
   return {
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr%2Fmain', roomName: 'github.com/o/r/main', browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
     ...extra,
   }
@@ -81,7 +83,7 @@ describe('automatic conflict notices', () => {
   it('logs a rejected debounced conflict check instead of leaving it unhandled', async () => {
     const log = vi.fn()
     const room = new RoomDoc()
-    const watcher = new ConflictWatcher({ room, me, debounceMs: 1, log,
+    const watcher = new ConflictWatcher({ room, post: hubSeam(room).post, me, debounceMs: 1, log,
       liveText: async () => undefined, baseText: async () => undefined,
       baseFor: () => base, mergeBase: async () => base })
     const internal = watcher as unknown as { schedule(person: string, path: string): void; check(person: string, path: string): Promise<void> }
@@ -99,7 +101,7 @@ describe('automatic conflict notices', () => {
   })
 
   function watcherFor(room: RoomDoc, extra: Partial<ConflictDeps> = {}) {
-    const watcher = new ConflictWatcher({ room, me, debounceMs: 10_000,
+    const watcher = new ConflictWatcher({ room, post: hubSeam(room).post, me, debounceMs: 10_000,
       liveText: async (p, person) => room.text(p, person), baseText: async () => 'base\n',
       baseFor: () => base, mergeBase: async () => base, ...extra })
     watcher.start()
@@ -175,7 +177,7 @@ describe('automatic conflict notices', () => {
     const room = new RoomDoc()
     room.setOverlay('Rohan', 'api/handlers.py', 'from api.pricing import total\n')
     const watcher = new ConflictWatcher({
-      room, me, debounceMs: 0,
+      room, post: hubSeam(room).post, me, debounceMs: 0,
       liveText: async (p, person) => room.text(p, person),
       baseText: async () => '', baseFor: () => base, mergeBase: async () => base,
     })
@@ -257,7 +259,7 @@ describe('automatic conflict notices', () => {
     let present = false
     let mergeReads = 0
     const watcher = new ConflictWatcher({
-      room, me, debounceMs: 0, isPresent: () => present,
+      room, post: hubSeam(room).post, me, debounceMs: 0, isPresent: () => present,
       liveText: async (p, person) => room.text(p, person),
       baseText: async () => { mergeReads++; return COMMITTED },
       baseFor: () => base,
@@ -285,7 +287,7 @@ describe('automatic conflict notices', () => {
       room.setOverlay('Kieran', p, 'theirs\n')
     }
     const watcher = new ConflictWatcher({
-      room, me, debounceMs: 0, mergeBudget: 4, mergeWindowMs: 10_000, now: () => clock,
+      room, post: hubSeam(room).post, me, debounceMs: 0, mergeBudget: 4, mergeWindowMs: 10_000, now: () => clock,
       liveText: async (p, person) => room.text(p, person),
       baseText: async () => { mergeReads++; return 'base\n' },
       baseFor: () => base,
@@ -352,7 +354,7 @@ describe('room lifecycle', () => {
   it('room_close needs confirm=true, then closes for everyone and leaves', async () => {
     const clock = Date.UTC(2026, 8, 15, 8, 30)
     const t = setup({ now: () => clock })
-    t.other.post(kieran, { type: 'note', text: 'done (api): shipped', priority: 'fyi' })
+    hubAppend(t.other, kieran, { type: 'note', text: 'done (api): shipped', priority: 'fyi' })
     expect(await t.tools.call('room_close', {})).toContain('confirm=true')
     expect(t.closed).toEqual([])
     const out = await t.tools.call('room_close', { confirm: true })
@@ -368,7 +370,7 @@ describe('room lifecycle', () => {
 
   it('room_export writes the current ledger to a requested path and reports its line count', async () => {
     const t = setup({ now: () => Date.UTC(2026, 8, 15, 9) })
-    t.other.post(kieran, { type: 'note', text: 'done (tests): 12 pass', priority: 'fyi' })
+    hubAppend(t.other, kieran, { type: 'note', text: 'done (tests): 12 pass', priority: 'fyi' })
     const out = await t.tools.call('room_export', { path: '.room/custom-story.md' })
     const ledger = join(dir, '.room', 'custom-story.md')
     expect(out).toBe(`exported room ledger to ${ledger} (4 lines)`)

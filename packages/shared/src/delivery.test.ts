@@ -7,6 +7,8 @@ import {
 } from './delivery.js'
 import type { DeliveryCursor, MessageMap, Msg, MsgType } from './types.js'
 
+const SHOWN = { s: 'session-1', via: 'reply' } as const
+
 const NOW = Date.UTC(2026, 8, 28, 12)
 const DAY = 24 * 60 * 60 * 1000
 const P = { name: 'pat', kind: 'agent' as const }
@@ -60,7 +62,7 @@ describe('owed (test 1)', () => {
     const room = new RoomDoc()
     const [routed, ended, receipted, irrelevant, kept] = push(room, broadcast(), question(), question(), question(), question())
     room.outcomes.set(ended.id, { to: P.name, from: 'quinn', outcome: 'expired', at: NOW })
-    room.markSeen(P.name, [receipted.id])
+    room.markSeen(P.name, [receipted.id], SHOWN)
     const before = Y.encodeStateVector(room.doc)
     expect(ids(owed(room, P, cursor([], [routed.id]), {}, m => m.id !== irrelevant.id))).toEqual([kept.id])
     expect(Y.encodeStateVector(room.doc)).toEqual(before)
@@ -85,7 +87,7 @@ describe('owed (test 1)', () => {
   })
 })
 
-describe('message lookup and deterministic ids', () => {
+describe('message lookup', () => {
   it('finds a message on the bus, then in mail', () => {
     const room = new RoomDoc()
     const [onBus] = push(room, question())
@@ -94,21 +96,6 @@ describe('message lookup and deterministic ids', () => {
     expect(room.message(onBus.id)).toEqual(onBus)
     expect(room.message(mailed.id)).toEqual(mailed)
     expect(room.message('m_missing')).toBeUndefined()
-  })
-
-  it('a post whose id exists in bus, mail, archive or outcomes adds nothing', () => {
-    const room = new RoomDoc()
-    const first = room.post(P, { type: 'note', text: 'done', to: 'lead' } as never, undefined, { id: 'wk:w1:1' })
-    expect(first.id).toBe('wk:w1:1')
-    expect(room.post(P, { type: 'note', text: 'again', to: 'lead' } as never, undefined, { id: 'wk:w1:1' })).toEqual(first)
-    const mailed = question({ id: 'cf:slot:1' })
-    room.mail.set(mailed.id, mailed)
-    expect(room.post(P, { type: 'note', text: 'retry' } as never, undefined, { id: 'cf:slot:1' })).toEqual(mailed)
-    room.archive.set('cf:slot:2', ['note', 'pat', NOW, []])
-    room.outcomes.set('cf:slot:3', { to: 'lead', from: 'pat', outcome: 'expired', at: NOW })
-    room.post(P, { type: 'note', text: 'retry' } as never, undefined, { id: 'cf:slot:2' })
-    room.post(P, { type: 'note', text: 'retry' } as never, undefined, { id: 'cf:slot:3' })
-    expect(ids(room.messages())).toEqual(['wk:w1:1'])
   })
 })
 
@@ -123,8 +110,8 @@ describe('trim', () => {
     const changed = msg({ type: 'changed', paths: ['auth/a.ts'], summary: 'x', priority: 'fyi' } as Partial<Msg> & { type: 'changed' })
     const release = msg({ type: 'release', claimId: 'c1', path: 'auth/a.ts', unfulfilled: [{ kind: 'rename', symbol: 'token' }] } as Partial<Msg> & { type: 'release' })
     push(room, owedQ, shownQ, answeredQ, answer, changed, release, broadcast())
-    room.markSeen(P.name, [shownQ.id, answeredQ.id])
-    room.markSeen('quinn', [answer.id])
+    room.markSeen(P.name, [shownQ.id, answeredQ.id], SHOWN)
+    room.markSeen('quinn', [answer.id], SHOWN)
 
     const report = trim(room, NOW, { busKeep: 1 })
     expect(report).toMatchObject({ removed: 6, archived: 6, mailed: 2 })
@@ -147,7 +134,7 @@ describe('trim', () => {
     room.mail.set(answer.id, answer); room.mail.set(q.id, q)
     trim(room, NOW)
     expect(room.mail.size).toBe(2)
-    room.markSeen(P.name, [answer.id, q.id])
+    room.markSeen(P.name, [answer.id, q.id], SHOWN)
     trim(room, NOW)
     expect([...room.mail.keys()]).toEqual([q.id])
     trim(room, q.at + REPLY_WINDOW_MS)
@@ -158,7 +145,7 @@ describe('trim', () => {
     const origin = new RoomDoc()
     origin.setScope({ by: 'quinn', byKind: 'agent', area: 'auth', summary: 'login', paths: ['auth/'] })
     for (let i = 0; i < 30; i++) push(origin, i % 3 === 0 ? question() : i % 3 === 1 ? broadcast() : msg({ type: 'changed', paths: ['auth/a.ts'], summary: `${i}`, priority: 'fyi' } as Partial<Msg> & { type: 'changed' }))
-    origin.markSeen(P.name, [origin.messages()[3].id])
+    origin.markSeen(P.name, [origin.messages()[3].id], SHOWN)
     const copy = () => { const r = new RoomDoc(new Y.Doc()); Y.applyUpdate(r.doc, Y.encodeStateAsUpdate(origin.doc)); return r }
     const single = copy(), a = copy(), b = copy()
     trim(single, NOW, { busKeep: 10 })

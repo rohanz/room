@@ -171,7 +171,7 @@ export class Bridge {
     const now = Date.now()
     const content = JSON.stringify([area, summary])
     if (content !== this.lastScopePost.content || now - this.lastScopePost.at >= SCOPE_REPOST_MS) {
-      this.team.room.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
+      void this.team.post<ScopeMsg>(me, { type: 'scope', area, summary, paths })
       this.lastScopePost = { at: now, content }
     }
     this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own ? `${own.paths.length} own, ` : ''}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own?.paths.length ?? 0}`)
@@ -214,11 +214,11 @@ export class Bridge {
     if (!mirrored) return
     const local = [...this.local.room.messages()].reverse().find((m): m is ReleaseMsg => m.type === 'release' && m.claimId === localId)
     const tag = mirrored.intent.match(/^\[([^\]]+)\]/)?.[1]
-    this.team.room.post<ReleaseMsg>(this.team.me, {
+    void this.team.post<ReleaseMsg>(this.team.me, {
       type: 'release', claimId: teamId, path: mirrored.path,
       summary: `${tag ? `[${tag}] ` : ''}${local?.summary ?? 'released'}`,
       ...(local?.unfulfilled?.length ? { unfulfilled: local.unfulfilled } : {}),
-    })
+    }, { auto: true })
   }
 
   /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
@@ -247,7 +247,7 @@ export class Bridge {
       const last = this.recent.get(key) ?? 0
       if (!broadcast && priority !== 'interrupt' && now - last < RELAY_DEDUPE_MS) continue
       this.recent.set(key, now)
-      this.local.room.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` })
+      void this.local.post<NoteMsg>(this.team.me, { type: 'note', to: w.name, priority, text: `[team room] ${formatMsg(m)}` }, { auto: true })
       delivered.push(w.tag)
     }
     if (this.recent.size > RELAYED_MAX) for (const [k, t] of this.recent) if (now - t > RELAY_DEDUPE_MS) this.recent.delete(k)

@@ -12,6 +12,8 @@ import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { branchOf, exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
 
 let dir: string
 let base: string
@@ -31,8 +33,8 @@ function session(room: RoomDoc, me: Identity, roomName = ROOM): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', lastActive: Date.now() })
   return {
-    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x', policyStore: testPolicyStore(),
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
+    ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base },
   }
 }
@@ -125,23 +127,23 @@ describe('ledger to PR', () => {
     a.setMeta({ repo: 'o/r', branch: 'main', base })
     const alice: Identity = { name: 'alice', kind: 'agent', owner: 'alice' }
     const bob: Identity = { name: 'bob', kind: 'agent', owner: 'bob' }
-    a.post<ScopeMsg>(alice, { type: 'scope', area: 'auth', summary: 'sessions', paths: ['src/auth.py'] })
+    hubAppend<ScopeMsg>(a, alice, { type: 'scope', area: 'auth', summary: 'sessions', paths: ['src/auth.py'] })
     const c1 = a.addClaim({ path: 'src/auth.py', from: 1, to: 5, by: 'alice', byKind: 'agent', intent: 'rename login', plans: [{ kind: 'rename', symbol: 'login', detail: 'sign_in' }] })
-    a.post<ClaimMsg>(alice, { type: 'claim', claimId: c1.id, path: 'src/auth.py', from_line: 1, to_line: 5, intent: 'rename login', plans: c1.plans })
-    const q = a.post<QuestionMsg>(bob, { type: 'question', to: 'alice', text: 'keep the old name?' })
-    a.post<AnswerMsg>(alice, { type: 'answer', to: 'bob', inReplyTo: q.id, text: 'no, sign_in only' })
+    hubAppend<ClaimMsg>(a, alice, { type: 'claim', claimId: c1.id, path: 'src/auth.py', from_line: 1, to_line: 5, intent: 'rename login', plans: c1.plans })
+    const q = hubAppend<QuestionMsg>(a, bob, { type: 'question', to: 'alice', text: 'keep the old name?' })
+    hubAppend<AnswerMsg>(a, alice, { type: 'answer', to: 'bob', inReplyTo: q.id, text: 'no, sign_in only' })
     a.removeClaim(c1.id)
-    a.post<ReleaseMsg>(alice, { type: 'release', claimId: c1.id, path: 'src/auth.py', summary: 'renamed login to sign_in' })
+    hubAppend<ReleaseMsg>(a, alice, { type: 'release', claimId: c1.id, path: 'src/auth.py', summary: 'renamed login to sign_in' })
     const c2 = a.addClaim({ path: 'src/session.py', from: 1, to: 2, by: 'bob', byKind: 'agent', intent: 'drop cookie', plans: [{ kind: 'delete', symbol: 'cookie' }] })
-    a.post<ClaimMsg>(bob, { type: 'claim', claimId: c2.id, path: 'src/session.py', from_line: 1, to_line: 2, intent: 'drop cookie', plans: c2.plans })
+    hubAppend<ClaimMsg>(a, bob, { type: 'claim', claimId: c2.id, path: 'src/session.py', from_line: 1, to_line: 2, intent: 'drop cookie', plans: c2.plans })
     a.removeClaim(c2.id)
-    a.post<ReleaseMsg>(bob, { type: 'release', claimId: c2.id, path: 'src/session.py', summary: 'left it', unfulfilled: c2.plans })
-    a.post<NoteMsg>(alice, { type: 'note', text: 'merge preview with bob: no conflicts across 2 path(s); "npm test" passed', priority: 'fyi' })
-    a.post<NoteMsg>(alice, { type: 'note', text: 'evicted stale uncommitted work of carol', priority: 'fyi' }) // not part of the story
-    a.post<NoteMsg>(alice, { type: 'note', text: 'hi', to: 'bob', copyOf: 'm_orig' }) // routed copy: skipped
+    hubAppend<ReleaseMsg>(a, bob, { type: 'release', claimId: c2.id, path: 'src/session.py', summary: 'left it', unfulfilled: c2.plans })
+    hubAppend<NoteMsg>(a, alice, { type: 'note', text: 'merge preview with bob: no conflicts across 2 path(s); "npm test" passed', priority: 'fyi' })
+    hubAppend<NoteMsg>(a, alice, { type: 'note', text: 'evicted stale uncommitted work of carol', priority: 'fyi' }) // not part of the story
+    hubAppend<NoteMsg>(a, alice, { type: 'note', text: 'hi', to: 'bob', copyOf: 'm_orig' }) // routed copy: skipped
     const c3 = a.addClaim({ path: 'src/auth.py', from: 9, to: 9, by: 'alice', byKind: 'agent', intent: 'still working' })
-    a.post<ClaimMsg>(alice, { type: 'claim', claimId: c3.id, path: 'src/auth.py', from_line: 9, to_line: 9, intent: 'still working' })
-    a.post<NoteMsg>(alice, { type: 'note', text: 'done (auth): sign_in landed, 12 tests pass' })
+    hubAppend<ClaimMsg>(a, alice, { type: 'claim', claimId: c3.id, path: 'src/auth.py', from_line: 9, to_line: 9, intent: 'still working' })
+    hubAppend<NoteMsg>(a, alice, { type: 'note', text: 'done (auth): sign_in landed, 12 tests pass' })
     return a
   }
 

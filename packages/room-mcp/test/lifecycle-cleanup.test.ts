@@ -14,6 +14,11 @@ import { handlers as joinHandlers } from '../src/tools/join.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 import { type HandlerState } from '../src/tools/context.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 describe('worker lifecycle cleanup', () => {
   it('signals only processes whose resolved cwd is inside the worktree, then escalates survivors', async () => {
@@ -112,7 +117,7 @@ describe('worker lifecycle cleanup', () => {
       const room = new RoomDoc()
       const worker = { tag: 'a', name: 'lead+a', lead: 'lead', host: 'codex', task: 'task', dir, branch: 'room/a', id: 'id', pid: 999999, startedAt: Date.now(), status: 'running' } as const
       room.workers.set('a', worker as never)
-      const s = { room, dir: root, roomName: 'local/repo/main', me: { name: 'lead', kind: 'agent' } } as Session
+      const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root, roomName: 'local/repo/main', me: { name: 'lead', kind: 'agent' } } as Session
       await syncDocumentWorkers(s)
       const kill = vi.fn(() => { child.kill('SIGTERM'); return true })
       const state = { ctx: { listCwdProcesses: () => [{ pid: child.pid!, cwd: dir, command: 'node' }] }, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
@@ -138,10 +143,10 @@ describe('worker lifecycle cleanup', () => {
   it('sweeps an archived worker record left by an older collection', async () => {
     const room = new RoomDoc()
     const record: RetiredWorker = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex', task: 'task', summary: '', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }
-    room.retireParticipant(record.name, record)
+    room.retireParticipant(record.name, record, ignore)
     room.workers.set(record.tag, { tag: record.tag, name: record.name, lead: record.lead, host: record.host, task: record.task, dir: '/missing', branch: 'room/old', pid: -1, startedAt: record.startedAt, status: 'done' })
     room.setOverlay(record.name, 'old.ts', 'ghost')
-    const s = { room, dir: '/missing', me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
+    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/missing', me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
     let current: Session | null = s
     const rooms = new Rooms({ primary: () => current, setPrimary: next => { current = next }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
     rooms.track(s)
@@ -154,7 +159,7 @@ describe('worker lifecycle cleanup', () => {
 
   it('room_leave waits for cwd cleanup and names stopped processes', async () => {
     const room = new RoomDoc()
-    const s = { room, dir: '/repo', roomName: 'local/repo/main' } as Session
+    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/repo', roomName: 'local/repo/main' } as Session
     const worker = { tag: 'a', dir: '/repo/.room/workers/a' }
     const dismissWorker = vi.fn(async () => 'pid 123 signalled; stopped processes: node (pid 123)')
     const state = {
@@ -172,9 +177,9 @@ describe('worker lifecycle cleanup', () => {
     const room = new RoomDoc()
     const worker = { id: 'stalled-id', tag: 'stalled', name: 'lead+stalled', lead: 'lead', host: 'codex' as const,
       task: 'x', dir: '/missing', branch: 'room/stalled', pid: process.pid, processStartTime: 'test:start', startedAt: 1, status: 'running' as const }
-    room.setWorker(worker)
+    room.setWorker(worker, ignore)
     const before = { ...room.workers.get(worker.tag)! }
-    const s = { room, dir: '/missing', me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main' } as Session
+    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/missing', me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main' } as Session
     const log = vi.fn()
     const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: '/missing', leave: async () => {},
       probe: () => ({ startTime: 'test:start', executable: 'codex' }), log })

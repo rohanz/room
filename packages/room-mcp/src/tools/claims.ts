@@ -57,20 +57,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const claimedHash = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
       const overl = s.room.openClaims().filter(c => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }))
-      let claim!: Claim
-      let msg!: ClaimMsg
-      s.room.doc.transact(() => {
-        claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}), ...(claimedHash ? { claimedHash } : {}) })
-        msg = s.room.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
-        for (const o of overl) {
-          const text = `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}`
-          s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, text, to: o.by })
-        }
-      }, s.me)
-      s.room.setClaimMsg(claim.id, msg.id)
+      const claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}), ...(claimedHash ? { claimedHash } : {}) }, s.me)
+      const posting = s.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
+      s.room.setClaimMsg(claim.id, posting.id)
+      const conflicts = overl.map(o => s.post<ConflictMsg>(s.me, { type: 'conflict', claimId: claim.id, otherClaimId: o.id, path: p, to: o.by,
+        text: `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}` }, { auto: true }))
+      const [posted] = await Promise.all([posting, ...conflicts])
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
-      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`]
+      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]]
       // A new plan on a symbol I already have an open plan for supersedes the old one.
       let superseded = 0
       for (const pl of plans) {
@@ -83,7 +78,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
       }
-      if (superseded) s.room.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
+      if (superseded) await s.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
       for (const o of overl) out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
         await s.graph.ready
@@ -96,7 +91,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
       await loadAreas(s)
       out.push(...ownerHints(s, [areasOf(s).areaOf(p)]))
-      out.push(...await upgrade(s, msg, [p], plans.map(x => x.symbol)))
+      if (posted.ok) out.push(...await upgrade(s, posted.msg, [p], plans.map(x => x.symbol)))
       return out.join('\n')
     },
     async room_release(a) {
@@ -109,13 +104,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const done = new Set(Array.isArray(a.done) ? a.done.filter((x): x is string => typeof x === 'string') : [])
       const unfulfilled = (c.plans ?? []).filter(pl => !done.has(pl.symbol) && !(summary ?? '').includes(pl.symbol) && !(pl.detail && (summary ?? '').includes(pl.detail)))
       s.room.removeClaim(c.id)
-      s.room.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, ...(summary ? { summary } : {}), ...(unfulfilled.length ? { unfulfilled } : {}) })
+      const posted = await s.post<ReleaseMsg>(s.me, { type: 'release', claimId: c.id, path: c.path, ...(summary ? { summary } : {}), ...(unfulfilled.length ? { unfulfilled } : {}) })
       s.daemon.touch()
       const next = mine(s)[0]
       setPresence(s, next
         ? { cursor: { path: next.path, from: next.from, to: next.to }, status: `editing ${next.path}:${next.from}-${next.to} — ${next.intent}` }
         : { cursor: undefined, status: s.room.scope(s.me.name) ? `on ${s.room.scope(s.me.name)!.area}` : 'idle' })
-      const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`]
+      const out = [`released ${c.id} (${c.path}:${c.from}-${c.to})${summary ? ` — ${summary}` : ''}`, ...posted.ok ? [] : [`release notice ${posted.text}`]]
       if (unfulfilled.length) {
         out.push(`not done (declared but not in summary): ${formatPlans(unfulfilled)} — if you did them, room_send changed with symbols; if not, others were expecting them`)
         for (const pl of unfulfilled) out.push(...planChanged(s, c, pl, 'cancelled', summary ?? 'released without doing it'))
@@ -127,23 +122,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   return handlers
 }
 
-/** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. */
+/** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. The fyi note is posted, not awaited. */
 export function releaseClaimsOnDone(s: Session, keep?: (claim: Claim) => boolean, name = s.me.name, clearScope = true): number {
   const released = s.room.openClaims().filter(c => c.by === name && c.byKind !== 'human' && !keep?.(c))
   s.room.doc.transact(() => {
     for (const c of released) s.room.removeClaim(c.id)
-    const plans = released.reduce((n, c) => n + (c.plans?.length ?? 0), 0)
-    if (released.length) s.room.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${name} released ${released.length} claim(s)${plans ? `; ended ${plans} plan(s)` : ''}` })
     if (clearScope) s.room.clearScope(name)
   }, s.me)
+  const plans = released.reduce((n, c) => n + (c.plans?.length ?? 0), 0)
+  if (released.length) void s.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${name} released ${released.length} claim(s)${plans ? `; ended ${plans} plan(s)` : ''}` })
   return released.length
 }
 
 function postPlanChange(s: Session, c: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan, priority?: PlanMsg['priority']): string[] {
   const deps = (c.msgId ? s.room.dependentsOf(c.msgId) : []).filter(p => p !== s.me.name)
   const base = { type: 'plan' as const, status, claimId: c.id, path: c.path, plan, text, ...(replacedBy ? { replacedBy } : {}), priority: priority ?? 'interrupt' }
-  const orig = s.room.post<PlanMsg>(s.me, { ...base, priority: 'fyi' })
-  for (const p of deps) s.room.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id })
+  // Ids are known before the hub answers, so the copies name the original; posts never throw.
+  const orig = s.post<PlanMsg>(s.me, { ...base, priority: 'fyi' })
+  for (const p of deps) void s.post<PlanMsg>(s.me, { ...base, to: p, copyOf: orig.id }, { auto: true })
   return deps.length ? [`plan ${status}: ${formatPlans([plan])} — told ${deps.map(d => `${d}'s agent`).join(', ')} (they were shown it)`] : [`plan ${status}: ${formatPlans([plan])} — nobody had been shown it`]
 }
 
@@ -164,6 +160,7 @@ function parsePlans(v: unknown): Plan[] | string {
 
 export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' | 'log' | 'ctx' | 'liveText' | 'baseFor'>): Pick<HandlerState, 'observeClaims' | 'planChanged' | 'startConflictWatcher'> {
   const { conflictPairs, mine, log, ctx, liveText, baseFor } = deps
+  const sessionDir = () => ctx.binding?.dir()
   const observeClaims = (s: Session) => {
       s.room.claims.observe((ev, tr) => {
         if (tr.local) return
@@ -178,7 +175,7 @@ export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' |
             conflictPairs.add(key)
             if (m.id.localeCompare(arrived.id) > 0) continue
             const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`
-            s.room.post<ConflictMsg>(s.me, { type: 'conflict', claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by })
+            void s.post<ConflictMsg>(s.me, { type: 'conflict', claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by }, { auto: true })
           }
         }
       })
@@ -188,7 +185,8 @@ export function createClaims(deps: Pick<HandlerState, 'conflictPairs' | 'mine' |
   const startConflictWatcher = (s: import('../session.js').Session): ConflictWatcher => {
     const watcher = new ConflictWatcher({
       room: s.room, me: s.me, log, debounceMs: ctx.conflictDebounceMs,
-      writeIntent: createWriteIntentReader(s.dir),
+      post: s.post,
+      writeIntent: createWriteIntentReader(s.dir, sessionDir),
       coLocated: person => {
         const states = [...s.awareness.getStates().values()]
         const mine = s.awareness.getLocalState()?.watchedDirectory

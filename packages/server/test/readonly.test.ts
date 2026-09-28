@@ -7,6 +7,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import { bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity } from '../src/readonly.js'
+import { hubAppend } from '@room/shared/testing'
 
 const doc = new Y.Doc()
 doc.getText('t').insert(0, 'hello')
@@ -229,7 +230,7 @@ describe('document identity binding', () => {
     const server = new Y.Doc(), room = new RoomDoc(server)
     room.setScope({ by: 'victim', byKind: 'agent', area: 'api', summary: 'real', paths: ['api.ts'] })
     const claim = room.addClaim({ by: 'victim', byKind: 'agent', path: 'api.ts', from: 1, to: 2, intent: 'real' })
-    room.post({ name: 'victim', kind: 'agent' }, { type: 'note', text: 'real' })
+    hubAppend(room, { name: 'victim', kind: 'agent' }, { type: 'note', text: 'real' })
     const conn = new EventEmitter(), dropped: string[] = []
     conn.on('message', message => applyPacket(server, message))
     bindDocumentIdentity(conn, 'octo', new DocumentIdentityGuard(() => server), (_login, reason) => dropped.push(reason), 'enforce')

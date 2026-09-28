@@ -3,6 +3,9 @@ import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
 import type { RetiredWorker } from './types.js'
 
+/** No release notices to send here. */
+const ignore = () => {}
+
 function peers(): [RoomDoc, RoomDoc] {
   const a = new RoomDoc(), b = new RoomDoc()
   return [a, b]
@@ -179,7 +182,7 @@ describe('participant-owned base texts', () => {
         files: ['file.py'], fileCount: 1, startedAt: i, finishedAt: i + 1,
         retiredAt: i + 2, outcome: 'clean',
       }
-      b.retireParticipant(name, record)
+      b.retireParticipant(name, record, ignore)
       sync(a, b)
       for (const room of [a, b]) {
         expect(room.baseText(name, 'sha', 'file.py')).toBeUndefined()

@@ -1,11 +1,14 @@
+import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
 import { hookHealthNote } from '../hooks-bridge.js'
+import type { Batch, Ledger, Notice } from '../ledger.js'
+import { greeted } from '../post.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
-import { NeedFetch, NotJoined, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
-import { defs as joinDefs, handlers as joinHandlers, markHistorySeenOnJoin, teamSharingNote } from './join.js'
+import { NeedFetch, NotJoined, REPLY_BATCH, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
+import { defs as joinDefs, handlers as joinHandlers, offerTeamSharingDisclosure } from './join.js'
 import { defs as scopeDefs, handlers as scopeHandlers } from './scope.js'
 import { defs as claimDefs, handlers as claimHandlers } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, WAIT_SIGNAL } from './messaging.js'
@@ -15,17 +18,30 @@ import { defs as workerDefs, handlers as workerHandlers } from './workers.js'
 import { defs as shareDefs, handlers as shareHandlers } from './share.js'
 import { defs as prDefs, handlers as prHandlers } from './prs.js'
 
+/** How the host's transport ends a reply's batch: commit after a confirmed write, release on failure. */
+export interface Settle { commit(): void; release(): void }
+/** One line the before-edit or SessionStart hook prints (ledger "Before-edit and SessionStart hooks"). */
+export interface HookItem { id: string; line: string; priority: Priority }
+
 export interface Tools {
   list(): ToolDef[]
-  call(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>
+  /**
+   * One tool call. Its inbox and notices are reserved in a ledger batch: with `handoff`, the caller commits
+   * it once the reply's bytes are written (FlushedStdioTransport); without, it commits when the call returns.
+   */
+  call(name: string, args: Record<string, unknown>, signal?: AbortSignal, handoff?: (settle: Settle) => void): Promise<string>
+  /** The session's delivery ledger (the hooks' arbitration endpoint selects through it). */
+  readonly ledger: Ledger
+  /** A hook's select: what the joined rooms owe, plus pending notices, reserved in a hook batch. */
+  hookSelect(): { batch: Batch; items: HookItem[]; notices: string[] }
+  /** A startup notice, offered until a reply or hook hands it off, or until a room is joined. */
+  startupNotice(text: string): void
   /** Attach the hooks bridge (state file + wake) to a session; idempotent. */
   attachHooks(s: Session): void
   /** Release claims, clear scope, stop the bridge and daemon (process exit path). */
   shutdown(): Promise<void>
   /** For sessions joined outside room_join (auto-join): clear stale state under my name. */
   clearStale(s: Session): number
-  /** Apply the same pre-join inbox boundary for explicit, automatic, and branch-change joins. */
-  markHistorySeenOnJoin(s: Session): void
   /** The automatic join: every tool call ensures it first; room_join/create retarget it, room_leave/close end it. */
   setAutoJoin(a: AutoJoinHandle): void
   /** Leave a session that can no longer reach its room, without dismissing workers. */
@@ -46,24 +62,18 @@ export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name =
 export function createTools(ctx: ToolCtx): Tools {
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
-  if (initial) trackConnection(initial, state.now)
+  if (initial) { trackConnection(initial, state.now); state.ledger.bind(initial) }
   let autoJoin: AutoJoinHandle | undefined
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
     : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
   const handlers = Object.assign({}, joinHandlers(state), scopeHandlers(state), fileHandlers(state), claimHandlers(state), messagingHandlers(state), workerHandlers(state), collectHandlers(state), prHandlers(state), shareHandlers(state))
 
-  return {
-    list: () => DEFS,
-    attachHooks: state.attachHooks,
-    clearStale: state.clearStale,
-    markHistorySeenOnJoin: s => markHistorySeenOnJoin(s, state.seen),
-    setAutoJoin(a) { autoJoin = a },
-    drop: state.drop,
-    shutdown: state.shutdown,
-    flushConflicts: state.flushConflicts,
-    async call(name, args, signal) {
-      return withToolSignal(signal, async () => {
+  const { ledger } = state
+  let startup: Notice | undefined
+  /** A room joined since the startup notice was written makes it moot. */
+  const withdrawStartup = () => { if (startup && ctx.getSession()) { ledger.withdraw(startup.id); startup = undefined } }
+  const run = (name: string, args: Record<string, unknown>, signal: AbortSignal | undefined, batch: Batch): Promise<string> => withToolSignal(signal, async () => {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
@@ -82,19 +92,23 @@ export function createTools(ctx: ToolCtx): Tools {
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }
       try {
-        const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal } : args ?? {})
+        const body = await h(name === 'room_wait' ? { ...(args ?? {}), [WAIT_SIGNAL]: signal, [REPLY_BATCH]: batch } : args ?? {})
         if (toolCallAborted() && name !== 'room_send' && name !== 'room_spawn') return 'error: tool call cancelled'
         if (name === 'room_preview_merge' || name.startsWith('room_pr_')) await state.rooms.retireWorkers()
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
         if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
         const prefix = moved ? `${moved}\n\n` : ''
-        const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2) : ''
-        const sharing = s2 ? await teamSharingNote(s2) : ''
-        const health = s2 ? hookHealthNote(s2, !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
+        const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
+        if (s2) await offerTeamSharingDisclosure(s2, ledger)
+        withdrawStartup()
+        const notices = ledger.notices(batch).map(n => n.text + '\n\n').join('')
+        if (s2) await greeted(s2.hub)
+        const paused = s2?.hub.paused()
+        const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
         const autoTag = s2?.autoTagNote
         if (s2) delete s2.autoTagNote
-        return prefix + (sharing ? sharing + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
+        return prefix + notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
         if (toolCallAborted()) return 'error: tool call cancelled'
         if (e instanceof NotJoined) return notJoined()
@@ -105,6 +119,38 @@ export function createTools(ctx: ToolCtx): Tools {
         return `error: ${e instanceof Error ? e.message : String(e)}`
       }
       })
+
+  return {
+    list: () => DEFS,
+    ledger,
+    attachHooks: state.attachHooks,
+    clearStale: state.clearStale,
+    setAutoJoin(a) { autoJoin = a },
+    drop: state.drop,
+    shutdown: state.shutdown,
+    flushConflicts: state.flushConflicts,
+    startupNotice(text) { startup = ledger.notice('startup', text); withdrawStartup() },
+    hookSelect() {
+      const batch = ledger.open('hook')
+      withdrawStartup()
+      const s = ctx.getSession()
+      const ws = state.rooms.workers()
+      const items: HookItem[] = []
+      if (s) for (const source of [s, ...(ws && ws !== s ? [ws] : [])]) {
+        for (const m of ledger.select(source, batch)) items.push({ id: m.id, priority: m.priority, line: `${source === s ? '' : '[workers room] '}${formatMsg(m)}` })
+      }
+      return { batch, items, notices: ledger.notices(batch).map(n => n.text) }
+    },
+    async call(name, args, signal, handoff) {
+      const batch = ledger.open('reply')
+      try {
+        const text = await run(name, args, signal, batch)
+        // A cancelled call's reply is never written: its selections stay owed.
+        if (signal?.aborted) ledger.release(batch)
+        else if (handoff) handoff({ commit: () => ledger.commit(batch), release: () => ledger.release(batch) })
+        else ledger.commit(batch)
+        return text
+      } catch (e) { ledger.release(batch); throw e }
     },
   }
 }

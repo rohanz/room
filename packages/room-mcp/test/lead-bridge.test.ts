@@ -15,6 +15,8 @@ import { createTools } from '../src/tools.js'
 import { shouldWake } from '../src/wake.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
@@ -36,7 +38,7 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
     shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
@@ -68,7 +70,7 @@ function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
   const exits: ((code: number | null) => void)[] = []
   const attached: Session[] = []
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, queue, probe: () => undefined, listCwdProcesses: () => [],
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, queue, probe: () => undefined, listCwdProcesses: () => [],
     attachChannel: s => { attached.push(s) },
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},
@@ -106,7 +108,6 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
   it('through the codex queue of the workers-room hooks bridge', async () => {
     const woken: string[] = []
     const t = setupBridged(async (_id, text) => { woken.push(text) })
-    writeFileSync(join(dir, '.git', 'room-session.json'), JSON.stringify({ session_id: 'thread-lead', at: Date.now(), cwd: dir, host: 'codex' }))
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
     t.exits[0](0)
     await new Promise(r => setTimeout(r, 100))
@@ -129,7 +130,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
         if (w) pushed.push(w.meta.type)
       }
     })
-    s.room.post(s.me, { type: 'note', to: 'rohanz+money', text: 'mine', priority: 'interrupt' } as never)
+    hubAppend(s.room, s.me, { type: 'note', to: 'rohanz+money', text: 'mine', priority: 'interrupt' } as never)
     expect(pushed).toEqual([])
     t.exits[0](1)
     await vi.waitFor(() => expect(pushed).toEqual(['note']))

@@ -28,7 +28,7 @@ export class ExpiryTenure {
    * this tenure last saw there, so a concurrent leader's write restarts the measurement instead of being
    * counted twice. Returns the names it expired; `post` appends their release notices.
    */
-  observe(room: RoomDoc, view: readonly ParticipantView[], origin?: unknown, post?: ReleasePoster): string[] {
+  observe(room: RoomDoc, view: readonly ParticipantView[], origin: unknown, post: ReleasePoster): string[] {
     const now = this.clock()
     const expired: string[] = []
     const measured = new Set<string>()
@@ -72,7 +72,7 @@ export class ExpiryTenure {
  * overlay text, claims (with release notices), scope, graph and owned conflict slots. Owed mail is
  * the ledger's and stays.
  */
-export function expireParticipant(room: RoomDoc, name: string, origin?: unknown, post?: ReleasePoster): void {
+export function expireParticipant(room: RoomDoc, name: string, origin: unknown, post: ReleasePoster): void {
   const prefix = `${name}\u0000`
   const dropOwned = (map: Y.Map<unknown>) => { for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key) }
   room.doc.transact(() => {

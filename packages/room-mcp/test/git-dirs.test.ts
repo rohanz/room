@@ -3,8 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
-import { sessionMetadataPath } from '../src/config.js'
-import { writePendingHookContext } from '../src/hooks-bridge.js'
+import { sessionDirectory } from '../src/session.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
@@ -23,29 +22,21 @@ function repo() {
   return { root, worker }
 }
 
-it('session and hook state use private gitdirs and preserve the direct .git fallback', () => {
+it('a host session\'s directory is one per clone, in the common gitdir, for the hooks and the MCP alike', async () => {
   const { root, worker } = repo()
-  for (const dir of [root, worker]) {
-    const privateDir = run(dir, 'rev-parse', '--absolute-git-dir')
-    expect(sessionMetadataPath(dir)).toBe(path.join(privateDir, 'room-session.json'))
-    writePendingHookContext(dir, 'pendingNotice', 'hello')
-    expect(JSON.parse(fs.readFileSync(path.join(privateDir, 'room-state.json'), 'utf8')).pendingNotice).toBe('hello')
-    const subdir = path.join(dir, 'subdir')
-    fs.mkdirSync(subdir)
-    expect(sessionMetadataPath(subdir)).toBe(path.join(subdir, '.git', 'room-session.json'))
-  }
-  const missing = path.join(root, 'missing')
-  expect(sessionMetadataPath(missing)).toBe(path.join(missing, '.git', 'room-session.json'))
-  expect(sessionMetadataPath(root)).not.toBe(sessionMetadataPath(worker))
+  const { sessionDir } = await import('../../../plugins/room/hooks/common.mjs')
+  const common = path.resolve(root, run(root, 'rev-parse', '--git-common-dir'))
+  for (const dir of [root, worker]) expect(sessionDir(dir, 's1')).toBe(sessionDirectory(common, 's1'))
+  expect(sessionDir(root, 's1')).not.toBe(sessionDir(root, 's2'))
 })
 
-it('does not write hook state into a checkout when a gitfile has an empty gitdir target', () => {
+it('does not write hook state into a checkout when a gitfile has an empty gitdir target', async () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-empty-gitdir-')))
   roots.push(dir)
   fs.writeFileSync(path.join(dir, '.git'), 'gitdir:  \n')
-  expect(sessionMetadataPath(dir)).toBe(path.join(dir, '.git', 'room-session.json'))
-  writePendingHookContext(dir, 'pendingNotice', 'hello')
-  expect(fs.existsSync(path.join(dir, 'room-state.json'))).toBe(false)
+  const { sessionDir, writeJsonAtomic } = await import('../../../plugins/room/hooks/common.mjs')
+  writeJsonAtomic(path.join(sessionDir(dir, 's1'), 'state.json'), { hello: true })
+  expect(fs.readdirSync(dir)).toEqual(['.git'])
 })
 
 it('worker stop state lives in the common gitdir across worktrees and is keyed by worker id', async () => {

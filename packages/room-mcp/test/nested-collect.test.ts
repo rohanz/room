@@ -11,6 +11,11 @@ import { prepareWorktree } from '../src/worker-git.js'
 import { registryForDir } from '../src/worker-registry.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import type { Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 vi.mock('../src/tools/claims.js', async original => ({ ...await original<typeof import('../src/tools/claims.js')>(), releaseClaimsOnDone: vi.fn() }))
 
@@ -21,7 +26,7 @@ const temp: string[] = []
 afterEach(() => { for (const dir of temp.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 
 function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: Worker) => boolean = () => false) {
-  const s = { dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop', awareness: { getStates: () => new Map() } }
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir, me: { name, kind: 'agent' }, room, local: {}, roomName: 'local/shop', awareness: { getStates: () => new Map() } }
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: async () => {}, handle: () => undefined },
     workerAlive: (_s: Session, w: Worker) => workerAlive(w), now: Date.now, ctx: { sleep: async () => {}, listCwdProcesses: () => [] },
@@ -48,13 +53,13 @@ async function batch() {
   })
   const leadWorker = worker('lead', 'rohanz', lead)
   const catWorker = worker('cat', 'rohanz+lead', cat)
-  room.setWorker(leadWorker); room.setWorker(catWorker)
+  room.setWorker(leadWorker, ignore); room.setWorker(catWorker, ignore)
   return { root, lead, cat, room, leadWorker, catWorker }
 }
 
 it('keeps a live lead-worker responsible for its finished grand-worker, including tagged apply, copy, and discard', async () => {
   const { root, cat, room, leadWorker } = await batch()
-  leadWorker.status = 'running'; room.setWorker(leadWorker)
+  leadWorker.status = 'running'; room.setWorker(leadWorker, ignore)
   const humanCollect = collect(room, root, 'rohanz', w => w.tag === 'lead')
   const all = await humanCollect({})
   expect(all).not.toContain('Changes from cat:')
@@ -76,7 +81,7 @@ it('keeps a live lead-worker responsible for its finished grand-worker, includin
 
 it('denies direct orphaned grand-worker collect and explains the parent discard path', async () => {
   const { root, room, leadWorker } = await batch()
-  leadWorker.status = 'running'; room.setWorker(leadWorker)
+  leadWorker.status = 'running'; room.setWorker(leadWorker, ignore)
   const out = await collect(room, root, 'rohanz')({ tag: 'cat' })
   expect(out).toContain('cat belongs to rohanz+lead')
   expect(out).toContain('room_collect tag=lead discard=true force=true')
@@ -87,7 +92,7 @@ it('uses the lead-worker PID when its process handle is unavailable', async () =
   const { root, room, leadWorker } = await batch()
   leadWorker.status = 'running'
   leadWorker.pid = process.pid
-  room.setWorker(leadWorker)
+  room.setWorker(leadWorker, ignore)
   const humanCollect = collect(room, root, 'rohanz')
   expect(await humanCollect({})).not.toContain('Changes from cat:')
   expect(await humanCollect({ tag: 'cat' })).toContain('cat belongs to rohanz+lead, which is still running')
@@ -101,7 +106,7 @@ it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task i
   leadWorker.pid = 7777
   delete leadWorker.finishedAt
   delete leadWorker.exitCode
-  room.setWorker(leadWorker)
+  room.setWorker(leadWorker, ignore)
   const store = await syncDocumentWorkers({ dir: root, roomName: 'local/shop', me: { name: 'rohanz' }, room } as Session)
   await store.beginStop(store.list().find(record => record.tag === 'lead')!.id, 'lead-session-ended')
   const humanCollect = collect(room, root, 'rohanz')
@@ -126,7 +131,7 @@ it('copies named partial edits from a stopped worker when explicitly tagged', as
   leadWorker.status = 'dismissed'
   leadWorker.stopReason = 'lead-session-ended'
   leadWorker.pid = 7777
-  room.setWorker(leadWorker)
+  room.setWorker(leadWorker, ignore)
   const out = await collect(room, root, 'rohanz')({ tag: 'lead', mode: 'copy', paths: ['lead.txt'] })
   expect(out).toContain('copied lead.txt')
   expect(read(root, 'lead.txt')).toBe('partial lead\n')
@@ -153,7 +158,7 @@ it('collects grand-worker edits through a lead once while preserving the human c
     dir: prepared.dir, branch: prepared.branch, base: prepared.base, carriedUntracked: prepared.carriedUntracked,
     pid: -1, startedAt: 1, finishedAt: 2, exitCode: 0, status: 'done',
   })
-  room.setWorker(mk('lead', 'rohanz', lead)); room.setWorker(mk('cat', 'rohanz+lead', cat))
+  room.setWorker(mk('lead', 'rohanz', lead), ignore); room.setWorker(mk('cat', 'rohanz+lead', cat), ignore)
   const childResult = await collect(room, lead.dir, 'rohanz+lead')({ tag: 'cat' })
   expect(childResult).toContain('Changes from cat:')
   expect(read(lead.dir, 'catalog.py')).toContain('Return the product price.')
@@ -184,9 +189,9 @@ it('recovers the intentional shutdown reason for both worker levels after the re
   const room = new RoomDoc(new Y.Doc())
   for (const [tag, owner, prepared] of [['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const) {
     const worker = { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'running' } as Worker
-    room.setWorker(worker)
+    room.setWorker(worker, ignore)
   }
-  const session = { dir: root, roomName: 'local/shop', me: { name: 'rohanz' }, room } as Session
+  const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: root, roomName: 'local/shop', me: { name: 'rohanz' }, room } as Session
   const registry = await syncDocumentWorkers(session)
   for (const tag of ['lead', 'cat']) {
     const record = registry.list().find(record => record.tag === tag)!
@@ -205,7 +210,7 @@ it('force discard saves a grand-worker patch and removes both levels of Git book
   put(cat.dir, 'catalog.py', 'grand-worker output\n')
   const room = new RoomDoc(new Y.Doc())
   for (const [tag, owner, prepared] of [['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const) {
-    room.setWorker({ id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1, status: 'running' })
+    room.setWorker({ id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, base: prepared.base, pid: -1, startedAt: 1, status: 'running' }, ignore)
   }
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded cat')

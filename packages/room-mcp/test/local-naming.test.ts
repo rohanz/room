@@ -10,6 +10,7 @@ import { ensureLocalRelay } from '@room/relay'
 import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
+import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
@@ -48,8 +49,8 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   let session: Session | null = null
   const fake = {
     dir, room, awareness, roomName: name, roomUrl, browserUrl: `http://localhost/?room=${encodeURIComponent(roomUrl)}`,
-    pinnedRoom: true, me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness },
-    daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
+    pinnedRoom: true, me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
+    daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
     ...(where === 'local' ? { local: { url: 'ws://127.0.0.1:1' } } : {}),
   } as Session
   const joiner = vi.fn(async () => fake)
@@ -86,8 +87,8 @@ function transitionTools() {
     const name = opts.room!, roomUrl = 'ws://127.0.0.1:1/' + encodeURIComponent(name)
     return { dir, room, awareness, roomName: name, roomUrl,
       browserUrl: 'http://localhost/?room=' + encodeURIComponent(roomUrl), pinnedRoom: true,
-      me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness },
-      daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
+      me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
+      daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
       local: { url: 'ws://127.0.0.1:1' },
     } as Session
   })

@@ -12,6 +12,7 @@ import { requestedShare, serverShareMax, findRoomFile, type Session } from '../s
 import { sharingDescription } from '../src/config.js'
 import { readChoice, writeChoice } from '../src/choice.js'
 import { CeilingSource, PolicyStore } from '../src/policy-store.js'
+import { hubSeam } from './fixtures/hub.js'
 
 let dir: string
 const cleanup: (() => void | Promise<void>)[] = []
@@ -32,7 +33,7 @@ function setup(company = false) {
     const policyStore = await PolicyStore.open({ dir, room: name, participant: 'Ada', server: opts.server, requested: daemon.share as ShareLevel,
       onChange: policy => { daemon.share = policy.level } })
     if (opts.shareExplicit) await policyStore.setRequested((opts.share ?? 'full') as ShareLevel)
-    const s = { dir, room, awareness, roomName: name, roomUrl: `${opts.server}/${encodeURIComponent(name)}`, browserUrl: 'http://example/view', me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness }, daemon, policyStore, shareMax: 'full', shareRequested: daemon.share, ...(opts.server === 'local' ? { local: { url: 'ws://local' } } : {}) } as Session
+    const s = { dir, room, awareness, roomName: name, roomUrl: `${opts.server}/${encodeURIComponent(name)}`, browserUrl: 'http://example/view', me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), provider: { synced: true, awareness }, daemon, policyStore, shareMax: 'full', shareRequested: daemon.share, ...(opts.server === 'local' ? { local: { url: 'ws://local' } } : {}) } as Session
     if (company) {
       const other = new Y.Doc(), aw = new Awareness(other)
       aw.setLocalState({ user: { name: 'Bob', kind: 'agent' }, lastActive: Date.now() })

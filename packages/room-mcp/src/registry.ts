@@ -20,6 +20,8 @@ import { decideResume, decideRetire, processExited, workerRealState } from './wo
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
 import { registryForDir } from './worker-registry.js'
+import { followRegistry } from './worker-mirror.js'
+import { postWorkerMessage, releasePoster } from './post.js'
 import { realStateInput } from './worker-status.js'
 import { repairRetired, retireCollected } from './retire.js'
 
@@ -69,6 +71,7 @@ export class Rooms {
   private exitWaiters = new Map<string, Set<() => void>>()
   private retirementTimers = new Map<Session, ReturnType<typeof setInterval>>()
   private retiring = new Map<Session, Promise<void>>()
+  private following = new Map<Session, () => void>()
 
   constructor(private o: RoomsOptions) {}
   probe(pid: number) { return (this.o.probe ?? probeProcess)(pid) }
@@ -106,6 +109,9 @@ export class Rooms {
     if (this.tracked.has(s)) return
     this.tracked.add(s)
     this.o.observeClaims(s)
+    void registryForDir(s.dir).then(registry => {
+      if (this.tracked.has(s) && !this.following.has(s)) this.following.set(s, followRegistry(s, registry))
+    }).catch(() => {})
     const timer = setInterval(() => { void this.retireWorkers(s).catch(() => {}) }, 60_000)
     timer.unref()
     this.retirementTimers.set(s, timer)
@@ -124,6 +130,8 @@ export class Rooms {
   private stopRetirement(s: Session): void {
     clearInterval(this.retirementTimers.get(s))
     this.retirementTimers.delete(s)
+    this.following.get(s)?.()
+    this.following.delete(s)
     this.tracked.delete(s)
   }
 
@@ -151,7 +159,7 @@ export class Rooms {
       if (w.lead !== s.me.name || this.hasHandle(s, w)) continue
       const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) })
       if (!processExited(state)) continue
-      if (w.status !== 'done') s.room.clearWorkerCoordination(w.name)
+      if (w.status !== 'done') s.room.clearWorkerCoordination(w.name, 'worker stopped', releasePoster(s.post))
       if (w.status === 'running') {
         await (await registryForDir(s.dir)).reconcile()
         continue
@@ -218,7 +226,7 @@ export class Rooms {
   }
   /** The session whose bus carries a message id, if any of ours does. */
   holdingQuestion(msgId: string, from: Session = this.primary() ?? this.mustHave()): Session | undefined {
-    for (const s of [from, ...this.all().filter(x => x !== from)]) if (s.room.messages().some(m => m.id === msgId)) return s
+    for (const s of [from, ...this.all().filter(x => x !== from)]) if (s.room.message(msgId)) return s
     return undefined
   }
   private mustHave(): Session { throw new Error('not in a room') }
@@ -313,16 +321,10 @@ export class Rooms {
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
             ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
               executable: this.probe(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
-        const { mirrorRegistryWorkerRecord } = await import('./tools/workers.js')
-        mirrorRegistryWorkerRecord(s, registry, record.id)
       }, async code => {
         await registry.writeExit(record.id, { run: run.n, code, witnessed: true, at: at() })
         this.dropHandle(s, record.id)
-        const { mirrorRegistryWorkerRecord } = await import('./tools/workers.js')
-        mirrorRegistryWorkerRecord(s, registry, record.id)
-        await registry.postObservedFailure(record.id, run.n, message => {
-          if (message.body.type === 'note') s.room.post({ name: record.name, kind: 'agent', owner: record.lead.participant, label: record.tag }, message.body, undefined, { id: message.id })
-        })
+        await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
       })
       return `resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`
     } catch (error) {

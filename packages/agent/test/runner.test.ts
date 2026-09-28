@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { RoomDoc, type AnswerMsg, type ConflictMsg, type QuestionMsg, type NoteMsg, type ChangedMsg } from '@room/shared'
 import { Runner } from '../src/runner.js'
+import type { Post } from '@room/room-mcp'
 import { FakeBackend } from '../src/backend.js'
+import { hubAppend } from '@room/shared/testing'
 
 const tick = () => new Promise(r => setTimeout(r, 0))
+/** The runner's post seam, standing in for the hub: appends at once. */
+const postTo = (room: RoomDoc): Post => (from, body, opts) => {
+  const msg = hubAppend(room, from, body, opts?.id ? { id: opts.id } : {})
+  return Object.assign(Promise.resolve({ ok: true as const, msg }), { id: msg.id })
+}
 
 function setup() {
   const room = new RoomDoc()
@@ -12,7 +19,7 @@ function setup() {
   const backend = new FakeBackend()
   // pre-existing human message that must be ignored
   room.say('Rohan', { role: 'human', text: 'old message' })
-  const runner = new Runner({ name: 'Rohan', room, awareness, backend, preamble: 'PREAMBLE' })
+  const runner = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, preamble: 'PREAMBLE' })
   runner.start()
   return { room, backend, runner, statuses }
 }
@@ -36,15 +43,15 @@ describe('Runner', () => {
   })
 
   it("does not wake on the agent's own bus messages", async () => {
-    s.room.post<ChangedMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'changed', paths: ['a.py'], summary: 'x' })
-    s.room.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'fyi' })
-    s.room.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Sam', text: 'not for us' })
+    hubAppend<ChangedMsg>(s.room, { name: 'Rohan', kind: 'agent' }, { type: 'changed', paths: ['a.py'], summary: 'x' })
+    hubAppend<NoteMsg>(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'fyi' })
+    hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Sam', text: 'not for us' })
     await s.runner.idle(); await tick()
     expect(s.backend.inputs).toHaveLength(0)
   })
 
   it('wakes on a question addressed to us with a <room-event input and an event chat line', async () => {
-    s.room.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
+    hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
     await tick(); await s.runner.idle()
     expect(s.backend.inputs).toHaveLength(1)
     const inp = s.backend.inputs[0]
@@ -57,8 +64,8 @@ describe('Runner', () => {
   })
 
   it('enqueues the answer to a question addressed to us', async () => {
-    const question = s.room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'which payload?' })
-    s.room.post<AnswerMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'use v2' })
+    const question = hubAppend<QuestionMsg>(s.room, { name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'which payload?' })
+    hubAppend<AnswerMsg>(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'use v2' })
     await tick(); await s.runner.idle()
     expect(s.backend.inputs).toHaveLength(1)
     expect(s.backend.inputs[0]).toContain('type="answer"')
@@ -70,8 +77,8 @@ describe('Runner', () => {
     s.room.say('Rohan', { role: 'human', text: 'go' })
     await tick()
     expect(s.backend.inputs).toHaveLength(1)
-    s.room.post<ChangedMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'changed', to: 'Rohan', paths: ['a.py'], summary: 'renamed f', symbols: ['f'] })
-    s.room.post<QuestionMsg>({ name: 'Kieran', kind: 'human' }, { type: 'question', to: 'Rohan', text: 'anyone touching b.py?' })
+    hubAppend<ChangedMsg>(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'changed', to: 'Rohan', paths: ['a.py'], summary: 'renamed f', symbols: ['f'] })
+    hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'human' }, { type: 'question', to: 'Rohan', text: 'anyone touching b.py?' })
     s.backend.hold = false
     s.backend.finish()
     await s.runner.idle()
@@ -185,7 +192,7 @@ describe('/stop', () => {
     const room = new RoomDoc()
     const backend = new FakeBackend(); backend.hold = true
     const awareness = { setLocalStateField() {} }
-    const r = new Runner({ name: 'Rohan', room, awareness, backend, log: () => {} })
+    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, log: () => {} })
     r.start()
     room.addClaim({ path: 'a.py', from: 1, to: 3, by: 'Rohan', byKind: 'agent', intent: 'edit a' })
     room.addClaim({ path: 'b.py', from: 2, to: 4, by: 'Rohan', byKind: 'agent', intent: 'edit b' })
@@ -218,13 +225,13 @@ describe('conflict preemption', () => {
   it('aborts a running turn and handles the conflict before queued work', async () => {
     const room = new RoomDoc()
     const backend = new FakeBackend(); backend.hold = true
-    const r = new Runner({ name: 'Rohan', room, awareness: { setLocalStateField() {} }, backend })
+    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend })
     r.start()
     room.say('Rohan', { role: 'human', text: 'long task' })
     await tick()
     room.say('Rohan', { role: 'human', text: 'queued work' })
     backend.hold = false
-    room.post<ConflictMsg>({ name: 'Kieran', kind: 'agent' }, {
+    hubAppend<ConflictMsg>(room, { name: 'Kieran', kind: 'agent' }, {
       type: 'conflict', claimId: 'c_other', otherClaimId: 'c_mine', path: 'a.py', text: 'same lines',
     })
     await r.idle()

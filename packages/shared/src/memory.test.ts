@@ -5,6 +5,8 @@ import { RoomDoc } from './doc.js'
 import { RECEIPTS_BYTES, trim } from './delivery.js'
 import type { Msg } from './types.js'
 
+const SHOWN = { s: 'session-1', via: 'reply' } as const
+
 const NOW = Date.UTC(2026, 8, 28, 12)
 const restore = (source: Y.Doc, opts?: Parameters<typeof memorySnapshot>[1]) => {
   const wire = new Y.Doc(), restored = new RoomDoc()
@@ -40,9 +42,9 @@ it('keeps exactly the receipts that bus, mail and outcomes reference: a shown qu
   const name = 'lead+worker / encoded'
   const q = message({ type: 'question', to: name, text: 'which token?' })
   source.bus.push([q])
-  source.markSeen(name, [q.id])
+  source.markSeen(name, [q.id], SHOWN)
   for (let i = 0; i < 2500; i++) source.bus.push([message()])
-  source.markSeen(name, source.messages().map(m => m.id))
+  source.markSeen(name, source.messages().map(m => m.id), SHOWN)
   source.seen(name).set('gone', NOW)
   source.seen(name).set('invalid', NaN)
   source.outcomes.set('m_ended', { to: 'other', from: 'quinn', outcome: 'expired', at: NOW })
@@ -68,8 +70,8 @@ it('spends the receipt budget on mail and addressed receipts first, then the new
   source.mail.set(mailed.id, mailed)
   for (let i = 0; i < 2000; i++) source.bus.push([message()])
   const broadcasts = source.messages().slice(1)
-  for (let p = 0; p < 20; p++) source.markSeen(`p${p}`, broadcasts.map(m => m.id))
-  source.markSeen('p0', [addressed.id])
+  for (let p = 0; p < 20; p++) source.markSeen(`p${p}`, broadcasts.map(m => m.id), SHOWN)
+  source.markSeen('p0', [addressed.id], SHOWN)
   source.doc.getMap('seen:p1').set(mailed.id, { s: 'session', via: 'hook', at: NOW })
 
   const { restored } = restore(source.doc)
@@ -96,7 +98,7 @@ it('never exceeds the limit: drops archive oldest first, then broadcast receipts
     for (let i = 0; i < 150; i++) { const m = message({ to: `r${i}`, type: 'question', text: 'm'.repeat(10 * 1024) }); source.mail.set(m.id, m) }
     for (let i = 0; i < 5000; i++) source.archive.set(`a_${String(i).padStart(5, '0')}`, ['changed', 'quinn', NOW - 10_000 + i, ['area-with-a-long-name']])
     source.outcomes.set('m_x', { to: 'pat', from: 'quinn', outcome: 'over-cap', at: NOW })
-    source.markSeen('pat', [addressed.id, ...source.messages().slice(1).map(m => m.id)])
+    source.markSeen('pat', [addressed.id, ...source.messages().slice(1).map(m => m.id)], SHOWN)
     return { source, addressed }
   }
 
@@ -134,7 +136,7 @@ it('returns the smallest achievable snapshot when protected data alone is over t
   const addressed = message({ to: 'pat' })
   source.bus.push([addressed, message(), message()])
   source.archive.set('a_1', ['changed', 'quinn', NOW, []])
-  source.markSeen('pat', source.messages().map(m => m.id))
+  source.markSeen('pat', source.messages().map(m => m.id), SHOWN)
   const { restored, size } = restore(source.doc, { log })
   expect(size).toBeGreaterThan(MAX_MEMORY_BYTES)
   expect(restored.mail.get(owedMail.id)).toEqual(owedMail)

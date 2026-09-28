@@ -16,6 +16,7 @@ import {
   type QuestionMsg,
   type ScopeMsg,
 } from './index.js'
+import { hubAppend } from './testing.js'
 
 declare module './types.js' {
   interface MessageMap {
@@ -33,7 +34,7 @@ describe('MessageKinds', () => {
 
   it('wakes for base moves only with uncommitted work', () => {
     const room = new RoomDoc()
-    const m = room.post<BaseMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', prev: 'def', commits: 1, summary: 'update', paths: [] })
+    const m = hubAppend<BaseMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', prev: 'def', commits: 1, summary: 'update', paths: [] })
     const me = { name: 'Rohan', kind: 'agent' } as const
     expect(shouldWakeOnMsg(me, m, [], false).wake).toBe(false)
     expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(true)
@@ -43,7 +44,7 @@ describe('MessageKinds', () => {
   it('uses a registered priority when posting a waking kind', () => {
     registerMessageKind('ping', { audience: 'broadcast', wakes: 'always', priority: 'interrupt', format: m => m.text })
     const room = new RoomDoc()
-    const m = room.post<PingMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'ping', text: 'look' })
+    const m = hubAppend<PingMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'ping', text: 'look' })
     expect(m.priority).toBe('interrupt')
     expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(true)
     room.doc.destroy()
@@ -74,17 +75,17 @@ it('formats only the newest declared scope in a live area as current', () => {
   const worker = { name: 'Rohan+worker', kind: 'agent' } as const
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
   try {
-    const old = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['api/a.ts'] })
+    const old = hubAppend<ScopeMsg>(room, worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['api/a.ts'] })
     room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'old work', paths: ['./api/a.ts', 'api/a.ts'] })
     expect(formatMsg(old, { scopes: room.allScopes(), messages: room.messages() })).toContain('is on api: old work')
     clock.mockReturnValue(1_500)
-    const revised = room.post<ScopeMsg>(worker, { type: 'scope', area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
+    const revised = hubAppend<ScopeMsg>(room, worker, { type: 'scope', area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
     room.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'revised work', paths: ['api/b.ts'] })
     const revisedContext = { scopes: room.allScopes(), messages: room.messages() }
     expect(formatMsg(old, revisedContext)).toContain('earlier: Rohan+worker was on api (00:00:01): old work')
     expect(formatMsg(revised, revisedContext)).toContain('is on api: revised work')
     clock.mockReturnValue(2_000)
-    const moved = room.post<ScopeMsg>(worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/a.ts'] })
+    const moved = hubAppend<ScopeMsg>(room, worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/a.ts'] })
     room.setScope({ by: worker.name, byKind: worker.kind, area: 'web', summary: 'new work', paths: ['web/a.ts'] })
     const context = { scopes: room.allScopes(), messages: room.messages() }
     expect(formatMsg(old, context)).toContain('earlier: Rohan+worker was on api (00:00:01): old work')
@@ -102,8 +103,8 @@ it('formats only the newest declared scope in a live area as current', () => {
 it('addresses a note as a waking notification while leaving broadcast notes as FYI', () => {
   const room = new RoomDoc()
   const from = { name: 'Kieran', kind: 'agent' } as const
-  const addressed = room.post<NoteMsg>(from, { type: 'note', to: 'Rohan', text: 'please also check the report' })
-  const broadcast = room.post<NoteMsg>(from, { type: 'note', text: 'progress update' })
+  const addressed = hubAppend<NoteMsg>(room, from, { type: 'note', to: 'Rohan', text: 'please also check the report' })
+  const broadcast = hubAppend<NoteMsg>(room, from, { type: 'note', text: 'progress update' })
   expect(addressed.priority).toBe('notify')
   expect(messageEndsWait(addressed, { me: 'Rohan' })).toBe(true)
   expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, addressed).wake).toBe(true)
@@ -116,7 +117,7 @@ it('addresses a note as a waking notification while leaving broadcast notes as F
 
 it.each(['fyi', 'notify', 'interrupt'] as const)('routes a broadcast %s note to other participants with the matching wake behavior', priority => {
   const room = new RoomDoc()
-  const note = room.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'shared update', priority })
+  const note = hubAppend<NoteMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'shared update', priority })
   expect(messageForMe({ name: 'Rohan' }, note)).toBe(priority !== 'fyi')
   expect(messageForMe({ name: 'Ada' }, note)).toBe(priority !== 'fyi')
   expect(messageForMe({ name: 'Kieran' }, note)).toBe(false)
@@ -152,7 +153,7 @@ it('does not treat an answer to someone else as the answer to my wait', () => {
  it('filters own agentic messages but keeps an explicitly addressed same-named human message', () => {
    const room = new RoomDoc()
    for (const kind of ['human', 'agent', 'bot', 'ci'] as const) {
-     const m = room.post<NoteMsg>({ name: 'Rohan', kind }, { type: 'note', text: 'own', priority: 'interrupt', to: 'Rohan' })
+     const m = hubAppend<NoteMsg>(room, { name: 'Rohan', kind }, { type: 'note', text: 'own', priority: 'interrupt', to: 'Rohan' })
      expect(messageForMe({ name: 'Rohan' }, m)).toBe(kind === 'human')
    }
    room.doc.destroy()
@@ -160,7 +161,7 @@ it('does not treat an answer to someone else as the answer to my wait', () => {
 
  it('keeps ended plans out of inboxes and wakeups even when addressed', () => {
    const room = new RoomDoc()
-   const m = room.post<PlanMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'plan', status: 'cancelled', claimId: 'c', path: 'a.ts', plan: { kind: 'add', symbol: 'f' }, text: 'session ended', to: 'Rohan' })
+   const m = hubAppend<PlanMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'plan', status: 'cancelled', claimId: 'c', path: 'a.ts', plan: { kind: 'add', symbol: 'f' }, text: 'session ended', to: 'Rohan' })
    expect(m.priority).toBe('fyi')
    expect(messageForMe({ name: 'Rohan' }, m)).toBe(false)
    expect(shouldWakeOnMsg({ name: 'Rohan', kind: 'agent' }, m).wake).toBe(false)
@@ -186,7 +187,7 @@ it('changed is feed-only as a broadcast; the copy addressed to someone who uses 
 
 it('addresses merge conflicts to the affected participant as a waking notification', () => {
   const room = new RoomDoc()
-  const m = room.post<import('./types.js').MergeConflictMsg>({ name: 'room', kind: 'bot' }, { type: 'merge-conflict', to: 'Rohan', path: 'api.ts', text: 'your file and Kieran’s now conflict' })
+  const m = hubAppend<import('./types.js').MergeConflictMsg>(room, { name: 'room', kind: 'bot' }, { type: 'merge-conflict', to: 'Rohan', path: 'api.ts', text: 'your file and Kieran’s now conflict' })
   expect(m.priority).toBe('notify')
   expect(messageForMe({ name: 'Rohan' }, m)).toBe(true)
   expect(messageForMe({ name: 'Ada' }, m)).toBe(false)
@@ -197,7 +198,7 @@ it('addresses merge conflicts to the affected participant as a waking notificati
 
 it('formats a tagged question recipient by its Room name', () => {
   const room = new RoomDoc()
-  const question = room.post<QuestionMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'rohanz+codex', text: 'which lines?' })
+  const question = hubAppend<QuestionMsg>(room, { name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'rohanz+codex', text: 'which lines?' })
   expect(formatMsg(question)).toBe("[notify] Rohan's agent → rohanz+codex asks: which lines?")
   room.doc.destroy()
 })
