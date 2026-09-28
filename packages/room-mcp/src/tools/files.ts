@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { describeClaim, manifestChangers, manifestPaths, withLineNumbers, type NoteMsg, type Version, type Worker } from '@room/shared'
+import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, withLineNumbers, type NoteMsg, type Version, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -62,7 +62,7 @@ function ownDiskText(dir: string, rel: string): string | null {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, others, presences, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state
+  const { S, rooms, others, presences, myWorkers, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state
   const gapLine = (person: string, p: string, version: Version): string => {
     if (version.kind === 'held') {
       const reason = version.entry.held === 'scope' ? 'outside their declared area' : version.entry.held === 'binary' ? 'binary file' : 'worker text not in this room'
@@ -159,13 +159,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const allSessions = rooms.all()
       const fullName = (name: string) => allSessions.flatMap(s => [...s.room.workers.values()]).find(w => w.tag === name && w.lead === caller.me.name)?.name ?? name
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
-      const present = Array.from(new Set(allSessions.flatMap(s => presences(s).map(p => p.user.name)))).filter(p => p !== caller.me.name)
+      const present = Array.from(new Set(allSessions.flatMap(s => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter(name => presences(s).some(p => p.user.name === name)))))
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
+      const myPaths = [...manifestPaths(caller.room, caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
+      const overlaps = (person: string) => {
+        const session = rooms.holding(person, caller)
+        const worker = session.room.workerOf(person)
+        return worker?.lead === caller.me.name && worker.status === 'running' || manifestPaths(session.room, person).some(p => myPaths.some(mine => coversPath(p, mine)))
+      }
+      const runningWorkers = allSessions.flatMap(s => myWorkers(s).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name))
       const people = Array.from(new Set(explicit
         ? Array.isArray(a.people) ? (a.people as string[]).map(p => fullName(p.trim())) : [fullName(alias)]
-        : (a.includeOffline === true ? available : present).sort())).filter(p => p !== caller.me.name)
+        : [...available.filter(overlaps), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
       const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
-      const skipped = !explicit && a.includeOffline !== true ? offlineWithFacts : []
+      const skipped = !explicit ? offlineWithFacts.filter(person => !people.includes(person)) : []
       const skippedNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''

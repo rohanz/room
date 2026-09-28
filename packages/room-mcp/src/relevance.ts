@@ -5,7 +5,7 @@
  * ("you switched to B; the room is for R") is relevant only while the clone is still on B.
  */
 import { execFileSync } from 'node:child_process'
-import type { Msg } from '@room/shared'
+import { neighbours, participantsView, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 
 /** A negative answer is checked again after this long; HEAD moves forward, and an ancestor stays one. */
@@ -15,6 +15,7 @@ const BRANCH_NOTE = /^you switched to (\S+); the room is for \S+;/
 export function createRelevance(now: () => number = Date.now): (s: Session, m: Msg) => boolean {
   const integrated = new Map<string, true | number>()
   return (s, m) => {
+    if (m.type === 'pushed' && !neighbours(participantsView(s.room, s.awareness, now()), s.me.name).has(m.from)) return false
     const branchNote = m.type === 'note' && m.from === 'room' ? BRANCH_NOTE.exec(m.text) : null
     if (branchNote) return !s.daemon?.branch || s.daemon.branch === branchNote[1]
     const sha = m.type === 'base' ? m.base : m.type === 'pushed' ? m.toSha : undefined

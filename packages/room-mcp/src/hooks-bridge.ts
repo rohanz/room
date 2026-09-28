@@ -10,7 +10,7 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { BASE_CATCH_UP, coordinationPaths, displayName, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, type Presence, isAgentic } from '@room/shared'
+import { BASE_CATCH_UP, coordinationPaths, neighbours, participantsView, displayName, formatMsg, formatPlans, shouldWakeOnMsg, type Msg, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
@@ -133,7 +133,7 @@ export class HooksBridge {
     const openClaims = this.s.room.openClaims()
     const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
     const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
-    const near = coordinationPaths(this.s.room, me, { includeOwnNonAgentClaims: true })
+    const near = coordinationPaths(this.s.room, neighbours(participantsView(this.s.room, this.s.awareness, this.now()), me), me, { includeOwnNonAgentClaims: true })
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.now())
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
     const others = company.others.map(name => displayName({ name, kind: (presences.find(p => p.user?.name === name && p.user.kind === 'agent') ?? presences.find(p => p.user?.name === name))?.user?.kind ?? this.s.room.scope(name)?.byKind ?? 'agent' }))

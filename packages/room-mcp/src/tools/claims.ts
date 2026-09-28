@@ -6,7 +6,7 @@ import { git, gitShow } from '@room/roomd/git'
 import { claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coordinationPaths, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type Worker, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type Worker, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -24,16 +24,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
       if (typeof a.intent !== 'string' || !a.intent) return 'error: intent is required'
       const p = a.path, intent = a.intent
-      const nearby = coordinationPaths(s.room, s.me.name)
+      const nb = neighbours(participantsView(s.room, s.awareness, Date.now()), s.me.name)
+      const nearby = coordinationPaths(s.room, nb, s.me.name)
       if (!nearPath(p, nearby.filter(entry => entry.reason !== 'changed' || !sameCheckoutSession(s, entry.by))).length) return `${p}: no claim needed; nobody else is near this path`
       const plans = parsePlans(a.plans)
       if (typeof plans === 'string') return plans
       const directory = p.endsWith('/')
       if (directory && a.symbol) return 'error: directory claims do not take a symbol'
       if (directory) {
-        const scopeHits = s.room.allScopes().flatMap(sc => sc.by === s.me.name ? [] : sc.paths
+        const scopeHits = s.room.allScopes().flatMap(sc => sc.by === s.me.name || !nearby.some(n => n.by === sc.by && n.reason === 'scope') ? [] : sc.paths
           .filter(path => coversPath(p, path)).map(path => `${sc.by}'s scope includes ${path}`))
-        const claimHits = s.room.openClaims().flatMap(c => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path)
+        const claimHits = s.room.openClaims().flatMap(c => isMe(s, { name: c.by, kind: c.byKind }) || !nb.has(c.by) || !coversPath(p, c.path)
           ? [] : [`${c.by}'s claim includes ${c.path}`])
         const hits = [...scopeHits, ...claimHits]
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join('; ')}). Claim narrower files instead.`
@@ -78,7 +79,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       if (superseded) await s.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
-      const overlaps = (await Promise.all(s.room.openClaims().filter(c => c.id !== claim.id && !isMe(s, { name: c.by, kind: c.byKind })).map(async c => ({
+      const overlaps = (await Promise.all(s.room.openClaims().filter(c => c.id !== claim.id && nb.has(c.by) && !isMe(s, { name: c.by, kind: c.byKind })).map(async c => ({
         claim: c, range: await claimRangeInMyText(s, c, t ?? ''),
       })))).filter(({ claim: c, range }) => claimsOverlap({ path: c.path, ...range }, { path: p, ...r }))
       for (const { claim: o, range } of overlaps)
@@ -90,7 +91,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           out.push(users.length ? `impact: ${pl.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl.symbol} has no other users in the indexed graph`)
         }
       }
-      const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && scopeCovers(sc, p))
+      const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && nearby.some(n => n.by === sc.by && n.reason === 'scope') && scopeCovers(sc, p))
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
       await loadAreas(s)
       out.push(...ownerHints(s, [areasOf(s).areaOf(p)]))

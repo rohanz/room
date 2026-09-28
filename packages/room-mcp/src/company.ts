@@ -1,4 +1,4 @@
-import { displayName, type Worker } from '@room/shared'
+import { displayName, neighbours, participantsView, type Worker } from '@room/shared'
 import type { Presence } from '@room/shared'
 import type { Session } from './session.js'
 
@@ -23,14 +23,15 @@ export function sameCheckoutSession(s: Session, name: string): boolean {
  * is covered passively by the conflict watcher and merge previews. */
 export function hasCompany(s: Session, runningWorkers: readonly Worker[] = [], now = Date.now()): CompanyState {
   const names = new Map<string, string>()
+  const nb = neighbours(participantsView(s.room, s.awareness, now), s.me.name)
   for (const [clientId, value] of s.awareness.getStates()) {
     const p = value as Partial<Presence>
-    if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name || sameCheckoutSession(s, p.user.name)) continue
+    if (!p.user || clientId === s.awareness.clientID || !nb.has(p.user.name) || sameCheckoutSession(s, p.user.name)) continue
     if (!isFresh(s.awareness, clientId, now)) continue
     if (p.user.kind === 'human' && p.status === 'viewing') continue
     names.set(p.user.name, p.user.name)
   }
-  for (const worker of runningWorkers) names.set(worker.name, names.get(worker.name) ?? worker.name)
+  for (const worker of runningWorkers) if (nb.has(worker.name)) names.set(worker.name, names.get(worker.name) ?? worker.name)
   const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b))
   return { company: others.length > 0, others }
 }

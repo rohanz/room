@@ -1,4 +1,4 @@
-import { type NoteMsg } from '@room/shared'
+import { neighbours, participantRecord, participantsView, type NoteMsg } from '@room/shared'
 import { fetchPrs, postPrNote, prLeader, renderPrNote, syncPrs } from '../prs.js'
 import { openPrs, branchOf, type PrInfo } from '../prs.js'
 import type { Session } from '../session.js'
@@ -40,11 +40,20 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
   const postNote = ctx.prs?.post ?? postPrNote
   const refreshPrs = async (s: Session): Promise<string> => {
       if (!s.roomName.startsWith('github.com/')) return ''
-      const present = presences(s).map(p => p.user.name)
+      const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
+      const present = presences(s).map(p => p.user.name).filter(name => name === s.me.name || nb.has(name))
       const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workers.values()).map(w => w.name))
       if (leader !== s.me.name) return ''
+      const view = participantsView(s.room, s.awareness, now())
+      const names = [s.me.name, ...neighbours(view, s.me.name).names()]
+      const active = new Map(presences(s).map(p => [p.user.name, p.lastActive ?? 0]))
+      const branches = [...new Set(names.sort((a, b) => (active.get(b) ?? 0) - (active.get(a) ?? 0))
+        .map(name => participantRecord(s.room, name)?.git?.branch).filter((branch): branch is string => !!branch && !branch.startsWith('room/')))].slice(0, 10)
       let prs: PrInfo[]
-      try { prs = await fetchPrList(s) } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
+      try {
+        const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch }), fetchPrList(s, { branch, head: true })]))
+        prs = [...new Map(fetched.flat().map(pr => [pr.number, pr])).values()].slice(0, 20)
+      } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
       const r = syncPrs(s.room, prs, s.me)
       const parts = [r.added.length ? `mirrored ${r.added.map(n => `#${n}`).join(', ')}` : '', r.removed.length ? `removed ${r.removed.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean)
       if (parts.length) log(`pull requests: ${parts.join('; ')}`)
