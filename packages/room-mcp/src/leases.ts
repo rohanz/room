@@ -2,7 +2,7 @@
  * are serialized by a sibling guard, so a stale owner cannot remove its successor. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
@@ -26,12 +26,42 @@ function syncDirectory(dir: string): void {
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
+function ensureDurableDirectory(dir: string): void {
+  const parent = path.dirname(dir)
+  if (parent !== dir) ensureDurableDirectory(parent)
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 })
+    if (parent !== dir) syncDirectory(parent)
+  } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
+}
+
+const startMarker = (startTime: string): string => createHash('sha256').update(startTime).digest('hex').slice(0, 24)
+const tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/
+
+/** Opportunistic maintenance: only a missing pid or a changed birth marker proves a temp's writer dead. */
+export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProcess): number {
+  let removed = 0
+  for (const name of fs.readdirSync(dir)) {
+    const match = tempPattern.exec(name)
+    if (!match) continue
+    const observed = probe(Number(match[1]))
+    if (observed && (match[2] === 'u' || !observed.startTime || startMarker(observed.startTime) === match[2])) continue
+    try { fs.unlinkSync(path.join(dir, name)); removed++ }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+  }
+  if (removed) syncDirectory(dir)
+  return removed
+}
+
 function writeTemp(file: string, content: object): string {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`
+  const dir = path.dirname(file)
+  ensureDurableDirectory(dir)
+  cleanupOrphanTemps(dir)
+  const start = probeProcess(process.pid)?.startTime
+  const temp = `${file}.roomtmp-p${process.pid}-s${start ? startMarker(start) : 'u'}-n${randomUUID()}.tmp`
   const fd = fs.openSync(temp, 'wx', 0o600)
   try { fs.writeFileSync(fd, JSON.stringify(content) + '\n'); fs.fsyncSync(fd) }
-  catch (e) { fs.closeSync(fd); fs.rmSync(temp, { force: true }); throw e }
+  catch (e) { fs.closeSync(fd); fs.rmSync(temp, { force: true }); syncDirectory(dir); throw e }
   fs.closeSync(fd)
   return temp
 }
@@ -44,14 +74,14 @@ export function createExclusive(file: string, content: object): boolean {
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false; throw e }
     syncDirectory(path.dirname(file))
     return true
-  } finally { fs.rmSync(temp, { force: true }) }
+  } finally { fs.rmSync(temp, { force: true }); syncDirectory(path.dirname(file)) }
 }
 
 /** Durable replacement for single-writer records or files held under a guard. */
 export function writeAtomic(file: string, content: object): void {
   const temp = writeTemp(file, content)
   try { fs.renameSync(temp, file); syncDirectory(path.dirname(file)) }
-  finally { fs.rmSync(temp, { force: true }) }
+  finally { fs.rmSync(temp, { force: true }); syncDirectory(path.dirname(file)) }
 }
 
 function read(file: string): Record<string, unknown> | undefined {
@@ -59,10 +89,12 @@ function read(file: string): Record<string, unknown> | undefined {
   catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
 }
 
-function holder(value: Record<string, unknown>): ProcessIdentity | undefined {
-  const candidate = (value.holder ?? value) as Partial<ProcessIdentity> | null
-  return candidate && typeof candidate.pid === 'number' && typeof candidate.startTime === 'string' && typeof candidate.executable === 'string'
-    ? candidate as ProcessIdentity : undefined
+/** Leases with payloads store a holder field; a run writer is itself the token. */
+function leaseToken(value: Record<string, unknown>): InstanceToken | undefined {
+  const candidate = (value.holder ?? value) as Partial<InstanceToken> | null
+  return candidate && typeof candidate.pid === 'number' && typeof candidate.startTime === 'string'
+    && typeof candidate.executable === 'string' && typeof candidate.sessionId === 'string' && typeof candidate.nonce === 'string'
+    ? candidate as InstanceToken : undefined
 }
 
 function ownToken(): InstanceToken {
@@ -74,35 +106,39 @@ function ownToken(): InstanceToken {
 function acquireGuard(file: string, probe: ProcessProbe, depth = 0): InstanceToken {
   if (depth > 12) throw new Error(`too many stale lease guards at ${file}`)
   const token = ownToken()
-  if (createExclusive(file, { holder: token })) return token
+  if (createExclusive(file, token)) return token
   const previous = read(file)
-  const previousHolder = previous && holder(previous)
+  const previousHolder = previous && leaseToken(previous)
   if (!previousHolder || liveness(previousHolder, probe) !== 'dead') throw new Error(`lease guard busy: ${file}`)
   const outer = acquireGuard(`${file}.guard`, probe, depth + 1)
   try {
     const latest = read(file)
-    const latestHolder = latest && holder(latest)
+    const latestHolder = latest && leaseToken(latest)
     if (latestHolder && liveness(latestHolder, probe) === 'dead') {
       fs.unlinkSync(file)
       syncDirectory(path.dirname(file))
     }
   } finally { releaseGuard(`${file}.guard`, outer) }
-  if (createExclusive(file, { holder: token })) return token
+  if (createExclusive(file, token)) return token
   throw new Error(`lease guard busy: ${file}`)
 }
 
 function releaseGuard(file: string, token: InstanceToken): void {
   const current = read(file)
-  if ((current?.holder as Partial<InstanceToken> | undefined)?.nonce === token.nonce) {
+  if (current && leaseToken(current)?.nonce === token.nonce) {
     fs.unlinkSync(file)
     syncDirectory(path.dirname(file))
   }
 }
 
-export function withGuard<T>(file: string, fn: () => T, probe: ProcessProbe = probeProcess): T {
+export function withGuard<T>(file: string, fn: () => T extends PromiseLike<unknown> ? never : T, probe: ProcessProbe = probeProcess): T {
   const guard = `${file}.guard`
   const token = acquireGuard(guard, probe)
-  try { return fn() }
+  try {
+    const result = fn()
+    if (result && typeof (result as { then?: unknown }).then === 'function') throw new TypeError('lease guard callback must be synchronous')
+    return result
+  }
   finally { releaseGuard(guard, token) }
 }
 
@@ -118,7 +154,7 @@ export function replace(file: string, expect: (content: Record<string, any>) => 
 export function compareAndRelease(file: string, token: InstanceToken): boolean {
   return withGuard(file, () => {
     const current = read(file)
-    if ((current?.holder as Partial<InstanceToken> | undefined)?.nonce !== token.nonce) return false
+    if (!current || leaseToken(current)?.nonce !== token.nonce) return false
     fs.unlinkSync(file)
     syncDirectory(path.dirname(file))
     return true
@@ -128,7 +164,7 @@ export function compareAndRelease(file: string, token: InstanceToken): boolean {
 export function recover(file: string, orphan: (content: Record<string, any>) => boolean, probe: ProcessProbe = probeProcess): boolean {
   return withGuard(file, () => {
     const current = read(file)
-    const owner = current && holder(current)
+    const owner = current && leaseToken(current)
     if (!current || !owner || liveness(owner, probe) !== 'dead' || !orphan(current)) return false
     fs.unlinkSync(file)
     syncDirectory(path.dirname(file))
