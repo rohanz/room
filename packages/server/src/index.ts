@@ -27,13 +27,15 @@
  *    closes one: live connections are dropped and persisted branch docs deleted.
  *  - Browser view keys (?view=) are read-only: inbound document and awareness writes are discarded.
  * All coordination state lives inside the Y.Doc; room name = URL path.
+ * Each loaded room also runs its hub (hub.ts, @room/hub-core) on message type 7 of the same websocket:
+ * name leases, message order, trim and expiry.
  */
 import http from 'node:http'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
-import { setupWSConnection, docs, getPersistence } from '@y/websocket-server/utils'
+import { setupWSConnection, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
 import * as Y from 'yjs'
@@ -41,6 +43,7 @@ import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
 import { makeAdmitted, type Creds } from './admit.js'
 import { storeFromEnv, type AuditEntry, type OpenRepo } from './store.js'
+import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -140,6 +143,7 @@ async function closeRepo(repo: string): Promise<string[]> {
     const doc = docs.get(name)
     if (doc) for (const conn of Array.from(doc.conns.keys()) as { close(code?: number, reason?: string): void }[]) conn.close(4001, 'room closed')
     docs.delete(name)
+    hubs.stop(name)
     documentGuards.delete(name); awarenessOwners.delete(name)
     try { await ((getPersistence() as { provider?: { clearDocument?(n: string): Promise<void> } } | null)?.provider)?.clearDocument?.(name) } catch (e) { console.log(`close ${name}: could not clear persisted doc: ${e instanceof Error ? e.message : e}`) }
   }
@@ -335,9 +339,18 @@ const droppedWrite = (room: string) => () => {
   dropLog.set(room, now)
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
+/** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
+const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES })
+const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
+if (stockPersistence) setPersistence(hubs.persistence(stockPersistence.provider))
+setInterval(() => hubs.tick(), 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
-wss.on('connection', (conn, req) => setupWSConnection(conn, req, { gc: true, docName: docNameOf(req.url ?? '/') }))
+wss.on('connection', (conn, req) => {
+  const docName = docNameOf(req.url ?? '/')
+  setupWSConnection(conn, req, { gc: true, docName })
+  hubs.ensure(docName, docs.get(docName)!)
+})
 /** Refused connections are audited at most once per 10 s per remote address: a client retrying in a
  *  loop (or a scanner) must not fill the audit log. The refusal itself is still logged and sent. */
 const refusedAudit = new Map<string, number>()
@@ -375,6 +388,8 @@ server.on('upgrade', (req, socket, head) => {
   const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
     ? wss.handleUpgrade(req, socket, head, ws => {
       noteBranch(roomName)
+      // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
+      bindHub(ws, () => hubs.current(roomName), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false })
       audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
       if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
       if (opts.login) {

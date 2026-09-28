@@ -61,7 +61,7 @@ describe('local relay browser view', () => {
       const js = await get(`http://127.0.0.1:${relay.port}/app.js`)
       expect(js.type).toContain('javascript')
       const health = await get(`http://127.0.0.1:${relay.port}/health`)
-      expect(JSON.parse(health.body)).toEqual({ ok: true, local: true })
+      expect(JSON.parse(health.body)).toEqual({ ok: true, local: true, hub: 1 })
       const outside = await get(`http://127.0.0.1:${relay.port}/../../etc/passwd`)
       expect(outside.body).not.toContain('root:')
       const doc = new Y.Doc()

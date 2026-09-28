@@ -1,8 +1,7 @@
-import { participantRecord, type RoomDoc } from './doc.js'
+import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
 import { messageForMe, type MessageRouteContext } from './messages.js'
-import { AWARENESS_FRESH_MS, type AwarenessView } from './views.js'
-import type { ArchivedMsg, ArchivedRelease, DeliveryCursor, Identity, Msg, MsgType, Outcome, Presence, Scope } from './types.js'
+import type { ArchivedMsg, ArchivedRelease, DeliveryCursor, Identity, Msg, MsgType, Outcome, Scope } from './types.js'
 
 // The one delivery ledger: docs/superpowers/specs/2026-09-28-ledger.md ("The trim", "Message lookup").
 
@@ -234,35 +233,4 @@ export function archiveSummary(doc: RoomDoc, area?: string): ArchiveSummary {
   }
   out.unfulfilled.sort(byAge)
   return out
-}
-
-export interface TrimLeader { name: string; sessionId?: string }
-
-/**
- * The trim leader, which limits churn; correctness never depends on it. Candidates are present PR-less
- * awareness states, fresh by participantsView's window. A name with a holder record counts only through
- * that holder's session. Non-workers come first, then the lowest name, then the lowest session id.
- */
-export function trimLeader(doc: RoomDoc, awareness: AwarenessView, now: number): TrimLeader | undefined {
-  const candidates: (TrimLeader & { worker: boolean })[] = []
-  for (const [clientId, value] of awareness.getStates()) {
-    const state = value as Partial<Presence> | null
-    const name = state?.user?.name
-    if (!name || name.startsWith('pr#')) continue
-    const updated = awareness.meta?.get(clientId)?.lastUpdated
-    if (updated !== undefined && (now - updated > AWARENESS_FRESH_MS || updated > now)) continue
-    const holder = participantRecord(doc, name)?.holder
-    if (holder && state.sessionId !== holder.sessionId) continue
-    candidates.push({ name, ...(state.sessionId !== undefined ? { sessionId: state.sessionId } : {}), worker: holder?.workerId !== undefined || !!doc.workerOf(name) })
-  }
-  const bySession = (a?: string, b?: string) => a === b ? 0 : a === undefined ? 1 : b === undefined ? -1 : compare(a, b)
-  candidates.sort((a, b) => Number(a.worker) - Number(b.worker) || compare(a.name, b.name) || bySession(a.sessionId, b.sessionId))
-  if (!candidates.length) return undefined
-  const { worker: _worker, ...leader } = candidates[0]
-  return leader
-}
-
-/** Whether `me` is the elected leader; a session id is compared only when both sides carry one. */
-export function leadsTrim(leader: TrimLeader | undefined, me: { name: string; sessionId?: string }): boolean {
-  return !!leader && leader.name === me.name && (leader.sessionId === undefined || me.sessionId === undefined || leader.sessionId === me.sessionId)
 }
