@@ -186,11 +186,62 @@ describe('worker identity', () => {
     exits[0](0) // the first process finally exits: its record is gone, so nothing changes
     expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'running', task: 'second' })
     exits[1](0)
-    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'failed' })
+    expect(a.workers.get('money')).toMatchObject({ id: second.id, status: 'done', noReport: true })
   })
 })
 
 describe('worker process exits', () => {
+  it('reconciles a delayed room_done after a clean exit wins the concurrent worker record', async () => {
+    const leadDoc = new Y.Doc(), workerDoc = new Y.Doc()
+    leadDoc.clientID = 100; workerDoc.clientID = 10
+    const a = new RoomDoc(leadDoc), b = new RoomDoc(workerDoc)
+    const s = fakeSession(a, lead), r = registry()
+    const w = { id: 'rohanz/money#1', gen: 1, tag: 'money', name: worker.name, host: 'codex' as const, task: 'x', dir, branch: 'room/money', pid: -1, startedAt: 1, status: 'running' as const, lead: lead.name }
+    a.setWorker(w)
+    r.rooms.add(s, 'primary')
+    Y.applyUpdate(workerDoc, Y.encodeStateAsUpdate(leadDoc))
+    const vector = Y.encodeStateVector(leadDoc)
+    b.updateWorker('money', { status: 'done', summary: 'actual report', finishedAt: 2 }, w.id)
+    b.post(worker, { type: 'done', tag: 'money', workerId: w.id, summary: 'actual report', changed: [], to: lead.name, priority: 'notify' })
+    const pending = Y.encodeStateAsUpdate(workerDoc, vector)
+    await finishWorkerProcess(s, a.workers.get('money')!, 0, 3)
+    expect(a.workers.get('money')).toMatchObject({ status: 'done', noReport: true })
+    Y.applyUpdate(leadDoc, pending)
+    expect(a.workers.get('money')).toMatchObject({ status: 'done', summary: 'actual report' })
+    expect(a.workers.get('money')?.noReport).toBeUndefined()
+    r.rooms.remove(s)
+    leadDoc.destroy(); workerDoc.destroy()
+  })
+
+  it.each([0, 1])('does not use an earlier generation report on exit %i', async code => {
+    const s = fakeSession(pair().a, lead)
+    const marker = s.room.post(lead, { type: 'note', text: 'new spawn', priority: 'fyi' })
+    s.room.setWorker({ id: 'rohanz/money#2', gen: 2, tag: 'money', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/money', pid: -1, startedAt: 1, spawnedAfter: marker.id, status: 'running', lead: lead.name })
+    s.room.post(worker, { type: 'done', tag: 'money', workerId: 'rohanz/money#1', summary: 'old report (from an earlier generation of money)', changed: [], to: lead.name, priority: 'notify' })
+    await finishWorkerProcess(s, s.room.workers.get('money')!, code, 3)
+    expect(s.room.workers.get('money')).toMatchObject({ status: code === 0 ? 'done' : 'failed', exitCode: code })
+    expect(s.room.workers.get('money')?.noReport).toBe(code === 0 ? true : undefined)
+    expect(s.room.workers.get('money')?.summary).not.toContain('old report')
+  })
+
+  it('does not reconcile a delayed report without workerId', async () => {
+    const s = fakeSession(pair().a, lead), r = registry()
+    r.rooms.add(s, 'primary')
+    s.room.setWorker({ id: 'rohanz/money#1', gen: 1, tag: 'money', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/money', pid: -1, startedAt: 1, status: 'done', noReport: true, lead: lead.name })
+    s.room.post(worker, { type: 'done', tag: 'money', summary: 'legacy report', changed: [], to: lead.name, priority: 'notify' })
+    expect(s.room.workers.get('money')).toMatchObject({ noReport: true })
+    r.rooms.remove(s)
+  })
+
+  it('does not reuse a prior run report when a resumed process exits', async () => {
+    const s = fakeSession(pair().a, lead)
+    s.room.post(worker, { type: 'done', tag: 'money', summary: 'prior run', changed: [], to: lead.name, priority: 'notify' })
+    const marker = s.room.post(lead, { type: 'note', text: 'resume', priority: 'fyi' })
+    s.room.setWorker({ id: 'rohanz/money#1', gen: 1, tag: 'money', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/money', pid: -1, startedAt: 1, spawnedAfter: marker.id, resumeLogStart: 0, status: 'running', lead: lead.name })
+    await finishWorkerProcess(s, s.room.workers.get('money')!, 0, 3)
+    expect(s.room.workers.get('money')?.summary).toContain('(follow-up: finished without a report)')
+    expect(s.room.workers.get('money')?.summary).not.toContain('prior run')
+  })
   it('records a worker found dead after lead restart as an unknown unwitnessed exit, releases claims, and sends no false death alarm', async () => {
     const r = registry(), s = fakeSession(pair().a, lead)
     r.rooms.add(s, 'primary')
@@ -253,9 +304,9 @@ describe('worker process exits', () => {
   })
 
   it.each([
-    ['running', 0, 120_000, true], ['done', 1, 120_000, true],
+    ['running', 0, 120_000, false], ['done', 1, 120_000, true],
     ['done', 0, 56_000, false], ['done', 0, 90_000, false],
-    ['running', 1, 5_000, true], ['running', 0, 5_000, true], ['done', 1, 720_000, true],
+    ['running', 1, 5_000, true], ['running', 0, 5_000, false], ['done', 1, 720_000, true],
   ] as const)('status %s exit %i after %i ms: interrupt=%s', async (status, code, elapsed, warn) => {
     const s = fakeSession(pair().a, lead)
     s.room.setWorker({ id: 'exit#1', tag: 'exit', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/exit', pid: -1, startedAt: 1000, status, lead: lead.name, ...(status === 'done' ? { summary: 'finished' } : {}) })
@@ -268,8 +319,21 @@ describe('worker process exits', () => {
       expect(text).toContain('last lines of its log:')
       expect(text).toContain(elapsed < 90_000 ? `${Math.floor(elapsed / 1000)} s after start` : `after ${Math.floor(elapsed / 60_000)}m`)
     }
-    expect(s.room.workers.get('exit')).toMatchObject({ status: status === 'done' ? 'done' : 'failed', exitCode: code })
+    expect(s.room.workers.get('exit')).toMatchObject({ status: status === 'done' || code === 0 ? 'done' : 'failed', exitCode: code })
+    if (status === 'running' && code === 0) {
+      expect(s.room.workers.get('exit')?.noReport).toBe(true)
+      expect(s.room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'notify', text: expect.stringContaining('worker exit ended without a report') }])
+    }
     if (status === 'done') expect(s.room.workers.get('exit')?.summary).toBe('finished')
+  })
+
+  it.each([[null, undefined], [0, 'spawn failed']] as const)('treats exit %s with error %s as failed', async (code, error) => {
+    const s = fakeSession(pair().a, lead)
+    s.room.setWorker({ id: 'error#1', tag: 'error', name: worker.name, host: 'codex', task: 'x', dir, branch: 'room/error', pid: -1, startedAt: 1000, status: 'running', lead: lead.name })
+    await finishWorkerProcess(s, s.room.workers.get('error')!, code, 2000, error)
+    expect(s.room.workers.get('error')).toMatchObject({ status: 'failed', exitCode: code ?? -1 })
+    expect(s.room.workers.get('error')?.noReport).not.toBe(true)
+    expect(s.room.messages().filter(m => m.type === 'note')).toMatchObject([{ priority: 'interrupt', text: expect.stringContaining('worker error died') }])
   })
 })
 

@@ -4,7 +4,7 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail, writeHookReceipt } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -16,6 +16,8 @@ const previous = readJson(activityFile, null)
 if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
   try { fs.writeFileSync(activityFile, JSON.stringify({ at: now, session_id: ev.session_id, event: 'PreToolUse' })) } catch { /* best effort */ }
 }
+// One receipt file per session: the file above keeps only the latest session's, and another session overwrites it.
+writeHookReceipt(stateDir, ev.session_id, now)
 const sessionFile = path.join(stateDir, 'room-session.json')
 let session = readJson(sessionFile, null)
 if (session && ev.session_id && session.session_id === ev.session_id) {

@@ -196,7 +196,7 @@ export function splitParticipants(input: ParticipantInput & { retiredWorkers: re
   const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name))
   const retiredNames = new Set(retiredWorkers.map(w => w.name))
   const participants = deriveParticipants(input).filter(p => !retiredNames.has(p.name) || workers.has(p.name))
-  const active = participants.filter(p => p.online || ['running', 'failed'].includes(workers.get(p.name)?.status ?? ''))
+  const active = participants.filter(p => p.online || ['running', 'failed'].includes(workers.get(p.name)?.status ?? '') || (workers.get(p.name)?.status === 'done' && workers.get(p.name)?.noReport === true))
   const offlineTeammates = participants.filter(p => !p.online && !workers.has(p.name))
   const leads = new Set([...workers.values()].map(w => w.lead))
   for (const w of retiredWorkers) leads.add(w.lead)
@@ -286,7 +286,7 @@ export function workerLine({ worker: w, processGone = false, lastActive, changed
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.dismissedAt !== undefined || w.status === 'dismissed' ? `discard pending (${w.status})`
     : w.status === 'running' && processGone ? STOPPED_UNWITNESSED
-    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
+    : w.status === 'running' ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status === 'done' && w.noReport ? 'ended without a report' : w.status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${w.status === 'running' && processGone && !stoppedWithSession(w) ? ` · worktree ${w.dir}` : ''}${summary ? ` · ${summary}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,

@@ -675,16 +675,25 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(out).toContain('which field carries the price?')
   })
 
-  it("a worker that exits without room_done ends the lead's wait with one interrupt", async () => {
+  it("a clean worker exit without room_done ends the lead's wait with a completion note", async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    t.a.addClaim({ path: 'app.py', from: 1, to: 1, by: 'rohanz+money', byKind: 'agent', intent: 'switch prices' })
+    t.a.addClaim({ path: 'app.py', from: 2, to: 2, by: 'rohanz', byKind: 'agent', intent: 'lead work' })
+    expect(t.a.openClaims().map(c => c.by).sort()).toEqual(['rohanz', 'rohanz+money'])
     const waiting = t.leadTools.call('room_wait', { timeoutMs: 3000 })
     await new Promise(r => setTimeout(r, 50))
     t.exits[0](0)
     const out = await waiting
-    expect(out).toContain('[interrupt]')
-    expect(out).toContain('exited without room_done')
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
+    expect(out).toContain('[notify]')
+    expect(out).toContain('worker money ended without a report')
+    expect(out).toContain('last lines of its log: (log unavailable)')
+    expect(out).not.toContain('died')
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', noReport: true, exitCode: 0 })
+    expect(t.a.workers.get('money')?.summary).toContain('last lines of its log: (log unavailable)')
+    expect(t.a.openClaims().map(c => c.by)).toEqual(['rohanz'])
+    expect(t.a.messages().filter(m => m.type === 'note' && m.to === 'rohanz')).toHaveLength(1)
+    expect(await t.leadTools.call('room_state', {})).toContain('money (claude, ended without a report')
   })
 
   it('refuses beyond the worker budget', async () => {
@@ -713,21 +722,26 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, config })
     await tools.call('room_done', { summary: 'old task finished' })
     expect(t.a.workers.get('money')?.status).toBe('running')
-    expect(t.a.messages().some(m => m.type === 'done' && m.summary.includes('earlier generation'))).toBe(true)
+    const report = t.a.messages().find(m => m.type === 'done' && m.summary.includes('earlier generation'))
+    expect(report).toBeDefined()
+    if (report?.type === 'done') expect(report.workerId).toBe(identity.workerId)
   })
 
   it("a worker's room_done reaches its lead as an addressed done message that wakes it, and marks the worker done", async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    t.a.updateWorker('money', { noReport: true })
     t.b.setOverlay('rohanz+money', 'app.py', 'x = 100\n')
     const out = await t.workerTools.call('room_done', { summary: 'Money type in cents, 7 tests pass' })
     expect(out).toContain('Your lead rohanz has been told (worker money)')
     const done = t.a.messages().find(m => m.type === 'done') as Msg & { type: 'done' }
     expect(done).toBeTruthy()
     expect(done.to).toBe('rohanz'); expect(done.tag).toBe('money'); expect(done.changed).toEqual(['app.py'])
+    expect(done.workerId).toBe(t.a.workers.get('money')?.id)
     expect(shouldWakeOnMsg(lead, done).wake).toBe(true)
     expect(shouldWakeOnMsg({ name: 'someone', kind: 'agent' }, done).wake).toBe(false)
     expect(t.a.workers.get('money')).toMatchObject({ status: 'done', summary: 'Money type in cents, 7 tests pass' })
+    expect(t.a.workers.get('money')?.noReport).toBeUndefined()
     // The lead's next tool call shows the done line in its inbox.
     const st = await t.leadTools.call('room_state', {})
     expect(st).toContain('finished: Money type in cents')
@@ -757,7 +771,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(tested).not.toContain('caused by')
   })
 
-  it('a worker that exits without room_done is marked failed regardless of exit code; dismiss kills a running one', async () => {
+  it('a worker that exits nonzero without room_done is failed; dismiss kills a running one', async () => {
     const t = setup()
     await t.leadTools.call('room_spawn', { tag: 'a', task: 'x' })
     await t.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
@@ -798,10 +812,10 @@ describe('pinned rooms', () => {
   })
 })
 
-function setupLead() {
+function setupLead(local = true) {
   const { a, b } = pair()
   a.setMeta({ repo: 'x', branch: 'main', base })
-  let ls: Session | null = fakeSession(a, lead)
+  let ls: Session | null = fakeSession(a, lead, local)
   const specs: SpawnSpec[] = []
   const exits: ((code: number | null) => void)[] = []
   const sessionIds: ((id: string) => void)[] = []
@@ -965,19 +979,71 @@ describe('worker safety', () => {
     expect(a.messages()).toHaveLength(0)
   })
 
-  it('room_spawn refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
-    const t = setupLead()
+  const otherRepo = () => {
     const outside = mkdtempSync(join(tmpdir(), 'room-outside-'))
+    scratchRepos.push(outside)
     execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'elsewhere'], { stdio: 'pipe' })
     writeFileSync(join(outside, 'f.txt'), 'x\n')
     execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.'], { stdio: 'pipe' })
     execFileSync('git', ['-C', outside, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { stdio: 'pipe' })
+    return outside
+  }
+
+  it('room_spawn from a team room refuses a dir outside the repo unless allowOutside, and then skips worktree bookkeeping', async () => {
+    const t = setupLead(false)
+    const outside = otherRepo()
     const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
     expect(refused).toContain('outside this repo')
     expect(t.specs).toHaveLength(0)
     const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
     expect(ok).toContain('outside this repo, so no worktree was made')
     expect(t.a.workers.get('far')).toMatchObject({ dir: outside, branch: 'elsewhere' })
+  })
+
+  it('room_spawn from a local room refuses another repository even with allowOutside, but allows another worktree of this clone', async () => {
+    const t = setupLead()
+    const plain = mkdtempSync(join(tmpdir(), 'room-plain-'))
+    scratchRepos.push(plain)
+    for (const outside of [otherRepo(), plain]) {
+      const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
+      expect(refused).toBe(`error: ${outside} is another repository; a worker there cannot join this local room. Start a lead in ${outside} instead: its room is that repository's own local room, and give your human that room's link.`)
+    }
+    const nested = join(dir, 'nested')
+    execFileSync('git', ['init', '-q', nested], { stdio: 'pipe' })
+    try { expect(await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: nested })).toContain('a worker there cannot join this local room') }
+    finally { rmSync(nested, { recursive: true, force: true }) }
+    expect(t.specs).toHaveLength(0)
+    expect(t.a.workers.get('far')).toBeUndefined()
+    expect(t.a.messages()).toHaveLength(0)
+    const parent = mkdtempSync(join(tmpdir(), 'room-sibling-'))
+    scratchRepos.push(parent)
+    const sibling = join(parent, 'wt')
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '-b', 'sibling', sibling], { stdio: 'pipe' })
+    try {
+      const ok = await t.leadTools.call('room_spawn', { tag: 'near', task: 'x', dir: sibling, allowOutside: true })
+      expect(ok).toContain(`spawned near`)
+      expect(t.a.workers.get('near')).toMatchObject({ dir: sibling, branch: 'sibling' })
+    } finally {
+      execFileSync('git', ['-C', dir, 'worktree', 'remove', '--force', sibling], { stdio: 'pipe' })
+      execFileSync('git', ['-C', dir, 'branch', '-D', 'sibling'], { stdio: 'pipe' })
+    }
+  })
+
+  it('room_spawn where=local from a team room refuses another repository: its local workers room is hosted by this clone', async () => {
+    const team = pair(), local = pair()
+    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    let ls: Session | null = fakeSession(team.a, lead, false)
+    const specs: SpawnSpec[] = []
+    const leadTools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined,
+      join: async () => fakeSession(local.a, lead), leave: async () => {},
+      spawner: spec => { specs.push(spec); return { pid: 99, started: Promise.resolve(), onExit: () => {}, kill: () => true } },
+    })
+    const outside = otherRepo()
+    expect(await leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true, where: 'local' })).toContain('a worker there cannot join this local room')
+    expect(specs).toHaveLength(0)
+    expect(local.a.workers.get('far')).toBeUndefined()
+    await leadTools.shutdown()
   })
   it('shows an existing-dir worker model without attributing the lead checkout edits to it', async () => {
     const t = setupLead()
@@ -1066,7 +1132,7 @@ describe('review fixes: workers', () => {
     t.exits[0](1) // the first process finally dies
     expect(t.a.workers.get('money')).toMatchObject({ status: 'running', task: 'second', gen: second.gen })
     t.exits[1](0)
-    expect(t.a.workers.get('money')).toMatchObject({ status: 'failed', gen: second.gen })
+    expect(t.a.workers.get('money')).toMatchObject({ status: 'done', noReport: true, gen: second.gen })
     // and while a process is alive the tag cannot be reused
     await t.leadTools.call('room_spawn', { tag: 'x', task: 't' })
     expect(await t.leadTools.call('room_spawn', { tag: 'x', task: 'again' })).toContain('already running')
@@ -1131,7 +1197,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const t = setupLead()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't' })
     const env = t.specs[0].env
-    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_THREADS'])
+    expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_GEN', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_THREADS'])
     expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_GEN: '1', ROOM_SHARE: 'full' })
     expect(env.ROOM_DIR).toBe(join(dir, '.room', 'workers', 'money'))
     expect(env.ROOM_LOG_FILE).toBe(join(dir, '.room', 'workers', 'money.mcp.log'))
@@ -1731,5 +1797,21 @@ describe('worker follow-up sessions', () => {
     t.a.retireParticipant(finished.name, { ...finished, summary: 'collected', finishedAt: finished.finishedAt!, retiredAt: Date.now(), files: [], fileCount: 0, outcome: 'dismissed' })
     expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('collected or discarded')
     expect(t.specs).toHaveLength(1)
+  })
+})
+
+describe('lead clone', () => {
+  it('room_spawn and a resume tell the worker which clone its lead is in', async () => {
+    const t = setupLead()
+    const leadClone = realpathSync(join(dir, '.git'))
+    await t.leadTools.call('room_spawn', { tag: 'leadclone', task: 'first', host: 'claude' })
+    expect(t.specs[0].env.ROOM_LEAD_CLONE).toBe(leadClone)
+    mkdirSync(t.a.workers.get('leadclone')!.dir, { recursive: true })
+    t.a.updateWorker('leadclone', { status: 'done', summary: 'first done', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('leadclone')?.exitCode).toBe(0))
+    await t.leadTools.call('room_send', { type: 'note', to: 'leadclone', text: 'one more task' })
+    expect(t.specs[1].env.ROOM_LEAD_CLONE).toBe(leadClone)
+    await t.leadTools.shutdown()
   })
 })

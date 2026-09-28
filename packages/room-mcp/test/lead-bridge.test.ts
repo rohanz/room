@@ -100,8 +100,8 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
     t.exits[0](0)
     await new Promise(r => setTimeout(r, 100))
-    expect(woken.some(x => x.includes('exited without room_done'))).toBe(true)
-    expect(t.local.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
+    expect(woken.some(x => x.includes('ended without a report'))).toBe(true)
+    expect(t.local.a.workers.get('money')).toMatchObject({ status: 'done', noReport: true, exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
 

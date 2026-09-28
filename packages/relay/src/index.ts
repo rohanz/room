@@ -131,6 +131,11 @@ export interface LocalRelay {
 
 export const LOCAL_FILE = 'room-local.json'
 
+/** ensureLocalRelay with joinOnly found no relay serving this clone, and started none. */
+export class NoLocalRelay extends Error {
+  constructor(public commonDir: string) { super(`no room relay is running for ${commonDir}`) }
+}
+
 export function relayFile(commonDir: string): string { return path.join(commonDir, LOCAL_FILE) }
 
 export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
@@ -292,8 +297,9 @@ function pidAlive(pid: number): boolean {
  * start together exactly one binds; the other sees EADDRINUSE, waits for the winner's file,
  * and joins. If that port is held by something that is not a room relay, any free port is used
  * instead, and a short re-check afterwards adopts a relay another racer may have recorded.
+ * With joinOnly, a clone with no answering relay throws NoLocalRelay instead of starting one.
  */
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string } = {}): Promise<LocalRelay> {
+export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; joinOnly?: boolean } = {}): Promise<LocalRelay> {
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`))
   let owned: { port: number; close(): Promise<void> } | null = null
   let port = 0
@@ -325,6 +331,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
 
   const existing = await recorded()
   if (existing) adopt(existing, 'joined')
+  else if (opts.joinOnly) throw new NoLocalRelay(commonDir)
   else {
     key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString('hex')
     const want = deterministicPort(commonDir)

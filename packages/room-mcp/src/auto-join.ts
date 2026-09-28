@@ -59,7 +59,9 @@ function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
   if (e instanceof NotLoggedIn) return 'Room is not connected: not logged in; use room_login.'
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`
-  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.` : `${head}; use room_join.${baseRecovery(e)}`
+  if (local && retryable(e)) return `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.`
+  if (local) return `${head}; room_join to retry now.${baseRecovery(e)}`
+  return `${head}; use room_join.${baseRecovery(e)}`
 }
 
 export class AutoJoin {

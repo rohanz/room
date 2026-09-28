@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { joinSession, leaveSession, resolveServer, DEFAULT_SERVER, type Session } from '../src/session.js'
@@ -12,14 +12,20 @@ const sessions: Session[] = []
 const prevRoomEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('ROOM_')))
 const clearRoomEnv = () => { for (const k of Object.keys(process.env)) if (k.startsWith('ROOM_')) delete process.env[k] }
 
+/** A one-commit repository on main whose user is Ada. */
+function repo(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix))
+  const git = (...a: string[]) => execFileSync('git', ['-C', d, ...a], { stdio: 'pipe' }).toString()
+  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'Ada')
+  writeFileSync(join(d, 'app.py'), 'x = 1\n')
+  git('add', '.'); git('commit', '-qm', 'init')
+  return d
+}
+
 beforeEach(clearRoomEnv)
 beforeAll(() => {
   clearRoomEnv()
-  dir = mkdtempSync(join(tmpdir(), 'room-localjoin-'))
-  const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
-  git('init', '-q', '-b', 'main'); git('config', 'user.email', 't@t'); git('config', 'user.name', 'Ada')
-  writeFileSync(join(dir, 'app.py'), 'x = 1\n')
-  git('add', '.'); git('commit', '-qm', 'init')
+  dir = repo('room-localjoin-')
 })
 afterEach(async () => {
   for (const s of sessions.splice(0)) { try { await leaveSession(s) } catch { /* ignore */ } }
@@ -55,6 +61,49 @@ describe('local mode (no server)', () => {
     const s = await joinSession({ dir, server: 'local', room: name, localBranch: 'worker', tag: 'worker', log: () => {} })
     sessions.push(s)
     expect(s.roomName).toBe(name)
+  })
+
+  it('a dispatched worker joins its lead\'s relay from a worktree of the clone, and never starts a relay in another repository', async () => {
+    const room = `local/${basename(dir)}/main`
+    const lead = await joinSession({ dir, server: 'local', room, name: 'Ada', log: () => {} }); sessions.push(lead)
+    const other = repo('room-localjoin-other-')
+    const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { stdio: 'pipe' }).toString()
+    // The environment an older room_spawn gives a worker (no ROOM_LEAD_CLONE), joined as the worker's startup does.
+    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada' })
+    await expect(joinSession({ dir: other, room, server: 'local', log: () => {} })).rejects.toThrow(`your lead's room ${room} has no relay running for ${other}`)
+    expect(existsSync(join(other, '.git', 'room-local.json'))).toBe(false)
+    const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
+    git(dir, 'worktree', 'add', '-q', '-b', 'room/w', wt)
+    const worker = await joinSession({ dir: wt, room, server: 'local', log: () => {} }); sessions.push(worker)
+    expect(worker.local?.owned).toBe(false)
+    expect(worker.roomUrl).toBe(lead.roomUrl)
+    expect(worker.browserUrl.startsWith(`${lead.local!.httpUrl}/?room=${encodeURIComponent(lead.roomUrl)}&`)).toBe(true)
+  })
+
+  it('a worker in its lead\'s clone starts the relay when the lead\'s relay is gone', async () => {
+    const clone = repo('room-localjoin-dead-')
+    const room = `local/${basename(clone)}/main`
+    // The lead crashed after dispatch: its discovery file names a relay nobody serves.
+    writeFileSync(join(clone, '.git', 'room-local.json'), JSON.stringify({ port: 1, pid: 999_999_999, room, startedAt: 1, key: 'dead' }))
+    const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
+    execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
+    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada', ROOM_LEAD_CLONE: realpathSync(join(clone, '.git')) })
+    const worker = await joinSession({ dir: wt, room, server: 'local', log: () => {} }); sessions.push(worker)
+    expect(worker.local?.owned).toBe(true)
+    expect(worker.roomName).toBe(room)
+  })
+
+  it('a worker in another repository than its lead\'s is refused for good, and never touches that repository\'s relay', async () => {
+    const other = repo('room-localjoin-elsewhere-')
+    const room = `local/${basename(dir)}/main`
+    const theirs = await joinSession({ dir: other, server: 'local', name: 'Bo', log: () => {} }); sessions.push(theirs)
+    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada', ROOM_LEAD_CLONE: realpathSync(join(dir, '.git')) })
+    const lines: string[] = []
+    const joined = joinSession({ dir: other, room, server: 'local', log: line => lines.push(line) })
+    joined.then(s => sessions.push(s), () => {})
+    await expect(joined).rejects.toMatchObject({ code: 2, message: `this worker is in ${other}, another repository than its lead's (${realpathSync(join(dir, '.git'))}); it cannot join the lead's local room. Start a lead in ${other} instead.` })
+    expect(lines.filter(l => /relay/.test(l))).toEqual([])
+    expect([...theirs.awareness.getStates().values()].map(state => state.user?.name)).toEqual(['Bo'])
   })
 
   it('joins a local room without any server, names it after the clone, and a tagged second session shares it', async () => {

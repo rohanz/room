@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, findThreadForDir, HooksBridge, hookHealthNote, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
+import { consumeHookDisclosure, consumeHookNotice, createWriteIntentReader, findThreadForDir, HooksBridge, hookHealthNote, hookReceiptPath, noteHostTurnMetadata, ownHookIdentity, syncHookSeen, writePendingHookContext } from '../src/hooks-bridge.js'
 import type { Session } from '../src/session.js'
 import { hasCompany } from '../src/company.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
@@ -143,6 +143,59 @@ describe('shell edit hooks', () => {
     await runHook('before-edit.mjs', { session_id: 'intent-lead', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'echo x > app.py' } })
     expect(lead('app.py')).toBe(true)
     expect(peer('app.py')).toBe(false)
+  })
+
+  it('keeps a before-edit receipt file per session, so a later session does not erase an earlier one', async () => {
+    rmSync(join(dir, '.git/room-hook-receipts'), { force: true, recursive: true })
+    await runHook('session-start.mjs', { session_id: 'receipt-claude', cwd: dir })
+    await runHook('before-edit.mjs', { session_id: 'receipt-claude', cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'app.py' } })
+    await runHook('session-start.mjs', { session_id: 'receipt-codex', cwd: dir })
+    await runHook('before-edit.mjs', { session_id: 'receipt-codex', cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'ls' } })
+    for (const id of ['receipt-claude', 'receipt-codex']) expect(JSON.parse(readFileSync(hookReceiptPath(dir, id), 'utf8'))).toMatchObject({ sessionId: id })
+    expect(JSON.parse(readFileSync(join(dir, '.git/room-hook-activity.json'), 'utf8')).session_id).toBe('receipt-codex')
+  })
+
+  it('keeps both receipts when two sessions write at the same moment', async () => {
+    rmSync(join(dir, '.git/room-hook-receipts'), { force: true, recursive: true })
+    const ids = Array.from({ length: 8 }, (_, i) => `concurrent-${i}`)
+    await Promise.all(ids.map(id => runHook('before-edit.mjs', { session_id: id, cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'app.py' } })))
+    for (const id of ids) expect(JSON.parse(readFileSync(hookReceiptPath(dir, id), 'utf8')).sessionId).toBe(id)
+    expect(fs.readdirSync(join(dir, '.git/room-hook-receipts')).filter(n => n.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('writes no receipt for an oversized or control-character session id', async () => {
+    const { writeHookReceipt, receiptSessionId } = await import(join(HOOKS, 'common.mjs'))
+    const state = join(dir, '.git')
+    rmSync(join(state, 'room-hook-receipts'), { force: true, recursive: true })
+    expect(receiptSessionId('x'.repeat(256))).toBe('x'.repeat(256))
+    for (const bad of ['x'.repeat(257), 'a\nb', 'a\u0000b', '', 42]) expect(writeHookReceipt(state, bad, Date.now())).toBe(false)
+    expect(existsSync(join(state, 'room-hook-receipts'))).toBe(false)
+    await runHook('before-edit.mjs', { session_id: 'y'.repeat(1_000_000), cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'app.py' } })
+    expect(existsSync(join(state, 'room-hook-receipts'))).toBe(false)
+  })
+
+  it('prunes week-old receipts at most every ten minutes, scanning a bounded number of entries', async () => {
+    const { writeHookReceipt, pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
+    const state = join(dir, '.git'), receiptsDir = join(state, 'room-hook-receipts')
+    rmSync(receiptsDir, { force: true, recursive: true })
+    const now = Date.now(), old = new Date(now - 8 * 86400_000)
+    expect(writeHookReceipt(state, 'fresh', now)).toBe(true)
+    for (const name of ['old-a.json', 'old-b.json', 'stale.tmp']) { writeFileSync(join(receiptsDir, name), '{}'); fs.utimesSync(join(receiptsDir, name), old, old) }
+    // The first write pruned already (no marker yet); age the marker so the next write prunes again.
+    fs.utimesSync(join(receiptsDir, '.pruned'), new Date(now - 11 * 60_000), new Date(now - 11 * 60_000))
+    expect(writeHookReceipt(state, 'another', now)).toBe(true)
+    expect(fs.readdirSync(receiptsDir).filter(n => !n.startsWith('.')).sort()).toEqual([hookReceiptPath(dir, 'another'), hookReceiptPath(dir, 'fresh')].map(p => p.split('/').pop()).sort())
+    // Within ten minutes of the last prune nothing is scanned.
+    writeFileSync(join(receiptsDir, 'old-c.json'), '{}'); fs.utimesSync(join(receiptsDir, 'old-c.json'), old, old)
+    pruneHookReceipts(receiptsDir, now + 60_000)
+    expect(existsSync(join(receiptsDir, 'old-c.json'))).toBe(true)
+    // A large directory is scanned only in part: at most 500 entries per prune.
+    for (let i = 0; i < 700; i++) { const f = join(receiptsDir, `bulk-${i}.json`); writeFileSync(f, '{}'); fs.utimesSync(f, old, old) }
+    fs.utimesSync(join(receiptsDir, '.pruned'), old, old)
+    pruneHookReceipts(receiptsDir, now)
+    const left = fs.readdirSync(receiptsDir).filter(n => n.startsWith('bulk-')).length
+    expect(left).toBeGreaterThanOrEqual(200)
+    expect(left).toBeLessThan(700)
   })
 
   it('records PowerShell write targets but not read-only commands', async () => {
@@ -997,83 +1050,167 @@ it('contains a scheduled hook-state write failure and logs it once', () => {
   }
 })
 
-it('reports unverified pre-edit coverage on team join and first scope only', () => {
+// hookHealthNote judges only receipts from this process's own host session (Claude's CLAUDE_CODE_SESSION_ID, the
+// Codex thread its tool calls name), since this process started. room-session.json is never identity.
+const self = (id: string | undefined, startedAt: number) => ({ ids: new Set(id ? [id] : []), startedAt })
+const receipt = (id: string, at: number) => writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: id, event: 'PreToolUse', at }))
+const receipts = (map: Record<string, number>) => { for (const [id, at] of Object.entries(map)) { mkdirSync(join(dir, '.git/room-hook-receipts'), { recursive: true }); writeFileSync(hookReceiptPath(dir, id), JSON.stringify({ sessionId: id, at })) } }
+const clearReceipts = () => { for (const f of ['room-hook-activity.json', 'room-hook-receipts', 'room-session.json']) rmSync(join(dir, '.git', f), { force: true, recursive: true }) }
+
+it('tells Codex up front on team join and first scope only, and only once it knows its own thread', () => {
+  clearReceipts()
   vi.stubEnv('ROOM_HOST', 'codex')
-  const s = session(new RoomDoc())
   const now = Date.now()
-  expect(hookHealthNote(s, false, now, 'room_join')).toBe('')
-  expect(hookHealthNote(s, true, now + 1, 'room_join')).toContain('approve them once in an interactive Codex session')
-  expect(hookHealthNote(s, true, now + 2, 'room_join')).toBe('')
-  expect(hookHealthNote(s, true, now + 3, 'room_scope')).toContain('approve them once in an interactive Codex session')
-  expect(hookHealthNote(s, true, now + 4, 'room_scope')).toBe('')
-  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
-
-  // Claude Code has no hook-trust step that can silently skip hooks, and its before-edit hook is silent while alone:
-  // nothing is said up front, and the later diagnostic never asks the agent to judge from a silent hook.
-  vi.stubEnv('ROOM_HOST', 'claude')
-  const claude = session(new RoomDoc())
-  expect(hookHealthNote(claude, true, now + 1, 'room_join')).toBe('')
-  expect(hookHealthNote(claude, true, now + 2, 'room_scope')).toBe('')
-  expect(hookHealthNote(claude, true, now + 3, 'room_state')).toBe('')
-  expect(hookHealthNote(claude, true, now + 60_000, 'room_state')).toBe('')
-  expect(hookHealthNote(claude, true, now + 120_000, 'room_state')).toBe('')
-  claude.awareness.destroy()
-  vi.stubEnv('ROOM_HOST', 'codex')
-
+  const unknown = session(new RoomDoc())
+  expect(hookHealthNote(unknown, true, now, 'room_join', true, self(undefined, now - 1))).toBe('')
+  expect(hookHealthNote(unknown, true, now + 1, 'room_scope', true, self(undefined, now - 1))).toBe('')
+  const s = session(new RoomDoc())
+  const me = self('codex-me', now - 1)
+  expect(hookHealthNote(s, false, now, 'room_join', true, me)).toBe('')
+  expect(hookHealthNote(s, true, now + 1, 'room_join', true, me)).toContain('approve them once in an interactive Codex session')
+  expect(hookHealthNote(s, true, now + 2, 'room_join', true, me)).toBe('')
+  expect(hookHealthNote(s, true, now + 3, 'room_scope', true, me)).toContain('approve them once in an interactive Codex session')
+  expect(hookHealthNote(s, true, now + 4, 'room_scope', true, me)).toBe('')
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state', true, me)).toBe('')
+  // A SessionStart record is not a PreToolUse receipt.
   const sessionOnly = session(new RoomDoc())
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'session-only' }))
-  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'session-only', event: 'SessionStart', at: now + 1 }))
-  expect(hookHealthNote(sessionOnly, true, now + 2, 'room_join')).toContain('Pre-edit coordination is not confirmed yet')
-
+  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'codex-me', event: 'SessionStart', at: now + 1 }))
+  expect(hookHealthNote(sessionOnly, true, now + 2, 'room_join', true, me)).toContain('Pre-edit coordination is not confirmed yet')
   const healthy = session(new RoomDoc())
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'healthy' }))
-  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'healthy', event: 'PreToolUse', at: now - 60_000 }))
-  expect(hookHealthNote(healthy, true, now + 2, 'room_join')).toBe('')
-  expect(hookHealthNote(healthy, true, now + 3, 'room_scope')).toBe('')
-  s.awareness.destroy(); sessionOnly.awareness.destroy(); healthy.awareness.destroy()
+  receipt('codex-me', now)
+  expect(hookHealthNote(healthy, true, now + 2, 'room_join', true, me)).toBe('')
+  expect(hookHealthNote(healthy, true, now + 3, 'room_scope', true, me)).toBe('')
+  for (const x of [unknown, s, sessionOnly, healthy]) x.awareness.destroy()
 })
 
-it('warns Claude once after its own tree changed without a PreToolUse receipt', () => {
+it('says nothing up front to Claude, whose hook is silent while alone', () => {
+  clearReceipts()
   vi.stubEnv('ROOM_HOST', 'claude')
+  const now = Date.now(), me = self('claude-me', now - 1)
+  const claude = session(new RoomDoc())
+  for (const [i, tool] of ['room_join', 'room_scope', 'room_state'].entries()) expect(hookHealthNote(claude, true, now + 1 + i, tool, true, me)).toBe('')
+  expect(hookHealthNote(claude, true, now + 60_000, 'room_state', true, me)).toBe('')
+  expect(hookHealthNote(claude, true, now + 120_000, 'room_state', true, me)).toBe('')
+  claude.awareness.destroy()
+})
+
+it('warns Claude once after its own tree changed without a receipt of its own', () => {
+  clearReceipts()
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const now = Date.now(), me = self('claude-me', now - 1)
   const s = session(new RoomDoc())
-  const now = Date.now()
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-edit', at: now }))
-  expect(hookHealthNote(s, true, now, 'room_join')).toBe('') // nothing up front: see the coverage test
+  expect(hookHealthNote(s, true, now, 'room_join', true, me)).toBe('')
   s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
-  hookHealthNote(s, true, now + 1, 'room_state')
-  const note = hookHealthNote(s, true, now + 60_000, 'room_state')
+  hookHealthNote(s, true, now + 1, 'room_state', true, me)
+  const note = hookHealthNote(s, true, now + 60_000, 'room_state', true, me)
   expect(note).toContain("plugin's hooks may not be running")
   expect(note).toContain('reinstall or re-enable the plugin')
   expect(note).not.toContain('Codex')
-  expect(hookHealthNote(s, true, now + 120_000, 'room_state')).toBe('')
+  expect(hookHealthNote(s, true, now + 120_000, 'room_state', true, me)).toBe('')
   s.awareness.destroy()
 })
 
-it('does not warn Claude when a PreToolUse receipt follows its edit', () => {
+it('does not warn Claude when its own receipt exists, including one just before its first Room call', () => {
   vi.stubEnv('ROOM_HOST', 'claude')
-  const s = session(new RoomDoc())
-  const now = Date.now()
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-receipt', at: now }))
-  hookHealthNote(s, true, now, 'room_join')
-  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
-  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-receipt', event: 'PreToolUse', at: now + 1 }))
-  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
-  s.awareness.destroy()
+  const now = Date.now(), me = self('claude-me', now - 10_000)
+  for (const at of [now - 5, now + 1]) {
+    clearReceipts()
+    const s = session(new RoomDoc())
+    receipt('claude-me', at)
+    hookHealthNote(s, true, now, 'room_join', true, me)
+    s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    expect(hookHealthNote(s, true, now + 60_000, 'room_state', true, me)).toBe('')
+    s.awareness.destroy()
+  }
 })
 
-it('ignores an edit and receipt from before this Claude session started', () => {
+it('ignores an edit and a receipt from before this process started', () => {
+  clearReceipts()
   vi.stubEnv('ROOM_HOST', 'claude')
+  const now = Date.now(), me = self('claude-me', now)
   const s = session(new RoomDoc())
-  const now = Date.now()
   s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
   s.room.overlayAt.set('Rohan', now - 60_000)
-  writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-current', at: now }))
-  writeFileSync(join(dir, '.git/room-hook-activity.json'), JSON.stringify({ session_id: 'claude-current', event: 'PreToolUse', at: now - 60_000 }))
-  expect(hookHealthNote(s, true, now, 'room_join')).toBe('')
-  expect(hookHealthNote(s, true, now + 60_000, 'room_state')).toBe('')
+  receipt('claude-me', now - 60_000)
+  expect(hookHealthNote(s, true, now, 'room_join', true, me)).toBe('')
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state', true, me)).toBe('')
   s.room.setOverlay('Rohan', 'app.py', 'x = 3\n')
-  expect(hookHealthNote(s, true, now + 61_000, 'room_state')).toContain('before-edit hook')
+  expect(hookHealthNote(s, true, now + 61_000, 'room_state', true, me)).toContain('before-edit hook')
   s.awareness.destroy()
+})
+
+it('judges only its own session: another session in the clone neither counts nor blocks', () => {
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const now = Date.now(), me = self('claude-lead', now - 10_000)
+  const run = (setup: () => void) => {
+    clearReceipts(); setup()
+    const s = session(new RoomDoc())
+    hookHealthNote(s, true, now, 'room_spawn', true, me)
+    s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    const note = hookHealthNote(s, true, now + 60_000, 'room_collect', true, me)
+    s.awareness.destroy()
+    return note
+  }
+  // Live (databricks, 2026-09-28): a Codex session took over room-session.json; the Claude lead's own receipt counts.
+  expect(run(() => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'codex-other', at: now - 3_600_000, host: 'codex' }))
+    receipt('claude-lead', now + 1)
+  })).toBe('')
+  // Another session's later receipt overwrote the latest-receipt file: ours is still in the per-session map.
+  expect(run(() => { receipts({ 'claude-lead': now + 1, 'codex-other': now + 2 }); receipt('codex-other', now + 2) })).toBe('')
+  // Astra 1: Codex A's receipt, Codex B's session file, Claude edits with no receipt of its own: warn.
+  expect(run(() => {
+    receipt('codex-a', now + 1)
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'codex-b', at: now, host: 'codex' }))
+  })).toContain('before-edit hook')
+  // Astra 2, second half: a Claude session file naming the other session does not make its receipt ours.
+  expect(run(() => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-other', at: now, host: 'claude' }))
+    receipt('claude-other', now + 1)
+  })).toContain('before-edit hook')
+})
+
+it('Codex judges its own thread, whatever room-session.json names', () => {
+  vi.stubEnv('ROOM_HOST', 'codex')
+  const now = Date.now(), me = self('codex-me', now - 10_000)
+  const run = (setup: () => void) => {
+    clearReceipts(); setup()
+    const s = session(new RoomDoc())
+    const note = hookHealthNote(s, true, now + 1, 'room_join', true, me)
+    s.awareness.destroy()
+    return note
+  }
+  // Astra 2: a Claude session file does not reject Codex's own receipt, nor make Claude's receipt count.
+  expect(run(() => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-x', at: now, host: 'claude' }))
+    receipt('codex-me', now)
+  })).toBe('')
+  expect(run(() => {
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'claude-x', at: now, host: 'claude' }))
+    receipt('claude-x', now)
+  })).toContain('Pre-edit coordination is not confirmed yet')
+})
+
+it('never warns when the process cannot name its own session', () => {
+  clearReceipts()
+  vi.stubEnv('ROOM_HOST', 'claude')
+  const now = Date.now()
+  const s = session(new RoomDoc())
+  receipt('someone-else', now + 1)
+  hookHealthNote(s, true, now, 'room_join', true, self(undefined, now - 1))
+  s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+  expect(hookHealthNote(s, true, now + 60_000, 'room_state', true, self(undefined, now - 1))).toBe('')
+  s.awareness.destroy()
+})
+
+it('learns Codex thread ids from tool-call turn metadata', () => {
+  noteHostTurnMetadata({ 'x-codex-turn-metadata': { session_id: 'codex-thread-1', workspaces: {} } })
+  noteHostTurnMetadata({ 'x-codex-turn-metadata': { thread_id: '../bad id' } })
+  noteHostTurnMetadata(undefined)
+  expect([...ownHookIdentity('codex').ids]).toContain('codex-thread-1')
+  expect([...ownHookIdentity('codex').ids]).not.toContain('../bad id')
+  expect([...ownHookIdentity('claude', { CLAUDE_CODE_SESSION_ID: 'c1' }).ids]).toEqual(['c1'])
+  expect(ownHookIdentity('claude', {}).ids.size).toBe(0)
 })
 
 it('tells agents to claim the files they will edit, not an overbroad directory', () => {

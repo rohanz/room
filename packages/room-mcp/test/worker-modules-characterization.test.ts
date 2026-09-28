@@ -21,6 +21,13 @@ describe('worker module characterization', () => {
     expect(env.ROOM_LOG_FILE).toBe(path.join('/lead', '.room', 'workers', 'w.mcp.log'))
   })
 
+  it('names the lead\'s clone for a worker and never passes a lead\'s own lead clone on', () => {
+    const options = { threads: 1, memGb: 1, host: 'codex' as const, server: 'local', room: 'r', dir: '/worker', tag: 'w', lead: 'l', owner: 'o', share: 'intent', gen: 1, id: 'id', logDir: '/lead', isWorker: true }
+    expect(workerProcessEnv({ ...options, leadClone: '/lead/.git' }).ROOM_LEAD_CLONE).toBe('/lead/.git')
+    expect(workerProcessEnv(options).ROOM_LEAD_CLONE).toBeUndefined()
+    expect(workerEnv({ ROOM_LEAD_CLONE: '/grandlead/.git', KEEP: 'yes' }, {})).toEqual({ KEEP: 'yes' })
+  })
+
   it('accepts only a Codex thread-start event as a session id', () => {
     const id = '00000000-0000-0000-0000-000000000001'
     expect(codexSessionId(JSON.stringify({ type: 'thread.started', thread_id: id }))).toBe(id)

@@ -50,6 +50,8 @@ export function workerProcessEnv(options: {
   threads: number; memGb: number; host: WorkerHost; model?: string; effort?: string
   server: string; room: string; dir: string; tag: string; lead: string; owner: string
   share: string; gen: number; id: string; token?: string; logDir: string; isWorker: boolean; port?: number
+  /** The lead clone's real git common dir: a local worker joins only from a worktree of it. */
+  leadClone?: string
 }, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const caps: Record<string, string> = {}
   for (const key of WORKER_THREAD_CAPS) {
@@ -64,6 +66,7 @@ export function workerProcessEnv(options: {
     ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_GEN: String(options.gen), ROOM_WORKER_ID: options.id,
     ...(options.token ? { ROOM_TOKEN: options.token } : {}),
+    ...(options.leadClone ? { ROOM_LEAD_CLONE: options.leadClone } : {}),
     ROOM_LOG_FILE: path.join(options.logDir, '.room', 'workers', `${options.tag}.mcp.log`),
   }
 }
@@ -123,9 +126,9 @@ export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | 
  * ROOM_URL/ROOM_NAME/ROOM_DIR would send it into the lead's room under the lead's name, and the
  * lead's token, share level, tag or generation are the lead's, not the worker's. room_spawn sets
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
- * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
+ * ROOM_OWNER, ROOM_SHARE, ROOM_GEN, ROOM_LOG_FILE, ROOM_LEAD_CLONE and, when the lead joined with one, ROOM_TOKEN).
  */
-const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_GEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

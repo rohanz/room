@@ -13,7 +13,7 @@ import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type 
 import { AutoJoin } from './auto-join.js'
 import { joinableRoot } from './repository.js'
 import { gitCommonDir } from '@room/roomd'
-import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext } from './hooks-bridge.js'
+import { consumeHookDisclosure, consumeHookNotice, syncHookSeen, writePendingHookContext, noteHostTurnMetadata } from './hooks-bridge.js'
 import { resolveConfig, resolveSessionHost } from './config.js'
 import { SocketWakeRouter } from './wake-path.js'
 import { waitConsumesMessage } from './tools/messaging.js'
@@ -184,6 +184,7 @@ async function main() {
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }))
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    noteHostTurnMetadata(req.params._meta)
     const result = await binding.run(req.params, runtime => runtime.call(req, extra.signal))
     return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })

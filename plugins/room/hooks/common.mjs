@@ -225,3 +225,56 @@ export function containsPath(parent, child) {
 export function coversPath(a, b) {
   return containsPath(a, b) || containsPath(b, a)
 }
+
+/** A session id Room will name a receipt after: bounded, printable. Anything else gets no receipt. */
+export function receiptSessionId(id) {
+  return typeof id === 'string' && id.length > 0 && id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(id) ? id : undefined
+}
+/** One before-edit receipt per session, named by a hash of its id, so no session ever rewrites another's. */
+export function hookReceiptFile(stateDir, sessionId) {
+  return path.join(stateDir, 'room-hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
+}
+const RECEIPT_MAX_AGE_MS = 7 * 86400_000
+const RECEIPT_PRUNE_EVERY_MS = 10 * 60_000
+const RECEIPT_PRUNE_SCAN = 500
+/**
+ * Record this session's before-edit receipt (throttled to one write per 5 s) with a temp file and a rename in
+ * the receipts directory: no read-modify-write of shared state, no lock, no wait. At most every ten minutes,
+ * remove receipts older than a week, looking at no more than 500 entries. Never throws.
+ */
+export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
+  const sessionId = receiptSessionId(rawId)
+  if (!sessionId) return false
+  const file = hookReceiptFile(stateDir, sessionId)
+  const dir = path.dirname(file)
+  try {
+    const last = JSON.parse(fs.readFileSync(file, 'utf8'))?.at
+    if (typeof last === 'number' && last <= now && now - last < 5000) return false
+  } catch { /* first receipt, or unreadable: write one */ }
+  const temp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(temp, JSON.stringify({ sessionId, at: now }))
+    fs.renameSync(temp, file)
+  } catch {
+    try { fs.rmSync(temp, { force: true }) } catch { /* best effort */ }
+    return false
+  }
+  pruneHookReceipts(dir, now)
+  return true
+}
+export function pruneHookReceipts(dir, now = Date.now()) {
+  const marker = path.join(dir, '.pruned')
+  try { if (now - fs.statSync(marker).mtimeMs < RECEIPT_PRUNE_EVERY_MS) return } catch { /* never pruned */ }
+  let handle
+  try {
+    fs.writeFileSync(marker, '')
+    handle = fs.opendirSync(dir)
+    for (let seen = 0, entry; seen < RECEIPT_PRUNE_SCAN && (entry = handle.readSync()); seen++) {
+      if (!entry.isFile() || !/\.(json|tmp)$/.test(entry.name)) continue
+      const file = path.join(dir, entry.name)
+      try { if (now - fs.statSync(file).mtimeMs > (entry.name.endsWith('.tmp') ? 3600_000 : RECEIPT_MAX_AGE_MS)) fs.rmSync(file, { force: true }) } catch { /* raced */ }
+    }
+  } catch { /* best effort */ }
+  finally { try { handle?.closeSync() } catch { /* already closed */ } }
+}

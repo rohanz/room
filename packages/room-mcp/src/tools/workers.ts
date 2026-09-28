@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
-import { parseShare } from '@room/roomd'
+import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerId, workerIdBase, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
@@ -31,6 +31,10 @@ function missingBriefPaths(task: string, leadDir: string, workerDir: string): st
     if (fs.existsSync(source) && !fs.existsSync(target)) paths.add(rel)
   }
   return [...paths].sort()
+}
+/** Worktrees of one clone share its git common dir (and so its local relay); a folder outside any repository shares nothing. */
+async function sameClone(a: string, b: string): Promise<boolean> {
+  try { return await realGitCommonDir(a) === await realGitCommonDir(b) } catch { return false }
 }
 
 export const defs: ToolDef[] = [
@@ -59,8 +63,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const myId = ctx.config?.workerId, gen = ctx.config?.gen
       const stale = !!asWorker && (myId ? asWorker.id !== undefined && asWorker.id !== myId : !!gen && asWorker.gen !== undefined && String(asWorker.gen) !== gen)
       if (asWorker) {
-        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary, finishedAt: now() }, asWorker.id)
-        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
+        if (!stale) s.room.updateWorker(asWorker.tag, { status: 'done', summary, finishedAt: now(), noReport: undefined }, asWorker.id)
+        s.room.post<DoneMsg>(s.me, { type: 'done', tag: asWorker.tag, ...(myId || !stale ? { workerId: myId ?? asWorker.id } : {}), summary: stale ? `${summary} (from an earlier generation of ${asWorker.tag}; the current worker's record was left alone)` : summary, changed: s.room.changedPaths(s.me.name), to: asWorker.lead, priority: 'notify' })
       } else {
         s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
       }
@@ -148,6 +152,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const inside = path.relative(s.dir, dir)
           outside = inside.startsWith('..') || path.isAbsolute(inside)
           if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
+          // A local room lives in this clone's git dir: a worker in another repository would host a second room of the same name.
+          if (s.local && !await sameClone(s.dir, dir)) return `error: ${dir} is another repository; a worker there cannot join this local room. Start a lead in ${dir} instead: its room is that repository's own local room, and give your human that room's link.`
           try { branch = (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = '?' }
         } else {
           try {

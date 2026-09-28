@@ -1,5 +1,6 @@
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
+import { realGitCommonDir } from '@room/roomd'
 import type { Session } from './session.js'
 import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
@@ -53,10 +54,12 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
     const port = reservation.port
     const portChanged = command.mode === 'resume' && port !== command.oldPort
+    // Without it (s.dir is no repository) the worker joins as an older lead's worker does.
+    const leadClone = await realGitCommonDir(s.dir).catch(() => undefined)
     const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
-      share: policy.share, gen: policy.gen, id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker })
+      share: policy.share, gen: policy.gen, id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, leadClone })
     const niceEnv = command.mode === 'resume'
       ? { ...process.env, ROOM_WORKER_NICE: String(policy.budget.nice) }
       : process.env

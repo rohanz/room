@@ -74,6 +74,15 @@ it('nests active and failed workers, collapses archives, and counts active in bo
   expect(people.querySelector<HTMLDetailsElement>('.finished-workers')!.open).toBe(true)
 })
 
+it('shows a done worker without a report in both worker cards', () => {
+  const { room, conn } = setup()
+  room.workers.set('quiet', { ...worker('quiet', 'done'), noReport: true, summary: 'ended without a report; last lines of its log: (empty log)' })
+  const people = participantsPanel(conn, createFocusState()), board = boardPanel(conn, vi.fn())
+  document.body.append(people, board)
+  expect(people.textContent).toContain('ended without a report')
+  expect(board.querySelector('.worker-children .participant-line')?.textContent).toContain('ended without a report')
+})
+
 it('bounds timeline and merge controls while retaining older filters and scope context', () => {
   const { room, conn } = setup()
   room.retireParticipant('Lead+archived', retired('archived'))

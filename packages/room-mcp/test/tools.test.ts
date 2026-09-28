@@ -1324,3 +1324,38 @@ it('omits caches and Room files from preview omissions but keeps requested-artif
     await t.tools.shutdown(); t.session?.awareness.destroy()
   }
 })
+
+it('puts an installed-version warning above connected and offline room_state output', async () => {
+  const t = setup()
+  const warning = 'this session runs Room 0.13.0; 0.16.36 is installed. Restart the session or reconnect Room (/mcp) to use it.'
+  const tools = createTools({ getSession: () => t.session, setSession: () => {}, cwd: dir, staleVersionWarning: () => warning })
+  try {
+    expect((await tools.call('room_state', {})).split('\n')[0]).toBe(warning)
+    t.session!.provider.wsconnected = false
+    expect((await tools.call('room_state', {})).split('\n')[0]).toBe(warning)
+  } finally { await tools.shutdown(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('puts an installed-version warning above a not-joined room_state reply only', async () => {
+  const warning = 'this session runs Room 0.13.0; 0.16.36 is installed. Restart the session or reconnect Room (/mcp) to use it.'
+  const staleVersionWarning = vi.fn(() => warning)
+  const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: dir, staleVersionWarning })
+  try {
+    const state = await tools.call('room_state', {})
+    expect(state).toBe(`${warning}\nerror: not in a room. room_join if a teammate has opened this repo, room_create otherwise.`)
+    expect(staleVersionWarning).toHaveBeenCalledOnce()
+    expect(await tools.call('room_send', { type: 'note', text: 'hello' })).toBe('error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.')
+    expect(staleVersionWarning).toHaveBeenCalledOnce()
+  } finally { await tools.shutdown() }
+})
+
+it('puts an installed-version warning above a repository-problem room_state reply', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'room-not-repo-'))
+  const warning = 'this session runs Room 0.13.0; 0.16.36 is installed. Restart the session or reconnect Room (/mcp) to use it.'
+  const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: folder, staleVersionWarning: () => warning })
+  try {
+    const state = await tools.call('room_state', {})
+    expect(state.split('\n')[0]).toBe(warning)
+    expect(state).toContain(`Room works inside a git repository, and ${folder} isn't one.`)
+  } finally { await tools.shutdown(); rmSync(folder, { recursive: true, force: true }) }
+})

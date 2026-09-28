@@ -4,7 +4,7 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { existsSync, mkdirSync, readFileSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -13,14 +13,14 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalRelay, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, assertValidParticipantName, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
+import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, normaliseWhere, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime, sessionMetadataPath } from './config.js'
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 import { acquireOwnedFile } from './owned-file.js'
@@ -449,7 +449,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
   if (chosen === LOCAL) {
-    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web })
+    // A worker dispatched into its lead's local room joins only from a worktree of its lead's clone (ROOM_LEAD_CLONE).
+    // A worker of an older lead, which names no clone, joins a running relay but never hosts that room.
+    const dispatched = !!config.workerId && normaliseWhere(process.env.ROOM_SERVER) === LOCAL
+    const leadClone = dispatched ? process.env.ROOM_LEAD_CLONE || undefined : undefined
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, web: config.web, leadClone, joinOnly: dispatched && !leadClone })
     session.shareWarning = config.shareWarning
     return session
   }
@@ -541,7 +545,7 @@ export function normalizeLocalRoomName(room: string): string {
 }
 
 /** Local mode: no server, no login. The clone's shared git dir hosts a relay; every worktree of the clone shares the room. */
-async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
+async function joinLocal(dir: string, opts: JoinOptions & { leadClone?: string; joinOnly?: boolean }): Promise<Session> {
   const roomName = opts.room !== undefined ? normalizeLocalRoomName(opts.room) : await localRoomName(dir, opts.localBranch)
   // A dispatched worker is named after its lead's verified owner (ROOM_OWNER), not this clone's git config.
   const owner = opts.name ?? await defaultName(dir)
@@ -552,7 +556,11 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
   const common = await gitCommonDir(dir)
-  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log }))
+  // Permanent: any relay here, running or not, would be this repository's room under the lead's room name.
+  if (opts.leadClone && realpathSync(common) !== opts.leadClone) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${opts.leadClone}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
+  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: opts.joinOnly }).catch(e => {
+    throw e instanceof NoLocalRelay ? new RoomdError(`your lead's room ${roomName} has no relay running for ${dir}, and a worker dispatched by an older Room lead cannot start one. It joins once the lead's session is back.`, 1) : e
+  }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, autoTagNote: string | undefined, refreshRuntime: () => void

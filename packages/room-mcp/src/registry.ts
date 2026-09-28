@@ -8,7 +8,7 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import type { DoneMsg, NoteMsg, Presence, Worker } from '@room/shared'
+import type { DoneMsg, NoteMsg, Presence, Worker, RoomDoc } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -87,13 +87,21 @@ function followUpAnswer(logFile: string, host: Worker['host'], runStart: number)
   return 'finished without a report'
 }
 
+function workerDoneReport(room: RoomDoc, w: Worker): DoneMsg | undefined {
+  const messages = room.messages()
+  const boundary = w.spawnedAfter ? messages.findIndex(m => m.id === w.spawnedAfter) : -1
+  return messages.slice(boundary + 1).filter((m): m is DoneMsg =>
+    m.type === 'done' && m.workerId === w.id && m.from === w.name && m.tag === w.tag && m.to === w.lead && m.at >= w.startedAt).at(-1)
+}
+
 /** A confirmed exit is recorded once, including when discovered after the lead restarts. */
 /** `unwitnessed`: a later lead found the recorded worker process gone, but cannot know why it stopped. */
 export async function finishWorkerProcess(s: Session, w: Worker, code: number | null, at = Date.now(), error?: string, unwitnessed = false): Promise<void> {
   const current = s.room.workers.get(w.tag)
   if (current !== w || w.exitCode !== undefined) return
   const resumedDone = w.status === 'running' && w.resumeLogStart !== undefined && code === 0 && !unwitnessed && !error && !w.stopReason && w.dismissedAt === undefined
-  const done = w.status === 'done' || resumedDone
+  const noReport = w.status === 'running' && w.resumeLogStart === undefined && code === 0 && !unwitnessed && !error && !w.stopReason && w.dismissedAt === undefined
+  const done = w.status === 'done' || resumedDone || noReport
   const exitCode = code ?? -1
   const logFile = path.join(s.dir, '.room', 'workers', `${w.tag}.log`)
   const tail = workerLogTail(logFile)
@@ -104,10 +112,11 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
     ...(stopReason ? { stopReason } : {}),
     ...(w.status !== 'running' ? {}
       : unwitnessed ? { status: stopReason ? 'dismissed' as const : 'failed' as const, summary: `stopped while no session of yours was running; ${stopReason ?? 'reason unknown'}; worktree: ${w.dir}; last lines of its log: ${tail || '(empty log)'}` }
-      : stopReason ? { status: 'dismissed' as const } : resumedDone ? { status: 'done' as const, summary }
+      : stopReason ? { status: 'dismissed' as const } : resumedDone ? { status: 'done' as const, summary, noReport: undefined }
+        : noReport ? { status: 'done' as const, noReport: true, summary: `ended without a report; last lines of its log: ${tail || '(empty log)'}` }
         : { status: 'failed' as const, summary: w.summary ?? error ?? 'process exited without room_done' }),
   }, w.id)
-  if (!done || resumedDone) {
+  if (!done || resumedDone || noReport) {
     // tools/state constructs Rooms: defer this dependency until all tool definitions are loaded.
     const { releaseClaimsOnDone } = await import('./tools/claims.js')
     const current = s.room.workers.get(w.tag)
@@ -116,6 +125,14 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
   }
   if (resumedDone) {
     s.room.post<DoneMsg>({ name: w.name, kind: 'agent' }, { type: 'done', tag: w.tag, summary: summary!, changed: s.room.changedPaths(w.name), to: w.lead, priority: 'notify' })
+  }
+  if (noReport) {
+    const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
+    const elapsed = seconds < 90 ? `${seconds} s after start` : `after ${Math.floor(seconds / 60)}m`
+    s.room.post<NoteMsg>({ name: 'room', kind: 'bot' }, {
+      type: 'note', to: w.lead, priority: 'notify',
+      text: `worker ${w.tag} ended without a report ${elapsed} (exit 0); last lines of its log: ${tail || '(empty log)'}`,
+    })
   }
   if (!unwitnessed && !w.stopReason && w.dismissedAt === undefined && (exitCode !== 0 || !done)) {
     const seconds = Math.max(0, Math.floor((at - w.startedAt) / 1000))
@@ -130,6 +147,7 @@ export async function finishWorkerProcess(s: Session, w: Worker, code: number | 
 export class Rooms {
   private entries = new Map<Session, { role: Role; attachment?: Attachment }>()
   private tracked = new WeakSet<Session>()
+  private reportObservers = new Map<Session, () => void>()
   /** Processes this MCP instance started, by worker id. A lead that restarted only has the pid in the doc. */
   private handles = new Map<string, { proc: SpawnedProcess; session: Session }>()
   private exitWaiters = new Map<string, Set<() => void>>()
@@ -183,6 +201,20 @@ export class Rooms {
       } catch { /* an external checkout has no local carry record */ }
     }
     this.o.observeClaims(s)
+    const reconcile = () => {
+      for (const w of s.room.workers.values()) {
+        if (w.status !== 'done' || !w.noReport || w.resumeLogStart !== undefined || w.lead !== s.me.name) continue
+        const report = workerDoneReport(s.room, w)
+        const current = s.room.workers.get(w.tag)
+        if (report && current && current.id === w.id && current.gen === w.gen && current.startedAt === w.startedAt && current.noReport) {
+          s.room.updateWorker(w.tag, { summary: report.summary, noReport: undefined }, w.id)
+        }
+      }
+    }
+    s.room.bus.observe(reconcile)
+    s.room.workers.observe(reconcile)
+    this.reportObservers.set(s, () => { s.room.bus.unobserve(reconcile); s.room.workers.unobserve(reconcile) })
+    reconcile()
     const timer = setInterval(() => { void this.retireWorkers(s).catch(() => {}) }, 60_000)
     timer.unref()
     this.retirementTimers.set(s, timer)
@@ -199,6 +231,8 @@ export class Rooms {
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
 
   private stopRetirement(s: Session): void {
+    this.reportObservers.get(s)?.()
+    this.reportObservers.delete(s)
     clearInterval(this.retirementTimers.get(s))
     this.retirementTimers.delete(s)
     this.tracked.delete(s)
@@ -453,7 +487,7 @@ export class Rooms {
         { mode: 'resume', sessionId: w.hostSessionId!, followUp, oldPort: w.port }, launchLease,
         ({ proc, port, startedAt, processStartTime }) => !!s.room.updateWorker(w.tag, { pid: proc.pid, port, status: 'running',
           startedAt, spawnedAfter, processStartTime, resumeLogStart, exitCode: undefined, finishedAt: undefined,
-          dismissedAt: undefined, stopReason: undefined }, id)) }
+          dismissedAt: undefined, stopReason: undefined, noReport: undefined }, id)) }
         catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {

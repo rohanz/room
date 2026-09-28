@@ -1,4 +1,5 @@
 import { createHandlerState } from './state.js'
+import { createStaleVersionWarning } from '../stale-version.js'
 import { baseRecovery } from '../auto-join.js'
 import { repositoryProblem } from '../repository.js'
 import { hookHealthNote } from '../hooks-bridge.js'
@@ -48,6 +49,7 @@ const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {
+  const staleVersionWarning = ctx.staleVersionWarning ?? createStaleVersionWarning()
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
   if (initial) trackConnection(initial, state.now)
@@ -98,7 +100,8 @@ export function createTools(ctx: ToolCtx): Tools {
         workerOps.add(done)
         void done.then(() => workerOps.delete(done))
       }
-      try { return await withToolSignal(signal, async () => {
+      try {
+        const result = await withToolSignal(signal, async () => {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
@@ -145,7 +148,10 @@ export function createTools(ctx: ToolCtx): Tools {
           : `error: ${e.person}'s HEAD ${e.sha.slice(0, 10)} is not in this clone (${e.detail}); run git fetch, then retry; if it is still missing, ${e.person} has not pushed it yet`
         return `error: ${e instanceof Error ? e.message : String(e)}${baseRecovery(e)}`
       }
-      }) } finally { release?.() }
+        })
+        const warning = name === 'room_state' ? staleVersionWarning() : undefined
+        return warning ? `${warning}\n${result}` : result
+      } finally { release?.() }
     },
   }
 }

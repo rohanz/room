@@ -70,6 +70,8 @@ describe('shared room views', () => {
     ])
     const recovered = { ...worker, status: 'failed' as const, summary: 'stopped while no session of yours was running; reason unknown; worktree: /tmp/views; last lines of its log: model build failed' }
     expect(workerLine({ worker: recovered, changedCount: 2, now: 60_000 })[1]).toContain('worktree: /tmp/views; last lines of its log: model build failed')
+    const noReport = { ...worker, status: 'done' as const, noReport: true, summary: 'ended without a report; last lines of its log: an answer' }
+    expect(workerLine({ worker: noReport, changedCount: 2, now: 60_000 })[0]).toContain('ended without a report')
   })
 })
 

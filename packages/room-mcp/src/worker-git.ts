@@ -421,7 +421,9 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
     await run(['read-tree', 'HEAD'], UNKNOWN_WHOLE_TREE_PATHS)
     const unchanged = carriedUnchangedPaths(workerBaseline(w))
     const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map(p => ':(exclude,literal)' + p)]
-    await run(['add', '-A', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)
+    // Exclusions apply to the diff only: `git add` refuses any pathspec naming an ignored path, even an
+    // exclude, and a carried or linked path may lie under a directory the worker's .gitignore ignores.
+    await run(['add', '-A', '--', '.'], UNKNOWN_WHOLE_TREE_PATHS)
     const patch = await run(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS)
     if (!patch.length) return undefined
     // The recovery artifact is useful only if it applies to a fresh checkout of this base.

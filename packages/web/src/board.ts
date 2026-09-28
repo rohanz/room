@@ -42,7 +42,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
       const presence = raw.find(p => p.user.kind === 'agent') ?? raw[0]
       const share: ShareLevel = ['intent', 'declared', 'full'].includes(presence?.share) ? presence.share : 'full'
       const worker = [...conn.room.workers.values()].find(w => w.name === person.name)
-      const label = worker?.status === 'failed' ? 'failed' : personLine({ name: person.name, scope: person.scope, presences: input.presences, changedPaths: person.files, messages: messages.filter((m): m is NoteMsg => m.type === 'note'), share })
+      const label = worker?.status === 'failed' ? 'failed' : worker?.status === 'done' && worker.noReport ? 'ended without a report' : personLine({ name: person.name, scope: person.scope, presences: input.presences, changedPaths: person.files, messages: messages.filter((m): m is NoteMsg => m.type === 'note'), share })
       const name = h('button', { class: 'person-open mono', title: `Inspect ${named(person.name)}'s files`, onclick: () => inspect(person.name) }, named(person.name))
       const areas = [...new Set([...(person.scope?.areas ?? []), ...(person.scope ? [person.scope.area] : [])])]
       const last = lastMessage(person.name)

@@ -11,7 +11,7 @@ import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
 
-vi.mock('@room/relay', () => ({ ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
+vi.mock('@room/relay', async importOriginal => ({ ...await importOriginal<typeof import('@room/relay')>(), ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
 let dir: string
 const dispose: (() => void)[] = []
 beforeEach(() => {

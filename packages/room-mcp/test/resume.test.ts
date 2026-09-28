@@ -75,7 +75,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 describe('resumed worker boundaries', () => {
   it('returns a clean Codex follow-up to done, reports it to the lead, and allows collection', async () => {
     const t = setup()
-    t.seed('quiet', { host: 'codex', summary: 'initial work done' })
+    t.seed('quiet', { host: 'codex', summary: 'initial work done', noReport: true })
     const workerDir = t.room.workers.get('quiet')!.dir
     execFileSync('git', ['-C', t.dir, 'worktree', 'add', '-b', 'room/quiet', workerDir, 'HEAD'])
     expect(await t.tools.call('room_send', { type: 'note', to: 'quiet', text: 'check cleanup' })).toContain('resumed quiet')
@@ -87,6 +87,7 @@ describe('resumed worker boundaries', () => {
     ].join('\n'))
     t.exits[0](0)
     await vi.waitFor(() => expect(t.room.workers.get('quiet')).toMatchObject({ status: 'done', exitCode: 0, summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }))
+    expect(t.room.workers.get('quiet')?.noReport).toBeUndefined()
     await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done')).toMatchObject([{ from: 'rohanz+quiet', to: 'rohanz', tag: 'quiet', priority: 'notify', summary: 'initial work done (follow-up: Confirmed: nothing needs removing)' }]))
     expect(t.room.messages().filter(m => m.priority === 'interrupt')).toEqual([])
     const collected = await t.tools.call('room_collect', { tag: 'quiet' })
@@ -94,13 +95,16 @@ describe('resumed worker boundaries', () => {
     expect(collected).not.toContain('error:')
   })
 
-  it('still fails a fresh worker that exits zero without room_done', async () => {
+  it('marks a fresh worker that exits zero without room_done as done and collectable', async () => {
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')
     expect(t.room.workers.get('fresh')?.resumeLogStart).toBeUndefined()
+    writeFileSync(join(t.dir, '.room', 'workers', 'fresh.log'), 'one line\nlast useful line\n')
     t.exits[0](0)
-    await vi.waitFor(() => expect(t.room.workers.get('fresh')?.status).toBe('failed'))
-    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(t.room.workers.get('fresh')).toMatchObject({ status: 'done', noReport: true, exitCode: 0 }))
+    expect(t.room.workers.get('fresh')?.summary).toBe('ended without a report; last lines of its log: one line\nlast useful line')
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'note' && m.to === 'rohanz')).toMatchObject([{ priority: 'notify', text: expect.stringContaining('worker fresh ended without a report') }]))
+    expect(await t.tools.call('room_collect', { tag: 'fresh' })).not.toContain('skipped fresh')
   })
 
   it('fails a resumed nonzero exit with the death note', async () => {

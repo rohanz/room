@@ -218,7 +218,9 @@ Wake-ups: interrupts and questions addressed to you reach an idle Codex thread t
 - `room_collect(tag=..., discard=true)` stops and discards one worker. Process identity is
   checked before signalling a worker recovered after a lead restart.
 - `room_spawn dir=` outside the repo needs `allowOutside=true`; no worktree or branch
-  bookkeeping is done for it.
+  bookkeeping is done for it. In a local room a `dir` in another repository is refused (its
+  worker could only host a second room of the same name): start a lead in that repository
+  instead; team rooms keep allowing it.
 - Joining the team room on the choice remembered for a clone prints the same one-line
   visibility notice as an explicit join, once per worktree.
 - The bridge relays team plans, conflicts and base moves to workers as interrupts; scopes,

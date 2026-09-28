@@ -207,6 +207,15 @@ describe('AutoJoin (the ensure step)', () => {
     expect(t.reports[0]).toBe('Room could not join: no room for github.com/o/r/main yet; use room_join.')
   })
 
+  it('does not promise automatic retry for a permanent local join failure', async () => {
+    let calls = 0
+    const t = setup(async () => { calls++; throw new RoomdError('clone mismatch', 2) }, { local: true })
+    await t.a.ensure()
+    await t.a.ensure()
+    expect(calls).toBe(1)
+    expect(t.reports[0]).toBe('Room could not join the local room: clone mismatch; room_join to retry now.')
+  })
+
   it('a cancel ends a pending run at once, and a session that arrives afterwards is left', async () => {
     let finish!: (s: Session) => void
     const t = setup(() => new Promise(r => { finish = r }))

@@ -101,7 +101,7 @@ export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: str
 /** A declared plan changed: cancelled (released undone) or superseded by a new plan on the same symbol. Routed to everyone who was shown the original. */
 export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
 /** A worker finished its task; addressed to the lead that dispatched it. */
-export interface DoneMsg extends MsgBase { type: 'done'; tag: string; summary: string; changed: string[] }
+export interface DoneMsg extends MsgBase { type: 'done'; tag: string; workerId?: string; summary: string; changed: string[] }
 /** Extensible mapping from a bus kind to its payload. Add a member alongside its MessageKinds entry. */
 export interface MessageMap {
   claim: ClaimMsg
@@ -157,6 +157,8 @@ export interface Worker {
   spawnedAfter?: string
   status: WorkerStatus
   summary?: string
+  /** A witnessed clean exit without room_done; older clients can ignore this marker. */
+  noReport?: boolean
   /** Log byte offset when the current resumed run began; absent on fresh and legacy runs. */
   resumeLogStart?: number
   exitCode?: number

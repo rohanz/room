@@ -441,26 +441,73 @@ function missingPreEditGuidance(s: Session): string {
   return 'Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.'
 }
 
+/** This MCP process's start: receipts and edits before it belong to no session this process serves. */
+const PROCESS_STARTED_AT = Date.now()
+const codexTurnIds = new Set<string>()
+
+/** Record the Codex thread a tool call came from (`_meta["x-codex-turn-metadata"]`); one process can serve several. */
+export function noteHostTurnMetadata(meta: unknown): void {
+  const turn = meta && typeof meta === 'object' ? (meta as Record<string, unknown>)['x-codex-turn-metadata'] : undefined
+  if (!turn || typeof turn !== 'object') return
+  for (const key of ['session_id', 'thread_id', 'sessionId', 'threadId']) {
+    const id = (turn as Record<string, unknown>)[key]
+    if (typeof id === 'string' && /^[\w-]{1,128}$/.test(id) && !codexTurnIds.has(id)) {
+      if (codexTurnIds.size >= 32) codexTurnIds.delete(codexTurnIds.values().next().value!)
+      codexTurnIds.add(id)
+    }
+  }
+}
+
+export interface HookIdentity { ids: ReadonlySet<string>; startedAt: number }
+
+/**
+ * The host session ids this process serves, known only from the host itself: Claude's
+ * CLAUDE_CODE_SESSION_ID, or the Codex threads its tool calls named. Never room-session.json,
+ * which whichever session in the clone started last overwrites.
+ */
+export function ownHookIdentity(host: string, env: NodeJS.ProcessEnv = process.env): HookIdentity {
+  const ids = host === 'claude' ? new Set(env.CLAUDE_CODE_SESSION_ID ? [env.CLAUDE_CODE_SESSION_ID] : [])
+    : host === 'codex' ? new Set(codexTurnIds) : new Set<string>()
+  return { ids, startedAt: PROCESS_STARTED_AT }
+}
+
+/** The per-session receipt file the before-edit hook writes (plugins/room/hooks/common.mjs hookReceiptFile). */
+export function hookReceiptPath(dir: string, sessionId: string): string {
+  return path.join(path.dirname(gitStatePath(dir, 'room-hook-receipts')), 'room-hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
+}
+
+/** The newest before-edit receipt from one of `ids`: each id's own receipt file, else the single latest-receipt file. */
+function latestOwnReceipt(dir: string, ids: ReadonlySet<string>): number | undefined {
+  let latest: number | undefined
+  const take = (at: unknown) => { if (typeof at === 'number' && Number.isFinite(at) && (latest === undefined || at > latest)) latest = at }
+  for (const id of ids) {
+    if (id.length > 256 || /[\u0000-\u001f\u007f]/.test(id)) continue
+    try {
+      const receipt = JSON.parse(fs.readFileSync(hookReceiptPath(dir, id), 'utf8'))
+      if (receipt?.sessionId === id) take(receipt.at)
+    } catch { /* none yet, or an older hook script */ }
+  }
+  try {
+    const activity = JSON.parse(fs.readFileSync(gitStatePath(dir, 'room-hook-activity.json'), 'utf8'))
+    if (activity.event === 'PreToolUse' && ids.has(activity.session_id)) take(activity.at)
+  } catch { /* no receipt yet */ }
+  return latest
+}
+
 /** Diagnose Claude only after this host session has actually changed its own tree. */
-export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), tool?: string, team = !s.local): string {
+export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), tool?: string, team = !s.local, self?: HookIdentity): string {
   let health = hookHealth.get(s)
   if (!health) { health = newHookHealth(now); hookHealth.set(s, health) }
-  let sessionStartedAt = health.since
-  try {
-    const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
-    if (typeof session.at === 'number' && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at
-  } catch { /* use the first room-tool call as the session boundary */ }
-  try {
-    const activity = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-hook-activity.json'), 'utf8'))
-    const session = JSON.parse(fs.readFileSync(gitStatePath(s.dir, 'room-session.json'), 'utf8'))
-    if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now &&
-        (resolveSessionHost(s.dir) !== 'claude' || activity.at >= sessionStartedAt) &&
-        activity.session_id === session.session_id) health.observed = true
-  } catch { /* no receipt yet */ }
+  const host = resolveSessionHost(s.dir)
+  const { ids, startedAt } = self ?? ownHookIdentity(host)
+  // Advisory only: a process that cannot name its own session cannot tell our receipts from another session's.
+  if (!ids.size) return ''
+  const receipt = latestOwnReceipt(s.dir, ids)
+  if (receipt !== undefined && receipt <= now && receipt >= startedAt) health.observed = true
   if (!expected || health.observed || health.noted) return ''
   // Only Codex can skip an unapproved hook silently, so only Codex is told up front. Elsewhere the hook is silent
   // while the agent is alone, which an agent cannot tell from a missing hook: wait for the evidence below instead.
-  const upFront = team && resolveSessionHost(s.dir) === 'codex'
+  const upFront = team && host === 'codex'
   if (upFront && tool === 'room_join' && !health.joinNoted && !health.scopeNoted) {
     health.joinNoted = true
     return missingPreEditGuidance(s)
@@ -473,8 +520,8 @@ export function hookHealthNote(s: Session, expected: boolean, now = Date.now(), 
   if (!health.calls) health.since = now
   health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
-  if (resolveSessionHost(s.dir) === 'claude' &&
-      !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return ''
+  if (host === 'claude' &&
+      !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= startedAt)) return ''
   health.noted = true
   return missingPreEditGuidance(s)
 }
