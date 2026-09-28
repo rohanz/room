@@ -12,6 +12,7 @@ import { clearChoice, describeWhere, writeChoice } from '../choice.js'
 import { configureCredentials, getCredential, getPending, setPending } from '../credentials.js'
 import { LOCAL, logout as doLogout, pollLogin, refreshBrowserUrl, serverAuthConfig, startLogin } from '../session.js'
 import { SHARE, RO, RW, int, str, type Handler, type HandlerState, type ToolDef } from './context.js'
+import type { Ledger } from '../ledger.js'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers, publisherLine } from './share.js'
 import { exportRoomLedger } from '../prs.js'
@@ -68,20 +69,14 @@ export function pendingTeamSharingDisclosure(s: Session): string | undefined {
   return disclosures.get(s)?.pending
 }
 
-/** Mark a hook-delivered sentence so a later Room tool reply cannot repeat it. */
-export function markTeamSharingDisclosureDelivered(s: Session): void {
-  const state = disclosures.get(s) ?? {}
-  delete state.pending
-  state.delivered = true
-  disclosures.set(s, state)
-}
-
-/** One human disclosure per worktree and destination, including automatic and solo joins. */
-export async function teamSharingNote(s: Session): Promise<string | undefined> {
+/**
+ * One human disclosure per worktree and destination, including automatic and solo joins: a local notice
+ * (ledger MF10) that the next tool reply or hook hands off, receipted only after that handoff.
+ */
+export async function offerTeamSharingDisclosure(s: Session, ledger: Ledger): Promise<void> {
   await prepareTeamSharingDisclosure(s)
-  const note = pendingTeamSharingDisclosure(s)
-  if (note) markTeamSharingDisclosureDelivered(s)
-  return note
+  const sentence = pendingTeamSharingDisclosure(s)
+  if (sentence) ledger.notice('sharing', sentence)
 }
 
 /** Join s's room again as s did, without opening the repo again. */
@@ -89,20 +84,8 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
   return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token }
 }
 
-/** Filter earlier history while preserving a worker's post-spawn briefing from its lead. */
-export function markHistorySeenOnJoin(s: Session, seen: Set<string>): void {
-  const worker = s.room.workerOf(s.me.name)
-  const messages = s.room.messages()
-  const spawnIndex = messages.findIndex(m => m.id === worker?.spawnedAfter)
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i]
-    if (worker?.status === 'running' && i > spawnIndex && m.type === 'note' && (!m.to || m.to === s.me.name) && m.from === worker.lead && (m.priority === 'notify' || m.priority === 'interrupt')) continue
-    seen.add(m.id)
-  }
-}
-
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, seen, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
+  const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, evictStale, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
     const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
@@ -141,8 +124,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const cur = ctx.getSession()
       const currentReply = async () => {
         const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
-        const note = cur ? await teamSharingNote(cur) : undefined
-        return [note, sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
+        if (cur) await offerTeamSharingDisclosure(cur, ledger)
+        return [sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
       }
       if (cur && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
         return currentReply()
@@ -195,7 +178,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
-      markHistorySeenOnJoin(s, seen)
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
       if (stale || s.room.scope(s.me.name)) log(`cleared ${stale} stale claim(s) and scope from an earlier session`)
@@ -204,8 +186,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (base ${(s.room.meta.base ?? '?').slice(0, 10)}, clone ${s.dir})`]
       if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
-      const note = await teamSharingNote(s)
-      if (note) out.push(note)
+      await offerTeamSharingDisclosure(s, ledger)
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)
       if (presences(s).some(p => sameCheckoutSession(s, p.user.name))) out.push('another session in this checkout')
       const sameCheckoutNames = new Set(presences(s).filter(p => sameCheckoutSession(s, p.user.name)).map(p => p.user.name))
@@ -288,7 +269,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const repo = s.roomName.slice(0, s.roomName.lastIndexOf('/'))
       await closeWorkersRoom()
       cleanupMine(s, 'closing the room')
-      s.room.post<NoteMsg>(s.me, { type: 'note', text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: 'interrupt' })
+      await s.post<NoteMsg>(s.me, { type: 'note', text: `closing the room for ${repo}: every branch room and all shared work is being removed`, priority: 'interrupt' })
       rooms.remove(s)
       const closed = await doClose(s)
       await doLeave(s)
@@ -304,8 +285,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'seen' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'followBranch' | 'evictStale' | 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
-  const { ctx, log, doJoin, doLeave, seen, rooms, now, presences, runningWorkers } = deps
+export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'followBranch' | 'evictStale' | 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
+  const { ctx, log, doJoin, doLeave, rooms, now, presences, runningWorkers } = deps
   const blockedBranch = new WeakMap<Session, string>()
   const followBranch = async (): Promise<string> => {
       const s = ctx.getSession()
@@ -328,12 +309,9 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
       try {
         const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target })
         delete n.pinnedRoom
-        const stale = s.room.messages().filter(m => m.type === 'note' && m.from === 'room' && m.to === s.me.name && m.text.startsWith(`you switched to ${branch}; the room is for ${current};`)).map(m => m.id)
-        if (stale.length) { s.room.markSeen(s.me.name, stale); for (const id of stale) seen.add(id) }
         cleanupMine(s, `switched branch to ${branch}`)
         rooms.remove(s)
         await doLeave(s)
-        markHistorySeenOnJoin(n, seen)
         rooms.add(n, 'primary'); cleanupMine(n, 'stale from an earlier session')
         return `[room] your clone switched to branch ${branch}: left ${current}, joined ${target}. Scope and claims were reset; declare a scope before editing.`
       } catch (e) {
@@ -351,7 +329,7 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
         if (age === undefined || age < STALE_MS) continue
         const n = s.room.clearOverlays(person)
         const days = Math.round(age / 86_400_000)
-        s.room.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
+        void s.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
         log(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`)
         gone.push(person)
       }

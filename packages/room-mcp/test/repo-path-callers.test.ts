@@ -12,6 +12,11 @@ import { type HandlerState } from '../src/tools/context.js'
 import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/worker-git.js'
 import type { Session } from '../src/session.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -32,8 +37,8 @@ const cases = ['a\\b', 'a//b', 'a/./b', 'a/../b', '.git/config', 'a/.git/config'
 describe('collection path policy through room_collect copy', () => {
   it('rejects lexical variants and all link components', async () => {
     const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
-    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base })
-    const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, awareness: { getStates: () => new Map() } }
+    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base }, ignore)
+    const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, awareness: { getStates: () => new Map() } }
     await syncDocumentWorkers(session as Session)
     const state = { S: () => session, rooms: { all: () => [session], holdingWorker: () => session, reserve: () => true, unreserve() {}, retireWorkers: async () => {} }, workerAlive: () => false } as unknown as HandlerState
     const call = collectHandlers(state).room_collect
@@ -122,16 +127,16 @@ it('carry distinguishes contained, escaping, and absolute symlink leaves', async
 
 it('rollback recovery skips invalid recorded paths before writing them', async () => {
   const prepared = await prepareWorktree(lead, 'recover', 'lead')
-  const record = path.join(lead, '.git', 'room-carry', 'recover.json')
-  const realRm = fs.promises.rm.bind(fs.promises)
-  vi.spyOn(fs.promises, 'rm').mockImplementation((target, options) => {
-    if (String(target) === record) throw new Error('late failure')
-    return realRm(target, options)
-  })
   const invalid = ['../escape', 'a//b', 'a/./b', 'a/../b', '/tmp/nope']
   const w = { tag: 'recover', name: 'lead+recover', lead: 'lead', dir: prepared.dir, branch: prepared.branch,
     status: 'done', exitCode: 0, carriedUntracked: invalid.map(rel => ({ path: rel, sha: '0'.repeat(40) })) } as Worker
-  await expect(cleanupWorker(lead, w, true, true, [], { list: () => [] })).rejects.toThrow(/late failure/)
+  // Fail a late cleanup step (the carry record it used to delete is registry state since registry step 3).
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-failing-git-'))
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\ncase " $* " in *" branch -D room/recover "*) echo "late failure" >&2; exit 1;; esac\nexec /usr/bin/git "$@"\n', { mode: 0o755 })
+  const originalPath = process.env.PATH
+  process.env.PATH = bin + path.delimiter + originalPath
+  try { await expect(cleanupWorker(lead, w, true, true, [], { list: () => [] })).rejects.toThrow(/cleanup failed:.*late failure.*reconstructed base/) }
+  finally { process.env.PATH = originalPath; fs.rmSync(bin, { recursive: true, force: true }) }
   expect(fs.existsSync(path.join(lead, 'escape'))).toBe(false)
 })
 
@@ -141,7 +146,7 @@ describe('disk read paths', () => {
     const localState = { publishUnder: 'publisher', watchedDirectory: 'same', user: { name: 'lead', kind: 'agent' } }
     const peerState = { watchedDirectory: 'same', user: { name: 'publisher', kind: 'agent' } }
     const awareness = { clientID: 1, getLocalState: () => localState, getStates: () => new Map([[1, localState], [2, peerState]]), meta: new Map([[2, { lastUpdated: Date.now() }]]) }
-    const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness } as unknown as Session
+    const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness } as unknown as Session
     const state = { S: () => session, rooms: { holding: () => session }, withheld: () => undefined, liveText: async () => undefined, baseText: async () => undefined, baseFor: () => base, shareOf: () => 'full', ledgerLines: () => [], lines: () => 1 } as unknown as HandlerState
     const call = fileHandlers(state).room_read
     for (const rel of ['a/../b', '/tmp/nope']) await expect(call({ path: rel })).rejects.toThrow(/unsafe room path/)
@@ -151,7 +156,7 @@ describe('disk read paths', () => {
     fs.symlinkSync(path.join(root, 'outside'), path.join(lead, 'outside'))
     expect(await call({ path: 'inside' })).toContain('base')
     await expect(call({ path: 'outside' })).rejects.toThrow(/unsafe room symlink/)
-    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base })
+    room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base }, ignore)
     const actual = createHandlerState({ getSession: () => session, setSession() {}, cwd: lead })
     for (const rel of ['', 'a/../b', '/tmp/nope']) await expect(actual.liveText(session, rel, 'lead+w')).rejects.toThrow(/unsafe worker path/)
     for (const rel of ['a\\b', 'a//b', 'a/./b', 'a/.git/config']) await expect(actual.liveText(session, rel, 'lead+w')).resolves.toBeNull()
@@ -174,7 +179,7 @@ it('combined-tree preview reads contained link leaves and excludes escaping ones
   fs.symlinkSync('file.txt', path.join(lead, 'inside-link'))
   fs.symlinkSync(path.join(root, 'outside'), path.join(lead, 'outside-link'))
   const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base)
-  const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
+  const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
   const result = await buildCombinedTree(state, session, [], { diskOnly: true })
   expect(result.paths).toContain('inside-link')
@@ -191,8 +196,8 @@ it('refuses a worker root replaced by a symlink between files in one preview', a
   fs.writeFileSync(path.join(outside, 'b.txt'), 'outside b\n')
   const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
   room.setBaseOf('lead', base); room.setBaseOf('lead+w', base)
-  room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base })
-  const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness: { getStates: () => new Map() } } as unknown as Session
+  room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base }, ignore)
+  const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness: { getStates: () => new Map() } } as unknown as Session
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
   const parked = path.join(root, 'parked-worker')
   const read = fs.readFileSync.bind(fs)
@@ -225,7 +230,7 @@ it('combined-tree disk sites retain their lexical path cases', async () => {
   const preview = async (paths: string[]) => {
     const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base); room.setBaseOf('peer', base)
     for (const rel of paths) room.setOverlay('peer', rel, 'peer\n')
-    const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
+    const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
     const state = { rooms: { holding: () => session }, liveText: async () => 'peer\n', baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
     try { return await buildCombinedTree(state, session, [{ person: 'peer', session }]) }
     finally { room.doc.destroy() }

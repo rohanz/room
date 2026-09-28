@@ -11,11 +11,17 @@ import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
-import { markHistorySeenOnJoin } from '../src/tools/join.js'
+import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+import { hubAppend } from '@room/shared/testing'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 const scratch: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -38,7 +44,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const session = {
     room, awareness, me, dir, roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x',
-    provider: { synced: true, awareness },
+    ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
     daemon: { touch() {}, async stop() {}, share: 'full', dir, name: me.name, roomDoc: room, branch: 'main' },
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
@@ -69,7 +75,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
       hostSessionId: '550e8400-e29b-41d4-a716-446655440000',
       budget: { threads: 1, memGb: 1, nice: 0 }, task: 'test', dir: workerDir,
       branch: `room/${tag}`, pid: -1, startedAt: 1, status: 'done', exitCode: 0, gen: 1, ...patch,
-    })
+    }, ignore)
   }
   return { dir, room, session, tools, specs, spawned, exits, errors, kills, logs, seed, portFile: (port: number) => join(dir, 'room', 'ports', String(port)) }
 }
@@ -96,7 +102,7 @@ describe('resumed worker boundaries', () => {
 
   it('records the newest bus message as the worker spawn marker', async () => {
     const t = setup()
-    const before = t.room.post(t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
+    const before = hubAppend(t.room, t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
     expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
     expect(t.room.workers.get('briefed')?.spawnedAfter).toBe(before.id)
   })
@@ -104,16 +110,16 @@ describe('resumed worker boundaries', () => {
   it('advances the briefing boundary when a finished worker resumes', async () => {
     const t = setup()
     t.seed('briefed')
-    const between = t.room.post(t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
+    const between = hubAppend(t.room, t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
     expect(await t.tools.call('room_send', { type: 'note', to: 'briefed', text: 'continue' })).toContain('resumed briefed')
     const worker = t.room.workers.get('briefed')!
     expect(worker.spawnedAfter).toBe(between.id)
-    const after = t.room.post(t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })
+    const after = hubAppend(t.room, t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })
     const joined = { ...t.session, me: { name: worker.name, kind: 'agent' as const } } as Session
-    const seen = new Set<string>()
-    markHistorySeenOnJoin(joined, seen)
-    expect(seen.has(between.id)).toBe(true)
-    expect(seen.has(after.id)).toBe(false)
+    // The resumed worker's cursor starts at its new spawn marker: later broadcasts are owed, earlier ones are not.
+    const owed = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) }).candidates(joined).map(m => m.id)
+    expect(owed).not.toContain(between.id)
+    expect(owed).toContain(after.id)
   })
 
   it.each([

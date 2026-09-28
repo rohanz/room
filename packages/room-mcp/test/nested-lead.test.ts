@@ -23,6 +23,8 @@ import { syncDocumentWorkers } from './registry-fixture.js'
 import { type SpawnSpec } from '../src/worker-process.js'
 import { createFocusState, participantsPanel } from '../../web/src/panels.ts'
 import type { Conn } from '../../web/src/conn.ts'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
 
 vi.mock('../src/tools/claims.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/tools/claims.js')>(),
@@ -99,7 +101,7 @@ describe('nested lead: a worker that leads workers', () => {
     const room = new RoomDoc(new Y.Doc())
     const human: Identity = { name: HUMAN, kind: 'agent', owner: HUMAN }
     const leadMe: Identity = { name: LEAD, kind: 'agent', owner: HUMAN, label: 'lead' }
-    const msg = room.post<NoteMsg>(human, { type: 'note', to: LEAD, text: 'also add a comment to api/reports.py' })
+    const msg = hubAppend<NoteMsg>(room, human, { type: 'note', to: LEAD, text: 'also add a comment to api/reports.py' })
     expect(messageForMe(leadMe, msg)).toBe(true) // delivered to the inbox today
     expect({
       endsWait: messageEndsWait(msg, { me: LEAD }),
@@ -210,7 +212,7 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   const base = git(dir, 'rev-parse', 'HEAD')
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Ftop%2Fshop', roomName: 'local/top/shop', browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'shop', base } as never,
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },

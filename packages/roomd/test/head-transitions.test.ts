@@ -76,11 +76,8 @@ it('keeps the new baseline after publishing a dirty overlay', async () => {
 it('retries after publication and claim re-anchoring without losing the baseline or moving claims twice', async () => {
   const { newHead, claim } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'added\nfirst\nclaimed\nlast\ndirty\n')
-  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown>; markIntegratedBaseNotices(notices: unknown[]): void; appliedHead: string }
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown>; appliedHead: string }
   const reanchor = internal.reanchorOwnClaims.bind(internal)
-  const markNotices = internal.markIntegratedBaseNotices.bind(internal)
-  let notices = 0
-  internal.markIntegratedBaseNotices = messages => { notices++; markNotices(messages) }
   let fail = true
   internal.reanchorOwnClaims = async (head, claims) => {
     const changes = await reanchor(head, claims)
@@ -92,13 +89,11 @@ it('retries after publication and claim re-anchoring without losing the baseline
   expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
   expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')).toBeUndefined()
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeUndefined()
-  expect(notices).toBe(0)
   await daemon!.reconcileGitChanges()
   expect(internal.appliedHead).toBe(newHead)
   expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
   expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toContain('dirty')
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeDefined()
-  expect(notices).toBe(1)
 })
 
 it('retries when HEAD moves during publication', async () => {

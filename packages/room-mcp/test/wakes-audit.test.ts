@@ -2,9 +2,15 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, type Worker } from '@room/shared'
 import { Rooms } from '../src/registry.js'
+import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createInbox, handlers } from '../src/tools/messaging.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam } from './fixtures/hub.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(f => f()); vi.useRealTimers() })
@@ -15,7 +21,7 @@ function fixture() {
     const room = new RoomDoc(), awareness = new Awareness(room.doc)
     awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
     const s = { room, awareness, roomName, me: { name: 'lead', kind: 'agent' }, local: true,
-      provider: { synced: true }, daemon: { touch: vi.fn() } } as unknown as Session
+      ...hubSeam(room), provider: { synced: true }, daemon: { touch: vi.fn() } } as unknown as Session
     sessions.push(s)
     return s
   }
@@ -25,7 +31,7 @@ function fixture() {
     S: () => main, rooms, now: () => Date.now(), myWorkers: (s: Session) => Array.from(s.room.workers.values()),
     workerAlive: () => true, presences: (s: Session) => Array.from(s.awareness.getStates().values()),
     upgrade: async () => [], setPresence: vi.fn(), forMe: (s: Session, m: { to?: string }) => m.to === s.me.name,
-    seen: new Set<string>(), scheduleInboxWrite: vi.fn(), mine: () => [], msgInMyAreas: () => false,
+    ledger: new Ledger({ sessionId: () => 'test-session', route: () => ({}) }), scheduleInboxWrite: vi.fn(), mine: () => [], msgInMyAreas: () => false,
     others: () => [], upgraded: new Set<string>(), log: vi.fn(),
   } as unknown as HandlerState
   cleanups.push(() => sessions.forEach(s => { rooms.remove(s); s.awareness.destroy(); s.room.doc.destroy() }))
@@ -41,7 +47,7 @@ it('accepts message as an alias for room_send text', async () => {
 
 it('infers the asker for an explicit inReplyTo when to is omitted', async () => {
   const { main, tools } = fixture()
-  const question = main.room.post({ name: 'worker', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
+  const question = hubAppend(main.room, { name: 'worker', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
   main.room.colors.set('worker', 0)
   const sent = await tools.room_send({ type: 'answer', inReplyTo: question.id, text: 'price_cents' })
   expect(sent).toContain('price_cents')
@@ -52,10 +58,10 @@ it('refuses an explicit inReplyTo when the question is already answered, without
   const { main, rooms, tools } = fixture()
   const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
     branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker)
-  const answered = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
-  main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: answered.id, text: 'Yes' })
-  const open = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  main.room.setWorker(worker, ignore)
+  const answered = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
+  hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: answered.id, text: 'Yes' })
+  const open = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const resume = vi.spyOn(rooms, 'resumeWorker')
   const sent = await tools.room_send({ type: 'answer', to: 'money', inReplyTo: answered.id, text: 'Again' })
   expect(sent).toContain(`invalid inReplyTo ${answered.id}`)
@@ -68,9 +74,9 @@ it('refuses an explicit inReplyTo addressed to someone else, without resuming or
   const { main, rooms, tools } = fixture()
   const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
     branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker)
-  const wrong = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'someone-else', text: 'Private question?' })
-  const open = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  main.room.setWorker(worker, ignore)
+  const wrong = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'someone-else', text: 'Private question?' })
+  const open = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const resume = vi.spyOn(rooms, 'resumeWorker')
   const sent = await tools.room_send({ type: 'answer', to: 'money', inReplyTo: wrong.id, text: 'price_cents' })
   expect(sent).toContain(`invalid inReplyTo ${wrong.id}`)
@@ -85,8 +91,8 @@ it('validates explicit question and note replies without answering a question wi
   main.room.colors.set('Ada', 0)
   main.room.colors.set('Bea', 0)
   main.room.colors.set('Cara', 0)
-  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
-  const note = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'note', to: 'lead', text: 'For context' })
+  const question = hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const note = hubAppend(main.room, { name: 'Bea', kind: 'agent' }, { type: 'note', to: 'lead', text: 'For context' })
   const wrongQuestion = await tools.room_send({ type: 'answer', to: 'Bea', inReplyTo: question.id, text: 'price_cents' })
   expect(wrongQuestion).toContain(`invalid inReplyTo ${question.id}`)
   expect(wrongQuestion).toContain(`${question.id}: Which field?`)
@@ -98,7 +104,7 @@ it('validates explicit question and note replies without answering a question wi
   expect(main.room.messages().filter(m => m.type === 'answer')).toHaveLength(0)
   expect(main.room.messages().some(m => m.id === question.id)).toBe(true)
 
-  const unaddressed = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'note', to: 'Cara', text: 'Private context' })
+  const unaddressed = hubAppend(main.room, { name: 'Bea', kind: 'agent' }, { type: 'note', to: 'Cara', text: 'Private context' })
   expect(await tools.room_send({ type: 'note', to: 'Bea', inReplyTo: unaddressed.id, text: 'Thanks' }))
     .toBe(`error: inReplyTo ${unaddressed.id} must name a note addressed to you`)
   expect(await tools.room_send({ type: 'note', to: 'Ada', inReplyTo: note.id, text: 'Thanks' }))
@@ -109,15 +115,15 @@ it('validates explicit question and note replies without answering a question wi
 it('refuses an implicit answer when no unanswered question matches the recipient', async () => {
   const { main, tools } = fixture()
   main.room.colors.set('Ada', 0)
-  const answered = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
-  main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: 'Ada', inReplyTo: answered.id, text: 'Yes' })
+  const answered = hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Already handled?' })
+  hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: 'Ada', inReplyTo: answered.id, text: 'Yes' })
   expect(await tools.room_send({ type: 'answer', to: 'Ada', text: 'Again' })).toBe('error: answer requires inReplyTo; no unanswered question from Ada addressed to you')
 })
 
 it('answers the only unanswered question from the recipient and names it in the reply', async () => {
   const { main, tools } = fixture()
   main.room.colors.set('Ada', 0)
-  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const question = hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const sent = await tools.room_send({ type: 'answer', to: 'Ada', text: 'price_cents' })
   expect(sent).toContain(`answered ${question.id}`)
   expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'Ada', inReplyTo: question.id, text: 'price_cents' })
@@ -125,7 +131,7 @@ it('answers the only unanswered question from the recipient and names it in the 
 
 it('infers the recipient when one unanswered question exists and to is omitted', async () => {
   const { main, tools } = fixture()
-  const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Ready?' })
+  const question = hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Ready?' })
   const sent = await tools.room_send({ type: 'answer', text: 'Yes' })
   expect(sent).toContain(`answered ${question.id}`)
   expect(main.room.messages().at(-1)).toMatchObject({ type: 'answer', to: 'Ada', inReplyTo: question.id })
@@ -133,8 +139,8 @@ it('infers the recipient when one unanswered question exists and to is omitted',
 
 it('lists multiple unanswered questions with previews when inReplyTo is omitted', async () => {
   const { main, tools } = fixture()
-  const first = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
-  const second = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'x'.repeat(100) })
+  const first = hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  const second = hubAppend(main.room, { name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'x'.repeat(100) })
   const sent = await tools.room_send({ type: 'answer', text: 'The answer' })
   expect(sent).toContain('error: answer requires inReplyTo')
   expect(sent).toContain(`${first.id}: Which field?`)
@@ -147,12 +153,12 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
   const { main, rooms, tools } = fixture()
   const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
     branch: 'room/money', pid: 1, startedAt: 1, status: 'done', exitCode: 0 }
-  main.room.setWorker(worker)
-  const question = main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  main.room.setWorker(worker, ignore)
+  const question = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt) => {
     expect(prompt).toBe('price_cents')
-    if (change === 'answered') main.room.post({ name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
-    else main.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
+    if (change === 'answered') hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
+    else hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
     return 'resumed money'
   })
   const sent = await tools.room_send({ type: 'answer', to: 'money', text: 'price_cents' })
@@ -167,10 +173,9 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
 it('finds a read answer sent before room_wait even if another room holds the question', async () => {
   const { main, rooms, makeSession, state, tools } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
-  const question = workers.room.post({ name: 'lead', kind: 'agent' }, { type: 'question', to: 'worker', text: 'which field?' })
-  const answer = main.room.post({ name: 'worker', kind: 'agent' }, { type: 'answer', to: 'lead', inReplyTo: question.id, text: 'price_cents' })
-  state.seen.add(answer.id)
-  main.room.markSeen('lead', [answer.id]) // another room_state already showed the answer
+  const question = hubAppend(workers.room, { name: 'lead', kind: 'agent' }, { type: 'question', to: 'worker', text: 'which field?' })
+  const answer = hubAppend(main.room, { name: 'worker', kind: 'agent' }, { type: 'answer', to: 'lead', inReplyTo: question.id, text: 'price_cents' })
+  main.room.markSeen('lead', [answer.id], { s: 'earlier-session', via: 'reply' }) // another room_state already showed the answer
   expect(await tools.room_wait({ questionId: question.id, timeoutMs: 10 })).toContain('price_cents')
   expect(main.room.seen('lead').has(answer.id)).toBe(true)
 })
@@ -188,9 +193,9 @@ it('surfaces an addressed worker question before a routine note while waiting', 
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
   const worker: Worker = { tag: 'money', name: 'lead+money', lead: 'lead', host: 'codex', task: 't', dir: '/tmp/money',
     branch: 'room/money', pid: 1, startedAt: 1, status: 'running' }
-  workers.room.setWorker(worker)
-  main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
-  workers.room.post({ name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
+  workers.room.setWorker(worker, ignore)
+  hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
+  hubAppend(workers.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
   const result = await tools.room_wait({ timeoutMs: 10 })
   expect(result).toContain('question from a worker')
   expect(result).toContain('answer it with room_send type=answer inReplyTo=')
@@ -202,8 +207,8 @@ it.each([false, true])('keeps the second same-tick question unread during a wait
   if (workersRoom) rooms.add(source, 'workers')
   const waiting = tools.room_wait({ timeoutMs: 1000 })
   await vi.waitFor(() => expect(state.setPresence).toHaveBeenCalledWith(main, { status: 'waiting' }))
-  const a = source.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'first?' })
-  const b = source.room.post({ name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'second?' })
+  const a = hubAppend(source.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'first?' })
+  const b = hubAppend(source.room, { name: 'Bea', kind: 'agent' }, { type: 'question', to: 'lead', text: 'second?' })
   expect(await waiting).toContain('first?')
   expect(source.room.seen('lead').has(a.id)).toBe(true)
   expect(source.room.seen('lead').has(b.id)).toBe(false)
@@ -214,9 +219,9 @@ it('puts an unread worker question ahead of notes with a clear reply instruction
   const { main, rooms, makeSession, state } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
   state.inbox = createInbox(state).inbox
-  main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
-  const q = workers.room.post({ name: 'lead+money', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
-  const block = state.inbox(main)
+  hubAppend(main.room, { name: 'Ada', kind: 'agent' }, { type: 'note', to: 'lead', text: 'routine' })
+  const q = hubAppend(workers.room, { name: 'lead+money', kind: 'agent' }, { type: 'question', to: 'lead', text: 'which field?' })
+  const block = state.inbox(main, state.ledger.open('reply'))
   expect(block).toContain('QUESTION FOR YOU')
   expect(block.indexOf('QUESTION FOR YOU')).toBeLessThan(block.indexOf('routine'))
   expect(block).toContain(`room_send type=answer inReplyTo=${q.id}`)

@@ -8,6 +8,7 @@ import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
 
 let root: string, repo: string, head: string
 const shutdowns: (() => Promise<void>)[] = []
@@ -35,7 +36,7 @@ function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, s
   const graph = new GraphIndex(room, me.name, repo); graph.start()
   let session: Session | null = {
     graph, room, awareness, me, dir: repo, roomName, roomUrl: `ws://127.0.0.1:1/${encodeURIComponent(roomName)}`, browserUrl: 'http://x',
-    provider: { synced: true, awareness } as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as Session['provider'],
     daemon: { share: 'full', touch() {}, async stop() {}, dir: repo, name: me.name, roomDoc: room, provider: null, branch: 'main', base: head } as never,
     shareMax: 'full', shareRequested: 'full', local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
   } as Session

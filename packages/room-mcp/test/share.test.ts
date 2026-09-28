@@ -12,6 +12,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = COMMITTED.replace('return 2', 'return 22')
@@ -54,7 +55,7 @@ function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: Sh
   const session: Session = {
     policyStore,
     graph, room: a, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(a), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: daemon as unknown as Session['daemon'],
     shareMax: opts.shareMax ?? 'full',
     local: { url: 'ws://x' } as Session['local'],

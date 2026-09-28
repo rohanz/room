@@ -6,11 +6,12 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
+import { RoomDoc, participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
 import { claimDigest } from '../src/reanchor.js'
 import { markManifestIncomplete } from '../src/manifest-publish.js'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 import { pollHead } from './poll-head.js'
+import { hubAppend } from '@room/shared/testing'
 
 vi.setConfig({ testTimeout: 30_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
@@ -70,10 +71,13 @@ async function world(options: { local?: boolean } = {}) {
   const server = new Y.Doc()
   room.connect(server)
   const start = async (extra: Partial<RoomdOptions> = {}, at = dir) => {
+    // The daemon's automatic posts, standing in for the hub: appended at once to its own doc.
+    let own!: RoomDoc
     const daemon = await startRoomd({ policy: policyFromLevel('full'),
       dir: at, room: `ws://memory/${encodeURIComponent(options.local ? 'local/repo' : 'github.com/owner/repo/rehearsal')}`,
       ...(options.local ? { localKey: 'test-local-key' } : {}),
-      name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => room.connect(doc),
+      name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => { own = new RoomDoc(doc); return room.connect(doc) },
+      post: (from, body, opts) => hubAppend(own, from, body, opts.id ? { id: opts.id } : {}),
       basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, ...extra,
     })
     daemons.push(daemon)
@@ -226,7 +230,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect((daemon as unknown as { stopped: boolean }).stopped).toBe(false)
   })
 
-  it('writes the record, claim moves and pushed in one transaction', async () => {
+  it('writes the record and claim moves in one transaction, then posts pushed by id through the hub', async () => {
     const w = await world()
     const daemon = await w.start()
     const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
@@ -234,13 +238,13 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
     const together: boolean[] = []
     daemon.roomDoc.doc.on('afterTransaction', (tr: Y.Transaction) => {
-      if (tr.changed.has(daemon.roomDoc.participants)) together.push(tr.changed.has(daemon.roomDoc.claims) && tr.changed.has(daemon.roomDoc.bus))
+      if (tr.changed.has(daemon.roomDoc.participants)) together.push(tr.changed.has(daemon.roomDoc.claims) && !tr.changed.has(daemon.roomDoc.bus))
     })
     await poll(daemon)
     expect(together).toEqual([true])
     expect(daemon.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
     expect(git(daemon)).toMatchObject({ head: moved, base: moved })
-    expect(pushed(daemon)).toHaveLength(1)
+    expect(pushed(daemon)).toMatchObject([{ id: expect.stringMatching(/^pushed:Alice:/) }])
   })
 
   it('marks the manifest head incomplete before the transition\'s async work, until the whole transition succeeds', async () => {

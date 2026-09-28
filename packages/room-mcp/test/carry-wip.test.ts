@@ -16,6 +16,8 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/worker-git.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const CARRIED_SUBJECT = 'room: carried-in uncommitted work from rohanz'
@@ -79,7 +81,7 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: head } as never,
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },

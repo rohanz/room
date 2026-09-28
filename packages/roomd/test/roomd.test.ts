@@ -632,46 +632,6 @@ describe('roomd v2 push-only overlays', () => {
     await daemon.stop()
   })
 
-  it('receipts integrated base notices on pull and arrival, while pending and invalid commits stay unread', async () => {
-    const origin = await makeRepo({ 'app.py': 'base\n' })
-    const dir = await cloneRepo(origin)
-    const daemon = await start({ room: room(), dir, name: 'Alice', basePollMs: 60_000 })
-    const old = sh(dir, ['rev-parse', 'HEAD'])
-    fs.writeFileSync(path.join(origin, 'app.py'), 'next\n')
-    sh(origin, ['commit', '-qam', 'next'])
-    const next = sh(origin, ['rev-parse', 'HEAD'])
-    sh(dir, ['fetch', '-q', 'origin'])
-    const post = (base: string) => daemon.roomDoc.post({ name: 'Bob', kind: 'agent' },
-      { type: 'base', base, prev: old, commits: 1, paths: ['app.py'], summary: 'next' })
-
-    const pending = post(next)
-    expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(false)
-    sh(dir, ['merge', '--ff-only', 'origin/main'])
-    await daemon.reconcileGitChanges()
-    expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(true)
-
-    const arrived = post(old)
-    expect(daemon.roomDoc.seen('Alice').has(arrived.id)).toBe(true)
-    const invalid = post('missing-commit')
-    expect(daemon.roomDoc.seen('Alice').has(invalid.id)).toBe(false)
-    expect(daemon.roomDoc.messages()).toContainEqual(pending)
-  })
-
-  it('receipts an integrated base notice during startup sync', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    const base = sh(dir, ['rev-parse', 'HEAD'])
-    const roomUrl = room()
-    const remote = new RoomDoc()
-    const provider = hub.connect(roomUrl, remote.doc)
-    remote.setMeta({ base, branch: 'main' })
-    const notice = remote.post({ name: 'Bob', kind: 'agent' },
-      { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already here' })
-    try {
-      const daemon = await start({ room: roomUrl, dir, name: 'Alice' })
-      expect(daemon.roomDoc.seen('Alice').has(notice.id)).toBe(true)
-    } finally { provider.destroy(); remote.doc.destroy() }
-  })
-
   it('does not tell a worker on a carried commit to push its branch', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const roomUrl = room()

@@ -75,7 +75,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
   const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
       const body = renderPrNote(s.room, { roomName: s.roomName, now: now() })
       const r = await postNote(s, pr.number, body)
-      s.room.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
+      await s.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
       return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`
     }
   return { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger }

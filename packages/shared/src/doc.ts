@@ -15,6 +15,7 @@ import type {
   MsgType,
   Outcome,
   Priority,
+  Receipt,
   Scope,
   Worker,
   RetiredWorker,
@@ -22,12 +23,13 @@ import type {
 } from './types.js'
 import { newId, PALETTE } from './identity.js'
 import type { GraphSnapshot } from './graph.js'
-import { ledger as ledgerView, areaSummary as areaSummaryView, emptyLedgerArchive, foldLedger, messageAreas, compactRetiredWorker, MAX_RETIRED_WORKERS, type LedgerArchive, type LedgerQuery } from './ledger.js'
+import { ledger as ledgerView, areaSummary as areaSummaryView, compactRetiredWorker, MAX_RETIRED_WORKERS, type LedgerQuery } from './ledger.js'
 
 type ScopeInput = Omit<Scope, 'by' | 'at'> & { at?: number }
 type NewScope = Omit<Scope, 'at'> & { at?: number }
-type PostBody<T extends Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> & { priority?: Priority }
-/** Appends the release notices of a cleared participant: `RoomDoc.post`, or the hub's sequenced append. */
+/** A message as its author writes it: the hub assigns `seq` and `at` (hub §2.3). */
+export type PostBody<T extends Msg = Msg> = Omit<T, 'id' | 'at' | 'from' | 'fromKind' | 'priority' | 'seq'> & { priority?: Priority }
+/** Posts the release notices of a cleared participant: a session's post seam (`auto`), or the hub's sequenced append. */
 export type ReleasePoster = (from: Identity, body: PostBody<ReleaseMsg>) => unknown
 const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
@@ -71,6 +73,11 @@ export function participantRecord(room: RoomDoc, name: string): ParticipantRecor
   const proj = room.participants.get(key('proj')) as ParticipantProjection | undefined
   if (!id && !holder && !git && !proj) return undefined
   return { ...(id ? { id } : {}), ...(holder ? { holder } : {}), ...(git ? { git } : {}), ...(proj ? { proj } : {}) }
+}
+
+/** The message a post request carries (hub §2.2 PostIn): no `seq`, no `at`. The id is the caller's. */
+export function outgoing<T extends Msg>(from: Identity, body: PostBody<T>, id: string): Omit<T, 'at'> {
+  return { ...body, priority: body.priority ?? defaultPriority(body as { type: MsgType; symbols?: string[] }), id, from: from.name, fromKind: from.kind } as unknown as Omit<T, 'at'>
 }
 
 /** Default bus priority from spec §6. */
@@ -158,14 +165,13 @@ export class RoomDoc {
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
-  /** Compact histories keyed by area; `_room` contains every archived message. */
-  get ledgerArchives(): Y.Map<LedgerArchive> { return this.doc.getMap<LedgerArchive>('ledger') }
   /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
   get workers(): Y.Map<Worker> { return this.doc.getMap<Worker>('workers') }
-  setWorker(w: Worker): void {
+  /** A replaced generation's claims are released; only the hub appends to the bus, so `post` sends their notices. */
+  setWorker(w: Worker, post: ReleasePoster): void {
     this.doc.transact(() => {
       const prior = this.workers.get(w.tag)
-      if (prior && (prior.id !== w.id || prior.startedAt !== w.startedAt)) this.clearWorkerCoordination(prior.name)
+      if (prior && (prior.id !== w.id || prior.startedAt !== w.startedAt)) this.clearWorkerCoordination(prior.name, 'worker stopped', post)
       this.workers.set(w.tag, w)
     })
   }
@@ -197,8 +203,8 @@ export class RoomDoc {
     return repairs
   }
 
-  /** Remove coordination from a worker that can no longer act, including records from older releases. */
-  clearWorkerCoordination(name: string, reason = 'worker stopped', post: ReleasePoster = (from, body) => this.post<ReleaseMsg>(from, body)): void {
+  /** Remove coordination from a worker that can no longer act, including records from older releases; `post` sends the release notices. */
+  clearWorkerCoordination(name: string, reason: string, post: ReleasePoster): void {
     this.doc.transact(() => {
       for (const claim of this.claims.values()) if (claim.by === name) {
         this.claims.delete(claim.id)
@@ -210,14 +216,14 @@ export class RoomDoc {
     })
   }
 
-  /** Atomically replace live worker state with a bounded archive entry. */
-  retireParticipant(name: string, record: RetiredWorker): void {
+  /** Atomically replace live worker state with a bounded archive entry; `post` sends the release notices. */
+  retireParticipant(name: string, record: RetiredWorker, post: ReleasePoster): void {
     if (record.name !== name) throw new Error('retirement name does not match record')
     const current = this.workerOf(name)
     if (current && (current.startedAt !== record.startedAt || current.lead !== record.lead)) return
     this.doc.transact(() => {
       const archive = this.doc.getArray<RetiredWorker>('retiredWorkers')
-      this.clearWorkerCoordination(name, 'retired')
+      this.clearWorkerCoordination(name, 'retired', post)
       const archived = archive.toArray().some(r => r.name === name && r.startedAt === record.startedAt && r.lead === record.lead)
       this.colors.delete(name)
       this.bases.delete(name)
@@ -371,9 +377,6 @@ export class RoomDoc {
   scope(person: string): Scope | undefined { return this.scopes.get(person) }
   allScopes(): Scope[] { return Array.from(this.scopes.values()).sort((a, b) => a.at - b.at) }
   ledger(q: LedgerQuery = {}): Msg[] { return ledgerView(this.messages(), this.allScopes(), q) }
-  archivedLedger(q: Pick<LedgerQuery, 'area'> = {}): LedgerArchive {
-    return this.ledgerArchives.get(q.area ?? '_room') ?? emptyLedgerArchive()
-  }
   areaSummary(windowMs?: number): string[] { return areaSummaryView(this.messages(), this.allScopes(), windowMs) }
 
   setScope(scope: NewScope, origin?: unknown): Scope
@@ -523,71 +526,18 @@ export class RoomDoc {
     return messages.slice(Math.max(0, messages.length - n))
   }
 
-  /** Fold an old contiguous prefix into compact histories, preserving actionable entries in full. */
-  trimBus(keep = 2000, origin?: unknown): number {
-    const messages = this.messages()
-    const cutoff = Math.max(0, messages.length - Math.max(0, keep))
-    if (!cutoff) return 0
-    const answered = new Set(messages.filter(m => m.type === 'answer').map(m => m.inReplyTo))
-    const removable: Msg[] = []
-    const indexes: number[] = []
-    for (let i = 0; i < cutoff; i++) {
-      const m = messages[i]
-      if (m.type === 'question' && !answered.has(m.id)) continue
-      removable.push(m); indexes.push(i)
-    }
-    if (!removable.length) return 0
-    const scopes = this.allScopes()
-    this.doc.transact(() => {
-      this.ledgerArchives.set('_room', foldLedger(this.ledgerArchives.get('_room'), removable))
-      const byArea = new Map<string, Msg[]>()
-      for (const m of removable) for (const area of messageAreas(m, scopes)) {
-        const list = byArea.get(area) ?? []
-        list.push(m); byArea.set(area, list)
-      }
-      for (const [area, list] of byArea) this.ledgerArchives.set(area, foldLedger(this.ledgerArchives.get(area), list))
-      // Delete backwards so retained open questions do not shift later indexes.
-      for (let end = indexes.length - 1; end >= 0;) {
-        let start = end
-        while (start > 0 && indexes[start - 1] === indexes[start] - 1) start--
-        this.bus.delete(indexes[start], indexes[end] - indexes[start] + 1)
-        end = start - 1
-      }
-    }, origin)
-    return removable.length
-  }
-
-  /** With `opts.id`, a retry posts nothing: an id already on the bus or in mail returns that record, and
-   * one only in `archive`/`outcomes` (its body is gone) returns the unposted message. */
-  post<T extends Msg>(from: Identity, body: PostBody<T>, origin?: unknown, opts: { id?: string } = {}): T {
-    const msg = {
-      ...body,
-      priority: body.priority ?? defaultPriority(body as { type: MsgType; symbols?: string[] }),
-      id: opts.id ?? newId('m_'),
-      at: Date.now(),
-      from: from.name,
-      fromKind: from.kind,
-    } as T
-    if (opts.id !== undefined) {
-      const existing = this.message(opts.id)
-      if (existing) return existing as T
-      if (this.archive.has(opts.id) || this.outcomes.has(opts.id)) return msg
-    }
-    this.doc.transact(() => { this.bus.push([msg]) }, origin)
-    return msg
-  }
-
   // ---- read receipts ------------------------------------------------------
-  /** Message ids a person's agent has been shown (inbox delivery), with the time. */
-  seen(name: string): Y.Map<number> { return this.doc.getMap<number>(`seen:${encodeURIComponent(name)}`) }
-  markSeen(name: string, ids: string[], origin?: unknown): void {
+  /** `seen:<P>`: message ids P's agent was handed, after a confirmed handoff (ledger R2). Legacy receipts are a number. */
+  seen(name: string): Y.Map<Receipt | number> { return this.doc.getMap<Receipt | number>(`seen:${encodeURIComponent(name)}`) }
+  /** Receipts for a confirmed handoff to session `s` by `via`; the Ledger (room-mcp/src/ledger.ts) is the writer. */
+  markSeen(name: string, ids: readonly string[], receipt: Omit<Receipt, 'at'>, origin?: unknown): void {
     if (!ids.length) return
-    const at = Date.now()
-    this.doc.transact(() => { const m = this.seen(name); for (const id of ids) if (!m.has(id)) m.set(id, at) }, origin)
+    const value: Receipt = { ...receipt, at: Date.now() }
+    this.doc.transact(() => { const m = this.seen(name); for (const id of ids) if (!m.has(id)) m.set(id, value) }, origin)
   }
   seenBy(msgId: string): string[] {
     const out: string[] = []
-    for (const key of this.doc.share.keys()) if (key.startsWith('seen:') && this.doc.getMap<number>(key).has(msgId)) out.push(decodeURIComponent(key.slice(5)))
+    for (const key of this.doc.share.keys()) if (key.startsWith('seen:') && this.doc.getMap<unknown>(key).has(msgId)) out.push(decodeURIComponent(key.slice(5)))
     return out.sort()
   }
 

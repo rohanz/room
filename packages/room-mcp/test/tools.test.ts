@@ -17,7 +17,8 @@ import { SocketWakeRouter } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { shouldWake } from '../src/wake.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
-import { markHistorySeenOnJoin } from '../src/tools/join.js'
+import { hubAppend } from '@room/shared/testing'
+import { hubSeam, setHubReachable } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -42,7 +43,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
     graph,
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
-    provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
   }
 }
@@ -75,7 +76,7 @@ it.each(['room_wait', 'room_state'])('a successful Claude push leaves the messag
   const s = t.session!
   const peer = addPresence(s.awareness, 'Kieran')
   try {
-    const msg = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'channel delivery regression' })
+    const msg = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'channel delivery regression' })
     const notify = vi.fn(async () => {})
     await sendChannelNotification(shouldWake(me, { kind: 'msg', msg }, [], false)!, notify)
     expect(notify).toHaveBeenCalledOnce()
@@ -95,7 +96,7 @@ it.each(['room_wait', 'room_state'])('skips a daemon-receipted base in %s while 
   const t = setup()
   const s = t.session!
   try {
-    const msg = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already pulled' })
+    const msg = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'base', base, prev: base, commits: 1, paths: ['app.py'], summary: 'already pulled' })
     t.room.markSeen(me.name, [msg.id])
     const result = await t.tools.call(tool, { timeoutMs: 1 })
     expect(result).not.toContain('[inbox 1]')
@@ -115,7 +116,7 @@ it('a socket wake leaves the message unread until a Room tool delivers it', asyn
   const post = vi.fn(async () => {})
   const router = new SocketWakeRouter({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/test.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }, parentArgs: 'claude', notify: vi.fn(async () => {}), post, windowMs: 1 })
   try {
-    const msg = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'socket delivery regression' })
+    const msg = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'socket delivery regression' })
     router.push(shouldWake(me, { kind: 'msg', msg }, [], false))
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(post).toHaveBeenCalledOnce()
@@ -144,13 +145,13 @@ it('a pending room_wait consumes its answer without a socket wake, while unrelat
   })
   s.room.bus.observe(ev => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as NoteMsg[]) router.push(shouldWake(me, { kind: 'msg', msg: m })) })
   try {
-    const question = t.room.post(me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
+    const question = hubAppend(t.room, me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
     const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
     await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
-    const unrelated = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other update' } as never)
+    const unrelated = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other update' } as never)
     await vi.waitFor(() => expect(posts).toHaveLength(1))
     expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
-    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
+    const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
     expect(await waiting).toContain('answered:')
     expect(s.room.seen(me.name).has(answer.id)).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -168,13 +169,13 @@ it('tracks only messages an active room_wait will deliver', async () => {
   const s = t.session!
   const peer = addPresence(s.awareness, 'Kieran')
   try {
-    const question = t.room.post(me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
+    const question = hubAppend(t.room, me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
     const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
     await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
-    const unrelated = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other' } as never)
+    const unrelated = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other' } as never)
     expect(waitConsumesMessage(s, unrelated)).toBe(false)
     expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
-    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
+    const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
     expect(await waiting).toContain('answered:')
     expect(s.room.seen(me.name).has(answer.id)).toBe(true)
     expect(waitConsumesMessage(s, answer)).toBe(false)
@@ -295,8 +296,10 @@ describe('session gating', () => {
     expect(await tools.call('room_state', {})).not.toContain('OFFLINE')
     clock += 2001
     expect(await tools.call('room_state', {})).toMatch(/OFFLINE: not connected to ws:\/\/x since .*; showing the last known state in r\nroom:/)
-    expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('offline: queued/not delivered')
-    expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: queued/not delivered')
+    setHubReachable(session, false)
+    expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('not sent: hub unreachable')
+    expect(a.messages().some(m => 'text' in m && m.text === 'queued')).toBe(false)
+    expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: room_wait cannot observe new messages until reconnected')
   })
 
   it('join uses cwd, reports who is here, and leave releases claims', async () => {
@@ -471,8 +474,8 @@ describe('one login, two agents', () => {
     const mk = (room: RoomDoc, id: Identity, awareness: Awareness) => {
       awareness.setLocalState({ user: { ...id, color: '#000' }, status: 'idle', lastActive: Date.now() })
       const graph = new GraphIndex(room, id.name, dir); graph.start()
-      const s: Session = { graph, policyStore: testPolicyStore(), room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
-        provider: { synced: true, awareness } as unknown as Session['provider'],
+      const s: Session = { graph, room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+        ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
         daemon: { touch() {}, async stop() {}, dir, name: id.name, roomDoc: room, provider: null as never, branch: 'main', base } }
       return createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
     }
@@ -587,7 +590,7 @@ describe('reading', () => {
 describe('scope, claims, plans, ledger', () => {
   it('scope posts a notify and returns the area ledger', async () => {
     const t = setup()
-    t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['app.py'], summary: 'tweaked b', symbols: ['b'] } as never)
+    hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'changed', paths: ['app.py'], summary: 'tweaked b', symbols: ['b'] } as never)
     const out = await t.tools.call('room_scope', { area: 'API', summary: 'harden app', paths: ['app.py'] })
     expect(out).toContain('scope set: api: harden app (app.py)')
     expect(out).toContain('api ledger (1):')
@@ -601,7 +604,7 @@ describe('scope, claims, plans, ledger', () => {
     const t = setup()
     const worker = { name: 'Rohan+old', kind: 'agent' as const }
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
-    t.other.post(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
+    hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
     clock.mockRestore()
     t.other.retireParticipant(worker.name, { name: worker.name, tag: 'old', lead: 'Rohan', host: 'codex', task: 'old work', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' })
     const out = await t.tools.call('room_scope', { area: 'api', summary: 'new work', paths: ['app.py'] })
@@ -614,7 +617,7 @@ describe('scope, claims, plans, ledger', () => {
     const t = setup()
     const worker = { name: 'Kieran', kind: 'agent' as const }
     t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'live work', paths: ['app.py'] })
-    t.other.post(worker, { type: 'scope', area: 'api', summary: 'live work', paths: ['app.py'] })
+    hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'live work', paths: ['app.py'] })
     const scopeReply = await t.tools.call('room_scope', { area: 'api', summary: 'my work', paths: ['app.py'] })
     expect(scopeReply).toContain("Kieran's agent is on api: live work")
     const state = await t.tools.call('room_state', { all: true })
@@ -625,9 +628,9 @@ describe('scope, claims, plans, ledger', () => {
     const t = setup()
     const worker = { name: 'Kieran', kind: 'agent' as const }
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
-    t.other.post(worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
+    hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'old work', paths: ['app.py'] })
     clock.mockReturnValue(2_000)
-    t.other.post(worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/app.ts'] })
+    hubAppend(t.other, worker, { type: 'scope', area: 'web', summary: 'new work', paths: ['web/app.ts'] })
     clock.mockRestore()
     t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'web', summary: 'new work', paths: ['web/app.ts'] })
     const state = await t.tools.call('room_state', { all: true })
@@ -640,7 +643,7 @@ describe('scope, claims, plans, ledger', () => {
     const worker = { name: 'Rohan+review', kind: 'agent' as const }
     t.other.setWorker({ tag: 'review', name: worker.name, lead: 'Rohan', host: 'codex', task: 'review', dir, branch: 'room/review', pid: -1, startedAt: 1, status: 'done' })
     t.other.setScope({ by: worker.name, byKind: worker.kind, area: 'api', summary: 'review code', paths: ['app.py'] })
-    t.other.post(worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })
+    hubAppend(t.other, worker, { type: 'scope', area: 'api', summary: 'review code', paths: ['app.py'] })
     const state = await t.tools.call('room_state', { all: true })
     expect(state).toContain('last: [notify] Rohan+review is on api: review code')
   })
@@ -741,7 +744,7 @@ describe('concurrency', () => {
     await t.tools.call('room_state', {}) // marks everything so far seen
     // Insert a remote message at index 0 (before everything seen) by building it on a detached doc and merging.
     t.other.bus.insert(0, [{ id: 'm_early', type: 'question', priority: 'notify', from: 'Kieran', fromKind: 'agent', to: 'Rohan', at: 1, text: 'inserted early' } as never])
-    t.other.post(k, { type: 'question', to: 'Rohan', text: 'appended late' } as never)
+    hubAppend(t.other, k, { type: 'question', to: 'Rohan', text: 'appended late' } as never)
     const out = await t.tools.call('room_state', {})
     const block = out.split('\n\n')[0]
     expect(block).toContain('[inbox 2]')
@@ -763,7 +766,7 @@ describe('claim by symbol and read receipts', () => {
   it('records which messages an agent was shown, and marks copies with copyOf', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
-    const q = t.other.post(k, { type: 'question', to: 'Rohan', text: 'hi' } as never)
+    const q = hubAppend(t.other, k, { type: 'question', to: 'Rohan', text: 'hi' } as never)
     await t.tools.call('room_state', {})
     expect(t.room.seenBy(q.id)).toEqual(['Rohan'])
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
@@ -821,7 +824,7 @@ describe('inbox', () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
     for (const priority of ['fyi', 'notify'] as const) {
-      t.other.post(k, { type: 'note', text: `${priority} update`, priority } as never)
+      hubAppend(t.other, k, { type: 'note', text: `${priority} update`, priority } as never)
     }
     const out = await t.tools.call('room_state', {})
     const block = out.slice(0, out.indexOf('you: '))
@@ -834,9 +837,9 @@ describe('inbox', () => {
   it('prefixes tool replies with unread messages for me, once, highest priority first', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
-    t.other.post(k, { type: 'note', text: 'broadcast fyi' } as never)
-    t.other.post(k, { type: 'question', text: 'are you changing b?', to: 'Rohan' } as never)
-    t.other.post(k, { type: 'note', text: 'urgent', to: 'Rohan', priority: 'interrupt' } as never)
+    hubAppend(t.other, k, { type: 'note', text: 'broadcast fyi' } as never)
+    hubAppend(t.other, k, { type: 'question', text: 'are you changing b?', to: 'Rohan' } as never)
+    hubAppend(t.other, k, { type: 'note', text: 'urgent', to: 'Rohan', priority: 'interrupt' } as never)
     const out = await t.tools.call('room_state', {})
     expect(out).toMatch(/\[inbox 2\]\n  \[.*?\] \[interrupt\]/)
     const block = out.slice(out.indexOf('[inbox 2]')).split('\n\n')[0]
@@ -850,13 +853,13 @@ describe('wait', () => {
   it.each(['message', 'interrupt', 'timeout'] as const)('returns every unread inbox item on %s and receipts only what it delivered', async ending => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
-    const first = t.other.post<NoteMsg>(k, { type: 'note', text: 'first notify', priority: 'notify' })
-    const second = t.other.post<NoteMsg>(k, { type: 'note', text: 'second notify', priority: 'notify' })
-    const elsewhere = t.other.post<NoteMsg>(k, { type: 'note', text: 'for someone else', to: 'Ada', priority: 'notify' })
+    const first = hubAppend<NoteMsg>(t.other, k, { type: 'note', text: 'first notify', priority: 'notify' })
+    const second = hubAppend<NoteMsg>(t.other, k, { type: 'note', text: 'second notify', priority: 'notify' })
+    const elsewhere = hubAppend<NoteMsg>(t.other, k, { type: 'note', text: 'for someone else', to: 'Ada', priority: 'notify' })
     const waiting = t.tools.call('room_wait', { timeoutMs: ending === 'timeout' ? 40 : 2000 })
     if (ending !== 'timeout') {
       await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
-      t.other.post(k, ending === 'interrupt'
+      hubAppend(t.other, k, ending === 'interrupt'
         ? { type: 'note', text: 'stop now', priority: 'interrupt' }
         : { type: 'question', text: 'can you check?', to: me.name } as never)
     }
@@ -874,7 +877,7 @@ describe('wait', () => {
     const t = setup()
     const waiting = t.tools.call('room_wait', { timeoutMs: 2000 })
     await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
-    const note = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'stop the batch', priority: 'interrupt' })
+    const note = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'stop the batch', priority: 'interrupt' })
     expect(await waiting).toContain('stop the batch')
     expect(messageEndsWait(note, { me: me.name })).toBe(true)
     expect(t.room.seen(me.name).has(note.id)).toBe(true)
@@ -884,7 +887,7 @@ describe('wait', () => {
     const t = setup()
     const waiting = t.tools.call('room_wait', { timeoutMs: 80 })
     await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
-    const note = t.other.post<NoteMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'progress while waiting', priority: 'notify' })
+    const note = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'progress while waiting', priority: 'notify' })
     const out = await waiting
     expect(out).toContain('timeout after 80ms')
     expect(out).toContain('progress while waiting')
@@ -895,7 +898,7 @@ describe('wait', () => {
 
   it('presents an addressed note as a note, without asking for an answer', async () => {
     const t = setup()
-    t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'FYI: tests passed', to: 'Rohan' } as never)
+    hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', text: 'FYI: tests passed', to: 'Rohan' } as never)
     const out = await t.tools.call('room_wait', { timeoutMs: 100 })
     expect(out).toContain('FYI: tests passed')
     expect(out).not.toContain('question for you')
@@ -905,7 +908,7 @@ describe('wait', () => {
   it('returns immediately for a wait-ending unread message already in the inbox', async () => {
     const t = setup()
     const k = { name: 'Kieran', kind: 'agent' as const }
-    t.other.post(k, { type: 'question', text: 'already here?', to: 'Rohan' } as never)
+    hubAppend(t.other, k, { type: 'question', text: 'already here?', to: 'Rohan' } as never)
     const started = Date.now()
     const out = await t.tools.call('room_wait', { timeoutMs: 2000 })
     expect(Date.now() - started).toBeLessThan(500)
@@ -928,12 +931,12 @@ describe('wait', () => {
       const qid = q.match(/\[(m_[^\]]+)\]/)![1]
       const p2 = t.tools.call('room_wait', { questionId: qid, timeoutMs: 2000 })
       await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe(`waiting for answer to ${qid}`))
-      t.other.post(k, { type: 'answer', inReplyTo: qid, to: 'Rohan', text: 'yes' } as never)
+      hubAppend(t.other, k, { type: 'answer', inReplyTo: qid, to: 'Rohan', text: 'yes' } as never)
       expect(await p2).toContain('answered:')
 
       const p3 = t.tools.call('room_wait', { timeoutMs: 2000 })
       await vi.waitFor(() => expect(t.session!.awareness.getLocalState()?.status).toBe('waiting'))
-      t.other.post(k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never)
+      hubAppend(t.other, k, { type: 'note', text: 'stop', to: 'Rohan', priority: 'interrupt' } as never)
       expect(await p3).toContain('[interrupt]')
 
       expect(await t.tools.call('room_wait', { timeoutMs: 30 })).toContain('timeout after 30ms')
@@ -945,11 +948,11 @@ it('delivers a lead broadcast posted after spawn but before the worker joins, wi
   const t = setup({ joined: false })
   const lead = { name: 'Kieran', kind: 'agent' } as const
   const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
-  const old = t.other.post<NoteMsg>(lead, { type: 'note', text: 'old history', priority: 'notify' })
+  const old = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'old history', priority: 'notify' })
   t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
     branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' })
   clock.mockReturnValue(old.at + 2)
-  const fresh = t.other.post<NoteMsg>(lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
+  const fresh = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
   clock.mockRestore()
   await t.tools.call('room_join', {})
   const out = await t.tools.call('room_state', {})
@@ -960,23 +963,20 @@ it('delivers a lead broadcast posted after spawn but before the worker joins, wi
   expect(t.room.seen(me.name).has(fresh.id)).toBe(true)
 })
 
-it('keeps eligible lead notes when the spawn marker was trimmed', async () => {
+it('with its spawn marker trimmed, a worker still gets addressed briefings but no earlier broadcasts', async () => {
   const t = setup({ joined: false })
   const lead = { name: 'Kieran', kind: 'agent' } as const
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
-  const old = t.other.post<NoteMsg>(lead, { type: 'note', text: 'trimmed marker', priority: 'fyi' })
+  const old = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'trimmed marker', priority: 'fyi' })
   t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
-    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' })
+    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' }, () => {})
   t.other.bus.delete(0, 1)
-  const addressed = t.other.post<NoteMsg>(lead, { type: 'note', to: me.name, text: 'addressed briefing', priority: 'notify' })
-  const broadcast = t.other.post<NoteMsg>(lead, { type: 'note', text: 'broadcast briefing', priority: 'interrupt' })
-  const routine = t.other.post<NoteMsg>(lead, { type: 'note', text: 'routine history', priority: 'fyi' })
-  clock.mockRestore()
-  const seen = new Set<string>()
-  markHistorySeenOnJoin(fakeSession(t.room), seen)
-  expect(seen.has(addressed.id)).toBe(false)
-  expect(seen.has(broadcast.id)).toBe(false)
-  expect(seen.has(routine.id)).toBe(true)
+  hubAppend<NoteMsg>(t.other, lead, { type: 'note', to: me.name, text: 'addressed briefing', priority: 'notify' })
+  hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'broadcast before the worker bound', priority: 'interrupt' })
+  await t.tools.call('room_join', {})
+  const out = await t.tools.call('room_state', {})
+  const inbox = out.slice(0, out.indexOf('you: '))
+  expect(inbox).toContain('addressed briefing')
+  expect(inbox).not.toContain('broadcast before the worker bound')
 })
 
 describe('preview merge', () => {
@@ -1186,7 +1186,7 @@ describe('merge preview scratch tree', () => {
        expect(compact).not.toContain('unrelated claim detail long')
        expect(compact).toContain('room_state path=')
        expect(compact.length).toBeLessThan(8100)
-       for (let i = 0; i < 10; i++) t.room.post<NoteMsg>({ name: 'Rohan', kind: 'agent' }, { type: 'note', text: 'long history '.repeat(200) })
+       for (let i = 0; i < 10; i++) hubAppend<NoteMsg>(t.room, { name: 'Rohan', kind: 'agent' }, { type: 'note', text: 'long history '.repeat(200) })
        const bounded = await t.tools.call('room_state', {})
        expect(bounded.length).toBeLessThan(8100)
        expect(bounded).toContain('state lines; room_state all=true')
@@ -1201,7 +1201,7 @@ describe('merge preview scratch tree', () => {
    const t = setup()
    try {
      await t.tools.call('room_state', {})
-     const msg = t.other.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'already delivered by channel' })
+     const msg = hubAppend(t.other, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'already delivered by channel' })
      t.room.markSeen('Rohan', [msg.id])
      const state = await t.tools.call('room_state', {})
      expect(state.startsWith('[inbox')).toBe(false)
@@ -1298,8 +1298,8 @@ it('states local sharing first and exposes the browser link only on request', as
 it('returns a wait-ending answer once and marks it read', async () => {
   const t = setup()
   try {
-    const question = t.room.post({ name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'ready?' })
-    const answer = t.other.post({ name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'uniquely ready' })
+    const question = hubAppend(t.room, { name: 'Rohan', kind: 'agent' }, { type: 'question', to: 'Kieran', text: 'ready?' })
+    const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', to: 'Rohan', inReplyTo: question.id, text: 'uniquely ready' })
     const out = await t.tools.call('room_wait', { questionId: question.id })
     expect(out.match(/uniquely ready/g)).toHaveLength(1)
     expect(out.match(/\[notify\]/g)).toHaveLength(1)

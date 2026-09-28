@@ -1,7 +1,9 @@
 // Shared helpers for the room hooks. No dependencies: hooks run from the plugin cache.
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
-import { createHash, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { createHash, randomBytes } from 'node:crypto'
 
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
@@ -31,17 +33,6 @@ export function gitStatePath(root, name) {
   return path.join(dotgit, name)
 }
 
-/** Resolve hook state by session identity when a shell has moved to another worktree. */
-export function sessionStateDir(root, sessionId) {
-  const initial = path.dirname(gitStatePath(root, 'room-session.json'))
-  if (!sessionId || readJson(path.join(initial, 'room-session.json'), null)?.session_id === sessionId) return initial
-  let common = initial
-  try { common = path.resolve(initial, fs.readFileSync(path.join(initial, 'commondir'), 'utf8').trim()) } catch { /* main worktree */ }
-  const candidates = [common]
-  try { for (const entry of fs.readdirSync(path.join(common, 'worktrees'))) candidates.push(path.join(common, 'worktrees', entry)) } catch { /* no linked worktrees */ }
-  return candidates.find(dir => readJson(path.join(dir, 'room-session.json'), null)?.session_id === sessionId) ?? initial
-}
-
 export function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return fallback }
 }
@@ -58,78 +49,131 @@ export function newestModelInTranscriptTail(tail, startsMidLine = false) {
   }
 }
 
-/** Hook-local delivery state. Versions before 0.7.0 stored only the seen-id array. */
-export function readHookSeen(file) {
-  const value = readJson(file, { seen: [], companyTold: false })
-  if (Array.isArray(value)) return { seen: value, companyTold: false }
-  return { seen: Array.isArray(value?.seen) ? value.seen : [], companyTold: value?.companyTold === true, ...(value?.transcript && typeof value.transcript === 'object' ? { transcript: value.transcript } : {}), ...(value?.shown && typeof value.shown === 'object' ? { shown: value.shown } : {}), ...(value?.near && typeof value.near === 'object' ? { near: value.near } : {}), ...(value?.claims && typeof value.claims === 'object' ? { claims: value.claims } : {}) }
+/** The clone's common git directory (shared by its worktrees), without spawning git. */
+export function gitCommonDir(root) {
+  const own = path.dirname(gitStatePath(root, 'x'))
+  try { return path.resolve(own, fs.readFileSync(path.join(own, 'commondir'), 'utf8').trim()) } catch { return own }
 }
 
-export function writeHookSeen(file, value) {
-  const seen = value.seen.slice(-2000)
-  const shown = value.shown ? Object.fromEntries(seen.filter(id => typeof value.shown[id] === 'string').map(id => [id, value.shown[id]])) : undefined
-  const near = value.near && typeof value.near === 'object' ? Object.fromEntries(Object.entries(value.near).slice(-200)) : undefined
-  const claims = value.claims && typeof value.claims === 'object' ? Object.fromEntries(Object.entries(value.claims).slice(-200)) : undefined
-  try { fs.writeFileSync(file, JSON.stringify({ seen, companyTold: value.companyTold === true, ...(value.transcript ? { transcript: value.transcript } : {}), ...(shown ? { shown } : {}), ...(near && Object.keys(near).length ? { near } : {}), ...(claims && Object.keys(claims).length ? { claims } : {}) })) } catch { /* best effort */ }
+/** `<common>/room/sessions/<sid>/`, sid = sha256(host session id)[0:16] (room-mcp session.ts sessionDirectory). */
+export function sessionDir(root, sessionId) {
+  return path.join(gitCommonDir(root), 'room', 'sessions', createHash('sha256').update(sessionId).digest('hex').slice(0, 16))
 }
 
-/** Consume hook context under a tiny cross-process lock. The delivered value remains as
- * an acknowledgement so the MCP process cannot restore or repeat it through a tool reply. */
-export function takePendingContext(file, state, fields = ['pendingDisclosure', 'pendingNotice']) {
-  const release = acquireNoticeLock(file)
-  if (!release) return []
+/** Temp-and-rename, so a reader never sees half a file (ledger R5). */
+export function writeJsonAtomic(file, value) {
   try {
-    const current = readJson(file, state)
-    const lines = []
-    for (const field of fields) {
-      if (typeof current?.[field] !== 'string' || !current[field]) continue
-      lines.push(current[field])
-      current[field === 'pendingDisclosure' ? 'deliveredDisclosure' : 'deliveredNotice'] = current[field]
-      delete current[field]
-    }
-    if (lines.length) fs.writeFileSync(file, JSON.stringify(current, null, 1) + '\n')
-    return lines
-  } catch { return [] }
-  finally { release() }
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+    fs.writeFileSync(temp, JSON.stringify(value) + '\n', { mode: 0o600 })
+    fs.renameSync(temp, file)
+  } catch { /* hooks are best effort */ }
 }
 
-/** Mirrored in hooks-bridge.ts; hooks cannot import package dependencies. */
-function acquireNoticeLock(file) {
-  const lock = file + '.notice-lock'
-  const owner = { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000, token: randomUUID() }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(lock, 'wx', 0o600)
-      try { fs.writeFileSync(fd, JSON.stringify(owner)) } finally { fs.closeSync(fd) }
-      return () => {
-        try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === owner.token) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
-      }
-    } catch (error) {
-      if (error.code !== 'EEXIST') return undefined
-      try {
-        const stat = fs.statSync(lock)
-        const prior = JSON.parse(fs.readFileSync(lock, 'utf8'))
-        let alive = typeof prior.pid === 'number' && Number.isInteger(prior.pid)
-        if (alive) { try { process.kill(prior.pid, 0) } catch (e) { alive = e.code === 'EPERM' } }
-        if (prior.pid === process.pid && Math.abs((prior.startedAt ?? 0) - owner.startedAt) > 5000) alive = false
-        if (alive && Date.now() - stat.mtimeMs < 10_000) return undefined
-        if (fs.readFileSync(lock, 'utf8') === JSON.stringify(prior)) fs.rmSync(lock, { force: true })
-      } catch { /* another process may have replaced it */ }
-      try { if (Date.now() - fs.statSync(lock).mtimeMs >= 10_000) fs.rmSync(lock, { force: true }) } catch { /* best effort */ }
+/**
+ * A connection to this session's MCP arbitration endpoint (mcp.json), or undefined when it cannot be
+ * reached within `budgetMs`. `request` answers one JSON line, or undefined when the budget runs out.
+ */
+export async function openMcp(dir, budgetMs) {
+  const endpoint = readJson(path.join(dir, 'mcp.json'), null)
+  if (!Number.isInteger(endpoint?.port) || typeof endpoint?.key !== 'string') return undefined
+  const deadline = Date.now() + budgetMs
+  const socket = net.connect({ host: '127.0.0.1', port: endpoint.port })
+  socket.setEncoding('utf8')
+  socket.on('error', () => {})
+  const connected = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), budgetMs)
+    socket.once('connect', () => { clearTimeout(timer); resolve(true) })
+    socket.once('error', () => { clearTimeout(timer); resolve(false) })
+  })
+  if (!connected) { socket.destroy(); return undefined }
+  let buffered = ''
+  const waiting = []
+  socket.on('data', chunk => {
+    buffered += chunk
+    for (let nl = buffered.indexOf('\n'); nl >= 0; nl = buffered.indexOf('\n')) {
+      const line = buffered.slice(0, nl)
+      buffered = buffered.slice(nl + 1)
+      let reply
+      try { reply = JSON.parse(line) } catch { reply = undefined }
+      waiting.shift()?.(reply)
     }
+  })
+  socket.once('close', () => { for (const w of waiting.splice(0)) w(undefined) })
+  return {
+    request(body, ms = Math.max(0, deadline - Date.now())) {
+      return new Promise(resolve => {
+        const timer = setTimeout(() => resolve(undefined), ms)
+        waiting.push(reply => { clearTimeout(timer); resolve(reply) })
+        socket.write(JSON.stringify({ ...body, key: endpoint.key }) + '\n')
+      })
+    },
+    close() { socket.destroy() },
   }
-  return undefined
 }
 
-/** Keep evidence separate for two agent sessions using the same worktree. */
-export function recordWriteIntents(stateDir, sessionId, root, paths, now = Date.now()) {
-  if (typeof sessionId !== 'string' || !sessionId) return
-  const file = path.join(stateDir, `room-write-intents-${createHash('sha256').update(sessionId).digest('hex')}.json`)
+/** Write to stdout and call back once the bytes were accepted (the handoff the ledger receipts). */
+export function writeStdout(text) {
+  return new Promise(resolve => {
+    try { process.stdout.write(text, error => resolve(!error)) } catch { resolve(false) }
+  })
+}
+
+/**
+ * This hook's ancestor processes as `{pid, startTime, executable}`, the identity room-mcp's probeProcess
+ * reads (relay/src/process.ts), so the MCP can find the record whose chain holds its host (registry §17).
+ */
+export function processChain(start = process.ppid, depth = 8) {
+  const table = processTable()
+  const chain = []
+  for (let pid = start; pid > 1 && chain.length < depth; pid = table.get(pid)?.ppid ?? 0) {
+    const entry = table.get(pid)
+    if (!entry?.startTime) break
+    chain.push({ pid, startTime: entry.startTime, executable: entry.executable })
+  }
+  return chain
+}
+
+function processTable() {
+  const table = new Map()
+  try {
+    if (process.platform === 'linux') {
+      const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
+      for (const name of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(name)) continue
+        try {
+          const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8')
+          const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+          let executable
+          try { executable = path.basename(fs.readlinkSync(`/proc/${name}/exe`)) } catch { /* not ours to read */ }
+          table.set(Number(name), { ppid: Number(fields[1]), startTime: `linux:${bootId}:${fields[19]}`, executable })
+        } catch { /* exited while listing */ }
+      }
+    } else if (process.platform === 'darwin') {
+      const env = { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' }
+      const boot = execFileSync('sysctl', ['-n', 'kern.boottime'], { encoding: 'utf8', timeout: 1000, env }).match(/sec\s*=\s*(\d+)/)?.[1]
+      const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart=,comm='], { encoding: 'utf8', timeout: 2000, env, maxBuffer: 8 * 1024 * 1024 })
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+      for (const line of out.split('\n')) {
+        const m = /^\s*(\d+)\s+(\d+)\s+\w{3} (\w{3})\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})\s+(.*)$/.exec(line)
+        if (!m || !boot) continue
+        const seconds = Date.UTC(Number(m[8]), months.indexOf(m[3]), Number(m[4]), Number(m[5]), Number(m[6]), Number(m[7])) / 1000
+        table.set(Number(m[1]), { ppid: Number(m[2]), startTime: `darwin:${boot}:${seconds}`, executable: path.basename(m[9].trim()) })
+      }
+    }
+  } catch { /* no identity: the session binds by other means (registry §17) */ }
+  return table
+}
+
+/** Keep write evidence per host session: two sessions in one worktree have separate directories. */
+export function recordWriteIntents(dir, root, paths, now = Date.now()) {
+  if (!paths.length) return
+  const file = path.join(dir, 'write-intents.json')
   const prior = readJson(file, null)
   const writes = (Array.isArray(prior?.writes) ? prior.writes : []).filter(w =>
     typeof w?.path === 'string' && Number.isFinite(w.at) && w.at <= now && now - w.at < 600_000)
   for (const p of paths) writes.push({ path: path.resolve(root, p), at: now })
-  try { fs.writeFileSync(file, JSON.stringify({ session_id: sessionId, at: now, writes: writes.slice(-200) })) } catch { /* best effort */ }
+  writeJsonAtomic(file, { at: now, writes: writes.slice(-200) })
 }
 
 // Both hook manifests include shell tools. Bash is Codex's documented canonical name;

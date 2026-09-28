@@ -8,6 +8,11 @@ import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createWorkerRuntime } from '../src/tools/workers.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 const terminate = vi.hoisted(() => vi.fn<(_dir: string) => Promise<string[]>>())
 vi.mock('../src/worker-process.js', async importOriginal => ({
@@ -37,7 +42,7 @@ function fixture(ownedWorktree: boolean | 'noncanonical' | 'nested') {
   if (ownedWorktree === 'nested') room.workers.set('parent', { id: 'parent-id', tag: 'parent', name: 'lead+parent', lead: 'lead', host: 'codex', task: 'parent', dir: parentDir, branch: 'room/parent', pid: -1, startedAt: Date.now(), status: 'done' } as Worker)
   const w = { id: 'worker-id', tag: 'test', name: 'lead+test', lead: ownedWorktree === 'nested' ? 'lead+parent' : 'lead', host: 'codex', task: 'test', dir, branch: 'room/test', pid: 987654, startedAt: Date.now(), status: 'running' } as Worker
   room.workers.set(w.tag, w)
-  const s = { dir: leadDir, roomName: 'local/test/main', room, me: { name: 'lead', kind: 'agent' } } as Session
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: leadDir, roomName: 'local/test/main', room, me: { name: 'lead', kind: 'agent' } } as Session
   const kill = vi.fn(() => true)
   const state = { ctx: {}, rooms: { handle: () => ({ kill }), hasHandle: () => true, all: () => [s] }, now: Date.now, log: vi.fn() } as unknown as HandlerState
   state.dismissWorker = createWorkerRuntime(state).dismissWorker
@@ -109,7 +114,7 @@ describe('dismissWorker ownership', () => {
     const t = fixture('nested')
     t.s.dir = t.parentDir; t.s.me.name = 'lead+parent'
     const parent = t.room.workers.get('parent')!
-    t.room.retireParticipant(parent.name, { name: parent.name, tag: parent.tag, lead: parent.lead, host: parent.host, task: parent.task, summary: 'done', files: [], fileCount: 0, startedAt: parent.startedAt, finishedAt: parent.startedAt + 1, retiredAt: parent.startedAt + 2, outcome: 'dismissed' })
+    t.room.retireParticipant(parent.name, { name: parent.name, tag: parent.tag, lead: parent.lead, host: parent.host, task: parent.task, summary: 'done', files: [], fileCount: 0, startedAt: parent.startedAt, finishedAt: parent.startedAt + 1, retiredAt: parent.startedAt + 2, outcome: 'dismissed' }, ignore)
     terminate.mockResolvedValue([])
     await dismiss(t)
     expect(terminate).toHaveBeenCalledWith(t.dir, expect.objectContaining({ protectedPids: [t.w.pid] }))

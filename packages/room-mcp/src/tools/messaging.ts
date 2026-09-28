@@ -1,8 +1,9 @@
-import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
+import { formatMsg, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
-import { syncHookSeen } from '../hooks-bridge.js'
+import type { Batch } from '../ledger.js'
+import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
-import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
@@ -37,7 +38,7 @@ export const defs: ToolDef[] = [
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, seen } = state
+  const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, ledger } = state
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
   const knownNames = (s: Session): Set<string> => new Set([
@@ -72,8 +73,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const unavailableQuestion = (s: Session, questionId: string): string | undefined => {
     const cached = unavailableQuestions.get(questionId)
     if (cached) return cached
-    const question = s.room.messages().find(m => m.id === questionId && m.type === 'question')
-    if (!question?.to) return undefined
+    const question = s.room.message(questionId)
+    if (question?.type !== 'question') return undefined
+    if (!question.to) return undefined
     const notice = recipientNotice(s, question.to)
     if (!notice?.terminal) return undefined
     unavailableQuestions.set(questionId, notice.text)
@@ -84,8 +86,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_send(a) {
       const lead = S()
       let byQuestion = typeof a.inReplyTo === 'string' && a.inReplyTo ? rooms.holdingQuestion(a.inReplyTo, lead) : undefined
-      let question = byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'question')
-      const repliedNote = (a.type === 'note' || a.type === 'answer') ? byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'note') : undefined
+      const replied = typeof a.inReplyTo === 'string' ? byQuestion?.room.message(a.inReplyTo) : undefined
+      let question = replied?.type === 'question' ? replied : undefined
+      const repliedNote = (a.type === 'note' || a.type === 'answer') && replied?.type === 'note' ? replied : undefined
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
       const requestedTo = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
@@ -104,9 +107,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       let to = resolvedWorker?.worker.name ?? requestedTo
       let inferredQuestionId: string | undefined
       const unansweredQuestions = () => {
-        const answered = new Set(rooms.all().flatMap(room => room.room.messages()
+        const history = (room: Session) => [...room.room.messages(), ...room.room.mail.values()]
+        const answered = new Set(rooms.all().flatMap(room => history(room)
           .filter(m => m.type === 'answer').map(m => m.inReplyTo)))
-        return rooms.all().flatMap(room => room.room.messages()
+        return rooms.all().flatMap(room => history(room)
           .filter((m): m is QuestionMsg => m.type === 'question' && m.to === room.me.name
             && !answered.has(m.id))
           .map(question => ({ room, question })))
@@ -153,7 +157,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.type === 'question' && !to) return 'error: question requires to (whose agent)'
       if (sendType === 'answer' && !question?.from && !to) return 'error: answer requires to (could not infer from inReplyTo)'
       if (!['changed', 'question', 'answer', 'note'].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`
-      let msg!: Msg
       const notes: string[] = []
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
       const addressedWorker = to && s.room.workerOf(to)
@@ -164,39 +167,35 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         deliveredInPrompt = true
         notes.push(typeof result === 'string' ? result : result.reply)
       }
-      let paths: string[] = [], symbols: string[] = []
-      // Publish the timeline entry and its prompt-delivery receipt together. Bus
-      // observers must never see a resumed follow-up as unread by the worker.
-      s.room.doc.transact(() => {
-        switch (sendType) {
-          case 'changed': {
-            paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
-            symbols = Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
-            msg = s.room.post<ChangedMsg>(s.me, withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }))
-            break
-          }
-          case 'question':
-            msg = s.room.post<QuestionMsg>(s.me, withPr({ type: 'question', text, to: to! }))
-            break
-          case 'answer': {
-            msg = s.room.post<AnswerMsg>(s.me, withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }))
-            break
-          }
-          case 'note':
-            msg = s.room.post<NoteMsg>(s.me, withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }))
-            break
-        }
-        if (deliveredInPrompt) s.room.markSeen(to!, [msg.id])
-      })
+      const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
+      const symbols = sendType === 'changed' && Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
+      const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
+        : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
+        : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
+        : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
+      const posted: PostResult = await s.post(s.me, body)
+      if (!posted.ok) return [posted.text, ...deliveredInPrompt ? notes : []].join('\n')
+      const msg = posted.msg
+      if (deliveredInPrompt) ledger.commitPrompt(s, to!, [msg.id])
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
       const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()
-      return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes, ...(offline(s) ? ['offline: queued/not delivered'] : [])].join('\n')
+      return [`sent [${msg.id}] ${formatMsg(msg)}${(s !== lead) ? ' (in the workers room)' : ''}`, ...notes].join('\n')
     },
     async room_wait(a) {
       const signal = (a as Record<PropertyKey, unknown>)[WAIT_SIGNAL] as AbortSignal | undefined
+      // Standalone handler callers (no tool wrapper) hand off when the handler returns.
+      const given = (a as Record<PropertyKey, unknown>)[REPLY_BATCH] as Batch | undefined
+      const batch = given ?? ledger.open('reply')
+      const result = await wait(a, batch, signal)
+      if (!given) ledger.commit(batch)
+      return result
+    }
+  }
+  /** One wait over my rooms: the ledger selects what ends it into this reply's batch (receipted `via: 'wait'` on handoff). */
+  const wait = async (a: Record<string, unknown>, batch: Batch, signal?: AbortSignal): Promise<string> => {
       const s = S()
       const claimId = typeof a.claimId === 'string' && a.claimId ? a.claimId : undefined
       const questionId = typeof a.questionId === 'string' && a.questionId ? a.questionId : undefined
@@ -205,46 +204,46 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const capNotice = requestedMs > WAIT_MAX ? 'waited 100 s (the most per call); call again. ' : ''
       if (claimId && !s.room.claims.has(claimId)) return `claim ${claimId} is already released`
       const qRoom = (questionId && rooms.holdingQuestion(questionId, s)) || s
-      for (const room of [s, ...rooms.all().filter(x => x !== s)]) syncHookSeen(room)
-      const received = (x: Session, m: Msg) => { seen.add(m.id); x.room.markSeen(x.me.name, [m.id]); state.scheduleInboxWrite() }
+      const all = () => [s, ...rooms.all().filter(x => x !== s)]
       if (questionId) for (const x of [qRoom, ...rooms.all().filter(x => x !== qRoom)]) {
-        const an = x.room.messages().find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
-        if (an) { received(x, an); return `answered: ${formatMsg(an)}` }
+        // The answer ends the wait even when an earlier reply already showed it; it is receipted if still owed.
+        const an = [...x.room.messages(), ...x.room.mail.values()].find(m => messageEndsWait(m, { questionId, me: x.me.name, answersOnly: true }))
+        if (an) { ledger.select(x, batch, m => m.id === an.id, 'wait'); return `answered: ${formatMsg(an)}` }
       }
       if (questionId) { const notice = unavailableQuestion(qRoom, questionId); if (notice) return notice }
-      const waitResult = (x: Session, m: Msg, workersRoom = false): string | undefined => {
-        if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
-          received(x, m)
-          if (m.type === 'answer') return `answered: ${formatMsg(m)}`
-          if (m.type === 'done') return `worker done: ${formatMsg(m)}`
-          if (m.type === 'merge-conflict') return formatMsg(m)
-          if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
-          return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
-        }
-        if (m.priority === 'interrupt' && forMe(x, m)) { received(x, m); return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}` }
+      const ends = (x: Session) => (m: Msg) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom: x !== s }) || (m.priority === 'interrupt' && forMe(x, m))
+      const render = (x: Session, m: Msg): string => {
+        const workersRoom = x !== s
+        if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
+        if (m.type === 'answer') return `answered: ${formatMsg(m)}`
+        if (m.type === 'done') return `worker done: ${formatMsg(m)}`
+        if (m.type === 'merge-conflict') return formatMsg(m)
+        if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
+        return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
       }
-      const candidates = [s, ...rooms.all().filter(x => x !== s)].flatMap(x => x.room.messages()
-        .filter(m => !seen.has(m.id) && !x.room.seen(x.me.name).has(m.id))
-        .map(m => ({ x, m })))
-      candidates.sort((a, b) => (a.m.priority === 'interrupt' ? 0 : a.m.type === 'question' ? 1 : 2)
-        - (b.m.priority === 'interrupt' ? 0 : b.m.type === 'question' ? 1 : 2) || a.m.at - b.m.at)
-      for (const { x, m } of candidates) {
-        const ended = waitResult(x, m, x !== s)
-        if (ended) return ended
+      const rank = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2
+      /** The first owed message that ends this wait, reserved into the batch; the rest stay for the inbox. */
+      const take = (): string | undefined => {
+        const found = all().flatMap(x => ledger.available(x, batch, ends(x)).map(m => ({ x, m })))
+          .sort((p, q) => rank(p.m) - rank(q.m) || p.m.at - q.m.at)[0]
+        if (!found) return undefined
+        ledger.select(found.x, batch, m => m.id === found.m.id, 'wait')
+        return render(found.x, found.m)
       }
-      if (offline(s)) return 'offline: queued/not delivered; room_wait cannot observe new messages until reconnected'
+      const now0 = take()
+      if (now0) return now0
+      if (offline(s)) return 'offline: room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
       const waiting = new Map<Session, (m: Msg) => boolean>()
       for (const x of ws ? [s, ws] : [s]) {
-        const workersRoom = x !== s
-        const ends = (m: Msg) => messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom }) || (m.priority === 'interrupt' && forMe(x, m))
-        let callbacks = pendingWaits.get(x)
-        if (!callbacks) { callbacks = new Set(); pendingWaits.set(x, callbacks) }
-        callbacks.add(ends)
-        waiting.set(x, ends)
+        const callbacks = pendingWaits.get(x) ?? new Set()
+        pendingWaits.set(x, callbacks)
+        const fn = ends(x)
+        callbacks.add(fn)
+        waiting.set(x, fn)
       }
       setPresence(s, { status: claimId ? `waiting for ${claimId}` : questionId ? `waiting for answer to ${questionId}` : 'waiting' })
-      const result = await new Promise<string>(resolve => {
+      return await new Promise<string>(resolve => {
         let finished = false
         let timer: ReturnType<typeof setTimeout> | undefined
         const finish = (r: string) => {
@@ -253,10 +252,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (timer) clearTimeout(timer)
           s.room.claims.unobserve(onClaims)
           s.room.bus.unobserve(onBus)
-          ws?.room.bus.unobserve(onWorkersBus)
+          ws?.room.bus.unobserve(onBus)
           if (questionId) qRoom.room.doc.off('update', onRecipient)
           signal?.removeEventListener('abort', onAbort)
-          for (const [x, ends] of waiting) pendingWaits.get(x)?.delete(ends)
+          for (const [x, fn] of waiting) pendingWaits.get(x)?.delete(fn)
           setPresence(s, { status: 'idle' })
           resolve(r)
         }
@@ -266,17 +265,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const notice = unavailableQuestion(qRoom, questionId)
           if (notice) finish(notice)
         }
-        const onWorkersBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
-          if (!ws) return
-          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(ws, m, true)
-            if (ended) return finish(ended)
-          }
-        }
         timer = setTimeout(() => {
           const running = [...new Map(rooms.all().flatMap(room => myWorkers(room)).filter(w => w.status === 'running' && w.exitCode === undefined).map(w => [w.name, w])).values()]
           // Standalone handler callers may not have installed inbox delivery.
-          const unread = state.inbox?.(s) ?? ''
+          const unread = state.inbox?.(s, batch) ?? ''
           finish(capNotice + unread + (unread
             ? `timeout after ${timeoutMs}ms: unread messages delivered above. Continue independent work or wait again.`
             : running.length
@@ -284,45 +276,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ''}nothing new. Continue independent work or wait again.`))
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
-        const onBus = (ev: { changes: { delta: { insert?: unknown }[] } }) => {
-          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            const ended = waitResult(s, m)
-            if (ended) return finish(ended)
-          }
-        }
-        s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onWorkersBus)
+        // Live observers run the same selection as the first look.
+        const onBus = () => { const ended = take(); if (ended) finish(ended) }
+        s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onBus)
         if (questionId) qRoom.room.doc.on('update', onRecipient)
         signal?.addEventListener('abort', onAbort, { once: true })
         if (signal?.aborted) onAbort()
         else if (questionId) onRecipient()
       })
-      return result
     }
-  }
   return handlers
 }
 
 
-export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 'scheduleInboxWrite' | 'mine' | 'msgInMyAreas' | 'others' | 'upgraded'>): Pick<HandlerState, 'forMe' | 'inbox' | 'describeUsers' | 'waitingOn' | 'upgrade'> {
-  const { seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas, others, upgraded } = deps
-  const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: mine(s), inMyAreas: x => msgInMyAreas(s, x) })
-  const inbox = (s: Session): string => {
+export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' | 'scheduleInboxWrite' | 'mine' | 'msgInMyAreas' | 'others' | 'upgraded'>): Pick<HandlerState, 'forMe' | 'inbox' | 'describeUsers' | 'waitingOn' | 'upgrade'> {
+  const { rooms, log, scheduleInboxWrite, msgInMyAreas, others, upgraded } = deps
+  const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: deps.mine(s), inMyAreas: x => msgInMyAreas(s, x) })
+  const inbox = (s: Session, batch: Batch): string => {
       const fresh: Msg[] = []
       const ws = rooms.workers()
-      const sources = [s, ...(ws && ws !== s ? [ws] : [])]
-      for (const source of sources) {
-        syncHookSeen(source)
-        const delivered: string[] = []
-        for (const m of source.room.messages()) {
-          if (seen.has(m.id) || source.room.seen(source.me.name).has(m.id)) continue
-          seen.add(m.id)
-          if (!forMe(source, m)) continue
-          delivered.push(m.id)
-          fresh.push(source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
-        }
-        source.room.markSeen(source.me.name, delivered)
+      for (const source of [s, ...(ws && ws !== s ? [ws] : [])]) {
+        for (const m of deps.ledger.select(source, batch)) fresh.push(source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg)
       }
-      if (seen.size > 5000) { const keep = s.room.lastMessages(2000).map(m => m.id); seen.clear(); for (const k of keep) seen.add(k) }
       if (!fresh.length) return ''
       const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
       const order = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
@@ -409,9 +384,9 @@ export function createInbox(deps: Pick<HandlerState, 'seen' | 'rooms' | 'log' | 
         const key = `${m.id}:${person}`
         if (upgraded.has(key)) continue
         upgraded.add(key)
-        const { id: _id, at: _at, from: _f, fromKind: _k, ...body } = m as Msg & Record<string, unknown>
-        s.room.post(s.me, { ...(body as object), to: person, priority: 'notify', copyOf: m.id } as never)
-        notes.push(`notified ${person}'s agent (${why})`)
+        const { id: _id, at: _at, from: _f, fromKind: _k, seq: _q, ...body } = m as Msg & Record<string, unknown>
+        const copy = await s.post(s.me, { ...(body as object), to: person, priority: 'notify', copyOf: m.id } as PostBody, { auto: true })
+        notes.push(copy.ok ? `notified ${person}'s agent (${why})` : `could not notify ${person}'s agent: ${copy.text}`)
       }
       return notes
     }

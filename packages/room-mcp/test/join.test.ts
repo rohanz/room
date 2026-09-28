@@ -1,14 +1,17 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, trim, type AnswerMsg, type NoteMsg, type QuestionMsg } from '@room/shared'
+import { hubAppend } from '@room/shared/testing'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
 import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
+import { memorySession } from './fixtures/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
@@ -44,7 +47,7 @@ function session(roomName: string, options: { local?: boolean; share?: 'full' | 
     policyStore: testPolicyStore(share, policy => { daemon.share = policy.level }),
     dir, room, awareness, roomName, roomUrl, browserUrl: 'http://example/view',
     me: { name: 'Ada+privacy', owner: 'Ada', label: 'privacy', kind: 'agent' },
-    provider: { synced: true, awareness }, daemon, shareMax: 'full', shareRequested: share,
+    ...hubSeam(room), provider: { synced: true, awareness }, daemon, shareMax: 'full', shareRequested: share,
     ...(options.local ? { local: { url: 'ws://local' } } : {}),
     ...(options.pinned ? { pinnedRoom: true } : {}),
   } as Session
@@ -139,4 +142,43 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(await tools.call('room_login', { server, wait: 5 })).toContain('logged in')
   expect(await tools.call('room_join', { where: server, room: 'git/example/repo/main' })).toContain('joined git/example/repo/main')
   expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server, server])
+})
+
+describe('owed mail survives the trim (ledger test 5)', () => {
+  const pat = { name: 'Pat', kind: 'agent' as const }, quinn = { name: 'Quinn', kind: 'agent' as const }
+  const inbox = (text: string) => /\[inbox \d+\]\n((?: {2}.*\n)*)/.exec(text)?.[1] ?? ''
+  const toolsFor = (s: Session) => {
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
+    dispose.push(() => tools.shutdown())
+    return tools
+  }
+
+  it('an answer trimmed to mail while P was offline is delivered once when P returns', async () => {
+    const s = memorySession(pat, dir)
+    const q = hubAppend<QuestionMsg>(s.room, pat, { type: 'question', to: quinn.name, text: 'which token?' })
+    const a = hubAppend<AnswerMsg>(s.room, quinn, { type: 'answer', to: pat.name, inReplyTo: q.id, text: 'the access token' })
+    for (let i = 0; i < 5; i++) hubAppend<NoteMsg>(s.room, quinn, { type: 'note', text: `later ${i}` })
+    trim(s.room, Date.now(), { busKeep: 2 })
+    expect(s.room.messages().some(m => m.id === a.id)).toBe(false)
+    expect(s.room.mail.has(a.id)).toBe(true)
+    const tools = toolsFor(s)
+    expect(inbox(await tools.call('room_state', {}))).toContain('the access token')
+    expect(s.room.seen(pat.name).get(a.id)).toMatchObject({ via: 'reply' })
+    expect(inbox(await tools.call('room_state', {}))).not.toContain('the access token')
+  })
+
+  it('a question P was shown and has not answered moves to mail, and room_send inReplyTo still resolves (SF2)', async () => {
+    const s = memorySession(pat, dir)
+    s.room.colors.set(quinn.name, 0)
+    const tools = toolsFor(s)
+    const q = hubAppend<QuestionMsg>(s.room, quinn, { type: 'question', to: pat.name, text: 'still valid?' })
+    expect(inbox(await tools.call('room_state', {}))).toContain('still valid?')
+    for (let i = 0; i < 5; i++) hubAppend<NoteMsg>(s.room, quinn, { type: 'note', text: `later ${i}` })
+    trim(s.room, Date.now(), { busKeep: 2 })
+    expect(s.room.messages().some(m => m.id === q.id)).toBe(false)
+    expect(s.room.mail.get(q.id)).toMatchObject({ text: 'still valid?' })
+    const sent = await tools.call('room_send', { type: 'answer', inReplyTo: q.id, text: 'yes' })
+    expect(sent).toMatch(/^sent \[/)
+    expect(s.room.messages().find(m => m.type === 'answer')).toMatchObject({ inReplyTo: q.id, to: quinn.name })
+  })
 })

@@ -10,9 +10,11 @@ import { signalWorker, pidAlive } from '../src/worker-process.js'
 import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
-import { retainedDeclaredFile } from '@room/roomd'
+import { PolicyStore, sharingFile } from '../src/policy-store.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
@@ -36,7 +38,7 @@ function setup(status = 'done') {
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
   room.workers.set('test', w as never)
-  const s = { dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
   const retireWorkers = vi.fn(async () => {})
   const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
   return { call: async (args: Record<string, unknown>) => {
@@ -120,8 +122,13 @@ describe('room_collect', () => {
     t.s.room.workers.set('test', { ...t.w, exitCode: 0 } as never)
     put(worker, 'new.txt', 'worker change')
     put(worker, 'artifact.bin', 'ignored output')
-    const retained = retainedDeclaredFile(worker, t.s.roomName, t.w.name, 'ws://127.0.0.1:1')
-    fs.writeFileSync(retained, JSON.stringify({ server: 'ws://127.0.0.1:1', room: t.s.roomName, participant: t.w.name, paths: ['new.txt'] }))
+    // The worker's declared grant ended while new.txt was shared, so its policy retains that path.
+    const policy = await PolicyStore.open({ dir: worker, room: t.s.roomName, participant: t.w.name, server: 'ws://127.0.0.1:1', requested: 'declared' })
+    await policy.declare(['new.txt'])
+    await policy.settle(await policy.declare([]), new Map([['new.txt', { state: 'shared', change: 'A' }]]), [])
+    expect(policy.retained).toEqual(['new.txt'])
+    const retained = await sharingFile(worker, t.s.roomName, t.w.name)
+    expect(fs.existsSync(retained)).toBe(true)
     seedPresence(t)
     expect(await t.call({ tag: 'test' })).toContain(`kept artifact.bin at ${path.join(worker, 'artifact.bin')}`)
     expect(fs.existsSync(worker)).toBe(true)

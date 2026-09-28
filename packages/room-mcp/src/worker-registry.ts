@@ -251,7 +251,7 @@ export class WorkerRegistry {
   private readonly alive: LivenessProbe
   private readonly now: () => number
   private readonly identity: InstanceToken
-  private readonly listeners = new Set<() => void>()
+  private readonly listeners = new Set<(id?: string) => void>()
   private observed = new Map<string, string>()
   private readonly watchers: fs.FSWatcher[] = []
   private readonly heldOperations = new Map<string, string>()
@@ -328,8 +328,9 @@ export class WorkerRegistry {
     } catch (e) { this.quarantine(file, e) }
     return undefined
   }
-  private changed(): void { for (const listener of this.listeners) listener() }
-  onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
+  /** `id` names the one worker that changed; none means any may have (another instance's writes). */
+  private changed(id?: string): void { for (const listener of this.listeners) listener(id) }
+  onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
   /** Callable by the wave-4 presence loop; its durable journal makes crash replay idempotent. */
   async reconcileIdleClaims(action: IdleClaimsAction): Promise<boolean> {
@@ -437,7 +438,7 @@ export class WorkerRegistry {
         lead: { ...current.lead, participant: lead.participant, room: lead.room },
         legacy: { ...current.legacy, unowned: false }, seq: current.seq + 1 }
       writeAtomic(this.workerFile(record.id), next)
-      this.changed()
+      this.changed(record.id)
       return next
     })
   }
@@ -480,7 +481,7 @@ export class WorkerRegistry {
       } catch (error) { await pauseForGuard(deadline, error) }
     }
     this.heldOperations.set(record.id, 'spawn')
-    this.changed()
+    this.changed(record.id)
   }
 
   /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
@@ -497,7 +498,7 @@ export class WorkerRegistry {
       writeAtomic(this.workerFile(id), next)
       return next
     })
-    this.changed()
+    this.changed(id)
     return value
   }
   async finishOperation(id: string): Promise<boolean> {
@@ -555,7 +556,7 @@ export class WorkerRegistry {
         writeAtomic(this.workerFile(id), record)
         return record
       })
-      this.changed()
+      this.changed(id)
       return next
     } catch (error) { await this.finishOperation(id); throw error }
   }
@@ -587,18 +588,19 @@ export class WorkerRegistry {
   }
 
   /** The post callback must use the deterministic id with RoomDoc.post. */
-  async postCompletion(id: string, n: number, post: (id: string, record: WorkerRecord, report: RunReport) => void): Promise<boolean> {
+  /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
+  async postCompletion(id: string, n: number, post: (id: string, record: WorkerRecord, report: RunReport) => Promise<void>): Promise<boolean> {
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
     const report = this.reports(id).find(value => value.run === n)
     if (!record || !run || !report?.done) throw new Error('worker completion not reported')
     if (report.posted || run.posted) return false
     const messageId = `wk:${id}:${n}`
-    post(messageId, record, report)
+    await post(messageId, record, report)
     await this.writeReport(id, { ...report, posted: messageId })
     return true
   }
 
-  async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => void): Promise<boolean> {
+  async postObservedFailure(id: string, n: number, post: (message: NonNullable<ReturnType<typeof completionMessage>>) => Promise<void>): Promise<boolean> {
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
     const exit = this.exits(id).find(value => value.run === n)
     const report = this.reports(id).find(value => value.run === n)
@@ -606,7 +608,7 @@ export class WorkerRegistry {
     if (!record || !run || !exit?.witnessed || run.posted || report?.posted || status?.status !== 'failed') return false
     const message = completionMessage(record, run, status, report)
     if (!message || message.body.type !== 'note') return false
-    post(message)
+    await post(message)
     await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
     return true
   }
@@ -760,7 +762,7 @@ export class WorkerRegistry {
         hostSessionId: previous.hostSessionId ?? report.hostSessionId,
         done: previous.done ?? report.done, posted: previous.posted ?? report.posted } : report)
     })
-    this.changed()
+    this.changed(id)
   }
 
   /** A witnessed child-close observation is never replaced by a later unwitnessed poll. */
@@ -770,7 +772,7 @@ export class WorkerRegistry {
       const old = this.readFact(file, exitShape)
       if (!old || (!old.witnessed && observation.witnessed)) writeAtomic(file, observation)
     })
-    this.changed()
+    this.changed(id)
   }
 
   private rollbackPreparation(record: WorkerRecord): void {

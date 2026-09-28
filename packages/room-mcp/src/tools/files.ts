@@ -211,7 +211,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        if (!hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return out.join('\n')
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

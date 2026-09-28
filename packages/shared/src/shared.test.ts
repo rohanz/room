@@ -10,6 +10,7 @@ import {
   formatMsg,
   type QuestionMsg,
 } from './index.js'
+import { hubAppend } from './testing.js'
 
 describe('identity', () => {
   it('colour is deterministic and shared between a person and their agent', () => {
@@ -80,7 +81,7 @@ describe('RoomDoc overlays', () => {
     b.setScope({ by: 'Kieran', byKind: 'human', area: 'tests', summary: 'write tests', paths: ['tests/'] })
     expect(a.scope('Kieran')).toMatchObject({ summary: 'write tests', at: expect.any(Number) })
 
-    b.post<QuestionMsg>({ name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
+    hubAppend<QuestionMsg>(b, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'changing payload?' })
     expect(a.lastMessages(1)[0]).toMatchObject({ type: 'question', priority: 'notify', from: 'Kieran' })
     expect(formatMsg(a.lastMessages(1)[0])).toBe("[notify] Kieran's agent → Rohan's agent asks: changing payload?")
 

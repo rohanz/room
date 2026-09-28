@@ -10,6 +10,8 @@ import { RoomDoc } from '@room/shared'
 import * as Y from 'yjs'
 import type { Session } from '../src/session.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: vi.fn() }))
 let root: string, lead: string, worker: string, base: string
@@ -31,7 +33,7 @@ function setup() {
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
   room.workers.set('test', w as never)
-  const s = { dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() } }
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() } }
   const state = {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: vi.fn(async () => {}) }, workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,

@@ -10,7 +10,8 @@ import { bareSymbol, claimsOverlap, displayName, observedContractChanges, type S
  */
 import { structuredPatch } from 'diff'
 import { createHash } from 'node:crypto'
-import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, Identity, NoteMsg, RoomDoc } from '@room/shared'
+import type { Claim, ConflictMsg, MergeConflictMsg, ContractMsg, GraphSnapshot, Identity, Msg, NoteMsg, PostBody, RoomDoc } from '@room/shared'
+import type { Post } from './post.js'
 import { gitMergeFile } from './merge.js'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
@@ -21,6 +22,8 @@ const ROOM: Identity = { name: 'room', kind: 'agent' }
 export interface ConflictDeps {
   room: RoomDoc
   me: Identity
+  /** The session's post seam; these notices are automatic posts (never refused over a cap). */
+  post: Post
   /** A person's live text for a path; undefined when the file exists nowhere; null when deleted. */
   liveText: (path: string, person: string) => Promise<string | undefined | null>
   /** Text of a path at a commit. */
@@ -86,6 +89,8 @@ type ObservedChange = NonNullable<GraphSnapshot['observed']>[number]
 const hashText = (text: string) => createHash('sha256').update(text).digest('hex')
 
 export class ConflictWatcher {
+  /** Notices on their way to the hub; flush() waits for them. */
+  private readonly posting = new Set<Promise<void>>()
   private stopFns: (() => void)[] = []
   private timers = new Map<string, NodeJS.Timeout>()
   /** "path|claimId" pairs already reported. */
@@ -156,6 +161,17 @@ export class ConflictWatcher {
     this.integrationTimer = null
   }
 
+  /** Post as the room. A notice the hub did not take is forgotten, so the next check derives it again (hub §7). */
+  private notify<T extends Msg>(body: PostBody<T>, forget?: () => void): void {
+    const posting = this.d.post<T>(ROOM, body, { auto: true }).then(r => {
+      this.posting.delete(posting)
+      if (r.ok) return
+      this.d.log?.(`${body.type} notice ${r.text}`)
+      forget?.()
+    })
+    this.posting.add(posting)
+  }
+
   /** Debounced per (person, path): a burst of keystrokes becomes one check. */
   private schedule(person: string, p: string): void {
     const key = `${person}|${p}`
@@ -179,6 +195,7 @@ export class ConflictWatcher {
     for (const [person, t] of this.observedTimers) { clearTimeout(t); this.observedTimers.delete(person); this.runObserved(person) }
     while (this.observedChecks.size) await Promise.all(this.observedChecks)
     this.reportIntegrations()
+    await Promise.all(this.posting)
   }
 
   private checkAllObserved(): void {
@@ -228,8 +245,8 @@ export class ConflictWatcher {
         this.d.log?.(`contract coverage degraded for ${path}: ${read.error.message}`)
         if (!this.degradedBaseline.has(degradedKey)) {
           this.degradedBaseline.add(degradedKey)
-          this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'notify',
-            text: `contract coverage degraded for ${path}: carried baseline unavailable; changes in this file cannot be checked` })
+          this.notify<NoteMsg>({ type: 'note', to: this.d.me.name, priority: 'notify',
+            text: `contract coverage degraded for ${path}: carried baseline unavailable; changes in this file cannot be checked` }, () => this.degradedBaseline.delete(degradedKey))
         }
         continue
       }
@@ -283,7 +300,7 @@ export class ConflictWatcher {
       const action = change.kind === 'signature' ? `changed the signature of ${change.symbol}()` : `deleted ${change.symbol}()`
       const consumers = uses.length === 1 ? `${uses[0]} uses it` : `${uses.join(', ')} use it`
       const text = `${person} ${action} in ${change.path} (${change.detail}); ${consumers}`
-      this.d.room.post<ContractMsg>(ROOM, { type: 'contract', to: this.d.me.name, priority: 'notify', path: change.path, symbol: change.symbol, text })
+      this.notify<ContractMsg>({ type: 'contract', to: this.d.me.name, priority: 'notify', path: change.path, symbol: change.symbol, text }, () => this.observedReported.delete(key))
       this.d.log?.(`contract: ${text}`)
     }
   }
@@ -338,7 +355,7 @@ export class ConflictWatcher {
         for (const [path, at] of this.externalReported) if (now - at >= 600_000) this.externalReported.delete(path)
         if (!this.externalReported.has(p)) {
           this.externalReported.set(p, now)
-          this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: me.name, priority: 'fyi', text: `${p} changed in your folder without a write from your session` })
+          this.notify<NoteMsg>({ type: 'note', to: me.name, priority: 'fyi', text: `${p} changed in your folder without a write from your session` }, () => this.externalReported.delete(p))
         }
         continue
       }
@@ -346,9 +363,9 @@ export class ConflictWatcher {
       if (this.reported.has(k)) continue
       this.reported.add(k)
       const who = displayName({ name: c.by, kind: c.byKind })
-      this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: me.name, priority: 'interrupt',
-        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})` })
-      this.d.room.post<ConflictMsg>(ROOM, { type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: c.by, priority: 'notify',
+      this.notify<ConflictMsg>({ type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: me.name, priority: 'interrupt',
+        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})` }, () => this.reported.delete(k))
+      this.notify<ConflictMsg>({ type: 'conflict', claimId: c.id, otherClaimId: '', path: p, to: c.by, priority: 'notify',
         text: `${displayName(me)} edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming` })
       this.d.log?.(`overlap: my edit ${p}:${hit.from}-${hit.to} inside ${c.by}'s claim ${c.id}`)
     }
@@ -359,7 +376,7 @@ export class ConflictWatcher {
     this.integrationTimer = null
     for (const [holder, paths] of this.integrated) {
       this.integrationReported.add(holder)
-      this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'fyi',
+      this.notify<NoteMsg>({ type: 'note', to: this.d.me.name, priority: 'fyi',
         text: `${this.d.me.name} integrated ${paths.size} file${paths.size === 1 ? '' : 's'} of ${holder}` })
     }
     this.integrated.clear()
@@ -380,12 +397,12 @@ export class ConflictWatcher {
     const was = this.conflicting.has(key)
     if (res.status === 'conflict' && !was) {
       this.conflicting.add(key)
-      this.d.room.post<MergeConflictMsg>(ROOM, { type: 'merge-conflict', path: p, to: this.d.me.name,
-        text: `your ${p} and ${person}'s now conflict around line${res.lines.length === 1 ? '' : 's'} ${res.lines.join(', ')}; room_preview_merge(${person}) for detail` })
+      this.notify<MergeConflictMsg>({ type: 'merge-conflict', path: p, to: this.d.me.name,
+        text: `your ${p} and ${person}'s now conflict around line${res.lines.length === 1 ? '' : 's'} ${res.lines.join(', ')}; room_preview_merge(${person}) for detail` }, () => { this.conflicting.delete(key); this.mergeHashes.delete(key) })
       this.d.log?.(`preview: ${p} conflicts with ${person}'s at ${res.lines.join(', ')}`)
     } else if (res.status !== 'conflict' && was) {
       this.conflicting.delete(key)
-      this.d.room.post<NoteMsg>(ROOM, { type: 'note', to: this.d.me.name, priority: 'fyi', text: `your ${p} and ${person}'s merge cleanly again` })
+      this.notify<NoteMsg>({ type: 'note', to: this.d.me.name, priority: 'fyi', text: `your ${p} and ${person}'s merge cleanly again` }, () => { this.conflicting.add(key); this.mergeHashes.delete(key) })
     }
   }
 

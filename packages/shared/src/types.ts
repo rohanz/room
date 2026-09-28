@@ -84,6 +84,8 @@ export interface MsgBase {
   at: number
   /** Set on a copy the room addressed to someone because it affects them; the original's id. */
   copyOf?: string
+  /** Assigned by the room's hub, the sole appender (hub §3). */
+  seq?: number
 }
 export interface ClaimMsg extends MsgBase { type: 'claim'; claimId: string; path: string; from_line: number; to_line: number; intent: string; plans?: Plan[] }
 export interface ReleaseMsg extends MsgBase { type: 'release'; claimId: string; path: string; summary?: string; unfulfilled?: Plan[] }

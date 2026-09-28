@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
+import { createPost, HubClient, hubTransport } from '@room/room-mcp'
 import { RoomDoc, colorFor } from '@room/shared'
 import { configureCredentials, deriveRoomName, encodeRoom, getCredential, parseServer } from '@room/room-mcp'
 import { CodexBackend } from './backend.js'
@@ -91,7 +92,10 @@ const backend = new CodexBackend({
     ...(credentialsPath ? { ROOM_CREDENTIALS: credentialsPath } : {}),
   } },
 })
-const runner = new Runner({ name, room, awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
+// Posts go through the room's hub, the sole appender of its bus; hello now and on every reconnect.
+const hub = new HubClient({ transport: hubTransport(provider), client: 'roomagent', sessionId: `roomagent:${process.pid}` })
+provider.once('sync', () => { void hub.hello().catch(() => {}) })
+const runner = new Runner({ name, room, post: createPost(room, hub), awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
 
 // Mirror the transcript to the terminal so the browser view is optional.
 room.chat(name).observe(ev => {

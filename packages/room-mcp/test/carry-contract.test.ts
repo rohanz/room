@@ -8,6 +8,7 @@ import { ensureLanguages, parseFile } from '../src/parse/engine.js'
 import { gitShow } from '@room/roomd/git'
 import { ConflictWatcher } from '../src/conflicts.js'
 import { referencesSymbol } from '../src/graph-index.js'
+import { hubSeam } from './fixtures/hub.js'
 
 const lead = 'rohanz', worker = 'rohanz+calc', pricing = 'api/pricing.py', handler = 'api/handler.py'
 const carriedText = 'def tier_rate(tier):\n    return 0.1\n'
@@ -63,7 +64,7 @@ async function world(carried: 'tracked' | 'untracked' | false = 'tracked', graph
   room.setWorker(record)
   const me: Identity = { name: worker, kind: 'agent', owner: lead }
   const watcher = new ConflictWatcher({
-    room, me, debounceMs: 0,
+    room, post: hubSeam(room).post, me, debounceMs: 0,
     liveText: async (file, person) => {
       const location = path.join(person === lead ? repo : dir, file)
       return fs.existsSync(location) ? fs.readFileSync(location, 'utf8') : null

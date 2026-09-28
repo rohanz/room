@@ -69,13 +69,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
       await s.policyStore.declare(paths)
-      const posted = s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
+      const posted = await s.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
       setPresence(s, { status: `on ${area}: ${summary}`, areas })
-      const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`]
+      const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`, ...posted.ok ? [] : [`scope notice ${posted.text}`]]
       out.push(...areaLines(s, areas))
       const overlapping = s.room.allScopes().filter(sc => sc.by !== s.me.name && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
       for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} — coordinate before touching shared files`)
-      out.push(...ledgerLines(s, { area, limit: 20 }, area, posted.id))
+      out.push(...ledgerLines(s, { area, limit: 20 }, area, posted.msg.id))
       return out.join('\n')
     },
     async room_state(a) {

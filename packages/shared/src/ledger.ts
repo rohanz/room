@@ -1,4 +1,4 @@
-import type { Msg, Plan, ReleaseMsg, Scope, RetiredWorker } from './types.js'
+import type { Msg, Scope, RetiredWorker } from './types.js'
 import { containsPath } from './near.js'
 
 export const MAX_RETIRED_WORKERS = 200
@@ -12,19 +12,6 @@ export function compactRetiredWorker(record: RetiredWorker): RetiredWorker {
 
 export type LedgerEntry = Msg
 const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'conflict', 'base', 'plan'])
-
-/** Compact history retained after old bus entries are removed. */
-export interface LedgerArchive {
-  messages: number
-  counts: Partial<Record<Msg['type'], number>>
-  lastSeen: Record<string, number>
-  lastAt: number
-  unfulfilled: { message: ReleaseMsg; plans: Plan[] }[]
-}
-
-export function emptyLedgerArchive(): LedgerArchive {
-  return { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] }
-}
 
 /** Paths a bus message touches. */
 export function msgPaths(m: Msg): string[] {
@@ -46,23 +33,6 @@ export function messageAreas(m: Msg, scopes: readonly Scope[]): string[] {
   if (m.type === 'scope') out.add(m.area)
   for (const path of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path)) out.add(scope.area)
   return Array.from(out).sort()
-}
-
-/** Fold messages into an existing archive without retaining routine message bodies. */
-export function foldLedger(previous: LedgerArchive | undefined, messages: readonly Msg[]): LedgerArchive {
-  const out: LedgerArchive = previous
-    ? { messages: previous.messages, counts: { ...previous.counts }, lastSeen: { ...previous.lastSeen }, lastAt: previous.lastAt, unfulfilled: [...previous.unfulfilled] }
-    : emptyLedgerArchive()
-  for (const m of messages) {
-    out.messages++
-    out.counts[m.type] = (out.counts[m.type] ?? 0) + 1
-    out.lastSeen[m.from] = Math.max(out.lastSeen[m.from] ?? 0, m.at)
-    out.lastAt = Math.max(out.lastAt, m.at)
-    if (m.type === 'release' && m.unfulfilled?.length && !out.unfulfilled.some(x => x.message.id === m.id)) {
-      out.unfulfilled.push({ message: m, plans: m.unfulfilled })
-    }
-  }
-  return out
 }
 
 /**

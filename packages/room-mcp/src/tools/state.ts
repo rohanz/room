@@ -14,7 +14,9 @@ import { HooksBridge } from '../hooks-bridge.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { isPrName } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
-import { authFor, closeRoom, joinSession, leaveSession, type Session } from '../session.js'
+import { authFor, closeRoom, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
+import { Ledger } from '../ledger.js'
+import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
 import { repairRetired } from '../retire.js'
@@ -27,7 +29,6 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const doLeave = ctx.leave ?? leaveSession
 
   // ---- per-session state --------------------------------------------------
-  const seen = new Set<string>() // message ids already shown in the inbox (ids, not indexes: the bus is a concurrent array)
   const upgraded = new Set<string>() // "msgId:person" copies already posted
   const conflictPairs = new Set<string>() // sorted "a:b" claim-id pairs already reported
   /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
@@ -41,7 +42,12 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    * file is the team room's), the host's channel push, and the bridge to the lead's team room.
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
-    const hooks = new HooksBridge(s, { forMe: m => inboxServices.forMe(s, m), isSeen: id => seen.has(id), company: () => company(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}) })
+    ledger.bind(s)
+    const hooks = new HooksBridge(s, {
+      forMe: m => inboxServices.forMe(s, m), owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
+      session: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(),
+      company: () => company(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}),
+    })
     hooks.start()
     if (role === 'primary') primaryHooks = hooks
     let watcher: ConflictWatcher | null = null
@@ -136,12 +142,21 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
   const claims = createClaims({ conflictPairs, mine, log, ctx, liveText, baseFor })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
-  const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
+  const ledger: Ledger = new Ledger({
+    sessionId: () => ctx.binding?.id() ?? syntheticSessionId({ pid: process.pid, startTime: '', executable: '' }),
+    sessionDir: () => ctx.binding?.dir(),
+    route: s => ({ claims: mine(s), inMyAreas: m => areas.msgInMyAreas(s, m) }),
+    relevant: createRelevance(),
+    onSettled: scheduleInboxWrite,
+    log,
+    hookLeaseMs: ctx.hookLeaseMs,
+  })
+  const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
-  const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences,
+  const join = createJoin({ ctx, log, doJoin, doLeave, rooms, now, presences,
     runningWorkers: s => registryRunningWorkers(s, rooms) })
-  const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, seen, log, cleanupMine: join.cleanupMine, now })
+  const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, log, cleanupMine: join.cleanupMine, now })
   const company = (s: Session) => hasCompany(s, workers.runningWorkers(s).map(r => r.w), now())
   const state: HandlerState = {
     ...workers,
@@ -151,7 +166,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...inboxServices,
     ...claims,
     ...areas,
-    ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, 
+    ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine, 
     hasCompany: company, others, presences,
     shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, 
     workerPaths: () => roomBridge?.workerPaths() ?? [],

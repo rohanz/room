@@ -8,9 +8,8 @@ import os from 'node:os'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
-import { gitCommonDir, worktreeGitDirFromDotGit } from '@room/roomd'
+import { gitCommonDir } from '@room/roomd'
 import { parseShare, type ShareLevel } from '@room/roomd'
-import { newestModelInTranscriptTail } from '../../../plugins/room/hooks/common.mjs'
 
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
@@ -112,8 +111,8 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   }
 }
 
-/** Explicit worker host wins, then static plugin env, parent process and the SessionStart hint. */
-export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } })): string {
+/** Explicit worker host wins, then static plugin env and the parent process; 'agent' when none says. */
+export function resolveSessionHost(env: NodeJS.ProcessEnv = process.env, parentCommand: () => string = () => execFileSync('ps', ['-o', 'comm=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } })): string {
   const host = (v: unknown) => v === 'claude' || v === 'codex' ? v : undefined
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST!
   if (host(env.ROOM_HOST)) return env.ROOM_HOST!
@@ -121,61 +120,25 @@ export function resolveSessionHost(dir: string, env: NodeJS.ProcessEnv = process
     const command = path.basename(parentCommand().trim()).toLowerCase()
     if (/^codex(?:[.-]|$)/.test(command)) return 'codex'
     if (/^claude(?:[.-]|$)/.test(command)) return 'claude'
-  } catch { /* ps unavailable: try the session file */ }
-  if (value(env.CLAUDE_CODE_SESSION_ID)) return 'claude'
-  try {
-    return host(JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')).host) ?? 'agent'
-  } catch { return 'agent' }
+  } catch { /* ps unavailable */ }
+  return value(env.CLAUDE_CODE_SESSION_ID) ? 'claude' : 'agent'
 }
 
-/** Per-worktree hook file, also used when the session changes under a live MCP process. */
-export function sessionMetadataPath(dir: string): string {
-  return path.join(worktreeGitDirFromDotGit(dir), 'room-session.json')
-}
-
-type TranscriptFs = Pick<typeof fs, 'readFileSync' | 'writeFileSync' | 'statSync' | 'openSync' | 'readSync' | 'closeSync'>
-
-/** Per-session bounded reader; successful reads are repeated only after the transcript changes. */
-export function createClaudeTranscriptModelRefresh(io: TranscriptFs = fs): (dir: string) => string | undefined {
-  const checked = new Map<string, { sessionId?: string; path: string; mtimeMs: number; size: number; model?: string }>()
-  return dir => {
-    const sessionFile = sessionMetadataPath(dir)
-    let session: Record<string, unknown>
-    try { session = JSON.parse(io.readFileSync(sessionFile, 'utf8')) as Record<string, unknown> } catch { return undefined }
-    if (session.host !== 'claude' || typeof session.transcript_path !== 'string' || !session.transcript_path) return undefined
-    let fd: number | undefined
-    try {
-      const stat = io.statSync(session.transcript_path)
-      const prior = checked.get(sessionFile)
-      const sameSession = prior?.sessionId === session.session_id && prior?.path === session.transcript_path
-      if (sameSession && prior && prior.mtimeMs === stat.mtimeMs && prior.size === stat.size) return prior.model
-      fd = io.openSync(session.transcript_path, 'r')
-      const start = Math.max(0, stat.size - 64 * 1024)
-      const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024))
-      const count = io.readSync(fd, tail, 0, tail.length, start)
-      const model = newestModelInTranscriptTail(tail.subarray(0, count).toString('utf8'), start > 0)
-      // The first transcript tail may predate the model reported by SessionStart.
-      const effective = session.modelFromHook && !sameSession && typeof session.model === 'string' ? session.model : model
-      checked.set(sessionFile, { sessionId: typeof session.session_id === 'string' ? session.session_id : undefined, path: session.transcript_path, mtimeMs: stat.mtimeMs, size: stat.size, ...(effective ? { model: effective } : {}) })
-      if (effective && session.model !== effective) {
-        try { io.writeFileSync(sessionFile, JSON.stringify({ ...session, model: effective }) + '\n') } catch { /* best effort */ }
-      }
-      return effective
-    } catch { return undefined }
-    finally { if (fd !== undefined) { try { io.closeSync(fd) } catch { /* best effort */ } } }
-  }
-}
-
-/** Never infer model/effort from ambient host configuration or inherited host-specific variables. */
-export function resolveSessionRuntime(dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
+/**
+ * Model and effort of the bound host session (ledger SF3): SessionStart's values in `session.json`,
+ * overlaid by a newer `runtime.json` (written only by the before-edit hook). Never inferred from ambient
+ * host configuration or inherited host-specific variables.
+ */
+export function resolveSessionRuntime(sessionDir: string | undefined, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
   const clean = (v: unknown) => typeof v === 'string' ? v.replace(/[^\x20-\x7e]/g, '').trim().slice(0, 80) || undefined : undefined
   const effort = (v: unknown) => { const e = clean(v); return e && ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(e) ? e : undefined }
-  let session: Record<string, unknown> = {}
-  try { session = JSON.parse(fs.readFileSync(sessionMetadataPath(dir), 'utf8')) as Record<string, unknown> } catch { /* unknown */ }
-  // Claude supplies its session ID to stdio MCP servers, but retains the spawn-time
-  // value across /clear. A newer Claude hook file is authoritative; an unrelated
-  // host's file from this clone is not.
-  if (env.CLAUDE_CODE_SESSION_ID && resolveSessionHost(dir, env) === 'claude' && session.session_id !== env.CLAUDE_CODE_SESSION_ID && session.host !== 'claude') session = {}
+  const read = (name: string): Record<string, unknown> => {
+    if (!sessionDir) return {}
+    try { return JSON.parse(fs.readFileSync(path.join(sessionDir, name), 'utf8')) as Record<string, unknown> } catch { return {} }
+  }
+  const session = read('session.json'), runtime = read('runtime.json')
   const ownSession = env.ROOM_WORKER_ID ? session.worker_id === env.ROOM_WORKER_ID : !session.worker_id
-  return { model: (ownSession ? clean(session.model) : undefined) ?? clean(env.ROOM_WORKER_MODEL), effort: (ownSession ? effort(session.effort) : undefined) ?? effort(env.ROOM_WORKER_EFFORT) }
+  const newer = typeof runtime.at === 'number' && runtime.at >= (typeof session.at === 'number' ? session.at : 0)
+  const pick = (field: 'model' | 'effort', check: (v: unknown) => string | undefined) => ownSession ? (newer ? check(runtime[field]) : undefined) ?? check(session[field]) : undefined
+  return { model: pick('model', clean) ?? clean(env.ROOM_WORKER_MODEL), effort: pick('effort', effort) ?? effort(env.ROOM_WORKER_EFFORT) }
 }

@@ -7,7 +7,7 @@
  * comment on the PR (room_pr_note / room_done pr_note).
  */
 import type { RoomDoc, Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { displayName, formatPlans } from '@room/shared'
+import { archiveSummary, displayName, formatPlans } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import { authFor, type Session } from './session.js'
@@ -126,7 +126,7 @@ export function exportRoomLedger(s: Session, opts: { path?: string; now?: number
  */
 export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: number; history?: boolean }): string {
   const now = opts.now ?? Date.now()
-  const archived = room.archivedLedger()
+  const archived = archiveSummary(room)
   const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
@@ -142,7 +142,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: numb
     const counts = Object.entries(archived.counts).sort(([a], [b]) => a.localeCompare(b)).map(([kind, n]) => `${n} ${kind}`).join(', ')
     const seen = Object.entries(archived.lastSeen).sort(([a], [b]) => a.localeCompare(b)).map(([person, at]) => `${person} (${t(at)})`).join(', ')
     lines.push(`- Earlier compact history: ${archived.messages} messages (${counts}); last seen: ${seen || 'unknown'}`)
-    for (const item of archived.unfulfilled) lines.push(`- ${t(item.message.at)} **${displayName({ name: item.message.from, kind: item.message.fromKind })}** left plans unfulfilled on \`${item.message.path}\`: ${formatPlans(item.plans)}${item.message.summary ? ` (${item.message.summary})` : ''}`)
+    for (const item of archived.unfulfilled) lines.push(`- ${t(item.at)} **${displayName({ name: item.from, kind: 'agent' })}** left plans unfulfilled on \`${item.path}\`: ${formatPlans(item.plans)}${item.summary ? ` (${item.summary})` : ''}`)
   }
   for (const m of msgs) {
     switch (m.type) {

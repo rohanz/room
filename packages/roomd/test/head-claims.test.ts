@@ -6,9 +6,10 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { startRoomd, type Roomd } from '../src/index.js'
+import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 import { claimDigest } from '../src/reanchor.js'
 import { pollHead } from './poll-head.js'
+import { hubAppend } from '@room/shared/testing'
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 let root: string | undefined
@@ -19,6 +20,9 @@ afterEach(async () => {
   if (root) fs.rmSync(root, { recursive: true, force: true })
   root = undefined
 })
+
+/** The daemon's automatic posts, standing in for the hub: appended at once to the daemon's doc. */
+const hubPost: RoomdOptions['post'] = (from, body, opts) => hubAppend(daemon!.roomDoc, from, body, opts.id ? { id: opts.id } : {})
 
 function provider(doc: Y.Doc): WebsocketProvider {
   let local: unknown = null
@@ -45,7 +49,7 @@ it('revalidates only its own claims when HEAD moves, retaining a moved block and
   git(root, 'add', '-A')
   git(root, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/claims', name: 'Alice', kind: 'agent',
-    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, post: hubPost,
   })
   const doc = daemon.roomDoc
   const claimedHash = claimDigest(before, 2, 3)
@@ -87,7 +91,7 @@ it('keeps the claim-time digest when a later overlay has unrelated lines at an u
   fs.writeFileSync(file, before)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/digest', name: 'Alice', kind: 'agent',
-    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, post: hubPost,
   })
   const doc = daemon.roomDoc
   const digest = claimDigest(before, 10, 12)!
@@ -114,7 +118,7 @@ for (const addedAbove of [0, 5]) {
     git(root, 'add', '-A')
     git(root, 'commit', '-qm', 'base')
     daemon = await startRoomd({ policy: policyFromLevel('full'), dir: root, room: 'ws://memory/claim-edit', name: 'Alice', kind: 'agent',
-      providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+      providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, post: hubPost,
     })
     const doc = daemon.roomDoc
     doc.setOverlay('Alice', 'app.txt', before)

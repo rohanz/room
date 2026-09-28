@@ -24,25 +24,9 @@ import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
 import { registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
 import { realStateInput, type WorkerRecord } from '../worker-status.js'
+import { postWorkerMessage } from '../post.js'
+import { mirrorRegistryWorkerRecord } from '../worker-mirror.js'
 
-/** Transition only: wave 3 `project` deletes this legacy tag-keyed document mirror. */
-export function mirrorRegistryWorkerRecord(s: Session, registry: WorkerRegistry, id: string): void {
-  const record = registry.read(id), status = registry.status(id)
-  if (!record || !status) return
-  const legacy = realStateInput(record, status)
-  if (!legacy.summary) legacy.summary = registry.reports(id).filter(report => report.done).at(-1)?.done?.summary
-  legacy.spawnedAfter = status.run?.busFrontier.at(-1)
-  const launch = status.run?.launch
-  if (launch?.outcome === 'launched') {
-    legacy.pid = launch.pid
-    legacy.processStartTime = launch.process?.startTime
-  }
-  const current = s.room.workers.get(record.tag)
-  if (current?.id === id) s.room.updateWorker(record.tag, legacy, id)
-  else if (current && current.name === record.name && current.startedAt === record.createdAt
-    && (!current.id || !current.id.startsWith('w_'))) s.room.updateWorker(record.tag, legacy)
-  else if (!current) s.room.setWorker(legacy)
-}
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -89,16 +73,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try {
           await registry!.reportDone(myId, ownRun.n, summary, changed)
           release()
-          await registry!.postCompletion(myId, ownRun.n, (id, record, report) => {
+          await registry!.postCompletion(myId, ownRun.n, async (id, record, report) => {
             const message = completionMessage(record, ownRun, registry!.status(myId)!, report)
             if (!message || message.id !== id || message.body.type !== 'done') throw new Error('worker completion message unavailable')
-            s.room.post<DoneMsg>(s.me, message.body, undefined, { id })
+            const posted = await s.post<DoneMsg>(s.me, message.body, { id, auto: true })
+            if (!posted.ok) throw new Error(posted.text)
           })
-          mirrorRegistryWorkerRecord(s, registry!, myId)
         } catch (error) { return `error: could not record worker report: ${error instanceof Error ? error.message : String(error)}` }
       } else {
         release()
-        s.room.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
+        await s.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
       }
       await s.policyStore.declare([])
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
@@ -227,17 +211,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }, async code => {
             await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
             rooms.dropHandle(s, id)
-            mirrorRegistryWorkerRecord(s, registry, id)
-            await registry.postObservedFailure(id, 1, message => {
-              if (message.body.type === 'note') s.room.post<NoteMsg>({ name: record.name, kind: 'agent', owner: record.lead.participant, label: record.tag }, message.body, undefined, { id: message.id })
-            })
+            await registry.postObservedFailure(id, 1, message => postWorkerMessage(s.post, record, message))
           })
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
             const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
             await registry.beginStop(id, reason)
-            mirrorRegistryWorkerRecord(s, registry, id)
             if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
             return `error: stopped after start: ${error.phase === 'cancelled' ? 'cancelled' : error.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`
           }
@@ -252,7 +232,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return `error: ${prefix}${error.message}`
         }
         const { proc, port, env, nice, logFile } = launched
-        s.room.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
+        await s.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
         const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
         const wakeNote = claudeWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
@@ -302,8 +282,8 @@ export function registryRunningWorkers(s: Session, rooms: import('../registry.js
   })
 }
 
-export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'seen' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
-  const { ctx, rooms, doJoin, doLeave, seen, log, cleanupMine, now } = deps
+export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | 'doJoin' | 'doLeave' | 'log' | 'cleanupMine' | 'now'>): Pick<HandlerState, 'myWorkers' | 'workerAlive' | 'ensureWorkersRoom' | 'closeWorkersRoom' | 'runningWorkers' | 'dismissWorker' | 'startWorkersBridge'> {
+  const { ctx, rooms, doJoin, doLeave, log, cleanupMine, now } = deps
   const myWorkers = (s: Session): Worker[] => Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name)
   const workerAlive = (s: Session, w: Worker): boolean => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe)
   const ensureWorkersRoom = async (lead: Session): Promise<Session> => {
@@ -311,7 +291,6 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       const have = rooms.workers()
       if (have) return have
       const ws = await doJoin({ dir: lead.dir, server: LOCAL, name: lead.me.owner ?? lead.me.name, tag: lead.me.label, log })
-      for (const m of ws.room.messages()) seen.add(m.id)
       rooms.add(ws, 'workers', lead)
       log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
       return ws
@@ -342,7 +321,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
         if (processState.process === 'not-ours' && pidPresent(w.pid, ctx.probe)) return `pid ${w.pid} belongs to another process; not signalled`
         if (processState.process === 'unknown') {
           const message = `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`
-          s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message })
+          await s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: 'interrupt', text: message }, { auto: true })
           return message
         }
         if (processState.process !== 'ours') return `pid ${w.pid} not signalled: the process is gone; worker record kept`
@@ -382,8 +361,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       // The stop fact was committed before any signal.
       if (cancelled?.aborted) return how + cleanupText()
       if (stopReason && cleanupError) throw new Error(cleanupError)
-      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) s.room.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` })
-      mirrorRegistryWorkerRecord(s, registry, w.id!)
+      if ((signalled || proc || pidPresent(w.pid, ctx.probe)) && !(signalled && !stopReason && why === 'discarded by the lead' && w.lead === s.me.name)) await s.post<NoteMsg>(s.me, { type: 'note', to: w.lead, priority: signalled ? 'notify' : 'interrupt', text: signalled ? `dismissed worker ${w.tag} (${w.name}): ${why}` : `could not dismiss worker ${w.tag} (${w.name}): ${how}` }, { auto: true })
       return how + cleanupText()
       } finally { if (acquired) await registry.finishOperation(w.id!) }
     }

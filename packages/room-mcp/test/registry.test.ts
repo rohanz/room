@@ -17,6 +17,11 @@ import { statusOf, type WorkerRecord } from '../src/worker-status.js'
 import { completionMessage } from '@room/shared'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
+import { hubAppend } from '@room/shared/testing'
+
+/** No release notices to send here. */
+const ignore = () => {}
 
 let dir: string, base: string
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
@@ -33,7 +38,7 @@ function fakeSession(room: RoomDoc, me: Identity, roomName = 'local/x/main'): Se
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   return {
     room, awareness, me, dir, roomUrl: `ws://127.0.0.1:1/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
-    provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
     shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
   } as Session
@@ -119,8 +124,8 @@ describe('Rooms: who lives where', () => {
     expect(x.rooms.holding('rohanz+money', x.t)).toBe(x.l)
     expect(x.rooms.holding('rohanz', x.t)).toBe(x.t)
     // the same tag recorded in both rooms but active in the team room: the team room wins
-    x.team.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 't', dir, branch: 'room/tiers', pid: 1, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
-    x.local.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 'l', dir, branch: 'room/tiers', pid: 2, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 })
+    x.team.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 't', dir, branch: 'room/tiers', pid: 1, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 }, ignore)
+    x.local.a.setWorker({ id: 'rohanz/tiers#1', tag: 'tiers', name: 'rohanz+tiers', host: 'claude', task: 'l', dir, branch: 'room/tiers', pid: 2, startedAt: 1, status: 'running', lead: 'rohanz', gen: 1 }, ignore)
     expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.t) // record in the caller's room, nobody active anywhere
     x.local.b.setOverlay('rohanz+tiers', 'app.py', 'y = 1\n')
     expect(x.rooms.holding('rohanz+tiers', x.t)).toBe(x.l) // now active in the local room
@@ -129,7 +134,7 @@ describe('Rooms: who lives where', () => {
 
   it('holdingQuestion finds the room whose bus carries the id', () => {
     const x = twoRooms()
-    const q = x.local.b.post(worker, { type: 'question', to: 'rohanz', text: 'which base?' })
+    const q = hubAppend(x.local.b, worker, { type: 'question', to: 'rohanz', text: 'which base?' })
     expect(x.rooms.holdingQuestion(q.id, x.t)).toBe(x.l)
     expect(x.rooms.holdingQuestion('m_missing', x.t)).toBeUndefined()
   })

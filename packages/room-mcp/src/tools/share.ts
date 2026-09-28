@@ -34,7 +34,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const policy = await s.policyStore.setRequested(asked)
       const level = policy.level
       s.shareRequested = asked
-      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
+      if (level !== before) await s.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       const secondary = publisherLine(s)
       if (secondary) out.push(secondary)
