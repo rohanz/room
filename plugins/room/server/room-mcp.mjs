@@ -31894,7 +31894,7 @@ function hashOf(text) {
   }
   return h >>> 0;
 }
-var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_REFRESH_CONCURRENCY, MAX_EDGES, MAX_OBSERVED, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, GraphIndex;
+var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_REFRESH_CONCURRENCY, MAX_EDGES, MAX_OBSERVED, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, YIELD_EVERY, YIELD_AFTER_MS, yieldToEventLoop, GraphIndex;
 var init_graph_index = __esm({
   "packages/room-mcp/src/graph-index.ts"() {
     "use strict";
@@ -31911,6 +31911,9 @@ var init_graph_index = __esm({
     MAX_OBSERVED = 200;
     MAX_SNAPSHOT_BYTES = 200 * 1024;
     MIN_PUBLISH_MS = 2e4;
+    YIELD_EVERY = 100;
+    YIELD_AFTER_MS = 50;
+    yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
     GraphIndex = class {
       constructor(room, me, dir, log2 = () => {
       }, opts = {}) {
@@ -31936,9 +31939,15 @@ var init_graph_index = __esm({
       observedByPath = /* @__PURE__ */ new Map();
       degradedPaths = /* @__PURE__ */ new Set();
       generation = 0;
+      graphRevision = 0;
+      observedRevision = 0;
+      indexedSinceYield = 0;
+      lastIndexYield = Date.now();
       truncated = false;
       publishing;
       lastPublished = { at: 0, key: "", status: "" };
+      lastPublishedRevision = { graph: -1, observed: -1, base: "" };
+      publication = Promise.resolve();
       phase = "indexing";
       base = "";
       stopped = false;
@@ -32018,11 +32027,21 @@ var init_graph_index = __esm({
         this.phase = "indexing";
         this.base = this.room.meta.base ?? "";
         this.observedByPath.clear();
+        this.observedRevision++;
         this.degradedPaths.clear();
-        for (const p of this.cache.keys()) this.graph.remove(p);
+        let removed = 0, lastRemovalYield = Date.now();
+        for (const p of this.cache.keys()) {
+          this.removeGraph(p);
+          if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
+            await yieldToEventLoop();
+            if (generation !== this.generation || this.stopped) return;
+            lastRemovalYield = Date.now();
+          }
+        }
         this.cache.clear();
         if (!this.base) return;
-        this.publish("indexing");
+        await this.publish("indexing");
+        if (generation !== this.generation || this.stopped) return;
         let paths = [];
         try {
           paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", "-z", this.base])).split("\0").filter(isSourcePath);
@@ -32043,18 +32062,24 @@ var init_graph_index = __esm({
         }
         const all2 = new Set(paths);
         for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all2.add(p);
-        for (const p of this.cache.keys()) if (!all2.has(p)) {
-          this.cache.delete(p);
-          this.graph.remove(p);
-        }
         const t0 = Date.now();
         const pathsToRefresh = Array.from(all2);
         await ensureLanguages(pathsToRefresh);
         if (generation !== this.generation || this.stopped) return;
-        await Promise.all(pathsToRefresh.map((path29) => this.refresh(path29)));
+        const refreshes = [];
+        let lastYield = Date.now();
+        for (let i2 = 0; i2 < pathsToRefresh.length; i2++) {
+          refreshes.push(this.refresh(pathsToRefresh[i2]));
+          if ((i2 + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+            await yieldToEventLoop();
+            if (generation !== this.generation || this.stopped) return;
+            lastYield = Date.now();
+          }
+        }
+        await Promise.all(refreshes);
         if (generation !== this.generation || this.stopped) return;
         this.phase = "ready";
-        this.publish("ready");
+        await this.publish("ready");
         this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
       }
       /** Current text for a path as the index sees it. */
@@ -32097,6 +32122,20 @@ var init_graph_index = __esm({
         this.drainRefreshQueue();
         return promise;
       }
+      removeGraph(path29) {
+        this.graph.remove(path29);
+        this.graphRevision++;
+      }
+      setGraph(path29, text) {
+        this.graph.set(path29, text);
+        this.graphRevision++;
+      }
+      async yieldAfterIndex() {
+        if (++this.indexedSinceYield < YIELD_EVERY && Date.now() - this.lastIndexYield < YIELD_AFTER_MS) return;
+        this.indexedSinceYield = 0;
+        this.lastIndexYield = Date.now();
+        await yieldToEventLoop();
+      }
       drainRefreshQueue() {
         while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
           const path29 = this.refreshQueue.shift();
@@ -32117,11 +32156,7 @@ var init_graph_index = __esm({
             if (!this.stopped && !this.pending.size) {
               clearTimeout(this.publishing);
               this.publishing = setTimeout(() => {
-                try {
-                  this.publish(this.phase);
-                } catch (e) {
-                  this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
-                }
+                void this.publish(this.phase);
               }, 100);
             }
             this.drainRefreshQueue();
@@ -32151,16 +32186,18 @@ var init_graph_index = __esm({
           if (generation !== this.generation) return false;
           if (!symbols || text === void 0) {
             this.cache.delete(path29);
-            this.graph.remove(path29);
+            this.removeGraph(path29);
           } else {
             this.cache.set(path29, symbols);
-            this.graph.set(path29, text);
+            this.setGraph(path29, text);
           }
           if (mine !== void 0 || mineDeleted) {
             if (baseRead?.kind === "unavailable") {
               this.degradedPaths.add(path29);
               this.observedByPath.delete(path29);
               this.log(`graph: baseline unavailable for ${path29}; observed contract coverage degraded: ${baseRead.error.message}`);
+              this.observedRevision++;
+              await this.yieldAfterIndex();
               return revision === this.revisions.get(path29);
             }
             this.degradedPaths.delete(path29);
@@ -32171,6 +32208,8 @@ var init_graph_index = __esm({
             this.observedByPath.delete(path29);
             this.degradedPaths.delete(path29);
           }
+          this.observedRevision++;
+          await this.yieldAfterIndex();
           return revision === this.revisions.get(path29);
         }
         return true;
@@ -32181,21 +32220,40 @@ var init_graph_index = __esm({
         while (this.pending.size) await Promise.all([...this.pending.values()].map((entry) => entry.idle));
       }
       publish(status) {
+        const generation = this.generation;
+        this.publication = this.publication.then(() => this.publishSnapshot(status, generation)).catch((e) => {
+          this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
+        });
+        return this.publication;
+      }
+      async publishSnapshot(status, generation) {
         if (this.stopped) return;
+        if (generation !== this.generation) return;
         if (this.degradedPaths.size) status = "error";
+        const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base;
+        if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision && this.lastPublishedRevision.base === base && this.lastPublished.status === status) return;
         const paths = Array.from(this.cache.keys()).sort();
         const edges = /* @__PURE__ */ new Map();
         let truncated = this.truncated;
-        for (const target of paths) for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
-          const key2 = JSON.stringify([source, target]);
-          if (!edges.has(key2)) {
-            if (edges.size >= MAX_EDGES) {
-              truncated = true;
-              continue;
+        let lastYield = Date.now();
+        for (let i2 = 0; i2 < paths.length; i2++) {
+          const target = paths[i2];
+          for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
+            const key2 = JSON.stringify([source, target]);
+            if (!edges.has(key2)) {
+              if (edges.size >= MAX_EDGES) {
+                truncated = true;
+                continue;
+              }
+              edges.set(key2, { source, target, symbols: [] });
             }
-            edges.set(key2, { source, target, symbols: [] });
+            edges.get(key2).symbols.push(dep.symbol);
           }
-          edges.get(key2).symbols.push(dep.symbol);
+          if ((i2 + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+            await yieldToEventLoop();
+            if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision) return;
+            lastYield = Date.now();
+          }
         }
         let edgeList = [...edges.values()];
         const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
@@ -32214,20 +32272,21 @@ var init_graph_index = __esm({
         }
         const key = `${this.base}|${status}|${body2.length}|${hashOf(body2)}`;
         const now = Date.now();
-        if (key === this.lastPublished.key) return;
+        if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision) return;
+        if (key === this.lastPublished.key) {
+          this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base };
+          return;
+        }
         const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS;
         if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
           clearTimeout(this.publishing);
           this.publishing = setTimeout(() => {
-            try {
-              this.publish(this.phase);
-            } catch (e) {
-              this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`);
-            }
+            void this.publish(this.phase);
           }, minMs - (now - this.lastPublished.at));
           return;
         }
         this.lastPublished = { at: now, key, status };
+        this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base };
         this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated });
       }
     };
