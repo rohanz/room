@@ -4,8 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll } from 'vitest'
 
-// Claude host identity must not leak into tests or the child processes they spawn.
-for (const key of ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) delete process.env[key]
+// Host and Room identity must not leak into tests or the child processes they spawn: a suite run inside a
+// Claude or Codex session, or inside a Room worker, would otherwise act as that session or worker.
+for (const key of ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID']) delete process.env[key]
+for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
 
 const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'room-test-config-'))
 process.env.XDG_CONFIG_HOME = configHome
