@@ -5,10 +5,10 @@
  */
 import type * as Y from 'yjs'
 import { participantRecord, type RoomDoc } from './doc.js'
-import type { ParticipantView } from './views.js'
+import { ROOM_STALE_MS, type ParticipantView } from './views.js'
 
-export const ROOM_STALE_DAYS = 7
-export const ROOM_STALE_MS = ROOM_STALE_DAYS * 24 * 60 * 60 * 1000
+/** For messages only; ROOM_STALE_MS in views.ts is the rule. */
+export const ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1000)
 
 type Observed = { observedMs: number; epoch: string }
 /** A run of this tenure's own measurements: absence since `t0` (this leader's clock) on top of `base`. */

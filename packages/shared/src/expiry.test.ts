@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc, participantRecord, type ParticipantHolder } from './doc.js'
-import { participantsView, type ParticipantView } from './views.js'
-import { ExpiryTenure, ROOM_STALE_MS, expireParticipant } from './expiry.js'
+import { ROOM_STALE_MS, participantsView, type ParticipantView } from './views.js'
+import { ExpiryTenure, expireParticipant } from './expiry.js'
 import type { QuestionMsg } from './types.js'
 
 const HOUR = 60 * 60 * 1000
