@@ -58,7 +58,7 @@ describe('flat participant records', () => {
     expect(participantsView(room, awareness('s1'), 40_000)[0]).toMatchObject({ fresh: true, visible: true })
   })
 
-  it('survives concurrent insertion of the same name; the loser stops publishing on the merged holder', () => {
+  it('keeps concurrent flat records attached and fences a losing session\'s later write', () => {
     const a = new RoomDoc(new Y.Doc())
     const b = new RoomDoc(new Y.Doc())
     for (const [room, session] of [[a, 'a'], [b, 'b']] as const) {
@@ -73,19 +73,27 @@ describe('flat participant records', () => {
     expect(a.participants.toJSON()).toEqual(b.participants.toJSON())
     const winner = participantRecord(a, 'ben')!.holder!.sessionId
     const loser = winner === 'a' ? 'b' : 'a'
-    let loserWrites = 0
-    const tick = (room: RoomDoc, session: string) => {
-      if (liveHolder(participantsView(room, awareness('a', 'b'), 100), 'ben') !== session) return
-      room.participants.set('ben\0git', git(session))
-      if (session === loser) loserWrites++
+    const sync = () => {
+      const fromA = Y.encodeStateAsUpdate(a.doc)
+      const fromB = Y.encodeStateAsUpdate(b.doc)
+      Y.applyUpdate(a.doc, fromB)
+      Y.applyUpdate(b.doc, fromA)
     }
-    tick(a, 'a'); tick(b, 'b')
-    expect(loserWrites).toBe(0)
-    Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc))
-    Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc))
+    const winnerRoom = winner === 'a' ? a : b
+    const loserRoom = loser === 'a' ? a : b
+    winnerRoom.participants.set('ben\0git', git(winner))
+    sync()
     for (const room of [a, b]) {
       const view = participantsView(room, awareness(winner), 100)
       expect(acceptedGit(participantRecord(room, 'ben'), view)).toEqual(git(winner))
+    }
+
+    // This simulates the read fence; production stop-and-rename arrives with the wave-4 name lease.
+    loserRoom.participants.set('ben\0git', git(loser))
+    sync()
+    for (const room of [a, b]) {
+      expect(participantRecord(room, 'ben')?.git?.fence).toBe(loser)
+      expect(acceptedGit(participantRecord(room, 'ben'), participantsView(room, awareness(winner), 100))).toBe('updating')
     }
   })
 })

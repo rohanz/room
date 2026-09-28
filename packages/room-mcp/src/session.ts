@@ -173,22 +173,26 @@ function parentCommandLine(): string {
 /** Re-evaluate on every call: a new SessionStart after Claude /clear supersedes the prior ID. */
 export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
   const env = options.env ?? process.env
-  const commonDir = options.commonDir ?? defaultCommonDir(options.cwd ?? process.cwd())
   const parent = options.parent ?? processIdentity(process.ppid, options.probe ?? probeProcess)
   const host = options.host ?? (env.ROOM_WORKER_HOST === 'claude' || env.ROOM_HOST === 'claude' ? 'claude'
     : env.ROOM_WORKER_HOST === 'codex' || env.ROOM_HOST === 'codex' ? 'codex'
       : parent && /claude/i.test(basename(parent.executable)) ? 'claude'
         : parent && /codex/i.test(basename(parent.executable)) ? 'codex' : undefined)
-  if (!host || !commonDir) return undefined
-  if (options.appServer || /\bcodex\b.*\bapp-server\b/.test(options.parentArgs ?? parentCommandLine())) return undefined
-  const records = sessionRecords(commonDir).filter(record => record.host === host)
+  if (!host) return undefined
   const workerId = options.workerId ?? env.ROOM_WORKER_ID
+  if (workerId && host === 'claude' && options.workerSessionId) return { id: options.workerSessionId, host }
+  const commonDir = options.commonDir ?? defaultCommonDir(options.cwd ?? process.cwd())
+  if (!commonDir) return undefined
+  const records = sessionRecords(commonDir).filter(record => record.host === host)
   if (workerId) {
-    if (host === 'claude' && options.workerSessionId) return { id: options.workerSessionId, host }
     const matching = records.filter(record => record.worker_id === workerId).sort((a, b) => b.at - a.at)[0]
     const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId : undefined)
     return id ? { id, host } : undefined
   }
+  const parentArgs = options.parentArgs ?? parentCommandLine()
+  if (options.appServer || /\bapp-server\b/.test(parentArgs)) return undefined
+  const parentExecutable = parentArgs.trim().split(/\s+/)[0]?.split(/[/\\]/).at(-1)
+  if (host === 'codex' && parentExecutable !== 'codex' && parentExecutable !== 'codex.exe') return undefined
   const matching = parent && records.filter(record => !record.worker_id && record.chain?.some(member => sameProcess(member, parent))).sort((a, b) => b.at - a.at)[0]
   if (matching) return { id: matching.session_id, host }
   return host === 'claude' && env.CLAUDE_CODE_SESSION_ID ? { id: env.CLAUDE_CODE_SESSION_ID, host } : undefined
