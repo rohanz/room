@@ -17829,13 +17829,14 @@ function memorySnapshot(doc, { maxBytes = MAX_MEMORY_BYTES, log: log2 } = {}) {
   log2?.(`snapshot over ${maxBytes} bytes: dropped ${archiveDropped} archive entries, ${receiptsDropped} broadcast receipts, ${busDropped} bus broadcasts${update.byteLength > maxBytes ? "; still over" : ""}`);
   return update;
 }
-var MAX_MEMORY_BYTES, MEMORY_TYPES, MEMORY_PREFIXES, compare2, entrySize;
+var MAX_MEMORY_BYTES, ROOM_DOC_MAX_BYTES, MEMORY_TYPES, MEMORY_PREFIXES, compare2, entrySize;
 var init_memory = __esm({
   "packages/shared/src/memory.ts"() {
     "use strict";
     init_yjs();
     init_delivery();
     MAX_MEMORY_BYTES = 5 * 1024 * 1024;
+    ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024;
     MEMORY_TYPES = {
       bus: "array",
       ledger: "map",
@@ -19157,7 +19158,7 @@ function publishManifest(input, facts) {
   const old = room.manifest.get(key);
   const entries = /* @__PURE__ */ new Map();
   const excluded = [];
-  if (input.level !== "intent" && !input.publisher) {
+  if (input.complete && input.level !== "intent" && !input.publisher) {
     for (const fact of facts) {
       if (fact.excluded) {
         excluded.push(digestPath(salt, fact.path));
@@ -19184,7 +19185,7 @@ function publishManifest(input, facts) {
   const head = {
     base: input.base,
     fence,
-    coverage: input.publisher ? { kind: "none", reason: "not-publisher" } : input.level === "intent" ? { kind: "none", reason: "intent" } : { kind: "all" },
+    coverage: input.publisher ? { kind: "none", reason: "not-publisher" } : input.level === "intent" ? { kind: "none", reason: "intent" } : !input.complete ? { kind: "none", reason: "starting" } : { kind: "all" },
     level: input.level,
     ...input.level === "declared" ? { textPrefixes: [...input.prefixes] } : {},
     excluded,
@@ -19207,10 +19208,17 @@ function publishManifest(input, facts) {
   });
   return head;
 }
+function markManifestIncomplete(room, name2, fence) {
+  const head = room.manifestHead.get(name2);
+  if (!head?.complete || head.fence !== fence) return;
+  room.doc.transact(() => {
+    room.manifestHead.set(name2, { ...head, complete: false, coverage: { kind: "none", reason: "starting" }, semRev: head.semRev + 1 });
+  });
+}
 async function scanManifest(input) {
   if (input.level === "intent" || input.publisher) return [];
   const [diff2, untracked] = await Promise.all([
-    git(input.dir, ["diff", "--name-only", "-z", input.base, "--"]),
+    git(input.dir, ["diff", "--no-renames", "--name-only", "-z", input.base, "--"]),
     git(input.dir, ["ls-files", "--others", "--exclude-standard", "-z"])
   ]);
   const own2 = input.room.manifest.get(manifestKey(input.name, input.fence));
@@ -19247,10 +19255,6 @@ async function scanManifest(input) {
     const bytes = fs8.readFileSync(absolute);
     const hash = createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     if (hash === base?.hash) continue;
-    if (budget + bytes.length > input.totalBudget) {
-      facts.push({ path: relpath, change: base ? "M" : "A", excluded: true });
-      continue;
-    }
     const permit = authorized(input, relpath);
     let text;
     let binary2 = false;
@@ -19260,7 +19264,13 @@ async function scanManifest(input) {
       } catch {
         binary2 = true;
       }
-      if (text !== void 0) budget += bytes.length;
+      if (text !== void 0) {
+        if (budget + bytes.length > input.totalBudget) {
+          facts.push({ path: relpath, change: base ? "M" : "A", excluded: true });
+          continue;
+        }
+        budget += bytes.length;
+      }
     }
     facts.push({ path: relpath, change: base ? "M" : "A", hash, size: bytes.length, baseHash: base?.hash, ...text !== void 0 ? { text } : {}, binary: binary2 });
   }
@@ -25795,6 +25805,10 @@ var init_src2 = __esm({
       appliedHead = "";
       /** refsKey of the last completed transition; unset until the start transition has run. */
       appliedRefs;
+      /** Whether the last completed transition wrote base facts; a change of role forces the next one (promotion, demotion). */
+      appliedAsPublisher;
+      /** Set when a transition marks the manifest incomplete; no publication completes it until the transition commits. */
+      transitionPending = false;
       /**
        * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
        * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
@@ -26080,16 +26094,16 @@ var init_src2 = __esm({
             if (event.keysChanged.has("roomSalt") && !this.stopped) void this.enqueue(() => this.publishManifestSnapshot());
           });
         }
-        const base = this.shared;
+        const { base, anchored } = this.anchor;
         const level = this.share;
         const generation = this.sharingGeneration;
         const fence = this.fence;
-        const holder = this.roomDoc.participants.get(`${this.name}\0holder`);
+        const holder = participantRecord(this.roomDoc, this.name)?.holder;
         if (holder && holder.sessionId !== fence) return;
-        const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: true, ...this.publishUnder ? { publisher: this.publishUnder } : {} };
-        const facts = await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: (p) => this.isSafeRoomPath(p) });
-        const currentHolder = this.roomDoc.participants.get(`${this.name}\0holder`);
-        if (this.stopped || base !== this.shared || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || currentHolder && currentHolder.sessionId !== fence) return;
+        const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: anchored && !this.transitionPending, ...this.publishUnder ? { publisher: this.publishUnder } : {} };
+        const facts = input.complete ? await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: (p) => this.isSafeRoomPath(p) }) : [];
+        const currentHolder = participantRecord(this.roomDoc, this.name)?.holder;
+        if (this.stopped || base !== this.anchor.base || anchored !== this.anchor.anchored || input.complete && this.transitionPending || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || currentHolder && currentHolder.sessionId !== fence) return;
         for (const fact of facts) {
           if (fact.text === void 0) continue;
           try {
@@ -26337,7 +26351,13 @@ var init_src2 = __esm({
         const branch = branchName(rawBranch);
         const inputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) };
         const headMoved = head !== this.appliedHead || branch !== this.branch;
-        if (!headMoved && refsKey(inputs) === this.appliedRefs) return;
+        const publishing = this.publishesBaseFacts();
+        if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher) return;
+        if (publishing) {
+          this.transitionPending = true;
+          markManifestIncomplete(this.roomDoc, this.name, this.fence);
+        }
+        const promoted = publishing && this.appliedAsPublisher === false;
         const prev = this.appliedHead;
         const firstTransition = this.appliedRefs === void 0;
         const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : [];
@@ -26355,19 +26375,22 @@ var init_src2 = __esm({
         const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {});
         const claims = await this.reanchorOwnClaims(head, claimSnapshot);
         if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
-        await this.commitTransition(inputs, resolved, claims);
+        await this.commitTransition(inputs, resolved, claims, promoted);
         this.anchor = { base: resolved.base, anchored: resolved.anchored };
+        this.transitionPending = false;
+        await this.publishManifestSnapshot();
         this.setStatus(resolved.status);
         if (headMoved) this.markIntegratedBaseNotices(this.roomDoc.messages());
         this.appliedHead = head;
         this.appliedRefs = refsKey(inputs);
+        this.appliedAsPublisher = publishing;
         if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
       }
       /**
        * §B2 step 5, one transaction: the `git` record (rev + 1), this participant's claim moves and releases,
        * and `pushed` when §B4 applies. A session publishing under another writes only its claim part.
        */
-      async commitTransition({ head, branch }, resolved, claims) {
+      async commitTransition({ head, branch }, resolved, claims, promoted) {
         const prev = participantRecord(this.roomDoc, this.name)?.git;
         let next;
         let pushed;
@@ -26384,7 +26407,7 @@ var init_src2 = __esm({
           };
           const { rev: _rev, ...recorded } = prev ?? { rev: 0 };
           if (JSON.stringify(recorded) !== JSON.stringify(fields)) next = { ...fields, rev: (prev?.rev ?? 0) + 1 };
-          if (next && prev && resolved.upstream && await pushedRange(this.dir, prev, next)) {
+          if (next && prev && !promoted && resolved.upstream && await pushedRange(this.dir, prev, next)) {
             pushed = { type: "pushed", branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) };
           }
         }
@@ -44796,13 +44819,31 @@ var stderr = (line) => {
   process.stderr.write(`${line}
 `);
 };
+var mb = (bytes) => (bytes / 1048576).toFixed(1);
+var WARN_EVERY_MS = 6e4;
+var warnedAt = /* @__PURE__ */ new Map();
+function warnLimited(key, line, log2) {
+  const now = Date.now();
+  if (now - (warnedAt.get(key) ?? -Infinity) < WARN_EVERY_MS) return;
+  warnedAt.set(key, now);
+  log2(line());
+}
+function largestRoots(update) {
+  const doc = new Doc2();
+  try {
+    applyUpdate(doc, update);
+    return [...memoryTypes(doc)].map(([name2, kind]) => [name2, JSON.stringify(kind === "array" ? doc.getArray(name2).toJSON() : doc.getMap(name2).toJSON()).length]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name2, size2]) => `${name2} ${mb(size2)} MB`).join(", ");
+  } finally {
+    doc.destroy();
+  }
+}
 function memoryFile(commonDir, room) {
   return path16.join(commonDir, "room-local", `${encodeURIComponent(room)}.ydoc`);
 }
 function loadMemory(commonDir, room, log2 = stderr) {
   const doc = new Doc2(), file = memoryFile(commonDir, room);
   try {
-    if (fs20.statSync(file).size > MAX_MEMORY_BYTES) throw new Error("snapshot exceeds 5 MB");
+    if (fs20.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
     applyUpdate(doc, fs20.readFileSync(file));
     return doc;
   } catch (e) {
@@ -44821,10 +44862,13 @@ function saveMemory(commonDir, room, doc, log2 = stderr) {
   const file = memoryFile(commonDir, room);
   const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
   try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: (line) => log2(`local room memory: ${room}: ${line}`) });
-    if (update.byteLength > MAX_MEMORY_BYTES) {
-      log2(`local room memory: skipping ${room}: snapshot exceeds 5 MB`);
+    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: (line) => warnLimited(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log2) });
+    if (update.byteLength > ROOM_DOC_MAX_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: skipping ${room}: snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling; keeping the last good file`, log2);
       return false;
+    }
+    if (update.byteLength > MAX_MEMORY_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
     }
     fs20.mkdirSync(path16.dirname(file), { recursive: true, mode: 448 });
     fs20.chmodSync(path16.dirname(file), 448);
