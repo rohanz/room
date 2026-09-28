@@ -44135,6 +44135,7 @@ init_yjs();
 init_src2();
 import { mkdirSync, readFileSync, watchFile as watchFile2, unwatchFile as unwatchFile2 } from "node:fs";
 import { createHash as createHash6 } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
 
 // packages/relay/src/memory.ts
@@ -44993,8 +44994,8 @@ function decodeRoom(encoded) {
     return encoded;
   }
 }
-async function reserveAutoName(dir, room, name2, worktree) {
-  const folder = join4(await gitCommonDir(dir), "room-name-locks");
+async function reserveAutoName(dir, room, name2, worktree, local) {
+  const folder = local ? join4(await gitCommonDir(dir), "room-name-locks") : join4(tmpdir(), `room-name-locks-${process.getuid?.() ?? "user"}`);
   mkdirSync(folder, { recursive: true, mode: 448 });
   const file = join4(folder, createHash6("sha256").update(`${room}\0${name2}`).digest("hex"));
   const release = acquireOwnedFile(file, { pid: process.pid, worktree });
@@ -45051,7 +45052,7 @@ async function startAutoTaggedRoomd(options, explicitTag, shareCeiling) {
       for (let candidate = rememberedTag === void 0 ? 0 : -1; ; candidate++) {
         const tag = candidate === -1 ? rememberedTag : candidate === 0 ? "" : candidate === 1 ? host : `${host}-${candidate}`;
         const candidateName = tag ? `${options.name}+${tag}` : options.name;
-        const { release, sameWorktree } = await reserveAutoName(options.dir, options.room, candidateName, worktree);
+        const { release, sameWorktree } = await reserveAutoName(options.dir, options.room, candidateName, worktree, !!options.localKey);
         if (!release) {
           reserved.add(candidateName);
           if (candidateName === (rememberedName ?? options.name)) ownPreviousLock = sameWorktree;
@@ -49864,7 +49865,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.31",
+  version: "0.16.32",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
