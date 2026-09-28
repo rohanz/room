@@ -3,7 +3,7 @@ import { statusOf, realStateInput, type WorkerRecord, type Run } from '../src/wo
 import { decideRegistryCollect } from '../src/worker-state.js'
 
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
-const run = (launch?: Run['launch'], mode: Run['mode'] = 'fresh'): Run => ({ n: 1, mode, intentAt: 1, nonce: 'n', busFrontier: [], promptMsgIds: [], launcher: token, logStart: 0, ...(launch ? { launch } : {}) })
+const run = (launch?: Run['launch'], mode: Run['mode'] = 'fresh'): Run => ({ n: 1, mode, intentAt: 1, nonce: 'n', busFrontier: 0, promptMsgIds: [], launcher: token, logStart: 0, ...(launch ? { launch } : {}) })
 const record = (phase: WorkerRecord['phase'], r: Run = run()): WorkerRecord => ({
   v: 1, id: 'w_01', tag: 'tests', name: 'lead+tests', mode: 'local', room: 'local/repo',
   lead: { participant: 'lead', room: 'local/repo', instance: token }, host: 'codex',

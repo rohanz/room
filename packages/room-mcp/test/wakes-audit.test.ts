@@ -1,9 +1,19 @@
-import { afterEach, expect, it, vi } from 'vitest'
-import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, type Worker } from '@room/shared'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { execFile, execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import * as Y from 'yjs'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import { RoomDoc, type QuestionMsg, type Worker } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import { Ledger } from '../src/ledger.js'
-import type { Session } from '../src/session.js'
+import { sessionDirectory, type Session } from '../src/session.js'
+import type { SessionBinding } from '../src/binding.js'
+import { startArbitration } from '../src/arbitration.js'
+import { createTools } from '../src/tools.js'
+import type { SendWake } from '../src/wake-path.js'
+import { testPolicyStore } from './policy-fixture.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { createInbox, handlers } from '../src/tools/messaging.js'
 import { hubAppend } from '@room/shared/testing'
@@ -225,4 +235,141 @@ it('puts an unread worker question ahead of notes with a clear reply instruction
   expect(block).toContain('QUESTION FOR YOU')
   expect(block.indexOf('QUESTION FOR YOU')).toBeLessThan(block.indexOf('routine'))
   expect(block).toContain(`room_send type=answer inReplyTo=${q.id}`)
+})
+
+describe('wakes (ledger test 11, MF8)', () => {
+  const SID = 'wake-session'
+  const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
+  const kieran = { name: 'Kieran', kind: 'agent' as const }
+  let dir: string
+  beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'room-wakes-')); execFileSync('git', ['-C', dir, 'init', '-q']) })
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+  beforeEach(() => {
+    rmSync(join(dir, '.git/room'), { recursive: true, force: true })
+    for (const name of ['ROOM_HOST', 'ROOM_WORKER_ID', 'ROOM_WAKE', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_SESSION_ID']) vi.stubEnv(name, undefined)
+  })
+  afterEach(() => vi.unstubAllEnvs())
+  const sdir = () => sessionDirectory(join(dir, '.git'), SID)
+
+  /** A bound Codex session's Room MCP: tools, ledger, wakes and the hooks' arbitration endpoint. */
+  async function mcp(send: SendWake, room = new RoomDoc(), hookLeaseMs = 10_000) {
+    const s = { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '',
+      shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true }, daemon: { touch() {}, async stop() {} } } as unknown as Session
+    const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: sdir, commonDir: () => join(dir, '.git') }
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, hookLeaseMs })
+    tools.attachHooks(s)
+    const arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => tools.hookSelect(), hookLeaseMs })
+    return { s, tools, async close() { await arbitration.close(); await tools.shutdown(); s.awareness.destroy() } }
+  }
+  const recorder = () => {
+    const texts: string[] = []
+    const send: SendWake = async (target, text) => { expect(target).toEqual({ id: SID, host: 'codex' }); texts.push(text); return 'queue' }
+    return { texts, send }
+  }
+  const quiet = () => new Promise(r => setTimeout(r, 100))
+
+  it('the Codex queue text has no body; the content is delivered once, by the reply, and never woken again', async () => {
+    const { texts, send } = recorder()
+    const m = await mcp(send)
+    try {
+      const q = hubAppend<QuestionMsg>(m.s.room, kieran, { type: 'question', to: 'Rohan', text: 'which token do we use?' })
+      await vi.waitFor(() => expect(texts).toHaveLength(1))
+      expect(texts[0]).toMatch(/^\[room\] 1 thing needs you: Kieran asked a question\. Call room_state; it shows them\. \(#\d+\)$/)
+      expect(m.s.room.seen('Rohan').has(q.id)).toBe(false)
+      expect(JSON.parse(readFileSync(join(sdir(), 'wakes.json'), 'utf8'))).toMatchObject({ r: { [q.id]: { via: 'queue' } } })
+      const reply = await m.tools.call('room_state', {})
+      expect(reply).toContain(`[inbox 1]\n  [${q.id}] QUESTION FOR YOU: `)
+      expect(m.s.room.seen('Rohan').get(q.id)).toMatchObject({ s: SID, via: 'reply' })
+      expect(await m.tools.call('room_state', {})).not.toContain('[inbox')
+      await quiet()
+      expect(texts).toHaveLength(1)
+    } finally { await m.close() }
+  })
+
+  it('the wake fails, the MCP restarts in the same session, and M is woken once', async () => {
+    const room = new RoomDoc()
+    const failing = vi.fn(async () => { throw new Error('codex: thread is busy') })
+    const first = await mcp(failing, room)
+    const q = hubAppend<QuestionMsg>(room, kieran, { type: 'question', to: 'Rohan', text: 'still there?' })
+    await vi.waitFor(() => expect(failing).toHaveBeenCalled())
+    await first.close()
+    const { texts, send } = recorder()
+    const second = await mcp(send, room)
+    try {
+      await vi.waitFor(() => expect(texts).toHaveLength(1))
+      expect(texts[0]).toContain('Kieran asked a question')
+      expect(room.seen('Rohan').has(q.id)).toBe(false)
+      await quiet()
+      expect(texts).toHaveLength(1)
+    } finally { await second.close() }
+  })
+
+  it('messages owed before the session first bound are left for its first reply, not woken', async () => {
+    const room = new RoomDoc()
+    const q = hubAppend<QuestionMsg>(room, kieran, { type: 'question', to: 'Rohan', text: 'asked before you arrived' })
+    const { texts, send } = recorder()
+    const m = await mcp(send, room)
+    try {
+      await quiet()
+      expect(texts).toEqual([])
+      expect(await m.tools.call('room_state', {})).toContain('asked before you arrived')
+      expect(room.seen('Rohan').has(q.id)).toBe(true)
+    } finally { await m.close() }
+  })
+
+  it('a wait cancel triggers a reconcile: the interrupt the wait had selected is woken', async () => {
+    const { texts, send } = recorder()
+    const m = await mcp(send)
+    try {
+      const abort = new AbortController()
+      const waiting = m.tools.call('room_wait', { timeoutMs: 5_000 }, abort.signal)
+      await vi.waitFor(() => expect(m.s.awareness.getLocalState()).toMatchObject({ status: 'waiting' }))
+      hubAppend(m.s.room, kieran, { type: 'note', to: 'Rohan', priority: 'interrupt', text: 'stop the migration' })
+      abort.abort()
+      await waiting
+      await vi.waitFor(() => expect(texts).toHaveLength(1))
+      expect(texts[0]).toContain('Kieran sent a note')
+      expect(m.s.room.seen('Rohan').size).toBe(0)
+    } finally { await m.close() }
+  })
+
+  it('a hook reserves M and dies; its lease expires with no other event, and M is woken', async () => {
+    const { texts, send } = recorder()
+    const m = await mcp(send, new RoomDoc(), 200)
+    try {
+      hubAppend(m.s.room, kieran, { type: 'question', to: 'Rohan', text: 'rebased yet?' })
+      const { items } = m.tools.hookSelect() // selected in the same tick, then never confirmed
+      expect(items.map(i => i.line).join('\n')).toContain('rebased yet?')
+      await quiet()
+      expect(texts).toEqual([])
+      await vi.waitFor(() => expect(texts).toHaveLength(1), { timeout: 1_000 })
+      expect(texts[0]).toContain('Kieran asked a question')
+    } finally { await m.close() }
+  })
+
+  it('the 2026-09-27 Codex queue scenario: a queued pointer, then the edit hook hands M off once; no duplicate, no loss', async () => {
+    const { texts, send } = recorder()
+    const m = await mcp(send)
+    const runHook = (input: object) => new Promise<string>((res, rej) => {
+      const p = execFile('node', [join(HOOKS, 'before-edit.mjs')], { cwd: HOOKS }, (err, out) => err ? rej(err) : res(out))
+      p.stdin!.end(JSON.stringify({ session_id: SID, cwd: dir, tool_name: 'Write', tool_input: { file_path: 'app.py' }, ...input }))
+    })
+    const context = (out: string) => out ? JSON.parse(out).hookSpecificOutput.additionalContext as string : ''
+    const peer = new Awareness(new Y.Doc())
+    peer.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() })
+    applyAwarenessUpdate(m.s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    try {
+      const q = hubAppend<QuestionMsg>(m.s.room, kieran, { type: 'question', to: 'Rohan', text: 'is app.py yours?' })
+      await vi.waitFor(() => expect(texts).toHaveLength(1))
+      expect(texts[0]).not.toContain('is app.py yours?')
+      await new Promise(r => setTimeout(r, 250)) // state.json lands
+      const shown = context(await runHook({}))
+      expect(shown.split('is app.py yours?')).toHaveLength(2)
+      expect(m.s.room.seen('Rohan').get(q.id)).toMatchObject({ via: 'hook' })
+      expect(context(await runHook({}))).not.toContain('is app.py yours?')
+      expect(await m.tools.call('room_state', {})).not.toContain('[inbox')
+      await quiet()
+      expect(texts).toHaveLength(1)
+    } finally { peer.destroy(); await m.close() }
+  })
 })

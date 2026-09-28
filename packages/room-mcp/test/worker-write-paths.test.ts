@@ -21,7 +21,7 @@ function fixture(): { root: string; record: WorkerRecord } {
     budget: { threads: 1, memGb: 1, nice: 10 }, share: 'intent', task: 'tests',
     dir: path.join(root, '.room/workers/tests'), outside: false, branch: 'room/tests', prep: { step: 'plan' },
     capabilities: { resume: true, signal: true, collect: 'delta' }, phase: 'intent',
-    runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'nonce-1', busFrontier: [], promptMsgIds: [], launcher: token('lead'), logStart: 0 }],
+    runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'nonce-1', busFrontier: 0, promptMsgIds: [], launcher: token('lead'), logStart: 0 }],
     createdAt: 1, seq: 1,
   }
   return { root, record }

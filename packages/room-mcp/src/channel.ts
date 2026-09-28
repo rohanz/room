@@ -1,10 +1,9 @@
-import type { WakeEvent } from './wake.js'
+export type ChannelNotification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
 
-type Notification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
-
-/** A successful send is only a wake-up hint, never proof the model received the message. */
-export async function sendChannelNotification(wake: WakeEvent, notify: (notification: Notification) => Promise<unknown>): Promise<void> {
-  try {
-    await notify({ method: 'notifications/claude/channel', params: { content: wake.content, meta: wake.meta } })
-  } catch { /* no channel attached */ }
+/**
+ * A content-free wake over the Room channel. It rejects when the transport write fails; Claude Code drops
+ * the event silently when the session has not admitted the channel, so success is only a hint.
+ */
+export async function sendChannelNotification(content: string, notify: (notification: ChannelNotification) => Promise<unknown>): Promise<void> {
+  await notify({ method: 'notifications/claude/channel', params: { content, meta: { type: 'room_wake' } } })
 }

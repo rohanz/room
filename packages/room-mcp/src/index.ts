@@ -3,17 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { displayName, isAgentic } from '@room/shared'
-import type { Msg } from '@room/shared'
+import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
-import { shouldWake } from './wake.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
-import { resolveConfig, resolveSessionHost } from './config.js'
-import { SocketWakeRouter } from './wake-path.js'
-import { waitConsumesMessage } from './tools/messaging.js'
+import { resolveConfig } from './config.js'
+import { createWakeSender } from './wake-path.js'
 import { offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
@@ -26,8 +23,6 @@ import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' wi
 export const RELEASE_VERSION = pluginManifest.version
 
 export { AGENT_INSTRUCTIONS } from './prompt.js'
-export { shouldWake } from './wake.js'
-export type { WakeEvent, RoomEvent } from './wake.js'
 export { createTools, DEFS } from './tools.js'
 export type { ToolCtx, ToolDef, Tools } from './tools.js'
 export { joinSession, leaveSession, createRoom, closeRoom, NoRoom, NotLoggedIn, deriveRoomName, findRoomFile, encodeRoom, decodeRoom, parseServer, serverAuthMode, serverShareMax, requestedShare, resolveAuth, startLogin, pollLogin, logout } from './session.js'
@@ -92,16 +87,17 @@ async function main() {
       LOG_FILE = startup.logFile
       ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
       if (signal.aborted) throw new Error('Room is shutting down')
-      // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
       const sessionBinding = createSessionBinding(dir)
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s), binding: sessionBinding })
+      // Content-free wakes of this host session: the Codex queue, or Claude Code's inbox socket, then the channel.
+      const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
+      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, binding: sessionBinding })
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(), log })
       const adopt = async (s: Session) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
         session = s
-        attachChannel(s)
+        joined(s)
         tools.attachHooks(s)
         const n = tools.clearStale(s)
         if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
@@ -114,23 +110,7 @@ async function main() {
         return (updateNotice ? updateNotice + '\n\n' : '') + body
       }
 
-      // Claude Code: push interrupts and addressed notifies over the selected wake path.
-      const attachedWakeSessions = new WeakSet<Session>()
-      const attachChannel = (s: Session) => {
-        if (attachedWakeSessions.has(s)) return
-        attachedWakeSessions.add(s)
-        const router = new SocketWakeRouter({ host: resolveSessionHost(), channel: startup.claudeChannel, notify: notification => mcp.notification(notification), isUnread: wake => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log })
-        const myClaims = () => s.room.openClaims().filter(c => c.by === s.me.name && isAgentic(c.byKind))
-        s.room.bus.observe(ev => {
-          for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-            // My own posts never wake me; a message this process wrote as someone else (a worker's synthetic done) does.
-            if ((m.from === s.me.name && m.fromKind !== 'human') || s.room.seen(s.me.name).has(m.id)) continue
-            router.push(shouldWake(s.me, { kind: 'msg', msg: m }, myClaims(), s.room.changedPaths(s.me.name).length > 0,
-              new Set(Array.from(s.room.workers.values()).filter(w => w.lead === s.me.name).map(w => w.name))))
-          }
-        })
-        log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
-      }
+      const joined = (s: Session) => log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
 
       // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.

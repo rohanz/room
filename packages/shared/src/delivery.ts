@@ -54,9 +54,16 @@ function replyEligible(m: Msg, answered: ReadonlySet<string>, now: number): bool
   return !!m.to && (m.type === 'question' || m.type === 'note') && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS
 }
 
+/** The highest hub `seq` on the bus (hub §3: seqs only increase, across hub restarts too); 0 when there is none. */
+export function highestSeq(doc: RoomDoc): number {
+  let high = 0
+  for (const m of doc.messages()) if (typeof m.seq === 'number' && m.seq > high) high = m.seq
+  return high
+}
+
 /**
- * Everything `me` is owed: addressed messages in bus ∪ mail, and bus broadcasts outside the session's
- * frontier and `routed` that `messageForMe` accepts; minus receipts, outcomes and `!relevant`. Deduped
+ * Everything `me` is owed: addressed messages in bus ∪ mail, and bus broadcasts above the session's
+ * frontier seq and outside `routed` that `messageForMe` accepts; minus receipts, outcomes and `!relevant`. Deduped
  * by id. Pure: relevance and routing are read-time decisions and write nothing.
  */
 export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryCursor, route: MessageRouteContext,
@@ -68,7 +75,7 @@ export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryC
   for (const m of [...doc.mail.values()].sort(byAge)) if (addressedTo(m, me.name)) offer(m)
   for (const m of doc.messages()) {
     if (m.to) { if (addressedTo(m, me.name)) offer(m) }
-    else if (!cursor.frontier.has(m.id) && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m)
+    else if ((m.seq ?? 0) > cursor.frontier && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m)
   }
   return [...out.values()]
 }

@@ -3,7 +3,7 @@ import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
 import {
   admit, archiveSummary, BUS_BYTES, LEDGER_BUDGET, MAIL_BYTES, OUTCOMES_MAX, OWED_PER_RECIPIENT,
-  OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
+  highestSeq, OWED_TTL_MS, owed, REPLY_WINDOW_MS, trim,
 } from './delivery.js'
 import type { DeliveryCursor, MessageMap, Msg, MsgType } from './types.js'
 
@@ -12,13 +12,13 @@ const SHOWN = { s: 'session-1', via: 'reply' } as const
 const NOW = Date.UTC(2026, 8, 28, 12)
 const DAY = 24 * 60 * 60 * 1000
 const P = { name: 'pat', kind: 'agent' as const }
-const cursor = (frontier: string[] = [], routed: string[] = []): DeliveryCursor => ({ frontier: new Set(frontier), routed: new Set(routed) })
+const cursor = (frontier = 0, routed: string[] = []): DeliveryCursor => ({ frontier, routed: new Set(routed) })
 const ids = (messages: readonly Msg[]) => messages.map(m => m.id)
 
 let seq = 0
 function msg(fields: Partial<Msg> & { type: Msg['type'] }): Msg {
   seq++
-  return { id: `m_${String(seq).padStart(6, '0')}`, priority: 'notify', from: 'quinn', fromKind: 'agent', at: NOW - DAY + seq, ...fields } as Msg
+  return { id: `m_${String(seq).padStart(6, '0')}`, seq, priority: 'notify', from: 'quinn', fromKind: 'agent', at: NOW - DAY + seq, ...fields } as Msg
 }
 const question = (fields: Partial<Msg> = {}) => msg({ type: 'question', to: P.name, text: 'which token?', ...fields } as Partial<Msg> & { type: 'question' })
 const broadcast = (fields: Partial<Msg> = {}) => msg({ type: 'note', text: 'heads up', ...fields } as Partial<Msg> & { type: 'note' })
@@ -41,21 +41,31 @@ describe('owed (test 1)', () => {
     expect(everyKindAddressesParticipants).toBe(true)
   })
 
-  it('offers addressed messages from before the frontier and ignores broadcasts inside it', () => {
+  it('offers addressed messages at or below the frontier and ignores broadcasts at or below it', () => {
     const room = new RoomDoc()
     const [q, old] = push(room, question(), broadcast())
-    expect(ids(owed(room, P, cursor([q.id, old.id]), {}))).toEqual([q.id])
+    expect(ids(owed(room, P, cursor(highestSeq(room)), {}))).toEqual([q.id])
   })
 
-  it('offers a broadcast that merged in after the frontier at an earlier array position (SF1)', () => {
+  it('offers a broadcast with a higher seq at an earlier array position (SF1, by seq)', () => {
     const a = new RoomDoc(new Y.Doc()), b = new RoomDoc(new Y.Doc())
     a.doc.clientID = 2; b.doc.clientID = 1
-    const [late] = push(b, broadcast({ from: 'bea' }))
     const [first] = push(a, broadcast({ from: 'ann' }))
-    const frontier = ids(a.messages())
+    const frontier = highestSeq(a)
+    const [late] = push(b, broadcast({ from: 'bea' }))
     Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc))
     expect(ids(a.messages()).indexOf(late.id)).toBeLessThan(ids(a.messages()).indexOf(first.id))
+    expect(late.seq).toBeGreaterThan(frontier)
     expect(ids(owed(a, P, cursor(frontier), {}))).toEqual([late.id])
+  })
+
+  it('highestSeq is the largest seq on the bus, 0 for an empty one, and ignores a message without one', () => {
+    const room = new RoomDoc()
+    expect(highestSeq(room)).toBe(0)
+    const [one, two] = push(room, broadcast(), broadcast())
+    room.bus.insert(0, [{ ...broadcast(), seq: undefined }])
+    expect(highestSeq(room)).toBe(Math.max(one.seq!, two.seq!))
+    expect(ids(owed(room, P, cursor(0), {}))).toEqual([one.id, two.id])
   })
 
   it('skips routed broadcasts, outcomes, receipts and irrelevant messages, writing nothing for them', () => {
@@ -64,7 +74,7 @@ describe('owed (test 1)', () => {
     room.outcomes.set(ended.id, { to: P.name, from: 'quinn', outcome: 'expired', at: NOW })
     room.markSeen(P.name, [receipted.id], SHOWN)
     const before = Y.encodeStateVector(room.doc)
-    expect(ids(owed(room, P, cursor([], [routed.id]), {}, m => m.id !== irrelevant.id))).toEqual([kept.id])
+    expect(ids(owed(room, P, cursor(0, [routed.id]), {}, m => m.id !== irrelevant.id))).toEqual([kept.id])
     expect(Y.encodeStateVector(room.doc)).toEqual(before)
     expect(room.seen(P.name).has(irrelevant.id)).toBe(false)
   })

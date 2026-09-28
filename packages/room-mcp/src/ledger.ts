@@ -7,8 +7,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { messageForMe, owed, participantRecord, type MessageRouteContext, type Msg, type Via } from '@room/shared'
+import { highestSeq, messageForMe, owed, participantRecord, type MessageRouteContext, type Msg, type Via } from '@room/shared'
 import { writeAtomic } from './leases.js'
+import { registrySnapshotForDir } from './worker-registry.js'
 import type { Session } from './session.js'
 
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
@@ -35,8 +36,9 @@ export class Batch {
   has(s: Session, id: string): boolean { return this.items.some(x => x.s === s && x.m.id === id) }
 }
 
-interface Cursor { participant: string; frontier: Set<string>; routed: Set<string> }
-type CursorFile = Record<string, { participant: string; frontier: string[]; routed: string[] }>
+/** `frontier`: the highest hub seq the session had observed at its first bind in the room (ledger "Cursor"). */
+interface Cursor { participant: string; frontier: number; routed: Set<string> }
+type CursorFile = Record<string, { participant: string; frontier: number; routed: string[] }>
 
 export interface LedgerOptions {
   /** The host session that receipts name (`s`); the fence compares the holder with it. */
@@ -80,6 +82,12 @@ export class Ledger {
 
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s: Session): void { this.cursor(s) }
+
+  /** The highest hub seq `s` had observed at its first bind: only later messages can wake it (MF8). */
+  frontier(s: Session): number { return this.cursor(s).frontier }
+
+  /** Whether a live batch holds `id` (in flight, so not wakeable). */
+  reserved(s: Session, id: string): boolean { return this.reservations.has(key(s, id)) }
 
   /** Owed messages of `s` that no live batch holds (nor `batch` itself) and `filter` accepts; nothing is reserved. */
   available(s: Session, batch: Batch, filter?: (m: Msg) => boolean): Msg[] {
@@ -183,11 +191,11 @@ export class Ledger {
     let changed = false
     for (const m of s.room.messages()) {
       onBus.add(m.id)
-      if (m.to || cursor.frontier.has(m.id) || cursor.routed.has(m.id) || messageForMe(s.me, m, context)) continue
+      if (m.to || (m.seq ?? 0) <= cursor.frontier || cursor.routed.has(m.id) || messageForMe(s.me, m, context)) continue
       cursor.routed.add(m.id); changed = true
     }
-    // Both sets only matter for bus broadcasts; ids that left the bus are dropped so the file stays bounded.
-    for (const set of [cursor.frontier, cursor.routed]) for (const id of set) if (!onBus.has(id)) { set.delete(id); changed = true }
+    // `routed` only matters for bus broadcasts; ids that left the bus are dropped so the file stays bounded.
+    for (const id of cursor.routed) if (!onBus.has(id)) { cursor.routed.delete(id); changed = true }
     if (changed) this.persistCursor(s, cursor)
     return cursor
   }
@@ -196,11 +204,12 @@ export class Ledger {
     let cursor = this.cursors.get(s)
     if (cursor?.participant === s.me.name) return cursor
     const stored = this.readCursors()[s.roomName]
-    cursor = stored?.participant === s.me.name
-      ? { participant: s.me.name, frontier: new Set(stored.frontier), routed: new Set(stored.routed) }
-      : { participant: s.me.name, frontier: seedFrontier(s), routed: new Set() }
+    const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier)
+    cursor = kept
+      ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) }
+      : { participant: s.me.name, frontier: ownLaunchFrontier(s) ?? highestSeq(s.room), routed: new Set() }
     this.cursors.set(s, cursor)
-    if (!stored || stored.participant !== s.me.name) this.persistCursor(s, cursor)
+    if (!kept) this.persistCursor(s, cursor)
     return cursor
   }
 
@@ -220,7 +229,7 @@ export class Ledger {
     if (!file) return
     try {
       const all = this.readCursors()
-      all[s.roomName] = { participant: cursor.participant, frontier: [...cursor.frontier], routed: [...cursor.routed] }
+      all[s.roomName] = { participant: cursor.participant, frontier: cursor.frontier, routed: [...cursor.routed] }
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
       writeAtomic(file, all)
     } catch (e) { this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`) }
@@ -243,14 +252,14 @@ export class Ledger {
 }
 
 /**
- * The broadcasts a session had observed when it first bound. A spawned worker takes its lead's bus at
- * spawn (`spawnedAfter`), so the lead's later briefing is above its frontier; everyone else takes the bus now.
+ * A spawned worker's seed: its own run's `busFrontier`, the lead's highest seq at launch intent, so the
+ * lead's later briefing is above it (ledger "Cursor"). Everyone else takes the highest seq at first bind.
  */
-function seedFrontier(s: Session): Set<string> {
-  const bus = s.room.messages()
-  const worker = s.room.workerOf(s.me.name)
-  const spawnedAfter = worker?.status === 'running' ? worker.spawnedAfter : undefined
-  // An empty bus at spawn leaves nothing below the frontier; a marker trimmed away since falls back to now.
-  const at = spawnedAfter === undefined ? bus.length - 1 : spawnedAfter === '' ? -1 : bus.findIndex(m => m.id === spawnedAfter)
-  return new Set(bus.slice(0, spawnedAfter && at < 0 ? bus.length : at + 1).filter(m => !m.to).map(m => m.id))
+function ownLaunchFrontier(s: Session): number | undefined {
+  const id = process.env.ROOM_WORKER_ID, run = Number(process.env.ROOM_WORKER_RUN)
+  if (!id || !Number.isSafeInteger(run)) return undefined
+  try {
+    const record = registrySnapshotForDir(s.dir).read(id)
+    return record?.name === s.me.name ? record.runs.find(r => r.n === run)?.busFrontier : undefined
+  } catch { return undefined }
 }

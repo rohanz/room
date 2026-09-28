@@ -150,7 +150,7 @@ function record(root: string, id: string, tag = 'money'): WorkerRecord {
     budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full', task: 'test',
     dir: join(root, '.room', 'workers', tag), outside: false, branch: `room/${tag}`,
     prep: { step: 'prepared' }, capabilities: { resume: false, signal: false, collect: 'delta' }, phase: 'active',
-    runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: id, busFrontier: [], promptMsgIds: [],
+    runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: id, busFrontier: 0, promptMsgIds: [],
       launcher: token, logStart: 0, launch: { outcome: 'launched', pid: 101 } }],
     createdAt: 1, seq: 1,
   }

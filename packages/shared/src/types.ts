@@ -258,7 +258,8 @@ export interface ArchivedRelease { path: string; plans: Plan[]; summary?: string
 /** Compact record of a message that left the bus: [type, from, at, areas, unfulfilled?]. */
 export type ArchivedMsg = [type: MsgType, from: string, at: number, areas: string[], unfulfilled?: ArchivedRelease]
 /** One session's causal cursor in a room: bus ids observed at first bind, and broadcasts routing rejected. */
-export interface DeliveryCursor { frontier: ReadonlySet<string>; routed: ReadonlySet<string> }
+/** A session's broadcast cursor (ledger "Cursor"): the highest hub `seq` it had observed at its first bind, and broadcasts routed away. */
+export interface DeliveryCursor { frontier: number; routed: ReadonlySet<string> }
 
 export type ChatRole = 'human' | 'agent' | 'tool' | 'event' | 'status'
 export interface ChatItem {

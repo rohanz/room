@@ -107,7 +107,7 @@ describe('carry and discard safety', () => {
     expect(registry.read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
     // §6 row 8 holds a stopped run as running until its exit; row 11 (stopped) needs the exit.
     await registry.writeExit(record.id, { run: 1, code: null, witnessed: true, at: Date.now() })
-    const resumed = await registry.resume(record.id, 2, { nonce: 'resume-2', logStart: 0 })
+    const resumed = await registry.resume(record.id, 2, { nonce: 'resume-2', busFrontier: 0, logStart: 0 })
     expect(resumed.runs.at(-1)?.n).toBe(2)
     expect(registry.status(record.id)?.status).toBe('starting')
     await registry.finishOperation(record.id)

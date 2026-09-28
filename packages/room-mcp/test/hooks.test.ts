@@ -15,6 +15,9 @@ import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
 import { createTools, type Tools } from '../src/tools.js'
 import { startArbitration, type Arbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
+import { Ledger } from '../src/ledger.js'
+import { WakeReconciler } from '../src/wake-reconciler.js'
+import type { SendWake } from '../src/wake-path.js'
 import type { Worker } from '@room/shared'
 import { hubSeam } from './fixtures/hub.js'
 
@@ -73,7 +76,15 @@ function addPresence(s: Session, name: string, kind: 'agent' | 'human' = 'agent'
 
 /** A bridge bound to this test's session directory. */
 function bridge(s: Session, o: Partial<HooksBridgeOptions> = {}, id = SID) {
-  return new HooksBridge(s, { forMe: () => false, owedCount: () => 0, fenced: () => true, session: () => ({ id, host: 'codex' }), sessionDir: () => sdir(id), ...o })
+  return new HooksBridge(s, { owedCount: () => 0, fenced: () => true, sessionDir: () => sdir(id), ...o })
+}
+
+/** Wakes for a bound Codex session, attached to `s`. */
+function wakes(s: Session, send: SendWake = async () => 'queue', ownWorkers: ReadonlySet<string> = new Set()) {
+  const ledger = new Ledger({ sessionId: () => SID, route: () => ({}) })
+  const w = new WakeReconciler({ ledger, bound: () => ({ id: SID, host: 'codex' }), sessionDir: () => sdir(), send, ownWorkers: () => ownWorkers, windowMs: 0 })
+  ledger.bind(s); w.attach(s)
+  return w
 }
 
 /** A bound session with a live Room MCP: tools, ledger and the hooks' arbitration endpoint. */
@@ -443,23 +454,15 @@ describe('hooks bridge state file', () => {
 
   it('does not wake an idle session merely because another participant joins', async () => {
     const s = session(new RoomDoc())
-    const queued: string[] = []
-    const b = bridge(s, { queue: async id => { queued.push(id) } })
+    const send = vi.fn(async () => 'queue' as const)
+    const b = bridge(s)
+    const w = wakes(s, send)
     b.start()
     addPresence(s, 'Kieran')
     await new Promise(r => setTimeout(r, 200))
-    expect(queued).toEqual([])
+    expect(send).not.toHaveBeenCalled()
     expect(readSession('state.json')).toMatchObject({ company: true, others: ["Kieran's agent"] })
-    b.stop()
-  })
-
-  it('a bridge with writeState:false never writes or removes the session state file', () => {
-    const s = session(new RoomDoc())
-    writeSessionFile('state.json', { lead: true })
-    const b = bridge(s, { writeState: false })
-    b.start(); b.write(); b.stop()
-    expect(readSession('state.json')).toEqual({ lead: true })
-    s.awareness.destroy()
+    b.stop(); w.stop()
   })
 
   it('contains a scheduled hook-state write failure and logs it once', () => {
@@ -768,139 +771,14 @@ describe('hook health', () => {
   })
 })
 
-describe('wakes (content, never receipts; the WakeReconciler replaces this in ledger step 4)', () => {
-  const remote = (room: RoomDoc) => { const other = new RoomDoc(); other.doc.on('update', (u: Uint8Array) => Y.applyUpdate(room.doc, u)); return other }
-
-  it('interrupts and questions for me wake the bound session once', async () => {
-    const room = new RoomDoc()
-    const s = session(room)
-    const queued: string[] = []
-    const b = bridge(s, { forMe: m => m.to === 'Rohan' || m.type === 'conflict' || m.type === 'base', queue: async (id, text) => { queued.push(`${id}: ${text}`) } }, 'thread-1')
-    b.start()
-    addPresence(s, 'Kieran')
-    const k = { name: 'Kieran', kind: 'agent' as const }
-    const other = remote(room)
-    hubAppend(other, k, { type: 'note', text: 'fyi only' } as never)
-    hubAppend(other, k, { type: 'question', to: 'Rohan', text: 'are you done?' } as never)
-    hubAppend(other, k, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    hubAppend(other, k, { type: 'base', base: 'b'.repeat(40), prev: 'a'.repeat(40), commits: 1, paths: ['app.py'], summary: 'x' } as never)
-    await new Promise(r => setTimeout(r, 50))
-    expect(queued.length).toBe(2)
-    room.setOverlay('Rohan', 'app.py', 'x = 2\n')
-    hubAppend(other, k, { type: 'base', base: 'c'.repeat(40), prev: 'b'.repeat(40), commits: 1, paths: ['app.py'], summary: 'y' } as never)
-    await new Promise(r => setTimeout(r, 50))
-    expect(queued.length).toBe(3)
-    expect(queued[2]).toContain('moved the base')
-    expect(queued[2]).toContain('git pull --ff-only --autostash')
-    expect(queued[0]).toContain('thread-1: [room] [notify]')
-    expect(queued[1]).toContain('stop!')
-    b.stop()
-  })
-
-  it('a queued wake is not delivery: the message stays owed and is not queued twice', async () => {
-    const s = session(new RoomDoc())
-    const queue = vi.fn(async () => {})
-    const b = bridge(s, { forMe: () => true, retryDelaysMs: [], queue })
-    const msg = hubAppend(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'queue first?' })
-    await b.maybeWake(msg)
-    await b.maybeWake(msg)
-    expect(queue).toHaveBeenCalledOnce()
-    expect(s.room.seen(s.me.name).has(msg.id)).toBe(false)
-    b.stop(); s.awareness.destroy()
-  })
-
-  it('skips a receipted message', async () => {
-    const s = session(new RoomDoc())
-    const queue = vi.fn(async () => {})
-    const b = bridge(s, { forMe: () => true, queue })
-    const msg = hubAppend(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'seen already' })
-    s.room.markSeen(s.me.name, [msg.id], { s: SID, via: 'reply' })
-    await b.maybeWake(msg)
-    expect(queue).not.toHaveBeenCalled()
-    b.stop(); s.awareness.destroy()
-  })
-
-  it('a failed wake retries with backoff', async () => {
-    vi.useFakeTimers()
-    const room = new RoomDoc()
-    const s = session(room)
-    let calls = 0
-    const b = bridge(s, { forMe: m => m.to === 'Rohan', retryDelaysMs: [1, 1, 1], queue: async () => { calls++; if (calls < 3) throw new Error('codex busy') } })
-    b.start()
-    hubAppend(remote(room), { name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    await vi.advanceTimersByTimeAsync(150)
-    expect(calls).toBe(3)
-    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(1)
-    b.stop()
-  })
-
-  it('gives up after the retries are exhausted', async () => {
-    vi.useFakeTimers()
-    const room = new RoomDoc()
-    const s = session(room)
-    let calls = 0
-    const logs: string[] = []
-    const b = bridge(s, { forMe: m => m.to === 'Rohan', retryDelaysMs: [1, 1], log: l => logs.push(l), queue: async () => { calls++; throw new Error('down') } })
-    b.start()
-    hubAppend(remote(room), { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: '?' } as never)
-    await vi.advanceTimersByTimeAsync(150)
-    expect(calls).toBe(3)
-    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(0)
-    expect(logs.some(l => l.includes('after 3 attempts'))).toBe(true)
-    b.stop()
-  })
-
-  it('with no bound session the wake stays pending until one binds', async () => {
-    vi.useFakeTimers()
-    const room = new RoomDoc()
-    const s = session(room)
-    const queued: string[] = []
-    let bound: { id: string; host: 'codex' } | undefined
-    const b = bridge(s, { forMe: m => m.to === 'Rohan', session: () => bound, pendingPollMs: 10, retryDelaysMs: [], queue: async id => { queued.push(id) } })
-    b.start()
-    hubAppend(remote(room), { name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    await vi.advanceTimersByTimeAsync(30)
-    expect(queued).toEqual([])
-    bound = { id: 'thread-3', host: 'codex' }
-    await vi.advanceTimersByTimeAsync(15)
-    expect(queued).toEqual(['thread-3'])
-    b.stop()
-  })
-
-  it('a Claude Code host is not queued through codex', async () => {
-    const room = new RoomDoc()
-    const s = session(room)
-    const queued: string[] = []
-    const logs: string[] = []
-    const b = bridge(s, { forMe: m => m.to === 'Rohan', session: () => ({ id: 'claude-1', host: 'claude' }), log: l => logs.push(l), queue: async id => { queued.push(id) } })
-    b.start()
-    hubAppend(remote(room), { name: 'Kieran', kind: 'agent' }, { type: 'note', to: 'Rohan', text: 'stop!', priority: 'interrupt' } as never)
-    await new Promise(r => setTimeout(r, 30))
-    expect(queued).toEqual([])
-    expect(logs.some(l => l.includes('claude host') && l.includes('via channel'))).toBe(true)
-    b.stop()
-  })
-
-  it('stop cancels an in-flight queue attempt', async () => {
-    const s = session(new RoomDoc())
-    let release!: () => void
-    const queued = new Promise<void>(resolve => { release = resolve })
-    const b = bridge(s, { forMe: () => true, queue: () => queued })
-    const msg = hubAppend(s.room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: s.me.name, text: 'still there?' })
-    const delivery = b.maybeWake(msg)
-    b.stop(); release(); await delivery
-    expect((b as unknown as { woken: Set<string> }).woken.size).toBe(0)
-    s.awareness.destroy(); s.room.doc.destroy()
-  })
-
+describe('wakes: capability presence and the lead\'s own workers', () => {
   it('publishes known unavailable Claude wake capability', () => {
     vi.stubEnv('ROOM_HOST', 'claude')
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
     const s = session(new RoomDoc())
-    const b = bridge(s)
-    b.start()
+    const w = wakes(s)
     expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
-    b.stop(); s.awareness.destroy()
+    w.stop(); s.awareness.destroy()
   })
 
   it('publishes socket wake capability and honors ROOM_WAKE=off', () => {
@@ -908,32 +786,31 @@ describe('wakes (content, never receipts; the WakeReconciler replaces this in le
     vi.stubEnv('ROOM_CLAUDE_CHANNEL', '')
     vi.stubEnv('CLAUDE_CODE_MESSAGING_SOCKET', '/tmp/claude-inbox.sock')
     const s = session(new RoomDoc())
-    const b = bridge(s)
-    b.start()
+    const w = wakes(s)
     expect(s.awareness.getLocalState()).toMatchObject({ wakeUnavailable: false })
-    b.stop(); s.awareness.destroy()
+    w.stop(); s.awareness.destroy()
     vi.stubEnv('ROOM_WAKE', 'off')
     const off = session(new RoomDoc())
-    const offBridge = bridge(off)
-    offBridge.start()
+    const offWakes = wakes(off)
     expect(off.awareness.getLocalState()).toMatchObject({ wakeUnavailable: true })
-    offBridge.stop(); off.awareness.destroy()
+    offWakes.stop(); off.awareness.destroy()
   })
 
-  it('Codex hook wakes for own worker questions and failures, but not progress notes', async () => {
+  it('wakes for own worker questions and failures, but not progress notes', async () => {
     const s = session(new RoomDoc())
-    s.room.setWorker({ tag: 'money', name: 'Rohan+money', lead: 'Rohan', host: 'codex', task: 'fix',
-      dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: 1, startedAt: 1, status: 'running' })
-    const queue = vi.fn(async () => {})
-    const b = bridge(s, { forMe: m => m.to === s.me.name, queue })
+    const send = vi.fn(async () => 'queue' as const)
+    const w = wakes(s, send, new Set(['Rohan+money']))
     const from = { name: 'Rohan+money', kind: 'agent' } as const
-    await b.maybeWake(hubAppend(s.room, from, { type: 'note', to: 'Rohan', text: 'halfway' }))
-    expect(queue).not.toHaveBeenCalled()
-    await b.maybeWake(hubAppend(s.room, from, { type: 'question', to: 'Rohan', text: 'which field?' }))
-    expect(queue).toHaveBeenCalledTimes(1)
-    await b.maybeWake(hubAppend(s.room, from, { type: 'note', priority: 'interrupt', to: 'Rohan', text: 'failed' }))
-    expect(queue).toHaveBeenCalledTimes(2)
-    b.stop(); s.awareness.destroy(); s.room.doc.destroy()
+    const settled = () => new Promise(r => setTimeout(r, 30))
+    try {
+      hubAppend(s.room, from, { type: 'note', to: 'Rohan', text: 'halfway' })
+      await settled()
+      expect(send).not.toHaveBeenCalled()
+      hubAppend(s.room, from, { type: 'question', to: 'Rohan', text: 'which field?' })
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+      hubAppend(s.room, from, { type: 'note', priority: 'interrupt', to: 'Rohan', text: 'failed' })
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2))
+    } finally { w.stop(); s.awareness.destroy(); s.room.doc.destroy() }
   })
 })
 

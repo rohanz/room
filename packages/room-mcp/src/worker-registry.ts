@@ -141,7 +141,7 @@ const processShape = (value: unknown): boolean => object(value) && Number.isSafe
 const runShape = (value: unknown): boolean => {
   if (!object(value) || !Number.isSafeInteger(value.n) || (value.n as number) < 1
     || !['fresh', 'resume'].includes(value.mode as string) || typeof value.intentAt !== 'number'
-    || typeof value.nonce !== 'string' || !Array.isArray(value.busFrontier) || !Array.isArray(value.promptMsgIds)
+    || typeof value.nonce !== 'string' || !Number.isSafeInteger(value.busFrontier) || !Array.isArray(value.promptMsgIds)
     || !tokenShape(value.launcher) || typeof value.logStart !== 'number') return false
   if (value.launch === undefined) return true
   if (!object(value.launch)) return false
@@ -539,7 +539,7 @@ export class WorkerRegistry {
   }
 
   /** Append the next run while the same capacity guard used by fresh spawn is held. */
-  async resume(id: string, capacity: number, input: { nonce: string; busFrontier?: string[]; promptMsgIds?: string[]; logStart: number }): Promise<WorkerRecord> {
+  async resume(id: string, capacity: number, input: { nonce: string; busFrontier: number; promptMsgIds?: string[]; logStart: number }): Promise<WorkerRecord> {
     await this.beginOperation(id, 'resume')
     try {
       const next = await guarded(path.join(this.root, 'capacity'), () => {
@@ -550,7 +550,7 @@ export class WorkerRegistry {
         if (status === 'stopped' && !['lead-session-ended', 'message-delivered-cancelled', 'message-delivered-failed'].includes(old.stop?.reason ?? '')) throw new Error('discarded worker cannot resume')
         if (this.occupancy() >= capacity) throw new Error('worker capacity reached')
         const run = { n: old.runs.at(-1)!.n + 1, mode: 'resume' as const, intentAt: this.now(),
-          nonce: input.nonce, busFrontier: input.busFrontier ?? [], promptMsgIds: input.promptMsgIds ?? [],
+          nonce: input.nonce, busFrontier: input.busFrontier, promptMsgIds: input.promptMsgIds ?? [],
           launcher: this.identity, logStart: input.logStart }
         const record: WorkerRecord = { ...old, phase: 'prepared', stop: undefined, runs: [...old.runs, run], seq: old.seq + 1 }
         writeAtomic(this.workerFile(id), record)
@@ -951,7 +951,7 @@ export class WorkerRegistry {
       capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
       phase: source.keptWorktree ? 'retired' : 'active', keptWorktree: source.keptWorktree,
       cleanup: source.keptWorktree ? { legacy: 'done' } : undefined,
-      runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: [], promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
+      runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: 0, promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
       legacy: { id: source.key, source: source.dir, said: source.said, unowned: true }, createdAt: this.now(), seq: 1,
     }
     createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })

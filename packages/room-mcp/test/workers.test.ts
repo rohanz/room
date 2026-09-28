@@ -1165,15 +1165,14 @@ describe('review fixes: workers', () => {
 })
 
 describe('review fixes: the workers room', () => {
-  function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
+  function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
     const team = pair(), local = pair()
     team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
     let ls: Session | null = fakeSession(team.a, lead, false)
     ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
-    const attached: string[] = []
     const leadTools = createTools({
-      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, queue, probe: () => undefined,
-      attachChannel: s => { attached.push(s.roomName) },
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined,
+      ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
       join: async () => fakeSession(local.a, lead),
       leave: async () => {},
       spawner: () => ({ pid: 99, started: Promise.resolve(), onExit: () => {}, kill: () => true }),
@@ -1181,7 +1180,7 @@ describe('review fixes: the workers room', () => {
     })
     let ws: Session | null = fakeSession(local.b, workerId)
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
-    return { team, local, leadTools, workerTools, attached }
+    return { team, local, leadTools, workerTools }
   }
 
   it("the lead's answer to a worker's question lands in the workers room, and room_wait finds the answer there (fix 6)", async () => {
@@ -1205,15 +1204,14 @@ describe('review fixes: the workers room', () => {
     const woken: string[] = []
     const t = setupBridged(async (_id, text) => { woken.push(text) })
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't', where: 'local' })
-    expect(t.attached).toEqual(['local/x/main'])
     await t.workerTools.call('room_send', { type: 'question', text: 'which field?', to: 'rohanz' })
-    await new Promise(r => setTimeout(r, 200))
-    expect(woken.some(x => x.includes('which field?'))).toBe(true)
+    await vi.waitFor(() => expect(woken.some(x => x.includes('rohanz+money asked a question'))).toBe(true))
     await t.workerTools.call('room_done', { summary: 'all in cents' })
-    await new Promise(r => setTimeout(r, 200))
-    expect(woken.some(x => x.includes('all in cents'))).toBe(true)
+    // The follow-up waits out the five-second window after the first wake.
+    await vi.waitFor(() => expect(woken.some(x => x.includes('rohanz+money finished'))).toBe(true), { timeout: 8_000 })
+    expect(woken.join('\n')).not.toMatch(/which field\?|all in cents/)
     await t.leadTools.call('room_leave', { force: true })
-  })
+  }, 15_000)
 })
 
 describe('workers review: env, keys, sessions, reservation, signals', () => {

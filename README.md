@@ -311,8 +311,9 @@ to give agents that context while they work.
 - **Before an edit:** the agent can see who holds the lines and what they intend to change.
 - **When a contract changes:** relevant consumers receive the declaration; superseded or
   cancelled plans generate interrupts for affected agents.
-- **When an agent is idle:** the plugin can queue an interrupt or addressed question into
-  its Codex session, provided the session bridge is available.
+- **When an agent is idle:** an interrupt or addressed question wakes its Codex or Claude Code
+  session with a pointer that names who and what kind, never the text; the next Room reply
+  or edit hook delivers the message itself.
 - **Before integration:** agents can preview a merge and run checks; developers retain
   control of commits and pushes.
 
@@ -382,8 +383,9 @@ Developer A’s clone                                  Developer B’s clone
    those for languages present in the repository. The browser keeps a smaller regex extractor
    rather than loading tree-sitter.
 4. **Deliver context.** Room tool replies surface the agent’s inbox. Pre-edit hooks show
-   unread messages and teammate claims. The session bridge queues interrupts and
-   addressed questions into Codex; an optional on-duty runner also handles room events.
+   unread messages and teammate claims. Interrupts and addressed questions
+   wake an idle session with a content-free pointer; an optional on-duty runner also handles
+   room events.
 5. **Integrate with Git.** Merge previews happen in memory or, when tests are requested,
    a temporary workspace. The shared base advances only when the new commit is on the
    remote. Teammates see that their clone is behind and can pull.

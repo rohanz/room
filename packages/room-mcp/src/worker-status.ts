@@ -5,7 +5,10 @@ import type { InstanceToken, Liveness, ProcessIdentity } from './leases.js'
 export type WorkerStatus2 = 'starting' | 'running' | 'unknown' | 'ambiguous' | 'done' | 'failed' | 'stopped' | 'imported' | 'collecting' | 'retired' | 'abandoned'
 export type StopReason = 'lead-session-ended' | 'discarded' | 'message-delivered-cancelled' | 'message-delivered-failed'
 export interface Run {
-  n: number; mode: 'fresh' | 'resume'; intentAt: number; nonce: string; busFrontier: string[]; promptMsgIds: string[]
+  n: number; mode: 'fresh' | 'resume'; intentAt: number; nonce: string
+  /** The lead's highest hub seq at intent: the worker's ledger frontier seed (ledger "Cursor"). */
+  busFrontier: number
+  promptMsgIds: string[]
   launcher: InstanceToken; logStart: number
   launch?: { outcome: 'launched'; pid: number; process?: ProcessIdentity } | { outcome: 'never'; error: string }
     | { outcome: 'ambiguous'; at: number } | { outcome: 'imported' }

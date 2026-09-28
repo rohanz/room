@@ -10,9 +10,8 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import type { Identity, Msg } from '@room/shared'
+import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
-import { shouldWake } from '../src/wake.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { hubAppend } from '@room/shared/testing'
@@ -62,16 +61,15 @@ afterEach(async () => {
 })
 
 /** A lead in a team room with a local workers room; the spawned process's exit is under test control. */
-function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
+function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
   const team = pair(), local = pair()
   team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
   let ls: Session | null = fakeSession(team.a, lead, false)
   ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
   const exits: ((code: number | null) => void)[] = []
-  const attached: Session[] = []
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, queue, probe: () => undefined, listCwdProcesses: () => [],
-    attachChannel: s => { attached.push(s) },
+    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined, listCwdProcesses: () => [],
+    ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},
     spawner: () => ({ pid: 99, started: Promise.resolve(), onExit: cb => { exits.push(cb) }, kill: () => {} }),
@@ -79,7 +77,7 @@ function setupBridged(queue?: (id: string, text: string) => Promise<void>) {
   })
   let ws: Session | null = fakeSession(local.b, workerId)
   const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
-  return { team, local, leadTools, workerTools, exits, attached, lead: () => ls! }
+  return { team, local, leadTools, workerTools, exits, lead: () => ls! }
 }
 
 describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
@@ -105,35 +103,18 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
 })
 
 describe('a worker exiting without room_done wakes the lead (B3)', () => {
-  it('through the codex queue of the workers-room hooks bridge', async () => {
+  it("through the host's wake path for the workers room, content-free, without waking on the lead's own posts", async () => {
     const woken: string[] = []
     const t = setupBridged(async (_id, text) => { woken.push(text) })
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
-    t.exits[0](0)
+    hubAppend(t.local.a, lead, { type: 'note', to: 'rohanz+money', text: 'mine', priority: 'interrupt' } as never)
     await new Promise(r => setTimeout(r, 100))
-    expect(woken.some(x => x.includes('exited without room_done'))).toBe(true)
+    expect(woken).toEqual([])
+    t.exits[0](0)
+    await vi.waitFor(() => expect(woken).toHaveLength(1))
+    expect(woken[0]).toContain('rohanz+money')
+    expect(woken[0]).not.toContain('exited without room_done')
     expect(t.local.a.workers.get('money')).toMatchObject({ status: 'failed', exitCode: 0 })
-    await t.leadTools.call('room_leave', { force: true })
-  })
-
-  it('through the channel observer index.ts attaches to the workers room, without waking on the lead\'s own posts', async () => {
-    const t = setupBridged()
-    await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
-    expect(t.attached).toHaveLength(1)
-    const s = t.attached[0]
-    // the same observer index.ts installs (kept in step with attachChannel there)
-    const pushed: string[] = []
-    s.room.bus.observe(ev => {
-      for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as Msg[]) {
-        if (ev.transaction.local && m.from === s.me.name) continue
-        const w = shouldWake(s.me, { kind: 'msg', msg: m }, [])
-        if (w) pushed.push(w.meta.type)
-      }
-    })
-    hubAppend(s.room, s.me, { type: 'note', to: 'rohanz+money', text: 'mine', priority: 'interrupt' } as never)
-    expect(pushed).toEqual([])
-    t.exits[0](1)
-    await vi.waitFor(() => expect(pushed).toEqual(['note']))
     await t.leadTools.call('room_leave', { force: true })
   })
 })

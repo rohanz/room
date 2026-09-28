@@ -38,12 +38,10 @@ export interface ToolCtx {
   now?: () => number
   /** Collection exit grace period; injectable for tests. */
   sleep?: (ms: number) => Promise<void>
-  /** Injectable wake for tests (default: `codex queue`). */
-  queue?: (threadId: string, text: string) => Promise<void>
+  /** How a content-free wake reaches the bound host session (default: the Codex queue or Claude Code's inbox socket). */
+  wake?: import('../wake-path.js').SendWake
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
-  /** Called for a secondary session (the workers room) so the host can push its wake-ups too. */
-  attachChannel?: (s: Session) => void
   /** Pull-request integration; injectable for tests. */
   prs?: { fetch?: (s: Session, opts?: { head?: boolean }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */

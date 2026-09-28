@@ -11,6 +11,7 @@ import { workerBaseline } from '@room/roomd/baseline'
 import type { ShareLevel, SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
+import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictWatcher } from '../conflicts.js'
 import { isPrName } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
@@ -37,19 +38,19 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   let primaryHooks: HooksBridge | null = null
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
   /**
-   * Everything a joined session needs running. The primary gets the hooks bridge (state file + wake),
-   * the conflict watcher and the PR mirror. The workers room gets a wake-only hooks bridge (the state
-   * file is the team room's), the host's channel push, and the bridge to the lead's team room.
+   * Everything a joined session needs running. Both rooms get wakes. The primary gets the hooks bridge
+   * (state file), the conflict watcher and the PR mirror. The workers room gets the bridge to the lead's
+   * team room (the state file is the team room's).
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
     ledger.bind(s)
-    const hooks = new HooksBridge(s, {
-      forMe: m => inboxServices.forMe(s, m), owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
-      session: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(),
-      company: () => company(s), log, queue: ctx.queue, ...(role === 'workers' ? { writeState: false } : {}),
-    })
-    hooks.start()
-    if (role === 'primary') primaryHooks = hooks
+    wakes.attach(s)
+    const hooks = role === 'primary' ? new HooksBridge(s, {
+      owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
+      sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(), company: () => company(s), log,
+    }) : null
+    hooks?.start()
+    if (hooks) primaryHooks = hooks
     let watcher: ConflictWatcher | null = null
     let bridge: Bridge | null = null
     if (role === 'primary') {
@@ -61,8 +62,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     }
     return {
       stop() {
-        hooks.stop(); watcher?.stop()
-        if (primaryHooks === hooks) primaryHooks = null
+        wakes.detach(s); hooks?.stop(); watcher?.stop()
+        if (hooks && primaryHooks === hooks) primaryHooks = null
         if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
       },
@@ -147,9 +148,14 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     sessionDir: () => ctx.binding?.dir(),
     route: s => ({ claims: mine(s), inMyAreas: m => areas.msgInMyAreas(s, m) }),
     relevant: createRelevance(),
-    onSettled: scheduleInboxWrite,
+    onSettled: () => { scheduleInboxWrite(); wakes.reconcile() },
     log,
     hookLeaseMs: ctx.hookLeaseMs,
+  })
+  const wakes = new WakeReconciler({
+    ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
+    send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
+    ownWorkers: s => new Set(workers.myWorkers(s).map(w => w.name)),
   })
   const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
   const prs = createPrs({ ctx, presences, log, now })
@@ -175,6 +181,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
     async shutdown() {
+      wakes.stop()
       const s = ctx.getSession()
       if (!s) return
       const running = (await Promise.all(state.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
