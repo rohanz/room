@@ -11,7 +11,7 @@ const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); ex
 describe('resolveConfig', () => {
   it('restores a named local room after restart and still reads legacy choices', async () => {
     const dir = repo()
-    await writeChoice(dir, 'local', 'Ada', 'full', 'local/picked')
+    await writeChoice(dir, 'local', 'Ada', 'local/picked')
     expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: LOCAL, room: 'local/picked', whereRule: 'remembered' })
     expect((await resolveConfig({ dir, env: { ROOM_ROOM: 'local/from-env' } })).room).toBe('local/from-env')
     await writeChoice(dir, 'local')
@@ -27,12 +27,13 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
-  it('restores a remembered narrower share unless an argument or environment explicitly overrides it', async () => {
+  it('keeps the remembered destination separate from explicit sharing inputs', async () => {
     const dir = repo()
-    await writeChoice(dir, 'team', 'Ada', 'intent')
-    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: DEFAULT_SERVER, share: 'intent' })
-    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' } })).toMatchObject({ share: 'declared' })
-    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' }, args: { share: 'full' } })).toMatchObject({ share: 'full' })
+    await writeChoice(dir, 'team', 'Ada')
+    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: DEFAULT_SERVER, share: 'full', shareExplicit: false })
+    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' } })).toMatchObject({ share: 'declared', shareExplicit: true })
+    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' }, args: { share: 'full' } })).toMatchObject({ share: 'full', shareExplicit: true })
+    expect(await resolveConfig({ dir, env: {}, args: { share: 'full', shareExplicit: false } })).toMatchObject({ share: 'full', shareExplicit: false })
   })
 
   it('treats runner URLs as explicit environment destinations', async () => {
@@ -53,9 +54,9 @@ describe('resolveConfig', () => {
     expect((await resolveConfig({ dir, env: { ROOM_CLAUDE_CHANNEL: 'custom' }, args: { claudeChannel: '' } })).claudeChannel).toBe('')
   })
 
-  it('resolves worker identity and generation from the environment', async () => {
+  it('resolves worker identity from the environment', async () => {
     const config = await resolveConfig({ dir: repo(), env: { ROOM_WORKER_ID: ' spawn-id ', ROOM_GEN: ' 2 ' } })
-    expect(config).toMatchObject({ workerId: 'spawn-id', gen: '2' })
+    expect(config).toMatchObject({ workerId: 'spawn-id' })
   })
 
   it('resolves identity, paths, secrets and numeric defaults without mutating env', async () => {

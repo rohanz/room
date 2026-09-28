@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 /** Two repos: one with CODEOWNERS (api/ owned by kieran, web/ by rohan), one without. */
 let owned: { dir: string; base: string }
@@ -45,6 +46,7 @@ function agent(room: RoomDoc, me: Identity, r: { dir: string; base: string }) {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', lastActive: Date.now() })
   const s: Session = {
+    policyStore: testPolicyStore(),
     room, awareness, me, dir: r.dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir: r.dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: r.base } as never,

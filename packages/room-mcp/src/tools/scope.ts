@@ -68,6 +68,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
+      await s.policyStore.declare(paths)
       const posted = s.room.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
       setPresence(s, { status: `on ${area}: ${summary}`, areas })
       const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`]

@@ -6,8 +6,19 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { RoomDoc, digestPath, manifestKey } from '@room/shared'
-import { publishManifest, scanManifest } from '../src/manifest-publish.js'
+import { publishManifest, type ManifestFact } from '../src/manifest-publish.js'
 import { startRoomd } from '../src/index.js'
+import { plan, policyFromLevel, rulesFromText } from '../src/policy.js'
+import { readDisk } from '../src/disk-scan.js'
+
+async function scanPlan(input: { room: RoomDoc; name: string; fence: string; base: string; level: 'intent' | 'declared' | 'full'; prefixes: readonly string[]; dir: string; sizeCap: number; totalBudget: number; safe: (p: string) => boolean }): Promise<ManifestFact[]> {
+  const policy = policyFromLevel(input.level, input.prefixes)
+  const inputs = { policy, rules: rulesFromText('', input.sizeCap, input.totalBudget), head: input.base }
+  const old = input.room.manifest.get(manifestKey(input.name, input.fence))
+  const desired = plan(inputs, await readDisk(input.dir, inputs, old?.keys() ?? [], input.safe), input.room.ensureRoomSalt())
+  return [...desired.entries].map(([p, e]) => ({ path: p, change: e.change, hash: e.hash, size: e.size, baseHash: e.baseHash, text: e.text, binary: e.held === 'binary', at: e.at }))
+    .concat(desired.excludedPaths.map(p => ({ path: p, change: 'M' as const, excluded: true })))
+}
 
 function provider(doc: Y.Doc): WebsocketProvider {
   let state: unknown = null
@@ -106,7 +117,7 @@ describe('dual manifest publication', () => {
       fs.rmSync(path.join(dir, 'gone'))
       const room = new RoomDoc()
       const input = { room, name: 'ben', fence: 's1', base, level: 'declared' as const, prefixes: ['src/'], complete: true }
-      const facts = await scanManifest({ ...input, dir, sizeCap: 1024, totalBudget: 1024, safe: () => true })
+      const facts = await scanPlan({ ...input, dir, sizeCap: 1024, totalBudget: 1024, safe: () => true })
       publishManifest(input, facts)
       const entries = room.manifest.get(manifestKey('ben', 's1'))!
       expect(entries.get('private')).toMatchObject({ change: 'M', state: 'held', held: 'scope' })
@@ -133,7 +144,7 @@ describe('dual manifest publication', () => {
       publishManifest(input, [{ path: 'old', change: 'M', hash: 'earlier', size: 7, text: 'earlier' }])
       sh('mv', 'old', 'new')
       if (mode === 'committed') sh('commit', '-qm', 'rename')
-      const facts = await scanManifest({ ...input, dir, sizeCap: 1024, totalBudget: 1024, safe: () => true })
+      const facts = await scanPlan({ ...input, dir, sizeCap: 1024, totalBudget: 1024, safe: () => true })
       expect(facts.map(f => [f.path, f.change])).toEqual([['new', 'A'], ['old', 'D']])
       publishManifest(input, facts)
       expect(room.manifest.get(manifestKey('ben', 's1'))?.get('old')?.change).toBe('D')
@@ -153,13 +164,13 @@ describe('dual manifest publication', () => {
       fs.writeFileSync(path.join(dir, 'a'), '1234')
       fs.writeFileSync(path.join(dir, 'z'), '12345')
       const common = { room, name: 'ben', fence: 's1', base, prefixes: ['a'], complete: true, dir, sizeCap: 1024, totalBudget: 4, safe: () => true }
-      const scoped = await scanManifest({ ...common, level: 'declared' })
+      const scoped = await scanPlan({ ...common, level: 'declared' })
       expect(scoped.find(f => f.path === 'z')).toMatchObject({ change: 'M' })
       expect(scoped.find(f => f.path === 'z')?.excluded).toBeUndefined()
       publishManifest({ ...common, level: 'declared' }, scoped)
       expect(room.manifest.get(manifestKey('ben', 's1'))?.get('z')).toMatchObject({ state: 'held', held: 'scope' })
       fs.writeFileSync(path.join(dir, 'z'), Buffer.from([0xff, 0xfe, 0xfd, 0xfc, 0xfb]))
-      const binary = await scanManifest({ ...common, level: 'full' })
+      const binary = await scanPlan({ ...common, level: 'full' })
       expect(binary.find(f => f.path === 'z')).toMatchObject({ binary: true })
       expect(binary.find(f => f.path === 'z')?.excluded).toBeUndefined()
       publishManifest({ ...common, level: 'full' }, binary)
@@ -183,7 +194,7 @@ describe('dual manifest publication', () => {
       const anchor = sh(dir, 'rev-parse', 'HEAD')
       fs.writeFileSync(path.join(dir, 'x'), 'committed')
       sh(dir, 'add', '-A'); sh(dir, 'commit', '-qm', 'local')
-      daemon = await startRoomd({ dir, room: 'ws://memory/github.com/owner/repo/main', name: 'Ben', sessionId: 's1', share: 'full', providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60_000, log: () => {} })
+      daemon = await startRoomd({ dir, room: 'ws://memory/github.com/owner/repo/main', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'), providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60_000, log: () => {} })
       expect(daemon.anchor).toEqual({ base: anchor, anchored: true })
       expect(daemon.roomDoc.manifestHead.get('Ben')).toMatchObject({ base: anchor, complete: true })
       expect(daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))?.get('x')?.change).toBe('M')
@@ -194,7 +205,7 @@ describe('dual manifest publication', () => {
     } finally { await daemon?.stop(); fs.rmSync(root, { recursive: true, force: true }); vi.unstubAllEnvs() }
   })
 
-  it('withholds an equals-base claim when no remote anchor can be resolved', async () => {
+  it('keeps observed entries non-certifying when no remote anchor can be resolved', async () => {
     vi.stubEnv('CHOKIDAR_USEPOLLING', '1')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-no-anchor-'))
     const sh = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
@@ -205,10 +216,11 @@ describe('dual manifest publication', () => {
       fs.writeFileSync(path.join(dir, 'x'), 'base')
       sh('add', '-A'); sh('commit', '-qm', 'base')
       fs.writeFileSync(path.join(dir, 'x'), 'changed')
-      daemon = await startRoomd({ dir, room: 'ws://memory/github.com/owner/repo/main', name: 'Ben', sessionId: 's1', share: 'full', providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60_000, log: () => {} })
+      daemon = await startRoomd({ dir, room: 'ws://memory/github.com/owner/repo/main', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'), providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60_000, log: () => {} })
       expect(daemon.anchor.anchored).toBe(false)
       expect(daemon.roomDoc.manifestHead.get('Ben')?.complete).toBe(false)
-      expect(daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))?.size).toBe(0)
+      expect(daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))?.get('x')?.change).toBe('M')
+      expect(daemon.roomDoc.manifestHead.get('Ben')?.coverage).toEqual({ kind: 'none', reason: 'starting' })
     } finally { await daemon?.stop(); fs.rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs() }
   })
 })

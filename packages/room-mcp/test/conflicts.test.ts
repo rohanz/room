@@ -10,6 +10,7 @@ import type { Identity } from '@room/shared'
 import { createTools, type Tools } from '../src/tools.js'
 import { changedRanges, ConflictWatcher, type ConflictDeps } from '../src/conflicts.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const me: Identity = { name: 'Rohan', kind: 'agent' }
@@ -26,6 +27,7 @@ function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
   return {
+    policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr%2Fmain', roomName: 'github.com/o/r/main', browserUrl: 'http://x',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },

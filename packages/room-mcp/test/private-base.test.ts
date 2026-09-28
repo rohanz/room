@@ -8,6 +8,7 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 
 /** A teammate's clone, which never has a commit that exists only on the lead's machine. */
 function teammate(): { dir: string; base: string } {
@@ -27,7 +28,7 @@ function session(dir: string, base: string, person: string, sha: string, record?
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Bob', kind: 'agent', color: '#000' }, status: 'idle' })
   return {
-    room, awareness, me: { name: 'Bob', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full',
+    room, awareness, me: { name: 'Bob', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Bob', roomDoc: room, provider: null as never, branch: 'main', base } as unknown as Session['daemon'],
   }

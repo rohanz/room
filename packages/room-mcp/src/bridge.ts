@@ -40,25 +40,9 @@ export class Bridge {
   private own: Scope | undefined
   /** True while the team scope record holds the union (coordination paths wider than the lead's own). */
   private unionPublished = false
-  private origSetShare: Session['daemon']['setShare'] | undefined
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {}
 
-  /**
-   * What the lead's daemon may publish under `declared`: its own scope paths only, never the workers'.
-   * The union goes to the coordination record (scopes map + bus) so the team sees what the lead's side
-   * is on; it must not widen which of the lead's files are shared. `undefined` = follow the scope record.
-   */
-  sharePaths(): string[] | undefined {
-    return this.unionPublished ? (this.own?.paths ?? []) : undefined
-  }
-
-  /** Under `declared`, keep the daemon on the lead's own paths (or back on the scope record when no union is up). */
-  private syncShare(): void {
-    const d = this.team.daemon
-    if (d.share !== 'declared') return
-    void (this.origSetShare ?? d.setShare).call(d, d.share, this.sharePaths()).catch((e: unknown) => this.o.log?.(`bridge: could not re-share: ${e instanceof Error ? e.message : String(e)}`))
-  }
 
   /** Workers of this lead, by their local participant name. */
   workers(): Worker[] {
@@ -123,14 +107,6 @@ export class Bridge {
       () => l.overlays.unobserveDeep(onLocalOverlays), () => l.deleted.unobserveDeep(onLocalOverlays), () => l.overlayAt.unobserve(onLocalOverlays),
       () => t.bus.unobserve(onTeamBus), () => t.scopes.unobserve(onTeamScopes), () => t.claims.unobserve(onTeamClaims),
     )
-    // room_share (or anything else) changing the level while bridged: without explicit paths the daemon
-    // would follow the scope record, which holds the union. Keep the lead's own paths on it.
-    const d = this.team.daemon
-    if (typeof d.setShare === 'function') {
-      const orig = d.setShare.bind(d)
-      this.origSetShare = orig
-      d.setShare = (level, scopePaths) => orig(level, scopePaths ?? this.sharePaths())
-    }
     for (const c of l.openClaims()) this.mirrorClaim(c.id)
     this.scheduleScope()
   }
@@ -146,8 +122,7 @@ export class Bridge {
     const me = this.team.me.name
     if (this.own) this.team.room.setScope(this.own, this)
     else if (this.lastScopeKey && this.team.room.scope(me)) this.team.room.clearScope(me, this)
-    if (this.unionPublished) { this.unionPublished = false; this.syncShare() }
-    if (this.origSetShare) { this.team.daemon.setShare = this.origSetShare; this.origSetShare = undefined }
+    if (this.unionPublished) this.unionPublished = false
   }
 
   private localIdOf(teamId: string): string | undefined {
@@ -179,10 +154,10 @@ export class Bridge {
     this.lastScopeKey = key
     const me = this.team.me
     if (!workerPaths.length) {
-      // No worker activity: the team sees exactly what the lead declared for itself, and the daemon follows the scope record again.
+      // No worker activity: the team sees exactly what the lead declared for itself.
       if (own) this.team.room.setScope(own, this)
       else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this)
-      if (this.unionPublished) { this.unionPublished = false; this.syncShare() }
+      if (this.unionPublished) this.unionPublished = false
       return
     }
     const areas = ws.map(w => this.local.room.scope(w.name)?.area).filter((a): a is string => !!a)
@@ -190,9 +165,8 @@ export class Bridge {
     const lead = `lead of ${ws.length} worker${ws.length === 1 ? '' : 's'}: ${ws.map(w => `${w.tag} (${w.task.slice(0, 40)})`).join('; ')}`
     const summary = own ? `own: ${own.summary} · ${lead}` : lead
     const prev = this.team.room.scope(me.name)
-    // The daemon is pinned to the lead's own paths BEFORE the widened record lands, so it never publishes under the union.
+    // The policy store retains the lead's own paths while the coordination scope widens for workers.
     this.unionPublished = true
-    this.syncShare()
     this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...(prev?.areas ? { areas: prev.areas } : {}) }, this)
     const now = Date.now()
     const content = JSON.stringify([area, summary])

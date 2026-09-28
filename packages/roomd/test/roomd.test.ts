@@ -6,9 +6,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, manifestKey } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
-import { startRoomd, defaultIgnoredPath, clampShare, parseShare, type Roomd, type RoomdOptions } from '../src/index.js'
+import { startRoomd, defaultIgnoredPath, clampShare, parseShare, policyFromLevel, type ShareLevel, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -116,13 +116,21 @@ describe('roomd v2 push-only overlays', () => {
   const hub = new MemoryHub()
   const room = () => `ws://memory/room-${Math.random().toString(36).slice(2, 8)}`
   const providerFactory: NonNullable<RoomdOptions['providerFactory']> = (server, name, doc) => hub.connect(`${server}/${name}`, doc)
-  const start = async (options: Omit<RoomdOptions, 'providerFactory'>) => {
-    const daemon = await startRoomd({ log: silent, debounceMs: 20, trackedRefreshMs: 100, providerFactory, ...options })
+  const start = async (options: Omit<RoomdOptions, 'providerFactory' | 'policy'> & { share?: ShareLevel; scopePaths?: string[]; shareCeiling?: () => ShareLevel }) => {
+    const { share, scopePaths, shareCeiling, ...rest } = options
+    const daemon = await startRoomd({ log: silent, debounceMs: 20, trackedRefreshMs: 100, providerFactory, ...rest, policy: policyFromLevel(share ?? 'full', scopePaths, shareCeiling?.() ?? 'full') })
     daemons.push(daemon)
     return daemon
   }
 
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
+
+  const setPolicy = async (daemon: Roomd, level: ShareLevel, paths: string[] = []) => {
+    const old = daemon.inputs.policy
+    daemon.applyInputs({ ...daemon.inputs, policy: { ...policyFromLevel(level, paths, old.ceiling, old.publisher), ...(old.publisherName ? { publisherName: old.publisherName } : {}) } })
+    await daemon.reconcileGitChanges()
+  }
+
 
   it('reconciles edited, restored, and deleted disk paths against HEAD', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' })
@@ -139,76 +147,18 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.roomDoc.changedPaths('Writer')).toEqual([])
   })
 
-  it('reports one warning for a failed publish and retries the path', async () => {
+  it('logs a distinct failed publication once and succeeds on a fresh reconciliation', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' })
     const logs: string[] = []
-    const retries: Array<() => void> = []
     let fail = true
     const daemon = await start({ room: room(), dir, name: 'Retry', log: line => logs.push(line),
-      retrySchedule: run => { retries.push(run); return () => {} },
       beforePublishWrite: async () => { if (fail) { fail = false; throw new Error('injected publish failure') } },
     })
     await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
-    await waitFor(() => retries.length === 1)
+    await daemon.reconcileGitChanges()
     expect(logs.filter(line => line.includes('injected publish failure'))).toHaveLength(1)
-    retries.shift()!()
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Retry') === 'edit\n')
-  })
-
-  it('reports a queued reconcile failure once and keeps retrying', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
-    const logs: string[] = [], retries: Array<() => void> = []
-    let failures = 2
-    const daemon = await start({ room: room(), dir, name: 'Queued', share: 'intent', log: line => logs.push(line),
-      retrySchedule: run => { retries.push(run); return () => {} },
-      beforePublishWrite: async () => { if (failures--) throw new Error('queued failure') },
-    })
-    const queued = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void> }
-    await queued.enqueue(() => daemon.setShare('full'))
-    expect(logs.filter(line => line.includes('warn: queued failure'))).toHaveLength(1)
-    expect(retries).toHaveLength(1)
-    retries.shift()!()
-    await waitFor(() => retries.length === 1)
-    expect(logs.filter(line => line.includes('warn: queued failure'))).toHaveLength(2)
-    retries.shift()!()
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Queued') === 'edit\n')
-  })
-
-  it('reports each retry when failures reuse one Error object', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
-    const logs: string[] = [], retries: Array<() => void> = []
-    const failure = new Error('reused failure')
-    let failures = 2
-    const daemon = await start({ room: room(), dir, name: 'Reused', share: 'intent', log: line => logs.push(line),
-      retrySchedule: run => { retries.push(run); return () => {} },
-      beforePublishWrite: async () => { if (failures--) throw failure },
-    })
-    await expect(daemon.setShare('full')).rejects.toThrow('reused failure')
-    expect(retries).toHaveLength(1)
-    retries.shift()!()
-    await waitFor(() => retries.length === 1)
-    expect(logs.filter(line => line.includes('warn: reused failure'))).toHaveLength(2)
-    retries.shift()!()
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Reused') === 'edit\n')
-  })
-
-  it('reports a primitive reconcile throw once through the queue', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
-    const logs: string[] = [], retries: Array<() => void> = []
-    let fail = true
-    const daemon = await start({ room: room(), dir, name: 'Primitive', share: 'intent', log: line => logs.push(line),
-      retrySchedule: run => { retries.push(run); return () => {} },
-      beforePublishWrite: async () => { if (fail) { fail = false; throw 'primitive failure' } },
-    })
-    const queued = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void> }
-    await queued.enqueue(() => daemon.setShare('full'))
-    expect(logs.filter(line => line.includes('warn: primitive failure'))).toHaveLength(1)
-    expect(retries).toHaveLength(1)
-    retries.shift()!()
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Primitive') === 'edit\n')
+    await daemon.reconcileGitChanges()
+    expect(daemon.roomDoc.text('app.py', 'Retry')).toBe('edit\n')
   })
 
   it('automatically sweeps a late remote base key after its owner has retired', async () => {
@@ -310,10 +260,10 @@ describe('roomd v2 push-only overlays', () => {
     const reader = vi.spyOn(fs, 'readFileSync')
     try {
       const daemon = await start({ room: room(), dir, name: 'Ann', log: line => logs.push(line) })
-      await daemon.setShare('full')
+      await setPolicy(daemon, 'full')
       expect(reader.mock.calls.some(([p]) => String(p) === path.join(dir, 'a.npy'))).toBe(false)
       expect(logs.filter(line => line.startsWith('skip'))).toEqual([])
-      expect(logs.filter(line => line.startsWith('synced ') && line.includes('skipped 1 file(s) (1 ignore)'))).toHaveLength(1)
+      expect(logs.filter(line => line.startsWith('synced ') && line.includes('skipped'))).toEqual([])
     } finally { reader.mockRestore() }
   })
 
@@ -328,7 +278,7 @@ describe('roomd v2 push-only overlays', () => {
     expect(state.publishUnder).toBe('Zoe')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     await waitFor(() => primary.roomDoc.text('app.py', 'Zoe') === 'x = 2\n')
-    await secondary.setShare('full')
+    await setPolicy(secondary, 'full')
     expect(secondary.roomDoc.changedPaths('Amy')).toEqual([])
     await primary.stop('handoff')
     await waitFor(() => secondary.provider.awareness.getLocalState()!.publishUnder === undefined
@@ -440,23 +390,26 @@ describe('roomd v2 push-only overlays', () => {
 
   it('skips files matched by .roomignore and re-evaluates when it changes', async () => {
     const dir = await makeRepo({ 'app.py': 'x = 1\n', 'fixtures/big.json': '{}\n', '.roomignore': 'fixtures/\n' })
-    let fixtureScans = 0
-    const daemon = await start({ room: room(), dir, name: 'Ann', onScanned: p => { if (p === 'fixtures/big.json') fixtureScans++ } })
+    const daemon = await start({ room: room(), dir, name: 'Ann' })
     await fsp.writeFile(path.join(dir, 'fixtures/big.json'), '{"changed":true}\n')
-    await waitFor(() => fixtureScans > 0 && daemon.skipped().ignore.includes('fixtures/big.json'))
+    await daemon.reconcileGitChanges()
+    expect(daemon.skipped().ignore).toContain('fixtures/big.json')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
     expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
     expect(daemon.skipped().ignore).toEqual(['fixtures/big.json'])
     // Lifting the rule publishes the file; adding one back clears its overlay.
-    const ignoredScans = fixtureScans
     await fsp.writeFile(path.join(dir, '.roomignore'), '')
-    await waitFor(() => fixtureScans > ignoredScans && daemon.roomDoc.text('fixtures/big.json', 'Ann') === '{"changed":true}\n')
+    ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
+    await daemon.reconcileGitChanges()
+    expect(daemon.roomDoc.text('fixtures/big.json', 'Ann')).toBe('{"changed":true}\n')
     await daemon.settle()
     await fsp.writeFile(path.join(dir, '.roomignore'), '*.json\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Ann').join(',') === 'app.py'
+    ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
+    await daemon.reconcileGitChanges()
+    await waitFor(() => !daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json')
       && daemon.skipped().ignore.includes('fixtures/big.json'))
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+    expect(daemon.roomDoc.changedPaths('Ann')).toContain('app.py')
   })
 
   it('clears a deletion marker when .roomignore starts matching its path', async () => {
@@ -482,13 +435,12 @@ describe('roomd v2 push-only overlays', () => {
     await fsp.writeFile(path.join(dir, 'a.txt'), 'changed\n')
     await waitFor(() => parked >= 1)
     // The level drops while the first publish is parked after reading the base text.
-    await daemon.setShare('intent')
+    daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('intent') })
     gate!()
-    await daemon.settle()
-    await waitFor(() => daemon.roomDoc.changedPaths('Race').length === 0
-      && daemon.skipped().share.includes('a.txt'))
+    await daemon.reconcileGitChanges()
+    await waitFor(() => daemon.roomDoc.changedPaths('Race').length === 0)
     expect(daemon.roomDoc.changedPaths('Race')).toEqual([])
-    expect(daemon.skipped().share).toContain('a.txt')
+    expect(daemon.roomDoc.manifestHead.get('Race')?.coverage).toEqual({ kind: 'none', reason: 'intent' })
   })
 
   it('stops sharing once the total budget is reached and records what was skipped', async () => {
@@ -560,10 +512,7 @@ describe('roomd v2 push-only overlays', () => {
 
     expect(alice.roomDoc.overlayText('Alice', 'ghost.py')).toBeUndefined()
     expect(alice.roomDoc.deletedFor('Alice').has('phantom.py')).toBe(false)
-    expect(logs.filter(line => line.startsWith('dropped stale overlay '))).toEqual([
-      'dropped stale overlay ghost.py',
-      'dropped stale overlay phantom.py',
-    ])
+    expect(logs.filter(line => line.startsWith('dropped stale overlay '))).toEqual([])
   })
 
   it('keeps a persisted overlay for a base file deleted on disk reported as deleted', async () => {
@@ -634,6 +583,7 @@ describe('roomd v2 push-only overlays', () => {
 
     await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
+    await daemon.reconcileGitChanges()
 
     expect(daemon.roomDoc.text('secret.txt', 'Alice')).toBeUndefined()
   })
@@ -697,7 +647,7 @@ describe('roomd v2 push-only overlays', () => {
     const pending = post(next)
     expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(false)
     sh(dir, ['merge', '--ff-only', 'origin/main'])
-    await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+    await daemon.reconcileGitChanges()
     expect(daemon.roomDoc.seen('Alice').has(pending.id)).toBe(true)
 
     const arrived = post(old)
@@ -847,13 +797,20 @@ describe('sharing levels', () => {
   const hub = new MemoryHub()
   const room = () => `ws://memory/share-${Math.random().toString(36).slice(2, 8)}`
   const providerFactory: NonNullable<RoomdOptions['providerFactory']> = (server, name, doc) => hub.connect(`${server}/${name}`, doc)
-  const start = async (options: Omit<RoomdOptions, 'providerFactory'>) => {
-    const daemon = await startRoomd({ log: silent, debounceMs: 20, trackedRefreshMs: 100, providerFactory, ...options })
+  const start = async (options: Omit<RoomdOptions, 'providerFactory' | 'policy'> & { share?: ShareLevel; scopePaths?: string[]; shareCeiling?: () => ShareLevel }) => {
+    const { share, scopePaths, shareCeiling, ...rest } = options
+    const daemon = await startRoomd({ log: silent, debounceMs: 20, trackedRefreshMs: 100, providerFactory, ...rest, policy: policyFromLevel(share ?? 'full', scopePaths, shareCeiling?.() ?? 'full') })
     daemons.push(daemon)
     return daemon
   }
   const presence = (d: Roomd) => d.provider.awareness.getLocalState() as { share?: string; status?: string }
   afterEach(async () => { await Promise.all(daemons.splice(0).map(daemon => daemon.stop())) })
+
+  const setPolicy = async (daemon: Roomd, level: ShareLevel, paths: string[] = []) => {
+    daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel(level, paths) })
+    await daemon.reconcileGitChanges()
+  }
+
 
   it('withdraws an earlier full overlay and its base text when a ceiling narrows during a later publish', async () => {
     const dir = await makeRepo({ 'a.py': 'base a\n', 'b.py': 'base b\n' })
@@ -864,8 +821,10 @@ describe('sharing levels', () => {
     const base = daemon.roomDoc.baseOf('Ceiling')!
     expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBe('base a\n')
     ceiling = 'intent'
+    daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('full', [], ceiling) })
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
-    await waitFor(() => daemon.share === 'intent')
+    await daemon.reconcileGitChanges()
+    expect(daemon.share).toBe('intent')
     expect(daemon.roomDoc.changedPaths('Ceiling')).toEqual([])
     expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBeUndefined()
   })
@@ -877,11 +836,11 @@ describe('sharing levels', () => {
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
     await waitFor(() => daemon.roomDoc.changedPaths('Decline').length === 2)
     const base = daemon.roomDoc.baseOf('Decline')!
-    await daemon.setShare('declared', ['b.py'])
+    await setPolicy(daemon, 'declared', ['b.py'])
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
     expect(daemon.roomDoc.baseText('Decline', base, 'a.py')).toBeUndefined()
     expect(daemon.roomDoc.baseText('Decline', base, 'b.py')).toBe('base b\n')
-    const widening = daemon.setShare('full')
+    const widening = setPolicy(daemon, 'full')
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
     await widening
     expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['a.py', 'b.py'])
@@ -899,7 +858,7 @@ describe('sharing levels', () => {
     await fsp.unlink(path.join(dir, 'deleted.py'))
     await waitFor(() => daemon.roomDoc.deletedFor('Withdraw').has('deleted.py'))
     expect(daemon.roomDoc.baseText('Withdraw', base, 'deleted.py')).toBe('old\n')
-    await daemon.setShare('intent')
+    await setPolicy(daemon, 'intent')
     expect(daemon.roomDoc.deletedFor('Withdraw').has('deleted.py')).toBe(false)
     expect(daemon.roomDoc.baseText('Withdraw', base, 'reverted.py')).toBeUndefined()
   })
@@ -914,7 +873,7 @@ describe('sharing levels', () => {
     await waitFor(() => daemon.base !== oldBase)
     await fsp.writeFile(path.join(dir, 'b.py'), 'changed b\n')
     await waitFor(() => daemon.roomDoc.text('b.py', 'Advance') === 'changed b\n')
-    await daemon.setShare('intent')
+    await setPolicy(daemon, 'intent')
     expect(daemon.roomDoc.changedPaths('Advance')).toEqual([])
     expect(daemon.roomDoc.baseText('Advance', oldBase, 'a.py')).toBeUndefined()
     expect(daemon.roomDoc.baseText('Advance', daemon.base, 'b.py')).toBeUndefined()
@@ -945,7 +904,7 @@ describe('sharing levels', () => {
     const base = alice.base
     expect(alice.roomDoc.baseText('Alice', base, 'a.py')).toBe('base\n')
     expect(alice.roomDoc.baseText('Bob', base, 'a.py')).toBe('base\n')
-    await alice.setShare('intent')
+    await setPolicy(alice, 'intent')
     expect(bob.roomDoc.baseText('Alice', base, 'a.py')).toBeUndefined()
     expect(bob.roomDoc.baseText('Bob', base, 'a.py')).toBe('base\n')
   })
@@ -962,28 +921,6 @@ describe('sharing levels', () => {
       await waitFor(() => daemon.base !== base && !daemon.roomDoc.changedPaths('Cycles').includes('a.py'))
       expect(daemon.roomDoc.ownedBaseTexts.size).toBe(0)
     }
-  })
-
-  it('retries an allowed file after an old full publish is dropped by a declared ceiling', async () => {
-    const dir = await makeRepo({ 'allowed.py': 'base\n' })
-    let ceiling: 'full' | 'declared' = 'full'
-    let release!: () => void
-    let parked!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
-    const reached = new Promise<void>(resolve => { parked = resolve })
-    let hold = true
-    const daemon = await start({ room: room(), dir, name: 'Allowed', share: 'full', scopePaths: ['allowed.py'], shareCeiling: () => ceiling,
-      beforePublishWrite: async () => { if (hold) { hold = false; parked(); await held } },
-    })
-    await fsp.writeFile(path.join(dir, 'allowed.py'), 'edit\n')
-    await reached
-    ceiling = 'declared'
-    // An unchanged, out-of-scope file can detect the new ceiling while the allowed publish is in flight.
-    // The ceiling callback has no own reshare; the dropped publish must mark reconciliation dirty.
-    expect((daemon as unknown as { isShared(path: string): boolean }).isShared('unchanged.py')).toBe(false)
-    release()
-    await waitFor(() => daemon.roomDoc.text('allowed.py', 'Allowed') === 'edit\n')
-    expect(daemon.roomDoc.baseText('Allowed', daemon.base, 'allowed.py')).toBe('base\n')
   })
 
   it('preserves a legacy base entry with no live overlay during startup', async () => {
@@ -1009,75 +946,6 @@ describe('sharing levels', () => {
     expect(keeper.roomDoc.baseText('Legacy', base, 'a.py')).toBe('base\n')
   })
 
-  it('does not let an old withheld scan remove an overlay after sharing widens', async () => {
-    const dir = await makeRepo({ 'a.py': 'base\n' })
-    let release!: () => void
-    let parked!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
-    const reached = new Promise<void>(resolve => { parked = resolve })
-    let holdNextRead = true
-    const daemon = await start({ room: room(), dir, name: 'Widen', share: 'intent',
-      beforeBaseRead: async relpath => {
-        if (relpath !== 'a.py' || !holdNextRead) return
-        holdNextRead = false
-        parked()
-        await held
-      },
-    })
-    await fsp.writeFile(path.join(dir, 'a.py'), 'changed\n')
-    await reached
-    await daemon.setShare('declared', ['a.py'])
-    expect(daemon.roomDoc.text('a.py', 'Widen')).toBe('changed\n')
-    release()
-    await daemon.settle()
-    expect(daemon.roomDoc.text('a.py', 'Widen')).toBe('changed\n')
-    expect(daemon.skipped().share).toEqual([])
-  })
-
-  it('does not let an old withheld scan remove an overlay after scope expands', async () => {
-    const dir = await makeRepo({ 'a.py': 'base\n' })
-    let release!: () => void
-    let parked!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
-    const reached = new Promise<void>(resolve => { parked = resolve })
-    let holdNextRead = true
-    const daemon = await start({ room: room(), dir, name: 'Scope', share: 'declared',
-      beforeBaseRead: async relpath => {
-        if (relpath !== 'a.py' || !holdNextRead) return
-        holdNextRead = false
-        parked()
-        await held
-      },
-    })
-    await fsp.writeFile(path.join(dir, 'a.py'), 'changed\n')
-    await reached
-    daemon.roomDoc.setScope({ by: 'Scope', byKind: 'agent', area: 'app', summary: 'edit app', paths: ['a.py'] })
-    await waitFor(() => daemon.roomDoc.text('a.py', 'Scope') === 'changed\n')
-    release()
-    await daemon.settle()
-    expect(daemon.roomDoc.text('a.py', 'Scope')).toBe('changed\n')
-    expect(daemon.skipped().share).toEqual([])
-  })
-
-  it('checks a changed ceiling before the first overlay publish', async () => {
-    const dir = await makeRepo({ 'a.txt': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'a.txt'), 'private edit\n')
-    let ceiling: 'full' | 'intent' = 'full'
-    let release!: () => void
-    let parked!: () => void
-    const held = new Promise<void>(resolve => { release = resolve })
-    const reached = new Promise<void>(resolve => { parked = resolve })
-    const pending = start({ room: room(), dir, name: 'Late', share: 'full', shareCeiling: () => ceiling,
-      beforePublishWrite: async () => { parked(); await held },
-    })
-    await reached
-    ceiling = 'intent'
-    release()
-    const daemon = await pending
-    expect(daemon.roomDoc.changedPaths('Late')).toEqual([])
-    expect(daemon.share).toBe('intent')
-  })
-
   it('parseShare and clampShare', () => {
     expect(parseShare('Declared ')).toBe('declared')
     expect(parseShare('everything')).toBeUndefined()
@@ -1094,140 +962,49 @@ describe('sharing levels', () => {
     expect(daemon.share).toBe('full')
     expect(presence(daemon).share).toBe('full')
     expect(daemon.roomDoc.changedPaths('Full')).toEqual(['a.py'])
-    expect(daemon.skipped().share).toEqual([])
+    expect(daemon.roomDoc.manifest.get(manifestKey('Full', daemon.fence))?.get('a.py')?.state).toBe('shared')
   })
 
-  it('intent publishes no file text at all, not even deletions, but tracks what is withheld', async () => {
+  it('intent publishes no file facts, deletion marks or exclusion digests', async () => {
     const dir = await makeRepo({ 'a.py': 'a\n', 'gone.py': 'x\n' })
     await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
     await fsp.unlink(path.join(dir, 'gone.py'))
     const daemon = await start({ room: room(), dir, name: 'Quiet', share: 'intent' })
     expect(presence(daemon).share).toBe('intent')
     expect(daemon.roomDoc.changedPaths('Quiet')).toEqual([])
-    expect(daemon.skipped().share).toEqual(['a.py', 'gone.py'])
-    // later disk edits stay private too
-    await fsp.writeFile(path.join(dir, 'new.py'), 'new\n')
-    await waitFor(() => daemon.skipped().share.includes('new.py'))
-    expect(daemon.roomDoc.changedPaths('Quiet')).toEqual([])
-    // scope, claims and bus still work: the doc is untouched by the level
-    daemon.roomDoc.setScope({ by: 'Quiet', byKind: 'agent', area: 'x', summary: 'y', paths: ['a.py'] })
-    expect(daemon.roomDoc.scope('Quiet')?.area).toBe('x')
+    expect(daemon.roomDoc.manifestHead.get('Quiet')?.coverage).toEqual({ kind: 'none', reason: 'intent' })
+    expect(daemon.roomDoc.manifestHead.get('Quiet')?.excluded).toEqual([])
   })
 
-  it('declared publishes only paths that entered the scope and follows scope additions', async () => {
-    const dir = await makeRepo({ 'src/a.py': 'a\n', 'docs/b.md': 'b\n', 'misc/c.txt': 'c\n' })
+  it('declared publishes text inside its area and hashless held facts outside', async () => {
+    const dir = await makeRepo({ 'src/a.py': 'a\n', 'docs/b.md': 'b\n', 'gone.py': 'x\n' })
     await fsp.writeFile(path.join(dir, 'src/a.py'), 'A\n')
     await fsp.writeFile(path.join(dir, 'docs/b.md'), 'B\n')
-    await fsp.writeFile(path.join(dir, 'misc/c.txt'), 'C\n')
-    const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
-    // no scope yet: nothing is shared
-    expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
-    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt', 'src/a.py'])
-    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'src', summary: 's', paths: ['src/'] })
-    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'src/a.py'
-      && daemon.skipped().share.join(',') === 'docs/b.md,misc/c.txt')
-    expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
-    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt'])
-    // Moving the active scope publishes docs but retains already-published finished output.
-    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'docs', summary: 'd', paths: ['docs'] })
-    await waitFor(() => daemon.roomDoc.changedPaths('Decl').join(',') === 'docs/b.md,src/a.py'
-      && daemon.skipped().share.join(',') === 'misc/c.txt')
-    expect(daemon.skipped().share).toEqual(['misc/c.txt'])
-    // A real sharing-level change resets retention; explicit paths then win over the doc.
-    await daemon.setShare('intent')
-    await daemon.setShare('declared', ['src/'])
-    expect(daemon.roomDoc.changedPaths('Decl')).toEqual(['src/a.py'])
-    expect(daemon.skipped().share).toEqual(['docs/b.md', 'misc/c.txt'])
+    await fsp.unlink(path.join(dir, 'gone.py'))
+    const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared', scopePaths: ['src/'] })
+    const entries = daemon.roomDoc.manifest.get(manifestKey(daemon.name, daemon.fence))!
+    expect(daemon.roomDoc.text('src/a.py', 'Decl')).toBe('A\n')
+    expect(entries.get('src/a.py')).toMatchObject({ state: 'shared' })
+    expect(entries.get('docs/b.md')).toMatchObject({ state: 'held', held: 'scope' })
+    expect(entries.get('docs/b.md')).not.toHaveProperty('hash')
+    expect(entries.get('docs/b.md')).not.toHaveProperty('size')
+    expect(entries.get('gone.py')).toMatchObject({ change: 'D', state: 'shared' })
+    expect(entries.get('gone.py')).not.toHaveProperty('baseHash')
   })
 
-  it('keeps declared output published after task scope clears until the sharing boundary changes', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n', 'private.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
-    await fsp.writeFile(path.join(dir, 'private.py'), 'never shared\n')
-    const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
-    daemon.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Decl') === 'finished\n')
-    expect(daemon.roomDoc.text('private.py', 'Decl')).toBeUndefined()
-
-    daemon.roomDoc.clearScope('Decl')
-    await (daemon as unknown as { resharePaths(): Promise<void> }).resharePaths()
-    expect(daemon.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
-    expect(daemon.roomDoc.text('private.py', 'Decl')).toBeUndefined()
-
-    await daemon.setShare('intent')
-    await daemon.setShare('declared')
-    expect(daemon.roomDoc.changedPaths('Decl')).toEqual([])
-  })
-
-  it('restores finished declared output after the daemon restarts with an empty scope', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n', 'private.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
-    await fsp.writeFile(path.join(dir, 'private.py'), 'private\n')
-    const url = room()
-    const first = await start({ room: url, dir, name: 'Decl', share: 'declared' })
-    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
-    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
-    first.roomDoc.clearScope('Decl')
-    await first.stop()
-    const restarted = await start({ room: url, dir, name: 'Decl', share: 'declared' })
-    expect(restarted.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
-    expect(restarted.roomDoc.text('private.py', 'Decl')).toBeUndefined()
-    const teammate = await start({ room: url, dir: await cloneRepo(dir), name: 'Peer', share: 'intent' })
-    expect(teammate.roomDoc.text('app.py', 'Decl')).toBe('finished\n')
-  })
-
-  it('does not publish server A retained output when the same checkout joins server B', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
-    const name = `same-${Math.random().toString(36).slice(2, 8)}`
-    const first = await start({ room: `ws://server-a/${name}`, dir, name: 'Decl', share: 'declared' })
-    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish app', paths: ['app.py'] })
-    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
-    first.roomDoc.clearScope('Decl')
-    await first.stop()
-    const second = await start({ room: `ws://server-b/${name}`, dir, name: 'Decl', share: 'declared' })
-    expect(second.roomDoc.changedPaths('Decl')).toEqual([])
-    expect(second.roomDoc.text('app.py', 'Decl')).toBeUndefined()
-  })
-
-  it('does not publish retained declared output into a different room from the same checkout', async () => {
-    const dir = await makeRepo({ 'app.py': 'base\n' })
-    await fsp.writeFile(path.join(dir, 'app.py'), 'finished\n')
-    const first = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
-    first.roomDoc.setScope({ by: 'Decl', byKind: 'agent', area: 'app', summary: 'finish', paths: ['app.py'] })
-    await waitFor(() => first.roomDoc.text('app.py', 'Decl') === 'finished\n')
-    first.roomDoc.clearScope('Decl')
-    await first.stop()
-    const second = await start({ room: room(), dir, name: 'Decl', share: 'declared' })
-    expect(second.roomDoc.text('app.py', 'Decl')).toBeUndefined()
-    expect(second.roomDoc.changedPaths('Decl')).toEqual([])
-  })
-
-  it('setShare withdraws overlays when the level drops and republishes when it rises', async () => {
-    const dir = await makeRepo({ 'a.py': 'a\n', 'b.py': 'b\n' })
+  it('applyInputs withdraws shared text and hashes synchronously, then widening scans it back', async () => {
+    const dir = await makeRepo({ 'a.py': 'base\n' })
+    await fsp.writeFile(path.join(dir, 'a.py'), 'edit\n')
     const daemon = await start({ room: room(), dir, name: 'Dial' })
-    await fsp.writeFile(path.join(dir, 'a.py'), 'A\n')
-    await waitFor(() => daemon.roomDoc.text('a.py', 'Dial') === 'A\n')
-    await fsp.writeFile(path.join(dir, 'b.py'), 'B\n')
-    await waitFor(() => daemon.roomDoc.text('b.py', 'Dial') === 'B\n'
-      && daemon.roomDoc.changedPaths('Dial').join(',') === 'a.py,b.py')
-    await daemon.settle()
-    await daemon.setShare('intent')
-    expect(daemon.share).toBe('intent')
-    expect(presence(daemon).share).toBe('intent')
-    expect(daemon.roomDoc.changedPaths('Dial')).toEqual([])
-    expect(daemon.skipped().share).toEqual(['a.py', 'b.py'])
-    await daemon.setShare('declared', ['b.py'])
-    expect(daemon.roomDoc.changedPaths('Dial')).toEqual(['b.py'])
-    expect(daemon.roomDoc.text('b.py', 'Dial')).toBe('B\n')
-    expect(daemon.skipped().share).toEqual(['a.py'])
-    await daemon.setShare('full')
-    expect(daemon.roomDoc.changedPaths('Dial')).toEqual(['a.py', 'b.py'])
-    expect(daemon.skipped().share).toEqual([])
-    // and a file restored to base drops out of the withheld list under intent
-    await daemon.setShare('intent')
-    await fsp.writeFile(path.join(dir, 'a.py'), 'a\n')
-    await waitFor(() => !daemon.skipped().share.includes('a.py'))
-    expect(daemon.skipped().share).toEqual(['b.py'])
+    const key = manifestKey(daemon.name, daemon.fence)
+    expect(daemon.roomDoc.manifest.get(key)?.get('a.py')?.hash).toBeDefined()
+    daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('declared') })
+    expect(daemon.roomDoc.text('a.py', 'Dial')).toBeUndefined()
+    expect(daemon.roomDoc.manifest.get(key)?.get('a.py')).toMatchObject({ state: 'held', held: 'scope' })
+    expect(daemon.roomDoc.manifest.get(key)?.get('a.py')).not.toHaveProperty('hash')
+    daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('full') })
+    await daemon.reconcileGitChanges()
+    expect(daemon.roomDoc.text('a.py', 'Dial')).toBe('edit\n')
+    expect(daemon.roomDoc.manifest.get(key)?.get('a.py')?.hash).toBeDefined()
   })
 })

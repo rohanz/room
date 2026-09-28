@@ -10,6 +10,7 @@ import type { Identity, ClaimMsg, QuestionMsg, AnswerMsg, ScopeMsg, NoteMsg, Rel
 import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
+import { testPolicyStore } from './policy-fixture.js'
 import { branchOf, exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 
 let dir: string
@@ -30,7 +31,7 @@ function session(room: RoomDoc, me: Identity, roomName = ROOM): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', lastActive: Date.now() })
   return {
-    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x', policyStore: testPolicyStore(),
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base },
   }
