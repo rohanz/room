@@ -4,10 +4,11 @@ import { trackConnection } from './connection.js'
  * websocket provider) plus the identity the tools act as. `room_join` creates it,
  * `room_leave` tears it down.
  */
-import { existsSync, mkdirSync, readFileSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, watchFile, unwatchFile, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
@@ -24,6 +25,8 @@ import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, resolveConfi
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 import { acquireOwnedFile } from './owned-file.js'
+import { probeProcess, type ProcessProbe } from './worker-process.js'
+import { writeAtomic, type ProcessIdentity } from './leases.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -63,6 +66,136 @@ export interface Session {
   /** Refresh hook/session runtime metadata before a Room tool is dispatched. */
   refreshRuntime?: () => void
 }
+
+/** SessionStart owns session.json; the same session's hooks own runtime.json. */
+export interface SessionRecord {
+  session_id: string
+  host: 'claude' | 'codex'
+  cwd: string
+  at: number
+  source?: string
+  chain: ProcessIdentity[]
+  hostPid: number
+  transcript_path?: string
+  model?: string
+  effort?: string
+  worker_id?: string
+}
+
+export interface SessionRuntime {
+  model?: string
+  effort?: string
+  transcript?: { path: string; mtimeMs: number; size: number }
+  at: number
+}
+
+/** The short component keeps host thread IDs out of local path names. */
+export function sessionDirectory(commonDir: string, sessionId: string): string {
+  if (!sessionId) throw new Error('session ID is required')
+  const sid = createHash('sha256').update(sessionId).digest('hex').slice(0, 16)
+  return join(commonDir, 'room', 'sessions', sid)
+}
+
+function readSessionFile<T>(commonDir: string, sessionId: string, name: string): T | undefined {
+  try { return JSON.parse(readFileSync(join(sessionDirectory(commonDir, sessionId), name), 'utf8')) as T }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e }
+}
+
+export function writeSessionRecord(commonDir: string, record: SessionRecord): void {
+  writeAtomic(join(sessionDirectory(commonDir, record.session_id), 'session.json'), record)
+}
+
+export function readSessionRecord(commonDir: string, sessionId: string): SessionRecord | undefined {
+  const record = readSessionFile<SessionRecord>(commonDir, sessionId, 'session.json')
+  return record?.session_id === sessionId ? record : undefined
+}
+
+export function writeSessionRuntime(commonDir: string, sessionId: string, runtime: SessionRuntime): void {
+  writeAtomic(join(sessionDirectory(commonDir, sessionId), 'runtime.json'), runtime)
+}
+
+export function readSessionRuntime(commonDir: string, sessionId: string): SessionRuntime | undefined {
+  return readSessionFile<SessionRuntime>(commonDir, sessionId, 'runtime.json')
+}
+
+function sessionRecords(commonDir: string): SessionRecord[] {
+  const root = join(commonDir, 'room', 'sessions')
+  let entries: string[]
+  try { entries = readdirSync(root) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e }
+  const records: SessionRecord[] = []
+  for (const entry of entries) {
+    try {
+      const record = JSON.parse(readFileSync(join(root, entry, 'session.json'), 'utf8')) as SessionRecord
+      if (record?.session_id && sessionDirectory(commonDir, record.session_id) === join(root, entry)) records.push(record)
+    } catch (e) {
+      if (e instanceof SyntaxError || ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) continue
+      throw e
+    }
+  }
+  return records
+}
+
+export interface SessionBindingOptions {
+  commonDir?: string
+  cwd?: string
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>
+  host?: 'claude' | 'codex'
+  parent?: ProcessIdentity
+  probe?: ProcessProbe
+  workerId?: string
+  /** Registry's pre-generated Claude session, or an admitted Codex log thread ID. */
+  workerSessionId?: string
+  codexLogSessionId?: string
+  appServer?: boolean
+  parentArgs?: string
+}
+
+function processIdentity(pid: number, probe: ProcessProbe): ProcessIdentity | undefined {
+  const info = probe(pid)
+  return info?.startTime && info.executable ? { pid, startTime: info.startTime, executable: info.executable } : undefined
+}
+
+function sameProcess(a: ProcessIdentity, b: ProcessIdentity): boolean {
+  return a.pid === b.pid && a.startTime === b.startTime && a.executable === b.executable
+}
+
+function defaultCommonDir(cwd: string): string | undefined {
+  try { return resolve(cwd, execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()) }
+  catch { return undefined }
+}
+
+function parentCommandLine(): string {
+  try { return execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
+  catch { return '' }
+}
+
+/** Re-evaluate on every call: a new SessionStart after Claude /clear supersedes the prior ID. */
+export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
+  const env = options.env ?? process.env
+  const commonDir = options.commonDir ?? defaultCommonDir(options.cwd ?? process.cwd())
+  const parent = options.parent ?? processIdentity(process.ppid, options.probe ?? probeProcess)
+  const host = options.host ?? (env.ROOM_WORKER_HOST === 'claude' || env.ROOM_HOST === 'claude' ? 'claude'
+    : env.ROOM_WORKER_HOST === 'codex' || env.ROOM_HOST === 'codex' ? 'codex'
+      : parent && /claude/i.test(basename(parent.executable)) ? 'claude'
+        : parent && /codex/i.test(basename(parent.executable)) ? 'codex' : undefined)
+  if (!host || !commonDir) return undefined
+  if (options.appServer || /\bcodex\b.*\bapp-server\b/.test(options.parentArgs ?? parentCommandLine())) return undefined
+  const records = sessionRecords(commonDir).filter(record => record.host === host)
+  const workerId = options.workerId ?? env.ROOM_WORKER_ID
+  if (workerId) {
+    if (host === 'claude' && options.workerSessionId) return { id: options.workerSessionId, host }
+    const matching = records.filter(record => record.worker_id === workerId).sort((a, b) => b.at - a.at)[0]
+    const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId : undefined)
+    return id ? { id, host } : undefined
+  }
+  const matching = parent && records.filter(record => !record.worker_id && record.chain?.some(member => sameProcess(member, parent))).sort((a, b) => b.at - a.at)[0]
+  if (matching) return { id: matching.session_id, host }
+  return host === 'claude' && env.CLAUDE_CODE_SESSION_ID ? { id: env.CLAUDE_CODE_SESSION_ID, host } : undefined
+}
+
+/** Used by the name lease while a Codex app-server request has no bound thread. */
+export function syntheticSessionId(identity: ProcessIdentity): string { return `mcp:${identity.pid}:${identity.startTime}` }
 
 export interface JoinOptions {
   credentialsPath?: string
