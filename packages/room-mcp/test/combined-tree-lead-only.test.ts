@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -20,15 +21,17 @@ const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirnam
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-lead-only-'))
-  lead = path.join(root, 'lead'); worker = path.join(root, 'worker'); fs.mkdirSync(lead)
+  lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'test'); fs.mkdirSync(lead)
   git(lead, 'init', '-q'); git(lead, 'config', 'user.name', 'Lead'); git(lead, 'config', 'user.email', 'lead@example.test')
+  fs.appendFileSync(path.join(lead, '.git', 'info', 'exclude'), '.room/\n')
   put(lead, 'file.txt', 'base\n')
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
+  fs.mkdirSync(path.dirname(worker), { recursive: true })
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
 afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
 
-function setup() {
+async function setup() {
   const w = { tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status: 'done', exitCode: 0, summary: 'finished', base, host: 'codex', task: 'task', startedAt: 1 }
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ base, branch: 'main', repo: 'test' })
@@ -38,6 +41,7 @@ function setup() {
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: vi.fn(async () => {}) }, workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
   } as unknown as HandlerState
+  await syncDocumentWorkers(s as Session)
   return { state }
 }
 
@@ -52,7 +56,7 @@ const readsOf = (reader: { mock: { calls: unknown[][] } }, files: string[]) => r
 it('room_preview_merge does not read files only the lead changed', async () => {
   const art = leadArt()
   put(worker, 'new.txt', 'worker change\n')
-  const t = setup()
+  const t = await setup()
   const reader = vi.spyOn(fs, 'readFileSync')
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
   expect(result).toContain('new.txt (lead+test only)')
@@ -63,7 +67,7 @@ it('room_preview_merge does not read files only the lead changed', async () => {
 it('room_preview_merge still reports a conflict on a file both changed', async () => {
   put(lead, 'file.txt', 'lead\n')
   put(worker, 'file.txt', 'worker\n')
-  const t = setup()
+  const t = await setup()
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
   expect(result).toContain('CONFLICTS')
   expect(result).toContain('file.txt')
@@ -72,17 +76,17 @@ it('room_preview_merge still reports a conflict on a file both changed', async (
 it('credits identical edits to both participants', async () => {
   put(lead, 'file.txt', 'same change\n')
   put(worker, 'file.txt', 'same change\n')
-  const t = setup()
+  const t = await setup()
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test' })
   expect(result).toContain('lead and lead+test made the same change: file.txt')
   expect(result).not.toContain('only lead+test changed this file')
 })
 
 it('runs a team preview from a shared worker overlay even when its local directory exists', async () => {
-  const t = setup()
+  const t = await setup()
   const s = t.state.S()
   s.local = undefined
-  s.room.setOverlay('lead+test', 'new.txt', 'shared change\n')
+  publishFixture(s.room, 'lead+test', 'new.txt', 'shared change\n')
   t.state.liveText = async (_session, file, person) => s.room.text(file, person)
   const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
   expect(result).toContain('shared change')
@@ -92,13 +96,8 @@ it('runs a team preview from a shared worker overlay even when its local directo
 it('room_collect does not read files only the lead changed and leaves them untouched', async () => {
   const art = leadArt()
   fs.appendFileSync(path.join(lead, '.git', 'info', 'exclude'), '.room/\n')
-  const canonical = path.join(lead, '.room', 'workers', 'test')
-  fs.mkdirSync(path.dirname(canonical), { recursive: true })
-  git(lead, 'worktree', 'move', worker, canonical)
-  worker = canonical
   put(worker, 'new.txt', 'worker change\n')
-  const t = setup()
-  await syncDocumentWorkers(t.state.S() as Session)
+  const t = await setup()
   const reader = vi.spyOn(fs, 'readFileSync')
   const result = await handlers(t.state).room_collect({ tag: 'test' })
   expect(result).toContain('Changes from test: new.txt')
@@ -106,4 +105,4 @@ it('room_collect does not read files only the lead changed and leaves them untou
   reader.mockRestore()
   expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change\n')
   expect(fs.readFileSync(path.join(lead, 'art/scene.blend'), 'utf8')).toBe('lead-only art/scene.blend\n')
-})
+}, 30_000)

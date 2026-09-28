@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -85,7 +86,7 @@ describe('git facts and lead evaluation', () => {
     execFileSync('git', ['-C', w.dir, 'add', 'worker.txt'])
     execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'worker'])
     r.room.setWorker(w, ignore)
-    r.room.setOverlay(w.name, 'worker.txt', 'work')
+    publishFixture(r.room, w.name, 'worker.txt', 'work')
     r.room.addClaim({ by: w.name, byKind: 'agent', path: 'worker.txt', from: 1, to: 1, intent: 'work' })
     rmSync(w.dir, { recursive: true, force: true })
     await r.rooms.retireWorkers()
@@ -213,7 +214,7 @@ describe('git facts and lead evaluation', () => {
     git('merge', '--ff-only', w.branch)
     expect(execFileSync('git', ['-C', w.dir, 'status', '--porcelain']).toString()).toBe('?? data\n')
     r.room.setWorker(w, ignore)
-    r.room.setOverlay(w.name, 'a', 'worker output')
+    publishFixture(r.room, w.name, 'a', 'worker output')
     await r.rooms.retireWorkers()
     expect(r.room.workers.has(w.tag)).toBe(false)
     expect(r.room.retiredWorkers()).toMatchObject([{ outcome: 'merged' }])
@@ -239,7 +240,7 @@ describe('git facts and lead evaluation', () => {
     git('worktree', 'add', '-qb', 'room/w', work)
     const w = worker(work)
     r.room.setWorker(w, ignore)
-    r.room.setOverlay(w.name, 'a', 'published')
+    publishFixture(r.room, w.name, 'a', 'published')
     const proc = { pid: 1, onExit() {}, kill: () => true }
     r.rooms.setHandle(r.s, w.id!, proc)
     await r.rooms.retireWorkers(); expect(r.room.workers.has(w.tag)).toBe(true)
@@ -277,7 +278,7 @@ it('keeps uncommitted work visible until the lead commits and merges it; merged 
   r.room.setWorker(w, ignore)
   writeFileSync(join(w.dir, 'a'), 'worker edit')
   writeFileSync(join(w.dir, 'new\nfile'), 'untracked')
-  r.room.setOverlay(w.name, 'a', 'worker edit')
+  publishFixture(r.room, w.name, 'a', 'worker edit')
   await r.rooms.retireWorkers()
   expect(r.room.workers.has(w.tag)).toBe(true)
   expect(r.room.changedPaths(w.name)).toEqual(['a'])
@@ -369,7 +370,7 @@ it('clears a sharing record when repairing a legacy archived worker', async () =
     finishedAt: 2, retiredAt: 3, outcome: 'dismissed' as const }
   r.room.retireParticipant(w.name, record, ignore)
   r.room.setWorker(w, ignore)
-  r.room.setOverlay(w.name, 'a', 'ghost')
+  publishFixture(r.room, w.name, 'a', 'ghost')
   await r.rooms.retireWorkers()
   expect(r.room.workers.has(w.tag)).toBe(false)
   expect(r.room.changedPaths(w.name)).toEqual([])

@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
@@ -145,7 +146,7 @@ describe('worker lifecycle cleanup', () => {
     const record: RetiredWorker = { name: 'lead+old', tag: 'old', lead: 'lead', host: 'codex', task: 'task', summary: '', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'clean' }
     room.retireParticipant(record.name, record, ignore)
     room.workers.set(record.tag, { tag: record.tag, name: record.name, lead: record.lead, host: record.host, task: record.task, dir: '/missing', branch: 'room/old', pid: -1, startedAt: record.startedAt, status: 'done' })
-    room.setOverlay(record.name, 'old.ts', 'ghost')
+    publishFixture(room, record.name, 'old.ts', 'ghost')
     const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: '/missing', me: { name: 'lead' }, roomName: 'local/repo/main' } as Session
     let current: Session | null = s
     const rooms = new Rooms({ primary: () => current, setPrimary: next => { current = next }, observeClaims() {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })

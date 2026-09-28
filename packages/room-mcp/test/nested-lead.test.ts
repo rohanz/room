@@ -180,6 +180,7 @@ describe('nested lead: a worker that leads workers', () => {
     const { room } = await nestedBatch()
     room.workers.delete('cat')
     let s: Session | null = fakeSession(room, { name: HUMAN, kind: 'agent', owner: HUMAN }, top)
+    await syncDocumentWorkers(s) // the worktree is read only for a worker the registry trusts
     const tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: top })
     const out = await tools.call('room_state', { all: true })
     expect(out).toMatch(/lead \(claude[^\n]*\n\s+1 changed file/)

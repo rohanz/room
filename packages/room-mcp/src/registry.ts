@@ -8,7 +8,7 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import type { Presence, Worker } from '@room/shared'
+import { manifestPaths, type Presence, type Worker } from '@room/shared'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -186,7 +186,7 @@ export class Rooms {
       try { if ((await ignoredWorkerArtifacts(w)).length) continue }
       catch { continue }
       const done = s.room.messages().filter(m => m.type === 'done' && m.from === w.name && m.at >= w.startedAt).at(-1)
-      const files = [...new Set([...s.room.changedPaths(w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
+      const files = [...new Set([...manifestPaths(s.room, w.name), ...(done?.type === 'done' ? done.changed : [])])].sort()
       if (facts.clean && w.exitCode === 0) {
         try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue }
         catch { continue }

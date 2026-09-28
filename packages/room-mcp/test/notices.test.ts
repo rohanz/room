@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc, formatMsg, type ClaimMsg, type PlanMsg, type Worker } from '@room/shared'
@@ -110,7 +111,7 @@ describe('unavailable addressed recipients', () => {
   it('preserves the timeout for an offline teammate and infers the recipient of an answer', async () => {
     vi.useFakeTimers()
     const { s, tools } = fixture()
-    s.room.setOverlay('Ada', 'a.ts', 'work')
+    publishFixture(s.room, 'Ada', 'a.ts', 'work')
     expect(await tools.room_send({ type: 'question', to: 'Ada', text: 'Review?' })).toContain('Ada is offline; it will see this when it returns')
     const waiting = tools.room_wait({ questionId: s.room.messages().at(-1)!.id, timeoutMs: 10 })
     await vi.advanceTimersByTimeAsync(10)

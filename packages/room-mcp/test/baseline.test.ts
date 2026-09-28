@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { patchPublisher } from './registry-fixture.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -51,7 +52,7 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
   const dirOf = (person: string) => person === LEAD ? lead : wdir
   const baseOf = (person: string) => person === LEAD ? head : base
   /** Publish a side's changed files the way its daemon would. */
-  const publish = (person: string, files: string[]) => { for (const file of files) room.setOverlay(person, file, read(dirOf(person), file) ?? '') }
+  const publish = (person: string, files: string[]) => { for (const file of files) publishFixture(room, person, file, read(dirOf(person), file) ?? '') }
   const session = (name: string) => ({ me: { name, kind: 'agent' }, dir: dirOf(name), room, local: true, awareness: { getStates: () => new Map() } }) as unknown as Session
   const sessions = { [LEAD]: session(LEAD), [WORKER]: session(WORKER) }
   const state = {
@@ -167,6 +168,7 @@ describe('a carried worker\'s own changes', () => {
     expect(git(lead, 'show', `${t.base}:app.py`)).toBe(text({ 2: 'W' }).trim())
     put(lead, 'app.py', text({ 2: 'W', 5: 'LEAD' }, '\r\n'))
     put(wdir, 'keep.txt', 'worker\r\n')
+    t.publish(LEAD, ['app.py']); t.publish(WORKER, ['app.py', 'keep.txt'])
     for (const result of [await t.preview(LEAD, WORKER), await t.preview(WORKER, LEAD)]) {
       expect(result.conflictCount).toBe(0)
       expect(result.merged.get('app.py')).toBe(text({ 2: 'W', 5: 'LEAD' }, '\r\n'))

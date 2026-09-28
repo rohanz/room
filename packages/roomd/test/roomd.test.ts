@@ -1,3 +1,4 @@
+import { manifestText, manifestPaths, incarnationText, manifestDeleted } from './manifest-assert.js'
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -6,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
-import { RoomDoc, manifestKey } from '@room/shared'
+import { RoomDoc, manifestChangers, manifestKey } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, defaultIgnoredPath, clampShare, parseShare, policyFromLevel, type ShareLevel, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
@@ -136,15 +137,15 @@ describe('roomd v2 push-only overlays', () => {
     const dir = await makeRepo({ 'app.py': 'base\n' })
     await fsp.writeFile(path.join(dir, 'app.py'), 'edit\n')
     const daemon = await start({ room: room(), dir, name: 'Writer' })
-    expect(daemon.roomDoc.text('app.py', 'Writer')).toBe('edit\n')
+    expect(manifestText(daemon.roomDoc, 'app.py', 'Writer')).toBe('edit\n')
     await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Writer').length === 0)
+    await waitFor(() => manifestPaths(daemon.roomDoc, 'Writer').length === 0)
     await fsp.unlink(path.join(dir, 'app.py'))
-    await waitFor(() => daemon.roomDoc.deletedFor('Writer').has('app.py'))
-    expect(daemon.roomDoc.text('app.py', 'Writer')).toBeUndefined()
+    await waitFor(() => manifestDeleted(daemon.roomDoc, 'Writer', 'app.py'))
+    expect(manifestText(daemon.roomDoc, 'app.py', 'Writer')).toBeUndefined()
     await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
-    await waitFor(() => !daemon.roomDoc.deletedFor('Writer').has('app.py'))
-    expect(daemon.roomDoc.changedPaths('Writer')).toEqual([])
+    await waitFor(() => !manifestDeleted(daemon.roomDoc, 'Writer', 'app.py'))
+    expect(manifestPaths(daemon.roomDoc, 'Writer')).toEqual([])
   })
 
   it('logs a distinct failed publication once and succeeds on a fresh reconciliation', async () => {
@@ -158,10 +159,10 @@ describe('roomd v2 push-only overlays', () => {
     await daemon.reconcileGitChanges()
     expect(logs.filter(line => line.includes('injected publish failure'))).toHaveLength(1)
     await daemon.reconcileGitChanges()
-    expect(daemon.roomDoc.text('app.py', 'Retry')).toBe('edit\n')
+    expect(manifestText(daemon.roomDoc, 'app.py', 'Retry')).toBe('edit\n')
   })
 
-  it('automatically sweeps a late remote base key after its owner has retired', async () => {
+  it('leaves a retired participant\'s base key to its owner during remote repair', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n' }), url = room()
     const scheduled: Array<() => Promise<void>> = []
     const owner = await start({ dir, room: url, name: 'Keeper', remoteRepairSchedule: run => { scheduled.push(run); return () => {} } })
@@ -173,7 +174,7 @@ describe('roomd v2 push-only overlays', () => {
       expect(owner.roomDoc.baseText('Gone', 'sha', 'old.py')).toBe('late base')
       expect(scheduled).toHaveLength(1)
       await scheduled.shift()!()
-      expect(peer.baseText('Gone', 'sha', 'old.py')).toBeUndefined()
+      expect(peer.baseText('Gone', 'sha', 'old.py')).toBe('late base')
     } finally { connection.destroy(); peer.doc.destroy() }
   })
 
@@ -202,10 +203,10 @@ describe('roomd v2 push-only overlays', () => {
     const connection = hub.connect(url, peer.doc)
     try {
       const base = owner.shared
-      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n' && peer.deleted.get('Owner')?.has('gone.py') === true)
+      await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n' && manifestDeleted(peer, 'Owner', 'gone.py'))
       peer.clearOverlays('Owner')
-      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n'
-        && peer.deleted.get('Owner')?.has('gone.py') === true
+      await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n'
+        && manifestDeleted(peer, 'Owner', 'gone.py')
         && peer.baseText('Owner', base, 'edit.py') === 'base\n'
         && peer.baseText('Owner', base, 'gone.py') === 'old\n')
     } finally { connection.destroy(); peer.doc.destroy() }
@@ -219,11 +220,11 @@ describe('roomd v2 push-only overlays', () => {
     const peer = new RoomDoc()
     const connection = hub.connect(url, peer.doc)
     try {
-      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n')
+      await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n')
       peer.clearOverlays('Owner')
       owner.roomDoc.setBaseText('Owner', owner.shared, 'edit.py', 'late base', owner)
       peer.reconcileBaseTexts('Peer')
-      await waitFor(() => peer.overlayText('Owner', 'edit.py')?.toString() === 'changed\n'
+      await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n'
         && peer.baseText('Owner', owner.shared, 'edit.py') === 'base\n')
     } finally { connection.destroy(); peer.doc.destroy() }
   })
@@ -245,8 +246,8 @@ describe('roomd v2 push-only overlays', () => {
     expect(await gitIgnored(dir, 'data/results.csv')).toBe(true)
     const daemon = await start({ room: room(), dir, name: 'Ann' })
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+    await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Ann') === 'x = 2\n')
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toEqual(['app.py'])
     expect(daemon.skipped().ignore).toContain('data')
     expect(daemon.skipped().ignore).toContain('alias.py')
   })
@@ -277,12 +278,12 @@ describe('roomd v2 push-only overlays', () => {
     expect(state.watchedDirectory).toBe(primary.provider.awareness.getLocalState()!.watchedDirectory)
     expect(state.publishUnder).toBe('Zoe')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
-    await waitFor(() => primary.roomDoc.text('app.py', 'Zoe') === 'x = 2\n')
+    await waitFor(() => manifestText(primary.roomDoc, 'app.py', 'Zoe') === 'x = 2\n')
     await setPolicy(secondary, 'full')
-    expect(secondary.roomDoc.changedPaths('Amy')).toEqual([])
+    expect(manifestPaths(secondary.roomDoc, 'Amy')).toEqual([])
     await primary.stop('handoff')
     await waitFor(() => secondary.provider.awareness.getLocalState()!.publishUnder === undefined
-      && secondary.roomDoc.text('app.py', 'Amy') === 'x = 2\n')
+      && manifestText(secondary.roomDoc, 'app.py', 'Amy') === 'x = 2\n')
     await secondary.stop('test complete'); await secondary.stop('again')
     expect(logs.filter(line => line.startsWith('stopped:'))).toEqual(['stopped: test complete'])
   })
@@ -362,7 +363,7 @@ describe('roomd v2 push-only overlays', () => {
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     sh(dir, ['add', '.']); sh(dir, ['commit', '-qm', 'merge result'])
     await waitFor(() => daemon.base === sh(dir, ['rev-parse', 'HEAD']))
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toEqual([])
     expect(logs.some(line => line === 'published app.py overlay')).toBe(false)
   })
 
@@ -384,7 +385,7 @@ describe('roomd v2 push-only overlays', () => {
     } finally { release() }
     await waitFor(() => daemon.base === sh(dir, ['rev-parse', 'HEAD']))
     await daemon.settle()
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toEqual([])
     expect(logs.some(line => line === 'published app.py overlay')).toBe(false)
   })
 
@@ -395,34 +396,34 @@ describe('roomd v2 push-only overlays', () => {
     await daemon.reconcileGitChanges()
     expect(daemon.skipped().ignore).toContain('fixtures/big.json')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Ann') === 'x = 2\n')
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual(['app.py'])
+    await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Ann') === 'x = 2\n')
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toEqual(['app.py'])
     expect(daemon.skipped().ignore).toEqual(['fixtures/big.json'])
     // Lifting the rule publishes the file; adding one back clears its overlay.
     await fsp.writeFile(path.join(dir, '.roomignore'), '')
     ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
     await daemon.reconcileGitChanges()
-    expect(daemon.roomDoc.text('fixtures/big.json', 'Ann')).toBe('{"changed":true}\n')
+    expect(manifestText(daemon.roomDoc, 'fixtures/big.json', 'Ann')).toBe('{"changed":true}\n')
     await daemon.settle()
     await fsp.writeFile(path.join(dir, '.roomignore'), '*.json\n')
     ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
     await daemon.reconcileGitChanges()
-    await waitFor(() => !daemon.roomDoc.changedPaths('Ann').includes('fixtures/big.json')
+    await waitFor(() => !manifestPaths(daemon.roomDoc, 'Ann').includes('fixtures/big.json')
       && daemon.skipped().ignore.includes('fixtures/big.json'))
-    expect(daemon.roomDoc.changedPaths('Ann')).toContain('app.py')
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toContain('app.py')
   })
 
   it('clears a deletion marker when .roomignore starts matching its path', async () => {
     const dir = await makeRepo({ 'deleted.py': 'base\n', '.roomignore': '' })
     const daemon = await start({ room: room(), dir, name: 'Ann' })
     await fsp.unlink(path.join(dir, 'deleted.py'))
-    await waitFor(() => daemon.roomDoc.deletedFor('Ann').has('deleted.py'))
+    await waitFor(() => manifestDeleted(daemon.roomDoc, 'Ann', 'deleted.py'))
 
     await fsp.writeFile(path.join(dir, '.roomignore'), 'deleted.py\n')
     ;(daemon as unknown as { reloadRoomIgnore(): void }).reloadRoomIgnore()
 
-    expect(daemon.roomDoc.deletedFor('Ann').has('deleted.py')).toBe(false)
-    expect(daemon.roomDoc.changedPaths('Ann')).toEqual([])
+    expect(manifestDeleted(daemon.roomDoc, 'Ann', 'deleted.py')).toBe(false)
+    expect(manifestPaths(daemon.roomDoc, 'Ann')).toEqual([])
   })
 
   it('a publish already in flight when sharing drops to intent writes nothing', async () => {
@@ -438,8 +439,8 @@ describe('roomd v2 push-only overlays', () => {
     daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('intent') })
     gate!()
     await daemon.reconcileGitChanges()
-    await waitFor(() => daemon.roomDoc.changedPaths('Race').length === 0)
-    expect(daemon.roomDoc.changedPaths('Race')).toEqual([])
+    await waitFor(() => manifestPaths(daemon.roomDoc, 'Race').length === 0)
+    expect(manifestPaths(daemon.roomDoc, 'Race')).toEqual([])
     expect(daemon.roomDoc.manifestHead.get('Race')?.coverage).toEqual({ kind: 'none', reason: 'intent' })
   })
 
@@ -447,19 +448,19 @@ describe('roomd v2 push-only overlays', () => {
     const dir = await makeRepo({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' })
     const daemon = await start({ room: room(), dir, name: 'Bud', totalBudget: 250 })
     await fsp.writeFile(path.join(dir, 'a.txt'), 'A'.repeat(100))
-    await waitFor(() => daemon.roomDoc.text('a.txt', 'Bud') === 'A'.repeat(100))
+    await waitFor(() => manifestText(daemon.roomDoc, 'a.txt', 'Bud') === 'A'.repeat(100))
     await fsp.writeFile(path.join(dir, 'b.txt'), 'B'.repeat(100))
-    await waitFor(() => daemon.roomDoc.text('b.txt', 'Bud') === 'B'.repeat(100))
+    await waitFor(() => manifestText(daemon.roomDoc, 'b.txt', 'Bud') === 'B'.repeat(100))
     await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100))
     await waitFor(() => daemon.skipped().budget.includes('c.txt')
-      && daemon.roomDoc.changedPaths('Bud').join(',') === 'a.txt,b.txt')
-    expect(daemon.roomDoc.changedPaths('Bud').sort()).toEqual(['a.txt', 'b.txt'])
+      && manifestPaths(daemon.roomDoc, 'Bud').join(',') === 'a.txt,b.txt')
+    expect(manifestPaths(daemon.roomDoc, 'Bud').sort()).toEqual(['a.txt', 'b.txt'])
     expect(daemon.skipped().budget).toEqual(['c.txt'])
     // Freeing room lets the skipped file in on its next change.
     await fsp.writeFile(path.join(dir, 'a.txt'), 'a\n')
-    await waitFor(() => !daemon.roomDoc.changedPaths('Bud').includes('a.txt'))
+    await waitFor(() => !manifestPaths(daemon.roomDoc, 'Bud').includes('a.txt'))
     await fsp.writeFile(path.join(dir, 'c.txt'), 'C'.repeat(100) + '!')
-    await waitFor(() => daemon.roomDoc.text('c.txt', 'Bud') === 'C'.repeat(100) + '!'
+    await waitFor(() => manifestText(daemon.roomDoc, 'c.txt', 'Bud') === 'C'.repeat(100) + '!'
       && daemon.skipped().budget.length === 0)
     expect(daemon.skipped().budget).toEqual([])
   })
@@ -469,7 +470,7 @@ describe('roomd v2 push-only overlays', () => {
     sh(dir, ['remote', 'add', 'origin', 'git@github.com:openai/room.git'])
     const daemon = await start({ room: room(), dir, name: 'Alice' })
 
-    expect(daemon.roomDoc.changedPaths('Alice')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Alice')).toEqual([])
     expect(daemon.roomDoc.meta).toMatchObject({
       base: sh(dir, ['rev-parse', 'HEAD']),
       branch: 'main',
@@ -492,10 +493,10 @@ describe('roomd v2 push-only overlays', () => {
 
     const daemon = await start({ room: room(), dir, name: 'Dirty' })
 
-    expect(daemon.roomDoc.text('keep.py', 'Dirty')).toBe('dirty\n')
-    expect(daemon.roomDoc.text('new.py', 'Dirty')).toBe('new\n')
-    expect(daemon.roomDoc.deletedFor('Dirty').has('delete.py')).toBe(true)
-    expect(daemon.roomDoc.changedPaths('Dirty')).toEqual(['delete.py', 'keep.py', 'new.py'])
+    expect(manifestText(daemon.roomDoc, 'keep.py', 'Dirty')).toBe('dirty\n')
+    expect(manifestText(daemon.roomDoc, 'new.py', 'Dirty')).toBe('new\n')
+    expect(manifestDeleted(daemon.roomDoc, 'Dirty', 'delete.py')).toBe(true)
+    expect(manifestPaths(daemon.roomDoc, 'Dirty')).toEqual(['delete.py', 'keep.py', 'new.py'])
   })
 
   it('drops stale overlay and deleted paths when the same person restarts on a clean clone', async () => {
@@ -507,11 +508,10 @@ describe('roomd v2 push-only overlays', () => {
     const logs: string[] = []
 
     const alice = await start({ room: roomUrl, dir, name: 'Alice', log: line => logs.push(line) })
-    await waitFor(() => alice.roomDoc.changedPaths('Alice').length === 0
-      && alice.roomDoc.deletedFor('Alice').size === 0)
+    await waitFor(() => manifestPaths(alice.roomDoc, 'Alice').length === 0)
 
-    expect(alice.roomDoc.overlayText('Alice', 'ghost.py')).toBeUndefined()
-    expect(alice.roomDoc.deletedFor('Alice').has('phantom.py')).toBe(false)
+    expect(incarnationText(alice.roomDoc, 'Alice', 'ghost.py')).toBeUndefined()
+    expect(manifestDeleted(alice.roomDoc, 'Alice', 'phantom.py')).toBe(false)
     expect(logs.filter(line => line.startsWith('dropped stale overlay '))).toEqual([])
   })
 
@@ -523,10 +523,10 @@ describe('roomd v2 push-only overlays', () => {
     await fsp.unlink(path.join(dir, 'deleted.py'))
 
     const alice = await start({ room: roomUrl, dir, name: 'Alice' })
-    await waitFor(() => alice.roomDoc.deletedFor('Alice').has('deleted.py'))
+    await waitFor(() => manifestDeleted(alice.roomDoc, 'Alice', 'deleted.py'))
 
-    expect(alice.roomDoc.overlayText('Alice', 'deleted.py')).toBeUndefined()
-    expect(alice.roomDoc.deletedFor('Alice').has('deleted.py')).toBe(true)
+    expect(incarnationText(alice.roomDoc, 'Alice', 'deleted.py')).toBeUndefined()
+    expect(manifestDeleted(alice.roomDoc, 'Alice', 'deleted.py')).toBe(true)
   })
 
   it('pushes disk changes, clears files restored to base, and marks deletions', async () => {
@@ -534,15 +534,15 @@ describe('roomd v2 push-only overlays', () => {
     const daemon = await start({ room: room(), dir, name: 'Alice' })
 
     await fsp.writeFile(path.join(dir, 'app.py'), 'edited\n')
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Alice') === 'edited\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Alice') === 'edited\n')
     expect(daemon.provider.awareness.getLocalState()?.lastActive).toEqual(expect.any(Number))
 
     await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
-    await waitFor(() => daemon.roomDoc.text('app.py', 'Alice') === undefined)
+    await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Alice') === undefined)
 
     await fsp.unlink(path.join(dir, 'gone.py'))
-    await waitFor(() => daemon.roomDoc.deletedFor('Alice').has('gone.py'))
-    expect(daemon.roomDoc.text('gone.py', 'Alice')).toBeUndefined()
+    await waitFor(() => manifestDeleted(daemon.roomDoc, 'Alice', 'gone.py'))
+    expect(manifestText(daemon.roomDoc, 'gone.py', 'Alice')).toBeUndefined()
   })
 
   it('includes untracked non-ignored files and clears them when deleted', async () => {
@@ -551,41 +551,41 @@ describe('roomd v2 push-only overlays', () => {
     const daemon = await start({ room: room(), dir, name: 'Alice', onScanned: p => { if (p === 'ignored.txt') ignoredScanned = true } })
 
     await fsp.writeFile(path.join(dir, 'new.py'), 'new\n')
-    await waitFor(() => daemon.roomDoc.text('new.py', 'Alice') === 'new\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'new.py', 'Alice') === 'new\n')
     await fsp.writeFile(path.join(dir, 'ignored.txt'), 'secret\n')
-    await waitFor(() => ignoredScanned && daemon.roomDoc.text('ignored.txt', 'Alice') === undefined)
-    expect(daemon.roomDoc.text('ignored.txt', 'Alice')).toBeUndefined()
+    await waitFor(() => ignoredScanned && manifestText(daemon.roomDoc, 'ignored.txt', 'Alice') === undefined)
+    expect(manifestText(daemon.roomDoc, 'ignored.txt', 'Alice')).toBeUndefined()
 
     await fsp.unlink(path.join(dir, 'new.py'))
-    await waitFor(() => !daemon.roomDoc.changedPaths('Alice').includes('new.py'))
-    expect(daemon.roomDoc.text('new.py', 'Alice')).toBeUndefined()
-    expect(daemon.roomDoc.deletedFor('Alice').has('new.py')).toBe(false)
+    await waitFor(() => !manifestPaths(daemon.roomDoc, 'Alice').includes('new.py'))
+    expect(manifestText(daemon.roomDoc, 'new.py', 'Alice')).toBeUndefined()
+    expect(manifestDeleted(daemon.roomDoc, 'Alice', 'new.py')).toBe(false)
   })
 
   it('does not republish an existing overlay after git starts ignoring its path', async () => {
     const dir = await makeRepo({ '.gitignore': '' })
     const daemon = await start({ room: room(), dir, name: 'Alice', trackedRefreshMs: 60_000 })
     await fsp.writeFile(path.join(dir, 'secret.txt'), 'first\n')
-    await waitFor(() => daemon.roomDoc.text('secret.txt', 'Alice') === 'first\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'secret.txt', 'Alice') === 'first\n')
 
     await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
     await fsp.writeFile(path.join(dir, 'secret.txt'), 'second\n')
     await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('secret.txt', false)
 
-    expect(daemon.roomDoc.text('secret.txt', 'Alice')).toBeUndefined()
+    expect(manifestText(daemon.roomDoc, 'secret.txt', 'Alice')).toBeUndefined()
   })
 
   it('withdraws a published untracked file when a tracked refresh finds it newly git-ignored', async () => {
     const dir = await makeRepo({ '.gitignore': '' })
     const daemon = await start({ room: room(), dir, name: 'Alice', trackedRefreshMs: 60_000 })
     await fsp.writeFile(path.join(dir, 'secret.txt'), 'private\n')
-    await waitFor(() => daemon.roomDoc.text('secret.txt', 'Alice') === 'private\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'secret.txt', 'Alice') === 'private\n')
 
     await fsp.writeFile(path.join(dir, '.gitignore'), 'secret.txt\n')
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
     await daemon.reconcileGitChanges()
 
-    expect(daemon.roomDoc.text('secret.txt', 'Alice')).toBeUndefined()
+    expect(manifestText(daemon.roomDoc, 'secret.txt', 'Alice')).toBeUndefined()
   })
 
   it('never changes clone bytes when another person overlay arrives', async () => {
@@ -597,12 +597,12 @@ describe('roomd v2 push-only overlays', () => {
     const before = fs.readFileSync(path.join(otherClone, 'app.py'))
 
     await fsp.writeFile(path.join(source, 'app.py'), 'alice edit\n')
-    await waitFor(() => bob.roomDoc.text('app.py', 'Alice') === 'alice edit\n')
+    await waitFor(() => manifestText(bob.roomDoc, 'app.py', 'Alice') === 'alice edit\n')
 
     expect(fs.readFileSync(path.join(otherClone, 'app.py'))).toEqual(before)
     expect(read(otherClone, 'app.py')).toBe('base\n')
-    expect(bob.roomDoc.text('app.py', 'Bob')).toBeUndefined()
-    expect(alice.roomDoc.whoChanged('app.py')).toEqual(['Alice'])
+    expect(manifestText(bob.roomDoc, 'app.py', 'Bob')).toBeUndefined()
+    expect(manifestChangers(alice.roomDoc, 'app.py')).toEqual(['Alice'])
   })
 
   it('writes private room metadata and excludes Room files once', async () => {
@@ -674,9 +674,9 @@ describe('roomd v2 push-only overlays', () => {
     lead.roomDoc.setWorker(record)
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k' })
     expect(worker.roomDoc.baseOf('Alice+w')).toBe(carried)
-    expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
+    expect(manifestPaths(worker.roomDoc, 'Alice+w')).toEqual([])
     await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\nworker line\n')
-    await waitFor(() => worker.roomDoc.changedPaths('Alice+w').includes('notes.txt'))
+    await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').includes('notes.txt'))
     expect(worker.roomDoc.baseText(worker.name, carried, 'notes.txt')).toBe('lead notes\n')
   })
 
@@ -687,17 +687,17 @@ describe('roomd v2 push-only overlays', () => {
     lead.roomDoc.setWorker(record)
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
     expect(worker.roomDoc.baseOf('Alice+w')).toBe(leadHead)
-    expect(worker.roomDoc.changedPaths('Alice+w')).toEqual([])
+    expect(manifestPaths(worker.roomDoc, 'Alice+w')).toEqual([])
     // A worker edit on top of a carried file: the full text, with the base text a teammate's clone has.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\nworker line\n')
     await fsp.writeFile(path.join(workerDir, 'other.py'), 'other\nworker line\n')
-    await waitFor(() => worker.roomDoc.changedPaths('Alice+w').length === 2)
-    expect(worker.roomDoc.text('app.py', 'Alice+w')).toBe('lead WIP\nworker line\n')
+    await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').length === 2)
+    expect(manifestText(worker.roomDoc, 'app.py', 'Alice+w')).toBe('lead WIP\nworker line\n')
     expect(worker.roomDoc.baseText(worker.name, leadHead, 'app.py')).toBe('base\n')
     expect(worker.roomDoc.baseText(worker.name, leadHead, 'other.py')).toBe('other\n')
     // Reverting to the carried text withdraws the overlay again.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
-    await waitFor(() => !worker.roomDoc.changedPaths('Alice+w').includes('app.py'))
+    await waitFor(() => !manifestPaths(worker.roomDoc, 'Alice+w').includes('app.py'))
   })
 
   it('a clone behind its upstream joins, is marked behind, and syncs after pulling', async () => {
@@ -777,7 +777,7 @@ describe('sharing levels', () => {
     let ceiling: 'full' | 'intent' = 'full'
     const daemon = await start({ room: room(), dir, name: 'Ceiling', share: 'full', shareCeiling: () => ceiling })
     await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
-    await waitFor(() => daemon.roomDoc.text('a.py', 'Ceiling') === 'private a\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'a.py', 'Ceiling') === 'private a\n')
     const base = daemon.roomDoc.baseOf('Ceiling')!
     expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBe('base a\n')
     ceiling = 'intent'
@@ -785,7 +785,7 @@ describe('sharing levels', () => {
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
     await daemon.reconcileGitChanges()
     expect(daemon.share).toBe('intent')
-    expect(daemon.roomDoc.changedPaths('Ceiling')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Ceiling')).toEqual([])
     expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBeUndefined()
   })
 
@@ -794,16 +794,18 @@ describe('sharing levels', () => {
     const daemon = await start({ room: room(), dir, name: 'Decline' })
     await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
-    await waitFor(() => daemon.roomDoc.changedPaths('Decline').length === 2)
+    await waitFor(() => manifestPaths(daemon.roomDoc, 'Decline').length === 2)
     const base = daemon.roomDoc.baseOf('Decline')!
     await setPolicy(daemon, 'declared', ['b.py'])
-    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
+    expect(manifestPaths(daemon.roomDoc, 'Decline')).toEqual(['a.py', 'b.py'])
+    expect(daemon.roomDoc.manifest.get(manifestKey('Decline', daemon.roomDoc.manifestHead.get('Decline')!.fence))?.get('a.py'))
+      .toMatchObject({ state: 'held', held: 'scope', change: 'M' })
     expect(daemon.roomDoc.baseText('Decline', base, 'a.py')).toBeUndefined()
     expect(daemon.roomDoc.baseText('Decline', base, 'b.py')).toBe('base b\n')
     const widening = setPolicy(daemon, 'full')
-    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['b.py'])
+    expect(manifestPaths(daemon.roomDoc, 'Decline')).toEqual(['a.py', 'b.py'])
     await widening
-    expect(daemon.roomDoc.changedPaths('Decline')).toEqual(['a.py', 'b.py'])
+    expect(manifestPaths(daemon.roomDoc, 'Decline')).toEqual(['a.py', 'b.py'])
   })
 
   it('withdraws a deletion mark and collects base text when an overlay is reverted', async () => {
@@ -811,15 +813,15 @@ describe('sharing levels', () => {
     const daemon = await start({ room: room(), dir, name: 'Withdraw' })
     const base = daemon.roomDoc.baseOf('Withdraw')!
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'changed\n')
-    await waitFor(() => daemon.roomDoc.text('reverted.py', 'Withdraw') === 'changed\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'reverted.py', 'Withdraw') === 'changed\n')
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'old\n')
-    await waitFor(() => !daemon.roomDoc.changedPaths('Withdraw').includes('reverted.py'))
+    await waitFor(() => !manifestPaths(daemon.roomDoc, 'Withdraw').includes('reverted.py'))
     expect(daemon.roomDoc.baseText('Withdraw', base, 'reverted.py')).toBeUndefined()
     await fsp.unlink(path.join(dir, 'deleted.py'))
-    await waitFor(() => daemon.roomDoc.deletedFor('Withdraw').has('deleted.py'))
+    await waitFor(() => manifestDeleted(daemon.roomDoc, 'Withdraw', 'deleted.py'))
     expect(daemon.roomDoc.baseText('Withdraw', base, 'deleted.py')).toBe('old\n')
     await setPolicy(daemon, 'intent')
-    expect(daemon.roomDoc.deletedFor('Withdraw').has('deleted.py')).toBe(false)
+    expect(manifestDeleted(daemon.roomDoc, 'Withdraw', 'deleted.py')).toBe(false)
     expect(daemon.roomDoc.baseText('Withdraw', base, 'reverted.py')).toBeUndefined()
   })
 
@@ -832,9 +834,9 @@ describe('sharing levels', () => {
     sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', 'advance'])
     await waitFor(() => daemon.base !== oldBase)
     await fsp.writeFile(path.join(dir, 'b.py'), 'changed b\n')
-    await waitFor(() => daemon.roomDoc.text('b.py', 'Advance') === 'changed b\n')
+    await waitFor(() => manifestText(daemon.roomDoc, 'b.py', 'Advance') === 'changed b\n')
     await setPolicy(daemon, 'intent')
-    expect(daemon.roomDoc.changedPaths('Advance')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Advance')).toEqual([])
     expect(daemon.roomDoc.baseText('Advance', oldBase, 'a.py')).toBeUndefined()
     expect(daemon.roomDoc.baseText('Advance', daemon.base, 'b.py')).toBeUndefined()
   })
@@ -845,11 +847,11 @@ describe('sharing levels', () => {
     const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
     const first = await start({ room: url, dir, name: 'Restart' })
     await fsp.writeFile(path.join(dir, 'a.py'), 'edit\n')
-    await waitFor(() => keeper.roomDoc.text('a.py', 'Restart') === 'edit\n')
+    await waitFor(() => manifestText(keeper.roomDoc, 'a.py', 'Restart') === 'edit\n')
     const base = first.base
     await first.stop()
     const second = await start({ room: url, dir, name: 'Restart', share: 'intent' })
-    expect(second.roomDoc.changedPaths('Restart')).toEqual([])
+    expect(manifestPaths(second.roomDoc, 'Restart')).toEqual([])
     expect(keeper.roomDoc.baseText('Restart', base, 'a.py')).toBeUndefined()
   })
 
@@ -860,7 +862,7 @@ describe('sharing levels', () => {
     const bob = await start({ room: url, dir: await cloneRepo(origin), name: 'Bob' })
     await fsp.writeFile(path.join(alice.dir, 'a.py'), 'alice\n')
     await fsp.writeFile(path.join(bob.dir, 'a.py'), 'bob\n')
-    await waitFor(() => alice.roomDoc.text('a.py', 'Alice') === 'alice\n' && alice.roomDoc.text('a.py', 'Bob') === 'bob\n')
+    await waitFor(() => manifestText(alice.roomDoc, 'a.py', 'Alice') === 'alice\n' && manifestText(alice.roomDoc, 'a.py', 'Bob') === 'bob\n')
     const base = alice.base
     expect(alice.roomDoc.baseText('Alice', base, 'a.py')).toBe('base\n')
     expect(alice.roomDoc.baseText('Bob', base, 'a.py')).toBe('base\n')
@@ -875,10 +877,10 @@ describe('sharing levels', () => {
     for (let i = 0; i < 3; i++) {
       const base = daemon.base
       await fsp.writeFile(path.join(dir, 'a.py'), `edit ${i}\n`)
-      await waitFor(() => daemon.roomDoc.text('a.py', 'Cycles') === `edit ${i}\n`)
+      await waitFor(() => manifestText(daemon.roomDoc, 'a.py', 'Cycles') === `edit ${i}\n`)
       expect(daemon.roomDoc.baseText('Cycles', base, 'a.py')).toBeDefined()
       sh(dir, ['add', 'a.py']); sh(dir, ['commit', '-qm', `edit ${i}`])
-      await waitFor(() => daemon.base !== base && !daemon.roomDoc.changedPaths('Cycles').includes('a.py'))
+      await waitFor(() => daemon.base !== base && !manifestPaths(daemon.roomDoc, 'Cycles').includes('a.py'))
       expect(daemon.roomDoc.ownedBaseTexts.size).toBe(0)
     }
   })
@@ -921,7 +923,7 @@ describe('sharing levels', () => {
     const daemon = await start({ room: room(), dir, name: 'Full' })
     expect(daemon.share).toBe('full')
     expect(presence(daemon).share).toBe('full')
-    expect(daemon.roomDoc.changedPaths('Full')).toEqual(['a.py'])
+    expect(manifestPaths(daemon.roomDoc, 'Full')).toEqual(['a.py'])
     expect(daemon.roomDoc.manifest.get(manifestKey('Full', daemon.fence))?.get('a.py')?.state).toBe('shared')
   })
 
@@ -931,7 +933,7 @@ describe('sharing levels', () => {
     await fsp.unlink(path.join(dir, 'gone.py'))
     const daemon = await start({ room: room(), dir, name: 'Quiet', share: 'intent' })
     expect(presence(daemon).share).toBe('intent')
-    expect(daemon.roomDoc.changedPaths('Quiet')).toEqual([])
+    expect(manifestPaths(daemon.roomDoc, 'Quiet')).toEqual([])
     expect(daemon.roomDoc.manifestHead.get('Quiet')?.coverage).toEqual({ kind: 'none', reason: 'intent' })
     expect(daemon.roomDoc.manifestHead.get('Quiet')?.excluded).toEqual([])
   })
@@ -943,7 +945,7 @@ describe('sharing levels', () => {
     await fsp.unlink(path.join(dir, 'gone.py'))
     const daemon = await start({ room: room(), dir, name: 'Decl', share: 'declared', scopePaths: ['src/'] })
     const entries = daemon.roomDoc.manifest.get(manifestKey(daemon.name, daemon.fence))!
-    expect(daemon.roomDoc.text('src/a.py', 'Decl')).toBe('A\n')
+    expect(manifestText(daemon.roomDoc, 'src/a.py', 'Decl')).toBe('A\n')
     expect(entries.get('src/a.py')).toMatchObject({ state: 'shared' })
     expect(entries.get('docs/b.md')).toMatchObject({ state: 'held', held: 'scope' })
     expect(entries.get('docs/b.md')).not.toHaveProperty('hash')
@@ -959,12 +961,12 @@ describe('sharing levels', () => {
     const key = manifestKey(daemon.name, daemon.fence)
     expect(daemon.roomDoc.manifest.get(key)?.get('a.py')?.hash).toBeDefined()
     daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('declared') })
-    expect(daemon.roomDoc.text('a.py', 'Dial')).toBeUndefined()
+    expect(manifestText(daemon.roomDoc, 'a.py', 'Dial')).toBeUndefined()
     expect(daemon.roomDoc.manifest.get(key)?.get('a.py')).toMatchObject({ state: 'held', held: 'scope' })
     expect(daemon.roomDoc.manifest.get(key)?.get('a.py')).not.toHaveProperty('hash')
     daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('full') })
     await daemon.reconcileGitChanges()
-    expect(daemon.roomDoc.text('a.py', 'Dial')).toBe('edit\n')
+    expect(manifestText(daemon.roomDoc, 'a.py', 'Dial')).toBe('edit\n')
     expect(daemon.roomDoc.manifest.get(key)?.get('a.py')?.hash).toBeDefined()
   })
 })

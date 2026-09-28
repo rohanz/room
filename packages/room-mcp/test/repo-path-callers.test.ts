@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -146,7 +147,7 @@ describe('disk read paths', () => {
     const localState = { publishUnder: 'publisher', watchedDirectory: 'same', user: { name: 'lead', kind: 'agent' } }
     const peerState = { watchedDirectory: 'same', user: { name: 'publisher', kind: 'agent' } }
     const awareness = { clientID: 1, getLocalState: () => localState, getStates: () => new Map([[1, localState], [2, peerState]]), meta: new Map([[2, { lastUpdated: Date.now() }]]) }
-    const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness } as unknown as Session
+    const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, local: true, awareness } as unknown as Session
     const state = { S: () => session, rooms: { holding: () => session }, withheld: () => undefined, liveText: async () => undefined, baseText: async () => undefined, baseFor: () => base, shareOf: () => 'full', ledgerLines: () => [], lines: () => 1 } as unknown as HandlerState
     const call = fileHandlers(state).room_read
     for (const rel of ['a/../b', '/tmp/nope']) await expect(call({ path: rel })).rejects.toThrow(/unsafe room path/)
@@ -157,18 +158,19 @@ describe('disk read paths', () => {
     expect(await call({ path: 'inside' })).toContain('base')
     await expect(call({ path: 'outside' })).rejects.toThrow(/unsafe room symlink/)
     room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base }, ignore)
+    await syncDocumentWorkers(session)
     const actual = createHandlerState({ getSession: () => session, setSession() {}, cwd: lead })
-    for (const rel of ['', 'a/../b', '/tmp/nope']) await expect(actual.liveText(session, rel, 'lead+w')).rejects.toThrow(/unsafe worker path/)
-    for (const rel of ['a\\b', 'a//b', 'a/./b', 'a/.git/config']) await expect(actual.liveText(session, rel, 'lead+w')).resolves.toBeNull()
-    await expect(actual.liveText(session, '.', 'lead+w')).rejects.toThrow(/unsafe worker path/)
-    expect(await actual.liveText(session, '.git', 'lead+w')).toContain('gitdir:')
+    for (const rel of ['', 'a/../b', '/tmp/nope']) await expect(actual.readText(session, rel, 'lead+w')).rejects.toThrow(/unsafe worker path/)
+    for (const rel of ['a\\b', 'a//b', 'a/./b', 'a/.git/config']) await expect(actual.readText(session, rel, 'lead+w')).resolves.toBeNull()
+    await expect(actual.readText(session, '.', 'lead+w')).rejects.toThrow(/unsafe worker path/)
+    expect(await actual.readText(session, '.git', 'lead+w')).toContain('gitdir:')
     fs.mkdirSync(path.join(worker, 'a', '.git'), { recursive: true })
     fs.writeFileSync(path.join(worker, 'a', '.git', 'config'), 'nested')
-    expect(await actual.liveText(session, 'a/.git/config', 'lead+w')).toBe('nested')
+    expect(await actual.readText(session, 'a/.git/config', 'lead+w')).toBe('nested')
     fs.symlinkSync('file.txt', path.join(worker, 'worker-inside'))
     fs.symlinkSync(path.join(root, 'outside'), path.join(worker, 'worker-outside'))
-    expect(await actual.liveText(session, 'worker-inside', 'lead+w')).toBe('base\n')
-    await expect(actual.liveText(session, 'worker-outside', 'lead+w')).rejects.toThrow(/unsafe worker symlink/)
+    expect(await actual.readText(session, 'worker-inside', 'lead+w')).toBe('base\n')
+    await expect(actual.readText(session, 'worker-outside', 'lead+w')).rejects.toThrow(/unsafe worker symlink/)
     await buildCombinedTree(state, session, [], { diskOnly: true })
     room.doc.destroy()
   })
@@ -197,7 +199,8 @@ it('refuses a worker root replaced by a symlink between files in one preview', a
   const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
   room.setBaseOf('lead', base); room.setBaseOf('lead+w', base)
   room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base }, ignore)
-  const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, local: true, awareness: { getStates: () => new Map() } } as unknown as Session
+  const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, local: true, awareness: { getStates: () => new Map() } } as unknown as Session
+  await syncDocumentWorkers(session)
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
   const parked = path.join(root, 'parked-worker')
   const read = fs.readFileSync.bind(fs)
@@ -229,7 +232,7 @@ it('combined-tree disk sites retain their lexical path cases', async () => {
   fs.writeFileSync(path.join(lead, 'a', '.git', 'config'), 'nested git\n')
   const preview = async (paths: string[]) => {
     const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base); room.setBaseOf('peer', base)
-    for (const rel of paths) room.setOverlay('peer', rel, 'peer\n')
+    for (const rel of paths) publishFixture(room, 'peer', rel, 'peer\n')
     const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
     const state = { rooms: { holding: () => session }, liveText: async () => 'peer\n', baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
     try { return await buildCombinedTree(state, session, [{ person: 'peer', session }]) }

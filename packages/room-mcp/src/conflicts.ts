@@ -1,4 +1,4 @@
-import { bareSymbol, claimsOverlap, displayName, observedContractChanges, type SymbolGraph } from '@room/shared'
+import { bareSymbol, claimsOverlap, displayName, manifestChangers, manifestPaths, observedContractChanges, type SymbolGraph } from '@room/shared'
 /**
  * Conflicts the agents did not declare. Two watchers on the room doc:
  *  - overlap: my own edits landing inside someone else's open claim (I hold no claim there)
@@ -118,15 +118,24 @@ export class ConflictWatcher {
   constructor(private d: ConflictDeps) {}
 
   start(): void {
-    const onOverlays = (events: { target: unknown; path: (string | number)[]; changes: { keys: Map<string, unknown> } }[]) => {
+    const known = new Map([...this.d.room.manifest].map(([key, map]) => [key, new Set(map.keys())]))
+    const onManifest = (events: { target: unknown; path: (string | number)[]; changes: { keys: Map<string, unknown> } }[]) => {
       const touched = new Set<string>()
       for (const ev of events) {
-        if (ev.target === this.d.room.overlays) {
-          for (const person of ev.changes.keys.keys()) for (const p of this.d.room.changedPaths(person)) touched.add(`${person}|${p}`)
-        } else if (ev.path.length >= 2) {
-          touched.add(`${String(ev.path[0])}|${String(ev.path[1])}`)
-        } else if (ev.path.length === 1) {
-          for (const p of ev.changes.keys.keys()) touched.add(`${String(ev.path[0])}|${p}`)
+        if (ev.target === this.d.room.manifest) {
+          for (const key of ev.changes.keys.keys()) {
+            const person = key.split('\0')[0]
+            for (const p of known.get(key) ?? []) touched.add(`${person}|${p}`)
+            const current = this.d.room.manifest.get(key)
+            for (const p of current?.keys() ?? []) touched.add(`${person}|${p}`)
+            if (current) known.set(key, new Set(current.keys()))
+            else known.delete(key)
+          }
+        } else if (ev.path.length >= 1) {
+          const key = String(ev.path[0]), person = key.split('\0')[0]
+          if (this.d.room.manifestHead.get(person)?.fence !== key.slice(person.length + 1)) continue
+          for (const p of ev.changes.keys.keys()) touched.add(`${person}|${p}`)
+          known.set(key, new Set(this.d.room.manifest.get(key)?.keys() ?? []))
         }
       }
       for (const key of touched) {
@@ -135,8 +144,8 @@ export class ConflictWatcher {
       }
       this.checkAllObserved()
     }
-    this.d.room.overlays.observeDeep(onOverlays as never)
-    this.stopFns.push(() => this.d.room.overlays.unobserveDeep(onOverlays as never))
+    this.d.room.manifest.observeDeep(onManifest as never)
+    this.stopFns.push(() => this.d.room.manifest.unobserveDeep(onManifest as never))
     const onGraphs = (event: { keysChanged: Set<string> }) => {
       for (const person of event.keysChanged) if (person !== this.d.me.name) this.queueObserved(person)
     }
@@ -270,14 +279,14 @@ export class ConflictWatcher {
     const carried = this.carriedWorkerFor(person)
     if (!snapshot && !carried) return
     const mine = new Set([
-      ...this.d.room.changedPaths(this.d.me.name),
+      ...manifestPaths(this.d.room, this.d.me.name),
       ...this.d.room.openClaims().filter(claim => claim.by === this.d.me.name).map(claim => claim.path),
     ])
     if (!mine.size) return
     let changes = snapshot?.observed ?? []
     const mineTexts = new Map<string, string | null | undefined>()
     if (carried) {
-      const paths = new Set([...await carriedPaths(carried), ...this.d.room.changedPaths(person)])
+      const paths = new Set([...await carriedPaths(carried), ...manifestPaths(this.d.room, person)])
       const lives = new Map<string, string | null | undefined>()
       // A path the lead no longer has (reverted to a HEAD without it, or deleted) is compared as empty; an unreadable one is skipped.
       for (const path of [...paths].sort()) await this.d.liveText(path, person).then(live => lives.set(path, live), () => undefined)
@@ -313,8 +322,8 @@ export class ConflictWatcher {
       if (person === this.d.me.name) await this.checkOverlap(p)
       // A change by either side to a file both have changed re-runs the preview for every other person on it.
       const me = this.d.me.name
-      const people = (person === me ? this.d.room.whoChanged(p).filter(x => x !== me) : [person]).filter(x => !this.d.coLocated?.(x) && (this.d.isPresent?.(x) ?? true))
-      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p })
+      const people = (person === me ? manifestChangers(this.d.room, p).filter(x => x !== me) : [person]).filter(x => !this.d.coLocated?.(x) && (this.d.isPresent?.(x) ?? true))
+      if (manifestPaths(this.d.room, me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p })
       await this.drainMerges()
     } catch (e) {
       this.d.log?.(`conflict check ${key}: ${e instanceof Error ? e.message : String(e)}`)
@@ -323,8 +332,8 @@ export class ConflictWatcher {
 
   private async checkOverlap(p: string): Promise<void> {
     const me = this.d.me
-    const live = this.d.room.text(p, me.name)
-    if (live === undefined) return
+    const live = await this.d.liveText(p, me.name).catch(() => undefined)
+    if (live == null) return
     const base = (await this.d.baseText(this.d.baseFor(me.name), p)) ?? ''
     const ranges = changedRanges(base, live)
     if (!ranges.length) return
@@ -336,7 +345,7 @@ export class ConflictWatcher {
       if (!hit) continue
       // An overlay is authoritative; the resolver also handles local workers whose
       // current file has not been published (including ignored artifacts).
-      const theirs = this.d.room.text(p, c.by) ?? await this.d.liveText(p, c.by).catch(() => undefined)
+      const theirs = await this.d.liveText(p, c.by).catch(() => undefined)
       if (live === theirs) {
         if (!this.integrationReported.has(c.by)) {
           const paths = this.integrated.get(c.by) ?? new Set<string>()
@@ -385,7 +394,7 @@ export class ConflictWatcher {
   private async checkMerge(person: string, p: string): Promise<void> {
     if (this.d.coLocated?.(person)) return
     if (this.d.isPresent && !this.d.isPresent(person)) return
-    if (!this.d.room.changedPaths(person).includes(p)) return
+    if (!manifestPaths(this.d.room, person).includes(p)) return
     const key = `${person}|${p}`
     const mine = await this.d.liveText(p, this.d.me.name).catch(() => undefined)
     const theirs = await this.d.liveText(p, person).catch(() => undefined)

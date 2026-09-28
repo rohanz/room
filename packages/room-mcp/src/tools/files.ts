@@ -1,11 +1,11 @@
-import { git, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
+import { git, gitShow, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
 import { createTwoFilesPatch } from 'diff'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
+import { describeClaim, manifestChangers, manifestPaths, withLineNumbers, type NoteMsg, type Version, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -13,7 +13,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
-import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_read', annotations: RO, description: 'Read a live file with claims and history. diff=true compares to base; omit path for all diffs.',
@@ -44,12 +44,6 @@ export function testCommandFor(dir: string): string {
   return suggestedTestCommand(files)
 }
 
-/** A secondary Room process has no overlay of its own, but still reads this checkout's files. */
-function ownUnpublishedCheckout(s: Session, person: string): boolean {
-  const publisher = s.awareness.getLocalState()?.publishUnder
-  return person === s.me.name && !!publisher && sameCheckoutSession(s, publisher)
-}
-
 function ownDiskText(dir: string, rel: string): string | null {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe room path: ' + rel)
   const root = fs.realpathSync(dir)
@@ -68,30 +62,40 @@ function ownDiskText(dir: string, rel: string): string | null {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state
+  const { S, rooms, others, presences, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state
+  const gapLine = (person: string, p: string, version: Version): string => {
+    if (version.kind === 'held') {
+      const reason = version.entry.held === 'scope' ? 'outside their declared area' : version.entry.held === 'binary' ? 'binary file' : 'worker text not in this room'
+      const size = version.entry.size === undefined ? '' : ` (${version.entry.size} bytes)`
+      return `${p} changed by ${person}${size}; text not shared: ${reason}`
+    }
+    if (version.kind === 'excluded') return `${person} changed ${p}; it is excluded by their ignore rules or size limits`
+    return `${p}: ${person}'s version is unknown: ${version.kind === 'unknown' ? version.detail : 'unavailable'}`
+  }
   const readDiff: Handler = async a => {
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S())
-      const worker = diskWorker(s, person)
-      const ownDisk = ownUnpublishedCheckout(s, person)
+      const worker = await trustedWorker(s, person)
+      const ownDisk = person === s.me.name
       const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
       const one = async (p: string) => {
-        const l = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person)
-        const b = (await baseText(s, p, worker ? person : undefined)) ?? ''
+        const version = ownDisk || worker ? undefined : await readVersion(s, p, person)
+        if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
+        const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
+          : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
+        const b = (await gitShow(worker?.dir ?? s.dir, baseFor(s, person), p)) ?? ''
         const live = l === null ? '' : l ?? b
         return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
       }
-      const held = withheld(s, person, typeof a.path === 'string' && a.path ? a.path : undefined)
-      if (held) return held
       if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
       const parts: string[] = []
       const paths = worker || ownDisk ? new Set([
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
-      ].filter(Boolean)) : s.room.changedPaths(person)
+      ].filter(Boolean)) : manifestPaths(s.room, person)
       for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
-      const level = shareOf(s, person)
-      if (level === 'declared') parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`)
+      const head = s.room.manifestHead.get(person)
+      if (head) parts.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === 'none' ? ` (${head.coverage.reason})` : ''}; ${head.excluded.length} changed path(s) excluded (names not shared)`)
       return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
   }
   const handlers: Record<string, Handler> = {
@@ -101,19 +105,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const p = a.path
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
-      const held = withheld(s, person, p)
-      if (held) return held
-      const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : ''
-      const ownDisk = ownUnpublishedCheckout(s, person)
-      const t = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person)
+      const worker = await trustedWorker(s, person)
+      const note = worker ? ` ${WORKTREE_NOTE}` : ''
+      const ownDisk = person === s.me.name
+      const version = ownDisk || worker ? undefined : await readVersion(s, p, person)
+      if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
+      const t = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
+        : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
       if (t === null) {
         if (ownDisk && await baseText(s, p, person) === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
         return `${p}: deleted by ${person} (uncommitted)${note}`
       }
       if (t === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`
-      const edited = ownDisk ? t !== await baseText(s, p, person) : s.room.text(p, person) !== undefined
-      const out = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ', uncommitted edits' : diskWorker(s, person) ? ', worktree file' : ', unchanged'} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`]
-      const who = s.room.whoChanged(p).filter(x => x !== person && !sameCheckoutSession(s, x))
+      const edited = ownDisk ? t !== await baseText(s, p, person) : !!worker || version?.kind === 'text'
+      const out = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ', uncommitted edits' : ', unchanged'} on their base ${baseFor(s, person).slice(0, 10)})${note}`]
+      const who = manifestChangers(s.room, p).filter(x => x !== person && !sameCheckoutSession(s, x))
       if (who.length) out.push(`! also changed (uncommitted) by: ${who.join(', ')} — room_read with person= to see theirs`)
       for (const c of s.room.claimsFor(p)) out.push(`! claim ${c.id}: ${describeClaim(c)}`)
       out.push(withLineNumbers(t))
@@ -158,34 +164,34 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const people = Array.from(new Set(explicit
         ? Array.isArray(a.people) ? (a.people as string[]).map(p => fullName(p.trim())) : [fullName(alias)]
         : (a.includeOffline === true ? available : present).sort())).filter(p => p !== caller.me.name)
-      const offlineWithOverlays = available.filter(person => !present.includes(person) && rooms.holding(person, caller).room.changedPaths(person).length > 0)
-      const skipped = !explicit && a.includeOffline !== true ? offlineWithOverlays : []
+      const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
+      const skipped = !explicit && a.includeOffline !== true ? offlineWithFacts : []
       const skippedNote = skipped.length
-        ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with overlays: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
+        ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
       if (!people.length) return ['no present participants to merge', skippedNote].filter(Boolean).join('\n')
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
-        const held = withheld(session, person)
         const ownLocalWorker = session.local && session.room.workerOf(person)
         const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker)
         const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name)
         const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
         if (missing) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`)
-        if (held && !(held.startsWith(`${person} shares intent only;`) && preview === 'disk')) {
-          return missing ? `${person}'s worktree no longer exists; ${held}` : held
-        }
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
         const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
-        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
-        if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
-        if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
+        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps, complete } = result
+        const gapLines = gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`)
+        if (!paths.length && !result.callerOnly && !run) {
+          caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
+          return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, skippedNote].filter(Boolean).join('\n')
+        }
         out.unshift(...missingNotes)
         if (skippedNote) out.push(skippedNote)
+        if (!complete) out.push(`PARTIAL preview: ${gapLines.join('; ')}; the combined code was NOT fully checked`)
         for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
         out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
         if (noTestsNote) out.push(noTestsNote)
@@ -207,16 +213,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
             }
             const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
+            if (!complete) out.push('Tests ran on a partial tree; this does not verify the combined work')
           }
         }
-        caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
+        if (!result.isCurrent()) {
+          caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) }
+          return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
+        }
+        caller.lastPreview = { clean: hardCount === 0, complete, ...(run ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (!hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return out.join('\n')
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
-        caller.lastPreview = { clean: false }
+        caller.lastPreview = { clean: false, complete: false }
         return `preview failed: ${message.replace(/ failed: timed out/, ' timed out')}; combined code was NOT checked`
       }
     }

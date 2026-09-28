@@ -1,6 +1,6 @@
 import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
-import { roomNameParts, scopeLine, type Claim, type NoteMsg } from '@room/shared'
+import { manifestPaths, roomNameParts, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
@@ -207,7 +207,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(...areaLines(s, mineA))
       out.push(here.length ? `here now: ${here.map(label).join(', ')}` : 'nobody else is here yet')
       for (const n of here) out.push(`  ${label(n)}: ${personLine(s, n)}`)
-      const away = others(s).filter(n => !sameCheckoutSession(s, n) && !here.includes(n) && s.room.changedPaths(n).length)
+      const away = others(s).filter(n => !sameCheckoutSession(s, n) && !here.includes(n) && manifestPaths(s.room, n).length)
       for (const n of away) out.push(`  ${label(n)} (offline): ${personLine(s, n)}`)
       if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }
       const cs = s.room.openClaims()
@@ -318,22 +318,11 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
         return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`
       }
     }
-  const envStaleDays = Number(process.env.ROOM_STALE_DAYS)
-  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1000
   const evictStale = (s: Session): string[] => {
-      const here = new Set(presences(s).map(p => p.user.name))
-      const gone: string[] = []
-      for (const person of Array.from(s.room.overlays.keys())) {
-        if (person === s.me.name || here.has(person)) continue
-        const age = s.room.overlayAge(person, now())
-        if (age === undefined || age < STALE_MS) continue
-        const n = s.room.clearOverlays(person)
-        const days = Math.round(age / 86_400_000)
-        void s.post<NoteMsg>(s.me, { type: 'note', text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? '' : 's'}; last seen ${days} day${days === 1 ? '' : 's'} ago)`, priority: 'fyi' })
-        log(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`)
-        gone.push(person)
+      for (const [person, head] of s.room.manifestHead) {
+        if (person !== s.me.name) log(`${person}'s manifest last scanned ${Math.max(0, Math.floor((now() - head.scannedAt) / 1000))}s ago`)
       }
-      return gone
+      return []
     }
   const cleanupMine = (s: Session, _why: string, keep?: (c: Claim) => boolean): number => releaseClaimsOnDone(s, keep)
   const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }

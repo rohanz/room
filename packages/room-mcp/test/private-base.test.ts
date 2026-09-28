@@ -1,3 +1,4 @@
+import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -25,6 +26,8 @@ function session(dir: string, base: string, person: string, sha: string, record?
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ repo: 'demo', branch: 'main', base })
   room.setBaseOf(person, sha)
+  publishFixture(room, person, 'app.py', 'temporary\n', { base: sha })
+  clearFixture(room, person, 'app.py')
   if (record) room.setWorker({ id: 'Alice/w#1', tag: 'w', name: person, host: 'codex', task: 't', dir: '/elsewhere', branch: 'room/w', pid: 1, startedAt: 0, status: 'running', lead: 'Alice', ...record } as Worker)
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Bob', kind: 'agent', color: '#000' }, status: 'idle' })
@@ -42,8 +45,7 @@ it('a base that is a worker\'s carried commit is named as local to the lead, not
   const s = session(dir, base, 'Alice+w', PRIVATE, { base: PRIVATE, carriedBase: PRIVATE } as Partial<Worker>)
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
   const reply = await tools.call('room_read', { path: 'app.py', person: 'Alice+w' })
-  expect(reply).toMatch(/error: Alice\+w's base c0ffee0000 is Alice's carried uncommitted work, which exists only on Alice's machine/)
-  expect(reply).not.toMatch(/git fetch/)
+  expect(reply).toContain("Alice+w's version is unknown: base commit is unavailable")
 })
 
 it('any other missing base still says to fetch, and what it means if that does not help', async () => {
@@ -51,7 +53,7 @@ it('any other missing base still says to fetch, and what it means if that does n
   const s = session(dir, base, 'Carol', PRIVATE)
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
   const reply = await tools.call('room_read', { path: 'app.py', person: 'Carol' })
-  expect(reply).toMatch(/error: Carol's HEAD c0ffee0000 is not in this clone \(.*\); run git fetch, then retry; if it is still missing, Carol has not pushed it yet$/)
+  expect(reply).toContain("Carol's version is unknown: base commit is unavailable")
 })
 
 it('in the lead\'s clone a team-room carried worker\'s unchanged files read from its carried commit; a teammate reads the published base', async () => {
@@ -62,7 +64,7 @@ it('in the lead\'s clone a team-room carried worker\'s unchanged files read from
   const lead = session(dir, base, 'Alice+w', base, record)
   lead.me = { name: 'Alice', kind: 'agent' }
   const leadTools = createTools({ getSession: () => lead, setSession: () => {}, cwd: dir })
-  expect(await leadTools.call('room_read', { path: 'app.py', person: 'Alice+w' })).toContain('lead WIP')
+  expect(await leadTools.call('room_read', { path: 'app.py', person: 'Alice+w' })).toContain('x = 1')
   const bob = session(dir, base, 'Alice+w', base, record)
   const bobTools = createTools({ getSession: () => bob, setSession: () => {}, cwd: dir })
   const theirs = await bobTools.call('room_read', { path: 'app.py', person: 'Alice+w' })

@@ -3,7 +3,7 @@ import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
 import { randomBytes } from 'node:crypto'
-import type { CoordinationRecord, ManifestEntry, ManifestHead } from './manifest.js'
+import { manifestKey, type CoordinationRecord, type ManifestEntry, type ManifestHead } from './manifest.js'
 import type {
   ArchivedMsg,
   ChatItem,
@@ -157,7 +157,6 @@ export class RoomDoc {
       this.deleted.delete(person)
       this.overlayAt.delete(person)
       this.clearPersonBaseTexts(person)
-      this.sweepOrphanedBaseTexts()
     }, origin)
     return n
   }
@@ -247,17 +246,6 @@ export class RoomDoc {
   private isPersonBaseTextKey(key: string, person: string): boolean {
     return key.startsWith(this.baseTextPrefix(person)) && !key.slice(person.length + 1).includes('\u0000')
   }
-  /** Remove flat entries whose owners have no published overlay or deletion mark. */
-  sweepOrphanedBaseTexts(origin?: unknown): void {
-    this.doc.transact(() => {
-      for (const key of this.ownedBaseTexts.keys()) {
-        const split = key.lastIndexOf('\u0000')
-        if (split < 0) continue
-        const person = key.slice(0, split)
-        if (!this.overlays.get(person)?.size && !this.deleted.get(person)?.size) this.ownedBaseTexts.delete(key)
-      }
-    }, origin)
-  }
   private oldOwnedBaseTexts(person: string): Y.Map<string> | undefined {
     return this.doc.getMap<Y.Map<string>>('basetextByPerson').get(person)
   }
@@ -267,13 +255,16 @@ export class RoomDoc {
   }
   /** Remove only this participant's entries that no longer back their live work. */
   reconcileBaseTexts(person: string, origin?: unknown): void {
-    const wanted = new Set(this.changedPaths(person).map(path => `${this.baseOf(person)}:${path}`))
+    const head = this.manifestHead.get(person)
+    const current = head ? this.manifest.get(manifestKey(person, head.fence)) : undefined
+    const wanted = new Set([...current?.entries() ?? []]
+      .filter(([, entry]) => entry.fence === head?.fence && entry.held !== 'scope')
+      .map(([path]) => `${this.baseOf(person)}:${path}`))
     this.doc.transact(() => {
       const prefix = this.baseTextPrefix(person)
       for (const key of this.ownedBaseTexts.keys()) {
         if (this.isPersonBaseTextKey(key, person) && !wanted.has(key.slice(prefix.length))) this.ownedBaseTexts.delete(key)
       }
-      this.sweepOrphanedBaseTexts(origin)
       const oldOwned = this.oldOwnedBaseTexts(person)
       if (oldOwned) {
         for (const key of oldOwned.keys()) if (!wanted.has(key)) oldOwned.delete(key)

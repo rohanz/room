@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -92,7 +93,7 @@ describe('areas from CODEOWNERS', () => {
 
   it('a changed file puts you in its area even without a scope; room_claim hints the owners', async () => {
     const t = two(owned)
-    t.a.setOverlay('Rohan', 'api/a.py', 'def a():\n    return 11\n')
+    publishFixture(t.a, 'Rohan', 'api/a.py', 'def a():\n    return 11\n')
     // a claim is only recorded (and hinted) when someone else is near the path
     await t.kieran.tools.call('room_scope', { area: 'api', summary: 'handlers', paths: ['api/'] })
     t.sync()
@@ -107,7 +108,7 @@ describe('areas from CODEOWNERS', () => {
     await t.rohan.tools.call('room_scope', { area: 'web', summary: 'ui', paths: ['web/'] })
     await t.kieran.tools.call('room_scope', { area: 'api', summary: 'handlers', paths: ['api/'] })
     t.b.addClaim({ by: 'Kieran', byKind: 'agent', path: 'api/a.py', from: 1, to: 2, intent: 'tune a' })
-    t.b.setOverlay('Kieran', 'api/a.py', 'def a():\n    return 12\n')
+    publishFixture(t.b, 'Kieran', 'api/a.py', 'def a():\n    return 12\n')
     t.sync()
     const mine = await t.rohan.tools.call('room_state', {})
     expect(mine).toContain('your areas: web/')

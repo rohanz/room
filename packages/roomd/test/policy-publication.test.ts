@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -45,7 +46,7 @@ it('withdraws a path synchronously when policy narrows during an awaited base re
   expect(entries().size).toBe(0)
   release(); await work
   expect(entries().size).toBe(0)
-  expect(daemon.roomDoc.overlayText('Ben', 'x')).toBeUndefined()
+  expect(incarnationText(daemon.roomDoc, 'Ben', 'x')).toBeUndefined()
 })
 
 it('turns a changed ignored path into a digest even when the rule changes during a base read', async () => {

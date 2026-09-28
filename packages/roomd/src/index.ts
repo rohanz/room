@@ -27,7 +27,7 @@ import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from '
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -444,7 +444,7 @@ class Daemon implements Roomd {
     if (this.basePollMs > 0) this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
+    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
   }
 
   private step<T>(phase: string, work: () => Promise<T>): Promise<T> {
@@ -669,7 +669,7 @@ class Daemon implements Roomd {
     if (this.remoteRepairTimer) return
     this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = undefined
-      this.roomDoc.sweepOrphanedBaseTexts(this)
+      this.roomDoc.reconcileBaseTexts(this.name, this)
       await this.enqueue(async () => { await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending) })
     })
   }
@@ -809,10 +809,11 @@ class Daemon implements Roomd {
   /** Capture the claimed code before a commit can clear its overlay. */
   private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
     const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
-    const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(this.name, c.path) && !c.claimedHash).map(c => c.path))]
+    const incarnation = manifestKey(this.name, this.fence)
+    const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(incarnation, c.path) && !c.claimedHash).map(c => c.path))]
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
     return owned.map(c => {
-      const overlay = this.roomDoc.text(c.path, this.name)
+      const overlay = this.roomDoc.text(c.path, incarnation)
       if (c.claimedHash) return c
       if (overlay !== undefined) {
         const range = this.roomDoc.claimRange(c)
@@ -828,7 +829,7 @@ class Daemon implements Roomd {
     if (!snapshot.length) return NO_CLAIM_CHANGES
     const paths = [...new Set(snapshot.map(c => c.path))]
     const headTexts = await gitShowMany(this.dir, head, paths)
-    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]))
+    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, manifestKey(this.name, this.fence)) ?? headTexts.get(p)]))
     return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map(c => [c.id, c.claimedHash])) }
   }
 
@@ -977,7 +978,7 @@ class Daemon implements Roomd {
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
     if (await gitIgnored(this.dir, relpath)) { this.tracked.delete(relpath); await this.publisher.reconcile('all'); return }
-    if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
+    if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
       if (!isNew || !fs.existsSync(this.abs(relpath))) return
       this.tracked.add(relpath)
     }
@@ -996,7 +997,7 @@ class Daemon implements Roomd {
     try {
       const next = await gitTracked(this.dir)
       const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
-      const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
+      const removed = Array.from(new Set([...this.tracked, ...manifestPaths(this.roomDoc, this.name)])).filter(relpath => !next.has(relpath))
       this.tracked = next
       for (const relpath of added) {
         if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
@@ -1009,7 +1010,7 @@ class Daemon implements Roomd {
       for (const relpath of removed) {
         if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
           this.scheduleDisk(relpath, false)
-        } else if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
+        } else if (this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs.existsSync(this.abs(relpath))) {
           this.scheduleDisk(relpath, false)
         }
       }

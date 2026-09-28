@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
@@ -148,7 +149,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     await poll(daemon)
     expect(reads).toBe(2) // prepared, found stale, prepared again
     expect(git(daemon)).toMatchObject({ head: local, ahead: 1 })
-    expect(daemon.roomDoc.overlayText(daemon.name, 'wip.txt')?.toString()).toBe('second\n')
+    expect(incarnationText(daemon.roomDoc, daemon.name, 'wip.txt')?.toString()).toBe('second\n')
   })
 
   it('announces each push of its own commits once, including a partial push while HEAD is further ahead', async () => {

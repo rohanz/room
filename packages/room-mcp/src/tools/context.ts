@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker } from '@room/shared'
+import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker, Version } from '@room/shared'
 import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
 import type { ConflictWatcher } from '../conflicts.js'
@@ -12,6 +12,8 @@ import type { ResolvedConfig } from '../config.js'
 import type { CompanyState } from '../company.js'
 import type { Batch, Ledger } from '../ledger.js'
 import type { SessionBinding } from '../binding.js'
+import { registryForDir } from '../worker-registry.js'
+import { realStateInput } from '../worker-status.js'
 
 export interface ToolDef {
   name: string
@@ -90,13 +92,13 @@ export interface HandlerState {
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]
   shareOf: (s: Session, person: string) => ShareLevel
-  withheld: (s: Session, person: string, path?: string) => string | undefined
   shareLine: (s: Session) => string
   setPresence: (s: Session, patch: Partial<Presence>) => void
   base: (s: Session) => string
   baseFor: (s: Session, person: string) => string
   baseText: (s: Session, path: string, person?: string) => Promise<string | undefined>
-  liveText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
+  readText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
+  readVersion: (s: Session, path: string, person: string) => Promise<Version>
   lines: (text: string) => number
   loadAreas: (s: Session) => Promise<Areas>
   areasOf: (s: Session) => Areas
@@ -165,12 +167,13 @@ export class NotJoined extends Error {}
 /** A person's base is not in this clone; `lead` is set when it is a worker's carried commit, which only its lead's machine has. */
 export class NeedFetch extends Error { constructor(public person: string, public sha: string, public detail: string, public lead?: string) { super(detail) } }
 
-/** Only disconnected local workers may expose their worktree to the lead. */
-export function diskWorker(s: Session, person: string): Worker | undefined {
-  if (!s.local || s.room.overlays.get(person)?.size) return undefined
-  if ([...s.awareness.getStates().values()].some(p => p.user?.name === person)) return undefined
+/** Local worktree reads require a registry capability; replicated worker fields grant none. */
+export async function trustedWorker(s: Session, person: string): Promise<Worker | undefined> {
   const worker = s.room.workerOf(person)
-  return worker?.dir && fs.existsSync(worker.dir) ? worker : undefined
+  if (!worker?.id || worker.lead !== s.me.name) return undefined
+  const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag)
+  if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return undefined
+  return { ...realStateInput(trusted.record, trusted.status), dir: fs.realpathSync(trusted.record.dir) }
 }
 export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"
 
@@ -190,4 +193,3 @@ export function workerText(dir: string, rel: string): string | null {
     throw e
   }
 }
-

@@ -289,6 +289,8 @@ export interface PersonLineInput {
   scope?: Scope
   presences: readonly Presence[]
   changedPaths: readonly string[]
+  heldCount?: number
+  excludedCount?: number
   messages: readonly NoteMsg[]
   share: ShareLevel
 }
@@ -303,12 +305,12 @@ export function personLine(input: PersonLineInput): string {
   else if (p?.status?.startsWith('done')) what = p.status
   else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
   else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status + ', ' : ''}no task declared` : 'offline'
-  const share = input.share === 'full' ? '' : `; shares ${input.share}${input.share === 'intent' ? ' (no file text)' : ' (file text only under their scope paths)'}`
+  const share = input.share === 'full' ? '' : `; shares ${input.share}${input.share === 'intent' ? ' (no file text)' : ' (file text only in their declared area)'}`
   const files = summarizeFiles(input.changedPaths)
   const changed = files.count > 5
     ? `${files.count} files${files.dominant ? `, mostly ${files.dominant.folder} (${files.dominant.count})` : ''}: ${files.named.map(file => file.label).join(', ')} ...`
     : input.changedPaths.join(', ')
-  return `${what}${share}${files.count ? `; uncommitted, not yet pushed: ${changed}` : ''}`
+  return `${what}${share}${files.count ? `; uncommitted, not yet pushed: ${changed}` : ''}${input.heldCount ? `; ${input.heldCount} changed path(s) without text` : ''}${input.excludedCount ? `; ${input.excludedCount} changed path(s) excluded (names not shared)` : ''}`
 }
 
 export function claimLine(claim: Claim, options: { yours?: boolean; stale?: boolean } = {}): string {

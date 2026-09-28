@@ -1,3 +1,4 @@
+import { manifestPaths } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -56,7 +57,7 @@ describe('roomd startup', () => {
       beforePublishWrite: () => new Promise(resolve => setTimeout(resolve, 350)) })
     try {
       expect(Date.now() - started).toBeGreaterThan(2000)
-      expect(d.roomDoc.changedPaths('T')).toHaveLength(7)
+      expect(manifestPaths(d.roomDoc, 'T')).toHaveLength(7)
     } finally { await d.stop() }
   }, 10_000)
 })

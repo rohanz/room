@@ -1,3 +1,4 @@
+import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -41,7 +42,7 @@ it('publishes an edit between the startup scan and watcher readiness', async () 
   const config = options()
   config.beforeWatcherReady = () => { fs.writeFileSync(path.join(config.dir, 'app.txt'), 'startup edit\n') }
   daemon = await startRoomd(config)
-  expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('startup edit\n')
+  expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('startup edit\n')
 })
 
 it('publishes an edit with no watcher event on the periodic reconcile and cancels the timer on stop', async () => {
@@ -54,10 +55,10 @@ it('publishes an edit with no watcher event on the periodic reconcile and cancel
   const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void }; enqueue(work: () => Promise<void>): Promise<void> }
   internal.watcher.removeAllListeners('all')
   fs.writeFileSync(path.join(config.dir, 'app.txt'), 'missed edit\n')
-  expect(daemon.roomDoc.overlayText('Alice', 'app.txt')).toBeUndefined()
+  expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')).toBeUndefined()
   tick!()
   await internal.enqueue(async () => {})
-  expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('missed edit\n')
+  expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('missed edit\n')
   await daemon.stop()
   expect(cancelled).toBe(true)
 })
@@ -80,5 +81,5 @@ it('skips a periodic tick while its previous reconcile is in flight', async () =
   release()
   await internal.enqueue(async () => {})
   expect(writes).toBe(1)
-  expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('missed edit\n')
+  expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('missed edit\n')
 })

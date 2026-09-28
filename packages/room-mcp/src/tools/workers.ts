@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionMessage, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
+import { completionMessage, manifestPaths, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
@@ -69,7 +69,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           || process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== ownRun.nonce) {
           return 'error: this worker run was collected, discarded or superseded'
         }
-        const changed = s.room.changedPaths(s.me.name)
+        const changed = manifestPaths(s.room, s.me.name)
         try {
           await registry!.reportDone(myId, ownRun.n, summary, changed)
           release()
@@ -96,7 +96,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary)
       const command = s.lastPreview?.testsCommand
-      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
+      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.complete && s.lastPreview.testsPassed === true && command) {
         out.push(`The combined preview passed \`${command}\`.`)
       }
       if (a.pr_note === true) {

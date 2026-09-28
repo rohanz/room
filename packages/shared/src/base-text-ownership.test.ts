@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
+import { manifestKey, type ManifestEntry } from './manifest.js'
 import type { RetiredWorker } from './types.js'
 
 /** No release notices to send here. */
@@ -16,6 +17,14 @@ function sync(a: RoomDoc, b: RoomDoc): void {
   Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(a.doc))
 }
 
+function sharedEntry(room: RoomDoc, person: string, path: string, base: string): void {
+  const fence = 'test'
+  const entries = new Y.Map<ManifestEntry>()
+  entries.set(path, { change: 'M', state: 'shared', at: 1, fence })
+  room.manifest.set(manifestKey(person, fence), entries)
+  room.manifestHead.set(person, { base, fence, coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+}
+
 describe('participant-owned base texts', () => {
   it('keeps B’s text when A withdraws while B publishes', () => {
     const [a, b] = peers()
@@ -28,6 +37,7 @@ describe('participant-owned base texts', () => {
     a.reconcileBaseTexts('A')
     b.setBaseOf('B', 'sha')
     b.setOverlay('B', 'file.py', 'B edit')
+    sharedEntry(b, 'B', 'file.py', 'sha')
     b.setBaseText('B', 'sha', 'file.py', 'base')
     b.reconcileBaseTexts('B')
     sync(a, b)
@@ -148,7 +158,7 @@ describe('participant-owned base texts', () => {
     }
   })
 
-  it('sweeps a late flat key for a departed owner on another participant’s reconcile', () => {
+  it('does not let another participant sweep a departed owner’s late base key', () => {
     const [a, b] = peers()
     a.setOverlay('Gone', 'file.py', 'edit')
     sync(a, b)
@@ -158,8 +168,8 @@ describe('participant-owned base texts', () => {
     expect(b.ownedBaseTexts.get('Gone\u0000sha:file.py')).toBe('late base')
     b.reconcileBaseTexts('Keeper')
     sync(a, b)
-    expect(a.baseText('Gone', 'sha', 'file.py')).toBeUndefined()
-    expect(b.baseText('Gone', 'sha', 'file.py')).toBeUndefined()
+    expect(a.baseText('Gone', 'sha', 'file.py')).toBe('late base')
+    expect(b.baseText('Gone', 'sha', 'file.py')).toBe('late base')
   })
 
   it('matches the complete owner prefix when clearing flat keys', () => {

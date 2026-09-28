@@ -1,10 +1,12 @@
 /**
- * Keeps a SymbolGraph current for one room: base commit + everyone's overlays.
- * For each path the indexed text is: my overlay, else another person's overlay, else base.
+ * Keeps a SymbolGraph current for one room from local files and shared manifest versions.
  */
-import { bareSymbol, observedContractChanges, SymbolGraph, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, manifestKey, manifestPaths, observedContractChanges, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import type * as Y from 'yjs'
+import fs from 'node:fs'
+import path from 'node:path'
 import { git, gitShow } from '@room/roomd/git'
+import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
 import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/baseline'
@@ -106,11 +108,9 @@ export class GraphIndex {
         if (this.base) for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
       }
     }
-    const onOverlays = observe(this.room.overlays)
-    const onDeleted = observe(this.room.deleted)
-    this.room.overlays.observeDeep(onOverlays)
-    this.room.deleted.observeDeep(onDeleted)
-    this.unobserve.push(() => { this.room.overlays.unobserveDeep(onOverlays); this.room.deleted.unobserveDeep(onDeleted) })
+    const onManifest = observe(this.room.manifest)
+    this.room.manifest.observeDeep(onManifest)
+    this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
     const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild() }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
@@ -163,7 +163,7 @@ export class GraphIndex {
     this.truncated = paths.length > MAX_FILES
     if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
     const all = new Set(paths)
-    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all.add(p)
+    for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
     const t0 = Date.now()
     const pathsToRefresh = Array.from(all)
     await ensureLanguages(pathsToRefresh)
@@ -185,12 +185,34 @@ export class GraphIndex {
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
   }
 
-  /** Current text for a path as the index sees it. */
+  private ownText(pathname: string): string | undefined {
+    if (!validRepoPath(pathname, DISK_READ_PATH)) return undefined
+    try {
+      const root = fs.realpathSync(this.dir)
+      const file = containedRepoPath(root, path.join(root, pathname), { leaf: 'read-contained-link' })
+      if (!file.ok) return undefined
+      return fs.readFileSync(file.path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    }
+  }
+
+  /** Only visible text or a certified base participates in the graph. */
   private async textFor(path: string): Promise<string | undefined> {
-    if (this.room.deleted.get(this.me)?.has(path)) return undefined
-    const mine = this.room.text(path, this.me)
+    const ownFence = this.room.manifestHead.get(this.me)?.fence
+    const ownEntry = ownFence ? this.room.manifest.get(manifestKey(this.me, ownFence))?.get(path) : undefined
+    if (ownEntry?.change === 'D') return undefined
+    const mine = ownEntry ? this.ownText(path) : undefined
     if (mine !== undefined) return mine
-    for (const person of this.room.overlays.keys()) { if (person === this.me) continue; const t = this.room.text(path, person); if (t !== undefined) return t }
+    for (const person of this.room.manifestHead.keys()) {
+      if (person === this.me) continue
+      const participant = snapshot(this.room, person, [])
+      const version = await versionOf(participant, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      if (!participant?.entries.has(path) && version.kind !== 'excluded') continue
+      if (version.kind === 'text') return version.text
+      return undefined
+    }
     if (!this.base) return undefined
     return (this.opts.read ?? gitShow)(this.dir, this.base, path)
   }
@@ -254,14 +276,21 @@ export class GraphIndex {
       const revision = this.revisions.get(path), generation = this.generation
       await ensureLanguages([path])
       const text = await this.textFor(path)
+      const heldBy = text === undefined ? [...this.room.manifestHead.keys()].filter(person => {
+        if (person === this.me) return false
+        const fence = this.room.manifestHead.get(person)?.fence
+        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path)?.state === 'held'
+      }) : []
       const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
       const symbols: FileSymbols | undefined = parsed ? {
         defs: parsed.defs.map(definition => definition.name),
         refs: parsed.refs,
         imports: parsed.imports,
       } as FileSymbols & { imports?: string[] } : undefined
-      const mine = this.room.text(path, this.me)
-      const mineDeleted = this.room.deleted.get(this.me)?.has(path) ?? false
+      const myFence = this.room.manifestHead.get(this.me)?.fence
+      const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path) : undefined
+      const mine = myEntry && myEntry.change !== 'D' ? this.ownText(path) : undefined
+      const mineDeleted = myEntry?.change === 'D'
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
       const own = workerBaseline(this.room.workerOf(this.me))
       const read = (sha: string, file: string) => (this.opts.read ?? gitShow)(this.dir, sha, file)
@@ -287,7 +316,13 @@ export class GraphIndex {
         const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
-      } else { this.observedByPath.delete(path); this.degradedPaths.delete(path) }
+      } else {
+        this.observedByPath.delete(path)
+        if (heldBy.length) {
+          this.degradedPaths.add(path)
+          this.log(`graph: ${path} changed by ${heldBy.join(', ')}; contract not visible`)
+        } else this.degradedPaths.delete(path)
+      }
       this.observedRevision++
       await this.yieldAfterIndex()
       return revision === this.revisions.get(path)

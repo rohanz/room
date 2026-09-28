@@ -1,3 +1,4 @@
+import { publishFixture } from './fixtures/manifest.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -23,7 +24,7 @@ it('prints the actual fallback algorithm and reason in a merge preview', async (
   git('add', '.'); git('commit', '-qm', 'base')
   const base = git('rev-parse', 'HEAD')
   fs.writeFileSync(path.join(root, 'base.txt'), 'mine\n')
-  const room = new RoomDoc(); room.setMeta({ base }); room.setOverlay('peer', 'base.txt', 'theirs\n')
+  const room = new RoomDoc(); room.setMeta({ base }); publishFixture(room, 'peer', 'base.txt', 'theirs\n')
   const caller = { me: { name: 'lead' }, dir: root, room, local: false } as Session
   const participant = { me: { name: 'peer' }, dir: root, room, local: false } as Session
   const state = { rooms: { holding: () => participant }, liveText: async (_s: Session, p: string, person: string) => person === 'peer' ? room.text(p, person) : undefined,

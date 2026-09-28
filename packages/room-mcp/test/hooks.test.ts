@@ -1,3 +1,4 @@
+import { deleteFixture, publishFixture } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
@@ -138,13 +139,13 @@ describe('hasCompany', () => {
 
   it('does not count a foreign overlay alone', () => {
     const s = session(new RoomDoc())
-    s.room.setOverlay('Kieran', 'app.py', 'x = 2\n')
+    publishFixture(s.room, 'Kieran', 'app.py', 'x = 2\n')
     expect(hasCompany(s)).toEqual({ company: false, others: [] })
   })
 
   it('does not count a foreign deleted mark alone', () => {
     const s = session(new RoomDoc())
-    s.room.markDeleted('Kieran', 'app.py')
+    deleteFixture(s.room, 'Kieran', 'app.py')
     expect(hasCompany(s)).toEqual({ company: false, others: [] })
   })
 
@@ -532,7 +533,7 @@ describe('company and nearby work', () => {
     const peer = addPresence(s, 'Ada')
     const human = addPresence(s, 'Cy', 'human', 'idle')
     s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
-    s.room.setOverlay('Bea', 'other.py', 'changed')
+    publishFixture(s.room, 'Bea', 'other.py', 'changed')
     const b = bridge(s, {}, 'near')
     b.write()
     const snapshot = readSession('state.json', 'near')
@@ -726,7 +727,7 @@ describe('hook health', () => {
     const now = Date.now()
     writeSessionFile('session.json', { session_id: SID, at: now })
     expect(hookHealthNote(s, sdir(), true, now, 'room_join')).toBe('')
-    s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
     hookHealthNote(s, sdir(), true, now + 1, 'room_state')
     const note = hookHealthNote(s, sdir(), true, now + 60_000, 'room_state')
     expect(note).toContain("plugin's hooks may not be running")
@@ -741,7 +742,7 @@ describe('hook health', () => {
     const now = Date.now()
     writeSessionFile('session.json', { session_id: SID, at: now })
     hookHealthNote(s, sdir(), true, now, 'room_join')
-    s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
     writeSessionFile('hook-activity.json', { session_id: SID, event: 'PreToolUse', at: now + 1 })
     expect(hookHealthNote(s, sdir(), true, now + 60_000, 'room_state')).toBe('')
     s.awareness.destroy()
@@ -751,13 +752,13 @@ describe('hook health', () => {
     vi.stubEnv('ROOM_HOST', 'claude')
     const s = session(new RoomDoc())
     const now = Date.now()
-    s.room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
     s.room.overlayAt.set('Rohan', now - 60_000)
     writeSessionFile('session.json', { session_id: SID, at: now })
     writeSessionFile('hook-activity.json', { session_id: SID, event: 'PreToolUse', at: now - 60_000 })
     expect(hookHealthNote(s, sdir(), true, now, 'room_join')).toBe('')
     expect(hookHealthNote(s, sdir(), true, now + 60_000, 'room_state')).toBe('')
-    s.room.setOverlay('Rohan', 'app.py', 'x = 3\n')
+    publishFixture(s.room, 'Rohan', 'app.py', 'x = 3\n')
     expect(hookHealthNote(s, sdir(), true, now + 61_000, 'room_state')).toContain('before-edit hook')
     s.awareness.destroy()
   })
@@ -786,7 +787,7 @@ describe('wakes (content, never receipts; the WakeReconciler replaces this in le
     hubAppend(other, k, { type: 'base', base: 'b'.repeat(40), prev: 'a'.repeat(40), commits: 1, paths: ['app.py'], summary: 'x' } as never)
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(2)
-    room.setOverlay('Rohan', 'app.py', 'x = 2\n')
+    publishFixture(room, 'Rohan', 'app.py', 'x = 2\n')
     hubAppend(other, k, { type: 'base', base: 'c'.repeat(40), prev: 'b'.repeat(40), commits: 1, paths: ['app.py'], summary: 'y' } as never)
     await new Promise(r => setTimeout(r, 50))
     expect(queued.length).toBe(3)
