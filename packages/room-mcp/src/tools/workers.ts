@@ -42,7 +42,7 @@ export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
   { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.',
-    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo (no worktree bookkeeping)' }, dir: str('use this existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'reserved; outside directories are currently refused' }, dir: str('use an existing directory in this repo instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -70,8 +70,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return 'error: this worker run was collected, discarded or superseded'
         }
         const changed = s.room.changedPaths(s.me.name)
+        let saved = false
         try {
           await registry!.reportDone(myId, ownRun.n, summary, changed)
+          saved = true
           release()
           await registry!.postCompletion(myId, ownRun.n, async (id, record, report) => {
             const message = completionMessage(record, ownRun, registry!.status(myId)!, report)
@@ -79,7 +81,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const posted = await s.post<DoneMsg>(s.me, message.body, { id, auto: true })
             if (!posted.ok) throw new Error(posted.text)
           })
-        } catch (error) { return `error: could not record worker report: ${error instanceof Error ? error.message : String(error)}` }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error)
+          return saved
+            ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again.`
+            : `error: could not record worker report: ${detail}`
+        }
       } else {
         release()
         await s.post<NoteMsg>(s.me, { type: 'note', text: `done${sc ? ` (${sc.area})` : ''}: ${summary}` })
@@ -152,7 +159,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
       const relative = path.relative(s.dir, dir)
       const outside = relative.startsWith('..') || path.isAbsolute(relative)
-      if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
+      if (outside) return `error: ${dir} is outside this repo; allowOutside is not supported by the durable worker registry`
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
       const hostSessionId = host === 'claude' ? randomUUID() : undefined
       const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])
@@ -168,6 +175,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       try { await registry.writeIntent(record, max) }
       catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+      let childOwned = false
       try {
         let base: string | undefined, created = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
@@ -216,8 +224,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
+            childOwned = true
             const reason = error.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
-            await registry.beginStop(id, reason)
+            // A write failure cannot turn a returned child into a never-launched run.
+            // Keep the record even if this second persistence attempt also fails.
+            if (!registry.read(id)?.runs[0].launch) await registry.update(id, old => ({ ...old,
+              phase: 'active', runs: [{ ...old.runs[0], launch: { outcome: 'ambiguous', at: now() } }], seq: old.seq + 1 }))
+              .catch(writeError => state.log(`worker launch outcome: ${writeError}`))
+            await registry.beginStop(id, reason).catch(writeError => state.log(`worker launch stop record: ${writeError}`))
             if (!error.stopped) return `error: stop unconfirmed for ${tag} (pid ${error.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`
             return `error: stopped after start: ${error.phase === 'cancelled' ? 'cancelled' : error.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`
           }
@@ -225,7 +239,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             : error.phase === 'budget' || error.phase === 'cancelled' ? ''
             : `could not start ${host}: `
           if (!registry.read(id)?.runs[0].launch) {
-            await registry.abandonPreparation(id)
+            await registry.abandonPreparation(id).catch(cleanup => state.log(`worker preparation cleanup: ${cleanup}`))
             return `error: ${prefix}${error.message}`
           }
           await registry.update(id, old => ({ ...old, phase: 'active', seq: old.seq + 1 }))
@@ -260,7 +274,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
       } catch (error) {
-        await registry.abandonPreparation(id).catch(cleanup => { state.log(`worker preparation cleanup: ${cleanup}`) })
+        if (!childOwned) await registry.abandonPreparation(id).catch(cleanup => { state.log(`worker preparation cleanup: ${cleanup}`) })
         return `error: ${error instanceof Error ? error.message : String(error)}`
       } finally { await registry.finishOperation(id) }
     },

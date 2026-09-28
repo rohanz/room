@@ -162,6 +162,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const addressedWorker = to && s.room.workerOf(to)
       let deliveredInPrompt = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
+        if (s.hub.paused()) return `error: not sent: room connection is paused; ${addressedWorker.tag} was not resumed`
         const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
         if (typeof result === 'string' && result.startsWith('error:')) return result
         deliveredInPrompt = true
