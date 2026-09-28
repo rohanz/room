@@ -119,6 +119,54 @@ describe('dual manifest publication', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
+  it.each(['staged', 'committed'] as const)('keeps both sides of a %s rename, including a prior source entry', async mode => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-rename-'))
+    const sh = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
+    try {
+      sh('init', '-q')
+      sh('config', 'user.email', 'test@example.com'); sh('config', 'user.name', 'Test')
+      fs.writeFileSync(path.join(dir, 'old'), 'content')
+      sh('add', '-A'); sh('commit', '-qm', 'base')
+      const base = sh('rev-parse', 'HEAD')
+      const room = new RoomDoc()
+      const input = { room, name: 'ben', fence: 's1', base, level: 'full' as const, prefixes: [], complete: true }
+      publishManifest(input, [{ path: 'old', change: 'M', hash: 'earlier', size: 7, text: 'earlier' }])
+      sh('mv', 'old', 'new')
+      if (mode === 'committed') sh('commit', '-qm', 'rename')
+      const facts = await scanManifest({ ...input, dir, sizeCap: 1024, totalBudget: 1024, safe: () => true })
+      expect(facts.map(f => [f.path, f.change])).toEqual([['new', 'A'], ['old', 'D']])
+      publishManifest(input, facts)
+      expect(room.manifest.get(manifestKey('ben', 's1'))?.get('old')?.change).toBe('D')
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('holds out-of-area and binary files after shared text fills the budget', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-budget-'))
+    const sh = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
+    try {
+      sh('init', '-q')
+      sh('config', 'user.email', 'test@example.com'); sh('config', 'user.name', 'Test')
+      fs.writeFileSync(path.join(dir, 'a'), 'old')
+      fs.writeFileSync(path.join(dir, 'z'), 'old')
+      sh('add', '-A'); sh('commit', '-qm', 'base')
+      const base = sh('rev-parse', 'HEAD'), room = new RoomDoc()
+      fs.writeFileSync(path.join(dir, 'a'), '1234')
+      fs.writeFileSync(path.join(dir, 'z'), '12345')
+      const common = { room, name: 'ben', fence: 's1', base, prefixes: ['a'], complete: true, dir, sizeCap: 1024, totalBudget: 4, safe: () => true }
+      const scoped = await scanManifest({ ...common, level: 'declared' })
+      expect(scoped.find(f => f.path === 'z')).toMatchObject({ change: 'M' })
+      expect(scoped.find(f => f.path === 'z')?.excluded).toBeUndefined()
+      publishManifest({ ...common, level: 'declared' }, scoped)
+      expect(room.manifest.get(manifestKey('ben', 's1'))?.get('z')).toMatchObject({ state: 'held', held: 'scope' })
+      fs.writeFileSync(path.join(dir, 'z'), Buffer.from([0xff, 0xfe, 0xfd, 0xfc, 0xfb]))
+      const binary = await scanManifest({ ...common, level: 'full' })
+      expect(binary.find(f => f.path === 'z')).toMatchObject({ binary: true })
+      expect(binary.find(f => f.path === 'z')?.excluded).toBeUndefined()
+      publishManifest({ ...common, level: 'full' }, binary)
+      expect(room.manifest.get(manifestKey('ben', 's1'))?.get('z')).toMatchObject({ state: 'held', held: 'binary' })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
   it('uses the resolved anchor for committed-but-unpushed changes', async () => {
     vi.stubEnv('CHOKIDAR_USEPOLLING', '1')
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-manifest-anchor-'))

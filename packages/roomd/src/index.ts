@@ -18,7 +18,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { Publisher } from './publisher.js'
-import { publishManifest, scanManifest } from './manifest-publish.js'
+import { markManifestIncomplete, publishManifest, scanManifest } from './manifest-publish.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 import { WebSocket } from 'ws'
@@ -253,6 +253,10 @@ class Daemon implements Roomd {
   private appliedHead = ''
   /** refsKey of the last completed transition; unset until the start transition has run. */
   private appliedRefs?: string
+  /** Whether the last completed transition wrote base facts; a change of role forces the next one (promotion, demotion). */
+  private appliedAsPublisher?: boolean
+  /** Set when a transition marks the manifest incomplete; no publication completes it until the transition commits. */
+  private transitionPending = false
   /**
    * The commit this person's overlays are published against (baseOf): HEAD, except for a carried worker
    * in a team room. Its HEAD is a commit of the lead's uncommitted work that exists only on the lead's
@@ -555,10 +559,10 @@ class Daemon implements Roomd {
     const fence = this.fence
     const holder = participantRecord(this.roomDoc, this.name)?.holder
     if (holder && holder.sessionId !== fence) return
-    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: anchored, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
-    const facts = anchored ? await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) }) : []
+    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: anchored && !this.transitionPending, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
+    const facts = input.complete ? await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) }) : []
     const currentHolder = participantRecord(this.roomDoc, this.name)?.holder
-    if (this.stopped || base !== this.anchor.base || anchored !== this.anchor.anchored || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
+    if (this.stopped || base !== this.anchor.base || anchored !== this.anchor.anchored || (input.complete && this.transitionPending) || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
     for (const fact of facts) {
       if (fact.text === undefined) continue
       try {
@@ -818,7 +822,15 @@ class Daemon implements Roomd {
     const branch = branchName(rawBranch)
     const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
     const headMoved = head !== this.appliedHead || branch !== this.branch
-    if (!headMoved && refsKey(inputs) === this.appliedRefs) return
+    const publishing = this.publishesBaseFacts()
+    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher) return
+    // §B2 step 1, before any awaited work: readers stop trusting my manifest until the transition completes.
+    if (publishing) {
+      this.transitionPending = true
+      markManifestIncomplete(this.roomDoc, this.name, this.fence)
+    }
+    // A promoted session's own record predates the other publisher's tenure: it yields no pushed (§B4).
+    const promoted = publishing && this.appliedAsPublisher === false
     const prev = this.appliedHead
     const firstTransition = this.appliedRefs === undefined
     const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : []
@@ -837,13 +849,15 @@ class Daemon implements Roomd {
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
     const claims = await this.reanchorOwnClaims(head, claimSnapshot)
     if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
-    await this.commitTransition(inputs, resolved, claims)
+    await this.commitTransition(inputs, resolved, claims, promoted)
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
+    this.transitionPending = false
     await this.publishManifestSnapshot()
     this.setStatus(resolved.status)
     if (headMoved) this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.appliedHead = head
     this.appliedRefs = refsKey(inputs)
+    this.appliedAsPublisher = publishing
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
   }
 
@@ -851,7 +865,7 @@ class Daemon implements Roomd {
    * §B2 step 5, one transaction: the `git` record (rev + 1), this participant's claim moves and releases,
    * and `pushed` when §B4 applies. A session publishing under another writes only its claim part.
    */
-  private async commitTransition({ head, branch }: BaseInputs, resolved: ResolvedBase, claims: ClaimChanges): Promise<void> {
+  private async commitTransition({ head, branch }: BaseInputs, resolved: ResolvedBase, claims: ClaimChanges, promoted: boolean): Promise<void> {
     const prev = participantRecord(this.roomDoc, this.name)?.git
     let next: ParticipantGit | undefined
     let pushed: Omit<PushedMsg, 'id' | 'at' | 'from' | 'fromKind' | 'priority'> | undefined
@@ -864,7 +878,7 @@ class Daemon implements Roomd {
       const { rev: _rev, ...recorded } = prev ?? { rev: 0 }
       if (JSON.stringify(recorded) !== JSON.stringify(fields)) next = { ...fields, rev: (prev?.rev ?? 0) + 1 }
       // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4).
-      if (next && prev && resolved.upstream && await pushedRange(this.dir, prev, next)) {
+      if (next && prev && !promoted && resolved.upstream && await pushedRange(this.dir, prev, next)) {
         pushed = { type: 'pushed', branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) }
       }
     }

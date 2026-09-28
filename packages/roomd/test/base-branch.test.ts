@@ -7,6 +7,7 @@ import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
 import { participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
 import { claimDigest } from '../src/reanchor.js'
+import { markManifestIncomplete } from '../src/manifest-publish.js'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -223,6 +224,36 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     expect(pushed(daemon)).toHaveLength(1)
   })
 
+  it('marks the manifest head incomplete before the transition\'s async work, until the whole transition succeeds', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: true, base: w.base })
+    const next = commit(w.dir, 'a.txt', 'a\n')
+    const before = daemon.roomDoc.manifestHead.get('Alice')!
+    const internal = daemon as unknown as { reanchorOwnClaims: (...args: unknown[]) => Promise<unknown>; publishManifestSnapshot(): Promise<void> }
+    const reanchor = internal.reanchorOwnClaims.bind(daemon)
+    const during: unknown[] = []
+    internal.reanchorOwnClaims = async () => { during.push(daemon.roomDoc.manifestHead.get('Alice')); throw new Error('injected mid-transition failure') }
+    await expect(poll(daemon)).rejects.toThrow('injected mid-transition failure')
+    expect(during).toMatchObject([{ complete: false }])
+    expect((during[0] as { semRev: number }).semRev).toBeGreaterThan(before.semRev)
+    // Another publication path (watcher, reshare, salt) must not certify the head while the transition is unfinished.
+    await internal.publishManifestSnapshot()
+    expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, base: w.base })
+    expect(git(daemon)).toMatchObject({ head: w.base, rev: 1 })
+    internal.reanchorOwnClaims = reanchor
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: next, rev: 2 })
+    expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: true, base: w.base })
+    // A snapshot already scanning when a transition starts must not certify the head afterwards.
+    const inFlight = internal.publishManifestSnapshot() // computes its input now, then awaits the scan
+    const state = daemon as unknown as { transitionPending: boolean; fence: string }
+    state.transitionPending = true // what a transition starting now does before its first await
+    markManifestIncomplete(daemon.roomDoc, 'Alice', state.fence)
+    await inFlight
+    expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false })
+  })
+
   it('a local room anchors at HEAD: a commit bumps rev once and posts nothing', async () => {
     const w = await world({ local: true })
     const daemon = await w.start()
@@ -291,6 +322,36 @@ describe('one publisher per checkout (reporooms invariant 11)', () => {
     expect(git(alice, 'Bob')).toBeUndefined()
     expect(pushed(alice).map(m => m.from)).toEqual(['Alice'])
     expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+  })
+
+  it('a promoted session writes its base facts at once, and a stale record of its own never yields a pushed', async () => {
+    vi.stubEnv('ROOM_MACHINE_ID', 'test-machine')
+    const w = await world()
+    const alice = await w.start()
+    const bob = await w.start({ name: 'Bob' })
+    await poll(bob)
+    expect(git(bob, 'Bob')).toBeUndefined()
+    // Alice leaves with no commit or fetch: Bob is promoted and writes his record on the next poll.
+    await alice.stop(); daemons.splice(daemons.indexOf(alice), 1)
+    await poll(bob)
+    expect((bob as unknown as { publishUnder?: string }).publishUnder).toBeUndefined()
+    expect(git(bob, 'Bob')).toMatchObject({ head: w.base, base: w.base, anchored: true, rev: 1 })
+    // While Bob publishes, a commit is pushed from the checkout: Bob announces it, once.
+    const head = commit(w.dir, 'a.txt', 'a\n')
+    await poll(bob)
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    await poll(bob)
+    expect(pushed(bob).map(m => [m.from, m.fromSha, m.toSha])).toEqual([['Bob', w.base, head]])
+    // Alice returns under Bob, then is promoted when Bob leaves: her record from before is stale, not history to announce.
+    const back = await w.start()
+    expect((back as unknown as { publishUnder?: string }).publishUnder).toBe('Bob')
+    await poll(back)
+    expect(git(back, 'Alice')).toMatchObject({ head: w.base, rev: 1 })
+    await bob.stop(); daemons.splice(daemons.indexOf(bob), 1)
+    await poll(back)
+    expect((back as unknown as { publishUnder?: string }).publishUnder).toBeUndefined()
+    expect(git(back, 'Alice')).toMatchObject({ head, base: head, rev: 2 })
+    expect(pushed(back).map(m => m.from)).toEqual(['Bob'])
   })
 })
 

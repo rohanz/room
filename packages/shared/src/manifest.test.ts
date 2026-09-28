@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { digestPath, gitBlobHash, localVersionOf, manifestKey, snapshot, versionOf, type ManifestHead } from './manifest.js'
+import { digestPath, gitBlobHash, localVersionOf, manifestKey, snapshot, snapshotStillCurrent, versionOf, type ManifestHead } from './manifest.js'
 
 const head = (fence = 's1'): ManifestHead => ({ base: 'abc', fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
 
@@ -67,5 +67,32 @@ describe('manifest step 1', () => {
     texts.set('x', new Y.Text('current'))
     expect(await versionOf(snapshot(room, 'ben', [])!, 'x')).toMatchObject({ kind: 'text', text: 'current' })
     expect(await localVersionOf('x', async () => 'disk only')).toEqual({ kind: 'text', text: 'disk only' })
+  })
+
+  it('rejects a snapshot after a two-replica holder handover with equal semRev', () => {
+    const seed = new RoomDoc(), a = new RoomDoc(), b = new RoomDoc()
+    Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(seed.doc))
+    Y.applyUpdate(b.doc, Y.encodeStateAsUpdate(seed.doc))
+    a.doc.clientID = 100; b.doc.clientID = 200
+    a.participants.set('ben\0holder', { sessionId: 's1' })
+    a.participants.set('ben\0git', { base: 'abc', head: 'h1', fence: 's1' })
+    a.manifestHead.set('ben', { ...head('s1'), semRev: 2 })
+    const snap = snapshot(a, 'ben', [])!
+    b.participants.set('ben\0holder', { sessionId: 's2' })
+    b.participants.set('ben\0git', { base: 'def', head: 'h2', fence: 's2' })
+    b.manifestHead.set('ben', { ...head('s2'), base: 'def', semRev: 2 })
+    Y.applyUpdate(a.doc, Y.encodeStateAsUpdate(b.doc))
+    expect(a.manifestHead.get('ben')?.fence).toBe('s2')
+    expect(snapshotStillCurrent(a, snap, [])).toBe(false)
+  })
+
+  it('rejects a changed git head under the same fence even if semRev is unchanged', () => {
+    const room = new RoomDoc()
+    room.participants.set('ben\0holder', { sessionId: 's1' })
+    room.participants.set('ben\0git', { base: 'abc', head: 'h1', fence: 's1' })
+    room.manifestHead.set('ben', head('s1'))
+    const snap = snapshot(room, 'ben', [])!
+    room.participants.set('ben\0git', { base: 'abc', head: 'h2', fence: 's1' })
+    expect(snapshotStillCurrent(room, snap, [])).toBe(false)
   })
 })

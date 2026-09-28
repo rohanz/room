@@ -35,7 +35,7 @@ export interface WorkerRecord {
   runs: Run[]; stop?: { reason: StopReason; at: number; run: number }
   discard?: Record<string, unknown>; interrupted?: { op: 'collect' | 'discard'; at: number; detail: string }
   cleanup?: Record<string, 'pending' | 'done'>; keptWorktree?: string
-  legacy?: { id: string; source: string; said?: string }; createdAt: number; seq: number
+  legacy?: { id: string; source: string; said?: string; unowned?: boolean }; createdAt: number; seq: number
 }
 export interface WorkerStatusResult { status: WorkerStatus2; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string }
 export type LivenessProbe = (identity: ProcessIdentity) => Liveness
@@ -54,9 +54,13 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   if (record.phase === 'abandoned') return result('abandoned')
   if (['collecting', 'discarding', 'retiring'].includes(record.phase)) return result('collecting', undefined, record.interrupted?.detail)
   const ordered = [...runs].sort((a, b) => a.n - b.n)
-  let current = ordered.at(-1)
-  const neverResume = current?.mode === 'resume' && current.launch?.outcome === 'never'
-  if (neverResume) current = ordered.at(-2)
+  let index = ordered.length - 1
+  let current = ordered[index]
+  let neverResume = false
+  while (current?.mode === 'resume' && current.launch?.outcome === 'never') {
+    neverResume = true
+    current = ordered[--index]
+  }
   if (!current) return result('starting', undefined, neverResume ? 'follow-up not delivered' : undefined)
   const note = neverResume ? 'follow-up not delivered' : undefined
   const launch = current.launch

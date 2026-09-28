@@ -11,7 +11,7 @@ import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-sta
 import { realStateInput } from './worker-status.js'
 
 export interface LegacySource {
-  key: string; tag: string; name: string; lead: string; room: string; dir: string; branch: string; host: 'claude' | 'codex'
+  key: string; tag: string; dir: string; branch: string; host: 'claude' | 'codex'
   oldId?: string; model?: string; task?: string; said?: string; keptWorktree?: string; share?: WorkerRecord['share']
 }
 export interface RegistryOptions {
@@ -47,6 +47,48 @@ const synthetic = (): InstanceToken => ({ pid: process.pid, startTime: '', execu
 const missing = (file: string): boolean => !fs.existsSync(file)
 const safeId = (value: string): boolean => /^w_[A-Za-z0-9_-]{1,64}$/.test(value)
 const safeTag = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== '..'
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
+const tokenShape = (value: unknown): value is InstanceToken => object(value) && Number.isSafeInteger(value.pid)
+  && typeof value.startTime === 'string' && typeof value.executable === 'string'
+  && typeof value.sessionId === 'string' && typeof value.nonce === 'string'
+const processShape = (value: unknown): boolean => object(value) && Number.isSafeInteger(value.pid)
+  && typeof value.startTime === 'string' && typeof value.executable === 'string'
+const runShape = (value: unknown): boolean => {
+  if (!object(value) || !Number.isSafeInteger(value.n) || (value.n as number) < 1
+    || !['fresh', 'resume'].includes(value.mode as string) || typeof value.intentAt !== 'number'
+    || typeof value.nonce !== 'string' || !Array.isArray(value.busFrontier) || !Array.isArray(value.promptMsgIds)
+    || !tokenShape(value.launcher) || typeof value.logStart !== 'number') return false
+  if (value.launch === undefined) return true
+  if (!object(value.launch)) return false
+  switch (value.launch.outcome) {
+    case 'launched': return Number.isSafeInteger(value.launch.pid) && (value.launch.process === undefined || processShape(value.launch.process))
+    case 'never': return typeof value.launch.error === 'string'
+    case 'ambiguous': return typeof value.launch.at === 'number'
+    case 'imported': return true
+    default: return false
+  }
+}
+const recordShape = (value: unknown, id: string): value is WorkerRecord => object(value) && value.v === 1 && value.id === id
+  && typeof value.tag === 'string' && safeTag(value.tag) && typeof value.name === 'string'
+  && ['local', 'here'].includes(value.mode as string) && typeof value.room === 'string'
+  && object(value.lead) && typeof value.lead.participant === 'string' && typeof value.lead.room === 'string' && tokenShape(value.lead.instance)
+  && ['claude', 'codex'].includes(value.host as string) && object(value.budget)
+  && typeof value.task === 'string' && typeof value.dir === 'string' && typeof value.branch === 'string'
+  && typeof value.outside === 'boolean' && object(value.prep) && typeof value.prep.step === 'string'
+  && object(value.capabilities) && typeof value.capabilities.resume === 'boolean' && typeof value.capabilities.signal === 'boolean'
+  && ['delta', 'copy', 'none'].includes(value.capabilities.collect as string)
+  && ['intent', 'preparing', 'prepared', 'active', 'collecting', 'discarding', 'retiring', 'retired', 'abandoned'].includes(value.phase as string)
+  && Array.isArray(value.runs) && value.runs.length > 0 && value.runs.every(runShape)
+  && typeof value.createdAt === 'number' && Number.isSafeInteger(value.seq)
+const reportShape = (value: unknown): value is RunReport => object(value) && Number.isSafeInteger(value.run)
+  && typeof value.nonce === 'string' && Array.isArray(value.chain) && value.chain.every(processShape)
+  && typeof value.joinedAt === 'number' && (value.hostSessionId === undefined || typeof value.hostSessionId === 'string')
+  && (value.posted === undefined || typeof value.posted === 'string')
+  && (value.done === undefined || (object(value.done) && typeof value.done.at === 'number'
+    && typeof value.done.summary === 'string' && Array.isArray(value.done.changed)))
+const exitShape = (value: unknown): value is ExitObservation => object(value) && Number.isSafeInteger(value.run)
+  && (value.code === null || Number.isSafeInteger(value.code)) && typeof value.at === 'number'
+  && typeof value.witnessed === 'boolean' && (value.signal === undefined || typeof value.signal === 'string')
 function commitExists(commonDir: string, oid: unknown): oid is string {
   if (typeof oid !== 'string' || !/^[0-9a-f]{40,64}$/.test(oid)) return false
   try { execFileSync('git', ['--git-dir', commonDir, 'cat-file', '-e', `${oid}^{commit}`], { stdio: 'ignore' }); return true }
@@ -93,8 +135,9 @@ export function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
   let output: string
   try { output = execFileSync('git', ['--git-dir', commonDir, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' }) }
   catch { return [] }
-  const mainWorktree = /^worktree (.+)$/m.exec(output)?.[1]
-  const localRoom = `local/${path.basename(mainWorktree ?? path.dirname(commonDir))}`
+  const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map(match => {
+    try { return fs.realpathSync(match[1]) } catch { return path.resolve(match[1]) }
+  }))
   const display = legacyDisplay(commonDir)
   const out: LegacySource[] = []
   for (const block of output.split(/\n\s*\n/)) {
@@ -105,11 +148,10 @@ export function discoverLegacyWorktrees(commonDir: string): LegacySource[] {
     if (path.basename(dir) !== tag || !dir.includes(`${path.sep}.room${path.sep}workers${path.sep}`)) continue
     let canonical: string
     try { canonical = fs.realpathSync(dir) } catch { continue }
-    if (!mainWorktree || !roomWorkerPathMatchesBranch(mainWorktree, canonical, branch, true)) continue
-    const leadDir = path.dirname(path.dirname(path.dirname(canonical)))
-    const lead = path.basename(leadDir)
+    const ownerCheckout = path.dirname(path.dirname(path.dirname(canonical)))
+    if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue
     const prior = display.get(canonical)
-    out.push({ key: `worktree:${canonical}`, tag, name: `${lead}+${tag}`, lead, room: localRoom, dir: canonical, branch,
+    out.push({ key: `worktree:${canonical}`, tag, dir: canonical, branch,
       host: prior?.host ?? 'codex', ...(prior ?? {}) })
   }
   return out
@@ -121,6 +163,7 @@ export class WorkerRegistry {
   private readonly now: () => number
   private readonly identity: InstanceToken
   private readonly listeners = new Set<() => void>()
+  private observed = new Map<string, string>()
   private readonly watchers: fs.FSWatcher[] = []
   private timer?: ReturnType<typeof setInterval>
   private watchQueued = false
@@ -164,6 +207,7 @@ export class WorkerRegistry {
   private workerFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'workers', `${id}.json`) }
   private opFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'workers', `${id}.op`) }
   private tagFile(tag: string): string { if (!safeTag(tag)) throw new Error('invalid worker tag'); return path.join(this.root, 'tags', `${tag}.json`) }
+  private adoptionFile(id: string): string { if (!safeId(id)) throw new Error('invalid worker id'); return path.join(this.root, 'adoptions', `${id}.json`) }
   private runDir(id: string, n: number): string {
     if (!safeId(id) || !Number.isSafeInteger(n) || n < 1) throw new Error('invalid worker run')
     return path.join(this.root, 'runs', id)
@@ -181,6 +225,15 @@ export class WorkerRegistry {
   private hasQuarantinedRecord(id: string): boolean {
     try { return fs.readdirSync(path.join(this.root, 'quarantine')).some(name => name.startsWith(`${id}.json.bad-`)) }
     catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false; throw e }
+  }
+  private readFact<T>(file: string, valid: (value: unknown) => value is T): T | undefined {
+    try {
+      const value = readJson<unknown>(file)
+      if (value === undefined) return undefined
+      if (valid(value)) return value
+      this.quarantine(file, 'invalid registry fact')
+    } catch (e) { this.quarantine(file, e) }
+    return undefined
   }
   private changed(): void { for (const listener of this.listeners) listener() }
   onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
@@ -214,7 +267,7 @@ export class WorkerRegistry {
       })
       const noticeId = `idle-claims:${action.sessionId}:${action.idleEpoch}`
       const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(', ')}` : 'released no claims'
-      action.postNotice(noticeId, `${participant} ${names} and cleared its scope after 8 h idle`)
+      action.postNotice(noticeId, `${participant} ${names}${pending.hadScope ? ' and cleared its scope' : ''} after 8 h idle`)
       writeAtomic(file, { ...pending, state: 'done' })
       return true
     })
@@ -223,7 +276,7 @@ export class WorkerRegistry {
     const file = this.workerFile(id)
     try {
       const record = readJson<WorkerRecord>(file)
-      if (record && (record.v !== 1 || record.id !== id || !Array.isArray(record.runs))) {
+      if (record && !recordShape(record, id)) {
         this.quarantine(file, 'invalid worker record')
         return undefined
       }
@@ -243,7 +296,8 @@ export class WorkerRegistry {
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
-    const candidate = this.list().find(r => r.tag === tagOrName || r.name === tagOrName)
+    let candidate = this.list().find(r => r.tag === tagOrName || r.name === tagOrName)
+    if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead)
     if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room
       || ['retiring', 'retired', 'abandoned'].includes(candidate.phase)) return undefined
     const reservation = readJson<{ id?: string }>(this.tagFile(candidate.tag))
@@ -259,22 +313,59 @@ export class WorkerRegistry {
     if (!await isOwnedWorkerWorktree(leadDir, realStateInput(candidate, status), lead.participant, workers)) return undefined
     return { record: candidate, status }
   }
+  private async adoptLegacy(record: WorkerRecord, lead: { participant: string; room: string; dir: string }): Promise<WorkerRecord | undefined> {
+    if (!lead.participant || !lead.room || record.phase !== 'active') return undefined
+    let leadDir: string
+    try { leadDir = fs.realpathSync(lead.dir) } catch { return undefined }
+    const status = this.status(record.id)
+    if (!status) return undefined
+    const worker = { ...realStateInput(record, status), name: `${lead.participant}+${record.tag}`, lead: lead.participant }
+    if (!await isOwnedWorkerWorktree(leadDir, worker, lead.participant)) return undefined
+    const file = this.adoptionFile(record.id)
+    createExclusive(file, { participant: lead.participant, room: lead.room, name: worker.name })
+    // An unreadable adoption is still a reservation: never let corruption turn it into a new owner.
+    let adopted: { participant?: string; room?: string; name?: string } | undefined
+    try { adopted = readJson(file) } catch { return undefined }
+    if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker.name) return undefined
+    return withGuard(this.workerFile(record.id), () => {
+      const current = this.read(record.id)
+      if (!current) return undefined
+      if (!current.legacy?.unowned) return current
+      const next: WorkerRecord = { ...current, name: worker.name, room: lead.room,
+        lead: { ...current.lead, participant: lead.participant, room: lead.room },
+        legacy: { ...current.legacy, unowned: false }, seq: current.seq + 1 }
+      writeAtomic(this.workerFile(record.id), next)
+      this.changed()
+      return next
+    })
+  }
   occupancy(): number { return this.list().filter(r => ['starting', 'running', 'unknown', 'ambiguous'].includes(this.status(r.id)?.status ?? '')).length }
   reports(id: string): RunReport[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.report.json').flatMap(f => {
-    try { const r = readJson<RunReport>(f); return r ? [r] : [] } catch { return [] }
+    const report = this.readFact(f, reportShape)
+    if (report && path.basename(f) !== `${report.run}.report.json`) { this.quarantine(f, 'run report filename mismatch'); return [] }
+    return report ? [report] : []
   }) }
   exits(id: string): ExitObservation[] { if (!safeId(id)) throw new Error('invalid worker id'); return files(path.join(this.root, 'runs', id), '.exit.json').flatMap(f => {
-    try { const r = readJson<ExitObservation>(f); return r ? [r] : [] } catch { return [] }
+    const observation = this.readFact(f, exitShape)
+    if (observation && path.basename(f) !== `${observation.run}.exit.json`) { this.quarantine(f, 'exit filename mismatch'); return [] }
+    return observation ? [observation] : []
   }) }
 
   /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
   writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): void {
-    if (record.v !== 1 || !safeId(record.id) || !safeTag(record.tag) || !record.runs.length || record.runs[0].launch) throw new Error('invalid worker intent')
+    if (!safeId(record.id) || !recordShape(record, record.id) || record.runs[0].launch) throw new Error('invalid worker intent')
     withGuard(path.join(this.root, 'capacity'), () => {
       if (this.occupancy() >= capacity) throw new Error('worker capacity reached')
       const tagFile = this.tagFile(record.tag)
       if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) {
-        recover(tagFile, current => typeof current.id === 'string' && !this.read(current.id) && !this.hasQuarantinedRecord(current.id))
+        const reservation = readJson<{ id?: string; holder?: InstanceToken }>(tagFile)
+        if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
+          const bound = this.read(reservation.id)
+          const reusable = bound && (bound.phase === 'abandoned' || (bound.phase === 'retired' && !bound.keptWorktree
+            && !!bound.cleanup && Object.values(bound.cleanup).every(state => state === 'done')))
+          if (reusable) compareAndRelease(tagFile, reservation.holder)
+          else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, current => current.id === reservation.id)
+        }
         if (!createExclusive(tagFile, { id: record.id, holder: record.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record.tag}`)
       }
       if (!createExclusive(this.opFile(record.id), { op: 'spawn', holder: record.runs[0].launcher, at: this.now() })) throw new Error('worker operation lease busy')
@@ -293,7 +384,7 @@ export class WorkerRegistry {
       const old = this.read(id)
       if (!old) throw new Error(`unknown worker ${id}`)
       const next = edit(old)
-      if (next.id !== old.id || next.seq !== old.seq + 1) throw new Error('worker update must retain id and advance seq')
+      if (next.id !== old.id || next.seq !== old.seq + 1 || !recordShape(next, id)) throw new Error('worker update must retain id, advance seq and remain valid')
       writeAtomic(this.workerFile(id), next)
       return next
     })
@@ -309,17 +400,20 @@ export class WorkerRegistry {
     if (!run || run.n !== report.run || run.nonce !== report.nonce || !['prepared', 'active'].includes(record!.phase)) throw new Error('run not admitted')
     const writer = this.writerFile(id, report.run)
     if (!fs.existsSync(writer) && !createExclusive(writer, this.identity)) throw new Error('run writer busy')
-    const prior = readJson<InstanceToken>(writer)
+    const prior = this.readFact(writer, tokenShape)
     if (prior && prior.nonce !== this.identity.nonce && !replace(writer,
       current => current.sessionId === this.identity.sessionId && this.alive(current as InstanceToken) === 'dead', this.identity)) {
       throw new Error('run writer busy')
     }
     withGuard(writer, () => {
-      const owner = readJson<InstanceToken>(writer)
+      const owner = this.readFact(writer, tokenShape)
       if (owner?.nonce !== this.identity.nonce) throw new Error('run writer belongs to another instance')
-      const previous = readJson<RunReport>(this.reportFile(id, report.run))
-      if (previous && (previous.nonce !== report.nonce || previous.done)) return
-      writeAtomic(this.reportFile(id, report.run), previous ? { ...previous, ...report, joinedAt: previous.joinedAt, done: report.done ?? previous.done } : report)
+      const previous = this.readFact(this.reportFile(id, report.run), reportShape)
+      if (previous && previous.nonce !== report.nonce) throw new Error('run report nonce mismatch')
+      writeAtomic(this.reportFile(id, report.run), previous ? { ...previous,
+        chain: previous.chain, joinedAt: previous.joinedAt,
+        hostSessionId: previous.hostSessionId ?? report.hostSessionId,
+        done: previous.done ?? report.done, posted: previous.posted ?? report.posted } : report)
     })
     this.changed()
   }
@@ -328,7 +422,7 @@ export class WorkerRegistry {
   writeExit(id: string, observation: ExitObservation): void {
     const file = this.exitFile(id, observation.run)
     withGuard(file, () => {
-      const old = readJson<ExitObservation>(file)
+      const old = this.readFact(file, exitShape)
       if (!old || (!old.witnessed && observation.witnessed)) writeAtomic(file, observation)
     })
     this.changed()
@@ -374,7 +468,9 @@ export class WorkerRegistry {
       const run = record.runs.at(-1)
       if (!run) continue
       // The operation lease itself is deliberately not treated as launch evidence.
-      const op = readJson<{ holder: InstanceToken }>(this.opFile(record.id))
+      const hadOp = fs.existsSync(this.opFile(record.id))
+      const op = this.readFact(this.opFile(record.id), (value): value is { holder: InstanceToken } => object(value) && tokenShape(value.holder))
+      if (hadOp && !op) continue
       if (op && this.alive(op.holder) === 'dead') recover(this.opFile(record.id), () => true)
       if (record.phase === 'collecting' && (!op || this.alive(op.holder) === 'dead')) {
         this.update(record.id, old => ({ ...old, phase: 'active',
@@ -389,7 +485,7 @@ export class WorkerRegistry {
       }
       if (!run.launch) {
         const report = this.reports(record.id).find(r => r.run === run.n && r.nonce === run.nonce)
-        const writer = readJson<InstanceToken>(this.writerFile(record.id, run.n))
+        const writer = this.readFact(this.writerFile(record.id, run.n), tokenShape)
         if (writer && report) this.update(record.id, old => {
           const latest = old.runs.at(-1)!
           if (latest.launch) return { ...old, seq: old.seq + 1 }
@@ -402,7 +498,7 @@ export class WorkerRegistry {
       }
       if (run.launch.outcome === 'ambiguous') {
         const report = this.reports(record.id).find(r => r.run === run.n && r.nonce === run.nonce)
-        const writer = readJson<InstanceToken>(this.writerFile(record.id, run.n))
+        const writer = this.readFact(this.writerFile(record.id, run.n), tokenShape)
         if (writer && report) this.update(record.id, old => {
           const process = report.chain[0]
           return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process?.pid ?? 0, ...(process ? { process } : {}) } }], seq: old.seq + 1 }
@@ -413,6 +509,11 @@ export class WorkerRegistry {
         this.writeExit(record.id, { run: run.n, code: null, at: this.now(), witnessed: false })
       }
     }
+    const next = new Map<string, string>()
+    for (const record of this.list()) next.set(record.id, JSON.stringify([record, this.reports(record.id), this.exits(record.id)]))
+    const externalChange = next.size !== this.observed.size || [...next].some(([key, value]) => this.observed.get(key) !== value)
+    this.observed = next
+    if (externalChange) this.changed()
   }
 
   private migrate(): void {
@@ -467,16 +568,16 @@ export class WorkerRegistry {
     const carry = base && (!carryRecord?.carriedBase || carriedBase) ? 'delta' : 'copy'
     const hostSessionId = legacySession(source.dir, source.oldId, source.host)
     const record: WorkerRecord = {
-      v: 1, id: workerId, tag: source.tag, name: source.name, mode: 'local', room: source.room,
-      lead: { participant: source.lead, room: source.room, instance: token }, host: source.host, model: source.model,
+      v: 1, id: workerId, tag: source.tag, name: '', mode: 'local', room: '',
+      lead: { participant: '', room: '', instance: token }, host: source.host, model: source.model,
       budget: { threads: 1, memGb: 1, nice: 10 }, share: source.share ?? 'intent', task: source.task ?? 'legacy worker',
       dir: source.dir, outside: false, branch: source.branch, prep: { step: 'prepared' }, base,
       carriedBase, hostSessionId,
       capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
       phase: source.keptWorktree ? 'retired' : 'active', keptWorktree: source.keptWorktree,
-      cleanup: source.keptWorktree ? { [source.room]: 'done' } : undefined,
+      cleanup: source.keptWorktree ? { legacy: 'done' } : undefined,
       runs: [{ n: 1, mode: 'fresh', intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: [], promptMsgIds: [], launcher: token, launch: { outcome: 'imported' }, logStart: 0 }],
-      legacy: { id: source.key, source: source.dir, said: source.said }, createdAt: this.now(), seq: 1,
+      legacy: { id: source.key, source: source.dir, said: source.said, unowned: true }, createdAt: this.now(), seq: 1,
     }
     createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() })
     createExclusive(file, record)
