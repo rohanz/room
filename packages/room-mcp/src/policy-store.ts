@@ -109,7 +109,8 @@ export class PolicyStore {
   }
 
   setRequested(requested: ShareLevel): Promise<SharingPolicy> {
-    return this.update(old => ({ ...old, requested, declared: requested === 'declared' ? old.declared : emptyGrant(), updatedAt: Date.now() }))
+    return this.update(old => old.requested === requested ? old : { ...old, requested,
+      declared: requested === 'declared' ? old.declared : { ...old.declared, ending: [], retained: [] }, updatedAt: Date.now() })
   }
 
   declare(paths: readonly string[]): Promise<SharingPolicy> {
@@ -125,7 +126,7 @@ export class PolicyStore {
     return this.update(old => {
       if (this.policy !== input) return old
       const ending = old.declared.ending.filter(prefix => !input.ending.includes(prefix) || unsettled.some(p => containsPath(prefix, p)))
-      const retained = new Set(old.declared.retained.filter(p => entries.has(p)))
+      const retained = new Set(old.declared.retained.filter(p => entries.has(p) || unsettled.includes(p)))
       for (const prefix of old.declared.ending) {
         if (!input.ending.includes(prefix) || ending.includes(prefix)) continue
         for (const [p, entry] of entries) if (containsPath(prefix, p) && (entry.state === 'shared' || entry.change === 'D')) retained.add(p)

@@ -3,8 +3,8 @@ import { manifestKey, participantRecord, type RoomDoc } from '@room/shared'
 import { gitHead, gitShowMany } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk } from './disk-scan.js'
-import { publishManifest, type ManifestFact } from './manifest-publish.js'
-import { authorizesText, plan, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
+import { markManifestIncomplete, publishManifest, type ManifestFact } from './manifest-publish.js'
+import { authorizesText, defaultExcludedPath, plan, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
 
 interface Host {
@@ -41,6 +41,21 @@ export interface PreparedPublication {
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 
+/** A deletion mark can remain visible after its base text is no longer authorized. */
+function withdrawBaseTexts(host: Host, authorized: ReadonlySet<string>): void {
+  const prefix = `${host.name}\0`
+  for (const key of host.roomDoc.ownedBaseTexts.keys()) {
+    if (!key.startsWith(prefix)) continue
+    const separator = key.indexOf(':', prefix.length)
+    if (separator >= 0 && !authorized.has(key.slice(separator + 1))) host.roomDoc.ownedBaseTexts.delete(key)
+  }
+  const oldOwned = host.roomDoc.doc.getMap('basetextByPerson').get(host.name) as { keys(): IterableIterator<string>; delete(key: string): void } | undefined
+  if (oldOwned) for (const key of oldOwned.keys()) {
+    const separator = key.indexOf(':')
+    if (separator >= 0 && !authorized.has(key.slice(separator + 1))) oldOwned.delete(key)
+  }
+}
+
 /** One publisher path: capture inputs, read disk/Git, pure plan, synchronous guarded apply. */
 export class Publisher {
   private readonly excludedPaths = new Set<string>()
@@ -64,7 +79,7 @@ export class Publisher {
     let budget = 0
     if (next.policy.level !== 'intent' && next.policy.publisher) {
       for (const [path, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
-        if (next.rules.roomIgnore.ignores(path) || (entry.size !== undefined && entry.size > next.rules.sizeCap)) {
+        if (defaultExcludedPath(path) || next.rules.roomIgnore.ignores(path) || (entry.size !== undefined && entry.size > next.rules.sizeCap)) {
           facts.push({ path, change: entry.change, excluded: true })
           this.excludedPaths.add(path)
           continue
@@ -92,6 +107,7 @@ export class Publisher {
         host.roomDoc.unmarkDeleted(host.name, path, host)
       }
       host.roomDoc.reconcileBaseTexts(host.name, host)
+      withdrawBaseTexts(host, new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => f.path)))
     }, host)
     this.markDirty()
   }
@@ -117,6 +133,10 @@ export class Publisher {
     const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked)
     for (const item of disk) await this.host.beforeBaseRead?.(item.path)
     const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt())
+    if (desired.unsettled.length) {
+      if (this.host.fence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence)
+      this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`))
+    }
     const textPaths = [...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)
     const baseTexts = await gitShowMany(this.host.dir, this.host.shared || inputs.head, textPaths)
     for (const p of textPaths) {
@@ -131,6 +151,7 @@ export class Publisher {
 
   /** Final synchronous gate; called immediately before the Y transaction. */
   valid(prepared: PreparedPublication): boolean {
+    if (prepared.desired.unsettled.length) return false
     const { host } = this
     if (host.stopped || host.inputs !== prepared.inputs) return false
     const holder = participantRecord(host.roomDoc, host.name)?.holder
@@ -173,6 +194,7 @@ export class Publisher {
         if (base !== undefined) host.roomDoc.setBaseText(host.name, host.shared || inputs.head, p, base, host)
       }
       host.roomDoc.reconcileBaseTexts(host.name, host)
+      withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)))
     }, host)
     this.excludedPaths.clear()
     for (const p of desired.excludedPaths) this.excludedPaths.add(p)
