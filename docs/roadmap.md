@@ -526,3 +526,7 @@ list waits.
 - **Previews at declared sharing can be partial while a teammate is mid-task.** In the Flask rehearsal, a preview had a teammate's new tests but not yet their fix. Show per teammate which declared files are not shared yet, or how old the shared ones are, so a partial preview is not read as a regression.
 - **Fixed in 0.16.33: name presence check missed a live peer.** Root cause: the symbol index blocked the event loop on a large repository, so presence heartbeats stopped. Original note: In the Codex-repo rehearsal, a session joining 42 s after another saw no presence for it. 0.16.32's machine-wide lock covers the same machine. For one user on two machines, reproduce against a running server with two separate joins and find why the temporary provider's awareness was empty.
 - **Merge preview git timeout on large repositories.** A three-way preview in an 86 MB repository failed on a git timeout. Scale the timeout with repository size, or make it adaptive. **Fixed in 0.16.33:** whole-tree git steps get 30 s + 15 ms per path, capped at 5 minutes; a preview that still times out names the step and says the combined code was not checked.
+
+## Post-redesign
+
+- **Per-person permissions and validated operations.** The 0.17 redesign keeps "admitted means trusted" (human decision D3, 2026-09-28): single-writer rules are client discipline plus fences, and the server validates no writes. After the trial, add per-person permissions and server-validated operations (audit item 8, second option).

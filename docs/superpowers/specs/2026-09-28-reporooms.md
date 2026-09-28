@@ -2,7 +2,11 @@
 
 Status: design only (phase 1 of the Room redesign), against branch `redesign` at 0.16.33 (0481a9b); line
 numbers are pointers and drift. Revisions 2–3 resolve `reviews/2026-09-28-reporooms-review.md` (MF1–MF14,
-SF1–SF7, second-pass N1–N2 and the partly-resolved items; the three Leave items are kept).
+SF1–SF7, second-pass N1–N2 and the partly-resolved items; the three Leave items are kept). Revision 4 (same
+day) carries the human's decisions: D1, a hashless held side gives a *possible* conflict (§B5); D2, the hard
+cutover (§Migration); D3, admitted means trusted (invariant 9); D5, presence ends within a bounded time and
+only the worktree's publisher writes base facts and posts `pushed` (invariants 10–11, §B2, §B4, participants
+view). It also records the wave-0 lead rulings on `participantRecord`, `acceptedGit` and presence.
 
 Lead rulings: **R1–R6** (the brief); **R1a** (this spec owns the participant record; registry adds
 `holder`); **R3c** (a team-room base is an anchor peers can resolve; a projected worker uses the lead's
@@ -40,13 +44,15 @@ deletion. 0.16.32's name lock gives way to the registry lease keyed by `roomKey`
 
 1. A room name has no branch: the canonical repo name for team rooms, `local/<main worktree basename>` or an explicit name for local rooms.
 2. Nothing reads or writes a room-wide commit; `meta.base`, `meta.branch` and `meta.seededBy` are gone.
-3. Each participant field has one writer (`git`: its publishing daemon or projector; `id`, `holder`: the lease-holding session), and readers accept `git` only when its fence passes, eventually consistent across machines (R1a).
+3. Each participant field has one writer (`git`: the worktree's publisher, registry §16, or the projector; `id`, `holder`: the lease-holding session), and readers accept `git` only through `acceptedGit`, whose fence check is eventually consistent across machines (R1a).
 4. `git.base` is an anchor every reader can try to resolve (R3c); with none, `anchored: false` and peers report "cannot compare", and base resolution never throws.
 5. A pair is compared at `merge-base(A.base, B.base)`, and a commit that cannot be fetched yields "cannot compare" for that pair only, never an error, "equals base" or a daemon stop.
 6. A HEAD transition ends in one Y transaction writing the `git` record, the manifest entries and head (manifest §5.4), the owner's claim moves and releases, and any `pushed` notice.
-7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` only on a clean evaluation at current inputs, never because its path left the candidate set.
+7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` or `possible` only on a clean evaluation at current inputs, never because its path left the candidate set. A slot is `conflict` only when both sides' versions were read; a side that is a hashless held entry (manifest invariant 16, D1) makes it at most `possible`.
 8. A branch switch never changes the room, the participant name, the cursor or the receipts.
-9. Admitted means trusted (SF6): single-writer rules are client discipline plus fences, and a write the server drops is surfaced to its writer as a rejected state.
+9. Admitted means trusted (SF6; confirmed by the human as D3, 2026-09-28): single-writer rules are client discipline plus fences, and a write the server drops is surfaced to its writer as a rejected state. Validated operations are post-redesign roadmap work.
+10. A participant's presence ends within a bounded time once its host session has finished, even when its MCP process lives on (D5; registry §18). A quiet session holding scope or claims whose host is still alive is shown idle, never dropped.
+11. Only the worktree's publisher (registry §16) writes a `git` record and posts `pushed`. Other sessions in the same checkout never write base facts or announce base moves (D5).
 
 ## Data model
 
@@ -72,7 +78,7 @@ export function roomKey(server: string | 'local', room: string): string  // regi
 // participants: Y.Map<string, unknown>; key `${name}\u0000${field}`; every value is a whole JSON value (LWW)
 'id'     -> { name, kind, owner?, label?, host? }                    // writer: lease-holding session
 'holder' -> { sessionId, machine, pid, startTime, executable }       // writer: lease-holding session (registry R1a)
-'git'    -> ParticipantGit                                           // writer: publishing daemon, or projector
+'git'    -> ParticipantGit                                           // writer: the worktree publisher's daemon, or projector
 'proj'   -> { projectedFrom: string /*worker id*/, projectedBy: string /*lead name*/ } // writer: projector
 interface ParticipantGit {
   branch: string; head: string       // '' branch when detached; head is display-only, others may not resolve it
@@ -82,25 +88,42 @@ interface ParticipantGit {
   rev: number                        // +1 per completed HEAD transition
   fence: string                      // session id of the writer's lease holder (own) or the lead's (projection)
 }
-export function participantRecord(doc: RoomDoc, name: string): ParticipantRecord | undefined // composes fields
+export function participantRecord(doc: RoomDoc, name: string): ParticipantRecord | undefined // raw fields, unfenced
+export function acceptedGit(record: ParticipantRecord, view: ParticipantView[]): ParticipantGit | 'updating'
 ```
 
 No nested `Y.Map` exists, so two clones inserting `ben` concurrently cannot detach a writer's child map;
-each field is last-writer-wins. **Fence:** a reader accepts `git` only if `git.fence === holder.sessionId`
-(own) or `=== liveHolder(proj.projectedBy)` (projection); otherwise the participant reads `updating`. The
-loser of a `holder` race sees the mismatch within one tick, stops publishing and renames (registry §12).
-`manifestHead.fence` (manifest §4.1) follows the same rule.
+each field is last-writer-wins. **Fence (wave-0 lead ruling):** `participantRecord` returns the raw fields
+and applies no fence. Every reader of `git` goes through `acceptedGit`, the one place that applies both
+fences: `git.fence === holder.sessionId` (own) or `=== liveHolder(view, proj.projectedBy)` (projection);
+otherwise it returns `'updating'`. The loser of a `holder` race sees the mismatch within one tick, stops
+publishing and renames (registry §15). `manifestHead.fence` (manifest §4.1) follows the same rule. A
+participant that shares a checkout with its publisher has no `git` field (invariant 11); readers show
+"shares this checkout with <publisher>" from its `manifestHead.publisher` (manifest §5.7).
 
 ### Participants view (owned here; the manifest's `liveHolder` depends on it; SF5)
 
 `packages/shared/src/views.ts`:
 ```ts
-participantsView(doc, awareness, now): ParticipantView[]  // {name, kind, fresh, visible, holder, projectedBy?, expiresAt?}
+participantsView(doc, awareness, now): ParticipantView[]  // {name, kind, fresh, visible, holder, projectedBy?, idleMin?}
 liveHolder(view, name): string | undefined                // holder.sessionId while that session has presence
+// presence (awareness) gains: sessionId?: string; idleMin?: number   (wave-0 lead ruling; D5)
 ```
 
-`fresh`: a presence entry with the holder's session exists. `visible`: fresh, or has records and not
-expired; hiding is a local view decision that deletes nothing. **One destructive-expiry authority**
+`fresh`: a presence entry exists whose `sessionId` equals `holder.sessionId` (wave-0 lead ruling; a
+presence entry without `sessionId`, or with another session's, is not fresh). `visible`: fresh, or has
+records and not expired; hiding is a local view decision that deletes nothing.
+
+**Presence ends (D5).** On 2026-09-28 about 30 Room MCP processes were found outliving their Codex threads
+under one shared `codex app-server`, and seventeen sat in one local room as present participants for two
+days. Each session therefore ends its own presence by registry §18's rule: at once when its bound host
+session has ended, and after the idle lease when it cannot see its host. `idleMin` is the session's own
+measure of minutes since its last host activity (a Room call or a hook contact; registry §18), written by
+that session on its awareness heartbeat and never compared with another machine's clock. Views render it
+from 10 minutes on: "ben (idle 25 min)", and for a quiet session that holds scope or claims "ben (idle 3 h;
+holds 2 claims)". Such a participant stays fresh and keeps its claims; leaving presence (awareness removed,
+provider closed) is what makes it not fresh. Leaving deletes nothing: its records, claims and owed mail
+stay and age toward the expiry below. **One destructive-expiry authority**
 (Astra 12, Fable 7): the trim leader (`trimBusIfLeader`, `roomd/src/index.ts:986`, the ledger's role).
 **Observation epochs (S5):** each leadership tenure is an epoch. During its own epoch a leader measures
 continuous absence (records present, no fresh holder) with its **own monotonic clock** and adds only those
@@ -111,31 +134,50 @@ measurements, and time with no leader counts for nothing. Any fresh holder sets 
 manifest, head, text, claims, scope and owned slots, in one transaction. Workers are retired by their
 projector (registry). `evictStale` (`join.ts:342-356`) goes.
 
+**No `expiresAt` in the view.** An earlier draft had `ParticipantView.expiresAt?`; it is dropped. A
+timestamp would have to be derived from another machine's measurement, the thing this paragraph rules
+out, and nothing in step 1 writes `expiry`. `visible` (records present and not yet expired) plus the
+leader-written `expiry[name].observedMs` cover it: a view that wants to show "offline 3 days; expires in
+about 4" computes `ROOM_STALE_DAYS − observedMs` at render time, so the participants view needs no field
+for it. That display lands with the expiry authority (the trim leader's `expiry` writes and
+`expireParticipant`) in rollout step (2), the plan's wave-1 `base` worker (lead ruling, 2026-09-28): it is
+participant lifecycle, owned here, and wave 1 is where the ledger's trim leader lands (`delivery`). The
+leader election stays the ledger's; step (2) consumes it through `delivery`'s API.
+
 ### Conflict slots: new root `conflicts`
 
 ```ts
 interface ConflictSlot {
   kind: 'merge' | 'edit-in-claim' | 'claims' | 'contract'
   owner: string; other: string; path: string; subject?: string // claims: `${myId}\0${theirId}`; contract: symbol
-  status: 'conflict' | 'unknown' | 'clean'
+  status: 'conflict' | 'possible' | 'unknown' | 'clean'  // possible: one side hashless (D1), §B5
   inputs: string            // sha256 of every evaluation input (below): recompute only when it changes
-  factId: string            // sha256 of what is reported (below): a new factId in `conflict` is a new notice
-  settled: 'conflict' | 'clean' | 'none'  // last non-unknown status; drives epochs across `unknown`
+  factId: string            // sha256 of what is reported (below): a new factId in `conflict`/`possible` is a new notice
+  settled: 'conflict' | 'possible' | 'clean' | 'none'  // last non-unknown status; drives epochs across `unknown`
   epoch: number             // +1 on every notified conflict (§B5 step 4)
   lines?: number[]; why?: string
   fence: string             // the evaluator's lease-holder session (own, or the projector's for a projected owner)
   checkedAt: number; retryAt?: number   // display; unknown retry schedule
 }
 // key (slot identity): `${owner}\0${kind}\0${other}\0${path}\0${subject ?? ''}`
+// a possible conflict (D1) lives in the same `merge` slot; its fact identity is
+//   factId = sha256('possible' \0 path \0 mergeBase \0 owner.change \0 other.change)
+// with no hash from either side, and its notice ID is `cf:<h(slot)>:<epoch>` like any other
 ```
+
+The slot key never contained a hash, so a pair keeps one slot as its sides move between hashed and
+hashless: the status and `factId` change, the key does not.
 
 **Inputs (MF2)** hash everything that can change the answer: both bases, the merge base and `anchored`;
 per side, the path's manifest entry `{hash, state}` (or the blob at base for a committed-only change) and
 that side's `manifestHead.semRev` (manifest §4.1; it changes with coverage, exclusions, level,
-completeness and fence); for claims each `{id, from, to, claimedHash}`. **Fact identity** is what the
-notice reports, so edits that leave the conflict unchanged do not re-notify: `merge`, the base-side text of
-the conflicting hunks plus the merge base; `edit-in-claim`/`claims`, the claim IDs and geometry;
-`contract`, the symbol and its before/after signature (S3).
+completeness and fence); for claims each `{id, from, to, claimedHash}`. **A hashless side (D1)**, a `held`
+entry with no `hash` (manifest invariant 16), contributes `{change, state, held}` in place of
+`{hash, state}`, so its owner's re-edits (which move only its `at`) change neither the inputs nor the key.
+**Fact identity** is what the notice reports, so edits that leave the conflict unchanged do not re-notify:
+`merge`, the base-side text of the conflicting hunks plus the merge base; `possible`, the path, the merge
+base and each side's change kind, and nothing derived from either side's content; `edit-in-claim`/`claims`,
+the claim IDs and geometry; `contract`, the symbol and its before/after signature (S3).
 **Notice IDs:** `cf:<h(slot)>:<epoch>` (conflict), `…:clean`, `…:holder`; a post whose ID exists in
 `bus ∪ mail` is skipped (ledger dedupe). **Trust:** admitted means trusted; nothing is added to the
 observe-only guard in `server/src/readonly.ts`, and nothing relies on it (SF6).
@@ -185,6 +227,12 @@ base abc1234567, 2 unpushed)` (`join.ts:201`, `scope.ts:98`). Deleted: `pinnedRo
 
 A branch switch, a commit, a pull and a reset are all one transition in `Roomd.pollHead` (`:752-783`).
 The applied state advances only when the whole transition commits:
+Only the worktree's publisher (registry §16) runs the whole transition (invariant 11, D5). A session that
+shares the checkout without the publisher lease runs only its claim part: steps 4 and 5 restricted to its
+own claim moves and releases, with no `git` record, no manifest and no `pushed`. On 2026-09-26/27 every
+session's daemon in one checkout announced each base move, seventeen identical notices per commit; with one
+writer per checkout there is one.
+
 1. Mark the transition as started: `manifestHead.complete = false` (manifest §5.4).
 2. Read `branch`, `head` and the room remote's refs. Compute `base` (§B3).
 3. Run the manifest reconcile plan against the new base.
@@ -241,6 +289,10 @@ team room, projected worker (bridge): base = the lead's current team-room base (
 
 ### B4. `pushed` notices (replaces `base`; SF2)
 
+- **Who:** only the worktree's publisher, from its own §B2 transition (invariant 11). A non-publisher in the
+  same checkout never posts it. A lease handover posts nothing for moves before it: the new publisher had
+  no `git` record, so its first transition has no `prev` and derives no `pushed` (as for a lost record,
+  below).
 - **When:** in §B2 step 5, iff the branch is unchanged, `prev.base` is a *strict ancestor* of `next.base`,
   and `next.base` is an ancestor of (or equal to) `prev.head`: the anchor moved forward over commits this
   participant already had. A pull of others' commits fails the third test, a reset the second. It records
@@ -265,15 +317,21 @@ team room, projected worker (bridge): base = the lead's current team-room base (
 
 1. **Owners** this session evaluates: me, and, as a lead's bridge in a team room, each worker I project
    (R3c, MF13), fenced by my holder. Pairs `(a, b)` for `b` in `neighbours`, skipping my own projected
-   workers and my lead (handled locally).
+   workers and my lead (handled locally). A non-publisher (manifest §5.7) is never an owner or a `b` for
+   `merge`: its checkout's changes are its publisher's, which is paired. Its claims still take part in
+   `claims` and `edit-in-claim` slots, read through its publisher's version.
 2. **Candidates (MF1):** `changed(x) = manifest paths of x ∪ git diff --name-only mergeBase..x.base`
    (cached by `(mergeBase, base)`); `candidates = changed(a) ∩ changed(b) ∪ paths of this pair's existing
    slots`. A side that is incomplete, fenced out, `coverage != all` or `anchored: false` makes the pair one
    `unknown` slot (`path: '*'`, with the reason), never a clean silence.
 3. **Evaluation:** `mergePath` (`conflicts.ts:66-83`) at `merge-base(a.base, b.base)` via `ensureCommit`.
    Each side's text is its manifest version (`versionOf`, manifest §6) if it has an entry, else git at its
-   base (committed-only change), else the ancestor. `held`, `excluded`, `unknown` or a missing commit →
-   `unknown` with `why`; `m ?? b` (`:78`) applies only to a genuine `base` version. `edit-in-claim`: my
+   base (committed-only change), else the ancestor. **A hashless `held` side (D1)**, on either side or both,
+   gives `possible` when the other side changed the path too (it is a candidate, so it did): "ben changed
+   `x` too, outside ben's declared area; Room cannot check this merge". It is never `conflict` and never
+   `clean`. A `held` side with a hash is read through `known(hash)` and, if that resolves, evaluated
+   exactly. Otherwise `held`, `excluded`, `unknown` or a missing commit → `unknown` with `why`; `m ?? b`
+   (`:78`) applies only to a genuine `base` version. `edit-in-claim`: my
    changed ranges against `b`'s claims mapped into my lines (§B6); `claims`: claim against claim;
    `contract`: today's `checkObserved` (`:251-289`) with before/after signature in the fact (SF3).
 4. **Transitions** (only slots of owners I evaluate). A result of `conflict` is **notified** when
@@ -282,6 +340,11 @@ team room, projected worker (bridge): base = the lead's current team-room base (
    conflict bumps `epoch`, sets `settled: 'conflict'`, and writes the slot and its notice `cf:<h>:<epoch>` in
    one transaction: to the owner (a projected owner: below), plus `…:holder` to `b` for `edit-in-claim`
    (`conflicts.ts:349-352`).
+   A result of `possible` is handled the same way with its own `settled: 'possible'`: notified (as `fyi`,
+   one line) when `settled` differs or its `factId` changed, so re-edits of the hashless file are silent. A
+   `possible` that becomes `conflict` once both sides can be read (the owner widens its declared area, or
+   a hash resolves) is a new, `notify` conflict notice; one that evaluates clean posts `…:clean`. `possible`
+   is not retried on a timer: its inputs change only when a side's entry does.
    `conflict` → `clean` sets `settled: 'clean'` and posts `…:clean` (`fyi`). `unknown` posts nothing, keeps
    `settled` and `epoch`, and retries at `retryAt` (1, 2, 4, then 8 min) whatever its inputs; so
    conflict→unknown→the same conflict is silent. A slot is deleted only when `clean` and out of the
@@ -362,7 +425,8 @@ export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string):
 - **Header** (`panels.ts:983-1004`): `owner / repo`, the `local` chip and the active count. The branch chip
   and `base <sha7>` go.
 - **Participant rows** show branch, `N unpushed`, `behind upstream by N` from `git`, "updating" on a failed
-  fence and "no anchor" when `anchored` is false. The `behind base` pill and `roomBase`/`basesByPerson`/
+  fence, "no anchor" when `anchored` is false, "idle N min" from presence (participants view, D5), and
+  "shares this checkout with <publisher>" for a non-publisher. The `behind base` pill and `roomBase`/`basesByPerson`/
   `behindBase` (`views.ts:105-161`) go.
 - **Merged tab** (`:784-794`): as today when all selected participants share `git.base`; otherwise it lists
   the pairs' conflict slots and says "branches differ; an agent's room_preview_merge checks the
@@ -448,9 +512,9 @@ room-etiquette line ("removes all branch rooms") are reworded.
 
 ### B14. Identity, graph index and areas
 
-- **Identity (R1, R1a).** The name lease is keyed by `roomKey` (registry §12), so one user's two clones on
+- **Identity (R1, R1a).** The name lease is keyed by `roomKey` (registry §15), so one user's two clones on
   two branches get two names. Messages address participants (ledger), so a branch switch keeps the cursor
-  and receipts. Worker IDs contain no room name (registry §15).
+  and receipts. Worker IDs contain no room name (registry §Records).
 - **Graph index.** `graph-index.ts` `rebuild` (`:138-186`) indexes `ls-tree <my git.base>` plus manifest
   paths, and rebuilds when my `git.rev` changes (it was a `meta` observer, `:114-116`). `textFor` reads
   others through `versionOf`.
@@ -546,7 +610,12 @@ once under the canonical room (manifest §4.2).
 never a permission boundary (`admit.ts`), but they did separate content. The team-sharing note is shown
 once more, keyed `worktree#server#repo-room-1` in `markWarned` (`choice.ts:95`) and combined with the
 manifest's disclosure line: "Room now has one room per repository: teammates on any branch see what you
-share".
+share". At `declared`, what is shared is the manifest's consent line (D1): "paths of every changed file;
+text only in your declared area".
+
+**Hard cutover (D2, confirmed by the human 2026-09-28).** Every teammate upgrades to 0.17 at once; the
+branch rooms become the 30-day read-only archive above, and mixed-version rooms are refused (§B11 matrix)
+rather than supported.
 
 ## Failure and recovery
 
@@ -589,7 +658,10 @@ Failing-first (each fails on 0.16.33 unless marked "pin"):
    notice; conflict→clean→conflict and clean→unknown→conflict → new epoch notice; conflict→unknown→same
    conflict → silent; an edit that leaves the conflicting hunks unchanged → silent; A pushes its
    conflicting change → slot stays `conflict` (MF1); a second signature change while in conflict → a new
-   contract notice (S3).
+   contract notice (S3). **D1:** A (shared) and B (declared, `x` outside its area) both edit `x` → one
+   `possible` notice, status never `conflict`; B edits `x` three more times → no new notice and unchanged
+   `inputs`; A edits `x` again → no new notice (same `factId`); B widens its area to `x` and the hunks
+   conflict → a `conflict` notice; the slot's key and every notice ID contain no blob id of B's `x`.
 8. Flat records (MF11): two clones insert `ben`; one `holder` wins; the loser's `git` fails the fence,
    reads `updating`, and the loser renames.
 9. Projection (MF13): W (projected by L) edits in B's claim → slot owned by W written by L's bridge,
@@ -607,6 +679,19 @@ Failing-first (each fails on 0.16.33 unless marked "pin"):
     it once; a claim released in schema 2 is not resurrected; completion waits for the old relay to exit.
     Expiry (S5): a leader handover with a skewed clock never expires early.
 14. Web: no branch chip; Merged lists slots when bases differ; an old link shows the 410 page.
+15. **One publisher announces (D5).** Five sessions in one checkout of a team room under five names; one
+    commit, then its push. Exactly one `pushed` notice and one `git` record update, both from the
+    publisher; the four others write no `git` field and post nothing, and still move their own claims. In
+    a local room (where D5 was observed), one commit gives exactly one `git.rev` bump, from the publisher,
+    and no notice; again the others write no `git`. Fails on 0.16.33, where every
+    session's daemon posts its own base notice.
+16. **Presence (D5).** `fresh` is false for a presence entry without `sessionId` or with a stale one
+    (wave-0 ruling). A session that reports `idleMin: 25` renders "idle 25 min" and stays fresh; with 2
+    claims, "holds 2 claims". A session that leaves (registry §18) stops being fresh at once, and its
+    claims, scope and owed mail are still there afterwards.
+17. **`acceptedGit`.** Own and projected fences in one function: a stale own fence, a projection whose
+    lead's live holder changed, and a record without `git` (a non-publisher) each give `'updating'` or the
+    publisher redirect, never a stale `git`.
 
 Rehearsals (`scripts/demo.sh`, three clones; scripts belong to the implementation plan): branch per
 person with a cross-branch conflict; force-push mid-session; commit without push; upgrade day with an
@@ -615,8 +700,10 @@ unanswered question migrating.
 ## Rollout and size
 
 In order on the redesign branch, shipped together as the one schema-2 release (0.17), server deployed
-first (`deploy/DEPLOYING.md`, `--depot=false`): (1) `rooms.ts`, participants view, flat record;
-(2) `resolveBase`, transition boundary, `pushed`; (3) `ConflictSet`, claims across bases (needs the
+first (`deploy/DEPLOYING.md`, `--depot=false`): (1) `rooms.ts`, participants view (presence `sessionId`,
+`idleMin`), flat record, `acceptedGit`;
+(2) `resolveBase`, transition boundary, `pushed`, the expiry authority (`expiry` writes by the trim leader,
+`expireParticipant`; the election through the ledger's `delivery` API); (3) `ConflictSet`, claims across bases (needs the
 manifest's `versionOf`); (4) the `neighbours` seam; (5) naming, server lock, migration, archive, cap, relay
 generation, PR, web, skills, docs. About 2,400 production lines added and 1,400 deleted, plus ~1,050 test
 lines: seven or eight Codex tasks; splits belong to the implementation plan.
@@ -636,5 +723,10 @@ lines: seven or eight Codex tasks; splits belong to the implementation plan.
    changes weekly. Verify against current Claude Code plugin docs and `codex --help` (see
    `docs/host-survey-2026-09-24-*.md`). §B12's "has not joined" detail is the backstop.
 6. **Far-apart branches.** Is the 2,000-path preview cap right?
-7. **Upgrade lockout (R6a).** It is abrupt but explicit: 0.16 clients stop with a clear update text. A
-   local migration stays "in progress" while a 0.16 session keeps its relay alive (N2).
+7. **Upgrade lockout (R6a, D2).** It is abrupt but explicit, and the human chose it: 0.16 clients stop
+   with a clear update text. A local migration stays "in progress" while a 0.16 session keeps its relay
+   alive (N2).
+8. **A finished host that left scope or claims (D5).** The idle lease never drops a session holding scope
+   or claims, so a Codex thread under the shared app-server that finished without `room_done` stays
+   present, shown "idle Nh; holds …", until its MCP exits. Registry open question 5 asks whether a longer
+   cap should apply.
