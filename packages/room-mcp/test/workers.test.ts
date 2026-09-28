@@ -1091,18 +1091,17 @@ describe('worker safety', () => {
     expect(t.specs).toHaveLength(0)
     expect((await registryForDir(dir)).reserved('far')).toBeUndefined()
   })
-  it('returns a supplied-dir launch error and abandons its intent without deleting the directory (F-M5)', async () => {
+  it('refuses a supplied lead checkout before writing intent or starting a worker (S3)', async () => {
     const { a } = pair()
     a.setMeta({ repo: 'x', branch: 'main', base })
     let ls: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
-      spawner: () => { throw new Error('spawn failed as probed') } })
+      spawner: () => { throw new Error('should not spawn') } })
     const reply = await tools.call('room_spawn', { tag: 'existing', task: 'x', dir, host: 'codex' })
-    expect(reply).toContain('spawn failed as probed')
-    expect(reply).not.toContain('unsafe preparation path')
+    expect(reply).toContain('not an owned Room worktree')
     expect(existsSync(dir)).toBe(true)
     const registry = await registryForDir(dir)
-    expect(registry.reserved('existing')?.phase).toBe('abandoned')
+    expect(registry.reserved('existing')).toBeUndefined()
     expect(registry.occupancy()).toBe(0)
   })
   it('collects the new worker after an abandoned record reused its tag (F-M4)', async () => {
@@ -1126,14 +1125,14 @@ describe('worker safety', () => {
     await vi.waitFor(() => expect(t.a.workers.get('money')?.status).toBe('failed'))
     expect(await t.leadTools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
   })
-  it('shows an existing-dir worker model without attributing the lead checkout edits to it', async () => {
+  it('does not relaunch a preexisting Room checkout as a new supplied-dir worker', async () => {
     const t = setupLead()
+    const prepared = await prepareWorktree(dir, 'same', 'rohanz')
     writeFileSync(join(dir, 'lead-only.txt'), 'lead edit')
     try {
-      await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir, host: 'codex', model: 'worker-model' })
-      const state = await t.leadTools.call('room_state', { all: true })
-      expect(state).toContain('same (codex worker-model')
-      expect(state).toContain('0 changed files · branch main')
+      const reply = await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir: prepared.dir, host: 'codex', model: 'worker-model' })
+      expect(reply).toContain('tag in use: same')
+      expect(t.specs).toHaveLength(0)
     } finally { rmSync(join(dir, 'lead-only.txt'), { force: true }) }
   })
 })
@@ -1580,6 +1579,31 @@ describe('worker compute budgets', () => {
     expect(await t.leadTools.call('room_spawn', { tag: 'bad', task: 'train', threads })).toContain('error: threads must be an integer >= 1')
     expect(t.specs).toHaveLength(0)
   })
+
+  it('rejects supplied directories without an owned Room worktree before intent (S3 re-review)', async () => {
+    const t = setupLead()
+    const nested = join(dir, 'nested-checkout')
+    mkdirSync(nested, { recursive: true })
+    execFileSync('git', ['init', '-q', nested])
+    const ordinary = join(dir, 'ordinary-directory')
+    mkdirSync(ordinary, { recursive: true })
+    const external = mkdtempSync(join(tmpdir(), 'room-linked-checkout-'))
+    const linked = join(dir, 'linked-checkout')
+    symlinkSync(external, linked)
+    try {
+      for (const supplied of [nested, ordinary, linked]) {
+        const reply = await t.leadTools.call('room_spawn', { tag: 'supplied', task: 'work', dir: supplied })
+        expect(reply).toMatch(/error:.*(?:Room worktree|worker directory|outside this repo)/)
+        expect(t.specs).toHaveLength(0)
+        expect((await registryForDir(dir)).list()).toHaveLength(0)
+      }
+    } finally {
+      rmSync(nested, { recursive: true, force: true })
+      rmSync(ordinary, { recursive: true, force: true })
+      rmSync(linked, { force: true })
+      rmSync(external, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('worker scheduling priority', () => {
@@ -1849,8 +1873,24 @@ describe('worker follow-up sessions', () => {
     t.exits[0](0)
     await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
     vi.spyOn(t.session!.hub, 'paused').mockReturnValue('hub paused')
+    vi.spyOn(t.session!, 'post').mockResolvedValue({ ok: false, reason: 'unreachable', text: 'not sent: hub unreachable', msg: {} } as never)
     const reply = await t.leadTools.call('room_send', { type: 'note', to: 'money', text: 'follow up' })
-    expect(reply).toContain('was not resumed')
+    expect(reply).toContain('not sent: hub unreachable')
+    expect(t.specs).toHaveLength(1)
+  })
+
+  it('does not resume a finished worker when the post refuses after a successful hello (F-S5 re-review)', async () => {
+    const t = setupLead()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'first', host: 'claude' })
+    const worker = t.a.workers.get('money')!
+    mkdirSync(worker.dir, { recursive: true })
+    t.a.updateWorker('money', { status: 'done', summary: 'finished', finishedAt: Date.now() })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
+    vi.spyOn(t.session!, 'post').mockResolvedValue({ ok: false, reason: 'unreachable', text: 'not sent: hub unreachable', msg: {} } as never)
+    const reply = await t.leadTools.call('room_send', { type: 'note', to: 'money', text: 'follow up' })
+    expect(reply).toContain('not sent: hub unreachable')
+    expect(reply).not.toContain('resumed')
     expect(t.specs).toHaveLength(1)
   })
 

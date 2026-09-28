@@ -82,14 +82,16 @@ if (selected?.ok) {
   inbox.push(subagent ? `[room] ${count} for the main conversation.` : `[room] ${count}; Room is reconnecting.`)
 }
 const coordination = []
-if (current && typeof state.paused === 'string') coordination.push(state.paused)
+const receipts = []
+const addCoordination = (line, receipt) => { coordination.push(line); receipts.push(receipt) }
+if (current && typeof state.paused === 'string') addCoordination(state.paused)
 
 const hookFile = path.join(dir, 'hook.json')
 const hook = subagent ? {} : readJson(hookFile, {})
 const told = hook.companyTold === true
 let changed = false
 if (company) {
-  if (!told && !subagent) { coordination.push(companyLine(state)); hook.companyTold = true; changed = true }
+  if (!told && !subagent) addCoordination(companyLine(state), () => { hook.companyTold = true; changed = true })
   const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
     ? pathsOf(ev.tool_name, ev.tool_input, root) : []
   recordWriteIntents(dir, root, paths, now)
@@ -103,34 +105,49 @@ if (company) {
     ? previousNear[p] !== `${adequateClaim ? 'claimed' : 'open'}:${nearKey}`
     : previousNear[p] !== undefined)
   for (const p of paths) {
-    if (nearby.length) previousNear[p] = `${adequateClaim ? 'claimed' : 'open'}:${nearKey}`
-    else delete previousNear[p]
+    if (nearby.length && adequateClaim) { previousNear[p] = `claimed:${nearKey}`; changed ||= nearChanged }
+    else if (!nearby.length && previousNear[p] !== undefined) { delete previousNear[p]; changed = true }
   }
+  if (nearby.length && !adequateClaim && nearChanged) addCoordination('[room] Claim before editing: ' + nearEvidence.join('; ') + '.', () => {
+    for (const p of paths) previousNear[p] = `open:${nearKey}`
+    hook.near = Object.fromEntries(Object.entries(previousNear).slice(-200))
+    changed = true
+  })
   hook.near = Object.fromEntries(Object.entries(previousNear).slice(-200))
-  if (nearby.length && !adequateClaim && nearChanged) coordination.push('[room] Claim before editing: ' + nearEvidence.join('; ') + '.')
-  const claimEvidence = JSON.stringify(claims.map(c => [c.id, c.path, c.from, c.to, c.by, c.intent, c.plans]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
   const previousClaims = hook.claims ?? {}
-  const claimsChanged = paths.some(p => claims.length ? previousClaims[p] !== claimEvidence : previousClaims[p] !== undefined)
+  const evidence = claims.map(c => ({ claim: c, key: String(c.id), signature: JSON.stringify([c.id, c.path, c.from, c.to, c.by, c.intent, c.plans]) }))
+  const untold = evidence.filter(({ key, signature }) => paths.some(p => previousClaims[p]?.[key] !== signature))
   for (const p of paths) {
-    if (claims.length) previousClaims[p] = claimEvidence
-    else delete previousClaims[p]
+    if (claims.length) {
+      const old = previousClaims[p]
+      previousClaims[p] = Object.fromEntries(evidence.filter(({ key, signature }) => old && typeof old === 'object' && old[key] === signature)
+        .map(({ key, signature }) => [key, signature]))
+      if (old && typeof old === 'object' && Object.keys(old).length !== Object.keys(previousClaims[p]).length) changed = true
+    }
+    else if (previousClaims[p] !== undefined) { delete previousClaims[p]; changed = true }
   }
   hook.claims = Object.fromEntries(Object.entries(previousClaims).slice(-200))
-  if (claims.length && claimsChanged) {
-    coordination.push(`[room claims on ${paths.join(', ')}]`)
-    for (const c of claims) coordination.push(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`)
+  if (untold.length) {
+    addCoordination(`[room claims on ${paths.join(', ')}]`)
+    for (const { claim: c, key, signature } of untold) addCoordination(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`, () => {
+      for (const p of paths) previousClaims[p][key] = signature
+      changed = true
+    })
   }
-  changed ||= nearChanged || claimsChanged
 }
-if (changed && !subagent) writeJsonAtomic(hookFile, hook)
 // Inbox first, then coordination cut to what is left of the cap. An inbox that alone would not fit (the MCP
 // bounds it, so only an oversized notice) is not printed, and nothing is confirmed: it stays owed.
 if (interrupt) inbox.push('An interrupt is pending: re-plan before continuing (room_state).')
-const lines = joinedLength(inbox) <= CONTEXT_CAP ? [...inbox, ...fitLines(coordination, CONTEXT_CAP - joinedLength(inbox) - 1)] : fitLines(coordination, CONTEXT_CAP)
+const shownCoordination = fitLines(coordination, joinedLength(inbox) <= CONTEXT_CAP ? CONTEXT_CAP - joinedLength(inbox) - 1 : CONTEXT_CAP)
+const lines = joinedLength(inbox) <= CONTEXT_CAP ? [...inbox, ...shownCoordination] : shownCoordination
 if (joinedLength(inbox) > CONTEXT_CAP) confirm = undefined
 if (lines.length) {
   const written = await writeStdout(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: lines.join('\n') } }))
+  if (written && !subagent) {
+    for (let i = 0; i < shownCoordination.length; i++) if (shownCoordination[i] === coordination[i]) receipts[i]?.()
+    if (changed) writeJsonAtomic(hookFile, hook)
+  }
   // Only a confirmed handoff becomes a receipt; a lost confirm lets the lease expire (a duplicate, never a loss).
   if (written && confirm) await mcp.request({ op: 'confirm', batch: confirm }, 1000)
-}
+} else if (changed && !subagent) writeJsonAtomic(hookFile, hook)
 mcp?.close()
