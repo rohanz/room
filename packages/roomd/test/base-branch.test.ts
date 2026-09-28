@@ -5,8 +5,9 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { messageForMe, shouldWakeOnMsg } from '@room/shared'
-import { startRoomd, type Roomd } from '../src/index.js'
+import { participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
+import { claimDigest } from '../src/reanchor.js'
+import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 
 vi.setConfig({ testTimeout: 30_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
@@ -20,144 +21,300 @@ afterEach(async () => {
   finally { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-function provider(doc: Y.Doc): WebsocketProvider {
-  let local: unknown = null
+/** Docs joined through one hub share updates and one awareness map, as a room server would. */
+function hub() {
+  const docs = new Set<Y.Doc>()
   const states = new Map<number, unknown>()
   return {
-    synced: true,
-    awareness: {
-      setLocalState(state: unknown) { local = state; if (state) states.set(doc.clientID, state); else states.delete(doc.clientID) },
-      getLocalState: () => local,
-      getStates: () => states,
+    states,
+    connect(doc: Y.Doc): WebsocketProvider {
+      for (const peer of docs) Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer))
+      docs.add(doc)
+      const relay = (update: Uint8Array, origin: unknown) => { if (origin !== 'hub') for (const peer of docs) if (peer !== doc) Y.applyUpdate(peer, update, 'hub') }
+      doc.on('update', relay)
+      let local: unknown = null
+      return {
+        synced: true,
+        awareness: {
+          setLocalState(state: unknown) { local = state; if (state) states.set(doc.clientID, state); else states.delete(doc.clientID) },
+          getLocalState: () => local,
+          getStates: () => states,
+        },
+        on() {}, off() {}, destroy() { doc.off('update', relay); docs.delete(doc) },
+      } as unknown as WebsocketProvider
     },
-    on() {}, off() {}, destroy() {},
-  } as unknown as WebsocketProvider
+  }
 }
 
-async function setup(local = false): Promise<{ dir: string; base: string; poll: () => Promise<void> ; daemon: Roomd }> {
+async function world(options: { local?: boolean } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-base-'))
   roots.push(root)
   const origin = path.join(root, 'origin.git')
   const dir = path.join(root, 'checkout')
-  sh(root, 'init', '--bare', '-q', origin)
+  sh(root, 'init', '--bare', '-q', '-b', 'rehearsal', origin)
   sh(root, 'init', '-q', '-b', 'rehearsal', dir)
   sh(dir, 'config', 'user.email', 'test@example.com')
   sh(dir, 'config', 'user.name', 'Test')
-  fs.writeFileSync(path.join(dir, 'app.txt'), 'base\n')
+  fs.writeFileSync(path.join(dir, 'app.txt'), 'first\nclaimed\nlast\n')
   sh(dir, 'add', '-A')
   sh(dir, 'commit', '-qm', 'base')
   sh(dir, 'remote', 'add', 'origin', origin)
   sh(dir, 'push', '-q', '-u', 'origin', 'rehearsal')
+  sh(dir, 'remote', 'set-head', 'origin', 'rehearsal')
   const base = sh(dir, 'rev-parse', 'HEAD')
-  const daemon = await startRoomd({
-    dir, room: `ws://memory/${encodeURIComponent(local ? 'local/repo/rehearsal' : 'github.com/owner/repo/rehearsal')}`,
-    ...(local ? { localKey: 'test-local-key' } : {}),
-    name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => provider(doc),
-    basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
-  })
-  daemons.push(daemon)
-  return { dir, base, daemon, poll: () => (daemon as unknown as { pollHead(): Promise<void> }).pollHead() }
+  const room = hub()
+  // The server's copy: it outlives any one daemon, so a restart finds the records that survived.
+  const server = new Y.Doc()
+  room.connect(server)
+  const start = async (extra: Partial<RoomdOptions> = {}, at = dir) => {
+    const daemon = await startRoomd({
+      dir: at, room: `ws://memory/${encodeURIComponent(options.local ? 'local/repo' : 'github.com/owner/repo/rehearsal')}`,
+      ...(options.local ? { localKey: 'test-local-key' } : {}),
+      name: 'Alice', kind: 'agent', providerFactory: (_server, _name, doc) => room.connect(doc),
+      basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {}, ...extra,
+    })
+    daemons.push(daemon)
+    return daemon
+  }
+  const other = (name: string) => {
+    const at = path.join(root, name)
+    sh(root, 'clone', '-q', origin, at)
+    sh(at, 'config', 'user.email', 'test@example.com')
+    sh(at, 'config', 'user.name', 'Test')
+    return at
+  }
+  return { root, origin, dir, base, room, server, start, other }
+}
+const poll = (daemon: Roomd) => (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+const git = (daemon: Roomd, name = daemon.name): ParticipantGit | undefined => participantRecord(daemon.roomDoc, name)?.git
+const status = (daemon: Roomd) => (daemon.provider.awareness.getLocalState() as { status: string }).status
+const pushed = (daemon: Roomd) => daemon.roomDoc.messages().filter((m: Msg): m is PushedMsg => m.type === 'pushed')
+function commit(dir: string, file: string, text: string, message = file): string {
+  fs.writeFileSync(path.join(dir, file), text)
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-qm', message)
+  return sh(dir, 'rev-parse', 'HEAD')
 }
 
-describe('room branch base tracking', () => {
-  it.each(['missing origin', 'missing tracking branch'] as const)('advances a local commit with %s', async missing => {
-    const { dir, base, daemon, poll } = await setup(true)
-    if (missing === 'missing origin') sh(dir, 'remote', 'remove', 'origin')
-    else sh(dir, 'update-ref', '-d', 'refs/remotes/origin/rehearsal')
-    sh(dir, 'commit', '--allow-empty', '-qm', 'local change')
-    const local = sh(dir, 'rev-parse', 'HEAD')
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(local)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toMatchObject([
-      { prev: base, base: local, commits: 1 },
-    ])
-    expect((daemon.provider.awareness.getLocalState() as { status: string }).status).toBe('committed locally')
+describe('participant git record (reporooms §B2, §B3)', () => {
+  it('publishes branch, head, base and anchor at start, and keeps the one-time meta seed for legacy readers', async () => {
+    const w = await world()
+    const daemon = await w.start({ sessionId: 'host-1' })
+    expect(git(daemon)).toEqual({ branch: 'rehearsal', head: w.base, base: w.base, anchored: true, remote: 'origin', upstream: 'origin/rehearsal', ahead: 0, behind: 0, rev: 1, fence: 'host-1' })
+    expect(daemon.anchor).toEqual({ base: w.base, anchored: true })
+    expect(status(daemon)).toBe('synced with origin/rehearsal')
+    expect((daemon.provider.awareness.getLocalState() as { sessionId?: string }).sessionId).toBe('host-1')
+    expect(daemon.roomDoc.meta).toMatchObject({ base: w.base, branch: 'rehearsal', seededBy: 'Alice' })
   })
 
-  it('keeps a team-room base unchanged for a commit with no remote branch', async () => {
-    const { dir, base, daemon, poll } = await setup()
-    sh(dir, 'update-ref', '-d', 'refs/remotes/origin/rehearsal')
-    sh(dir, 'commit', '--allow-empty', '-qm', 'local only')
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(base)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(0)
-    expect((daemon.provider.awareness.getLocalState() as { status: string }).status).toBe('committed locally')
+  it('an unpushed commit keeps the anchor; its push moves it and posts one pushed {fromSha, toSha}', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const local = commit(w.dir, 'a.txt', 'a\n', 'add a')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: local, base: w.base, anchored: true, ahead: 1, rev: 2 })
+    expect(status(daemon)).toBe('1 unpushed')
+    expect(pushed(daemon)).toEqual([])
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    await poll(daemon)
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: local, base: local, ahead: 0, rev: 3 })
+    expect(pushed(daemon)).toMatchObject([{
+      id: `pushed:Alice:${w.base}:${local}`, from: 'Alice', branch: 'rehearsal', upstream: 'origin/rehearsal',
+      fromSha: w.base, toSha: local, commits: 1, paths: ['a.txt'], summary: 'add a',
+    }])
+    expect(pushed(daemon)[0].to).toBeUndefined()
+    expect(daemon.roomDoc.meta.base).toBe(w.base) // the legacy room base is never advanced again
+    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toEqual([])
   })
 
-  it('does not announce or advance a detached HEAD, then advances when back on the pushed room branch', async () => {
-    const { dir, base, daemon, poll } = await setup()
-    sh(dir, 'checkout', '--detach', '-q')
-    sh(dir, 'commit', '--allow-empty', '-qm', 'rebased change')
-    const rebased = sh(dir, 'rev-parse', 'HEAD')
-    sh(dir, 'push', '-q', 'origin', 'HEAD:rehearsal')
-    await poll()
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(base)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(0)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(0)
-
-    sh(dir, 'checkout', '-q', 'rehearsal')
-    sh(dir, 'merge', '-q', '--ff-only', rebased)
-    await poll()
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(rebased)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(1)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(0)
+  it('announces each push of its own commits once, including a partial push while HEAD is further ahead', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const first = commit(w.dir, 'a.txt', 'a\n')
+    const second = commit(w.dir, 'b.txt', 'b\n')
+    sh(w.dir, 'push', '-q', 'origin', `${first}:rehearsal`)
+    sh(w.dir, 'fetch', '-q', 'origin')
+    await poll(daemon)
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: second, base: first, ahead: 1 })
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    await poll(daemon)
+    await poll(daemon)
+    expect(pushed(daemon).map(m => [m.fromSha, m.toSha])).toEqual([[w.base, first], [first, second]])
   })
 
-  it('notices a branch switch even when HEAD stays at the same commit', async () => {
-    const { dir, base, daemon, poll } = await setup()
-    sh(dir, 'checkout', '-qb', 'feature')
-    await poll()
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(base)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(1)
-    expect((daemon.provider.awareness.getLocalState() as { status: string }).status).toContain('you switched to feature')
+  it('a pull of others\' commits, a reset and a branch switch post no pushed', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const bob = w.other('bob')
+    const theirs = commit(bob, 'b.txt', 'b\n')
+    sh(bob, 'push', '-q', 'origin', 'HEAD:rehearsal')
+    sh(w.dir, 'pull', '-q', '--ff-only')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: theirs, base: theirs })
+    sh(w.dir, 'reset', '-q', '--hard', w.base)
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: w.base, base: w.base, behind: 1 })
+    expect(status(daemon)).toMatch(/^behind origin\/rehearsal by 1: /)
+    sh(w.dir, 'checkout', '-qb', 'feature')
+    const feature = commit(w.dir, 'f.txt', 'f\n')
+    sh(w.dir, 'push', '-q', '-u', 'origin', 'feature')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ branch: 'feature', head: feature, base: feature, upstream: 'origin/feature' })
+    expect(pushed(daemon)).toEqual([])
+    expect(daemon.roomDoc.messages().filter(m => m.type === 'note')).toEqual([]) // no branch-switch banner
   })
 
-  it('ignores a pushed feature branch, tells only its own agent once, then advances once after a room-branch push', async () => {
-    const { dir, base, daemon, poll } = await setup()
-    sh(dir, 'checkout', '-qb', 'feature')
-    sh(dir, 'commit', '--allow-empty', '-qm', 'feature change')
-    const feature = sh(dir, 'rev-parse', 'HEAD')
-    sh(dir, 'push', '-q', '-u', 'origin', 'feature')
-    await poll()
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(base)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(0)
-    const notices = daemon.roomDoc.messages().filter(m => m.type === 'note' && m.to === 'Alice')
-    expect(notices).toHaveLength(1)
-    expect(notices[0]).toMatchObject({ from: 'room', text: 'you switched to feature; the room is for rehearsal; commits here are not the room\'s base until they are pushed to rehearsal' })
-    expect(messageForMe({ name: 'Alice' }, notices[0])).toBe(true)
-    expect(messageForMe({ name: 'Bob' }, notices[0])).toBe(false)
-    expect(shouldWakeOnMsg({ name: 'Alice', kind: 'agent' }, notices[0]).wake).toBe(true)
-
-    sh(dir, 'checkout', '-q', 'rehearsal')
-    sh(dir, 'merge', '-q', '--ff-only', 'feature')
-    sh(dir, 'push', '-q', 'origin', 'rehearsal')
-    await poll()
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(feature)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(1)
+  it('a detached HEAD is display only: branch is empty and nothing is announced', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    sh(w.dir, 'checkout', '-q', '--detach')
+    const head = commit(w.dir, 'd.txt', 'd\n')
+    sh(w.dir, 'push', '-q', 'origin', 'HEAD:rehearsal')
+    sh(w.dir, 'fetch', '-q')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ branch: '', head })
+    expect(status(daemon)).toBe(`detached at ${head.slice(0, 10)}`)
+    expect(pushed(daemon)).toEqual([])
   })
 
-  it('advances only through the pushed room-branch commit when HEAD is two commits ahead', async () => {
-    const { dir, base, daemon, poll } = await setup()
-    sh(dir, 'commit', '--allow-empty', '-qm', 'first')
-    const first = sh(dir, 'rev-parse', 'HEAD')
-    sh(dir, 'commit', '--allow-empty', '-qm', 'second')
-    const second = sh(dir, 'rev-parse', 'HEAD')
-    sh(dir, 'push', '-q', 'origin', `${first}:rehearsal`)
-    sh(dir, 'fetch', '-q', 'origin', 'rehearsal')
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(first)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toMatchObject([
-      { prev: base, base: first, commits: 1 },
-    ])
-    expect(daemon.base).toBe(second)
-    sh(dir, 'push', '-q', 'origin', 'rehearsal')
-    await poll()
-    expect(daemon.roomDoc.meta.base).toBe(second)
-    expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toHaveLength(2)
+  it('diverged clones and a force-pushed reset keep the daemon running; the anchor follows the remote', async () => {
+    const w = await world()
+    const bob = w.other('bob')
+    const shared = commit(bob, 'b.txt', 'b\n'); sh(bob, 'push', '-q', 'origin', 'HEAD:rehearsal')
+    sh(w.dir, 'pull', '-q', '--ff-only')
+    const mine = commit(w.dir, 'a.txt', 'a\n')
+    const daemon = await w.start()
+    expect(git(daemon)).toMatchObject({ head: mine, base: shared, anchored: true })
+    // Bob force-pushes a reset: the branch goes back to the first commit plus a new one.
+    sh(bob, 'reset', '-q', '--hard', w.base)
+    commit(bob, 'r.txt', 'r\n')
+    sh(bob, 'push', '-q', '--force', 'origin', 'HEAD:rehearsal')
+    sh(w.dir, 'fetch', '-q')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: mine, base: w.base, anchored: true, ahead: 2, behind: 1 })
+    expect(status(daemon)).toBe('diverged from origin/rehearsal: stop and tell your human')
+    // Then an unrelated history replaces the branch: no anchor, and still no stop.
+    sh(bob, 'checkout', '-q', '--orphan', 'rewrite')
+    commit(bob, 'o.txt', 'o\n')
+    sh(bob, 'push', '-q', '--force', 'origin', 'HEAD:rehearsal')
+    sh(w.dir, 'fetch', '-q')
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head: mine, base: mine, anchored: false })
+    expect(status(daemon)).toBe('no anchor on origin: teammates cannot compare with you')
+    expect(pushed(daemon)).toEqual([])
+    expect((daemon as unknown as { stopped: boolean }).stopped).toBe(false)
+  })
+
+  it('writes the record, claim moves and pushed in one transaction', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+    const moved = commit(w.dir, 'app.txt', 'added\nfirst\nclaimed\nlast\n')
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    const together: boolean[] = []
+    daemon.roomDoc.doc.on('afterTransaction', (tr: Y.Transaction) => {
+      if (tr.changed.has(daemon.roomDoc.participants)) together.push(tr.changed.has(daemon.roomDoc.claims) && tr.changed.has(daemon.roomDoc.bus))
+    })
+    await poll(daemon)
+    expect(together).toEqual([true])
+    expect(daemon.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+    expect(git(daemon)).toMatchObject({ head: moved, base: moved })
+    expect(pushed(daemon)).toHaveLength(1)
+  })
+
+  it('a local room anchors at HEAD: a commit bumps rev once and posts nothing', async () => {
+    const w = await world({ local: true })
+    const daemon = await w.start()
+    const head = commit(w.dir, 'a.txt', 'a\n')
+    await poll(daemon)
+    await poll(daemon)
+    expect(git(daemon)).toMatchObject({ head, base: head, anchored: true, rev: 2 })
+    expect(pushed(daemon)).toEqual([])
+  })
+})
+
+describe('restart: the transition resumes from the surviving record (reporooms §B2, §B4)', () => {
+  it('re-anchors own claims from the recorded head', async () => {
+    const w = await world()
+    const first = await w.start()
+    const claim = first.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+    await first.stop(); daemons.splice(daemons.indexOf(first), 1)
+    const head = commit(w.dir, 'app.txt', 'added\nfirst\nclaimed\nlast\n')
+    const second = await w.start()
+    expect(second.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+    expect(git(second)).toMatchObject({ head, rev: 2 })
+    expect(second.roomDoc.messages().filter(m => m.type === 'note')).toEqual([])
+  })
+
+  it('derives pushed from a surviving record, once, and fabricates none when the record was lost', async () => {
+    const w = await world()
+    const first = await w.start()
+    const local = commit(w.dir, 'a.txt', 'a\n')
+    await poll(first)
+    const beforePush = Y.encodeStateAsUpdate(w.server)
+    await first.stop(); daemons.splice(daemons.indexOf(first), 1)
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    const second = await w.start()
+    const id = `pushed:Alice:${w.base}:${local}`
+    expect(pushed(second).map(m => m.id)).toEqual([id])
+    const notice = pushed(second)[0]
+    await second.stop(); daemons.splice(daemons.indexOf(second), 1)
+
+    // A relay crash lost the record's advance but a reader re-synced the notice: the repost is the same ID, seen once.
+    const replay = await world()
+    Y.applyUpdate(replay.server, beforePush)
+    replay.server.getArray<Msg>('bus').push([notice])
+    const third = await replay.start({}, w.dir)
+    expect(pushed(third).map(m => m.id)).toEqual([id])
+
+    const lost = await world()
+    const fourth = await lost.start({}, w.dir)
+    expect(git(fourth)).toMatchObject({ base: local, rev: 1 })
+    expect(pushed(fourth)).toEqual([])
+  })
+})
+
+describe('one publisher per checkout (reporooms invariant 11)', () => {
+  it('a session publishing under another writes no git record and posts no pushed, but still moves its own claims', async () => {
+    vi.stubEnv('ROOM_MACHINE_ID', 'test-machine')
+    const w = await world()
+    const alice = await w.start()
+    const bob = await w.start({ name: 'Bob' })
+    expect((bob as unknown as { publishUnder?: string }).publishUnder).toBe('Alice')
+    const claim = bob.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Bob', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+    const head = commit(w.dir, 'app.txt', 'added\nfirst\nclaimed\nlast\n')
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    await poll(alice)
+    await poll(bob)
+    expect(git(alice, 'Alice')).toMatchObject({ head, base: head, rev: 2 })
+    expect(git(alice, 'Bob')).toBeUndefined()
+    expect(pushed(alice).map(m => m.from)).toEqual(['Alice'])
+    expect(alice.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+  })
+})
+
+
+describe('expiry authority in the trim leader (reporooms S5)', () => {
+  it('only the trim leader measures absence, on its own clock, and expires after ROOM_STALE_DAYS', async () => {
+    const w = await world()
+    let aliceNow = 0, zedNow = 1e12
+    const logs: string[] = []
+    const alice = await w.start({ expiryClock: () => aliceNow, busTrimMs: 0, log: line => logs.push(line) })
+    const zed = await w.start({ name: 'Zed', expiryClock: () => zedNow, busTrimMs: 0 }, w.other('zed'))
+    alice.roomDoc.participants.set('Gone\0id', { name: 'Gone', kind: 'agent' })
+    alice.roomDoc.participants.set('Gone\0holder', { sessionId: 'gone-session', machine: 'm', pid: 1, startTime: 't', executable: 'claude' })
+    alice.roomDoc.setScope('Gone', { byKind: 'agent', area: 'old', summary: 'left', paths: ['app.txt'] })
+    const trim = (daemon: Roomd) => (daemon as unknown as { trimBusIfLeader(): void }).trimBusIfLeader()
+    trim(alice); trim(zed)
+    zedNow += 30 * 24 * 60 * 60 * 1000
+    trim(zed)
+    expect(alice.roomDoc.expiry.has('Gone')).toBe(false)
+    aliceNow += 7 * 24 * 60 * 60 * 1000
+    trim(alice)
+    expect(participantRecord(alice.roomDoc, 'Gone')).toBeUndefined()
+    expect(alice.roomDoc.scope('Gone')).toBeUndefined()
+    expect(participantRecord(zed.roomDoc, 'Gone')).toBeUndefined()
+    expect(logs).toContain('expired Gone: offline for 7 days')
   })
 })

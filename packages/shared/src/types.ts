@@ -70,7 +70,7 @@ export interface Scope {
 }
 
 export type Priority = 'fyi' | 'notify' | 'interrupt'
-export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'merge-conflict' | 'contract' | 'note' | 'scope' | 'base' | 'plan' | 'done'
+export type BuiltinMsgType = 'claim' | 'release' | 'changed' | 'question' | 'answer' | 'conflict' | 'merge-conflict' | 'contract' | 'note' | 'scope' | 'base' | 'pushed' | 'plan' | 'done'
 export type MsgType = keyof MessageMap & string
 
 export interface MsgBase {
@@ -98,6 +98,8 @@ export interface NoteMsg extends MsgBase { type: 'note'; text: string; inReplyTo
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }
 /** The room's base commit moved forward (someone committed/pulled a descendant). */
 export interface BaseMsg extends MsgBase { type: 'base'; base: string; prev: string; commits: number; paths: string[]; summary: string }
+/** The author's own commits fromSha..toSha are now on `upstream` (reporooms §B4): an observed upstream advance, never addressed. */
+export interface PushedMsg extends MsgBase { type: 'pushed'; branch: string; upstream: string; fromSha: string; toSha: string; commits: number; paths: string[]; summary: string }
 /** A declared plan changed: cancelled (released undone) or superseded by a new plan on the same symbol. Routed to everyone who was shown the original. */
 export interface PlanMsg extends MsgBase { type: 'plan'; status: 'cancelled' | 'superseded'; claimId: string; path: string; plan: Plan; replacedBy?: Plan; text: string }
 /** A worker finished its task; addressed to the lead that dispatched it. */
@@ -115,6 +117,7 @@ export interface MessageMap {
   note: NoteMsg
   scope: ScopeMsg
   base: BaseMsg
+  pushed: PushedMsg
   plan: PlanMsg
   done: DoneMsg
 }

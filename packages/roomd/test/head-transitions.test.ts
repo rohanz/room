@@ -77,15 +77,16 @@ it('keeps the new baseline after publishing a dirty overlay', async () => {
 it('retries after publication and claim re-anchoring without losing the baseline or moving claims twice', async () => {
   const { newHead, claim, retries } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'added\nfirst\nclaimed\nlast\ndirty\n')
-  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<void>; markIntegratedBaseNotices(notices: unknown[]): void; appliedHead: string }
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown>; markIntegratedBaseNotices(notices: unknown[]): void; appliedHead: string }
   const reanchor = internal.reanchorOwnClaims.bind(internal)
   const markNotices = internal.markIntegratedBaseNotices.bind(internal)
   let notices = 0
   internal.markIntegratedBaseNotices = messages => { notices++; markNotices(messages) }
   let fail = true
   internal.reanchorOwnClaims = async (head, claims) => {
-    await reanchor(head, claims)
+    const changes = await reanchor(head, claims)
     if (fail) { fail = false; throw new Error('injected post-publication failure') }
+    return changes
   }
   await daemon!.reconcileGitChanges()
   expect(internal.appliedHead).not.toBe(newHead)

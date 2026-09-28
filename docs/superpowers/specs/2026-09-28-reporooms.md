@@ -7,6 +7,9 @@ day) carries the human's decisions: D1, a hashless held side gives a *possible* 
 cutover (§Migration); D3, admitted means trusted (invariant 9); D5, presence ends within a bounded time and
 only the worktree's publisher writes base facts and posts `pushed` (invariants 10–11, §B2, §B4, participants
 view). It also records the wave-0 lead rulings on `participantRecord`, `acceptedGit` and presence.
+Revision 5 (wave 1, rollout step 2 as built): the `update by push` reflog test in §B4, the explicit-name
+`origin` fallback in §B3, the expiry tenure details (holder-only measurement, restart on a concurrent
+write) and H1 (risk 8).
 
 Lead rulings: **R1–R6** (the brief); **R1a** (this spec owns the participant record; registry adds
 `holder`); **R3c** (a team-room base is an anchor peers can resolve; a projected worker uses the lead's
@@ -51,7 +54,7 @@ deletion. 0.16.32's name lock gives way to the registry lease keyed by `roomKey`
 7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` or `possible` only on a clean evaluation at current inputs, never because its path left the candidate set. A slot is `conflict` only when both sides' versions were read; a side that is a hashless held entry (manifest invariant 16, D1) makes it at most `possible`.
 8. A branch switch never changes the room, the participant name, the cursor or the receipts.
 9. Admitted means trusted (SF6; confirmed by the human as D3, 2026-09-28): single-writer rules are client discipline plus fences, and a write the server drops is surfaced to its writer as a rejected state. Validated operations are post-redesign roadmap work.
-10. A participant's presence ends within a bounded time once its host session has finished, even when its MCP process lives on (D5; registry §18). A quiet session holding scope or claims whose host is still alive is shown idle, never dropped.
+10. A participant's presence ends within a bounded time once its host session has finished, even when its MCP process lives on (D5; registry §18). A quiet session holding scope or claims whose host is still alive is shown idle, never dropped; a shared app-server session idle for eight hours releases its own claims and scope first (H1, registry §18).
 11. Only the worktree's publisher (registry §16) writes a `git` record and posts `pushed`. Other sessions in the same checkout never write base facts or announce base moves (D5).
 
 ## Data model
@@ -129,10 +132,20 @@ stay and age toward the expiry below. **One destructive-expiry authority**
 continuous absence (records present, no fresh holder) with its **own monotonic clock** and adds only those
 measured durations to `expiry[name] = {observedMs, epoch}`. No wall-clock timestamp written by another
 machine is ever compared with the reader's clock. A new leader starts a new epoch and adds only its own
-measurements, and time with no leader counts for nothing. Any fresh holder sets `observedMs` to 0. When
-`observedMs` ≥ `ROOM_STALE_DAYS` (7), the leader runs `expireParticipant(name)`: participant fields,
-manifest, head, text, claims, scope and owned slots, in one transaction. Workers are retired by their
-projector (registry). `evictStale` (`join.ts:342-356`) goes.
+measurements, and time with no leader counts for nothing. The leader clears the entry of any fresh holder
+(`observedMs` reads 0). When `observedMs` ≥ `ROOM_STALE_DAYS` (7), the leader runs
+`expireParticipant(name)`: participant fields, manifest, head, text, claims (with release notices), scope,
+graph and owned slots, in one transaction; owed mail is the ledger's and stays. Workers are retired by their
+projector (registry) and are never measured. `evictStale` (`join.ts:342-356`) goes.
+
+As built (wave 1, `shared/src/expiry.ts`, `ExpiryTenure` and `expireParticipant`; wired into
+`trimBusIfLeader` through the ledger's `trimLeader`/`leadsTrim`): a tenure starts when `leadsTrim` flips
+to true (a new `ep_…` epoch) and ends when it flips back. Its first observation of an absent participant
+only starts a measurement. It adds time only while `expiry[name]` still holds what the tenure last saw
+there; a write by another leader (a partition) or a deletion restarts its measurement from the value found,
+so two leaders never count the same interval twice. Only participants with a `holder` field are measured:
+until wave 4 writes `holder`, no participant can be `fresh`, and measuring holderless records would expire
+live participants.
 
 **No `expiresAt` in the view.** An earlier draft had `ParticipantView.expiresAt?`; it is dropped. A
 timestamp would have to be derived from another machine's measurement, the thing this paragraph rules
@@ -142,7 +155,8 @@ about 4" computes `ROOM_STALE_DAYS − observedMs` at render time, so the partic
 for it. That display lands with the expiry authority (the trim leader's `expiry` writes and
 `expireParticipant`) in rollout step (2), the plan's wave-1 `base` worker (lead ruling, 2026-09-28): it is
 participant lifecycle, owned here, and wave 1 is where the ledger's trim leader lands (`delivery`). The
-leader election stays the ledger's; step (2) consumes it through `delivery`'s API.
+leader election stays the ledger's; step (2) consumes it through `delivery`'s API. The "expires in about
+N days" rendering itself is a view change and lands with the web readers.
 
 ### Conflict slots: new root `conflicts`
 
@@ -245,6 +259,11 @@ writer per checkout there is one.
    code changed in <sha>"), and `pushed` if §B4 applies. `snapshotOwnClaims`/`reanchorOwnClaims`
    (`:876-916`) fold into steps 4 and 5.
 
+A transition runs whenever HEAD, the branch or the room remote's refs of interest move (`refsKey`), and
+the record is rewritten (`rev + 1`) only when one of its fields changed. Until the publisher lease (wave 4),
+the one seam `publishesBaseFacts()` is today's `!publishUnder`. The record's `fence` is the daemon's bound
+host session (`RoomdOptions.sessionId`), else a per-daemon id until wave 4 binds one.
+
 **Restart.** What survives is the CRDT `git` record and `manifestHead`. At start the daemon runs the same
 transition with `prev` = the recorded `git.head`, so a crash anywhere before step 5 is retried in full. If
 `prev` is not in the clone, or the record was lost with a snapshot, step 4 finds claims by `claimedHash`
@@ -257,7 +276,9 @@ kept (a task, not a branch), there is no banner, and a worker's branchless room 
 
 ```
 local room:           worker -> its carried commit C (registry pins it); otherwise HEAD
-team room, own:       remote = the room's remote (the remote whose URL canonicalizes to the room name)
+team room, own:       remote = the room's remote (the remote whose URL canonicalizes to the room name;
+                               until the cutover also a prefix of a legacy branch-room name; for an
+                               explicit room name no remote matches, and `origin` is used)
                       refs   = @{upstream} if on that remote, <remote>/<branch>, <remote>/HEAD (those that exist)
                       if a ref contains HEAD   -> base = HEAD
                       else candidates = merge-base(HEAD, ref) for each ref, non-empty
@@ -281,7 +302,9 @@ team room, projected worker (bridge): base = the lead's current team-room base (
   name, not assumed `origin`): `git -c credential.interactive=never fetch --no-tags --no-write-fetch-head
   <remote> <sha>` with `GIT_TERMINAL_PROMPT=0`, 20 s timeout, objects only (no ref or file change), at
   most once per sha per 5 minutes (in-memory). Failure gives `unknown: missing <sha>` in `NeedFetch`'s
-  wording (`context.ts:155`).
+  wording (`context.ts:155`). `comparePair(dir, remote, a, b)` (`roomd/src/base.ts`) is the pairwise
+  primitive: `{mergeBase}`, or `{cannotCompare}` with `unknown: no anchor`, `unknown: missing <sha>` or
+  `unknown: unrelated histories`; it never throws for these.
 - **Deleted:** the divergence throw and meta seeding (`:431-452`), the `metaMap` observer (`:465-467`),
   `maybeAdvance`, `advanceBase` and `refreshBaseStatus` (`:824-873`), `gitPushedRoomHead` and
   `gitRoomRemoteBranchExists` (`git.ts:226-241`), and `baseRecovery` plus the code-2 base path
@@ -293,9 +316,13 @@ team room, projected worker (bridge): base = the lead's current team-room base (
   same checkout never posts it. A lease handover posts nothing for moves before it: the new publisher had
   no `git` record, so its first transition has no `prev` and derives no `pushed` (as for a lost record,
   below).
-- **When:** in §B2 step 5, iff the branch is unchanged, `prev.base` is a *strict ancestor* of `next.base`,
-  and `next.base` is an ancestor of (or equal to) `prev.head`: the anchor moved forward over commits this
-  participant already had. A pull of others' commits fails the third test, a reset the second. It records
+- **When:** in §B2 step 5, iff the branch is unchanged, both records are anchored, `prev.base` is a
+  *strict ancestor* of `next.base`, and either `next.base` is an ancestor of (or equal to) `prev.head`, or
+  the anchor ref's reflog shows this clone's own push moved it to `next.base` (`update by push`): the
+  anchor moved forward over commits this participant already had. The reflog test covers a commit and its
+  push seen in one 3 s poll (`git commit && git push`, the usual agent sequence), which the ancestry test
+  alone cannot tell from a pull. A pull of others' commits fails the third test (a fetch never writes
+  `update by push`), a reset the second. It records
   an observed upstream advance, not who pushed: "ben's local commits abc1234..def5678 are now on
   origin/feat-x (3 commits: …)".
 - **Guarantee.** The notice and the record share one Y transaction, but a Y transaction is not a durable
@@ -717,8 +744,10 @@ lines: seven or eight Codex tasks; splits belong to the implementation plan.
    member. The mitigations are the one-time disclosure and `.roomignore`.
 3. **Noise.** Everyone in a repo is company. Path guidance still fires only through `nearPath`.
 4. **Automatic `git fetch <sha>`** (§B3). Is an objects-only background fetch acceptable, or should Room
-   only advise, as today? Proposed: fetch, with `ROOM_AUTO_FETCH=0` to turn it off. GitHub may refuse to
-   serve commits that were force-pushed away; check its current docs before relying on it.
+   only advise, as today? Built in step 2: fetch, with `ROOM_AUTO_FETCH=0` to turn it off. Checked
+   2026-09-28: GitHub serves a want by SHA only for commits reachable from a ref
+   (`uploadpack.allowReachableSHA1InWant` behaviour), so a commit force-pushed away cannot be fetched;
+   that pair stays "cannot compare" until the owner's anchor moves, as §B3 says.
 5. **Pre-spawn version check.** Reading a target host's installed Room version is host behaviour that
    changes weekly. Verify against current Claude Code plugin docs and `codex --help` (see
    `docs/host-survey-2026-09-24-*.md`). §B12's "has not joined" detail is the backstop.
@@ -726,7 +755,8 @@ lines: seven or eight Codex tasks; splits belong to the implementation plan.
 7. **Upgrade lockout (R6a, D2).** It is abrupt but explicit, and the human chose it: 0.16 clients stop
    with a clear update text. A local migration stays "in progress" while a 0.16 session keeps its relay
    alive (N2).
-8. **A finished host that left scope or claims (D5).** The idle lease never drops a session holding scope
-   or claims, so a Codex thread under the shared app-server that finished without `room_done` stays
-   present, shown "idle Nh; holds …", until its MCP exits. Registry open question 5 asks whether a longer
-   cap should apply.
+8. **A finished host that left scope or claims (D5, H1).** Decided by the human on 2026-09-28 (H1,
+   registry §18): a shared app-server session idle for eight hours releases its own claims and clears its
+   scope, with one notice naming them; the next idle-lease tick then ends its presence. Until then it
+   stays present, shown "idle Nh; holds …". An interactive CLI session is never released for quiet
+   time. Its records then age toward the expiry above like any absent participant's.
