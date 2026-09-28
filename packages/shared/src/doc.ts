@@ -2,6 +2,8 @@ import diff from 'fast-diff'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import * as Y from 'yjs'
+import { randomBytes } from 'node:crypto'
+import type { CoordinationRecord, ManifestEntry, ManifestHead } from './manifest.js'
 import type {
   ChatItem,
   Claim,
@@ -86,6 +88,16 @@ export class RoomDoc {
   get expiry(): Y.Map<{ observedMs: number; epoch: string }> { return this.doc.getMap('expiry') }
   /** Persistent participant -> palette slot assignments. */
   get colors(): Y.Map<number> { return this.doc.getMap<number>('colors') }
+  /** One writer per incarnation key; the head remains a plain value. */
+  get manifest(): Y.Map<Y.Map<ManifestEntry>> { return this.doc.getMap('manifest') }
+  get manifestHead(): Y.Map<ManifestHead> { return this.doc.getMap('manifestHead') }
+  get coordination(): Y.Map<CoordinationRecord> { return this.doc.getMap('coordination') }
+  get roomSalt(): string | undefined { return this.metaMap.get('roomSalt') as string | undefined }
+  /** Local/test fallback until room creation owns salt in the schema-2 cutover. */
+  ensureRoomSalt(): string {
+    if (!this.roomSalt) this.doc.transact(() => { if (!this.roomSalt) this.metaMap.set('roomSalt', randomBytes(32).toString('hex')) })
+    return this.roomSalt!
+  }
 
   constructor(doc: Y.Doc = new Y.Doc()) {
     this.doc = doc
@@ -403,7 +415,7 @@ export class RoomDoc {
 
   // ---- meta --------------------------------------------------------------
 
-  get meta(): Meta {
+  get meta(): Meta & { roomSalt?: string } {
     const map = this.metaMap
     return {
       repo: map.get('repo') as string | undefined,
@@ -412,6 +424,7 @@ export class RoomDoc {
       createdAt: map.get('createdAt') as number | undefined,
       seededBy: map.get('seededBy') as string | undefined,
       schemaVersion: map.get('schemaVersion') as number | undefined,
+      roomSalt: map.get('roomSalt') as string | undefined,
     }
   }
 

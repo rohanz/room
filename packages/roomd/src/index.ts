@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { Publisher } from './publisher.js'
+import { publishManifest, scanManifest } from './manifest-publish.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 import { WebSocket } from 'ws'
@@ -26,7 +27,7 @@ import { claimDigest, reanchorClaims } from './reanchor.js'
 import type { Claim, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, newId, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
@@ -83,6 +84,8 @@ function machineIdentity(log: (line: string) => void): string {
 }
 
 export interface RoomdOptions {
+  /** Host session holding this participant name; stable for the daemon lifetime. */
+  sessionId?: string
   /** Full room URL, e.g. ws://host:1234/my-room */
   room: string
   /** Path to the git clone. */
@@ -297,6 +300,9 @@ class Daemon implements Roomd {
   private readonly watchedDirectory: string
   publishUnder?: string
   private publisherChosen = false
+  private readonly fence: string
+  private manifestSaltObserved = false
+  private readonly manifestContent = new Map<string, { hash: string; at: number }>()
   private symlinks = new Set<string>()
   private loggedSkips = new Set<string>()
   /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
@@ -318,6 +324,7 @@ class Daemon implements Roomd {
     if (options.label) assertValidParticipantName(options.label)
     this.dir = path.resolve(options.dir)
     this.name = options.name
+    this.fence = options.sessionId ?? newId('daemon_')
     this.kind = options.kind ?? 'human'
     this.owner = options.owner ?? options.name
     this.label = options.label
@@ -522,7 +529,44 @@ class Daemon implements Roomd {
   }
 
   private isShared(relpath: string): boolean { return this.publisher.isShared(relpath) }
-  private resharePaths(): Promise<void> { return this.publisher.resharePaths() }
+  private async resharePaths(): Promise<void> {
+    await this.publisher.resharePaths()
+    await this.publishManifestSnapshot()
+  }
+
+  private async publishManifestSnapshot(): Promise<void> {
+    if (this.stopped) return
+    if (!this.manifestSaltObserved) {
+      this.manifestSaltObserved = true
+      this.roomDoc.metaMap.observe(event => {
+        if (event.keysChanged.has('roomSalt') && !this.stopped) void this.enqueue(() => this.publishManifestSnapshot())
+      })
+    }
+    const base = this.shared
+    const level = this.share
+    const generation = this.sharingGeneration
+    const fence = this.fence
+    const holder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
+    if (holder && holder.sessionId !== fence) return
+    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: true, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
+    const facts = await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) })
+    const currentHolder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
+    if (this.stopped || base !== this.shared || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
+    for (const fact of facts) {
+      if (fact.text === undefined) continue
+      try {
+        const stat = fs.lstatSync(this.abs(fact.path))
+        if (!stat.isFile() || !this.isSafeRoomPath(fact.path) || stat.size !== Buffer.byteLength(fact.text) || fs.readFileSync(this.abs(fact.path), 'utf8') !== fact.text) return
+      } catch { return }
+    }
+    for (const fact of facts) {
+      const identity = fact.hash ?? (fact.change === 'D' ? 'D' : 'excluded')
+      const before = this.manifestContent.get(fact.path)
+      fact.at = before?.hash === identity ? before.at : Date.now()
+      this.manifestContent.set(fact.path, { hash: identity, at: fact.at })
+    }
+    publishManifest(input, facts)
+  }
 
 
   private loadRoomIgnore(): void {
@@ -624,6 +668,7 @@ class Daemon implements Roomd {
       try {
         await this.pollHead()
         await this.publisher.reconcile(await gitChanged(this.dir))
+        await this.publishManifestSnapshot()
       } finally { this.reconcileQueued = false }
     })
   }
@@ -1092,7 +1137,7 @@ class Daemon implements Roomd {
         this.tracked.add(relpath)
       }
       await this.publisher.publishDiskState(relpath)
-    } finally { release() }
+    } finally { release(); await this.publishManifestSnapshot() }
   }
 
   /** Does git track (or offer as untracked) any file under this directory? */
