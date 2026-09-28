@@ -51,7 +51,7 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
   const old = room.manifest.get(key)
   const entries = new Map<string, ManifestEntry>()
   const excluded: string[] = []
-  if (input.level !== 'intent' && !input.publisher) {
+  if (input.complete && input.level !== 'intent' && !input.publisher) {
     for (const fact of facts) {
       if (fact.excluded) { excluded.push(digestPath(salt, fact.path)); continue }
       const permit = authorized(input, fact.path)
@@ -73,7 +73,7 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
   const exclusionChanged = JSON.stringify(excluded) !== JSON.stringify(previous?.excluded ?? [])
   const rev = (previous?.rev ?? 0) + (entryChanged || exclusionChanged ? 1 : 0)
   const head: ManifestHead = {
-    base: input.base, fence, coverage: input.publisher ? { kind: 'none', reason: 'not-publisher' } : input.level === 'intent' ? { kind: 'none', reason: 'intent' } : { kind: 'all' },
+    base: input.base, fence, coverage: input.publisher ? { kind: 'none', reason: 'not-publisher' } : input.level === 'intent' ? { kind: 'none', reason: 'intent' } : !input.complete ? { kind: 'none', reason: 'starting' } : { kind: 'all' },
     level: input.level, ...(input.level === 'declared' ? { textPrefixes: [...input.prefixes] } : {}), excluded,
     rev, semRev: 0, scannedAt: input.scannedAt ?? Date.now(), complete: input.complete,
     ...(input.publisher ? { publisher: input.publisher } : {}),

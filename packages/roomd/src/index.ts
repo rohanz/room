@@ -549,16 +549,16 @@ class Daemon implements Roomd {
         if (event.keysChanged.has('roomSalt') && !this.stopped) void this.enqueue(() => this.publishManifestSnapshot())
       })
     }
-    const base = this.shared
+    const { base, anchored } = this.anchor
     const level = this.share
     const generation = this.sharingGeneration
     const fence = this.fence
-    const holder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
+    const holder = participantRecord(this.roomDoc, this.name)?.holder
     if (holder && holder.sessionId !== fence) return
-    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: true, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
-    const facts = await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) })
-    const currentHolder = this.roomDoc.participants.get(`${this.name}\0holder`) as { sessionId?: string } | undefined
-    if (this.stopped || base !== this.shared || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
+    const input = { room: this.roomDoc, name: this.name, fence, base, level, prefixes: this.scopePaths(), complete: anchored, ...(this.publishUnder ? { publisher: this.publishUnder } : {}) }
+    const facts = anchored ? await scanManifest({ ...input, dir: this.dir, sizeCap: this.sizeCap, totalBudget: this.totalBudget, safe: p => this.isSafeRoomPath(p) }) : []
+    const currentHolder = participantRecord(this.roomDoc, this.name)?.holder
+    if (this.stopped || base !== this.anchor.base || anchored !== this.anchor.anchored || level !== this.share || generation !== this.sharingGeneration || JSON.stringify(input.prefixes) !== JSON.stringify(this.scopePaths()) || (currentHolder && currentHolder.sessionId !== fence)) return
     for (const fact of facts) {
       if (fact.text === undefined) continue
       try {
@@ -839,6 +839,7 @@ class Daemon implements Roomd {
     if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
     await this.commitTransition(inputs, resolved, claims)
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
+    await this.publishManifestSnapshot()
     this.setStatus(resolved.status)
     if (headMoved) this.markIntegratedBaseNotices(this.roomDoc.messages())
     this.appliedHead = head
