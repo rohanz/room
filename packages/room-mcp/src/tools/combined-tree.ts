@@ -169,17 +169,17 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
     const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
+    const leadBase = baseFor(session, person)
     const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead
-      && await descends(baseFor(session, person), pair.sha)
+      && await descends(leadBase, pair.sha)
     for (const p of paths) {
       const mine = merged.get(p)
       const b = await baseAt(pair, p)
-      // The lead's HEAD predates a worker's carried changes. With no published overlay for
-      // this path, the lead has no visible post-spawn edit; use the worker's shared base.
-      const unchangedLead = leadUsesCarriedBase && !previewWorker(session, person) && session.room.text(p, person) === undefined
-        && !session.room.deleted.get(person)?.has(p)
-      const theirsRaw = unchangedLead ? b : await previewText(session, p, person)
-      const mineT = mine ?? '', theirs = theirsRaw === undefined ? b : theirsRaw
+      const theirsRaw = await previewText(session, p, person)
+      // The lead's HEAD predates the carried changes. If its current text still equals
+      // that HEAD, use the worker's shared base instead of treating it as a revert.
+      const unchangedLead = leadUsesCarriedBase && theirsRaw === await textAt(leadBase, p)
+      const mineT = mine ?? '', theirs = unchangedLead || theirsRaw === undefined ? b : theirsRaw
       if (theirs === b) continue
       if (mine === theirs) {
         const prior = owners.get(p) ?? [caller.me.name]
