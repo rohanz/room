@@ -10,6 +10,9 @@ view). It also records the wave-0 lead rulings on `participantRecord`, `accepted
 Revision 5 (wave 1, rollout step 2 as built): the `update by push` reflog test in §B4, the explicit-name
 `origin` fallback in §B3, the expiry tenure details (holder-only measurement, restart on a concurrent
 write) and H1 (risk 8).
+Revision 6 (same day, the lead's hub decision; [hub spec](2026-09-28-hub.md)): the room's hub grants names
+with an epoch and writes `holder`, posts are hub requests (so `pushed` and conflict notices follow their
+transactions by ID), and the hub is the one expiry authority, on its own clock.
 
 Lead rulings: **R1–R6** (the brief); **R1a** (this spec owns the participant record; registry adds
 `holder`); **R3c** (a team-room base is an anchor peers can resolve; a projected worker uses the lead's
@@ -47,10 +50,10 @@ deletion. 0.16.32's name lock gives way to the registry lease keyed by `roomKey`
 
 1. A room name has no branch: the canonical repo name for team rooms, `local/<main worktree basename>` or an explicit name for local rooms.
 2. Nothing reads or writes a room-wide commit; `meta.base`, `meta.branch` and `meta.seededBy` are gone.
-3. Each participant field has one writer (`git`: the worktree's publisher, registry §16, or the projector; `id`, `holder`: the lease-holding session), and readers accept `git` only through `acceptedGit`, whose fence check is eventually consistent across machines (R1a).
+3. Each participant field has one writer (`git`: the worktree's publisher, registry §16, or the projector; `id`: the lease-holding session; `holder`: the room's hub, hub §4.1), and readers accept `git` only through `acceptedGit`, whose fence is the hub-granted lease (R1a; the epoch from wave 4).
 4. `git.base` is an anchor every reader can try to resolve (R3c); with none, `anchored: false` and peers report "cannot compare", and base resolution never throws.
 5. A pair is compared at `merge-base(A.base, B.base)`, and a commit that cannot be fetched yields "cannot compare" for that pair only, never an error, "equals base" or a daemon stop.
-6. A HEAD transition ends in one Y transaction writing the `git` record, the manifest entries and head (manifest §5.4), the owner's claim moves and releases, and any `pushed` notice.
+6. A HEAD transition ends in one Y transaction writing the `git` record (with `pushedPending` when a `pushed` is owed), the manifest entries and head (manifest §5.4), and the owner's claim moves and releases; the `pushed` notice is then posted to the hub by its deterministic ID (§B4; hub §2.3).
 7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` or `possible` only on a clean evaluation at current inputs, never because its path left the candidate set. A slot is `conflict` only when both sides' versions were read; a side that is a hashless held entry (manifest invariant 16, D1) makes it at most `possible`.
 8. A branch switch never changes the room, the participant name, the cursor or the receipts.
 9. Admitted means trusted (SF6; confirmed by the human as D3, 2026-09-28): single-writer rules are client discipline plus fences, and a write the server drops is surfaced to its writer as a rejected state. Validated operations are post-redesign roadmap work.
@@ -80,7 +83,7 @@ export function roomKey(server: string | 'local', room: string): string  // regi
 ```ts
 // participants: Y.Map<string, unknown>; key `${name}\u0000${field}`; every value is a whole JSON value (LWW)
 'id'     -> { name, kind, owner?, label?, host? }                    // writer: lease-holding session
-'holder' -> { sessionId, machine, pid, startTime, executable }       // writer: lease-holding session (registry R1a)
+'holder' -> { sessionId, epoch, pid, startTime, executable, workerId?, at, ended? } // writer: the room's hub (hub §4.1)
 'git'    -> ParticipantGit                                           // writer: the worktree publisher's daemon, or projector
 'proj'   -> { projectedFrom: string /*worker id*/, projectedBy: string /*lead name*/ } // writer: projector
 interface ParticipantGit {
@@ -89,7 +92,8 @@ interface ParticipantGit {
   remote?: string; upstream?: string // the room's remote and the ref used; ahead/behind are display only
   ahead?: number; behind?: number
   rev: number                        // +1 per completed HEAD transition
-  fence: string                      // session id of the writer's lease holder (own) or the lead's (projection)
+  fence: string                      // the writer's lease epoch (own) or the lead's (projection); session id until wave 4
+  pushedPending?: { fromSha: string; toSha: string } // a `pushed` this transition owes (§B4)
 }
 export function participantRecord(doc: RoomDoc, name: string): ParticipantRecord | undefined // raw fields, unfenced
 export function acceptedGit(record: ParticipantRecord, view: ParticipantView[]): ParticipantGit | 'updating'
@@ -99,8 +103,10 @@ No nested `Y.Map` exists, so two clones inserting `ben` concurrently cannot deta
 each field is last-writer-wins. **Fence (wave-0 lead ruling):** `participantRecord` returns the raw fields
 and applies no fence. Every reader of `git` goes through `acceptedGit`, the one place that applies both
 fences: `git.fence === holder.sessionId` (own) or `=== liveHolder(view, proj.projectedBy)` (projection);
-otherwise it returns `'updating'`. The loser of a `holder` race sees the mismatch within one tick, stops
-publishing and renames (registry §15). `manifestHead.fence` (manifest §4.1) follows the same rule. A
+otherwise it returns `'updating'`. From wave 4 the compared value is the hub's lease epoch (hub §4.1). There
+is no `holder` race: the hub grants the name to one session, and a session whose lease lapsed or was
+superseded stops publishing and re-acquires or renames (registry §15). `manifestHead.fence` (manifest §4.1)
+follows the same rule. A
 participant that shares a checkout with its publisher has no `git` field (invariant 11); readers show
 "shares this checkout with <publisher>" from its `manifestHead.publisher` (manifest §5.7).
 
@@ -127,13 +133,13 @@ from 10 minutes on: "ben (idle 25 min)", and for a quiet session that holds scop
 holds 2 claims)". Such a participant stays fresh and keeps its claims; leaving presence (awareness removed,
 provider closed) is what makes it not fresh. Leaving deletes nothing: its records, claims and owed mail
 stay and age toward the expiry below. **One destructive-expiry authority**
-(Astra 12, Fable 7): the trim leader (`trimBusIfLeader`, `roomd/src/index.ts:986`, the ledger's role).
-**Observation epochs (S5):** each leadership tenure is an epoch. During its own epoch a leader measures
-continuous absence (records present, no fresh holder) with its **own monotonic clock** and adds only those
+(Astra 12, Fable 7): the room's hub (hub §8; amended for the hub, it was the trim leader).
+**Observation epochs (S5):** each hub incarnation is an epoch. During its own epoch the hub measures
+continuous absence (records present, no live lease) with its **own monotonic clock** and adds only those
 measured durations to `expiry[name] = {observedMs, epoch}`. No wall-clock timestamp written by another
-machine is ever compared with the reader's clock. A new leader starts a new epoch and adds only its own
-measurements, and time with no leader counts for nothing. The leader clears the entry of any fresh holder
-(`observedMs` reads 0). When `observedMs` ≥ `ROOM_STALE_DAYS` (7), the leader runs
+machine is ever compared with the hub's clock. A new incarnation starts a new epoch and adds only its own
+measurements, and time with no hub counts for nothing. The hub clears the entry of any live holder
+(`observedMs` reads 0). When `observedMs` ≥ `ROOM_STALE_DAYS` (7), the hub runs
 `expireParticipant(name)`: participant fields, manifest, head, text, claims (with release notices), scope,
 graph and owned slots, in one transaction; owed mail is the ledger's and stays. Workers are retired by their
 projector (registry) and are never measured. `evictStale` (`join.ts:342-356`) goes.
@@ -145,17 +151,19 @@ only starts a measurement. It adds time only while `expiry[name]` still holds wh
 there; a write by another leader (a partition) or a deletion restarts its measurement from the value found,
 so two leaders never count the same interval twice. Only participants with a `holder` field are measured:
 until wave 4 writes `holder`, no participant can be `fresh`, and measuring holderless records would expire
-live participants.
+live participants. **The hub step** keeps `ExpiryTenure` and `expireParticipant` in `shared/src/expiry.ts`,
+runs them in the hub with `epoch = inc:<I>` and `fresh` meaning "live lease", and deletes the roomd wiring and
+`trimLeader`/`leadsTrim` (hub §8). The partition case above cannot arise with one hub.
 
 **No `expiresAt` in the view.** An earlier draft had `ParticipantView.expiresAt?`; it is dropped. A
 timestamp would have to be derived from another machine's measurement, the thing this paragraph rules
 out, and nothing in step 1 writes `expiry`. `visible` (records present and not yet expired) plus the
-leader-written `expiry[name].observedMs` cover it: a view that wants to show "offline 3 days; expires in
+hub-written `expiry[name].observedMs` cover it: a view that wants to show "offline 3 days; expires in
 about 4" computes `ROOM_STALE_DAYS − observedMs` at render time, so the participants view needs no field
 for it. That display lands with the expiry authority (the trim leader's `expiry` writes and
 `expireParticipant`) in rollout step (2), the plan's wave-1 `base` worker (lead ruling, 2026-09-28): it is
-participant lifecycle, owned here, and wave 1 is where the ledger's trim leader lands (`delivery`). The
-leader election stays the ledger's; step (2) consumes it through `delivery`'s API. The "expires in about
+participant lifecycle, owned here, and wave 1 is where the ledger's trim leader landed (`delivery`). The
+hub step then moved the authority to the hub (above). The "expires in about
 N days" rendering itself is a view change and lands with the web readers.
 
 ### Conflict slots: new root `conflicts`
@@ -170,7 +178,7 @@ interface ConflictSlot {
   settled: 'conflict' | 'possible' | 'clean' | 'none'  // last non-unknown status; drives epochs across `unknown`
   epoch: number             // +1 on every notified conflict (§B5 step 4)
   lines?: number[]; why?: string
-  fence: string             // the evaluator's lease-holder session (own, or the projector's for a projected owner)
+  fence: string             // the evaluator's lease (own, or the projector's for a projected owner); epoch from wave 4
   checkedAt: number; retryAt?: number   // display; unknown retry schedule
 }
 // key (slot identity): `${owner}\0${kind}\0${other}\0${path}\0${subject ?? ''}`
@@ -199,7 +207,8 @@ observe-only guard in `server/src/readonly.ts`, and nothing relies on it (SF6).
 ### Meta, messages, server records, local files
 
 - **`meta`** is `{repo, createdAt, schemaVersion: 2, roomSalt}`. The room creator writes `roomSalt` once,
-  for the manifest (§4.1). The root `expiry` is written only by the trim leader. The roots `unresolved`
+  for the manifest (§4.1). The hub mirrors its counters as `hubIncarnation`, `hubEpoch`, `hubSeq` (hub §3).
+  The root `expiry` is written only by the hub. The roots `unresolved`
   (written by migration, deleted by the claiming session) and `aliases` (placeholder → name, written by the
   claiming session) exist only after a migration with ambiguous names. `bases` and `baseOf`'s
   `meta.base` fallback (`doc.ts:226-229`) are not part of schema 2. `baseOf` reads
@@ -214,7 +223,8 @@ observe-only guard in `server/src/readonly.ts`, and nothing relies on it (SF6).
     step?: 'planned'|'frozen'|'moved' }                  // migration progress (§Migration)
   ```
   `branches` becomes `legacy` on load and is never trimmed before the purge (map risk 4).
-- **Local files (R5):** `<common>/room/relay.json` `{schema: 2, port, pid, startTime, key}` (§B12), memory
+- **Local files (R5):** `<common>/room/relay.json` `{schema: 2, port, pid, startTime, key}` (§B12), the hub's
+  `<common>/room/hub/authority.lock` and `incarnation.json` (hub §3, §5), memory
   `<common>/room/relay/<enc(room)>.ydoc`, catch-up ledger `<common>/room/relay/migrated.json`. 0.16's
   `room-local.json` and `room-local/*.ydoc` are left to the old relay and migration. `room-choice.json`'s
   `room` is only ever explicit (`choice.ts:52`), so it is kept verbatim (SF4).
@@ -256,8 +266,10 @@ writer per checkout there is one.
    `prev = participantRecord(me).git.head`.
 5. **One transaction (invariant 6):** the new `git` record (`rev + 1`), the reconciled manifest entries
    and `manifestHead {complete: true, base}`, claim moves (`moveClaim`) and releases with their note ("that
-   code changed in <sha>"), and `pushed` if §B4 applies. `snapshotOwnClaims`/`reanchorOwnClaims`
+   code changed in <sha>"), and `git.pushedPending` if §B4 applies. `snapshotOwnClaims`/`reanchorOwnClaims`
    (`:876-916`) fold into steps 4 and 5.
+6. If `pushedPending` is set, post `pushed` to the hub by its ID (hub §2.3; posts are hub requests since
+   the hub decision, so the notice cannot share step 5's transaction).
 
 A transition runs whenever HEAD, the branch or the room remote's refs of interest move (`refsKey`), and
 the record is rewritten (`rev + 1`) only when one of its fields changed. Until the publisher lease (wave 4),
@@ -265,7 +277,8 @@ the one seam `publishesBaseFacts()` is today's `!publishUnder`. The record's `fe
 host session (`RoomdOptions.sessionId`), else a per-daemon id until wave 4 binds one.
 
 **Restart.** What survives is the CRDT `git` record and `manifestHead`. At start the daemon runs the same
-transition with `prev` = the recorded `git.head`, so a crash anywhere before step 5 is retried in full. If
+transition with `prev` = the recorded `git.head`, so a crash anywhere before step 5 is retried in full, and
+re-posts a recorded `pushedPending` by its ID, which the hub dedupes (a crash between steps 5 and 6). If
 `prev` is not in the clone, or the record was lost with a snapshot, step 4 finds claims by `claimedHash`
 over the current text and releases the rest. Manifest §5.4's final transaction is this one. Scope is
 kept (a task, not a branch), there is no banner, and a worker's branchless room is never stranded.
@@ -316,7 +329,7 @@ team room, projected worker (bridge): base = the lead's current team-room base (
   same checkout never posts it. A lease handover posts nothing for moves before it: the new publisher had
   no `git` record, so its first transition has no `prev` and derives no `pushed` (as for a lost record,
   below).
-- **When:** in §B2 step 5, iff the branch is unchanged, both records are anchored, `prev.base` is a
+- **When:** decided in §B2 step 5 (recorded as `pushedPending`, posted in step 6), iff the branch is unchanged, both records are anchored, `prev.base` is a
   *strict ancestor* of `next.base`, and either `next.base` is an ancestor of (or equal to) `prev.head`, or
   the anchor ref's reflog shows this clone's own push moved it to `next.base` (`update by push`): the
   anchor moved forward over commits this participant already had. The reflog test covers a commit and its
@@ -325,10 +338,11 @@ team room, projected worker (bridge): base = the lead's current team-room base (
   `update by push`), a reset the second. It records
   an observed upstream advance, not who pushed: "ben's local commits abc1234..def5678 are now on
   origin/feat-x (3 commits: …)".
-- **Guarantee.** The notice and the record share one Y transaction, but a Y transaction is not a durable
-  commit. A relay crash before its deferred snapshot (`relay/src/memory.ts:83`) loses both. The restart
-  derives `pushed` only from a **surviving** `git` record. If the prior record survived, the same ID is
-  posted and readers dedupe it while the first copy is in `bus ∪ mail`. If it was lost, the anchor updates
+- **Guarantee.** The record (with `pushedPending`) is one Y transaction, and the notice follows it as a hub
+  post by ID; neither is a durable commit. A relay crash before its deferred snapshot
+  (`relay/src/memory.ts:83`) can lose both. The restart derives `pushed` only from a **surviving** `git`
+  record. If the prior record survived, the same ID is posted and the hub returns the first copy while it is
+  in `bus ∪ mail ∪ archive ∪ outcomes` (hub §2.3). If it was lost, the anchor updates
   silently and **no `pushed` is fabricated** (current refs cannot recover `fromSha`). Delivery is therefore
   at most once per `{fromSha, toSha}` observed with a surviving record, not guaranteed.
 - **Routing** (`MessageKinds.pushed`, answering ledger Q3; `MessageRouteContext` gains `upstream`,
@@ -364,9 +378,10 @@ team room, projected worker (bridge): base = the lead's current team-room base (
 4. **Transitions** (only slots of owners I evaluate). A result of `conflict` is **notified** when
    `settled != 'conflict'` (first conflict, after clean, or clean→unknown→conflict) or when `factId`
    differs from the slot's (a different conflict, e.g. a second incompatible signature; S3). A notified
-   conflict bumps `epoch`, sets `settled: 'conflict'`, and writes the slot and its notice `cf:<h>:<epoch>` in
-   one transaction: to the owner (a projected owner: below), plus `…:holder` to `b` for `edit-in-claim`
-   (`conflicts.ts:349-352`).
+   conflict bumps `epoch`, sets `settled: 'conflict'`, writes the slot, then posts its notice
+   `cf:<h>:<epoch>` to the hub by ID: to the owner (a projected owner: below), plus `…:holder` to `b` for
+   `edit-in-claim` (`conflicts.ts:349-352`). Posts are hub requests (hub §2.3), so slot and notice no longer
+   share a transaction; the level reconcile below covers the crash between them, for every owner.
    A result of `possible` is handled the same way with its own `settled: 'possible'`: notified (as `fyi`,
    one line) when `settled` differs or its `factId` changed, so re-edits of the hashless file are silent. A
    `possible` that becomes `conflict` once both sides can be read (the owner widens its declared area, or
@@ -376,6 +391,8 @@ team room, projected worker (bridge): base = the lead's current team-room base (
    `settled` and `epoch`, and retries at `retryAt` (1, 2, 4, then 8 min) whatever its inputs; so
    conflict→unknown→the same conflict is silent. A slot is deleted only when `clean` and out of the
    candidates, when `b` expires, or when its owner retires.
+   **Every owner, on start and reconnect (hub):** for each slot it evaluates with `settled` of `conflict`
+   or `possible` at epoch e, it posts `cf:<h>:<e>` by ID; the hub returns the existing copy if there is one.
    **Projected workers (N1).** A projected worker's notice lives in the workers-room doc, so it cannot share
    the team slot's transaction. The projector **level-reconciles** it instead, on start, reconnect and any
    change to `conflicts` or the workers room. For every team slot owned by projected W with `settled` of
@@ -384,7 +401,8 @@ team room, projected worker (bridge): base = the lead's current team-room base (
    cross-document transaction exists, and a crash between the two docs is repaired by the next reconcile.
 5. **Triggers:** start after first sync (Astra 10), reconnect (`synced`), observers of `manifest`,
    `manifestHead`, `participants`, `claims`, `graphs` (2 s debounce), and a 60 s tick serving `retryAt`.
-6. `room_claim` (`tools/claims.ts:59-68`) writes its `claims` slots and notices in its own transaction.
+6. `room_claim` (`tools/claims.ts:59-68`) writes its `claims` slots in its own transaction, then posts their
+   notices by ID.
    Offline-but-unexpired neighbours are evaluated (`isPresent` gating, `:299,370`, goes); `coLocated` stays.
 7. **Deleted:** the sets `reported`, `conflicting`, `mergeHashes`, `observedReported`,
    `integrationReported` (`:92-111`); `observeClaims` and `HandlerState.conflictPairs` (`claims.ts:165-185`,
@@ -500,6 +518,9 @@ export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string):
   with `prs.ts`'s ledger code.
 - **`closeRepo`** (`:130`) covers the repo, legacy and archive keys and clears `docMeters`/`capLogged`
   (which leak today). Idle expiry looks at one doc; audit `join` records the repo room.
+- **Hub (hub §6, §10).** The schema-2 preflight reply carries `hub: 1`; the server runs the room's hub
+  (`bindHub`, incarnation file) and `migrateRepo`'s writes use the hub origin. A 0.17 client refuses a server
+  without `hub` with the deploy text.
 - **Trust and cap (SF6):** admitted means trusted, plus `schemaVersion` (audit item 8, first option). At
   `ROOM_DOC_MAX_MB` the server stops dropping writes silently (`index.ts:400-405`): it closes the writer
   with **4413** "room is over its size cap (N MB)". A 0.17 client sets `s.rejected`, pauses publication,
@@ -511,7 +532,8 @@ export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string):
 
 - **New relay generation.** A 0.17 session finds its relay only through `<common>/room/relay.json`
   (`schema: 2`, port derived from the common dir and schema 2) and adopts it only after `/health` returns
-  JSON `{schema: 2}`. It never adopts a relay from 0.16's `room-local.json`; a live 0.16 relay keeps
+  JSON `{schema: 2, hub: 1}` (hub §5, §10: the relay is the local room's hub, started only under its
+  authority lock). It never adopts a relay from 0.16's `room-local.json`; a live 0.16 relay keeps
   serving its 0.16 sessions and stops when they end. A schema-less upgrade to the 0.17 relay gets HTTP 426
   (a backstop: 0.16 clients do not know this relay). The new relay serves the new `web/`.
 - **New lead, old worker: the contract with registry rev 3 (M10).** The 0.16 worker finds only the 0.16
@@ -647,9 +669,10 @@ rather than supported.
 ## Failure and recovery
 
 Each case is exercised by the test in brackets. kill -9 mid-transition: rerun from the recorded `git.head`
-(§B2) [T3, T4]. Crash between computing and writing a conflict: re-derived at start; deterministic IDs
-prevent a double notice [T7]. Partition: one writer per field; `synced` reconciles; fences settle `holder`
-races [T8]. Force-push or no network: per-pair "cannot compare" until anchors move or `ensureCommit`
+(§B2) [T3, T4]. Crash between computing and writing a conflict, or between a slot and its notice: re-derived
+at start; deterministic IDs prevent a double notice [T7]. Partition: one writer per field; `synced`
+reconciles; the hub grants a name to one session, and a partitioned holder pauses within its lease TTL
+(hub §4) [T8]. Force-push or no network: per-pair "cannot compare" until anchors move or `ensureCommit`
 succeeds (20 s, cached) [T2]. Two sessions or two clones: registry leases, one record each. Migration
 crash: resume from the persisted plan and step [T6]. Over the cap: 4413 and a visible rejected state [T6].
 Relay crash before its snapshot: state re-derived from surviving records; `pushed` only from a surviving
@@ -689,8 +712,9 @@ Failing-first (each fails on 0.16.33 unless marked "pin"):
    `possible` notice, status never `conflict`; B edits `x` three more times → no new notice and unchanged
    `inputs`; A edits `x` again → no new notice (same `factId`); B widens its area to `x` and the hunks
    conflict → a `conflict` notice; the slot's key and every notice ID contain no blob id of B's `x`.
-8. Flat records (MF11): two clones insert `ben`; one `holder` wins; the loser's `git` fails the fence,
-   reads `updating`, and the loser renames.
+8. Flat records (MF11): two clones write `ben`'s fields concurrently and converge. The hub grants `ben` to
+   one of them; the other gets `held` and takes the next name; a late `git` written under a lapsed lease fails
+   the fence and reads `updating` (hub §4).
 9. Projection (MF13): W (projected by L) edits in B's claim → slot owned by W written by L's bridge,
    notice delivered to W in the workers room; L–W not evaluated in the team room; kill L after the team
    slot commits and before the workers-room post → the restart's reconcile posts `cf:<h>:<e>` once (N1).
@@ -704,7 +728,7 @@ Failing-first (each fails on 0.16.33 unless marked "pin"):
     `failed` with "has not joined"; a 0.17 worker with a legacy `ROOM_WORKER_ID` exits with the lead text;
     local catch-up (N2): a 0.16 session posts a question after the first copy → the next catch-up inserts
     it once; a claim released in schema 2 is not resurrected; completion waits for the old relay to exit.
-    Expiry (S5): a leader handover with a skewed clock never expires early.
+    Expiry (S5): a hub restart never expires early; a new incarnation counts only its own time (hub §4.4).
 14. Web: no branch chip; Merged lists slots when bases differ; an old link shows the 410 page.
 15. **One publisher announces (D5).** Five sessions in one checkout of a team room under five names; one
     commit, then its push. Exactly one `pushed` notice and one `git` record update, both from the
@@ -730,7 +754,8 @@ In order on the redesign branch, shipped together as the one schema-2 release (0
 first (`deploy/DEPLOYING.md`, `--depot=false`): (1) `rooms.ts`, participants view (presence `sessionId`,
 `idleMin`), flat record, `acceptedGit`;
 (2) `resolveBase`, transition boundary, `pushed`, the expiry authority (`expiry` writes by the trim leader,
-`expireParticipant`; the election through the ledger's `delivery` API); (3) `ConflictSet`, claims across bases (needs the
+`expireParticipant`; the election through the ledger's `delivery` API; moved to the hub in the hub step, hub
+§8); (3) `ConflictSet`, claims across bases (needs the
 manifest's `versionOf`); (4) the `neighbours` seam; (5) naming, server lock, migration, archive, cap, relay
 generation, PR, web, skills, docs. About 2,400 production lines added and 1,400 deleted, plus ~1,050 test
 lines: seven or eight Codex tasks; splits belong to the implementation plan.
