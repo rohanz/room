@@ -241,9 +241,11 @@ describe('participant git record (reporooms §B2, §B3)', () => {
       if (tr.changed.has(daemon.roomDoc.participants)) together.push(tr.changed.has(daemon.roomDoc.claims) && !tr.changed.has(daemon.roomDoc.bus))
     })
     await poll(daemon)
-    expect(together).toEqual([true])
+    // The transition's one transaction, then the accepted post clearing pushedPending.
+    await vi.waitFor(() => expect(together).toEqual([true, false]))
     expect(daemon.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
     expect(git(daemon)).toMatchObject({ head: moved, base: moved })
+    expect(git(daemon)?.pushedPending).toBeUndefined()
     expect(pushed(daemon)).toMatchObject([{ id: expect.stringMatching(/^pushed:Alice:/) }])
   })
 

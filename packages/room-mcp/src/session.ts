@@ -550,7 +550,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   // The daemon's automatic posts go through this connection's hub, which exists once the daemon's provider does.
   let seam: Pick<Session, 'hub' | 'post'> | undefined
   try { daemon = await startRoomd({ ...daemonOptions, name, label, policy: policyStore.policy,
-    post: (from, body, opts) => { if (seam) void seam.post(from, body, opts); else options.log?.(`not posted before the hub connection: ${body.type}`) },
+    post: (from, body, opts) => { if (seam) return seam.post(from, body, opts); options.log?.(`not posted before the hub connection: ${body.type}`) },
     onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
     host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }) }
   catch (e) { releaseName?.(); throw e }

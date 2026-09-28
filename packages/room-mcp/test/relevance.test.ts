@@ -35,6 +35,27 @@ it('a pushed or base notice already in HEAD is not owed and gets no receipt; one
   expect(s.room.seen('Pat').size).toBe(0)
 })
 
+it('the ancestry answer follows the observed HEAD: a reset before B owes it again, and moving forward hides it at once (S1)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'room-relevance-')); dirs.push(dir)
+  git(dir, 'init', '-q')
+  git(dir, 'commit', '--allow-empty', '-qm', 'A')
+  const a = git(dir, 'rev-parse', 'HEAD')
+  git(dir, 'commit', '--allow-empty', '-qm', 'B')
+  const b = git(dir, 'rev-parse', 'HEAD')
+  const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)
+  const daemon = s.daemon as { base: string }
+  daemon.base = b
+  const ledger = new Ledger({ sessionId: () => 'session', route: () => ({}), relevant: createRelevance() })
+  ledger.bind(s)
+  const notice = hubAppend<PushedMsg>(s.room, { name: 'Ben', kind: 'agent' }, { type: 'pushed', branch: 'main', upstream: 'origin/main', fromSha: a, toSha: b, commits: 1, paths: [], summary: 'B' })
+  expect(ledger.candidates(s).map(m => m.id)).not.toContain(notice.id)
+  git(dir, 'reset', '-q', '--hard', a); daemon.base = a
+  expect(ledger.candidates(s).map(m => m.id)).toContain(notice.id)
+  git(dir, 'reset', '-q', '--hard', b); daemon.base = b
+  expect(ledger.candidates(s).map(m => m.id)).not.toContain(notice.id)
+  expect(s.room.seen('Pat').size).toBe(0)
+})
+
 it('a legacy "you switched to B" branch note is owed only while the clone is still on B (replaces join.ts markSeen)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'room-relevance-')); dirs.push(dir)
   const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)

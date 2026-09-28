@@ -16,14 +16,14 @@ import { HOOK_LEASE_MS, type Batch, type Ledger } from './ledger.js'
 import type { HookItem } from './tools/index.js'
 
 export type SelectReply =
-  | { ok: true; batch: string; items: HookItem[]; notices: string[]; leaseMs: number }
+  | { ok: true; batch: string; items: HookItem[]; notices: string[]; more: number; leaseMs: number }
   | { ok: false; reason: 'key' | 'foreign' | 'unbound' | 'invalid' }
 
 export interface ArbitrationOptions {
   binding: SessionBinding
   ledger: Ledger
-  /** What the joined rooms owe now, reserved in a hook batch. */
-  select(): { batch: Batch; items: HookItem[]; notices: string[] }
+  /** What the joined rooms owe now, reserved in a hook batch within the hook's character budget. */
+  select(): { batch: Batch; items: HookItem[]; notices: string[]; more: number }
   log?: (line: string) => void
   /** How often to look for a new binding (a SessionStart after /clear); default 2 s. */
   rebindMs?: number
@@ -43,17 +43,19 @@ export async function startArbitration(o: ArbitrationOptions): Promise<Arbitrati
       if (batch) { batches.delete(batch.id); o.ledger.commit(batch) }
       return { ok: !!batch }
     }
-    if (req.op !== 'select' || typeof req.sessionId !== 'string') return { ok: false, reason: 'invalid' }
+    if ((req.op !== 'select' && req.op !== 'ping') || typeof req.sessionId !== 'string') return { ok: false, reason: 'invalid' }
     const bound = o.binding.bound()
     if (!bound) return { ok: false, reason: 'unbound' }
     if (bound.id !== req.sessionId) return { ok: false, reason: 'foreign' }
-    const { batch, items, notices } = o.select()
-    if (!items.length && !notices.length) { o.ledger.release(batch); return { ok: true, batch: batch.id, items, notices, leaseMs: 0 } }
+    // A hook that must not select (one inside a subagent) asks only whether this session's MCP is up.
+    if (req.op === 'ping') return { ok: true }
+    const { batch, items, notices, more } = o.select()
+    if (!items.length && !notices.length) { o.ledger.release(batch); return { ok: true, batch: batch.id, items, notices, more, leaseMs: 0 } }
     batches.set(batch.id, batch)
     // A lease that ends first releases the batch; a late confirm still records a real handoff.
     const forget = setTimeout(() => batches.delete(batch.id), 60_000)
     forget.unref?.()
-    return { ok: true, batch: batch.id, items, notices, leaseMs: o.hookLeaseMs ?? HOOK_LEASE_MS }
+    return { ok: true, batch: batch.id, items, notices, more, leaseMs: o.hookLeaseMs ?? HOOK_LEASE_MS }
   }
   const server = net.createServer(socket => {
     socket.setEncoding('utf8')

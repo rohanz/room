@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import type { Msg } from '@room/shared'
 import type { Session } from './session.js'
 
-/** A negative answer is checked again after this long; HEAD moves forward, and an ancestor stays one. */
+/** A negative answer is checked again after this long, in case HEAD moved before the daemon observed it. */
 const RECHECK_MS = 5_000
 const BRANCH_NOTE = /^you switched to (\S+); the room is for \S+;/
 
@@ -19,7 +19,8 @@ export function createRelevance(now: () => number = Date.now): (s: Session, m: M
     if (branchNote) return !s.daemon?.branch || s.daemon.branch === branchNote[1]
     const sha = m.type === 'base' ? m.base : m.type === 'pushed' ? m.toSha : undefined
     if (!sha) return true
-    const key = `${s.dir}\u0000${sha}`
+    // Keyed by the HEAD the daemon last observed: a reset, checkout or new commit asks again, both ways.
+    const key = `${s.dir}\u0000${s.daemon?.base ?? ''}\u0000${sha}`
     const known = integrated.get(key)
     if (known === true) return false
     if (known !== undefined && now() - known < RECHECK_MS) return true
