@@ -89,6 +89,15 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
   return head
 }
 
+/** A HEAD transition has started (reporooms §B2 step 1): my complete head stops certifying until publishManifest completes it again. */
+export function markManifestIncomplete(room: RoomDoc, name: string, fence: string): void {
+  const head = room.manifestHead.get(name)
+  if (!head?.complete || head.fence !== fence) return
+  room.doc.transact(() => {
+    room.manifestHead.set(name, { ...head, complete: false, coverage: { kind: 'none', reason: 'starting' }, semRev: head.semRev + 1 })
+  })
+}
+
 /** Read the checkout against its publication base; never place excluded names in the Y.Doc. */
 export async function scanManifest(input: ManifestPublication & { dir: string; sizeCap: number; totalBudget: number; safe: (path: string) => boolean }): Promise<ManifestFact[]> {
   if (input.level === 'intent' || input.publisher) return []
