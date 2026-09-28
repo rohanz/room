@@ -3,7 +3,7 @@ import path from 'node:path'
 import type { Areas, RoomDoc, Claim, Msg, Plan, PlanMsg, Presence, Scope, Worker } from '@room/shared'
 import { DISK_READ_PATH, containedRepoPath, isInsideRoot, validRepoPath, type ShareLevel, type SharePresence } from '@room/roomd'
 import type { Bridge } from '../bridge.js'
-import type { ConflictWatcher } from '../conflicts.js'
+import type { ConflictSet } from '../conflict-set.js'
 import type { PrInfo } from '../prs.js'
 import type { Rooms } from '../registry.js'
 import type { JoinOptions, Session } from '../session.js'
@@ -97,6 +97,8 @@ export interface HandlerState {
   baseFor: (s: Session, person: string) => string
   baseText: (s: Session, path: string, person?: string) => Promise<string | undefined>
   liveText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
+  /** Own checkout text is read locally; foreign text comes from the current manifest version. */
+  readText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
   lines: (text: string) => number
   loadAreas: (s: Session) => Promise<Areas>
   areasOf: (s: Session) => Areas
@@ -129,14 +131,12 @@ export interface HandlerState {
   prLines: (s: Session) => string[]
   myPr: (s: Session) => Promise<PrInfo | undefined>
   postLedger: (s: Session, pr: PrInfo) => Promise<string>
-  observeClaims: (s: Session) => void
-  startConflictWatcher: (s: Session) => ConflictWatcher
+  startConflictSet: (s: Session) => ConflictSet
   startWorkersBridge: (lead: Session, workers: Session) => Bridge
   workerPaths: () => string[]
   /** Rewrite the hook's state.json (counts only) after a delivery changed what is owed. */
   scheduleInboxWrite: () => void
   upgraded: Set<string>
-  conflictPairs: Set<string>
   attachHooks: (s: Session) => void
   clearStale: (s: Session) => number
   shutdown: () => Promise<void>
@@ -190,4 +190,3 @@ export function workerText(dir: string, rel: string): string | null {
     throw e
   }
 }
-

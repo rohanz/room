@@ -7,7 +7,6 @@ import path from 'node:path'
 import { RoomDoc, type Identity, type Worker } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
-import { mergePath, type ConflictDeps } from '../src/conflicts.js'
 import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
 import { saveDiscardPatch } from '../src/worker-git.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
@@ -62,14 +61,7 @@ function spawn(files: Record<string, string>, wip: Record<string, string>, untra
     withheld: () => undefined,
   } as unknown as HandlerState
   const preview = (from: string, to: string) => buildCombinedTree(state, sessions[from as keyof typeof sessions], [{ person: to, session: sessions[from as keyof typeof sessions] }])
-  const deps = (me: string): ConflictDeps => ({
-    room, me: { name: me, kind: 'agent' } as Identity,
-    liveText: async (file, person) => read(dirOf(person), file),
-    baseText: (sha, file) => gitShow(lead, sha, file),
-    baseFor: baseOf,
-    mergeBase: async (a, b) => git(lead, 'merge-base', a, b),
-  })
-  return { base, room, publish, preview, deps }
+  return { base, room, publish, preview }
 }
 
 describe('a carried worker\'s own changes', () => {
@@ -84,8 +76,6 @@ describe('a carried worker\'s own changes', () => {
       expect(result.merged.get('shared.txt')).toBe(text({ 2: 'W2', 9: 'X9' }))
       expect(result.merged.get('keep.txt')).toBe('worker\n')
     }
-    expect(await mergePath(t.deps(LEAD), WORKER, 'shared.txt')).toEqual({ status: 'clean', lines: [] })
-    expect(await mergePath(t.deps(WORKER), LEAD, 'shared.txt')).toEqual({ status: 'clean', lines: [] })
   })
 
   it('does not report a carried file the worker never touched', async () => {
@@ -98,8 +88,6 @@ describe('a carried worker\'s own changes', () => {
       expect(result.merged.get('shared.txt')).toBe(text({ 2: 'W2' }))
       expect(result.owners.get('shared.txt')).toEqual([LEAD])
     }
-    expect((await mergePath(t.deps(WORKER), LEAD, 'shared.txt')).status).toBe('one-side')
-    expect((await mergePath(t.deps(LEAD), WORKER, 'shared.txt')).status).toBe('one-side')
   })
 
   it('still reports a real conflict on a carried line both changed', async () => {
@@ -107,8 +95,6 @@ describe('a carried worker\'s own changes', () => {
     put(lead, 'shared.txt', text({ 2: 'W2' })); put(wdir, 'shared.txt', text({ 2: 'MINE' }))
     t.publish(LEAD, ['shared.txt']); t.publish(WORKER, ['shared.txt'])
     for (const result of [await t.preview(LEAD, WORKER), await t.preview(WORKER, LEAD)]) expect(result.conflictCount).toBe(1)
-    expect(await mergePath(t.deps(LEAD), WORKER, 'shared.txt')).toEqual({ status: 'conflict', lines: [2] })
-    expect(await mergePath(t.deps(WORKER), LEAD, 'shared.txt')).toEqual({ status: 'conflict', lines: [2] })
   })
 
   it('measures carried untracked files against their spawn-time blobs', async () => {
@@ -123,11 +109,6 @@ describe('a carried worker\'s own changes', () => {
       expect(result.merged.get('mine.txt')).toBe('worker\n')
       expect(result.owners.get('mine.txt')).toContain(WORKER)
       expect(result.merged.get('both.txt')).toBe(text({ 2: 'LEAD', 9: 'WORKER' }))
-    }
-    for (const [me, other] of [[LEAD, WORKER], [WORKER, LEAD]]) {
-      expect((await mergePath(t.deps(me), other, 'notes.txt')).status).toBe('one-side')
-      expect((await mergePath(t.deps(me), other, 'mine.txt')).status).toBe('one-side')
-      expect((await mergePath(t.deps(me), other, 'both.txt')).status).toBe('clean')
     }
     const own = workerBaseline(t.room.workerOf(WORKER))!
     expect(carriedUnchanged(own, 'notes.txt')).toBe(true)
@@ -158,7 +139,6 @@ describe('a carried worker\'s own changes', () => {
       expect(result.ignoredNotes).toContain('missing private base blob: notes.txt')
       expect(result.paths).not.toContain('notes.txt')
     }
-    expect((await mergePath(t.deps(LEAD), WORKER, 'notes.txt')).status).toBe('unknown')
   })
 
   it('compares CRLF checkouts in one representation', async () => {

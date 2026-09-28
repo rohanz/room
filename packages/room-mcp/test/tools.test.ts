@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, messageEndsWait } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, messageEndsWait } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
+import { ConflictSet } from '../src/conflict-set.js'
 import { sendChannelNotification } from '../src/channel.js'
 import { SocketWakeRouter } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
@@ -61,6 +62,21 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
     leave: async () => {},
   })
   return { room: a, other: b, tools, joined, created, get session() { return session } }
+}
+
+function comparableClaimPair(room: RoomDoc): void {
+  room.ensureRoomSalt()
+  for (const name of ['Rohan', 'Kieran']) {
+    const fence = `lease-${name}`
+    room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+    room.participants.set(`${name}\0holder`, { sessionId: fence })
+    room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
+    room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    room.manifest.set(manifestKey(name, fence), new Y.Map())
+  }
+  room.manifest.get(manifestKey('Rohan', 'lease-Rohan'))!.set('app.py', {
+    change: 'M', state: 'shared', hash: gitBlobHash(MINE), at: 1, fence: 'lease-Rohan',
+  })
 }
 
 function addPresence(target: Awareness, name: string): Awareness {
@@ -663,14 +679,17 @@ describe('scope, claims, plans, ledger', () => {
     expect(t.room.messages().find(m => m.type === 'release')).toMatchObject({ type: 'release', unfulfilled: [{ symbol: 'validate' }] })
   })
 
-  it('overlapping claim posts a conflict addressed to the other party, which shows in their inbox logic', async () => {
+  it('overlapping claims across a comparable pair produce a deterministic ConflictSet notice', async () => {
     const t = setup()
+    comparableClaimPair(t.room)
     t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'fix b' })
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 5, to: 5, intent: 'also b' })
     expect(out).toContain('CONFLICT: overlaps')
-    const c = t.room.messages().find(m => m.type === 'conflict')
-    expect(c).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
+    const c = t.room.messages().find(m => m.type === 'conflict' && m.id.startsWith('cf:'))
+    expect(c).toMatchObject({ priority: 'notify', to: 'Rohan' })
+    expect([...t.room.doc.getMap<{ kind: string; status: string }>('conflicts').values()]).toContainEqual(
+      expect.objectContaining({ kind: 'claims', status: 'conflict' }))
   })
 
   it('refuses a directory claim that would cover another participant\'s declared file or claim', async () => {
@@ -723,18 +742,19 @@ describe('graph', () => {
 })
 
 describe('concurrency', () => {
-  it('two claims that raced past the pre-check get exactly one conflict when the remote one arrives', async () => {
+  it('two claims that raced past the pre-check reconcile to one slot notice', async () => {
     const t = setup()
+    comparableClaimPair(t.room)
     await t.tools.call('room_state', {}) // attaches the claims observer
     // Kieran's claim arrives from the other doc after Rohan's was made (neither saw the other pre-insert).
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 3, intent: 'mine' })
     await new Promise(r => setTimeout(r, 5)) // ids are time-ordered; the earlier (smaller) id is the one that reports
     t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
-    await new Promise(r => setTimeout(r, 150))
-    const conflicts = t.room.messages().filter(m => m.type === 'conflict')
+    await new ConflictSet(t.session!).reconcile('remote claim')
+    const conflicts = t.room.messages().filter(m => m.type === 'conflict' && m.id.startsWith('cf:'))
     expect(conflicts.length).toBe(1)
-    expect(conflicts[0]).toMatchObject({ priority: 'interrupt', to: 'Kieran' })
+    expect(conflicts[0]).toMatchObject({ priority: 'notify', to: 'Rohan' })
   })
 
   it('inbox tracks message ids, so a message inserted before an already-seen one is still delivered', async () => {
