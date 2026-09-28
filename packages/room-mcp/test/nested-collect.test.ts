@@ -7,8 +7,9 @@ import * as Y from 'yjs'
 import { RoomDoc, type Worker } from '@room/shared'
 import { handlers } from '../src/tools/collect.js'
 import type { HandlerState } from '../src/tools/context.js'
-import { prepareWorktree, persistWorkerStopReason } from '../src/worker-git.js'
-import { finishWorkerProcess, Rooms } from '../src/registry.js'
+import { prepareWorktree } from '../src/worker-git.js'
+import { registryForDir } from '../src/worker-registry.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 import type { Session } from '../src/session.js'
 
 vi.mock('../src/tools/claims.js', async original => ({ ...await original<typeof import('../src/tools/claims.js')>(), releaseClaimsOnDone: vi.fn() }))
@@ -25,7 +26,8 @@ function collect(room: RoomDoc, dir: string, name: string, workerAlive: (w: Work
     S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, retireWorkers: async () => {}, handle: () => undefined },
     workerAlive: (_s: Session, w: Worker) => workerAlive(w), now: Date.now, ctx: { sleep: async () => {}, listCwdProcesses: () => [] },
   } as unknown as HandlerState
-  return handlers(state).room_collect
+  const call = handlers(state).room_collect
+  return async (args: Parameters<typeof call>[0]) => { await syncDocumentWorkers(s as Session); return call(args) }
 }
 
 async function batch() {
@@ -33,8 +35,8 @@ async function batch() {
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); put(root, 'lead.txt', 'base lead\n'); put(root, 'cat.txt', 'base cat\n')
   git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
-  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], 'local/shop|rohanz')
-  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], 'local/shop|rohanz+lead')
+  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], undefined)
+  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], undefined)
   put(lead.dir, 'lead.txt', 'partial lead\n')
   put(cat.dir, 'cat.txt', 'finished cat\n')
   const room = new RoomDoc(new Y.Doc())
@@ -72,12 +74,13 @@ it('keeps a live lead-worker responsible for its finished grand-worker, includin
   expect(fs.existsSync(cat.dir)).toBe(true)
 })
 
-it('lets the human collect an orphaned grand-worker after the intermediate lead process exits', async () => {
+it('denies direct orphaned grand-worker collect and explains the parent discard path', async () => {
   const { root, room, leadWorker } = await batch()
   leadWorker.status = 'running'; room.setWorker(leadWorker)
   const out = await collect(room, root, 'rohanz')({ tag: 'cat' })
-  expect(out).toContain('Changes from cat:')
-  expect(read(root, 'cat.txt')).toBe('finished cat\n')
+  expect(out).toContain('cat belongs to rohanz+lead')
+  expect(out).toContain('room_collect tag=lead discard=true force=true')
+  expect(read(root, 'cat.txt')).toBe('base cat\n')
 })
 
 it('uses the lead-worker PID when its process handle is unavailable', async () => {
@@ -95,9 +98,12 @@ it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task i
   const { root, room, leadWorker } = await batch()
   leadWorker.status = status
   leadWorker.stopReason = 'lead-session-ended'
+  leadWorker.pid = 7777
   delete leadWorker.finishedAt
   delete leadWorker.exitCode
   room.setWorker(leadWorker)
+  const store = await syncDocumentWorkers({ dir: root, roomName: 'local/shop', me: { name: 'rohanz' }, room } as Session)
+  await store.beginStop(store.list().find(record => record.tag === 'lead')!.id, 'lead-session-ended')
   const humanCollect = collect(room, root, 'rohanz')
   const all = await humanCollect({})
   expect(all).toContain('skipped lead: stopped before finishing')
@@ -105,8 +111,8 @@ it.each(['running', 'dismissed'] as const)('skips a %s worker stopped mid-task i
   expect(all).toContain('room_collect tag=lead')
   expect(all).toContain('mode=copy')
   expect(all).toContain('discard=true')
-  expect(all).toContain('Changes from cat:')
-  expect(read(root, 'cat.txt')).toBe('finished cat\n')
+  expect(all).toContain('cat belongs to rohanz+lead')
+  expect(read(root, 'cat.txt')).toBe('base cat\n')
   expect(read(root, 'lead.txt')).toBe('base lead\n')
   expect(room.workers.has('lead')).toBe(true)
   const named = await humanCollect({ tag: 'lead' })
@@ -119,6 +125,7 @@ it('copies named partial edits from a stopped worker when explicitly tagged', as
   room.workers.delete('cat')
   leadWorker.status = 'dismissed'
   leadWorker.stopReason = 'lead-session-ended'
+  leadWorker.pid = 7777
   room.setWorker(leadWorker)
   const out = await collect(room, root, 'rohanz')({ tag: 'lead', mode: 'copy', paths: ['lead.txt'] })
   expect(out).toContain('copied lead.txt')
@@ -134,9 +141,9 @@ it('collects grand-worker edits through a lead once while preserving the human c
   git(top, 'add', '.'); git(top, 'commit', '-qm', 'base')
   const humanTracked = 'shop\nHuman WIP: café ☕\n', humanUntracked = 'human untracked\n\0bytes\n'
   put(top, 'README.md', humanTracked); put(top, 'notes.txt', humanUntracked)
-  const lead = await prepareWorktree(top, 'lead', 'rohanz', [], 'local/shop|rohanz')
+  const lead = await prepareWorktree(top, 'lead', 'rohanz', [], undefined)
   put(lead.dir, 'tax.py', 'RATES = {"sg": 9}\n')
-  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], 'local/shop|rohanz+lead')
+  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], undefined)
   put(cat.dir, 'catalog.py', 'def price():\n    """Return the product price."""\n    return 1\n')
   put(cat.dir, 'README.md', humanTracked + 'Cat adds a usage note.\n')
   const room = new RoomDoc(new Y.Doc())
@@ -151,14 +158,14 @@ it('collects grand-worker edits through a lead once while preserving the human c
   expect(childResult).toContain('Changes from cat:')
   expect(read(lead.dir, 'catalog.py')).toContain('Return the product price.')
   expect(read(lead.dir, 'README.md')).toBe(humanTracked + 'Cat adds a usage note.\n')
-  put(lead.dir, '.room/discarded/older-child.patch', 'recover an earlier child\n')
+  put(top, '.git/room/registry/patches/older-child.patch', 'recover an earlier child\n')
   const leadResult = await collect(room, top, 'rohanz')({ tag: 'lead' })
   expect(leadResult).toContain('Changes from lead:')
   expect(read(top, 'README.md')).toBe(humanTracked + 'Cat adds a usage note.\n')
   expect(read(top, 'notes.txt')).toBe(humanUntracked)
   expect(read(top, 'tax.py')).toBe('RATES = {"sg": 9}\n')
   expect(read(top, 'catalog.py')).toContain('Return the product price.')
-  expect(read(top, '.room/discarded/older-child.patch')).toBe('recover an earlier child\n')
+  expect(read(top, '.git/room/registry/patches/older-child.patch')).toBe('recover an earlier child\n')
   expect(room.workers.size).toBe(0)
   expect(git(top, 'worktree', 'list', '--porcelain')).not.toContain('room/workers')
   for (const tag of ['lead', 'cat']) {
@@ -174,22 +181,18 @@ it('recovers the intentional shutdown reason for both worker levels after the re
   put(root, '.gitignore', '.room/\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
   const lead = await prepareWorktree(root, 'lead', 'rohanz')
   const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead')
-  persistWorkerStopReason(root, 'lead', 'lead-session-ended')
-  persistWorkerStopReason(lead.dir, 'cat', 'lead-session-ended')
   const room = new RoomDoc(new Y.Doc())
   for (const [tag, owner, prepared] of [['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const) {
     const worker = { id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag, dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'running' } as Worker
     room.setWorker(worker)
-    await finishWorkerProcess({ dir: tag === 'lead' ? root : lead.dir, room } as Session, worker, null, Date.now(), undefined, true)
-    expect(room.workers.get(tag)).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
-    expect(room.workers.get(tag)?.summary).toContain('lead-session-ended')
-    const fresh = new RoomDoc(new Y.Doc())
-    fresh.setWorker(worker)
-    const session = { dir: tag === 'lead' ? root : lead.dir, room: fresh } as Session
-    const registry = new Rooms({ primary: () => session, setPrimary: () => {}, observeClaims: () => {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
-    registry.track(session)
-    expect(fresh.workers.get(tag)).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
-    registry.remove(session)
+  }
+  const session = { dir: root, roomName: 'local/shop', me: { name: 'rohanz' }, room } as Session
+  const registry = await syncDocumentWorkers(session)
+  for (const tag of ['lead', 'cat']) {
+    const record = registry.list().find(record => record.tag === tag)!
+    await registry.beginStop(record.id, 'lead-session-ended')
+    await registry.writeExit(record.id, { run: 1, code: null, at: Date.now(), witnessed: false })
+    expect((await registryForDir(lead.dir)).read(record.id)?.stop).toMatchObject({ reason: 'lead-session-ended', run: 1 })
   }
 })
 
@@ -197,8 +200,8 @@ it('force discard saves a grand-worker patch and removes both levels of Git book
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-nested-discard-'))); temp.push(root)
   git(root, 'init', '-q', '-b', 'shop'); git(root, 'config', 'user.name', 'Human'); git(root, 'config', 'user.email', 'human@example.test')
   put(root, '.gitignore', '.room/\n'); put(root, 'catalog.py', 'base\n'); git(root, 'add', '.'); git(root, 'commit', '-qm', 'base')
-  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], 'local/shop|rohanz')
-  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], 'local/shop|rohanz+lead')
+  const lead = await prepareWorktree(root, 'lead', 'rohanz', [], undefined)
+  const cat = await prepareWorktree(lead.dir, 'cat', 'rohanz+lead', [], undefined)
   put(cat.dir, 'catalog.py', 'grand-worker output\n')
   const room = new RoomDoc(new Y.Doc())
   for (const [tag, owner, prepared] of [['lead', 'rohanz', lead], ['cat', 'rohanz+lead', cat]] as const) {
@@ -207,7 +210,7 @@ it('force discard saves a grand-worker patch and removes both levels of Git book
   const result = await collect(room, root, 'rohanz')({ tag: 'lead', discard: true, force: true })
   expect(result).toContain('discarded cat')
   expect(result).toContain('discarded lead')
-  const patches = fs.readdirSync(path.join(root, '.room', 'discarded')).map(name => read(root, '.room/discarded/' + name))
+  const patches = fs.readdirSync(path.join(root, '.git', 'room', 'registry', 'patches')).map(name => read(root, '.git/room/registry/patches/' + name))
   expect(patches.some(patch => patch.includes('grand-worker output'))).toBe(true)
   expect(room.workers.size).toBe(0)
   expect(git(root, 'worktree', 'list', '--porcelain')).not.toContain('prunable')

@@ -29,7 +29,7 @@ export interface ResolvedConfig {
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
-  claudeChannel: string; workerId?: string; gen?: string
+  claudeChannel: string; workerId?: string
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined

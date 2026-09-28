@@ -3,11 +3,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { isRegenerableBuildPath, type Worker } from '@room/shared'
-import { LINK_INPUT_PATH, RECORDED_PATH, carryRecord, carryRecordSync, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
+import { LINK_INPUT_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
+import type { PrepJournal, PrepStep } from './worker-status.js'
 
 const WORKERS_DIR = path.join('.room', 'workers')
 
@@ -28,9 +29,6 @@ export async function ignoredWorkerArtifacts(w: Worker): Promise<string[]> {
     .filter(p => !isRegenerableBuildPath(p))
     .sort()
 }
-
-/** One worktree cannot be collected, discarded and auto-retired at the same time. */
-export function workerOperationKey(w: Pick<Worker, 'dir'>): string { return 'worker:' + path.resolve(w.dir) }
 
 /** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
 export async function pruneMissingWorkerWorktree(leadDir: string, w: Worker, manageBranch = true): Promise<string | undefined> {
@@ -152,33 +150,6 @@ function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sh
     return tree
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
-type CarryRecord = Pick<PreparedWorktree, 'base' | 'carriedBase' | 'carried' | 'carriedUntracked' | 'skippedCarry'> & { ownerId?: string }
-
-/** The relay can disappear with the lead; keep the intentional stop reason beside the carry record. */
-export function persistWorkerStopReason(repoDir: string, tag: string, reason: Worker['stopReason'], workerId?: string): void {
-  const recordFile = carryRecordSync(repoDir, tag)
-  const record = recordFile.read<CarryRecord & { stopReason?: Worker['stopReason'] }>() ?? {}
-  recordFile.write({ ...record, stopReason: reason, stopWorkerId: workerId })
-}
-
-export function persistedWorkerStopReason(repoDir: string, tag: string, workerId?: string): Worker['stopReason'] | undefined {
-  const record = carryRecordSync(repoDir, tag).read<{ stopReason?: Worker['stopReason']; stopWorkerId?: string }>()
-  if (record === undefined || (workerId && record.stopWorkerId && record.stopWorkerId !== workerId)) return undefined
-  return record.stopReason === 'lead-session-ended' || record.stopReason === 'message-delivered-cancelled' || record.stopReason === 'message-delivered-failed' ? record.stopReason : undefined
-}
-
-/** Clear only the stop state for this process generation after resume has started successfully. */
-export function clearWorkerStopState(repoDir: string, tag: string, workerId?: string): void {
-  const recordFile = carryRecordSync(repoDir, tag)
-  const record = recordFile.read<CarryRecord & { stopReason?: Worker['stopReason']; stopWorkerId?: string }>()
-  if (record === undefined) return
-  if (workerId && record.stopWorkerId && record.stopWorkerId !== workerId) return
-  delete record.stopReason
-  delete record.stopWorkerId
-  recordFile.write(record)
-}
-
-
 /** Roll back only a newly prepared worktree; do not remove reused worker output. */
 export async function cleanupPreparedWorktree(repoDir: string, prepared: PreparedWorktree): Promise<void> {
   if (!prepared.created) return
@@ -190,24 +161,17 @@ export async function cleanupPreparedWorktree(repoDir: string, prepared: Prepare
     if (previous) await internalGit(repoDir, ['update-ref', ref, previous])
     else try { await internalGit(repoDir, ['update-ref', '-d', ref]) } catch { /* no ref was created */ }
   }
-  await fs.promises.rm((await carryRecord(repoDir, prepared.branch.slice(5))).file, { force: true })
 }
 
 /** A worktree for the worker, with tracked WIP in its base and untracked bytes outside Git. */
-export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[], ownerId?: string, retry = 0, carry = true): Promise<PreparedWorktree> {
+export async function prepareWorktree(repoDir: string, tag: string, leadName = 'lead', linkExclusions?: string[],
+  onStep?: (step: PrepStep, facts: Partial<PrepJournal>) => Promise<void>, retry = 0, carry = true): Promise<PreparedWorktree> {
   const dir = path.join(repoDir, WORKERS_DIR, tag)
   const branch = `room/${tag}`
   const gitDir = (await git(repoDir, ['rev-parse', '--absolute-git-dir'])).trim()
   if (['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply'].some(p => fs.existsSync(path.join(gitDir, p)))) throw new Error('finish the merge or rebase before spawning workers')
-  const record = await (await carryRecord(repoDir, tag)).read<CarryRecord>()
-  if (record?.ownerId && ownerId && record.ownerId !== ownerId) throw new Error(`worktree ${tag} is owned by another room or worker`)
   if (fs.existsSync(path.join(dir, '.git'))) {
-    if (!carry) throw new Error(`worktree ${tag} already exists; choose a new tag for carry=false`)
-    if (ownerId && !record?.ownerId) throw new Error(`worktree ${tag} has unknown ownership; choose another tag`)
-    const actualBranch = (await git(dir, ['branch', '--show-current'])).trim()
-    if (actualBranch !== branch) throw new Error(`worktree ${tag} is on branch ${actualBranch || '(detached)'}, expected ${branch}; choose another tag`)
-    if (await realGitCommonDir(repoDir) !== await realGitCommonDir(dir)) throw new Error(`worktree ${tag} is not a worktree of this repository; choose another tag`)
-    return { dir, branch, created: false, ...record }
+    throw new Error(`worktree ${tag} is unmanaged; discard it by tag first`)
   }
   fs.mkdirSync(path.dirname(dir), { recursive: true })
   // A worker directory may have been deleted without removing its worktree registration.
@@ -215,8 +179,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
   await internalGit(repoDir, ['worktree', 'prune'])
   let hasBranch = false
   try { await git(repoDir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); hasBranch = true } catch { /* new branch */ }
-  if (hasBranch && ownerId && !record?.ownerId) throw new Error(`branch ${branch} has unknown ownership; choose another tag`)
-  if (hasBranch && !carry) throw new Error(`branch ${branch} already exists; choose a new tag for carry=false`)
+  if (hasBranch) throw new Error(`branch ${branch} is unmanaged; discard it by tag first`)
   const previousCarryRefs: Record<string, string> = {}
   if (!hasBranch) for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
     try { previousCarryRefs[ref] = (await git(repoDir, ['rev-parse', '--verify', ref])).trim() } catch { /* absent */ }
@@ -226,11 +189,14 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     try { base = (await git(repoDir, ['rev-parse', '--verify', 'HEAD'])).trim() }
     catch { throw new Error('make a first commit before spawning workers') }
   }
-  await internalGit(repoDir, hasBranch ? ['worktree', 'add', '-q', dir, branch] : ['worktree', 'add', '-q', '-b', branch, dir, base!])
-  if (!base) return { dir, branch, created: true, branchCreated: false, ...record }
+  await onStep?.('plan', { worktreeExisted: false, branchExisted: false,
+    previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map(ref => [ref, previousCarryRefs[ref] ?? null])) })
+  await onStep?.('worktree', { created: true, branchCreated: true })
+  await internalGit(repoDir, ['worktree', 'add', '-q', '-b', branch, dir, base!])
+  if (!base) return { dir, branch, created: true, branchCreated: false }
   if (!carry) {
     const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base }
-    await (await carryRecord(repoDir, tag)).write({ base, ownerId })
+    await onStep?.('prepared', { created: true, branchCreated: true })
     return result
   }
   try {
@@ -293,20 +259,24 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     }
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
     const staged = (await internalGit(dir, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean)
-    if (staged.length) await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
+    if (staged.length) {
+      await onStep?.('carry-commit', {})
+      await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
+    }
     const commit = (await git(dir, ['rev-parse', 'HEAD'])).trim()
     const paths = [...new Set([...staged, ...carriedUntracked.map(x => x.path)])].sort()
+    if (paths.length) await onStep?.('carry-refs', {})
     if (paths.length) await internalGit(repoDir, ['update-ref', carryRef(tag), commit])
     retainUntrackedTree(repoDir, tag, carriedUntracked)
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
     const result: PreparedWorktree = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : undefined, carried: paths.length ? { count: paths.length, commit, paths } : undefined, carriedUntracked, skippedCarry }
-    await (await carryRecord(repoDir, tag)).write({ base: result.base, carriedBase: result.carriedBase, carried: result.carried, carriedUntracked, skippedCarry, ownerId })
+    await onStep?.('prepared', { created: true, branchCreated: true })
     return result
   } catch (e) {
     if ((e as Error).message === 'lead changed during carry; retrying snapshot') {
       await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs })
       if (retry >= 2) throw new Error('lead changed repeatedly during carry; try spawning again when HEAD is stable')
-      return prepareWorktree(repoDir, tag, leadName, linkExclusions, ownerId, retry + 1, carry)
+      return prepareWorktree(repoDir, tag, leadName, linkExclusions, onStep, retry + 1, carry)
     }
     try {
       await internalGit(dir, ['reset', '--hard', base])
@@ -332,46 +302,24 @@ export async function cleanupWorker(leadDir: string, w: Worker, collected = fals
     .filter(dir => dir !== w.dir && isInsideRoot(fs.realpathSync(w.dir), dir))
   if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(', ')}`)
   const head = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
-  const recordFile = (await carryRecord(leadDir, w.tag)).file
-  const record = await fs.promises.readFile(recordFile).catch(e => { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e })
   const refs = new Map<string, string>()
   for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
     try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
   }
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
-  // A lead may have discarded a child earlier. Its recovery patches must outlive this worktree.
-  const nestedPatches = path.join(w.dir, '.room', 'discarded')
-  if (fs.existsSync(nestedPatches)) {
-    const dest = path.join(leadDir, '.room', 'discarded')
-    for (const name of fs.readdirSync(nestedPatches)) {
-      const source = path.join(nestedPatches, name)
-      if (!name.endsWith('.patch') || !fs.lstatSync(source).isFile()) continue
-      fs.mkdirSync(dest, { recursive: true })
-      let target = path.join(dest, name), suffix = 1
-      while (fs.existsSync(target)) target = path.join(dest, `${w.tag}-${suffix++}-${name}`)
-      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL)
-      const stat = fs.statSync(source)
-      fs.utimesSync(target, stat.atime, stat.mtime)
-    }
-  }
   try {
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     await internalGit(leadDir, ['branch', '-D', w.branch])
     for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])
-    await fs.promises.rm(recordFile, { force: true })
   } catch (error) {
-    const recoveryDir = path.join(leadDir, '.room', 'discarded')
-    const recovery = discarded && fs.existsSync(recoveryDir)
-      ? fs.readdirSync(recoveryDir).filter(name => name.startsWith(w.tag + '-') && name.endsWith('.patch')).sort().at(-1)
-      : undefined
-    const recoveryNote = recovery ? `actual worker edits are in ${path.join(recoveryDir, recovery)}` : `collected edits are in ${leadDir}`
+    const recovery = w.id ? path.join(await realGitCommonDir(leadDir), 'room', 'registry', 'patches', `${w.id}.patch`) : undefined
+    const recoveryNote = recovery && fs.existsSync(recovery) ? `actual worker edits are in ${recovery}` : `collected edits are in ${leadDir}`
     try {
       let branchExists = true
       try { await git(leadDir, ['rev-parse', '--verify', `refs/heads/${w.branch}`]) } catch { branchExists = false }
       if (!branchExists) await internalGit(leadDir, ['branch', w.branch, head])
       if (!fs.existsSync(path.join(w.dir, '.git'))) await internalGit(leadDir, ['worktree', 'add', '-q', w.dir, w.branch])
       for (const [ref, sha] of refs) await internalGit(leadDir, ['update-ref', ref, sha])
-      if (record && !fs.existsSync(recordFile)) await fs.promises.writeFile(recordFile, record, { mode: 0o600 })
       for (const entry of w.carriedUntracked ?? []) {
         if (!validRepoPath(entry.path, RECORDED_PATH)) continue
         const file = path.join(w.dir, entry.path)
@@ -405,15 +353,8 @@ export function cleanupWorkerLogs(leadDir: string, w: Pick<Worker, 'dir' | 'tag'
 }
 
 /** One binary-capable snapshot against the fork, without modifying the worker's index. */
-export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<string | undefined> {
-  const dir = path.join(leadDir, '.room', 'discarded'), now = Date.now()
-  if (fs.existsSync(dir)) {
-    for (const name of fs.readdirSync(dir)) {
-      const file = path.join(dir, name), stat = fs.lstatSync(file)
-      if (name.endsWith('.patch') && stat.isFile() && stat.mtimeMs < now - 7 * 86400_000) fs.unlinkSync(file)
-    }
-    try { fs.rmdirSync(dir) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw e }
-  }
+export async function saveDiscardPatch(leadDir: string, w: Worker,
+  publish: (bytes: Buffer) => Promise<string>): Promise<string | undefined> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-discard-'))
   try {
     const run = (args: string[], wholeTreePaths?: number) => boundedGit(w.dir, args, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') })
@@ -431,11 +372,6 @@ export async function saveDiscardPatch(leadDir: string, w: Worker): Promise<stri
     await internalGit(leadDir, ['worktree', 'add', '-q', '--detach', verifyDir, base])
     try { boundedGitSync(verifyDir, ['apply', '--binary', verifyPatch]) }
     finally { await internalGit(leadDir, ['worktree', 'remove', '--force', verifyDir]) }
-    fs.mkdirSync(dir, { recursive: true })
-    const local = new Date(now)
-    const stamp = `${local.getFullYear()}${String(local.getMonth() + 1).padStart(2, '0')}${String(local.getDate()).padStart(2, '0')}-${String(local.getHours()).padStart(2, '0')}${String(local.getMinutes()).padStart(2, '0')}${String(local.getSeconds()).padStart(2, '0')}`
-    const file = path.join(dir, `${w.tag}-${stamp}.patch`)
-    fs.writeFileSync(file, patch, { flag: 'wx', mode: 0o600 })
-    return file
+    return publish(patch)
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }

@@ -1,7 +1,6 @@
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
 import type { Session } from './session.js'
-import type { Rooms } from './registry.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
@@ -11,17 +10,15 @@ export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number, readonly stopped = false) { super(message) }
 }
 
-export interface WorkerLaunchLease { release(): void }
-/** The lease spans fresh worktree preparation as well as the process start. */
-export function reserveWorkerLaunch(rooms: Rooms, max: number, running: number): WorkerLaunchLease | undefined {
-  if (!rooms.reserveLaunch(max, running)) return undefined
-  let held = true
-  return { release() { if (held) { held = false; rooms.releaseLaunch() } } }
+export interface LaunchHost {
+  setHandle(id: string, proc: SpawnedProcess): void
+  watch(id: string, proc: SpawnedProcess, onExit: (code: number | null) => void): void
+  aborted(): boolean
 }
 
 interface Policy {
-  rooms: Rooms; session: Session; id: string; tag: string; dir: string; lead: string; owner: string
-  host: WorkerHost; model?: string; effort?: string; share: string; gen: number
+  session: Session; id: string; tag: string; dir: string; lead: string; owner: string
+  host: WorkerHost; model?: string; effort?: string; share: string; run: number; nonce: string; registry: string
   budget: { threads: number; memGb: number; nice?: number }
   server: string; isWorker: boolean; token?: string; claudeChannel?: string
   spawner?: Spawner; probe?: (pid: number) => ProcessInfo | undefined; log: (line: string) => void; at?: () => number
@@ -37,17 +34,17 @@ export interface WorkerLaunchResult {
   processStartTime?: string
 }
 
-/** The caller owns the room record transition; this routine owns every process resource and callback. */
-export async function launchWorkerProcess(policy: Policy, command: Command, lease: WorkerLaunchLease,
-  onStarted: (result: WorkerLaunchResult) => boolean, onSessionId?: (id: string, proc: SpawnedProcess) => void): Promise<WorkerLaunchResult> {
-  const { rooms, session: s, id, tag } = policy
+/** The caller records the launch intent before entering this boundary. */
+export async function launchWorkerProcess(policy: Policy, command: Command, host: LaunchHost,
+  onLaunched: (pid: number) => Promise<void>, onSpawn: (result: WorkerLaunchResult) => Promise<void>,
+  onExit: (code: number | null) => Promise<void>): Promise<WorkerLaunchResult> {
+  const { session: s, id, tag } = policy
   let reservation: ReturnType<typeof reserveWorkerPort> | undefined
   let passed = false
   let delivered = false
   let proc: SpawnedProcess | undefined
   let exited = false
   let watching = false
-  let stoppingReason: import('@room/shared').Worker['stopReason'] | undefined
   try {
     try { reservation = reserveWorkerPort(id, policy.usedPorts ?? [], undefined, policy.preferredPort) }
     catch (e) { throw new WorkerLaunchError('port', String(e instanceof Error ? e.message : e)) }
@@ -56,7 +53,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
     const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
-      share: policy.share, gen: policy.gen, id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker })
+      share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
+      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker })
     const niceEnv = command.mode === 'resume'
       ? { ...process.env, ROOM_WORKER_NICE: String(policy.budget.nice) }
       : process.env
@@ -74,38 +72,28 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
         maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels' })
     const priority = workerPriority(built, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
-    if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
+    if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
     try { proc = (policy.spawner ?? defaultSpawner)({ cmd: priority.cmd, args: priority.args,
-      cwd: policy.dir, env, logFile, captureCodexSession: policy.host === 'codex' }) }
+      cwd: policy.dir, env, logFile }) }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
+    bindWorkerPortReservation(proc, reservation)
+    host.watch(id, proc, code => { exited = true; void onExit(code).catch(error => policy.log(`worker exit: ${error}`)) })
+    watching = true
+    if (proc.pid > 0) await onLaunched(proc.pid)
     try { await proc.started }
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
-    bindWorkerPortReservation(proc, reservation)
     passed = true
-    rooms.setHandle(s, id, proc)
+    host.setHandle(id, proc)
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
       startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
-    if (!onStarted(result)) {
-      throw new WorkerLaunchError('stale', `${tag} changed during launch; attempted to stop the new process`, true)
-    }
-    rooms.watchWorkerProcess(s, id, proc, command.mode === 'resume' ? `could not resume ${tag}` : `could not start ${built.cmd}`, policy.log, policy.at, () => { exited = true; return stoppingReason })
-    watching = true
-    if (policy.host === 'codex') {
-      const launchedProc = proc
-      proc.onSessionId?.(sessionId => onSessionId?.(sessionId, launchedProc))
-    }
-    if (toolCallAborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
-    lease.release()
+    await onSpawn(result)
+    if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
     return result
   } catch (e) {
     let stopped = false
     if (delivered && proc) {
       const launchedProc = proc
-      const current = s.room.workers.get(tag)
-      const ownsRecord = current?.id === id && current.pid === launchedProc.pid
-      const reason = e instanceof WorkerLaunchError && e.phase === 'cancelled' ? 'message-delivered-cancelled' : 'message-delivered-failed'
-      if (ownsRecord) stoppingReason = reason
       try {
         if (watching) stopped = await stopWorkerWithEscalation({
           terminate: () => launchedProc.kill(), exited: () => exited,
@@ -113,7 +101,6 @@ export async function launchWorkerProcess(policy: Policy, command: Command, leas
         })
         else launchedProc.kill() // No exit observer was installed; never report a confirmed stop.
       } catch (stopError) { policy.log(`worker launch: could not stop ${tag}: ${stopError}`) }
-      if (!stopped) stoppingReason = undefined
     }
     if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e
     throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped)

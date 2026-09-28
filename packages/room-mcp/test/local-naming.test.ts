@@ -11,6 +11,8 @@ import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
+import { closeRegistryForDir } from '../src/worker-registry.js'
 
 vi.mock('@room/relay', () => ({ ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
 let dir: string
@@ -21,7 +23,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'local-naming-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
 })
-afterEach(() => { dispose.splice(0).forEach(fn => fn()); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs() })
+afterEach(async () => { dispose.splice(0).forEach(fn => fn()); await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs() })
 
 it.each(['anything', 'my room!?', undefined])('normalizes the local relay room for %s without an origin', async room => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room })).rejects.toThrow('relay boundary')
@@ -100,6 +102,7 @@ it('refuses to strand running workers and preserves the session and link', async
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const cur = t.current()
   cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
+  await syncDocumentWorkers(cur)
   expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.')
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
@@ -129,6 +132,7 @@ it('same-room rejoin is a no-op even with a running worker, preserving scope', a
   await t.tools.call('room_scope', { area: 'test', summary: 'keep', paths: [] })
   const scope = cur.room.scope('Ada')
   cur.room.setWorker({ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' })
+  await syncDocumentWorkers(cur)
   const reply = await t.tools.call('room_join', { where: 'local', room: 'local/custom' })
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)

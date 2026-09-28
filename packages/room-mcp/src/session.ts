@@ -28,6 +28,7 @@ import { acquireOwnedFile } from './owned-file.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
+import { admitWorkerEnvironment } from './worker-registry.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -573,6 +574,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
   const config = await resolveConfig({ dir, env: process.env, args: opts })
+  await admitWorkerEnvironment(dir)
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)

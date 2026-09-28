@@ -19,6 +19,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorktree } from '../src/worker-git.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 import { type SpawnSpec } from '../src/worker-process.js'
 import { createFocusState, participantsPanel } from '../../web/src/panels.ts'
 import type { Conn } from '../../web/src/conn.ts'
@@ -59,9 +60,9 @@ afterEach(() => {
 
 /** The shape the live run produced: the human's worker `lead` and its Codex worker `cat`, nested under it. */
 async function nestedBatch(opts: { leadStatus?: Worker['status']; catStatus?: Worker['status'] } = {}) {
-  const lead = await prepareWorktree(top, 'lead', HUMAN, [], `local/top/shop|${HUMAN}`)
+  const lead = await prepareWorktree(top, 'lead', HUMAN, [], undefined)
   put(lead.dir, 'api/tax.py', '# Rates reviewed 2026-09\nRATES = {}\n')
-  const cat = await prepareWorktree(lead.dir, 'cat', LEAD, [], `local/top/shop|${LEAD}`)
+  const cat = await prepareWorktree(lead.dir, 'cat', LEAD, [], undefined)
   put(cat.dir, 'api/catalog.py', 'def price_of(name):\n    """Raises KeyError for unknown products."""\n    return 1\n')
   put(lead.dir, '.room/workers/cat.log', 'codex transcript\n')
   const room = new RoomDoc(new Y.Doc())
@@ -83,7 +84,8 @@ function humanCollect(room: RoomDoc) {
     now: Date.now,
     ctx: { sleep: async () => {} },
   } as unknown as HandlerState
-  return collectHandlers(state).room_collect
+  const call = collectHandlers(state).room_collect
+  return async (args: Parameters<typeof call>[0]) => { await syncDocumentWorkers(s as Session); return call(args) }
 }
 
 const prunable = () => git(top, 'worktree', 'list', '--porcelain').split('\n').filter(l => l.startsWith('prunable'))
@@ -109,7 +111,9 @@ describe('nested lead: a worker that leads workers', () => {
   it('2: after the human session dies, the lead-worker\'s finished edits can still be copied out', async () => {
     // Live: room_state says "stopped while no session of yours was running", but the record still says running,
     // so room_collect answers "skipped lead: running" for apply AND copy mode; only discard is left.
-    const { room } = await nestedBatch()
+    const { room, leadW } = await nestedBatch()
+    leadW.pid = 7777
+    room.setWorker(leadW)
     const collect = humanCollect(room)
     const out = await collect({ tag: 'lead', mode: 'copy', paths: ['api/tax.py'] })
     expect(out).toContain('copied api/tax.py')
@@ -129,7 +133,8 @@ describe('nested lead: a worker that leads workers', () => {
     const { room, cat } = await nestedBatch()
     const out = await humanCollect(room)({ tag: 'lead', discard: true, force: true })
     const catEdit = 'Raises KeyError for unknown products'
-    const patches = fs.existsSync(path.join(top, '.room', 'discarded')) ? fs.readdirSync(path.join(top, '.room', 'discarded')).map(f => read(path.join(top, '.room', 'discarded'), f)) : []
+    const archive = path.join(top, '.git', 'room', 'registry', 'patches')
+    const patches = fs.existsSync(archive) ? fs.readdirSync(archive).map(f => read(archive, f)) : []
     const recoverable = (fs.existsSync(path.join(cat.dir, 'api/catalog.py')) && read(cat.dir, 'api/catalog.py').includes(catEdit)) || patches.some(p => p.includes(catEdit))
     expect({ out, recoverable }).toMatchObject({ recoverable: true })
     expect(prunable()).toEqual([])
@@ -137,14 +142,14 @@ describe('nested lead: a worker that leads workers', () => {
     if (!fs.existsSync(cat.dir)) expect(git(top, 'branch', '--list', 'room/cat')).toBe('')
   })
 
-  it('5: the human\'s session can dispose of grand-workers left behind by its dead lead-worker', async () => {
+  it('5: a retired lead view does not grant direct discard authority over its grand-worker', async () => {
     // Live: "error: no worker catalog owned by you" for collect and discard; the tag stays reserved for good
     // ("tag catalog is in use by rohanz+lead's worker in this room").
     const { room } = await nestedBatch({ leadStatus: 'done' })
     room.retireParticipant(LEAD, { name: LEAD, tag: 'lead', lead: HUMAN, host: 'claude', task: 'lead', summary: 'discarded', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'dismissed' })
     const out = await humanCollect(room)({ tag: 'cat', discard: true, force: true })
-    expect(out).not.toContain('no worker cat owned by you')
-    expect(room.workers.has('cat')).toBe(false)
+    expect(out).toContain('cat belongs to rohanz+lead')
+    expect(room.workers.has('cat')).toBe(true)
   })
 
   it('6: grand-workers share the lead-worker\'s compute budget instead of each inheriting all of it', async () => {

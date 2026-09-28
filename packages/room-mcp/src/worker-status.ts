@@ -22,6 +22,10 @@ export interface PrepJournal {
   previousCarryRefs?: Record<string, string | null>; untrackedTree?: string
   created?: boolean; branchCreated?: boolean
 }
+export interface DiscardPlan {
+  force: boolean; children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
+  patch?: { path: string; sha256: string }
+}
 export interface WorkerRecord {
   v: 1; id: string; tag: string; name: string; mode: 'here' | 'local'; room: string
   lead: { participant: string; room: string; instance: InstanceToken }
@@ -33,7 +37,7 @@ export interface WorkerRecord {
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
   phase: 'intent' | 'preparing' | 'prepared' | 'active' | 'collecting' | 'discarding' | 'retiring' | 'retired' | 'abandoned'
   runs: Run[]; stop?: { reason: StopReason; at: number; run: number }
-  discard?: Record<string, unknown>; interrupted?: { op: 'collect' | 'discard'; at: number; detail: string }
+  discard?: DiscardPlan; interrupted?: { op: 'collect' | 'discard'; at: number; detail: string }
   cleanup?: Record<string, 'pending' | 'done'>; keptWorktree?: string
   legacy?: { id: string; source: string; said?: string; unowned?: boolean }; createdAt: number; seq: number
 }

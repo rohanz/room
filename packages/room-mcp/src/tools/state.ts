@@ -1,4 +1,4 @@
-import { createWorkerRuntime } from './workers.js'
+import { createWorkerRuntime, registryRunningWorkers } from './workers.js'
 import { createJoin } from './join.js'
 import { createShare } from './share.js'
 import { createPrs } from './prs.js'
@@ -139,7 +139,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const inboxServices = createInbox({ seen, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
-  const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences, runningWorkers: s => rooms.occupiedWorkers(s) })
+  const join = createJoin({ ctx, log, doJoin, doLeave, seen, rooms, now, presences,
+    runningWorkers: s => registryRunningWorkers(s, rooms) })
   const workers = createWorkerRuntime({ ctx, rooms, doJoin, doLeave, seen, log, cleanupMine: join.cleanupMine, now })
   const company = (s: Session) => hasCompany(s, workers.runningWorkers(s).map(r => r.w), now())
   const state: HandlerState = {

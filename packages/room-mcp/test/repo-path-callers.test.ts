@@ -11,6 +11,7 @@ import { buildCombinedTree } from '../src/tools/combined-tree.js'
 import { type HandlerState } from '../src/tools/context.js'
 import { cleanupWorker, prepareWorkerLinks, prepareWorktree, resolveWorkerLinks } from '../src/worker-git.js'
 import type { Session } from '../src/session.js'
+import { syncDocumentWorkers } from './registry-fixture.js'
 
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -32,7 +33,8 @@ describe('collection path policy through room_collect copy', () => {
   it('rejects lexical variants and all link components', async () => {
     const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
     room.setWorker({ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', startedAt: 1, base })
-    const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } }
+    const session = { dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, awareness: { getStates: () => new Map() } }
+    await syncDocumentWorkers(session as Session)
     const state = { S: () => session, rooms: { all: () => [session], holdingWorker: () => session, reserve: () => true, unreserve() {}, retireWorkers: async () => {} }, workerAlive: () => false } as unknown as HandlerState
     const call = collectHandlers(state).room_collect
     for (const rel of cases) expect(await call({ tag: 'w', mode: 'copy', paths: [rel] })).toMatch(/unsafe collection path/)
