@@ -42,7 +42,7 @@ export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
   { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.',
-    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'reserved; outside directories are currently refused' }, dir: str('use an existing directory in this repo instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, dir: str('use an existing directory in this repo instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -159,7 +159,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
       const relative = path.relative(s.dir, dir)
       const outside = relative.startsWith('..') || path.isAbsolute(relative)
-      if (outside) return `error: ${dir} is outside this repo; allowOutside is not supported by the durable worker registry`
+      if (outside) return `error: ${dir} is outside this repo; a worker's directory must be in this repo`
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
       const hostSessionId = host === 'claude' ? randomUUID() : undefined
       const usedPorts = registry.list().flatMap(record => typeof record.port === 'number' ? [record.port] : [])

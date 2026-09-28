@@ -1076,7 +1076,7 @@ describe('worker safety', () => {
     expect(a.messages()).toHaveLength(0)
   })
 
-  it('refuses an outside checkout before intent even with allowOutside (S3)', async () => {
+  it('refuses an outside checkout before intent (S3)', async () => {
     const t = setupLead()
     const outside = mkdtempSync(join(tmpdir(), 'room-outside-'))
     execFileSync('git', ['-C', outside, 'init', '-q', '-b', 'elsewhere'], { stdio: 'pipe' })
@@ -1086,8 +1086,8 @@ describe('worker safety', () => {
     const refused = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
     expect(refused).toContain('outside this repo')
     expect(t.specs).toHaveLength(0)
-    const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside, allowOutside: true })
-    expect(ok).toContain('allowOutside is not supported')
+    const ok = await t.leadTools.call('room_spawn', { tag: 'far', task: 'x', dir: outside })
+    expect(ok).toContain('is outside this repo')
     expect(t.specs).toHaveLength(0)
     expect((await registryForDir(dir)).reserved('far')).toBeUndefined()
   })

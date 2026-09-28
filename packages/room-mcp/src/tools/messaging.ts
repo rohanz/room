@@ -2,7 +2,7 @@ import { formatMsg, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, 
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
-import type { PostResult } from '../post.js'
+import { greeted, type PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -163,6 +163,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const addressedWorker = to && s.room.workerOf(to)
       let deliveredInPrompt = false
       if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running') {
+        await greeted(s.hub)
         if (s.hub.paused()) return `error: not sent: room connection is paused; ${addressedWorker.tag} was not resumed`
         const result = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
         if (typeof result === 'string' && result.startsWith('error:')) return result
