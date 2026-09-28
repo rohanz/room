@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": ">=1.30.0 <2",
+    "@room/hub-core": "*",
     "@room/relay": "*",
     "@room/roomd": "*",
     "@room/shared": "*",
