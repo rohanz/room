@@ -80,18 +80,30 @@ it('refuses an explicit inReplyTo addressed to someone else, without resuming or
   expect(main.room.messages()).toHaveLength(2)
 })
 
-it('refuses an explicit inReplyTo from another recipient or naming a non-question', async () => {
+it('validates explicit question and note replies without answering a question with a note', async () => {
   const { main, tools } = fixture()
   main.room.colors.set('Ada', 0)
   main.room.colors.set('Bea', 0)
+  main.room.colors.set('Cara', 0)
   const question = main.room.post({ name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
   const note = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'note', to: 'lead', text: 'For context' })
-  for (const id of [question.id, note.id]) {
-    const sent = await tools.room_send({ type: 'answer', to: 'Bea', inReplyTo: id, text: 'price_cents' })
-    expect(sent).toContain(`invalid inReplyTo ${id}`)
-    expect(sent).toContain(`${question.id}: Which field?`)
-    expect(main.room.messages()).toHaveLength(2)
-  }
+  const wrongQuestion = await tools.room_send({ type: 'answer', to: 'Bea', inReplyTo: question.id, text: 'price_cents' })
+  expect(wrongQuestion).toContain(`invalid inReplyTo ${question.id}`)
+  expect(wrongQuestion).toContain(`${question.id}: Which field?`)
+  expect(main.room.messages()).toHaveLength(2)
+
+  const sent = await tools.room_send({ type: 'answer', to: 'Bea', inReplyTo: note.id, text: 'Thanks' })
+  expect(sent).toContain('sent [')
+  expect(main.room.messages().at(-1)).toMatchObject({ type: 'note', to: 'Bea', inReplyTo: note.id, text: 'Thanks' })
+  expect(main.room.messages().filter(m => m.type === 'answer')).toHaveLength(0)
+  expect(main.room.messages().some(m => m.id === question.id)).toBe(true)
+
+  const unaddressed = main.room.post({ name: 'Bea', kind: 'agent' }, { type: 'note', to: 'Cara', text: 'Private context' })
+  expect(await tools.room_send({ type: 'note', to: 'Bea', inReplyTo: unaddressed.id, text: 'Thanks' }))
+    .toBe(`error: inReplyTo ${unaddressed.id} must name a note addressed to you`)
+  expect(await tools.room_send({ type: 'note', to: 'Ada', inReplyTo: note.id, text: 'Thanks' }))
+    .toBe('error: note reply must go to Bea')
+  expect(main.room.messages()).toHaveLength(4)
 })
 
 it('refuses an implicit answer when no unanswered question matches the recipient', async () => {
