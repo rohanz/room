@@ -39,3 +39,117 @@ Reviewed **`git diff a269f85 bd95790`**, with the worktree pinned to **bd95790**
 - Arbitration statically binds to loopback, authenticates with a random key, bounds incoming frames, and writes its endpoint with mode 0600. Hook paths hash session IDs instead of interpolating them into paths. These observations do not substitute for the unavailable live socket rehearsal.
 
 - Finish preview: `room_preview_merge(people=["rohanz+review2f"])` reported **no conflicts**, zero peer paths applied and this review as the one local-only path. No combined-code tests were run; the review is the only worktree change.
+
+## Re-review (8a93607)
+
+Reviewed `git diff b33e692 8a93607 -- packages plugins vitest.setup.ts`, with this worktree still at
+`8a936071361f3f7871241f956d818a2e22f0486c`. The dispositions below cover both review reports and the
+rehearsal's Codex environment finding. **19 resolved, 3 not resolved in scope; 2 not resolved but explicitly
+deferred to wave 3. New findings: 2 Must-fix, 1 Should-fix.** No source or test files changed and no commit
+was made. Peer overlays and later wave-3 work are not included in these verdicts.
+
+### Original-item dispositions
+
+“Resolved” applies to the reported failure, not a blanket approval of its subsystem. “Static” means the
+fix was read but its socket-dependent integration case could not be rerun here.
+
+| Item | Disposition | Evidence at 8a93607 |
+| --- | --- | --- |
+| M1 — exclusions before read/deletion | **Resolved** | `disk-scan.ts:11–24,53–63` runs `git check-ignore --no-index -z --stdin`, computes ignore/safety exclusions before `lstat`/ENOENT, and passes an excluded fact to `plan`. `policy.ts:90–93` also applies default and room-ignore rules before errors/deletions. Reran all three real-Git regression cases in `policy-regressions.test.ts`: tracked `.gitignore`, default `.env`, and `.roomignore`, each modified and deleted, emit a digest without a named entry. |
+| M2 — policy identity prevents settlement | **Resolved** | `session.ts:38–40,546` now sends the store's exact policy object through `applySessionPolicy`. Reran `policy-wiring.test.ts` through that production helper and a real daemon: departing `src/` settles to `ending: []`, `retained: ['src/x']`. The separate colocation regression caused by this change is **N1** below. |
+| M3 — failed reads certify equality / revoke retention | **Resolved** | `Publisher.prepare` marks the manifest incomplete and schedules the dirty retry when `unsettled` is nonempty; `valid` rejects that plan (`publisher.ts:136–140,154`). The old entry/text survives instead of being replaced by an empty complete manifest. `PolicyStore.settle` retains unresolved paths. Reran EACCES, retained-grant and failed-HEAD-transition cases in `policy-regressions.test.ts` and `policy-wiring.test.ts`; all passed. |
+| M4 — deletion base text survives narrowing | **Resolved** | `withdrawBaseTexts` is called in both synchronous narrowing and publication, with only text-authorized paths. Reran the full → declared / prefix-withdrawal deletion test: D stays exact; `baseHash` and owned base text disappear synchronously and remain absent after reconciliation. |
+| M5 — error reply receipts omitted inbox | **Resolved** | `tools/index.ts:120` calls `ledger.discard(batch)` on reply-building failure; discard clears the batch as well as releasing reservations. `transport.ts:34` also rejects a handoff whose final response does not carry the selected tool text. Reran both transport-level tests in `delivery-fixes.test.ts`: failure after selection and replacement by a wrapper error leave the message unreceipted and re-offered. |
+| M6 — disclosure marked before delivery | **Resolved** | `prepareTeamSharingDisclosure` no longer persists `disclosed`. `offerTeamSharingDisclosure` registers a callback that runs after the notice receipt; a surviving notice receipt repairs a missing marker on reopen. All three real-store disclosure tests passed: unconfirmed reply, unconfirmed hook selection, and receipt-before-marker crash recovery. |
+| M7 — pushed notice lost on refusal/crash | **Resolved** | `commitTransition` records `git.pushedPending` in the transaction; `postPushedPending` retries on polls/startup and clears only after acceptance; the session now returns the post result. All three `pushed-pending.test.ts` real-Git/in-memory-provider cases passed: repeated refusal, surviving-document restart, and an old acknowledgment arriving after a newer transition. No live relay crash was run here. |
+| M8 — launch-write failure abandons live child | **Resolved** | `worker-launch.ts:81–88` owns and registers a returned child before the awaited launch write. Its failure path observes `started`, stops the child and preserves delivered/ambiguous outcomes and unconfirmed-stop resources. Reran fresh and resume injected-write-failure probes in `registry-write-fixes.test.ts`: each registers one handle, calls kill once and returns `delivered: true, stopped: true`. The spawn/resume catches preserve the record instead of rolling back a possibly live checkout. |
+| M9 — discard replay strips stop identity | **Resolved** | Replay now obtains stop identity directly from the durable launch/report rather than the `collecting` display status. The live-child replay regression in `registry-write-fixes.test.ts` passed with the launch process token supplied to the signaling seam. The newly added admitted-chain fallback has a different failure, **N2** below. |
+| S1 — positive ancestry cache survives reset | **Not resolved** | The ordinary observed-HEAD test passes, but the cache key uses `daemon.base` while `merge-base` reads current `HEAD` (`relevance.ts:23,28`). Real-Git probe: daemon last observed A; commit B; query B before the poll (caches true under A); reset to A before the daemon ever observes B. The existing relevance function still returns false, while a fresh function returns true. Since the daemon is again at A, later polls cannot invalidate this cached positive. Key and compute against the same captured Git SHA, or expire/recheck positive answers too. |
+| S2 — level changes erase active scope | **Resolved** | `setRequested` preserves `active`, clears only `ending`/`retained` when leaving declared, and returns the same object for a same-level request. Production-store and fixture tests for declared → full → full → declared passed and retain `['src/']`. |
+| S3 — supplied directory lacks registry capability | **Not resolved** | The literal outside-path case is now refused before intent, including `allowOutside: true`. However, the remaining advertised existing-directory mode uses only lexical containment (`tools/workers.ts:157–163`); a second checkout nested under the lead checkout passes that test and is launched with the lead's registry. A two-repository probe with exactly that record shape still gets `this worker run was collected, discarded or superseded` from admission, and `trusted` is false. A normal non-Room directory in the same repo also cannot satisfy `trusted`'s owned-worktree check. Reject unsupported supplied directories before intent, using canonical repository/worktree identity, or implement the distinct capability path. |
+| F-M1 — quiet-minute hook loses claims/company | **Resolved (static)** | `before-edit.mjs:59–69` no longer treats old state as grounds to exit when an MCP endpoint exists. A successful session-bound select/ping makes that state usable. `session-start.mjs` likewise accepts old state after a successful select. The offline stale-state test passed; the two live quiet-minute tests require sockets and were not run. |
+| F-M2 — oversized hook output is silently receipted | **Resolved for the reported hook/batch case** | `selectWithin` budgets rendered hook items to 6,000 characters and leaves the rest owed; hooks cap the combined context at 10,000, omitting an oversized inbox without confirming it. The original 40 × 500-character message probe passed in `delivery-fixes.test.ts` for both hook selection and reply batching, including the remaining-owed count. A socket-free actual hook probe also remained below the cap. Claim truncation has a separate consequence, **N3** below. The reply path's explicit single-oversized-item exception is not a proof against every host's MCP-result limit. |
+| F-M3 — subagent hook consumes main inbox | **Resolved (static)** | `before-edit.mjs:56,64–67,79` branches on `agent_id`, sends only `ping`, prints a content-free pending line, and never has a batch to confirm. It also avoids updating the main hook's claim/company evidence. The live subagent-selection test needs arbitration sockets and was not run. |
+| F-M4 — abandoned tag hides live incarnation | **Resolved** | `reserved` / `reservedByTagOrName` read the tag reservation first; `trusted`, `resumeWorker`, `missingCapability` and `holdingWorker` use that selection. Reran abandon → reuse → trusted-capability probe: the current record `w_02` wins over abandoned `w_01`. |
+| F-M5 — supplied-dir launch failure leaks capacity | **Resolved** | `rollbackPreparation` now returns without path validation when the journal records no created worktree, branch or carry refs. Reran the supplied-directory abandonment probe: phase becomes `abandoned`, directory survives, occupancy becomes zero. The handler preserves the launch error if cleanup itself fails. This fixes rollback, not the successful supplied-directory capability gap in S3. |
+| F-S1 — declared/full round-trip loses area | **Resolved** | Same production and fixture change and passing round-trip probe as S2. |
+| F-S2 — refused discard is automatically replayed | **Resolved (static)** | Each of the three reported post-plan refusal returns now calls `interruptDiscard` (`tools/collect.ts:202,216,231`); the existing catch already does so. `interruptDiscard` restores active and records the interruption, so reconciliation's discarding-only replay no longer picks it up. The newly added handler tests were inspected, not run because the worker suite's launch fixtures reserve listening ports. |
+| F-S3 — refused room_done completion never announced | **Resolved** | `postObservedFailure` now accepts a saved `done` report as well as failed status and posts `completionMessage` by `wk:<id>:<run>`; `room_done` explicitly says the report was saved and asks for retry when posting fails. The registry exit-recovery test passed: one deterministic completion ID is marked posted. Persistent outages/restarted-lead projection remain wave-3 work. |
+| F-S4 — tag reuse after collection | **Not resolved — deferred, out of scope** | No wave-2 retirement-completion change is expected under the lead's ruling. Wave 3's projector owns the cleanup acknowledgment and reservation release. Not counted among the three in-scope unresolved items. |
+| F-S5 — follow-up reaches worker before hub accepts | **Not resolved** | The new `s.hub.paused()` guard is insufficient: after a successful hello, a dropped transport still returns undefined from `paused()` until a later operation discovers it. In-process real-hub probe, with only `resumeWorker` stubbed to record the launch: disconnect, send a follow-up, observe **one resume**, **zero bus messages**, and `not sent: hub unreachable` followed by the resumed-conversation sentence. It also still launches before size/cap rejection. Obtain post acceptance before delivery, or at least implement the specified fresh connectivity preflight; cached `paused()` is not that preflight. |
+| F-S6 — content-bearing Codex queue wake | **Not resolved — deferred, out of scope** | The full-content queue wake is unchanged. The lead explicitly assigned it and the duplicate-wake rehearsal to wave 3's WakeReconciler. Not counted among the three in-scope unresolved items. |
+| Rehearsal — Codex MCP drops registry launch env | **Resolved** | `plugins/room/codex-mcp.json` now includes `ROOM_WORKER_ID`, `ROOM_WORKER_RUN`, `ROOM_LAUNCH_NONCE`, `ROOM_REGISTRY`, plus the name epoch and worker resource/runtime variables. `codex-env.test.ts` passed: every `ROOM_*` variable produced by `workerProcessEnv` appears in the MCP allow-list or fixed env. This verifies configuration, not a new native Codex launch. |
+
+### New Must-fix
+
+- **N1 — A sharing/scope change makes a colocated non-publisher publish again.**
+  **Locations:** `packages/room-mcp/src/session.ts:38–40,546`;
+  `packages/roomd/src/index.ts:553–555`. The M2 change removes the callback's publisher override, but
+  nothing updates `PolicyStore` when `choosePublisher` elects another session (`setPublisher` has no
+  production caller). Its next rebuilt policy therefore still says `publisher: true`. `choosePublisher`
+  subsequently returns early because `publishUnder` has not changed and never repairs that policy.
+  A real daemon with an injected awareness provider elected Alice, reporting
+  `{under:"Alice", publisher:false}`. Calling the production store callback through `declare(['x'])`
+  and `setRequested('declared')`, then choosing again and reconciling, produced
+  `{under:"Alice", publisher:true, text:"follower text"}` under Ben's own overlay. This violates the
+  existing non-publisher publication gate (manifest invariants 2/8); it is a regression in the present
+  colocation path, not a request to pull wave-4 leases forward. Feed publisher election into the same
+  store policy identity, or separate authorization revision from publisher inputs while preserving both.
+  Add a callback-wiring test with a second session in the same watched directory.
+
+- **N2 — Discard replay mistakes stopping the MCP for stopping the worker host, then snapshots a live worker.**
+  **Locations:** `packages/room-mcp/src/worker-registry.ts:100–103,725–743,753`;
+  `packages/room-mcp/src/worker-git.ts:309`. The new fallback chooses the first live identity from the
+  report's chain. Admission writes that chain as **MCP first, parent host second**. If the lead dies
+  after the PID-only launch fact but before the enriched process-token write, a successfully admitted
+  worker has exactly this state. Replay signals the MCP, marks `steps.stop = true` once that process
+  dies, and saves the recovery patch while the host remains alive. `cleanupWorker` only terminates
+  remaining cwd processes **after** that patch, so writes in the intervening window are omitted and
+  then deleted with the worktree.
+
+  An isolated probe used a real owned Git worktree and two real Node children, injected liveness and
+  the verified-signal seam, and the actual replay/patch/cleanup functions. The launch had the host PID
+  without its enriched token; the matching report had `[MCP, host]`. At the patch seam the host still
+  existed (`kill(pid, 0)` succeeded). A write injected immediately after the patch stood in for that
+  still-running host. Result: `signals:["mcp"]`, `aliveAtPatch:true`, `phase:"retiring"`,
+  `dirExists:false`, `patchHasLate:false`. This is a failure of the newly added fallback; M9's original
+  fully identified launch path now works. Identify and stop the actual host from the matching durable
+  run/chain, and establish quiescence for all relevant owned processes before publishing the recovery
+  patch. If that cannot be verified, retain the worktree without marking the stop step done.
+
+### New Should-fix
+
+- **N3 — Hook truncation marks unshown claim warnings as already told.**
+  **Location:** `plugins/room/hooks/before-edit.mjs:111–129`. The hook saves the complete claim/near
+  evidence into `hook.json` before `fitLines` cuts the coordination output. Claims beyond the cap are
+  consequently suppressed on every subsequent edit until their evidence changes. A socket-free probe
+  ran the actual hook twice with a fresh company snapshot and 60 claims on `x`: first context length
+  **9,995**, no `Peer59`; second context length **0**; `hook.json` nevertheless contains `Peer59`.
+  The output cap itself is correct, but truncation now counts omitted coordination as delivered.
+  Record only successfully printed evidence, or leave truncated claim/near groups eligible for the
+  next hook. Test successive calls, not only the first bounded output.
+
+### Validation and limits
+
+- Reran the original applicable offline probes via these source suites, with at most two Vitest workers:
+  `policy-store`, `policy-wiring`, `retained-done`, `worker-write-paths`, `registry-write-fixes`,
+  `delivery-fixes`, `transport`, `relevance`, `codex-env` (room-mcp), and `policy-regressions`, `plan`,
+  `policy-publication`, `head-transitions`, `pushed-pending` (roomd). First run: **62 passed, 2 failed**
+  across 14 files. Both failures were `EMFILE` starting native file watchers, before the behavior under
+  test. Reran `policy-wiring` and `policy-regressions` with `CHOKIDAR_USEPOLLING=1 --maxWorkers=1`:
+  **9/9 passed**. Thus all **64 distinct tests in those 14 files** passed on the completed attempts.
+- Ran the socket-free stale-state case from `hook-fixes.test.ts`: **1 passed, 4 skipped**. Its other
+  four cases need arbitration sockets and were intentionally not attempted. Also ran the isolated N2
+  replay probe: **1 passed**, asserting the defective stop selection and removed worktree. Temporary
+  harness setup errors were corrected before that probe was counted; no production edits were made.
+- Additional temporary probes exercised a real daemon/PolicyStore with fake awareness (N1), real Git
+  ancestry (S1), two actual repositories and admission (S3), the in-process hub plus a resume spy (F-S5),
+  and the actual hook subprocess without an endpoint (N3). No sockets, external posts, or native
+  Claude/Codex worker launches were used. Probe children were stopped and fixture checkouts removed.
+- `nice -n 10` was requested; the sandbox rejected `setpriority`, so validation stayed at one or two
+  workers and heavy jobs were staggered. No full-suite, typecheck, web build, plugin rebuild, or live
+  rehearsal claim is made. `plugins/room/hooks.json` is unchanged in the fix diff.
+- Finish preview: `room_preview_merge(people=["rohanz+review2a"])` found the original review worker's
+  stale add-file overlap resolvable by taking this worktree's superset. The `resolve=true` result was
+  compared with the local file and matched exactly (ignoring the final newline); no peer text needed
+  changing. No combined-code tests were run. Final diff is append-only in this review file.

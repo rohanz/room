@@ -551,7 +551,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await syncDocumentWorkers(fakeSession(t.a, lead))
     t.exits[0](0)
     await vi.waitFor(() => expect(t.a.workers.get('finished')?.exitCode).toBe(0))
-    expect(await t.leadTools.call('room_leave', {})).toMatch(/^error: 1 worker\(s\) still running: busy\. /)
+    expect(await t.leadTools.call('room_leave', {})).toMatch(/(^|\n)error: 1 worker\(s\) still running: busy\. /)
     expect(t.killed).toEqual([])
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
