@@ -16,6 +16,7 @@ import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
 import { syncDocumentWorkers } from './registry-fixture.js'
+import { registryForDir } from '../src/worker-registry.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubAppend } from '@room/shared/testing'
@@ -100,23 +101,28 @@ describe('resumed worker boundaries', () => {
     expect(t.room.messages().filter(m => m.type === 'done')).toEqual([])
   })
 
-  it('records the newest bus message as the worker spawn marker', async () => {
+  it("records the lead's highest seq at intent as the run's busFrontier", async () => {
     const t = setup()
     const before = hubAppend(t.room, t.session.me, { type: 'note', text: 'earlier work', priority: 'fyi' })
     expect(await t.tools.call('room_spawn', { tag: 'briefed', task: 'review', host: 'claude' })).toContain('spawned briefed')
-    expect(t.room.workers.get('briefed')?.spawnedAfter).toBe(before.id)
+    const record = (await registryForDir(t.dir)).list().find(r => r.tag === 'briefed')!
+    expect(record.runs[0].busFrontier).toBe(before.seq)
   })
 
   it('advances the briefing boundary when a finished worker resumes', async () => {
     const t = setup()
     t.seed('briefed')
     const between = hubAppend(t.room, t.session.me, { type: 'note', text: 'before resume', priority: 'notify' })
+    const resumed = t.room.messages().at(-1)!
     expect(await t.tools.call('room_send', { type: 'note', to: 'briefed', text: 'continue' })).toContain('resumed briefed')
-    const worker = t.room.workers.get('briefed')!
-    expect(worker.spawnedAfter).toBe(between.id)
+    const record = (await registryForDir(t.dir)).list().find(r => r.tag === 'briefed')!
+    expect(record.runs.at(-1)).toMatchObject({ n: 2, busFrontier: expect.any(Number) })
+    expect(record.runs.at(-1)!.busFrontier).toBeGreaterThanOrEqual(resumed.seq!)
     const after = hubAppend(t.room, t.session.me, { type: 'note', text: 'after resume', priority: 'notify' })
-    const joined = { ...t.session, me: { name: worker.name, kind: 'agent' as const } } as Session
-    // The resumed worker's cursor starts at its new spawn marker: later broadcasts are owed, earlier ones are not.
+    const joined = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
+    // A resumed run whose session lost its cursor seeds from the new run's busFrontier: later broadcasts are owed, earlier ones are not.
+    vi.stubEnv('ROOM_WORKER_ID', record.id)
+    vi.stubEnv('ROOM_WORKER_RUN', '2')
     const owed = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) }).candidates(joined).map(m => m.id)
     expect(owed).not.toContain(between.id)
     expect(owed).toContain(after.id)

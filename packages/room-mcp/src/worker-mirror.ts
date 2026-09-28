@@ -9,7 +9,6 @@ export function mirrorRegistryWorkerRecord(s: Session, registry: WorkerRegistry,
   if (!record || !status) return
   const legacy = realStateInput(record, status)
   if (!legacy.summary) legacy.summary = registry.reports(id).filter(report => report.done).at(-1)?.done?.summary
-  legacy.spawnedAfter = status.run?.busFrontier.at(-1)
   const launch = status.run?.launch
   if (launch?.outcome === 'launched') {
     legacy.pid = launch.pid

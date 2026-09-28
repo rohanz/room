@@ -8,7 +8,7 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import { manifestPaths, type Presence, type Worker } from '@room/shared'
+import { highestSeq, manifestPaths, type Presence, type Worker } from '@room/shared'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -301,7 +301,7 @@ export class Rooms {
     let run: import('./worker-status.js').Run
     try {
       const next = await registry.resume(record.id, config.maxWorkers, { nonce: randomUUID(), logStart,
-        busFrontier: s.room.messages().map(message => message.id) })
+        busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
     try {

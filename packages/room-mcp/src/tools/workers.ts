@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionMessage, manifestPaths, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
+import { completionMessage, highestSeq, manifestPaths, type DoneMsg, type NoteMsg, type Worker } from '@room/shared'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
@@ -163,7 +163,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
         dir, outside, branch, prep, hostSessionId,
         capabilities: { resume: true, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
-        runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: s.room.messages().map(message => message.id), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
+        runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,
       }
       try { await registry.writeIntent(record, max) }
@@ -369,7 +369,6 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
   const startWorkersBridge = (lead: import('../session.js').Session, s: import('../session.js').Session): Bridge => {
     const bridge = new Bridge(lead, s, { log, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : undefined })
     bridge.start()
-    ctx.attachChannel?.(s)
     return bridge
   }
   return { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, startWorkersBridge }

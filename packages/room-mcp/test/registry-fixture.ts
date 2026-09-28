@@ -34,7 +34,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
     budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full', task: 'test',
     dir: path.join(dir, '.room', 'workers', tag), outside: false, branch: `room/${tag}`,
     prep: { step: 'plan' }, capabilities: { resume: false, signal: false, collect: 'delta' }, phase: 'intent',
-    runs: [{ n: 1, mode: 'fresh', intentAt: now, nonce: `fixture:${id}`, busFrontier: [], promptMsgIds: [],
+    runs: [{ n: 1, mode: 'fresh', intentAt: now, nonce: `fixture:${id}`, busFrontier: 0, promptMsgIds: [],
       launcher: registry.instance, logStart: 0 }],
     createdAt: now, seq: 1, ...patch,
   }
@@ -60,7 +60,7 @@ export async function syncDocumentWorkers(session: Session): Promise<WorkerRegis
     if (!record) {
       const w = legacy as Worker
       const run = { n: 1, mode: 'fresh' as const, intentAt: w.startedAt ?? Date.now(), nonce: `fixture:${id}`,
-        busFrontier: [], promptMsgIds: [], launcher: registry.instance, logStart: 0 }
+        busFrontier: 0, promptMsgIds: [], launcher: registry.instance, logStart: 0 }
       const initial: WorkerRecord = {
         v: 1, id, tag: w.tag, name: w.name, mode: 'local', room: session.roomName,
         lead: { participant: w.lead, room: session.roomName, instance: registry.instance },

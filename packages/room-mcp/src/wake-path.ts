@@ -1,15 +1,25 @@
+/**
+ * How a content-free wake reaches the bound host session (ledger "Wake (MF8)"). No path acknowledges that
+ * the model read anything, so a sent wake is never a receipt.
+ *  - Codex: `codex queue --thread <id> --message <text>` queues the text for the thread's next turn.
+ *  - Claude Code 2.1.224+ (2.1.234+ on native Windows): the session's cross-session messaging inbox,
+ *    exported as CLAUDE_CODE_MESSAGING_SOCKET and _TOKEN; an idle session starts a turn with the message.
+ *  - Claude Code with the Room channel admitted (channels research preview, `--channels` or
+ *    `--dangerously-load-development-channels`): a `notifications/claude/channel` notification.
+ */
 import net from 'node:net'
-import { execFileSync } from 'node:child_process'
-import type { WakeEvent } from './wake.js'
+import { execFile, execFileSync } from 'node:child_process'
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
-import { sendChannelNotification } from './channel.js'
+import { sendChannelNotification, type ChannelNotification } from './channel.js'
 
-type Notification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
 type WakeEnv = NodeJS.ProcessEnv
 type Mode = 'auto' | 'socket' | 'channels' | 'off'
 
-/** Wake immediately, then gather events during this window into one follow-up. */
-const SOCKET_WAKE_WINDOW_MS = 5_000
+export interface WakeTarget { id: string; host: 'claude' | 'codex' }
+export type WakeVia = 'queue' | 'socket' | 'channel'
+/** Resolves with the path that took the wake, or undefined when this host has none; rejects when the path failed. */
+export type SendWake = (target: WakeTarget, text: string) => Promise<WakeVia | undefined>
+
 const SOCKET_POST_TIMEOUT_MS = 1_500
 
 let parentArgsCache: string | undefined
@@ -75,96 +85,38 @@ function postSocketWake(socketPath: string, token: string | undefined, content: 
   })
 }
 
-export interface SocketWakeOptions extends WakeAvailability {
-  notify: (notification: Notification) => Promise<unknown>
-  /** Checked immediately before sending, since room_wait may consume a queued event. */
-  isUnread?: (wake: WakeEvent) => boolean
-  /** A pending room_wait will deliver this event itself. */
-  isPendingWait?: (wake: WakeEvent) => boolean
-  windowMs?: number
+function codexQueue(threadId: string, text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('codex', ['queue', '--thread', threadId, '--message', text], { timeout: 10_000 }, (err, _out, stderr) => err ? reject(new Error(String(stderr || err.message).trim())) : resolve())
+  })
+}
+
+export interface WakeSenderOptions {
+  /** The MCP server's notification sender (the channel path). */
+  notify: (notification: ChannelNotification) => Promise<unknown>
+  channel?: string
+  env?: WakeEnv
+  parentArgs?: string
   post?: typeof postSocketWake
-  log?: (line: string) => void
+  queue?: (threadId: string, text: string) => Promise<void>
 }
 
-/** One router per joined session; at most one immediate and one follow-up post per window. */
-export class SocketWakeRouter {
-  private pending: WakeEvent[] = []
-  private timer: ReturnType<typeof setTimeout> | undefined
-  private sequence = 0
-  private lastSentAt: number | undefined
-  private loggedError = false
-  private loggedFlushError = false
-  private closed = false
-  constructor(private o: SocketWakeOptions) {}
-
-  push(wake: WakeEvent | null): void {
-    if (!wake || this.closed || this.o.host !== 'claude') return
-    if (this.o.isPendingWait?.(wake)) return
-    const env = this.o.env ?? process.env
+/** Codex: the queue. Claude: the socket, then the channel if the socket fails and the channel is admitted. */
+export function createWakeSender(o: WakeSenderOptions): SendWake {
+  return async (target, text) => {
+    if (target.host === 'codex') { await (o.queue ?? codexQueue)(target.id, text); return 'queue' }
+    const env = o.env ?? process.env
     const selected = mode(env)
-    if (selected === 'off') return
-    if (selected === 'channels') { if (this.unread(wake)) void this.channel(wake); return }
-    if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
-      if (selected === 'auto' && this.channelAdmitted() && this.unread(wake)) void this.channel(wake)
-      return
-    }
-    this.pending.push(wake)
-    if (this.timer) return
-    const windowMs = this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS
-    const elapsed = this.lastSentAt === undefined ? windowMs : Date.now() - this.lastSentAt
-    this.timer = setTimeout(() => { this.timer = undefined; this.flushSafely() }, elapsed < windowMs ? windowMs - elapsed : windowMs)
-    if (elapsed >= windowMs) this.flushSafely()
-  }
-
-  close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.pending = [] }
-
-  private async channel(wake: WakeEvent): Promise<void> {
-    if (this.o.channel === '') return
-    await sendChannelNotification(wake, this.o.notify)
-  }
-
-  private channelAdmitted(): boolean {
-    const env = this.o.env ?? process.env
-    return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel)
-  }
-
-  private unread(wake: WakeEvent): boolean { return this.o.isUnread?.(wake) ?? true }
-
-  private flushSafely(): void {
-    void this.flush().catch(error => {
-      if (this.loggedFlushError) return
-      this.loggedFlushError = true
-      this.o.log?.(`Claude wake fallback failed: ${error instanceof Error ? error.message : String(error)}`)
-    })
-  }
-
-  private async flush(): Promise<void> {
-    const items = this.pending.splice(0).filter(w => !this.o.isPendingWait?.(w) && this.unread(w))
-    if (!items.length || this.closed) return
-    this.lastSentAt = Date.now()
-    const count = items.length
-    const shown = count > 5 ? 4 : 5
-    const phrases = items.slice(0, shown).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)
-    if (count > shown) phrases.push(`${count - shown} more`)
-    // Sequence makes consecutive bursts distinct even when sender and kind are unchanged.
-    const collectHint = items.some(w => w.meta.type === 'done') ? ' (room_collect brings in finished workers)' : ''
-    const content = `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Use the room_state tool to read them${collectHint}. (#${++this.sequence})`
-    const env = this.o.env ?? process.env
-    try { await (this.o.post ?? postSocketWake)(env.CLAUDE_CODE_MESSAGING_SOCKET!, env.CLAUDE_CODE_MESSAGING_TOKEN, content) }
+    if (selected === 'off') return undefined
+    const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
+    const channel = async (): Promise<WakeVia> => { await sendChannelNotification(text, o.notify); return 'channel' }
+    if (selected === 'channels') return o.channel === '' ? undefined : channel()
+    const socket = env.CLAUDE_CODE_MESSAGING_SOCKET
+    if (!socket) return selected === 'auto' && admitted() ? channel() : undefined
+    try { await (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text); return 'socket' }
     catch (error) {
-      if (!this.loggedError) { this.loggedError = true; this.o.log?.(`Claude socket wake failed: ${error instanceof Error ? error.message : String(error)}`) }
-      if (mode(env) === 'auto' && this.channelAdmitted()) await this.channel({ content, meta: { type: 'room_wake', count: String(count) } })
+      if (selected === 'auto' && admitted()) return channel()
+      throw error
     }
-  }
-}
-
-function kindPhrase(type: string | undefined): string {
-  switch (type) {
-    case 'question': return 'asked a question'
-    case 'answer': return 'answered'
-    case 'changed': return 'reported a change'
-    case 'note': return 'sent a note'
-    case 'done': return 'finished'
-    default: return 'has an update'
   }
 }

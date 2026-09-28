@@ -1,26 +1,25 @@
 import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import net from 'node:net'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, messageEndsWait } from '@room/shared'
+import { RoomDoc, gitBlobHash, highestSeq, manifestKey, messageEndsWait } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { ConflictSet } from '../src/conflict-set.js'
-import { sendChannelNotification } from '../src/channel.js'
-import { SocketWakeRouter } from '../src/wake-path.js'
+import type { SendWake } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
-import { shouldWake } from '../src/wake.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam, setHubReachable } from './fixtures/hub.js'
+import { seedRegistryWorker } from './registry-fixture.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
@@ -50,16 +49,18 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   }
 }
 
-function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig } = {}) {
+function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base })
   setFixtureLocalRoot(a, 'Rohan', dir)
-  publishFixture(a, 'Rohan', 'app.py', MINE)
+  // The caller's holder is its own host session: the bound one when the test binds a session.
+  publishFixture(a, 'Rohan', 'app.py', MINE, opts.wake ? { fence: 'claude-1' } : {})
   let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.synced, opts.wsconnected)
   const joined: string[] = []
   const created: boolean[] = []
   const tools = createTools({
     config: opts.config, getSession: () => session, setSession: s => { session = s }, cwd: dir,
+    ...(opts.wake ? { wake: opts.wake, binding: { bound: () => ({ id: 'claude-1', host: 'claude' as const }), id: () => 'claude-1', dir: () => undefined, commonDir: () => undefined } } : {}),
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
   })
@@ -90,18 +91,19 @@ function addPresence(target: Awareness, name: string): Awareness {
   return peer
 }
 
-it.each(['room_wait', 'room_state'])('a successful Claude push leaves the message for %s delivery', async tool => {
-  const t = setup()
+it.each(['room_wait', 'room_state'])('a content-free wake leaves the message for %s delivery', async tool => {
+  const wakes: string[] = []
+  const t = setup({ wake: async (_target, text) => { wakes.push(text); return 'socket' } })
   const s = t.session!
+  t.tools.attachHooks(s)
   const peer = addPresence(s.awareness, 'Kieran')
   try {
-    const msg = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'channel delivery regression' })
-    const notify = vi.fn(async () => {})
-    await sendChannelNotification(shouldWake(me, { kind: 'msg', msg }, [], false)!, notify)
-    expect(notify).toHaveBeenCalledOnce()
+    const msg = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'wake delivery regression' })
+    await vi.waitFor(() => expect(wakes).toHaveLength(1))
+    expect(wakes[0]).not.toContain('wake delivery regression')
     expect(s.room.seen(me.name).has(msg.id)).toBe(false)
     const result = await t.tools.call(tool, { timeoutMs: 1 })
-    expect(result).toContain('channel delivery regression')
+    expect(result).toContain('wake delivery regression')
     if (tool === 'room_state') expect(result).toContain('[inbox')
     expect(s.room.seen(me.name).has(msg.id)).toBe(true)
   } finally {
@@ -128,58 +130,28 @@ it.each(['room_wait', 'room_state'])('skips a daemon-receipted base in %s while 
   }
 })
 
-it('a socket wake leaves the message unread until a Room tool delivers it', async () => {
-  const t = setup()
+it('a pending room_wait consumes its answer without a wake, while unrelated events still wake', async () => {
+  const wakes: string[] = []
+  const t = setup({ wake: async (_target, text) => { wakes.push(text); return 'socket' } })
   const s = t.session!
+  t.tools.attachHooks(s)
   const peer = addPresence(s.awareness, 'Kieran')
-  const post = vi.fn(async () => {})
-  const router = new SocketWakeRouter({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/test.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }, parentArgs: 'claude', notify: vi.fn(async () => {}), post, windowMs: 1 })
-  try {
-    const msg = hubAppend<NoteMsg>(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'note', to: me.name, priority: 'interrupt', text: 'socket delivery regression' })
-    router.push(shouldWake(me, { kind: 'msg', msg }, [], false))
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(post).toHaveBeenCalledOnce()
-    expect(s.room.seen(me.name).has(msg.id)).toBe(false)
-    expect(await t.tools.call('room_state', {})).toContain('socket delivery regression')
-    expect(s.room.seen(me.name).has(msg.id)).toBe(true)
-  } finally {
-    router.close(); peer.destroy(); peer.doc.destroy()
-    await t.tools.shutdown()
-    s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
-  }
-})
-
-it('a pending room_wait consumes its answer without a socket wake, while unrelated events still wake', async () => {
-  const t = setup()
-  const s = t.session!
-  const peer = addPresence(s.awareness, 'Kieran')
-  const socketDir = mkdtempSync(join(tmpdir(), 'room-wait-wake-'))
-  const socketPath = join(socketDir, 'inbox.sock')
-  const posts: string[] = []
-  const server = net.createServer(c => { let body = ''; c.on('data', chunk => { body += chunk }); c.on('end', () => posts.push(body)) })
-  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
-  const router = new SocketWakeRouter({ host: 'claude', env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath }, notify: vi.fn(async () => {}), windowMs: 20,
-    isUnread: wake => !s.room.seen(me.name).has(wake.meta.msg_id),
-    isPendingWait: wake => !!s.room.messages().find(m => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)),
-  })
-  s.room.bus.observe(ev => { for (const d of ev.changes.delta) for (const m of (d.insert ?? []) as NoteMsg[]) router.push(shouldWake(me, { kind: 'msg', msg: m })) })
   try {
     const question = hubAppend(t.room, me, { type: 'question', to: 'Kieran', text: 'ready?' } as never)
     const waiting = t.tools.call('room_wait', { questionId: question.id, timeoutMs: 2000 })
     await vi.waitFor(() => expect(s.awareness.getLocalState()?.status).toBe(`waiting for answer to ${question.id}`))
     const unrelated = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: 'another-question', to: me.name, text: 'other update' } as never)
-    await vi.waitFor(() => expect(posts).toHaveLength(1))
+    await vi.waitFor(() => expect(wakes).toHaveLength(1))
+    expect(wakes[0]).toContain('Kieran answered')
     expect(s.room.seen(me.name).has(unrelated.id)).toBe(false)
     const answer = hubAppend(t.other, { name: 'Kieran', kind: 'agent' }, { type: 'answer', inReplyTo: question.id, to: me.name, text: 'yes' } as never)
     expect(await waiting).toContain('answered:')
     expect(s.room.seen(me.name).has(answer.id)).toBe(true)
     await new Promise(resolve => setTimeout(resolve, 50))
-    expect(posts).toHaveLength(1)
-    expect(posts[0]).toContain('Kieran answered')
+    expect(wakes).toHaveLength(1)
   } finally {
-    router.close(); peer.destroy(); peer.doc.destroy()
+    peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
-    await new Promise<void>(resolve => server.close(() => resolve())); rmSync(socketDir, { recursive: true, force: true })
   }
 })
 
@@ -967,39 +939,27 @@ describe('wait', () => {
   })
 })
 
-it('delivers a lead broadcast posted after spawn but before the worker joins, without replaying older history', async () => {
+it("a worker seeds its frontier from its run record: addressed briefings and later broadcasts, no earlier history", async () => {
   const t = setup({ joined: false })
   const lead = { name: 'Kieran', kind: 'agent' } as const
-  const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000)
-  const old = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'old history', priority: 'notify' })
-  t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
-    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' })
-  clock.mockReturnValue(old.at + 2)
-  const fresh = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
-  clock.mockRestore()
-  await t.tools.call('room_join', {})
-  const out = await t.tools.call('room_state', {})
-  const inbox = out.slice(0, out.indexOf('you: '))
-  expect(inbox).toContain('[inbox 1]')
-  expect(inbox).toContain('post-spawn briefing')
-  expect(inbox).not.toContain('old history')
-  expect(t.room.seen(me.name).has(fresh.id)).toBe(true)
-})
-
-it('with its spawn marker trimmed, a worker still gets addressed briefings but no earlier broadcasts', async () => {
-  const t = setup({ joined: false })
-  const lead = { name: 'Kieran', kind: 'agent' } as const
-  const old = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'trimmed marker', priority: 'fyi' })
-  t.other.setWorker({ tag: 'review', name: me.name, lead: lead.name, host: 'codex', task: 'review', dir,
-    branch: 'room/review', pid: 1, startedAt: old.at + 300_000, spawnedAfter: old.id, status: 'running' }, () => {})
-  t.other.bus.delete(0, 1)
+  hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'old history', priority: 'notify' })
   hubAppend<NoteMsg>(t.other, lead, { type: 'note', to: me.name, text: 'addressed briefing', priority: 'notify' })
-  hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'broadcast before the worker bound', priority: 'interrupt' })
-  await t.tools.call('room_join', {})
-  const out = await t.tools.call('room_state', {})
-  const inbox = out.slice(0, out.indexOf('you: '))
-  expect(inbox).toContain('addressed briefing')
-  expect(inbox).not.toContain('broadcast before the worker bound')
+  const { record } = await seedRegistryWorker(dir, 'review', { name: me.name })
+  const atIntent = highestSeq(t.other)
+  await (await registryForDir(dir)).update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+  const fresh = hubAppend<NoteMsg>(t.other, lead, { type: 'note', text: 'post-spawn briefing', priority: 'notify' })
+  vi.stubEnv('ROOM_WORKER_ID', record.id)
+  vi.stubEnv('ROOM_WORKER_RUN', '1')
+  try {
+    await t.tools.call('room_join', {})
+    const out = await t.tools.call('room_state', {})
+    const inbox = out.slice(0, out.indexOf('you: '))
+    expect(inbox).toContain('[inbox 2]')
+    expect(inbox).toContain('addressed briefing')
+    expect(inbox).toContain('post-spawn briefing')
+    expect(inbox).not.toContain('old history')
+    expect(t.room.seen(me.name).has(fresh.id)).toBe(true)
+  } finally { vi.unstubAllEnvs(); await t.tools.shutdown(); await closeRegistryForDir(dir) }
 })
 
 describe('preview merge', () => {

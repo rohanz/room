@@ -24,7 +24,7 @@ const intent = (): WorkerRecord => ({
   budget: { threads: 1, memGb: 1, nice: 10 }, share: 'declared', task: 'tests',
   dir: '/tmp/repo/.room/workers/tests', outside: false, branch: 'room/tests', prep: { step: 'prepared' },
   capabilities: { resume: true, signal: true, collect: 'delta' }, phase: 'prepared',
-  runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'launch-nonce', busFrontier: [], promptMsgIds: [], launcher: token, logStart: 0 }],
+  runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'launch-nonce', busFrontier: 0, promptMsgIds: [], launcher: token, logStart: 0 }],
   createdAt: 1, seq: 1,
 })
 function common(): string { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-registry-')); dirs.push(dir); return dir }

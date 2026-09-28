@@ -66,11 +66,10 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
   it('keeps an addressed team interrupt relayed between spawn and worker join', async () => {
     const t = setup()
     const old = hubAppend<NoteMsg>(t.local.a, lead, { type: 'note', text: 'before spawn', priority: 'notify' })
-    t.local.a.updateWorker('money', { startedAt: 150, spawnedAfter: old.id })
     hubAppend<NoteMsg>(t.team.b, kieran, { type: 'note', priority: 'interrupt', text: 'stop now' })
     await settle()
     const relayed = t.local.b.messages().find(m => m.type === 'note' && m.to === worker.name)!
-    // The worker's cursor starts at its spawn marker; the relayed copy is addressed, so it is owed regardless.
+    // The worker's frontier is above the old broadcast; the relayed copy is addressed, so it is owed regardless.
     const workerSession = fakeSession(t.local.b, worker, 'local/x/main', true)
     const owed = new Ledger({ sessionId: () => 'worker-session', route: () => ({}) }).candidates(workerSession).map(m => m.id)
     expect(owed).not.toContain(old.id)

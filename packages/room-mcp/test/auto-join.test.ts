@@ -89,11 +89,11 @@ describe('automatic join (real room-mcp processes)', () => {
     cleanups.push(() => closeRegistryForDir(dir))
     const { registry, record } = await seedRegistryWorker(dir, 'q', {
       name: 'Ada+q', room, lead: { participant: 'Ada', room, instance: launcher }, host: 'codex', task: 'room_wait once', dir, branch: 'main',
-      runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'auto-join-run-1', busFrontier: [old.id], promptMsgIds: [], launcher, logStart: 0 }],
+      runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'auto-join-run-1', busFrontier: old.seq!, promptMsgIds: [], launcher, logStart: 0 }],
     })
     const run = record.runs[0]
     lead.room.setWorker({ id: record.id, tag: 'q', name: 'Ada+q', lead: 'Ada', host: 'codex', task: 'room_wait once', dir,
-      branch: 'main', pid: process.pid, startedAt: record.createdAt, spawnedAfter: old.id, status: 'running' }, () => {})
+      branch: 'main', pid: process.pid, startedAt: record.createdAt, status: 'running' }, () => {})
     const early = hubAppend(lead.room, lead.me, { type: 'note', text: 'BROADCAST-NOTIFY-1', priority: 'notify' })
     const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir,
       tag: 'q', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false })
