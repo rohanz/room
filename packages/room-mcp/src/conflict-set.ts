@@ -62,12 +62,12 @@ export class ConflictSlots {
   drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)) }
 
   /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
-  markContractsUnknown(owner: string, other: string, why: string): void {
+  markContractsUnknown(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
     const now = this.now()
     const fence = typeof this.fence === 'function' ? this.fence() : this.fence
     this.room.doc.transact(() => {
       for (const [key, slot] of this.owned(owner)) {
-        if (slot.kind !== 'contract' || slot.other !== other) continue
+        if (slot.kind !== 'contract' || slot.other !== other || paths && !paths.has(slot.path)) continue
         if (slot.status === 'unknown' && slot.why === why && slot.fence === fence) continue
         this.map.set(key, { ...slot, status: 'unknown', inputs: hash(`${key}\0${why}`), why,
           fence, checkedAt: now, retryAt: now + retryMinutes[0]! * 60_000 })
@@ -76,10 +76,11 @@ export class ConflictSlots {
   }
 
   /** Remove signature detail when the provider's current text is no longer readable. */
-  redactContracts(owner: string, other: string, why: string): void {
-    const old = this.owned(owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
-    if (old.length === 1 && old[0]![0] === slotKey(owner, 'contract', other, old[0]![1].path, '*') &&
-        old[0]![1].status === 'unknown' && old[0]![1].why === why) return
+  redactContracts(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
+    const old = this.owned(owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other &&
+      (!paths || paths.has(slot.path)))
+    if (old.every(([key, slot]) => key === slotKey(owner, 'contract', other, slot.path, '*') &&
+      slot.status === 'unknown' && slot.why === why)) return
     const byPath = new Map<string, ConflictSlot[]>()
     for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot])
     this.room.doc.transact(() => {
@@ -238,15 +239,23 @@ export class ConflictSet {
     const head = snap?.head
     const entries = head && room.manifest.get(manifestKey(other, head.fence))
     const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
-    const stillReadable = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === 'all' &&
-      head.base === snap.record?.git?.base && !!room.roomSalt && slots.every(([, slot]) => {
-        const entry = entries?.get(slot.path)
-        return slot.subject !== '*' && entry?.state === 'shared' && !!entry.hash && entry.fence === head.fence &&
-          (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, slot.path))) &&
-          !head.excluded.includes(digestPath(room.roomSalt!, slot.path))
-      })
-    if (stillReadable) this.slots.markContractsUnknown(this.owner, other, why)
-    else this.slots.redactContracts(this.owner, other, why)
+    const readable = new Set<string>(), withdrawn = new Set<string>()
+    const validCoverage = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === 'all' &&
+      head.base === snap.record?.git?.base && !!room.roomSalt
+    for (const [, slot] of slots) {
+      const path = slot.path
+      const entry = entries?.get(path)
+      // No entry under complete coverage means the path is readable at the
+      // accepted base. A held or invalid entry withdraws only its own path.
+      const textAllowed = head?.level === 'full' || head?.level === 'declared' &&
+        (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
+      const currentEntry = !entry || entry.state === 'shared' && !!entry.hash && entry.fence === head?.fence
+      if (validCoverage && textAllowed && currentEntry && !head!.excluded.includes(digestPath(room.roomSalt!, path)))
+        readable.add(path)
+      else withdrawn.add(path)
+    }
+    if (readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable)
+    if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn)
   }
   stop(): void {
     for (const stop of this.stops) stop()
@@ -377,7 +386,7 @@ export class ConflictSet {
         const why = `${other}'s manifest or base is updating`
         await this.settle(slotKey(this.owner, 'merge', other, '*'), { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(why), factId: '', why })
         for (const [key, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
-        this.slots.redactContracts(this.owner, other, why)
+        this.unknownOrRedactContracts(other, why, theirs)
         continue
       }
       const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]))
@@ -388,7 +397,7 @@ export class ConflictSet {
         const key = slotKey(this.owner, 'merge', other, '*')
         await this.settle(key, { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: '', why })
         for (const [existingKey, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(existingKey, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
-        this.slots.redactContracts(this.owner, other, why)
+        this.unknownOrRedactContracts(other, why, theirs)
         continue
       }
       await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), mine, theirs)
@@ -500,7 +509,7 @@ export class ConflictSet {
         }
         const version = await versionOf(theirs, path, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: blob => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) })
         const after = asText(version)
-        if (after === undefined) { this.slots.redactContracts(this.owner, other, 'provider version is not readable'); return }
+        if (after === undefined) { this.unknownOrRedactContracts(other, 'provider version is not readable', theirs); return }
         const oldText = before.kind === 'absent' ? '' : before.text
         const cacheKey = hash(JSON.stringify([carried.baseline.sha, path, oldText, after]))
         let parsed = this.contractCache.get(cacheKey)
@@ -518,7 +527,7 @@ export class ConflictSet {
       if (change.kind === 'add') continue
       const provider = await this.read(theirs, change.path)
       if (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base')) {
-        this.slots.redactContracts(this.owner, other, 'provider version is not readable')
+        this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
         return
       }
       let uses: string[]
@@ -536,7 +545,7 @@ export class ConflictSet {
           edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol)))) {
           const version = await this.read(mine, edge.target)
           const text = asText(version)
-          if (text === undefined) { this.slots.redactContracts(this.owner, other, 'consumer version is not readable'); return }
+          if (text === undefined) { this.unknownOrRedactContracts(other, 'consumer version is not readable', theirs); return }
           if (await consumesSymbol(edge.target, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(edge.target)
         }
         uses.sort()
@@ -556,7 +565,7 @@ export class ConflictSet {
       }
       const provider = await this.read(theirs, slot.path)
       if (asText(provider) === undefined) {
-        this.slots.redactContracts(this.owner, other, 'provider version is not readable')
+        this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
         return
       }
       await this.settle(key, { owner: this.owner, other, kind: 'contract', path: slot.path, subject: slot.subject,
