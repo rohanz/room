@@ -178,6 +178,18 @@ export class RoomDoc {
     for (const view of this.workerViews.values()) if (view.name === name && (!found || view.startedAt > found.startedAt)) found = view
     return found
   }
+  /** A view is display evidence only while its lead still holds the writer fence. */
+  workerViewCurrent(view: WorkerView): boolean {
+    const holder = participantRecord(this, view.lead)?.holder
+    return !!holder && !holder.ended && view.fence === (holderFence(holder) ?? holder.sessionId)
+  }
+  acceptedWorkerViewOf(name: string): WorkerView | undefined {
+    let found: WorkerView | undefined
+    for (const view of this.workerViews.values()) if (view.name === name && this.workerViewCurrent(view)
+      && (!found || view.startedAt > found.startedAt)) found = view
+    return found
+  }
+  acceptedWorkerViews(): WorkerView[] { return [...this.workerViews.values()].filter(view => this.workerViewCurrent(view)) }
   retiredWorkers(): RetiredWorker[] { return this.doc.getArray<RetiredWorker>('retiredWorkers').toArray() }
 
   /** Remove coordination from a participant that can no longer act; `post` sends the release notices. */

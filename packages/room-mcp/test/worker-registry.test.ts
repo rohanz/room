@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import * as Y from 'yjs'
-import { afterEach, describe, expect, it } from 'vitest'
-import { WorkerRegistry } from '../src/worker-registry.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { WorkerRegistry, admitWorkerEnvironment, closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { idleClaimsDue, type WorkerRecord } from '../src/worker-status.js'
 import { RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { memoryFile, saveMemory } from '../../relay/src/memory.js'
@@ -16,6 +16,17 @@ const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const openRegistry = (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => WorkerRegistry.open(dir, { ...options, watch: false })
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
+it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root', async () => {
+  const dir = common(), alias = `${dir}-alias`
+  execFileSync('git', ['-C', dir, 'init', '-q'])
+  fs.symlinkSync(dir, alias); dirs.push(alias)
+  const registry = await registryForDir(dir)
+  const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
+  try {
+    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_REGISTRY: path.join(alias, '.git', 'room', 'registry') })).resolves.toBeUndefined()
+    expect(admit).toHaveBeenCalledOnce()
+  } finally { await closeRegistryForDir(dir) }
+})
 const intent = (): WorkerRecord => ({
   v: 1, id: 'w_01', tag: 'tests', name: 'lead+tests', mode: 'local', room: 'local/repo',
   lead: { participant: 'lead', room: 'local/repo', instance: token }, host: 'codex',

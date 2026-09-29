@@ -18,7 +18,7 @@ import { defaultSpawner, pidPresent, probeProcess, type CwdProcessLister, type P
 import { decideResume, workerRealState } from './worker-state.js'
 import { DEFAULT_CLAUDE_CHANNEL, resolveConfig } from './config.js'
 import { launchWorkerProcess, WorkerLaunchError } from './worker-launch.js'
-import { registryForDir } from './worker-registry.js'
+import { registryForDir, registrySnapshotForDir } from './worker-registry.js'
 import { postWorkerMessage } from './post.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
 import { autoRetire } from './retire.js'
@@ -164,7 +164,7 @@ export class Rooms {
   }
   /** A worker's view where it joins: a `local` worker's view in the team room is only the bridge's projection. */
   private static joinedBy(s: Session, name: string): boolean {
-    const view = s.room.workerViewOf(name)
+    const view = s.room.acceptedWorkerViewOf(name)
     return !!view && (view.mode === 'here' || !!s.local)
   }
   private static activeIn(s: Session, name: string): boolean {
@@ -178,6 +178,15 @@ export class Rooms {
   holding(name: string, from: Session = this.primary() ?? this.mustHave()): Session {
     const others = this.all().filter(s => s !== from)
     if (!others.length || name === from.me.name) return from
+    // A projected head in the team room is evidence for peers, not a local join.
+    // The lead's registry determines the source room of its own local worker.
+    try {
+      const owned = registrySnapshotForDir(from.dir).list().find(record => record.name === name
+        && record.lead.participant === from.me.name && record.mode === 'local'
+        && !['retiring', 'retired', 'abandoned'].includes(record.phase))
+      const source = owned && others.find(s => s.roomName === owned.room)
+      if (source) return source
+    } catch { /* Without a local registry, ordinary room evidence decides. */ }
     if (Rooms.activeIn(from, name)) return from
     for (const s of others) if (Rooms.activeIn(s, name)) return s
     if (Rooms.joinedBy(from, name)) return from

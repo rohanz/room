@@ -6,10 +6,11 @@
  */
 import type { Session } from './session.js'
 import path from 'node:path'
-import type { WorkerView } from '@room/shared'
+import { completionMessage, type WorkerView } from '@room/shared'
 import { registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
 import { workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
+import { postWorkerMessage } from './post.js'
 import { missingClaudeSession, resumeAccepted } from './worker-process.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
@@ -59,6 +60,23 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       if (known ? inRole(known, roomKey, role) : role === 'joined') s.room.workerViews.delete(id)
     }
   }, origin)
+  // A completed worker cannot retry its own post. The joined-room projector replays the
+  // deterministic ID from durable report/exit evidence after outages and lead restarts.
+  if (role === 'joined') for (const { record, status } of [
+    ...write, ...retire.flatMap(record => { const status = registry.status(record.id); return status ? [{ record, status }] : [] }),
+  ]) {
+    const run = status.run ?? record.runs.at(-1)
+    if (!run) continue
+    const report = registry.reports(record.id).find(value => value.run === run.n)
+    try {
+      if (report?.done) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
+        const message = completionMessage(current, run, status, done)
+        if (message) await postWorkerMessage(s.post, current, message)
+      })
+      else if (status.status === 'failed' || record.phase === 'retiring' && !record.stop) await registry.postObservedFailure(record.id, run.n,
+        message => postWorkerMessage(s.post, record, message))
+    } catch { /* The next registry change, reconnect or projector pass retries this ID. */ }
+  }
   for (const record of retire) {
     s.room.retireWorker(record.id, { ...(record.archive ?? registry.archiveOf(record, { summary: '' })), id: record.id }, post)
     await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
@@ -77,6 +95,7 @@ export function localWorkerView(s: Session, id: string): WorkerView | undefined 
 /** Keeps a lead session's worker facts in one room current: on start, on every registry change, and on demand. */
 export class WorkerProjector {
   private unsubscribe?: () => void
+  private onSync = (synced: boolean) => { if (synced) void this.project() }
   private running: Promise<void> = Promise.resolve()
   private stopped = false
 
@@ -84,12 +103,14 @@ export class WorkerProjector {
 
   start(): void {
     this.unsubscribe = this.registry.onChange(() => { void this.project() })
+    this.s.provider.on?.('sync', this.onSync)
     void this.project()
   }
 
   stop(): void {
     this.stopped = true
     this.unsubscribe?.()
+    this.s.provider.off?.('sync', this.onSync)
   }
 
   /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */

@@ -51,7 +51,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const present = presences(s).some(p => p.user.name === name)
     // My own worker from my registry; anyone else's from its lead's view (registry §14).
     const own = myWorkers(s).find(w => w.name === name)
-    const view = own ? undefined : s.room.workerViewOf(name)
+    const rawView = own ? undefined : s.room.workerViewOf(name)
+    const view = own ? undefined : s.room.acceptedWorkerViewOf(name)
+    if (rawView && !view) return { text: `${name}'s worker view is stale; its current status is updating`, terminal: false }
     const worker = own ?? view
     // A live generation supersedes any archive under the same participant name.
     const retired = !worker && s.room.retiredWorkers().filter(w => w.name === name).sort((a, b) => b.retiredAt - a.retiredAt)[0]

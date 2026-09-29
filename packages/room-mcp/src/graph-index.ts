@@ -1,7 +1,7 @@
 /**
  * Keeps a SymbolGraph current for one room from local files and shared manifest versions.
  */
-import { bareSymbol, manifestKey, manifestPaths, observedContractChanges, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, containsPath, manifestKey, manifestPaths, observedContractChanges, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import type * as Y from 'yjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -55,7 +55,9 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
 
 export class GraphIndex {
   readonly graph: SymbolGraph
+  private readonly publishedGraph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
+  private publishedCache = new Map<string, FileSymbols | undefined>()
   private pending = new Map<string, { generation: number; promise: Promise<void>; resolve: () => void; idle: Promise<void>; resolveIdle: () => void }>()
   /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
   private refreshQueue: string[] = []
@@ -75,6 +77,7 @@ export class GraphIndex {
   private publication: Promise<void> = Promise.resolve()
   private phase: 'ready' | 'indexing' | 'error' = 'indexing'
   private base = ''
+  private ownPublicationKey: string | undefined = ''
   private stopped = false
   private initialStarted = false
   private jitterTimer?: ReturnType<typeof setTimeout>
@@ -97,6 +100,7 @@ export class GraphIndex {
 
   constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
+    this.publishedGraph = new SymbolGraph(path => this.publishedCache.get(path))
   }
 
   start(): void {
@@ -112,6 +116,23 @@ export class GraphIndex {
     const onManifest = observe(this.room.manifest)
     this.room.manifest.observeDeep(onManifest)
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
+    const publicationKey = () => {
+      const head = this.room.manifestHead.get(this.me)
+      return JSON.stringify(head && [head.fence, head.level, head.textPrefixes, head.coverage, head.complete])
+    }
+    this.ownPublicationKey = publicationKey()
+    const onHead = (event: { keysChanged: Set<string> }) => {
+      if (!event.keysChanged.has(this.me)) return
+      const next = publicationKey()
+      if (next === this.ownPublicationKey) return
+      const firstHead = this.ownPublicationKey === undefined
+      this.ownPublicationKey = next
+      if (firstHead) return // the manifest map event names every newly published path
+      const paths = new Set([...(this.room.manifestHead.get(this.me) ? manifestPaths(this.room, this.me) : []), ...this.cache.keys()])
+      for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
+    }
+    this.room.manifestHead.observe(onHead)
+    this.unobserve.push(() => this.room.manifestHead.unobserve(onHead))
     const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild() }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
@@ -154,6 +175,8 @@ export class GraphIndex {
       }
     }
     this.cache.clear()
+    for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p)
+    this.publishedCache.clear()
     if (!this.base) return
     await this.publish('indexing')
     if (generation !== this.generation || this.stopped) return
@@ -218,6 +241,22 @@ export class GraphIndex {
     return (this.opts.read ?? gitShow)(this.dir, this.base, path)
   }
 
+  /** Publication reads only a fenced shared version, never the caller's unshared disk text. */
+  private async publicationTextFor(path: string, fallback: string | undefined): Promise<string | undefined> {
+    const mine = snapshot(this.room, this.me, [])
+    if (mine?.entries.has(path)) {
+      if (!this.ownTextAuthorized(path)) return undefined
+      const version = await versionOf(mine, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      return version.kind === 'text' || version.kind === 'base' ? version.text : undefined
+    }
+    return fallback
+  }
+
+  private ownTextAuthorized(path: string): boolean {
+    const head = this.room.manifestHead.get(this.me)
+    return !!head && (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path)))
+  }
+
   refresh(path: string): Promise<void> {
     if (this.stopped) return Promise.resolve()
     this.revisions.set(path, (this.revisions.get(path) ?? 0) + 1)
@@ -240,7 +279,7 @@ export class GraphIndex {
     return promise
   }
 
-  private removeGraph(path: string): void { this.graph.remove(path); this.graphRevision++ }
+  private removeGraph(path: string): void { this.graph.remove(path); this.publishedGraph.remove(path); this.graphRevision++ }
   private setGraph(path: string, text: string): void { this.graph.set(path, text); this.graphRevision++ }
 
   private async yieldAfterIndex(): Promise<void> {
@@ -277,6 +316,7 @@ export class GraphIndex {
       const revision = this.revisions.get(path), generation = this.generation
       await ensureLanguages([path])
       const text = await this.textFor(path)
+      const publicText = await this.publicationTextFor(path, text)
       const heldBy = text === undefined ? [...this.room.manifestHead.keys()].filter(person => {
         if (person === this.me) return false
         const fence = this.room.manifestHead.get(person)?.fence
@@ -304,7 +344,17 @@ export class GraphIndex {
       if (generation !== this.generation) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }
       else { this.cache.set(path, symbols); this.setGraph(path, text) }
-      if (mine !== undefined || mineDeleted) {
+      if (publicText === undefined || publicText.length > MAX_BYTES) { this.publishedCache.delete(path); this.publishedGraph.remove(path) }
+      else {
+        const publicParsed = parseFile(path, publicText)
+        if (!publicParsed) { this.publishedCache.delete(path); this.publishedGraph.remove(path) }
+        else {
+          this.publishedCache.set(path, { defs: publicParsed.defs.map(d => d.name), refs: publicParsed.refs, imports: publicParsed.imports })
+          this.publishedGraph.set(path, publicText)
+        }
+      }
+      this.graphRevision++
+      if (myEntry?.state === 'shared' && this.ownTextAuthorized(path) && (publicText !== undefined || mineDeleted)) {
         if (baseRead?.kind === 'unavailable') {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
@@ -314,7 +364,7 @@ export class GraphIndex {
           return revision === this.revisions.get(path)
         }
         this.degradedPaths.delete(path)
-        const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : mine ?? '', path, parseFile).map(change => ({ path, ...change }))
+        const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : publicText ?? '', path, parseFile).map(change => ({ path, ...change }))
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else {
@@ -349,16 +399,17 @@ export class GraphIndex {
     if (this.stopped) return
     if (generation !== this.generation) return
     if (this.degradedPaths.size) status = 'error'
+    const authorization = this.ownPublicationKey
     const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base
     if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision &&
         this.lastPublishedRevision.base === base && this.lastPublished.status === status) return
-    const paths = Array.from(this.cache.keys()).sort()
+    const paths = Array.from(this.publishedCache.keys()).sort()
     const edges = new Map<string, { source: string; target: string; symbols: string[] }>()
     let truncated = this.truncated
     let lastYield = Date.now()
     for (let i = 0; i < paths.length; i++) {
       const target = paths[i]
-      for (const dep of this.graph.dependenciesOf(target)) for (const source of dep.definedIn) {
+      for (const dep of this.publishedGraph.dependenciesOf(target)) for (const source of dep.definedIn) {
         const key = JSON.stringify([source, target])
         if (!edges.has(key)) {
           if (edges.size >= MAX_EDGES) { truncated = true; continue }
@@ -384,7 +435,7 @@ export class GraphIndex {
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`
     const now = Date.now()
-    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision) return
+    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision || authorization !== this.ownPublicationKey) return
     if (key === this.lastPublished.key) {
       this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base }
       return

@@ -166,7 +166,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const myPaths = [...manifestPaths(caller.room, caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
       const overlaps = (person: string) => {
         const session = rooms.holding(person, caller)
-        const worker = session.room.workerViewOf(person)
+        const worker = session.room.acceptedWorkerViewOf(person)
         return worker?.lead === caller.me.name && worker.status === 'running' || manifestPaths(session.room, person).some(p => myPaths.some(mine => coversPath(p, mine)))
       }
       const runningWorkers = allSessions.flatMap(s => myWorkers(s).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name))
@@ -230,6 +230,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
         }
         caller.lastPreview = { clean: hardCount === 0, complete, ...(run ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
+        if (!complete) await caller.post<NoteMsg>(caller.me, {
+          type: 'note', priority: 'fyi',
+          text: `partial preview with ${people.join(', ')}: ${gapLines.join('; ')}${run ? `; command "${run}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
+        })
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
         if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return out.join('\n')

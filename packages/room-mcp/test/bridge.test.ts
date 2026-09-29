@@ -23,7 +23,7 @@ vi.setConfig({ testTimeout: 30_000 })
 
 let dir: string, B: string, C: string
 const TEAM = 'github.com/rohanz/x/main', LOCAL = 'local/x/main'
-const LEAD_FENCE = 'lead-session'
+const LEAD_FENCE = '1'
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const worker: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
 const kieran: Identity = { name: 'kieran', kind: 'agent', owner: 'kieran' }
@@ -50,7 +50,7 @@ function fakeSession(room: RoomDoc, me: Identity, roomName: string, local: boole
 }
 /** A participant whose holder session is present in `s`'s awareness, as the hub and its presence would show it. */
 function present(s: Session, who: Identity, sessionId: string): void {
-  s.room.participants.set(`${who.name}\u0000holder`, { sessionId, machine: 'm', pid: 1, startTime: 't', executable: 'e' })
+  s.room.participants.set(`${who.name}\u0000holder`, { sessionId, epoch: 1, machine: 'm', pid: 1, startTime: 't', executable: 'e' })
   if (who.name === s.me.name) return
   const other = new Awareness(new Y.Doc())
   other.setLocalState({ user: { ...who, color: '#111' }, status: 'idle', sessionId })
@@ -58,7 +58,7 @@ function present(s: Session, who: Identity, sessionId: string): void {
 }
 /** The worker's own workers-room manifest (against C), as its daemon publishes it. */
 function publishSource(room: RoomDoc, entries: Record<string, Omit<ManifestEntry, 'fence' | 'at'>>, head: Partial<ManifestHead> = {}): void {
-  const fence = 'worker-session'
+  const fence = '1'
   room.doc.transact(() => {
     const map = new Y.Map<ManifestEntry>()
     room.manifest.set(manifestKey(worker.name, fence), map)
@@ -222,6 +222,69 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 })
 
 describe('Bridge: the team projection of a local worker (manifest §5.5, registry §13)', () => {
+  it('M2 abandons a projection when the lead narrows sharing during composition', async () => {
+    const policy = testPolicyStore()
+    const t = await setup({ policy, start: false })
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6 } })
+    await t.bridge.sync()
+    expect(t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))?.has('app.py')).toBe(true)
+    const target = t.bridge as unknown as { composeFacts: (...args: unknown[]) => Promise<unknown> }
+    const original = target.composeFacts.bind(t.bridge)
+    vi.spyOn(target, 'composeFacts').mockImplementation(async (...args) => {
+      const facts = await original(...args)
+      await policy.setRequested('intent')
+      return facts
+    })
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.get(worker.name)?.level).not.toBe('full')
+    expect(t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))?.size ?? 0).toBe(0)
+  })
+
+  it('M3 applies the lead ignore and size rules to source and carried paths', async () => {
+    const t = await setup({ start: false })
+    ;(t.teamLead.daemon.inputs as { rules: ReturnType<typeof rulesFromText> }).rules = rulesFromText('app.py\n', 4, 8)
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6 } })
+    await t.bridge.sync()
+    const entries = t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))!
+    expect(entries.has('app.py')).toBe(false)
+    expect(entries.has('carried.py')).toBe(false) // 9-byte carried file exceeds the cap
+    expect(t.team.b.manifestHead.get(worker.name)?.excluded).toHaveLength(2)
+  })
+
+  it('M3 applies the lead Git ignore and total budget to projected source facts', async () => {
+    const t = await setup({ start: false })
+    writeFileSync(join(dir, '.gitignore'), 'ignored.py\n')
+    ;(t.teamLead.daemon.inputs as { rules: ReturnType<typeof rulesFromText> }).rules = rulesFromText('', 1 << 20, 8)
+    publishSource(t.local.b, {
+      'a.py': { change: 'A', state: 'shared', hash: gitBlobHash('aaaaaa'), size: 6 },
+      'b.py': { change: 'A', state: 'shared', hash: gitBlobHash('bbbbbb'), size: 6 },
+      'ignored.py': { change: 'A', state: 'shared', hash: gitBlobHash('x'), size: 1 },
+    })
+    await t.bridge.sync()
+    const entries = t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))!
+    expect([...entries.keys()]).toEqual(['a.py'])
+    expect(t.team.b.manifestHead.get(worker.name)?.excluded).toHaveLength(3) // b.py, carried.py, ignored.py
+  })
+
+  it('S3 refreshes at and scannedAt without changing semantic revisions', async () => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6 } })
+    await t.bridge.sync()
+    const first = t.team.b.manifestHead.get(worker.name)!
+    const key = manifestKey(worker.name, LEAD_FENCE)
+    await new Promise(resolve => setTimeout(resolve, 3))
+    t.local.b.manifest.get(manifestKey(worker.name, '1'))!.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6, at: 99, fence: '1' })
+    await t.bridge.sync()
+    expect(t.team.b.manifest.get(key)?.get('app.py')?.at).toBe(99)
+    expect(t.team.b.manifestHead.get(worker.name)?.scannedAt).toBeGreaterThan(first.scannedAt)
+    expect(t.team.b.manifestHead.get(worker.name)?.semRev).toBe(first.semRev)
+    const second = t.team.b.manifestHead.get(worker.name)!
+    await new Promise(resolve => setTimeout(resolve, 3))
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.get(worker.name)?.scannedAt).toBeGreaterThan(second.scannedAt)
+    expect(t.team.b.manifestHead.get(worker.name)?.rev).toBe(first.rev)
+    expect(t.team.b.manifestHead.get(worker.name)?.semRev).toBe(first.semRev)
+  })
   it("projects the worker against the lead's team base: projectedFrom, the lead's fence, held: 'worker', and everything between B and C", async () => {
     const t = await setup({ start: false })
     const hash = gitBlobHash('x = 2\n')
@@ -264,6 +327,17 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     expect(entries['out.py'].size).toBeUndefined()
     expect(entries['carried.py'].hash).toBeUndefined()
     expect(t.team.b.manifestHead.get(worker.name)).toMatchObject({ level: 'declared', textPrefixes: ['src/'] })
+  })
+
+  it('D1 keeps a source hashless held path hashless even when the lead shares full', async () => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'held', held: 'scope' } })
+    await t.bridge.sync()
+    const entry = t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))?.get('app.py')
+    expect(entry).toMatchObject({ change: 'M', state: 'held', held: 'worker' })
+    expect(entry?.hash).toBeUndefined()
+    expect(entry?.size).toBeUndefined()
+    expect(entry?.baseHash).toBeUndefined()
   })
 
   it('N2: coverage is inherited, never upgraded — a source at intent projects nothing', async () => {

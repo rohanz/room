@@ -302,8 +302,9 @@ describe('GraphIndex snapshot discipline', () => {
     try {
       gi.start(); await gi.ready
       let probe = false, scheduled = false, probeAtReady: boolean | undefined
-      const originalDependencies = gi.graph.dependenciesOf.bind(gi.graph)
-      vi.spyOn(gi.graph, 'dependenciesOf').mockImplementation(path => {
+      const published = (gi as unknown as { publishedGraph: typeof gi.graph }).publishedGraph
+      const originalDependencies = published.dependenciesOf.bind(published)
+      vi.spyOn(published, 'dependenciesOf').mockImplementation(path => {
         if (!scheduled) { scheduled = true; setImmediate(() => { probe = true }) }
         return originalDependencies(path)
       })
@@ -323,11 +324,12 @@ describe('GraphIndex snapshot discipline', () => {
   it('skips edge construction when the queued publish finds no graph changes', async () => {
     const room = new RoomDoc(); room.setMeta({ base })
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
-    const dependencies = vi.spyOn(gi.graph, 'dependenciesOf')
+    const published = (gi as unknown as { publishedGraph: typeof gi.graph }).publishedGraph
+    const dependencies = vi.spyOn(published, 'dependenciesOf')
     try {
       gi.start(); await gi.ready
       const calls = dependencies.mock.calls.length
-      expect(calls).toBe(gi.graph.size)
+      expect(calls).toBe(published.size)
       await new Promise(resolve => setTimeout(resolve, 150))
       expect(dependencies).toHaveBeenCalledTimes(calls)
     } finally { gi.stop(); room.doc.destroy() }
