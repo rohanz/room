@@ -249,7 +249,8 @@ function writeTargets(input, powerShell = false, root = '') {
         }
       }
     } else if (name === 'patch') {
-      if (positional[0]) add(positional[0])
+      const options = args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+      if (!options.some(arg => ['--dry-run', '--check', '-C'].includes(arg)) && positional[0]) add(positional[0])
     } else if (['tee', 'rm', 'touch', 'truncate', 'apply_patch'].includes(name)) {
       if (name === 'rm' || name === 'touch' || name === 'tee') for (const arg of positional) add(arg)
       else if (last) add(last)
@@ -264,7 +265,10 @@ function writeTargets(input, powerShell = false, root = '') {
     } else if (name === 'git') {
       const action = args[0]
       if (action === 'mv' || action === 'rm') {
-        for (const arg of args.slice(1).filter(a => !a.startsWith('-'))) add(arg)
+        const options = args.slice(1, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+        if (action !== 'rm' || !options.some(arg => ['--dry-run', '-n', '--cached'].includes(arg))) {
+          for (const arg of args.slice(1).filter(a => !a.startsWith('-'))) add(arg)
+        }
       } else if (action === 'restore') {
         const files = args.slice(1)
         for (let i = 0; i < files.length; i++) {
