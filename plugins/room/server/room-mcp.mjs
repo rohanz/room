@@ -45762,12 +45762,12 @@ var ConflictSlots = class {
     this.room.doc.transact(() => this.map.delete(key2));
   }
   /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
-  markContractsUnknown(owner, other, why) {
+  markContractsUnknown(owner, other, why, paths) {
     const now = this.now();
     const fence = typeof this.fence === "function" ? this.fence() : this.fence;
     this.room.doc.transact(() => {
       for (const [key2, slot] of this.owned(owner)) {
-        if (slot.kind !== "contract" || slot.other !== other) continue;
+        if (slot.kind !== "contract" || slot.other !== other || paths && !paths.has(slot.path)) continue;
         if (slot.status === "unknown" && slot.why === why && slot.fence === fence) continue;
         this.map.set(key2, {
           ...slot,
@@ -45782,9 +45782,9 @@ var ConflictSlots = class {
     });
   }
   /** Remove signature detail when the provider's current text is no longer readable. */
-  redactContracts(owner, other, why) {
-    const old = this.owned(owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
-    if (old.length === 1 && old[0][0] === slotKey(owner, "contract", other, old[0][1].path, "*") && old[0][1].status === "unknown" && old[0][1].why === why) return;
+  redactContracts(owner, other, why, paths) {
+    const old = this.owned(owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other && (!paths || paths.has(slot.path)));
+    if (old.every(([key2, slot]) => key2 === slotKey(owner, "contract", other, slot.path, "*") && slot.status === "unknown" && slot.why === why)) return;
     const byPath = /* @__PURE__ */ new Map();
     for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot]);
     this.room.doc.transact(() => {
@@ -45946,12 +45946,19 @@ var ConflictSet = class {
     const head = snap?.head;
     const entries = head && room.manifest.get(manifestKey(other, head.fence));
     const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
-    const stillReadable = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === "all" && head.base === snap.record?.git?.base && !!room.roomSalt && slots.every(([, slot]) => {
-      const entry = entries?.get(slot.path);
-      return slot.subject !== "*" && entry?.state === "shared" && !!entry.hash && entry.fence === head.fence && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, slot.path))) && !head.excluded.includes(digestPath(room.roomSalt, slot.path));
-    });
-    if (stillReadable) this.slots.markContractsUnknown(this.owner, other, why);
-    else this.slots.redactContracts(this.owner, other, why);
+    const readable = /* @__PURE__ */ new Set(), withdrawn = /* @__PURE__ */ new Set();
+    const validCoverage = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === "all" && head.base === snap.record?.git?.base && !!room.roomSalt;
+    for (const [, slot] of slots) {
+      const path45 = slot.path;
+      const entry = entries?.get(path45);
+      const textAllowed = head?.level === "full" || head?.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45));
+      const currentEntry = !entry || entry.state === "shared" && !!entry.hash && entry.fence === head?.fence;
+      if (validCoverage && textAllowed && currentEntry && !head.excluded.includes(digestPath(room.roomSalt, path45)))
+        readable.add(path45);
+      else withdrawn.add(path45);
+    }
+    if (readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable);
+    if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn);
   }
   stop() {
     for (const stop2 of this.stops) stop2();
@@ -46102,7 +46109,7 @@ var ConflictSet = class {
         const why = `${other}'s manifest or base is updating`;
         await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
         for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.slots.redactContracts(this.owner, other, why);
+        this.unknownOrRedactContracts(other, why, theirs);
         continue;
       }
       const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
@@ -46113,7 +46120,7 @@ var ConflictSet = class {
         const key2 = slotKey(this.owner, "merge", other, "*");
         await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
         for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.slots.redactContracts(this.owner, other, why);
+        this.unknownOrRedactContracts(other, why, theirs);
         continue;
       }
       await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs);
@@ -46276,7 +46283,7 @@ var ConflictSet = class {
         const version2 = await versionOf(theirs, path45, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) });
         const after = asText(version2);
         if (after === void 0) {
-          this.slots.redactContracts(this.owner, other, "provider version is not readable");
+          this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
           return;
         }
         const oldText = before.kind === "absent" ? "" : before.text;
@@ -46296,7 +46303,7 @@ var ConflictSet = class {
       if (change.kind === "add") continue;
       const provider = await this.read(theirs, change.path);
       if (asText(provider) === void 0 || !carriedProvider && provider.kind === "base") {
-        this.slots.redactContracts(this.owner, other, "provider version is not readable");
+        this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
         return;
       }
       let uses;
@@ -46314,7 +46321,7 @@ var ConflictSet = class {
           const version2 = await this.read(mine, edge.target);
           const text = asText(version2);
           if (text === void 0) {
-            this.slots.redactContracts(this.owner, other, "consumer version is not readable");
+            this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
             return;
           }
           if (await consumesSymbol(edge.target, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(edge.target);
@@ -46345,7 +46352,7 @@ var ConflictSet = class {
       }
       const provider = await this.read(theirs, slot.path);
       if (asText(provider) === void 0) {
-        this.slots.redactContracts(this.owner, other, "provider version is not readable");
+        this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
         return;
       }
       await this.settle(key2, {
@@ -51466,11 +51473,12 @@ function handlers5(state) {
     const config2 = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
     configureCredentials(config2.credentialsPath);
     ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath };
+    return config2;
   }
   const handlers10 = {
     async room_login(a) {
-      await configureLogin(a);
-      const server = serverOf(a);
+      const config2 = await configureLogin(a);
+      const server = serverOf(a, config2.server);
       if (server === LOCAL) return LOCAL_LOGIN;
       if (a.action === "logout") {
         setPending(server, void 0);
@@ -51518,11 +51526,12 @@ function handlers5(state) {
         return currentReply();
       }
       const dir = typeof a.dir === "string" && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd();
-      const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : a.create === true && !process.env.ROOM_SERVER && !process.env.ROOM_URL ? "team" : void 0;
+      const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } });
-      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule };
-      const requestedRoom = typeof a.room === "string" ? a.room : resolved.room;
-      const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : resolved.room ?? (await deriveRoomName(dir)).roomName;
+      const createFromLocal = a.create === true && resolved.server === LOCAL;
+      const choice = { server: createFromLocal ? DEFAULT_SERVER : resolved.server, where: createFromLocal ? "team" : resolved.where, rule: resolved.whereRule };
+      const requestedRoom = createFromLocal && resolved.whereRule === "remembered" ? typeof a.room === "string" ? a.room : process.env.ROOM_ROOM : resolved.room;
+      const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : requestedRoom ?? (await deriveRoomName(dir)).roomName;
       if (cur) {
         const sameServer = choice.server === LOCAL ? !!cur.local : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf("/"))).server;
         if (sameServer && targetRoom === cur.roomName && resolve4(dir) === cur.dir && !terminalNameLoss && a.takeover !== true && a.create !== true) {
@@ -51549,7 +51558,7 @@ function handlers5(state) {
           dir,
           credentialsPath: resolved.credentialsPath,
           name: resolved.name,
-          room: choice.server === LOCAL ? targetRoom : resolved.room,
+          room: choice.server === LOCAL ? targetRoom : requestedRoom,
           server: choice.server,
           create: a.create === true,
           confirm: a.confirm === true,
@@ -51715,8 +51724,10 @@ function createJoin(deps) {
     }, s.me);
     return released;
   };
-  const serverOf = (a) => {
-    const r = resolveServer(typeof a.server === "string" && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER);
+  const serverOf = (a, resolvedServer) => {
+    const current = ctx.getSession();
+    const requested = typeof a.server === "string" && a.server ? resolveServer(a.server) : void 0;
+    const r = requested ?? (current ? current.local ? LOCAL : current.roomUrl.slice(0, current.roomUrl.lastIndexOf("/")) : resolvedServer);
     return r === LOCAL ? LOCAL : parseServer(r).server;
   };
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
@@ -53236,10 +53247,14 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const { rooms, baseFor } = state;
   const people = participants.map((p) => p.person);
   const snapshots = /* @__PURE__ */ new Map();
-  if (!options.diskOnly) for (const { person, session } of participants) snapshots.set(person, {
-    session,
-    snap: snapshot(session.room, person, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : [])
-  });
+  const acceptedRecords = /* @__PURE__ */ new Map();
+  if (!options.diskOnly) for (const { person, session } of participants) {
+    const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : [];
+    const snap = snapshot(session.room, person, view);
+    snapshots.set(person, { session, snap });
+    const record2 = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view);
+    if (record2 !== "updating") acceptedRecords.set(person, { ...record2 });
+  }
   const gaps = [];
   const previewWorkers = /* @__PURE__ */ new WeakMap();
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
@@ -53465,6 +53480,16 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     });
   }
   const paths = Array.from(pathSet).sort();
+  const includedParticipants = participants.map(({ person, session }) => {
+    const base = bases.find((item) => item.person === person).base;
+    const snap = snapshots.get(person)?.snap;
+    return {
+      person,
+      base,
+      gitRecord: acceptedRecords.get(person),
+      liveShared: !previewWorker(session, person) && !!snap && paths.some((p) => snap.entries.get(p)?.state === "shared")
+    };
+  });
   const merged = /* @__PURE__ */ new Map();
   const owners = /* @__PURE__ */ new Map();
   for (const p of paths) {
@@ -53578,7 +53603,7 @@ ${conflicts.join("\n")}`);
   }
   out2.unshift(`preview merge of your changes with ${people.map((p) => `${p}'s`).join(", ")} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? "fallback" : "git"}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join("; ")}` : ""}):`);
   const isCurrent = () => [...snapshots.values()].every(({ session, snap }) => !snap || snapshotStillCurrent(session.room, snap, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []));
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent };
+  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent };
 }
 function supersetSide(a, b) {
   const contains2 = (outer, inner) => {
@@ -53785,11 +53810,11 @@ ${text}` : text;
       const offlineWithFacts = available.filter((person) => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0);
       const skipped = !explicit ? offlineWithFacts.filter((person) => !people.includes(person)) : [];
       const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with manifest facts: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
-      const recordPartial = async (names, gaps, command = "", ranOk, anchors2 = "") => {
+      const recordPartial = async (names, gaps, command = "", ranOk, anchors = "") => {
         await caller.post(caller.me, {
           type: "note",
           priority: "fyi",
-          text: `partial preview with ${names.join(", ") || "no participants"}: ${gaps.join("; ")}${anchors2}${command ? `; command "${command}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
+          text: `partial preview with ${names.join(", ") || "no participants"}: ${gaps.join("; ")}${anchors}${command ? `; command "${command}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
         });
       };
       if (!people.length) {
@@ -53800,17 +53825,12 @@ ${text}` : text;
         return ["no present participants to merge", skippedNote, ...unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join("; ")}`] : []].filter(Boolean).join("\n");
       }
       const participants = people.map((person) => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }));
-      const callerBase = baseFor(caller, caller.me.name);
-      const anchors = participants.flatMap(({ person, session }) => {
-        const base = baseFor(session, person);
-        const view = participantsView(session.room, session.awareness, Date.now());
-        const gitRecord = acceptedGit(participantRecord(session.room, person), view);
-        if (base === callerBase || gitRecord === "updating" || gitRecord.base !== base) return [];
+      const anchorsFor = (result2) => result2.includedParticipants.flatMap(({ person, base, gitRecord, liveShared }) => {
+        if (base === result2.callerBase || !gitRecord || gitRecord.base !== base) return [];
         const location2 = gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base ? ` (pushed to ${gitRecord.upstream})` : gitRecord.branch ? ` (on ${gitRecord.branch})` : "";
-        const live = [...snapshot(session.room, person, view)?.entries.values() ?? []].some((entry) => entry.state === "shared") ? " + live changes" : "";
+        const live = liveShared ? " + live changes" : "";
         return [`${person} at ${base.slice(0, 10)}${location2}${live}`];
       });
-      const anchorNote = anchors.length ? `; included ${anchors.join(", ")}` : "";
       const missingNotes = [];
       for (const { person, session } of participants) {
         const ownLocalWorker = session.local && localWorkers(session.dir, (record2) => record2.name === person)[0];
@@ -53823,6 +53843,8 @@ ${text}` : text;
       const noTestsNote = run2 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
       try {
         const result2 = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run2 ? { encoding: "latin1" } : { skipCallerOnly: true } });
+        const anchors = anchorsFor(result2);
+        const anchorNote = anchors.length ? `; included ${anchors.join(", ")}` : "";
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2, gaps } = result2;
         const complete = result2.complete && unavailable.length === 0;
         const gapLines = [...gaps.map((gap) => `${gap.person}${gap.path ? ` ${gap.path}` : ""}: ${gap.why}`), ...unavailable];
