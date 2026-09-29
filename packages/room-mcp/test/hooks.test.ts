@@ -810,6 +810,8 @@ describe('hook health', () => {
     const now = Date.now()
     publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
     s.room.overlayAt.set('Rohan', now - 60_000)
+    // The prior scan belongs to the previous host session too.
+    s.room.manifestHead.set('Rohan', { ...s.room.manifestHead.get('Rohan')!, scannedAt: now - 60_000 })
     writeSessionFile('session.json', { session_id: SID, at: now })
     writeSessionFile('hook-activity.json', { session_id: SID, event: 'PreToolUse', at: now - 60_000 })
     expect(hookHealthNote(s, sdir(), true, now, 'room_join')).toBe('')

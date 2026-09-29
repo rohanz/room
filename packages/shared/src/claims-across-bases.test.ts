@@ -3,6 +3,7 @@ import { claimInMyLines, mapRange } from './claims.js'
 
 describe('claims across bases', () => {
   it('moves a claim past inserted lines and widens a changed hunk', () => {
+    expect(claimInMyLines({ from: 1, to: 1 }, 'x = 1\n', 'x = 1\n')).toEqual({ from: 1, to: 1, approximate: false })
     expect(claimInMyLines({ from: 1, to: 1 }, 'old\n', 'inserted\nold\n')).toEqual({ from: 2, to: 2, approximate: false })
     expect(mapRange('a\nb\nc\n', 'new\na\nb\nc\n', { from: 2, to: 2 })).toEqual({ from: 3, to: 3 })
     expect(mapRange('a\nb\nc\n', 'a\nB\nC\nc\n', { from: 2, to: 2 })).toEqual({ from: 2, to: 3 })

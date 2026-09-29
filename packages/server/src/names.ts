@@ -30,8 +30,13 @@ export function githubRepoOf(roomPath: string): string | undefined {
 }
 
 
-/** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "git/host/owner/repo/main" -> 4 segments; "local/dir/main" -> "local/dir". */
-export function repoOf(roomName: string): string {
-  const parts = roomName.split('/')
-  return parts.slice(0, roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/')
+/** A repository room is the origin-derived name. Only an already-open proper prefix
+ * can identify a legacy branch suffix; segment counting would truncate real repo names. */
+export function repoRoomOf(roomName: string, isOpen: (name: string) => boolean): string {
+  const name = roomNameOf(roomName)
+  const canonical = name.startsWith('github.com/') ? name.toLowerCase() : name
+  for (let i = canonical.length - 1; i > 0; i--) {
+    if (canonical[i] === '/' && isOpen(canonical.slice(0, i))) return canonical.slice(0, i)
+  }
+  return canonical
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import { localRoomName } from '@room/roomd/local'
-import { manifestKey } from '@room/shared'
+import { manifestKey, participantRecord } from '@room/shared'
 import { startAutoTaggedRoomd } from '../src/session.js'
 import { resolveConfig, resolveSessionHost } from '../src/config.js'
 import { clearChoice, readChoice, rememberTag, writeChoice, worktreePath } from '../src/choice.js'
@@ -36,6 +36,19 @@ async function start(room: HubRoom, dir = repo(), tag?: string, sessionId = `s${
   return { ...result, log, dir }
 }
 describe('automatic session tags (registry §15: local lease, then hub lease)', () => {
+  it('production join passes hub pushed acceptance back to the daemon', async () => {
+    const room = hubRoom(), s = await start(room)
+    const fromSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s.dir, encoding: 'utf8' }).trim()
+    writeFileSync(join(s.dir, 'next.txt'), 'next\n')
+    execFileSync('git', ['add', '.'], { cwd: s.dir })
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'next'], { cwd: s.dir })
+    const toSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s.dir, encoding: 'utf8' }).trim()
+    const git = participantRecord(s.daemon.roomDoc, s.me.name)!.git!
+    s.daemon.roomDoc.participants.set(`${s.me.name}\0git`, { ...git, pushedPending: { fromSha, toSha, upstream: 'origin/main' } })
+    await (s.daemon as unknown as { postPushedPending(): Promise<void> }).postPushedPending()
+    await vi.waitFor(() => expect(participantRecord(s.daemon.roomDoc, s.me.name)?.git?.pushedPending).toBeUndefined())
+    expect(room.doc.messages().filter(m => m.type === 'pushed')).toHaveLength(1)
+  })
   it('tags a join whose name another session holds, using the session host', async () => {
     const room = hubRoom()
     await room.hold('name')

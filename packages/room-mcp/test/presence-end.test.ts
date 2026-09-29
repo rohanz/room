@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { idleLabel } from '@room/shared'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { describe, expect, it, vi } from 'vitest'
+import { idleLabel, RoomDoc } from '@room/shared'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, releaseIdleHeld, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import type { Session } from '../src/session.js'
 
 const MIN = 60_000
 function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
@@ -22,6 +27,23 @@ function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
 }
 
 describe('presence end and the idle lease (registry §18)', () => {
+  it('H1 refuses a lapsed or old epoch of the same host session', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'idle-epoch-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      const room = new RoomDoc()
+      room.participants.set('ben\0holder', { sessionId: 'same-session', epoch: 22 })
+      room.claims.set('c1', { id: 'c1', path: 'x', from: 1, to: 1, by: 'ben', byKind: 'agent', intent: 'work', at: 1 })
+      const lease = { sessionId: 'same-session', fence: vi.fn<() => string | undefined>(() => undefined) }
+      const session = { dir, room, roomName: 'local/example', me: { name: 'ben', kind: 'agent' }, lease,
+        post: vi.fn().mockResolvedValue({ ok: true }) } as unknown as Session
+      expect(await releaseIdleHeld(session, 'idle-1', IDLE_CLAIMS_MS, () => IDLE_CLAIMS_MS)).toBe(false)
+      expect(room.claims.has('c1')).toBe(true)
+      lease.fence.mockReturnValue('21')
+      expect(await releaseIdleHeld(session, 'idle-1', IDLE_CLAIMS_MS, () => IDLE_CLAIMS_MS)).toBe(false)
+      expect(room.claims.has('c1')).toBe(true)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
   it('an unbound app-server session with nothing held shows idle from 10 min and leaves at 30 (row 25)', async () => {
     const { presence, events, published, at } = fixture('shared-app-server')
     await at(9 * MIN)

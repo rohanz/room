@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * Room server: a stock y-websocket server plus access control and persistence.
- *  - Rooms named github.com/<owner>/<repo>/<branch> admit callers whose GitHub account has push
+ *  - Rooms named github.com/<owner>/<repo> admit callers whose GitHub account has push
  *    access to the repo (checked against the GitHub API, cached 10 min). Read access is not
  *    enough: a public repo must not be an open room.
  *  - GITHUB_CLIENT_ID: clients log in with GitHub's device flow (POST /auth/start, /auth/poll) and the
@@ -21,10 +21,9 @@
  *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too unless
  *    DATABASE_URL points at Postgres (see store.ts). GET /audit?session=<admin session>&since=<ms>
  *    for logins in ROOM_ADMINS.
- *  - A repo is opened explicitly once (POST /rooms) before anyone can connect to any of its branch
- *    rooms; a websocket to a repo nobody opened is refused with 404. Joining a branch of an
- *    opened repo needs no further step. GET /rooms lists the caller's open repos; DELETE /rooms
- *    closes one: live connections are dropped and persisted branch docs deleted.
+ *  - A repo is opened explicitly once (POST /rooms) before anyone can connect. A websocket
+ *    to a repo nobody opened is refused with 404. GET /rooms lists open repos; DELETE /rooms
+ *    closes one, dropping live connections and persisted legacy archives.
  *  - Browser view keys (?view=) are read-only: inbound document and awareness writes are discarded.
  * All coordination state lives inside the Y.Doc; room name = URL path.
  * Each loaded room also runs its hub (hub.ts, @room/hub-core) on message type 7 of the same websocket:
@@ -36,14 +35,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
-import { docNameOf, roomNameOf, githubRepoOf, repoOf } from './names.js'
+import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
+import { docNameOf, roomNameOf, githubRepoOf, repoRoomOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
 import { makeAdmitted, type Creds } from './admit.js'
-import { storeFromEnv, type AuditEntry, type OpenRepo } from './store.js'
+import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
+import { RepoLocks } from './repo-lock.js'
+import { migrateRepo } from './migrate.js'
+import { HUB_ORIGIN } from '@room/hub-core'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -93,62 +95,141 @@ const VIEW_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE,
 try { if (VIEW_FILE && fs.existsSync(VIEW_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(VIEW_FILE, 'utf8')) as Record<string, { room: string; exp: number }>)) if (v.exp > Date.now()) viewTokens.set(k, v) } catch { /* start empty */ }
 function saveViewTokens() {
   if (!VIEW_FILE) return
-  try { fs.writeFileSync(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens))) } catch { /* best effort */ }
+  fs.mkdirSync(path.dirname(VIEW_FILE), { recursive: true })
+  writeAtomicFile(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens)))
 }
 
-/** "github.com/owner/repo/feature/x" -> "github.com/owner/repo"; "git/host/owner/repo/main" -> "git/host/owner/repo"; "local/dir/main" -> "local/dir". */
-/** Repos someone has opened: repo -> who/when + the branch rooms seen since. Persisted through the store. */
+/** Repos someone has opened, keyed by their canonical origin-derived names. */
 const rooms = new Map<string, OpenRepo>()
-const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => { for (const [k, v] of Object.entries(all)) rooms.set(k, v) }).catch(e => console.log(`could not load the room registry: ${e instanceof Error ? e.message : e}`))
-function saveRooms() {
-  store.saveRooms(Object.fromEntries(rooms)).catch(e => console.log(`could not save the room registry: ${e instanceof Error ? e.message : e}`))
-}
-const NOT_OPEN = (room: string) => `no room for ${repoOf(room)} yet: open one with room_create (or POST /rooms)`
+const locks = new RepoLocks()
+const canonical = (name: string) => repoRoomOf(name, key => rooms.has(key))
+const oldBranchRepo = (name: string) => name.split('/').slice(0, name.startsWith('github.com/') ? 3 : name.startsWith('git/') ? 4 : 2).join('/')
+const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => {
+  for (const [key, value] of Object.entries(all)) {
+    const name = repoRoomOf(key, () => false)
+    const previous = rooms.get(name)
+    if (!previous) {
+      rooms.set(name, { ...value, branches: [...new Set(value.branches ?? [])],
+        legacy: [...new Set([...(value.legacy ?? []), ...(key === name ? [] : [key])])] })
+      continue
+    }
+    const earliest = previous.at <= value.at ? previous : value
+    const progress = previous.plan || previous.migratedAt ? previous : value.plan || value.migratedAt ? value : earliest
+    rooms.set(name, { ...progress, by: earliest.by, at: Math.min(previous.at, value.at),
+      lastSeen: Math.max(previous.lastSeen ?? 0, value.lastSeen ?? 0) || undefined,
+      branches: [...new Set([...previous.branches, ...value.branches])],
+      legacy: [...new Set([...(previous.legacy ?? []), ...(value.legacy ?? []), ...(key === name ? [] : [key])])] })
+  }
+  if (Object.keys(all).some(key => !rooms.has(key))) return saveRooms()
+}).catch(e => console.log(`could not load the room registry: ${e instanceof Error ? e.message : e}`))
+function saveRooms(): Promise<void> { return store.saveRooms(Object.fromEntries(rooms)) }
+const NOT_OPEN = (room: string) => `no room for ${canonical(room)} yet: open one with room_create (or POST /rooms)`
+const upgradeText = (repo: string) => `update Room to 0.17 or later: this repository now has one room for all branches (${repo})`
 
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting;
  *  the verdict carries the verified login when the caller is logged in. See admit.ts. */
 const admitted = makeAdmitted({ auth, token: TOKEN })
-/** Remember which branch rooms of an open repo have been connected to, so closing can find their docs. */
-function noteBranch(roomName: string) {
-  const r = rooms.get(repoOf(roomName))
-  if (!r) return
-  r.lastSeen = Date.now()
-  if (!r.branches.includes(roomName)) r.branches.push(roomName)
-  saveRooms()
+const memoryDocs = new Map<string, Uint8Array>()
+const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
+const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...memoryDocs.keys(), ...docs.keys()])]
+const loadDoc = async (name: string): Promise<Y.Doc> => {
+  const live = docs.get(name)
+  if (live) return live
+  if (provider()) return provider()!.getYDoc(name)
+  const doc = new Y.Doc()
+  const update = memoryDocs.get(name)
+  if (update) Y.applyUpdate(doc, update)
+  return doc
+}
+const writeDoc = async (name: string, update: Uint8Array): Promise<void> => {
+  if (provider()) { await provider()!.storeUpdate(name, update); return }
+  const before = memoryDocs.get(name)
+  memoryDocs.set(name, before ? Y.mergeUpdates([before, update]) : update)
+}
+const clearDoc = async (name: string): Promise<void> => {
+  memoryDocs.delete(name)
+  await provider()?.clearDocument?.(name)
+}
+function stopDoc(name: string, reason = 'room closed') {
+  const doc = docs.get(name)
+  if (doc) for (const conn of [...doc.conns.keys()] as { close(code?: number, reason?: string): void; terminate(): void }[]) {
+    try { conn.close(4001, reason) } catch { conn.terminate() }
+  }
+  hubs.stop(name)
+  documentGuards.delete(name); awarenessOwners.delete(name)
+  docMeters.delete(name); capLogged.delete(name)
+}
+async function freezeDocs(names: string[], reason: string): Promise<void> {
+  const live = new Map(names.flatMap(name => docs.get(name) ? [[name, docs.get(name)!] as const] : []))
+  if (!provider()) for (const [name, doc] of live) await writeDoc(name, Y.encodeStateAsUpdate(doc))
+  const closed = [...live.values()].flatMap(doc => [...doc.conns.keys()]).map(conn => new Promise<void>(resolve => {
+    const socket = conn as { once(event: 'close', fn: () => void): void; terminate(): void }
+    const timer = setTimeout(() => { socket.terminate(); resolve() }, 1000)
+    socket.once('close', () => { clearTimeout(timer); resolve() })
+  }))
+  for (const name of names) stopDoc(name, reason)
+  await Promise.all(closed)
+  for (const [name, doc] of live) {
+    await hubs.flush(doc)
+    if (!provider()) await writeDoc(name, Y.encodeStateAsUpdate(doc))
+    docs.delete(name)
+  }
+}
+async function migrateOpenRepo(repo: string): Promise<void> {
+  await locks.run(repo, async () => {
+    const r = rooms.get(repo)
+    if (!r || r.migratedAt) return
+    await migrateRepo(repo, r, {
+      list: listDocs, load: loadDoc, write: writeDoc, clear: clearDoc, save: saveRooms,
+      freeze: names => freezeDocs(names, upgradeText(repo)),
+      revoke: async names => {
+        const set = new Set(names)
+        for (const [token, value] of viewTokens) if (set.has(value.room)) viewTokens.delete(token)
+        saveViewTokens()
+      },
+    })
+  })
 }
 /** Repos nobody has connected to for ROOM_IDLE_DAYS (default 30) are closed automatically: their
  *  shared uncommitted work is deleted. 0 disables. Checked hourly and at startup. */
 const IDLE_MS = Number(process.env.ROOM_IDLE_DAYS ?? 30) * 24 * 60 * 60 * 1000
 async function expireIdle() {
-  if (!IDLE_MS) return
   const cutoff = Date.now() - IDLE_MS
   for (const [repo, r] of Array.from(rooms)) {
-    const live = Array.from(docs.keys()).some(n => repoOf(n) === repo && (docs.get(n)?.conns.size ?? 0) > 0)
-    if (!live && (r.lastSeen ?? r.at) < cutoff) { console.log(`room expired: ${repo} (idle since ${new Date(r.lastSeen ?? r.at).toISOString()})`); await closeRepo(repo) }
+    if (r.migratedAt && r.legacy?.length && Date.now() - r.migratedAt > Number(process.env.ROOM_LEGACY_DAYS ?? 30) * 86400000) {
+      await locks.run(repo, async () => {
+        const current = rooms.get(repo)
+        if (!current?.legacy?.length || !current.migratedAt) return
+        for (const name of current.legacy) await clearDoc(name)
+        const doc = await loadDoc(repo)
+        doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
+        await writeDoc(repo, Y.encodeStateAsUpdate(doc))
+        current.legacy = []; current.unresolved = 0
+        await saveRooms()
+      })
+    }
+    const live = Array.from(docs.keys()).some(n => canonical(n) === repo && (docs.get(n)?.conns.size ?? 0) > 0)
+    if (IDLE_MS && !live && (r.lastSeen ?? r.at) < cutoff) { console.log(`room expired: ${repo} (idle since ${new Date(r.lastSeen ?? r.at).toISOString()})`); await closeRepo(repo) }
   }
 }
 setInterval(() => { void expireIdle() }, 60 * 60 * 1000).unref()
-void expireIdle()
-/** Close a repo: forget it, drop every live connection to its branch rooms, delete their persisted docs. */
-async function closeRepo(repo: string): Promise<string[]> {
-  const r = rooms.get(repo)
-  if (!r) return []
-  const names = new Set(r.branches)
-  for (const name of docs.keys()) if (repoOf(name) === repo) names.add(name)
-  rooms.delete(repo); saveRooms()
-  // Links minted for its rooms stop working too, so a stale tab cannot bring the old document back.
-  for (const [k, v] of Array.from(viewTokens)) if (names.has(v.room) || repoOf(v.room) === repo) viewTokens.delete(k)
-  saveViewTokens()
-  for (const name of names) {
-    const doc = docs.get(name)
-    if (doc) for (const conn of Array.from(doc.conns.keys()) as { close(code?: number, reason?: string): void }[]) conn.close(4001, 'room closed')
-    docs.delete(name)
-    hubs.stop(name)
-    documentGuards.delete(name); awarenessOwners.delete(name)
-    try { await ((getPersistence() as { provider?: { clearDocument?(n: string): Promise<void> } } | null)?.provider)?.clearDocument?.(name) } catch (e) { console.log(`close ${name}: could not clear persisted doc: ${e instanceof Error ? e.message : e}`) }
-  }
-  console.log(`room closed: ${repo} (${names.size} branch room(s))`)
-  return Array.from(names)
+void roomsLoaded.then(expireIdle)
+/** Close all live and archived documents, including while the caller is unjoined. */
+async function closeRepo(repo: string, oldClient = false): Promise<string[] | undefined> {
+  return locks.run(repo, async () => {
+    const r = rooms.get(repo)
+    if (!r) return []
+    if (oldClient && r.mode === 'repo') return undefined
+    const names = new Set([repo, ...r.branches, ...(r.legacy ?? []), ...(r.plan?.sources ?? [])])
+    for (const name of await listDocs()) if (canonical(name) === repo) names.add(name)
+    rooms.delete(repo); await saveRooms()
+    for (const [key, value] of viewTokens) if (names.has(value.room)) viewTokens.delete(key)
+    saveViewTokens()
+    await freezeDocs([...names], 'room closed')
+    for (const name of names) await clearDoc(name)
+    console.log(`room closed: ${repo} (${names.size} document(s))`)
+    return [...names]
+  })
 }
 const str = (v: unknown): string | undefined => typeof v === 'string' && v ? v : undefined
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -163,7 +244,12 @@ const server = http.createServer((req, res) => {
   const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
   const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
   const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
-  const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => { try { await fn(JSON.parse(body || '{}') as Record<string, unknown>) } catch { text(400, 'bad request') } }); return }
+  const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => {
+    let parsed: Record<string, unknown>
+    try { parsed = JSON.parse(body || '{}') as Record<string, unknown> } catch { text(400, 'bad request'); return }
+    try { await fn(parsed) }
+    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(500, 'room server operation failed; retry') }
+  }); return }
 
   // ---- auth ----
   if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device', providers: auth.providers, shareMax: SHARE_MAX, ...(auth.fake ? { fake: true } : {}) })
@@ -215,7 +301,7 @@ const server = http.createServer((req, res) => {
     const c = queryCreds()
     void (async () => {
       const out: ({ repo: string } & OpenRepo)[] = []
-      for (const [repo, r] of rooms) if ((await admitted(`${repo}/x`, c)).ok) out.push({ repo, ...r })
+      for (const [repo, r] of rooms) if ((await admitted(repo, c)).ok) out.push({ repo, ...r })
       json(200, out)
     })()
     return
@@ -223,37 +309,101 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/rooms' && req.method === 'DELETE') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`close refused: ${v.why}`); return text(v.status, v.why) }
-    const repo = repoOf(roomNameOf(room))
+    const repo = canonical(room)
     if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
-    const closed = await closeRepo(repo)
+    if (o.schema !== 2 && rooms.get(repo)?.mode === 'repo') return text(403, upgradeText(repo))
+    const closed = await closeRepo(repo, o.schema !== 2)
+    if (!closed) return text(403, upgradeText(repo))
     audit({ event: 'room_closed', room: repo, login: v.login, id: v.id })
     json(200, { repo, closed, ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`open refused: ${v.why}`); return text(v.status, v.why) }
     const by = v.login ?? str(o.by)
-    const name = repoOf(roomNameOf(room))
-    const existing = rooms.get(name)
-    if (!existing) { rooms.set(name, { by, at: Date.now(), branches: [] }); saveRooms(); console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`); audit({ event: 'room_opened', room: name, login: by, id: v.id }) }
-    json(existing ? 200 : 201, { repo: name, created: !existing, ...(existing ?? {}), ...(v.login ? { login: v.login } : {}) })
+    const requested = roomNameOf(room)
+    const name = o.schema === 2 ? canonical(requested) : canonical(oldBranchRepo(requested))
+    if (o.schema === 2 && name !== repoRoomOf(requested, () => false)) return json(409, { room: name })
+    let created = false
+    await locks.run(name, async () => {
+      const existing = rooms.get(name)
+      if (o.schema !== 2 && existing?.mode === 'repo') return text(403, upgradeText(name))
+      if (!existing) {
+        created = true
+        const oldDocs = o.schema === 2 && (await listDocs()).some(doc => doc === name || repoRoomOf(doc, key => key === name) === name)
+        rooms.set(name, { by, at: Date.now(), branches: [], mode: o.schema === 2 && !oldDocs ? 'repo' : 'branch',
+          ...(o.schema === 2 && !oldDocs ? { migratedAt: Date.now() } : {}) })
+        if (o.schema === 2 && !oldDocs) {
+          const empty = new Y.Doc(); empty.getMap('meta').set('schemaVersion', 2)
+          await writeDoc(name, Y.encodeStateAsUpdate(empty))
+        }
+        await saveRooms()
+        console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`)
+        audit({ event: 'room_opened', room: name, login: by, id: v.id })
+      }
+    })
+    if (res.writableEnded) return
+    if (o.schema === 2) await migrateOpenRepo(name)
+    json(created ? 201 : 200, { repo: name, created, ...rooms.get(name),
+      ...(o.schema === 2 ? { room: name, hub: 1 } : {}), ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`view-token refused: ${v.why}`); return text(v.status, v.why) }
-    const name = roomNameOf(room)
-    if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
-    const view = crypto.randomBytes(16).toString('hex')
-    viewTokens.set(view, { room: name, exp: Date.now() + VIEW_TTL })
-    for (const [k, vv] of viewTokens) if (vv.exp < Date.now()) viewTokens.delete(k)
-    saveViewTokens()
-    json(200, { view, expiresIn: VIEW_TTL, ...(v.login ? { login: v.login } : {}) })
+    const repo = canonical(room)
+    const entry = rooms.get(repo)
+    if (!entry) return text(404, NOT_OPEN(repo))
+    if (o.schema !== 2 && entry.mode === 'repo') return text(403, upgradeText(repo))
+    if (o.schema === 2) await migrateOpenRepo(repo)
+    const name = o.schema === 2 ? repo : roomNameOf(room)
+    const view = await locks.run(repo, async () => {
+      if (!rooms.has(repo)) return undefined
+      if (o.schema !== 2 && rooms.get(repo)?.mode === 'repo') return undefined
+      const key = crypto.randomBytes(16).toString('hex')
+      viewTokens.set(key, { room: name, exp: Date.now() + VIEW_TTL })
+      for (const [k, vv] of viewTokens) if (vv.exp < Date.now()) viewTokens.delete(k)
+      saveViewTokens()
+      return key
+    })
+    if (!view) return rooms.get(repo)?.mode === 'repo' && o.schema !== 2
+      ? text(403, upgradeText(repo)) : text(404, NOT_OPEN(repo))
+    json(200, { ...(o.schema === 2 ? { room: name, hub: 1 } : {}), view, expiresIn: VIEW_TTL, ...(v.login ? { login: v.login } : {}) })
+  })
+
+  // Legacy documents are retained for 30 days but never connected to a writable socket.
+  if (url.pathname === '/archive' && req.method === 'GET') {
+    void (async () => {
+      const repo = canonical(url.searchParams.get('repo') ?? '')
+      const entry = rooms.get(repo)
+      if (!entry) return text(404, NOT_OPEN(repo))
+      const v = await admitted(repo, queryCreds())
+      if (!v.ok) return text(v.status, v.why)
+      const unresolved = (await loadDoc(repo)).getMap('unresolved')
+      json(200, { repo, legacy: entry.legacy ?? [], unresolved: [...unresolved.keys()] })
+    })().catch(e => text(500, `archive unavailable: ${e instanceof Error ? e.message : e}`))
+    return
+  }
+  if (url.pathname === '/archive/export' && req.method === 'POST') return withBody(async o => {
+    if (o.schema !== 2) return text(403, 'update Room to 0.17 or later to export an archive')
+    const name = str(o.room)
+    if (!name) return text(400, 'room required')
+    if (o.view) return text(403, 'view tokens cannot export an archive')
+    const repo = [...rooms].find(([, r]) => r.legacy?.includes(name))?.[0]
+    if (!repo) return text(404, 'archive not found')
+    const v = await admitted(repo, creds(o))
+    if (!v.ok) return text(v.status, v.why)
+    const update = Y.encodeStateAsUpdate(await loadDoc(name))
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
+    res.end(Buffer.from(update))
   })
 
   // ---- github (pull requests) ----
@@ -272,10 +422,10 @@ const server = http.createServer((req, res) => {
       if (!repo) return text(400, `${name} is not a github.com room`)
       const v = await admitted(name, c)
       if (!v.ok) { console.log(`github/prs refused: ${v.why}`); return text(v.status, v.why) }
-      if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
+      if (!rooms.has(canonical(name))) return text(404, NOT_OPEN(name))
       const token = githubTokenFor(c)
       if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to see pull requests')
-      try { json(200, await github.openPrs(token, repo, name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1' })) }
+      try { json(200, await github.openPrs(token, repo, url.searchParams.get('branch') ?? name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1' })) }
       catch (e) { githubFail('github/prs', e) }
     })()
     return
@@ -293,7 +443,7 @@ const server = http.createServer((req, res) => {
     if (!repo) return text(400, `${name} is not a github.com room`)
     const v = await admitted(name, c)
     if (!v.ok) { console.log(`github/pr-note refused: ${v.why}`); return text(v.status, v.why) }
-    if (!rooms.has(repoOf(name))) return text(404, NOT_OPEN(name))
+    if (!rooms.has(canonical(name))) return text(404, NOT_OPEN(name))
     const token = githubTokenFor(c)
     if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to comment on pull requests')
     try { json(200, { repo, number, ...(await github.upsertNote(token, repo, number, body)), ...(v.login ? { login: v.login } : {}) }) }
@@ -347,7 +497,10 @@ setInterval(() => hubs.tick(), 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
 wss.on('connection', (conn, req) => {
-  const docName = docNameOf(req.url ?? '/')
+  const url = new URL(req.url ?? '/', 'http://x')
+  const raw = docNameOf(req.url ?? '/')
+  const repo = canonical(raw)
+  const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
   setupWSConnection(conn, req, { gc: true, docName })
   hubs.ensure(docName, docs.get(docName)!)
 })
@@ -385,39 +538,44 @@ function awarenessOwnerMap(roomName: string): Map<number, string> {
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
-  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repoOf(roomName))
+  const repo = canonical(roomName)
+  const docKey = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : roomName
+  if (url.searchParams.get('schema') !== '2' && rooms.get(repo)?.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
+  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repo)
     ? wss.handleUpgrade(req, socket, head, ws => {
-      noteBranch(roomName)
+      const entry = rooms.get(repo)!
+      entry.lastSeen = Date.now(); void saveRooms()
       // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
-      bindHub(ws, () => hubs.current(roomName), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false })
-      audit({ event: 'join', room: roomName, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
-      if (opts.readOnly) makeReadOnly(ws, droppedWrite(roomName))
+      bindHub(ws, () => hubs.current(docKey), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false })
+      audit({ event: 'join', room: docKey, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
+      if (opts.readOnly) makeReadOnly(ws, droppedWrite(docKey))
       if (opts.login) {
         bindIdentity(ws, opts.login, (login, name) => {
           const now = Date.now()
           if ((identityLog.get(login) ?? 0) > now - 60_000) return
           identityLog.set(login, now)
           console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
-        }, awarenessOwnerMap(roomName))
-        bindDocumentIdentity(ws, opts.login, documentGuard(roomName), (login, reason) => {
+        }, awarenessOwnerMap(docKey))
+        bindDocumentIdentity(ws, opts.login, documentGuard(docKey), (login, reason) => {
           const key = `document:${login}`
           const now = Date.now()
           if ((identityLog.get(key) ?? 0) > now - 60_000) return
           identityLog.set(key, now)
           if (IDENTITY_GUARD_MODE === 'enforce') {
-            console.log(`rejected identity-bearing update from ${login} (room ${roomName}): ${reason}`)
-            audit({ event: 'refused', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
+            console.log(`rejected identity-bearing update from ${login} (room ${repo}): ${reason}`)
+            audit({ event: 'refused', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
           } else {
-            console.log(`observed identity-bearing update from ${login} (room ${roomName}); update applied: ${reason}`)
-            audit({ event: 'identity_violation', room: roomName, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update observed; update applied: ${reason}` })
+            console.log(`observed identity-bearing update from ${login} (room ${repo}); update applied: ${reason}`)
+            audit({ event: 'identity_violation', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update observed; update applied: ${reason}` })
           }
         }, IDENTITY_GUARD_MODE)
       }
       // The cap is the outermost wrapper: a packet it refuses never advances the identity shadow.
-      const meter = docMeter(roomName)
+      const meter = docMeter(docKey)
       capDocSize(ws, bytes => meter.size(bytes), DOC_MAX_BYTES, size => {
         const now = Date.now()
-        if ((capLogged.get(roomName) ?? 0) < now - 60_000) { capLogged.set(roomName, now); console.log(`refusing writes: room ${roomName} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
+        if ((capLogged.get(repo) ?? 0) < now - 60_000) { capLogged.set(repo, now); console.log(`refusing writes: room ${repo} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
+        ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
       })
       wss.emit('connection', ws, req)
     })
@@ -425,12 +583,23 @@ server.on('upgrade', (req, socket, head) => {
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
-    if (v && v.exp > Date.now() && v.room === roomName) return accept({ readOnly: true })
+    if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true })
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
   const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
   admitted(roomName, c)
-    .then(v => v.ok ? accept({ login: v.login, id: v.id, provider: v.provider }) : refuse(socket, v.status, v.why, roomName))
+    .then(async v => {
+      if (!v.ok) return refuse(socket, v.status, v.why, roomName)
+      const entry = rooms.get(repo)
+      if (!entry) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
+      if (url.searchParams.get('schema') !== '2') {
+        if (entry.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
+        return accept({ login: v.login, id: v.id, provider: v.provider })
+      }
+      await migrateOpenRepo(repo)
+      if (!rooms.has(repo)) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
+      return accept({ login: v.login, id: v.id, provider: v.provider })
+    })
     .catch(() => refuse(socket, 403, 'Forbidden', roomName))
 })
 function escapeHtml(s: string): string { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!) }

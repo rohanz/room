@@ -8,6 +8,12 @@ import { digestPath, gitBlobHash } from './manifest-node.js'
 const head = (fence = '11'): ManifestHead => ({ base: 'abc', fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
 
 describe('manifest step 1', () => {
+  it('identifies a complete non-publisher without a git record', async () => {
+    const room = new RoomDoc()
+    room.participants.set('ben\0holder', { sessionId: 's1', epoch: 11 })
+    room.manifestHead.set('ben', { ...head(), coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Ada' })
+    expect(await versionOf(snapshot(room, 'ben', [])!, 'x')).toMatchObject({ kind: 'unknown', why: 'not-publisher', detail: expect.stringContaining('Ada') })
+  })
   it('uses a stable salt and hashes excluded paths without exposing names', () => {
     const room = new RoomDoc()
     const salt = room.ensureRoomSalt()

@@ -164,21 +164,35 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const present = Array.from(new Set(allSessions.flatMap(s => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter(name => presences(s).some(p => p.user.name === name)))))
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
       const myPaths = [...manifestPaths(caller.room, caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
-      const overlaps = (person: string) => {
+      const unavailable: string[] = []
+      const overlaps = async (person: string) => {
         const session = rooms.holding(person, caller)
         const worker = session.room.acceptedWorkerViewOf(person)
-        return worker?.lead === caller.me.name && worker.status === 'running' || manifestPaths(session.room, person).some(p => myPaths.some(mine => coversPath(p, mine)))
+        if (worker?.lead === caller.me.name && worker.status === 'running') return true
+        const theirs = manifestPaths(session.room, person)
+        try {
+          const mineBase = baseFor(caller, caller.me.name), theirBase = baseFor(session, person)
+          const ancestor = (await git(caller.dir, ['merge-base', mineBase, theirBase])).trim()
+          const changed = async (base: string) => base === ancestor ? [] : (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)
+          const mine = [...myPaths, ...await changed(mineBase)]
+          theirs.push(...await changed(theirBase))
+          return theirs.some(p => mine.some(path => coversPath(p, path)))
+        } catch (error) {
+          unavailable.push(`${person}: committed changes unavailable (${error instanceof Error ? error.message : String(error)})`)
+          return false
+        }
       }
       const runningWorkers = allSessions.flatMap(s => myWorkers(s).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name))
+      const overlapping = explicit || a.includeOffline === true ? [] : (await Promise.all(available.filter(p => present.includes(p)).map(async p => ({ person: p, yes: await overlaps(p) })))).filter(p => p.yes).map(p => p.person)
       const people = Array.from(new Set(explicit
         ? Array.isArray(a.people) ? (a.people as string[]).map(p => fullName(p.trim())) : [fullName(alias)]
-        : [...(a.includeOffline === true ? available : available.filter(p => present.includes(p) && overlaps(p))), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
+        : [...(a.includeOffline === true ? available : overlapping), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
       const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
       const skipped = !explicit ? offlineWithFacts.filter(person => !people.includes(person)) : []
       const skippedNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
-      if (!people.length) return ['no present participants to merge', skippedNote].filter(Boolean).join('\n')
+      if (!people.length) return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
@@ -192,8 +206,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
         const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
-        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps, complete } = result
-        const gapLines = gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`)
+        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
+        const complete = result.complete && unavailable.length === 0
+        const gapLines = [...gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`), ...unavailable]
         if (!paths.length && !result.callerOnly && !run) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
           return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, skippedNote].filter(Boolean).join('\n')

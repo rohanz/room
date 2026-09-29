@@ -27,6 +27,7 @@ import { createFocusState, participantsPanel } from '../../web/src/panels.ts'
 import type { Conn } from '../../web/src/conn.ts'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 vi.mock('../src/tools/claims.js', async importOriginal => ({
   ...await importOriginal<typeof import('../src/tools/claims.js')>(),
@@ -196,9 +197,11 @@ describe('nested lead: a worker that leads workers', () => {
     vi.stubGlobal('document', dom.window.document); vi.stubGlobal('window', dom.window)
     vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1)); vi.stubGlobal('cancelAnimationFrame', vi.fn())
     const room = new RoomDoc()
-    const w = (tag: string, lead: string): WorkerView => ({ id: `w_${tag}`, tag, name: `rohanz+${tag}`, lead, mode: 'local', host: tag === 'lead' ? 'claude' : 'codex', task: `task ${tag}`, branch: `room/${tag}`, status: 'running', run: 1, startedAt: 1, fence: 'test' })
+    visiblePeer(room, HUMAN)
+    visiblePeer(room, LEAD)
+    const w = (tag: string, lead: string): WorkerView => ({ id: `w_${tag}`, tag, name: `rohanz+${tag}`, lead, mode: 'local', host: tag === 'lead' ? 'claude' : 'codex', task: `task ${tag}`, branch: `room/${tag}`, status: 'running', run: 1, startedAt: 1, fence: '1' })
     for (const view of [w('lead', HUMAN), w('ship', LEAD), w('cat', LEAD)]) room.workerViews.set(view.id, view)
-    const states = new Map(['rohanz', 'rohanz+lead', 'rohanz+ship', 'rohanz+cat'].map((name, i) => [i + 1, { user: { name, kind: 'agent' } }]))
+    const states = new Map(['rohanz', 'rohanz+lead', 'rohanz+ship', 'rohanz+cat'].map((name, i) => [i + 1, { user: { name, kind: 'agent' }, sessionId: `fixture:${name}` }]))
     const conn = { room, displayRoomName: 'local/top/shop', onStatus: vi.fn(), provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
     const panel = participantsPanel(conn, createFocusState())
     document.body.append(panel)

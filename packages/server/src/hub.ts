@@ -131,6 +131,13 @@ export class ServerHubs {
 
   current(name: string): Hub | undefined { return this.entries.get(name)?.hub }
 
+  /** Drain a loaded document's writes before migration clears its old key. */
+  async flush(doc: Y.Doc): Promise<void> {
+    const loading = this.loads.get(doc)
+    await loading?.loaded
+    await loading?.stored()
+  }
+
   /** Stop a room's hub (its doc is going away: the last connection left, or the repo was closed). */
   stop(name: string): void {
     const entry = this.entries.get(name)
