@@ -172,7 +172,12 @@ describe('relay hub wiring', () => {
       expect(bob.epoch as number).toBeGreaterThan(epoch)
       await next.close()
     } finally {
-      for (const c of children) { c.kill('SIGCONT'); c.kill('SIGKILL') }
+      await Promise.all(children.map(c => new Promise<void>(resolve => {
+        if (c.exitCode !== null || c.signalCode !== null) { resolve(); return }
+        c.once('exit', () => resolve())
+        c.kill('SIGCONT')
+        c.kill('SIGKILL')
+      })))
       fs.rmSync(common, { recursive: true, force: true })
     }
   }, 60_000)
