@@ -138,9 +138,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const theirPaths = new Set<string>()
   const ignoredNotes: string[] = []
   const committedPaths = async (person: string, from: string, to: string) => {
-    const paths = (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', from, to])).split('\0').filter(Boolean)
-    if (paths.length > 2000) gaps.push({ person, why: `committed path enumeration truncated at 2000 of ${paths.length}` })
-    return paths.slice(0, 2000)
+    const paths = [...new Set((await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', from, to])).split('\0').filter(Boolean))]
+    if (paths.length > 2000) gaps.push({ person, why: `committed path enumeration exceeded 2000 (${paths.length}); using manifest paths only` })
+    return paths.length > 2000 ? [] : paths
   }
   // A lead's revert to HEAD clears its manifest entry, but still changes a file
   // the worker inherited at spawn. Compare those carried paths explicitly.

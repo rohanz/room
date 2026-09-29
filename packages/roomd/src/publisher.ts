@@ -67,11 +67,6 @@ function withdrawBaseTexts(host: Host, authorized: ReadonlySet<string>): void {
     const separator = key.indexOf(':', prefix.length)
     if (separator >= 0 && !authorized.has(key.slice(separator + 1))) host.roomDoc.ownedBaseTexts.delete(key)
   }
-  const oldOwned = host.roomDoc.doc.getMap('basetextByPerson').get(host.name) as { keys(): IterableIterator<string>; delete(key: string): void } | undefined
-  if (oldOwned) for (const key of oldOwned.keys()) {
-    const separator = key.indexOf(':')
-    if (separator >= 0 && !authorized.has(key.slice(separator + 1))) oldOwned.delete(key)
-  }
 }
 
 /** One publisher path: capture inputs, read disk/Git, pure plan, synchronous guarded apply. */

@@ -161,3 +161,30 @@ it('fetches a reachable participant anchor before explicit preview and honours R
     expect(session.lastPreview?.complete).toBe(true)
   } finally { if (before === undefined) delete process.env.ROOM_AUTO_FETCH; else process.env.ROOM_AUTO_FETCH = before }
 })
+
+it('S1 keeps a manifest-overlapping peer when committed paths exceed the preview bound', async () => {
+  const { room, head, entries, session, state } = fixture()
+  room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
+  entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash('ben edit\n'), at: 1, fence: '1' })
+  room.setOverlay(manifestKey('ben', '1'), 'app.py', 'ben edit\n')
+  for (let i = 0; i < 2001; i++) fs.writeFileSync(path.join(root!, `bulk-${String(i).padStart(4, '0')}.txt`), `${i}\n`)
+  execFileSync('git', ['add', '.'], { cwd: root! })
+  execFileSync('git', ['commit', '-qm', 'large committed change'], { cwd: root! })
+  const changedBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root!, encoding: 'utf8' }).trim()
+  execFileSync('git', ['reset', '--hard', head.base], { cwd: root! })
+  execFileSync('git', ['clean', '-fd'], { cwd: root! })
+  room.participants.set('ben\0git', { base: changedBase, head: changedBase, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base: changedBase, rev: 2, semRev: 2 })
+  state.presences = () => [{ user: { name: 'ben', kind: 'agent' } }] as never
+  state.baseFor = (_s: Session, person: string) => person === 'ben' ? changedBase : head.base
+  const selected = await handlers(state).room_preview_merge({})
+  expect(selected).toContain('ben')
+  expect(selected).toContain('PARTIAL preview')
+  expect(selected).toContain('committed path enumeration')
+  expect(selected).not.toContain('no present participants to merge')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false })
+  const explicit = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(explicit).toContain('app.py')
+  expect(explicit).toContain('committed path enumeration')
+  expect(session.lastPreview?.complete).toBe(false)
+})

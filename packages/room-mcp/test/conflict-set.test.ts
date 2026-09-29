@@ -414,6 +414,84 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it('N2 preserves contract notice epochs through redaction without clearing a restored conflict', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      const entriesA = f.room.manifest.get(manifestKey('A', '1'))!
+      entriesA.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const entriesB = f.room.manifest.get(manifestKey('B', '1'))!
+      const provider = 'def call(a, b):\n    pass\n'
+      entriesB.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      const sent = new Set<string>(), accepted: string[] = []
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!sent.has(opts.id)) { sent.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      const graph = (detail: string, rev: number) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail }], truncated: false })
+      f.room.graphs.set('B', graph('call(a) → call(a, b)', 1))
+      await new ConflictSet(f.session('A')).reconcile('first')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(accepted).toContain(noticeId(key, 1))
+      f.room.graphs.set('B', graph('call(a) → call(a, b, c)', 1))
+      await new ConflictSet(f.session('A')).reconcile('second')
+      expect(accepted).toContain(noticeId(key, 2))
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2 })
+      await new ConflictSet(f.session('A')).reconcile('redacted')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toBeUndefined()
+      f.room.graphs.set('B', graph('call(a) → call(a, b, c, d)', 2))
+      await new ConflictSet(f.session('A')).reconcile('restored')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 3 })
+      expect(accepted).toContain(noticeId(key, 3))
+      expect(f.post.mock.calls.filter(c => c[1]?.type === 'contract' && c[1]?.text?.includes('cleared'))).toEqual([])
+      expect(f.room.doc.getMap<any>('conflicts').has(slotKey('A', 'contract', 'B', 'api.py', '*'))).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it.each([
+    { name: 'untracked API removal', before: 'def call(a):\n    return a\n', after: undefined, tracked: false },
+    { name: 'tracked signature revert', before: 'def call(a, b):\n    return a + b\n', after: 'def call(a):\n    return a\n', tracked: true },
+  ])('N3 notifies a carried worker after the lead\'s $name', async ({ before, after, tracked }) => {
+    const f = fixture()
+    try {
+      f.holder('W'); f.holder('B'); f.entry('W', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifest.get(manifestKey('W', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('W', '1'), 'consumer.py', consumer)
+      let sha = f.base
+      const untracked = new Map<string, { sha: string }>()
+      if (tracked) {
+        writeFileSync(join(f.dir, 'api.py'), after!)
+        execFileSync('git', ['-C', f.dir, 'add', 'api.py'])
+        execFileSync('git', ['-C', f.dir, 'commit', '-qm', 'base api'])
+        sha = execFileSync('git', ['-C', f.dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+        writeFileSync(join(f.dir, 'api.py'), before)
+        execFileSync('git', ['-C', f.dir, 'add', 'api.py'])
+        execFileSync('git', ['-C', f.dir, 'commit', '-qm', 'carried signature'])
+        const carried = execFileSync('git', ['-C', f.dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+        f.room.participants.set('W\0git', { ...f.room.participants.get('W\0git')!, base: carried, head: carried })
+        f.room.manifestHead.set('W', { ...f.room.manifestHead.get('W')!, base: carried })
+      } else {
+        const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', '--stdin'], { input: before, encoding: 'utf8' }).trim()
+        untracked.set('api.py', { sha: blob })
+      }
+      const baseline = { worker: 'W', sha: tracked ? execFileSync('git', ['-C', f.dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() : sha,
+        dir: f.dir, carriedCommit: tracked, untracked }
+      f.room.participants.set('B\0git', { ...f.room.participants.get('B\0git')!, base: sha, head: sha })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, base: sha, level: 'full' })
+      await new ConflictSet(f.session('W'), 'W', f.session('W'), () => {}, 0,
+        person => person === 'W' ? { baseline, lead: 'B' } : undefined).reconcile('reverted')
+      const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
+    } finally { f.cleanup() }
+  })
+
   it('does not certify a stale contract graph after the provider becomes hashless held', async () => {
     const f = fixture()
     try {

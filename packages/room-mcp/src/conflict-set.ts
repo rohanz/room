@@ -31,6 +31,8 @@ export interface ConflictSlot {
   checkedAt: number
   retryAt?: number
   retrySource?: string
+  /** Opaque identities preserve notice epochs while restricted symbol names are withdrawn. */
+  redacted?: { keyHash: string; epoch: number; settled: 'conflict' | 'possible' | 'clean' | 'none'; factId: string }[]
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource'>
 
@@ -70,15 +72,31 @@ export class ConflictSlots {
       for (const [key] of old) this.map.delete(key)
       for (const [path, slots] of byPath) {
         const prior = slots.find(slot => slot.settled === 'conflict') ?? slots.find(slot => slot.settled === 'possible') ?? slots[0]!
+        const identities = new Map<string, NonNullable<ConflictSlot['redacted']>[number]>()
+        for (const [key, slot] of old) {
+          if (slot.path !== path) continue
+          for (const identity of slot.redacted ?? []) identities.set(identity.keyHash, identity)
+          if (slot.subject && slot.subject !== '*') {
+            const identity = { keyHash: hash(key), epoch: slot.epoch, settled: slot.settled, factId: slot.factId }
+            const existing = identities.get(identity.keyHash)
+            if (!existing || existing.epoch <= identity.epoch) identities.set(identity.keyHash, identity)
+          }
+        }
         this.map.set(slotKey(owner, 'contract', other, path, '*'), { owner, other, kind: 'contract', path, subject: '*',
           status: 'unknown', settled: prior.settled, epoch: prior.epoch, fence: prior.fence, checkedAt: this.now(),
-          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why })
+          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why, redacted: [...identities.values()] })
       }
     })
   }
 
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
-    const prev = this.map.get(key)
+    let prev = this.map.get(key)
+    if (!prev && result.kind === 'contract' && result.subject !== '*') {
+      const aggregate = this.map.get(slotKey(result.owner, 'contract', result.other, result.path, '*'))
+      const identity = aggregate?.redacted?.find(item => item.keyHash === hash(key))
+      if (aggregate && identity) prev = { ...aggregate, subject: result.subject, epoch: identity.epoch,
+        settled: identity.settled, factId: identity.factId, inputs: '' }
+    }
     const now = this.now()
     const fence = typeof this.fence === 'function' ? this.fence() : this.fence
     if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev
@@ -470,7 +488,7 @@ export class ConflictSet {
     for (const change of changes) {
       if (change.kind === 'add') continue
       const provider = await this.read(theirs, change.path)
-      if (asText(provider) === undefined || provider.kind === 'base') {
+      if (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base')) {
         this.slots.redactContracts(this.owner, other, 'provider version is not readable')
         return
       }
@@ -503,6 +521,10 @@ export class ConflictSet {
     }
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
+      if (slot.subject === '*' && [...live].some(liveKey => liveKey.startsWith(slotKey(this.owner, 'contract', other, slot.path, '')))) {
+        this.slots.drop(key)
+        continue
+      }
       const provider = await this.read(theirs, slot.path)
       if (asText(provider) === undefined) {
         this.slots.redactContracts(this.owner, other, 'provider version is not readable')

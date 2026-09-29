@@ -907,26 +907,26 @@ describe('sharing levels', () => {
     }
   })
 
-  it('preserves a legacy base entry with no live overlay during startup', async () => {
+  it('ignores a legacy base entry with no live overlay during startup', async () => {
     const dir = await makeRepo({ 'a.py': 'base\n' })
     const url = room()
     const keeper = await start({ room: url, dir: await cloneRepo(dir), name: 'Keeper', share: 'intent' })
     const base = keeper.base
-    keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
+    keeper.roomDoc.doc.getMap<string>('basetext').set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir, name: 'Collector', share: 'intent' })
-    expect(keeper.roomDoc.baseTexts.get(`${base}:a.py`)).toBe('base\n')
-    expect(keeper.roomDoc.baseText('Collector', base, 'a.py')).toBe('base\n')
+    expect(keeper.roomDoc.doc.getMap<string>('basetext').get(`${base}:a.py`)).toBe('base\n')
+    expect(keeper.roomDoc.baseText('Collector', base, 'a.py')).toBeUndefined()
   })
 
-  it('adopts a legacy base entry for a surviving overlay during startup', async () => {
+  it('does not adopt a legacy base entry for a surviving overlay during startup', async () => {
     const origin = await makeRepo({ 'a.py': 'base\n' })
     const url = room()
     const keeper = await start({ room: url, dir: await cloneRepo(origin), name: 'Keeper', share: 'intent' })
     const base = keeper.base
     keeper.roomDoc.setOverlay('Legacy', 'a.py', 'legacy edit\n')
-    keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
+    keeper.roomDoc.doc.getMap<string>('basetext').set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir: origin, name: 'Collector', share: 'intent' })
-    expect(keeper.roomDoc.baseText('Legacy', base, 'a.py')).toBe('base\n')
+    expect(keeper.roomDoc.baseText('Legacy', base, 'a.py')).toBeUndefined()
   })
 
   it('parseShare and clampShare', () => {

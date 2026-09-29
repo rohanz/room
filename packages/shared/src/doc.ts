@@ -243,9 +243,6 @@ export class RoomDoc {
     })
   }
   get metaMap(): Y.Map<string | number> { return this.doc.getMap<string | number>('meta') }
-  /** Legacy shared base text, keyed "<sha>:<path>". New clients only read it as a fallback;
-   * these entries age out with legacy clients, which still depend on and manage them. */
-  get baseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetext') }
   /** Flat keys merge even when two sessions first publish under the same participant tag. */
   get ownedBaseTexts(): Y.Map<string> { return this.doc.getMap<string>('basetextFlat') }
   private baseTextKey(person: string, sha: string, relpath: string): string { return `${person}\u0000${sha}:${relpath}` }
@@ -253,12 +250,8 @@ export class RoomDoc {
   private isPersonBaseTextKey(key: string, person: string): boolean {
     return key.startsWith(this.baseTextPrefix(person)) && !key.slice(person.length + 1).includes('\u0000')
   }
-  private oldOwnedBaseTexts(person: string): Y.Map<string> | undefined {
-    return this.doc.getMap<Y.Map<string>>('basetextByPerson').get(person)
-  }
   baseText(person: string, sha: string, relpath: string): string | undefined {
-    const key = `${sha}:${relpath}`
-    return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath)) ?? this.oldOwnedBaseTexts(person)?.get(key) ?? this.baseTexts.get(key)
+    return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath))
   }
   /** Remove only this participant's entries that no longer back their live work. */
   reconcileBaseTexts(person: string, origin?: unknown, baseSha?: string): void {
@@ -273,17 +266,11 @@ export class RoomDoc {
       for (const key of this.ownedBaseTexts.keys()) {
         if (this.isPersonBaseTextKey(key, person) && !wanted.has(key.slice(prefix.length))) this.ownedBaseTexts.delete(key)
       }
-      const oldOwned = this.oldOwnedBaseTexts(person)
-      if (oldOwned) {
-        for (const key of oldOwned.keys()) if (!wanted.has(key)) oldOwned.delete(key)
-        if (oldOwned.size === 0) this.doc.getMap<Y.Map<string>>('basetextByPerson').delete(person)
-      }
     }, origin)
   }
   /** Only eviction/retirement may remove another participant's entries: that owner has stopped. */
   private clearPersonBaseTexts(person: string): void {
     for (const key of this.ownedBaseTexts.keys()) if (this.isPersonBaseTextKey(key, person)) this.ownedBaseTexts.delete(key)
-    this.doc.getMap<Y.Map<string>>('basetextByPerson').delete(person) // pre-flat, participant-owned map
   }
   setBaseText(person: string, sha: string, relpath: string, text: string, origin?: unknown): void {
     const key = this.baseTextKey(person, sha, relpath)

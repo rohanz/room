@@ -176,11 +176,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const remote = await roomRemote(caller.dir, caller.roomName)
           if (!await ensureCommit(caller.dir, remote, mineBase) || !await ensureCommit(caller.dir, remote, theirBase)) throw new Error('anchor commit unavailable')
           const ancestor = (await git(caller.dir, ['merge-base', mineBase, theirBase])).trim()
-          const changed = async (base: string) => base === ancestor ? [] : (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)
-          const mine = [...myPaths, ...await changed(mineBase)]
-          theirs.push(...await changed(theirBase))
-          if (mine.length > 2000 || theirs.length > 2000) throw new Error('more than 2000 committed paths; explicit preview required')
-          return theirs.some(p => mine.some(path => coversPath(p, path)))
+          const changed = async (base: string) => base === ancestor ? [] : [...new Set((await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean))]
+          const mineCommitted = await changed(mineBase), theirCommitted = await changed(theirBase)
+          const overBound = mineCommitted.length > 2000 || theirCommitted.length > 2000
+          if (overBound) unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`)
+          const mine = [...new Set([...myPaths, ...(!overBound ? mineCommitted : [])])]
+          const peer = [...new Set([...theirs, ...(!overBound ? theirCommitted : [])])]
+          return peer.some(p => mine.some(path => coversPath(p, path)))
         } catch (error) {
           unavailable.push(`${person}: committed changes unavailable (${error instanceof Error ? error.message : String(error)})`)
           return false
@@ -261,7 +263,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) }
           return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
         }
-        caller.lastPreview = { clean: hardCount === 0, complete, ...(run ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
+        caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk : false,
+          ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
         if (!complete) await recordPartial(people, gapLines, run, ranOk)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
         if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
