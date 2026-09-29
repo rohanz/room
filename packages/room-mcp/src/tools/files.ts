@@ -78,7 +78,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const reader = S()
       const theirBase = baseFor(s, person)
       const yourBase = baseFor(reader, reader.me.name)
-      const baseNote = person !== reader.me.name && !worker && theirBase !== yourBase
+      const workerBase = workerBaseline(s.room.workerOf(person))
+      const carriedBase = workerBase?.carriedCommit && workerBase.sha === theirBase
+      const baseNote = person !== reader.me.name && !worker && !carriedBase && theirBase !== yourBase
         ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${yourBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes`
         : ''
       const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
