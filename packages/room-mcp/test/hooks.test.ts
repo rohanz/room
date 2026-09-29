@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import * as Y from 'yjs'
-import { RoomDoc, type NoteMsg, type QuestionMsg } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { createWriteIntentReader, HooksBridge, hookHealthNote, type HooksBridgeOptions } from '../src/hooks-bridge.js'
 import { sessionDirectory, type Session } from '../src/session.js'
@@ -87,6 +87,38 @@ function addPresence(s: Session, name: string, kind: 'agent' | 'human' = 'agent'
 function bridge(s: Session, o: Partial<HooksBridgeOptions> = {}, id = SID) {
   return new HooksBridge(s, { owedCount: () => 0, fenced: () => true, sessionDir: () => sdir(id), ...o })
 }
+
+it('maps a foreign claim into the caller checkout and labels unavailable mappings approximate', async () => {
+  const room = new RoomDoc(), s = session(room)
+  const peer = addPresence(s, 'Kieran')
+  try {
+    const owner = 'old\n', caller = 'inserted\nold\n'
+    writeFileSync(join(dir, 'app.py'), caller)
+    room.participants.set('Kieran\0git', { branch: 'main', head: 'base', base: 'base', anchored: true, rev: 1, fence: '1' })
+    room.manifestHead.set('Kieran', { base: 'base', fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    const entries = new Y.Map<any>()
+    entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(owner), at: 1, fence: '1' })
+    room.manifest.set(manifestKey('Kieran', '1'), entries)
+    room.setOverlay(manifestKey('Kieran', '1'), 'app.py', owner)
+    room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'old line' })
+    expect(room.openClaims()[0]).toMatchObject({ from: 1, to: 1 })
+    expect(room.overlayText(manifestKey('Kieran', '1'), 'app.py')?.toString()).toBe(owner)
+    expect(readFileSync(join(dir, 'app.py'), 'utf8')).toBe(caller)
+    bridge(s).write()
+    expect(readSession('state.json').claims[0]).toMatchObject({ from: 2, to: 2, approximate: false })
+    const head = room.manifestHead.get('Kieran')!
+    room.manifestHead.set('Kieran', { ...head, coverage: { kind: 'none', reason: 'intent' }, semRev: 2 })
+    bridge(s).write()
+    expect(readSession('state.json').claims[0]).toMatchObject({ from: 1, to: 2, approximate: true })
+    const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: '*** Begin Patch\n*** Update File: app.py\n@@\n-old\n+changed\n*** End Patch\n' } }))
+    expect(out).toContain('approximate whole-file warning')
+  } finally {
+    writeFileSync(join(dir, 'app.py'), 'x = 1\n')
+    peer.destroy()
+    s.awareness.destroy()
+    room.doc.destroy()
+  }
+})
 
 /** Wakes for a bound Codex session, attached to `s`. */
 function wakes(s: Session, send: SendWake = async () => 'queue', ownWorkers: ReadonlySet<string> = new Set()) {
@@ -445,7 +477,7 @@ describe('hooks bridge state file', () => {
     expect(text).not.toContain('touching app.py?')
     expect(JSON.parse(text)).toMatchObject({ owedCount: 1, company: true, claims: [{ path: 'app.py', by: 'Kieran', plans: 'rename x → y' }] })
     const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: '*** Begin Patch\n*** Update File: app.py\n@@\n-x = 1\n+x = 2\n*** End Patch\n' } }))
-    expect(out).toContain("Kieran's agent holds app.py:1-1 — bump x (plans: rename x → y)")
+    expect(out).toContain("Kieran's agent holds app.py:1-1 (approximate whole-file warning) — bump x (plans: rename x → y)")
     expect(out).toContain('[room] 1 message pending; Room is reconnecting.')
     rmSync(join(sdir(), 'state.json'))
     fenced = false

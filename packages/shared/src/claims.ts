@@ -48,7 +48,8 @@ export function mapRange(fromText: string, toText: string, range: { from: number
       if (j < next.length && (i === old.length || dp[i]![j + 1]! >= dp[i + 1]![j]!)) j++
       else i++
     }
-    if (oldStart + 1 <= range.to && Math.max(oldStart + 1, i) >= range.from) {
+    if ((i > oldStart && oldStart + 1 <= range.to && i >= range.from) ||
+        (i === oldStart && oldStart >= range.from && oldStart < range.to)) {
       start = Math.min(start, newStart + 1)
       end = Math.max(end, Math.max(newStart + 1, j))
     }
@@ -60,7 +61,7 @@ export function mapRange(fromText: string, toText: string, range: { from: number
 /** Claim coordinates in the caller's text; missing owner text must not certify a narrow overlap. */
 export function claimInMyLines(claim: { from: number; to: number }, ownerVersion: string | undefined, myText: string): { from: number; to: number; approximate: boolean } {
   if (ownerVersion === undefined) return { from: 1, to: Math.max(1, linesOf(myText).length), approximate: true }
-  return { ...mapRange(ownerVersion, myText, claim), approximate: false }
+  return { ...mapRange(ownerVersion, myText, claim), approximate: linesOf(ownerVersion).length * linesOf(myText).length > 1_000_000 && ownerVersion !== myText }
 }
 
 export function describeClaim(c: Claim): string {

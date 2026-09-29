@@ -216,6 +216,8 @@ export class RoomDoc {
     this.doc.transact(() => {
       if (this.workerOwnsName(id, name)) {
         this.clearWorkerCoordination(name, 'retired', post)
+        const conflicts = this.doc.getMap<{ owner?: string }>('conflicts')
+        for (const [key, slot] of conflicts) if (slot.owner === name) conflicts.delete(key)
         this.manifestHead.delete(name)
         for (const key of [...this.manifest.keys()]) if (key.startsWith(`${name}\u0000`)) this.manifest.delete(key)
         for (const key of [...this.overlays.keys()]) if (key.startsWith(`${name}\u0000`)) this.overlays.delete(key)

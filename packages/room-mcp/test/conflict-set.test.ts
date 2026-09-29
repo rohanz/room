@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RoomDoc } from '@room/shared'
-import { gitBlobHash, manifestKey } from '@room/shared'
+import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { execFileSync } from 'node:child_process'
@@ -74,6 +74,23 @@ describe('ConflictSlots', () => {
     expect(slots.get(key)?.epoch).toBe(2)
     expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), `${noticeId(key, 1)}:clean`, noticeId(key, 2)])
   })
+
+  it('describes the held owner instead of blaming the other participant', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, 'lease')
+    await slots.settle(slotKey('A', 'merge', 'B', 'x'), { owner: 'A', other: 'B', kind: 'merge', path: 'x', status: 'possible', inputs: 'i', factId: 'f', why: 'A' })
+    expect(post.mock.calls[0][1].text).toContain('A changed x too, outside their declared area')
+  })
+
+  it('routes a claim holder notice to the holder room with the holder perspective', async () => {
+    const room = new RoomDoc(), ownerPost = vi.fn().mockResolvedValue({ ok: true }), holderPost = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, ownerPost, 'lease', Date.now, () => {}, holderPost)
+    const key = slotKey('W', 'edit-in-claim', 'B', 'x', 'claim')
+    await slots.settle(key, { owner: 'W', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'claim', status: 'conflict', inputs: 'i', factId: 'f' })
+    await slots.replay('W')
+    expect(ownerPost.mock.calls.every(c => c[1].to === 'W')).toBe(true)
+    expect(holderPost.mock.calls.every(c => c[1].to === 'B' && c[1].text.includes('W edited x inside your claim'))).toBe(true)
+  })
 })
 
 describe('derived pair slots', () => {
@@ -90,16 +107,16 @@ describe('derived pair slots', () => {
     const states = new Map<number, unknown>()
     let next = 1
     const holder = (name: string, projectedBy?: string) => {
-      const fence = projectedBy ? 'lease-L' : `lease-${name}`
+      const fence = '1'
       room.participants.set(`${name}\0id`, { name, kind: 'agent' })
-      room.participants.set(`${name}\0holder`, { sessionId: fence })
+      room.participants.set(`${name}\0holder`, { sessionId: `session-${name}`, epoch: 1 })
       room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
       if (projectedBy) room.participants.set(`${name}\0proj`, { projectedBy, projectedFrom: 'w' })
-      states.set(next++, { user: { name, kind: 'agent' }, sessionId: fence })
+      states.set(next++, { user: { name, kind: 'agent' }, sessionId: `session-${name}` })
       return fence
     }
     const entry = (name: string, text: string | undefined, held = false, projectedBy?: string) => {
-      const fence = projectedBy ? 'lease-L' : `lease-${name}`
+      const fence = '1'
       room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true, ...(projectedBy ? { projectedBy, projectedFrom: 'w' } : {}) })
       const values = new Y.Map<{ change: 'M'; state: 'shared' | 'held'; hash?: string; held?: 'scope'; at: number; fence: string }>()
       if (text !== undefined || held) values.set('x', { change: 'M', state: held ? 'held' : 'shared', ...(text ? { hash: gitBlobHash(text) } : {}), ...(held ? { held: 'scope' as const } : {}), at: 1, fence })
@@ -124,8 +141,8 @@ describe('derived pair slots', () => {
       const firstInputs = f.room.doc.getMap<{ inputs: string }>('conflicts').get(key)!.inputs
       const firstId = f.post.mock.calls.find(c => c[2]?.id?.startsWith('cf:'))?.[2].id
       f.entry('B', undefined, true) // a new scan with the same hidden fact
-      const held = f.room.manifest.get(manifestKey('B', 'lease-B'))!.get('x')!
-      f.room.manifest.get(manifestKey('B', 'lease-B'))!.set('x', { ...held, at: 4 })
+      const held = f.room.manifest.get(manifestKey('B', '1'))!.get('x')!
+      f.room.manifest.get(manifestKey('B', '1'))!.set('x', { ...held, at: 4 })
       await new ConflictSet(f.session('A')).reconcile('test')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('possible')
       expect(f.room.doc.getMap<{ inputs: string }>('conflicts').get(key)?.inputs).toBe(firstInputs)
@@ -152,6 +169,104 @@ describe('derived pair slots', () => {
       const slots = [...f.room.doc.getMap<{ owner: string; kind: string; status: string }>('conflicts').values()]
       expect(slots).toContainEqual(expect.objectContaining({ owner: 'W', kind: 'edit-in-claim', status: 'conflict' }))
       expect(workersPost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W', type: 'conflict' }), expect.objectContaining({ id: expect.stringMatching(/^cf:/), auto: true }))
+    } finally { f.cleanup() }
+  })
+
+  it('reads a fresh projected held worker edit from its workers room without a stored Git blob', async () => {
+    const f = fixture()
+    try {
+      f.holder('L'); f.holder('W', 'L'); f.holder('B')
+      f.entry('L', undefined); f.entry('W', undefined, false, 'L'); f.entry('B', undefined)
+      const projected = f.room.manifest.get(manifestKey('W', '1'))!
+      projected.set('x', { change: 'M', state: 'held', hash: gitBlobHash('worker\n'), held: 'worker', at: 1, fence: '1' })
+      f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+      const source = new RoomDoc(), sourcePost = vi.fn().mockResolvedValue({ ok: true })
+      source.participants.set('W\0holder', { sessionId: 'session-W', epoch: 2, workerId: 'w' })
+      source.participants.set('W\0git', { branch: 'main', head: f.base, base: f.base, anchored: true, rev: 1, fence: '2' })
+      source.manifestHead.set('W', { base: f.base, fence: '2', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      const sourceEntries = new Y.Map<any>()
+      sourceEntries.set('x', { change: 'M', state: 'shared', hash: gitBlobHash('worker\n'), at: 1, fence: '2' })
+      source.manifest.set(manifestKey('W', '2'), sourceEntries)
+      source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
+      const workers = { ...f.session('L', sourcePost), room: source } as Session
+      await reconcileProjectedConflicts({ team: f.session('L'), workers, owner: 'W' })
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x', f.room.openClaims()[0]!.id))?.status).toBe('conflict')
+      expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
+      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining('W edited x inside your claim') }), expect.anything())
+    } finally { f.cleanup() }
+  })
+
+  it('does not clear a certified conflict after a changed path becomes excluded', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+      await new ConflictSet(f.session('A')).reconcile('initial')
+      const key = slotKey('A', 'merge', 'B', 'x')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
+      f.room.manifest.get(manifestKey('B', '1'))!.delete('x')
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, semRev: 2, excluded: [digestPath(f.room.roomSalt!, 'x')] })
+      await new ConflictSet(f.session('A')).reconcile('excluded')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict' })
+    } finally { f.cleanup() }
+  })
+
+  it('evaluates non-publisher claims using its publisher version', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'changed\n'); f.entry('B', undefined)
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'A' })
+      f.room.participants.delete('B\0git') // a non-publisher need not publish a Git fact
+      f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+      await new ConflictSet(f.session('A')).reconcile('non-publisher')
+      expect([...f.room.doc.getMap<any>('conflicts').values()]).toContainEqual(expect.objectContaining({ owner: 'A', other: 'B', kind: 'edit-in-claim', status: 'conflict' }))
+    } finally { f.cleanup() }
+  })
+
+  it('keeps large-file claim mapping possible rather than certified', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B')
+      const old = Array.from({ length: 1001 }, (_, i) => `line ${i}`).join('\n') + '\n'
+      f.entry('A', `inserted\n${old}`); f.entry('B', old)
+      f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 500, to: 500, intent: 'middle' })
+      await new ConflictSet(f.session('A')).reconcile('large claim')
+      const slot = [...f.room.doc.getMap<any>('conflicts').values()].find(s => s.kind === 'edit-in-claim')
+      expect(slot?.status).toBe('possible')
+      expect(f.post.mock.calls.some(c => c[1].type === 'conflict' && c[1].text.includes('line mapping is approximate'))).toBe(true)
+    } finally { f.cleanup() }
+  })
+
+  it('abandons a conflict if sharing narrows during the merge budget await', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+      const set = new ConflictSet(f.session('A'))
+      ;(set as any).budget = async () => {
+        const head = f.room.manifestHead.get('B')!
+        f.room.manifestHead.set('B', { ...head, semRev: head.semRev + 1, coverage: { kind: 'none', reason: 'intent' } })
+      }
+      await set.reconcile('narrowed')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'merge', 'B', 'x'))?.status).not.toBe('conflict')
+      expect(f.post.mock.calls.some(c => c[1].type === 'merge-conflict' && c[1].priority === 'notify')).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('honours the unknown retry deadline until inputs change', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, coverage: { kind: 'none', reason: 'intent' } })
+      const set = new ConflictSet(f.session('A'))
+      await set.reconcile('first')
+      const key = slotKey('A', 'merge', 'B', '*'), before = f.room.doc.getMap<any>('conflicts').get(key)
+      await set.reconcile('tick')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toBe(before)
+      f.room.manifestHead.set('B', { ...head, semRev: 2 })
+      await set.reconcile('changed')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).not.toBe(before)
     } finally { f.cleanup() }
   })
 
@@ -209,8 +324,8 @@ describe('derived pair slots', () => {
       const consumer = 'from api import call\ncall(1)\n'
       const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', '--stdin'], { input: oldText, encoding: 'utf8' }).trim()
       const add = (name: string, path: string, text: string) => {
-        f.room.manifest.get(manifestKey(name, `lease-${name}`))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: `lease-${name}` })
-        f.room.setOverlay(manifestKey(name, `lease-${name}`), path, text)
+        f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey(name, '1'), path, text)
       }
       add('W', 'consumer.py', consumer)
       add('B', 'api.py', newText)
@@ -230,8 +345,8 @@ describe('derived pair slots', () => {
       f.holder('W'); f.holder('B')
       f.entry('W', undefined); f.entry('B', undefined)
       const text = 'def call(a, b):\n    return a + b\n'
-      f.room.manifest.get(manifestKey('B', 'lease-B'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: 'lease-B' })
-      f.room.setOverlay(manifestKey('B', 'lease-B'), 'api.py', text)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', text)
       const baseline = { worker: 'W', sha: f.base, dir: f.dir, carriedCommit: false,
         untracked: new Map([['api.py', { sha: '0000000000000000000000000000000000000000' }]]) }
       const check = () => new ConflictSet(f.session('W'), 'W', f.session('W'), () => {}, 0,
