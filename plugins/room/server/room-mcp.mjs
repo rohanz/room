@@ -55924,8 +55924,7 @@ ${fresh.map(line).join("\n")}${more ? `
       }
       if (!symbols.length) continue;
       let hit;
-      if (s.graph) {
-        await s.graph.ready;
+      if (s.graph?.isReady) {
         for (const sym of symbols) {
           const f = s.graph.graph.usersOf(sym).find((u) => ownsFile(s, person, u));
           if (f) {
@@ -55966,7 +55965,7 @@ ${fresh.map(line).join("\n")}${more ? `
   }).join(", ");
   const waitingOn = async (s) => {
     if (!s.graph) return [];
-    await s.graph.ready;
+    if (!s.graph.isReady) return ["  (symbol index still building; planned changes to symbols you use appear when it is ready)"];
     const g = s.graph.graph;
     const sc = s.room.scope(s.me.name);
     const myFiles = new Set(manifestPaths(s.room, s.me.name));

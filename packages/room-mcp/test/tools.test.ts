@@ -931,6 +931,18 @@ describe('scope, claims, plans, ledger', () => {
       expect.objectContaining({ kind: 'claims', status: 'conflict' }))
   })
 
+  it('room_state and room_send changed never wait for the repository-wide graph build (Codex repo rerun: 145 s)', async () => {
+    const t = setup(), s = t.session!
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'app', paths: ['app.py'] })
+    Object.defineProperty(s.graph, 'isReady', { configurable: true, get: () => false })
+    Object.defineProperty(s.graph, 'ready', { configurable: true, get: () => new Promise<void>(() => {}) })
+    const within = <T>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('waited for the graph')), 3000))])
+    try {
+      expect(await within(t.tools.call('room_state', {}))).toContain('symbol index still building')
+      expect(await within(t.tools.call('room_send', { type: 'changed', text: 'renamed validate', paths: ['lib.py'], symbols: ['validate'] }))).not.toMatch(/^error/)
+    } finally { await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  })
+
   it('keeps a claim independent of repository-wide conflict and graph builds', async () => {
     const t = setup(), s = t.session!
     comparableClaimPair(t.room)
@@ -1002,6 +1014,7 @@ describe('scope, claims, plans, ledger', () => {
 
   it('changed with symbols upgrades to scope owners via base grep', async () => {
     const t = setup()
+    await t.session!.graph!.ready
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
     const out = await t.tools.call('room_send', { type: 'changed', text: 'renamed validate to verify', paths: ['app.py'], symbols: ['validate'] })
     expect(out).toContain("notified Kieran's agent")
@@ -1012,6 +1025,7 @@ describe('scope, claims, plans, ledger', () => {
 describe('graph', () => {
   it('room_impact answers by symbol and by path with owners; claim plans show impact; state shows waiting-on', async () => {
     const t = setup()
+    await t.session!.graph!.ready
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
     const sym = await t.tools.call('room_impact', { symbol: 'validate' })
     expect(sym).toContain('validate: defined in app.py')
@@ -1026,6 +1040,7 @@ describe('graph', () => {
     let ks: Session | null = { ...fakeSession(t.other), me: k }
     const ktools = createTools({ getSession: () => ks, setSession: s => { ks = s }, cwd: dir })
     await t.tools.call('room_scope', { area: 'api', summary: 'x', paths: ['app.py'] })
+    await ks!.graph?.ready
     const state = await ktools.call('room_state', {})
     expect(state).toContain("waiting on")
     expect(state).toContain("Rohan's agent plans rename validate → verify in app.py")
@@ -1076,6 +1091,7 @@ describe('claim by symbol and read receipts', () => {
   })
   it('records which messages an agent was shown, and marks copies with copyOf', async () => {
     const t = setup()
+    await t.session!.graph!.ready
     const k = { name: 'Kieran', kind: 'agent' as const }
     const q = hubAppend(t.other, k, { type: 'question', to: 'Rohan', text: 'hi' } as never)
     await t.tools.call('room_state', {})

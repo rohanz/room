@@ -353,8 +353,8 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
         if (!symbols.length) continue
         // Files that use the symbol (graph), owned by this person: in their scope, changed by them, or claimed by them.
         let hit: string | undefined
-        if (s.graph) {
-          await s.graph.ready
+        // Never wait for a repository-wide index build: before it is ready, read the person's shared text.
+        if (s.graph?.isReady) {
           for (const sym of symbols) {
             const f = s.graph.graph.usersOf(sym).find(u => ownsFile(s, person, u))
             if (f) { hit = `${f} uses ${sym}`; break }
@@ -389,7 +389,7 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
     }).join(', ')
   const waitingOn = async (s: Session): Promise<string[]> => {
       if (!s.graph) return []
-      await s.graph.ready
+      if (!s.graph.isReady) return ['  (symbol index still building; planned changes to symbols you use appear when it is ready)']
       const g = s.graph.graph
       const sc = s.room.scope(s.me.name)
       const myFiles = new Set(manifestPaths(s.room, s.me.name))
