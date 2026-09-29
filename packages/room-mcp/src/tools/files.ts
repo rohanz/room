@@ -387,13 +387,13 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
       env.ROOM_MERGED_TREE = dir
       return { bash, env }
     })
-    const result = await previewCheck(dir, () => new Promise<{ code: number | null; out: string }>(resolve => {
+    const result = await previewCheck(() => new Promise<{ code: number | null; out: string }>(resolve => {
       execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
         const raw = err ? (err as { code?: unknown }).code : 0
         resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
       })
     }))
-    return previewPhase('collect', () => {
+    return await previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)
       return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
