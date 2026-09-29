@@ -16,6 +16,7 @@ import type { Batch, Ledger } from '../ledger.js'
 import type { SessionBinding } from '../binding.js'
 import { registryForDir } from '../worker-registry.js'
 import { realStateInput } from '../worker-status.js'
+import { readBoundedDiskText } from './disk-text.js'
 
 export interface ToolDef {
   name: string
@@ -177,7 +178,7 @@ export async function trustedWorker(s: Session, person: string): Promise<LocalWo
 export const WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)"
 
 /** Resolve both lexical and symlink paths before reading anything outside git. */
-export function workerText(dir: string, rel: string): string | null {
+export async function workerText(dir: string, rel: string): Promise<string | null> {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe worker path: ' + rel)
   const root = fs.realpathSync(dir)
   const candidate = path.resolve(root, rel)
@@ -186,7 +187,7 @@ export function workerText(dir: string, rel: string): string | null {
     const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
     if (!result.ok) throw new Error('unsafe worker symlink: ' + rel)
     const real = result.path
-    return fs.readFileSync(real, 'utf8')
+    return await readBoundedDiskText(real, 'utf8', { root, path: candidate })
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw e

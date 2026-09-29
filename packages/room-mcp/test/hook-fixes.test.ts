@@ -48,7 +48,11 @@ function runHook(script: string, input: object, cwd = dir): Promise<string> {
   })
 }
 const context = (out: string) => out ? JSON.parse(out).hookSpecificOutput.additionalContext as string : ''
-const settle = () => new Promise(r => setTimeout(r, 250))
+/** Waits for the MCP's debounced, asynchronous hook-state write to reflect the fixture (never a fixed sleep). */
+const settle = (...needles: string[]) => vi.waitFor(() => {
+  const state = JSON.stringify(readSession('state.json'))
+  for (const needle of needles) if (!state.includes(needle)) throw new Error(`state.json does not show ${needle} yet`)
+}, { timeout: 15_000, interval: 25 })
 
 function addPresence(s: Session, name: string) {
   const peer = new Awareness(new Y.Doc())
@@ -81,7 +85,7 @@ describe('F-M1: a quiet minute does not silence the before-edit hook', () => {
       // B6: both versions are known and identical, so this is an exact claim.
       publishFixture(mcp.s.room, 'Quinn', 'api/tax.py', 'x = 1\n')
       mcp.s.room.addClaim({ path: 'api/tax.py', from: 1, to: 1, by: 'Quinn', byKind: 'agent', intent: 'rework tax' })
-      await settle()
+      await settle('api/tax.py', 'rework tax')
       writeSession('state.json', { ...readSession('state.json'), at: Date.now() - 61_000 })
       expect(context(await runHook('before-edit.mjs', editTax))).toContain("Quinn's agent holds api/tax.py:1-1 — rework tax")
     } finally { await mcp.close() }
@@ -90,7 +94,7 @@ describe('F-M1: a quiet minute does not silence the before-edit hook', () => {
   it('SessionStart after a quiet minute still names the company while the MCP is up', async () => {
     const mcp = await liveMcp()
     try {
-      await settle()
+      await settle('Quinn')
       writeSession('state.json', { ...readSession('state.json'), at: Date.now() - 61_000 })
       expect(context(await runHook('session-start.mjs', { source: 'resume' }))).toContain("Quinn's agent is here")
     } finally { await mcp.close() }
@@ -109,7 +113,7 @@ describe('F-M2: hook output stays under the 10,000-character additionalContext c
     try {
       for (let i = 0; i < 40; i++) hubAppend<NoteMsg>(mcp.s.room, quinn, { type: 'note', to: me.name, text: `${String(i).padStart(2, '0')} ${'y'.repeat(496)}` })
       for (let i = 0; i < 40; i++) mcp.s.room.addClaim({ path: 'app.py', from: i + 1, to: i + 1, by: `Peer${i}`, byKind: 'agent', intent: `a long intent ${'z'.repeat(200)}` })
-      await settle()
+      await settle('Peer39')
       const out = context(await runHook('before-edit.mjs', editApp))
       expect(out.length).toBeLessThanOrEqual(10_000)
       const shown = (out.match(/ y{496}/g) ?? []).length
@@ -149,7 +153,7 @@ describe('F-M3: a hook fired inside a subagent does not take the main session\'s
     try {
       mcp.s.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Quinn', byKind: 'agent', intent: 'rename x' })
       const m = hubAppend<QuestionMsg>(mcp.s.room, quinn, { type: 'question', to: me.name, text: 'touching app.py?' })
-      await settle()
+      await settle('rename x')
       const sub = { ...editApp, agent_id: 'agent-1', agent_type: 'Explore' }
       const inSubagent = context(await runHook('before-edit.mjs', sub))
       expect(inSubagent).not.toContain('touching app.py?')

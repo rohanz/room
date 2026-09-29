@@ -11,10 +11,19 @@ import type { WebsocketProvider } from 'y-websocket'
 import { claimDigest } from '../src/reanchor.js'
 import { pollHead } from './poll-head.js'
 
-const probe = vi.hoisted(() => ({ failTracked: false, blobChecks: [] as string[][], blobReads: [] as string[][] }))
+const probe = vi.hoisted(() => ({ failTracked: false, blobChecks: [] as string[][], blobReads: [] as string[][], headHook: undefined as undefined | (() => void) }))
 vi.mock('../src/git.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/git.js')>()
-  return { ...actual, gitBlobInfoMany: async (dir: string, base: string, paths: Iterable<string>) => {
+  return { ...actual, gitHead: async (dir: string) => {
+    const head = await actual.gitHead(dir)
+    if (probe.headHook) await new Promise<void>(resolve => setImmediate(() => {
+      const hook = probe.headHook
+      probe.headHook = undefined
+      hook?.()
+      resolve()
+    }))
+    return head
+  }, gitBlobInfoMany: async (dir: string, base: string, paths: Iterable<string>) => {
     const list = [...paths]
     probe.blobChecks.push(list)
     return actual.gitBlobInfoMany(dir, base, list)
@@ -40,6 +49,7 @@ afterEach(async () => {
   probe.failTracked = false
   probe.blobChecks.length = 0
   probe.blobReads.length = 0
+  probe.headHook = undefined
   await daemon?.stop()
   daemon = undefined
   if (dir) fs.rmSync(dir, { recursive: true, force: true })
@@ -135,6 +145,71 @@ it('finishes budget-limited claim validation on later ticks after a real HEAD tr
   expect((daemon as Roomd & { pendingClaimValidation?: unknown }).pendingClaimValidation).toBeUndefined()
 })
 
+async function pendingWideClaim(count = 1) {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-head-wide-'))
+  git(dir, 'init', '-q', '-b', 'main')
+  git(dir, 'config', 'user.email', 'test@example.com')
+  git(dir, 'config', 'user.name', 'Test')
+  const before = 'old\n' + 'filler\n'.repeat(35_000)
+  fs.writeFileSync(path.join(dir, 'app.txt'), before)
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-wide', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
+    basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
+  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  const claims = Array.from({ length: count }, () => daemon!.roomDoc.addClaim({ path: 'app.txt', from: 1, to: count === 1 ? 2000 : 1, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(before, 1, count === 1 ? 2000 : 1) }))
+  fs.writeFileSync(path.join(dir, 'app.txt'), before.replace(/^old/, 'new'))
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'replace claimed line')
+  await daemon.reconcileGitChanges()
+  return claims[claims.length - 1]
+}
+
+it('finishes a wide readable claim after a bounded number of retry ticks', async () => {
+  const claim = await pendingWideClaim()
+  for (let tick = 0; tick < 12 && daemon!.roomDoc.claims.has(claim.id); tick++) await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.claims.has(claim.id)).toBe(false)
+  expect((daemon as Roomd & { pendingClaimValidation?: unknown }).pendingClaimValidation).toBeUndefined()
+})
+
+it('keeps pending originals across an unrelated later HEAD transition', async () => {
+  const claim = await pendingWideClaim(20)
+  expect(daemon!.roomDoc.claims.has(claim.id)).toBe(true)
+  fs.writeFileSync(path.join(dir!, 'unrelated.txt'), 'new\n')
+  git(dir!, 'add', '-A'); git(dir!, 'commit', '-qm', 'unrelated change')
+  await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.manifestHead.get('Alice')?.complete).toBe(false)
+  for (let tick = 0; tick < 12 && daemon!.roomDoc.claims.has(claim.id); tick++) await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.claims.has(claim.id)).toBe(false)
+})
+
+it('keeps pending originals across a refs-only transition', async () => {
+  const claim = await pendingWideClaim(20)
+  expect(daemon!.roomDoc.claims.has(claim.id)).toBe(true)
+  git(dir!, 'remote', 'add', 'origin', dir!)
+  git(dir!, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(dir!, 'branch', '--set-upstream-to=origin/main', 'main')
+  await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.manifestHead.get('Alice')?.complete).toBe(false)
+  for (let tick = 0; tick < 12 && daemon!.roomDoc.claims.has(claim.id); tick++) await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.claims.has(claim.id)).toBe(false)
+})
+
+it.each(['lease', 'inputs'] as const)('does not apply a pending claim after %s changes during the final Git await', async change => {
+  await pendingWideClaim(20)
+  const internal = daemon as Roomd & { pendingClaimValidation: { head: string; fence: string; claims: Map<string, unknown> };
+    retryPendingClaims(head: string, fence: string): Promise<void> }
+  const pending = internal.pendingClaimValidation
+  expect(pending.claims.size).toBeGreaterThan(0)
+  const before = new Map([...pending.claims].map(([id]) => [id, JSON.stringify(daemon!.roomDoc.claims.get(id))]))
+  probe.headHook = () => {
+    if (change === 'lease') daemon!.setPublicationRejected(true)
+    else daemon!.applyInputs({ ...daemon!.inputs, policy: policyFromLevel('full') })
+  }
+  await internal.retryPendingClaims(pending.head, pending.fence)
+  expect([...before].map(([id]) => JSON.stringify(daemon!.roomDoc.claims.get(id)))).toEqual([...before.values()])
+  expect(internal.pendingClaimValidation).toBe(pending)
+  expect(pending.claims.size).toBe(before.size)
+})
+
 it('releases an oversized clean claim and keeps an oversized locally edited claim', async () => {
   const { claim } = await movedHead()
   const oversized = 'other\n'.repeat(120_000)
@@ -179,7 +254,7 @@ it('does not read an old blob for a claim with a digest or hash an oversized fal
   probe.blobReads.length = 0
   const first = await internal.snapshotOwnClaims(git(dir, 'rev-parse', 'HEAD'))
   expect(first.find(c => c.id === withDigest.id)?.claimedHash).toBe(withDigest.claimedHash)
-  expect(probe.blobChecks).toEqual([])
+  expect(probe.blobChecks).toEqual([['app.txt']])
   expect(probe.blobReads).toEqual([])
   daemon.roomDoc.removeClaim(withDigest.id)
   const withoutDigest = daemon.roomDoc.addClaim({ path: 'app.txt', from: 1, to: 1, by: 'Alice', byKind: 'agent', intent: 'edit' })

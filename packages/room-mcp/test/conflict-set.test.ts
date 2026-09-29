@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RoomDoc, formatMsg } from '@room/shared'
+import { RoomDoc, formatMsg, snapshot } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -367,6 +367,36 @@ describe('derived pair slots', () => {
       expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
       expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining('W edited x inside your claim') }), expect.anything())
     } finally { f.cleanup() }
+  })
+
+  it('reads a thousand projected paths with linear source text conversion and event turns', async () => {
+    const f = fixture()
+    const source = new RoomDoc()
+    try {
+      f.holder('L'); f.holder('W', 'L'); f.entry('W', undefined, false, 'L')
+      source.participants.set('W\0holder', { sessionId: 'session-W', epoch: 2, workerId: 'w' })
+      source.participants.set('W\0git', { branch: 'main', head: f.base, base: f.base, anchored: true, rev: 1, fence: '2' })
+      source.manifestHead.set('W', { base: f.base, fence: '2', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      const sourceEntries = new Y.Map<any>()
+      source.manifest.set(manifestKey('W', '2'), sourceEntries)
+      const projected = f.room.manifest.get(manifestKey('W', '1'))!
+      for (let i = 0; i < 1000; i++) {
+        const p = `file-${i}.ts`, hash = gitBlobHash(`value ${i}\n`)
+        sourceEntries.set(p, { change: 'M', state: 'shared', hash, at: 1, fence: '2' })
+        source.setOverlay(manifestKey('W', '2'), p, `value ${i}\n`)
+        projected.set(p, { change: 'M', state: 'held', hash, held: 'worker', at: 1, fence: '1' })
+      }
+      const workers = { ...f.session('L'), room: source } as Session
+      const set = new ConflictSet(f.session('L'), 'W', workers)
+      const snap = snapshot(f.room, 'W', [])!
+      const spy = vi.spyOn(Y.Text.prototype, 'toString')
+      let turned = false
+      setImmediate(() => { turned = true })
+      for (let i = 0; i < 1000; i++) expect((await (set as any).read(snap, `file-${i}.ts`)).kind).toBe('text')
+      expect(turned).toBe(true)
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(1000)
+      spy.mockRestore()
+    } finally { source.doc.destroy(); f.cleanup() }
   })
 
   it('does not clear a certified conflict after a changed path becomes excluded', async () => {

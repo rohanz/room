@@ -214,7 +214,7 @@ it('refuses a worker root replaced by a symlink between files in one preview', a
   }) as typeof fs.promises.open)
   try {
     await expect(buildCombinedTree(state, session, [{ person: 'lead+w', session }], { diskOnly: true }))
-      .rejects.toThrow(/unsafe preview symlink: b\.txt/)
+      .rejects.toThrow(/unsafe (?:preview symlink: b\.txt|Room read path)/) // refused at the swapped file's post-open check, or at the next file
     expect(swapped).toBe(true)
   } finally {
     vi.restoreAllMocks()

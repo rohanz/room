@@ -53,6 +53,27 @@ it('bounds an own-disk room_read before rendering file lines', async () => {
   await expect(handlers(state).room_read({ path: 'app.py' })).rejects.toThrow('file too large for Room read')
 })
 
+it('reports an oversized historical base as a named preview and diff gap', async () => {
+  const { room, head, entries, texts, state } = fixture()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
+  execFileSync('git', ['add', 'app.py'], { cwd: root! })
+  execFileSync('git', ['commit', '-qm', 'large old text'], { cwd: root! })
+  const largeBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root!, encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'small replacement\n')
+  room.participants.set('ben\0git', { base: largeBase, head: largeBase, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base: largeBase, rev: 2, semRev: 2 })
+  state.baseFor = () => largeBase
+  const changed = 'ben replacement\n'
+  entries.set('app.py', { change: 'M', state: 'shared', hash: gitBlobHash(changed), size: changed.length, at: 1, fence: '1' })
+  texts.set('app.py', new Y.Text(changed))
+  const diff = await handlers(state).room_read({ person: 'ben', path: 'app.py', diff: true })
+  expect(diff).toContain('historical text exceeds Room read limit')
+  const preview = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(preview).toContain('PARTIAL preview')
+  expect(preview).toContain('app.py')
+  expect(preview).toContain('historical text exceeds Room read limit')
+})
+
 it('yields during the path-safety pass before checking the last path', async () => {
   const { entries, state } = fixture()
   for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {

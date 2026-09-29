@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotPath, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
-import { git, gitShow } from '@room/roomd/git'
+import { git } from '@room/roomd/git'
 import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
-import { carriedPaths, carriesWork, readBaseline, type Baseline } from '@room/roomd/baseline'
+import { carriedPaths, carriesWork, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
+import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -170,6 +171,14 @@ export const changedRanges = (base: string, live: string): { from: number; to: n
   return ranges
 }
 const asText = (v: Version): string | undefined => v.kind === 'text' ? v.text : v.kind === 'base' ? v.text ?? '' : v.kind === 'deleted' ? '' : undefined
+async function boundedBaseline(dir: string, baseline: Baseline, path: string): Promise<BaselineRead> {
+  try {
+    const carried = baseline.untracked.get(path)
+    const text = carried ? await readBoundedCheckoutText(baseline.dir, carried.sha, path) : await readBoundedHistoricalText(dir, baseline.sha, path)
+    if (carried && text === undefined) throw new MissingBaseBlob(path)
+    return text === undefined ? { kind: 'absent' } : { kind: 'available', text }
+  } catch (error) { return { kind: 'unavailable', error: error instanceof Error ? error : new Error(String(error)) } }
+}
 const sideInput = (snap: ParticipantSnapshot, path: string): unknown => {
   const entry = snap.entries.get(path)
   return entry ? entry.state === 'held' && !entry.hash
@@ -287,12 +296,13 @@ export class ConflictSet {
   }
 
   private async read(snap: ParticipantSnapshot, path: string): Promise<Version> {
-    const env = { gitAt: (sha: string, p: string) => gitShow(this.team.dir, sha, p),
-      known: async (blob: string) => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) }
+    const env = { gitAt: (sha: string, p: string) => readBoundedHistoricalText(this.team.dir, sha, p),
+      known: async (blob: string) => readBoundedCheckoutText(this.team.dir, blob, path, 'utf8', false).catch(() => undefined) }
     const projected = snap.name === this.owner && snap.head.projectedFrom && this.notices.room !== this.team.room
     const projectedEntry = snap.entries.get(path)
     if (projected && projectedEntry?.state === 'held' && projectedEntry.hash) {
-      const source = snapshot(this.notices.room, this.owner, participantsView(this.notices.room, this.notices.awareness, Date.now()))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const source = snapshotPath(this.notices.room, this.owner, participantsView(this.notices.room, this.notices.awareness, Date.now()), path)
       if (source?.fenceValid && source.record?.holder?.workerId === snap.head.projectedFrom &&
           source.entries.get(path)?.hash === projectedEntry.hash) {
         const resolved = await versionOf(source, path, env)
@@ -305,7 +315,7 @@ export class ConflictSet {
       const worker = await trustedWorker(this.notices, this.owner).catch(() => undefined)
       if (worker && worker.id === snap.head.projectedFrom) {
         try {
-          const text = workerText(worker.dir, path)
+          const text = await workerText(worker.dir, path)
           if (text !== null && gitBlobHash(text, projectedEntry.hash.length === 64 ? 'sha256' : 'sha1') === projectedEntry.hash)
             return { kind: 'text', text, entry: projectedEntry }
         } catch { /* leave the version held */ }
@@ -448,7 +458,7 @@ export class ConflictSet {
       if (carried?.lead === other && carriesWork(carried.baseline)) {
         for (const path of aPaths) {
           await this.fileTurn()
-          const baseline = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
+          const baseline = await boundedBaseline(this.team.dir, carried.baseline, path)
           if (baseline.kind === 'unavailable') continue
           const ownText = asText(await this.read(mine, path))
           if (ownText !== undefined && ownText === (baseline.kind === 'absent' ? '' : baseline.text)) {
@@ -494,7 +504,7 @@ export class ConflictSet {
           continue
         }
         let ancestor: string
-        try { ancestor = await gitShow(this.team.dir, mergeBase, path) ?? '' }
+        try { ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? '' }
         catch { await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'unknown', inputs, factId: '', why: 'missing merge base' }); continue }
         await this.budget()
         const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: 'base', theirs: other })
@@ -527,7 +537,7 @@ export class ConflictSet {
       for (const path of paths) {
         await this.fileTurn()
         if (!this.contractPathAuthorized(theirs, path)) continue
-        const before = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
+        const before = await boundedBaseline(this.team.dir, carried.baseline, path)
         if (before.kind === 'unavailable') {
           const key = slotKey(this.owner, 'contract', other, path, '*')
           await this.settle(key, { owner: this.owner, other, kind: 'contract', path, subject: '*', status: 'unknown',
@@ -539,7 +549,7 @@ export class ConflictSet {
           if (!notice.ok) this.log(`contract coverage notice ${id}: ${notice.text}`)
           continue
         }
-        const version = await versionOf(theirs, path, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: blob => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) })
+        const version = await versionOf(theirs, path, { gitAt: (sha, p) => readBoundedHistoricalText(this.team.dir, sha, p), known: blob => readBoundedCheckoutText(this.team.dir, blob, path, 'utf8', false).catch(() => undefined) })
         const after = asText(version)
         if (after === undefined) { this.unknownContracts(other, 'provider version is not readable'); return }
         const oldText = before.kind === 'absent' ? '' : before.text
@@ -621,7 +631,7 @@ export class ConflictSet {
       const [ownV, theirV] = await Promise.all([read(mine, path), read(theirs, path)])
       const ownText = asText(ownV), theirText = asText(theirV)
       let ancestor: string | undefined
-      try { ancestor = await gitShow(this.team.dir, mergeBase, path) ?? '' } catch { /* unavailable */ }
+      try { ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? '' } catch { /* unavailable */ }
       for (const claim of theirClaims.filter(c => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
         const key = slotKey(this.owner, 'edit-in-claim', other, path, claim.id)
         seen.add(key)

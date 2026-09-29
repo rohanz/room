@@ -6,7 +6,6 @@ import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
 import { neighbours, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
-import { git, gitShow } from '@room/roomd/git'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
@@ -19,6 +18,7 @@ import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
 import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
+import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
 export function createHandlerState(ctx: ToolCtx): HandlerState {
   const now = ctx.now ?? (() => Date.now())
@@ -97,23 +97,23 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
    *  and its workers) uses the carried commit itself. */
   const baseFor = (s: Session, person: string) => s.room.manifestHead.get(person)?.base ?? participantRecord(s.room, person)?.git?.base ?? 'HEAD'
-  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(s.dir, baseFor(s, person), path)
+  const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => readBoundedHistoricalText(s.dir, baseFor(s, person), path)
   const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const view = participantsView(s.room, s.awareness, now())
       const snap = snapshot(s.room, person, view)
       const result = await versionOf(snap, path, {
-        gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
-        known: hash => git(s.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+        gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
+        known: hash => readBoundedCheckoutText(s.dir, hash, path, 'utf8', false).catch(() => undefined),
       })
       if (!snap || snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, now()))) return result
     }
     return { kind: 'unknown', why: 'updating', detail: `${person}'s changes moved during the read; re-run` }
   }
   const readText: HandlerState['readText'] = async (s, path, person) => {
-    if (person === s.me.name) return workerText(s.dir, path)
+    if (person === s.me.name) return await workerText(s.dir, path)
     const worker = await trustedWorker(s, person)
-    if (worker) return workerText(worker.dir, path)
+    if (worker) return await workerText(worker.dir, path)
     const version = await readVersion(s, path, person)
     if (version.kind === 'text') return version.text
     if (version.kind === 'deleted') return null

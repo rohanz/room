@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { setImmediate } from 'node:timers/promises'
 import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
@@ -28,6 +29,60 @@ export const defs: ToolDef[] = [{
 }]
 
 const split = (value: string) => value.split('\0').filter(Boolean)
+const COLLECT_TEXT_LIMIT = 512 * 1024
+const COLLECT_YIELD_EVERY = 32
+
+type FileIdentity = { size: number; mtimeMs: number; ino: number; dev: number; mode: number } | null
+
+function fileIdentity(file: string): FileIdentity {
+  let stat: fs.Stats
+  try { stat = fs.lstatSync(file) }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e }
+  if (!stat.isFile()) throw new Error('collection destination is not a regular file: ' + file)
+  return { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, dev: stat.dev, mode: stat.mode & 0o777 }
+}
+
+function sameIdentity(a: FileIdentity, b: FileIdentity): boolean {
+  return a === null || b === null ? a === b
+    : a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino && a.dev === b.dev && a.mode === b.mode
+}
+
+/** The descriptor is checked both before and after the bounded read. */
+function boundedCollectText(file: string, expected: FileIdentity): Buffer | null {
+  if (expected === null) return null
+  if (expected.size > COLLECT_TEXT_LIMIT) throw new Error(file + ' exceeds collection text limit; nothing written')
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!sameIdentity(expected, { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, dev: stat.dev, mode: stat.mode & 0o777 })) throw new Error(file + ' changed during collection; nothing written, retry')
+    const bytes = Buffer.alloc(stat.size)
+    let offset = 0
+    while (offset < bytes.length) {
+      const count = fs.readSync(fd, bytes, offset, bytes.length - offset, offset)
+      if (!count) throw new Error(file + ' changed during collection; nothing written, retry')
+      offset += count
+    }
+    if (!sameIdentity(expected, fileIdentity(file))) throw new Error(file + ' changed during collection; nothing written, retry')
+    return bytes
+  } finally { fs.closeSync(fd) }
+}
+
+/** Compare without loading either whole file into JS memory. */
+async function sameFileBytes(a: string, b: string, size: number): Promise<boolean> {
+  const left = await fs.promises.open(a, 'r')
+  let right: fs.promises.FileHandle | undefined
+  try {
+    right = await fs.promises.open(b, 'r')
+    const one = Buffer.alloc(Math.min(64 * 1024, size)), two = Buffer.alloc(one.length)
+    for (let offset = 0; offset < size; offset += one.length) {
+      await setImmediate()
+      const length = Math.min(one.length, size - offset)
+      const [x, y] = await Promise.all([left.read(one, 0, length, offset), right.read(two, 0, length, offset)])
+      if (x.bytesRead !== length || y.bytesRead !== length || !one.subarray(0, length).equals(two.subarray(0, length))) return false
+    }
+    return true
+  } finally { await Promise.all([left.close(), right?.close()]) }
+}
 
 /** Only signal processes after confirming this is still the worker's owned git worktree. */
 const ownershipRecords = (s: Session) => [...s.room.retiredWorkers(), ...localWorkers(s.dir)]
@@ -53,15 +108,17 @@ function safePath(root: string, rel: string): string {
   return result.path
 }
 
-function copyFiles(root: string, paths: string[]): string[] {
+async function copyFiles(root: string, paths: string[]): Promise<string[]> {
   const files = new Set<string>()
-  const visit = (rel: string) => {
+  let count = 0
+  const visit = async (rel: string): Promise<void> => {
+    if (count++ % COLLECT_YIELD_EVERY === 0) await setImmediate()
     const file = safePath(root, rel), stat = fs.statSync(file)
-    if (stat.isDirectory()) for (const name of fs.readdirSync(file)) visit(rel + '/' + name)
+    if (stat.isDirectory()) for (const name of fs.readdirSync(file)) await visit(rel + '/' + name)
     else if (stat.isFile()) files.add(rel)
     else throw new Error('not a regular file: ' + rel)
   }
-  paths.forEach(visit)
+  for (const rel of paths) await visit(rel)
   return [...files].sort()
 }
 
@@ -364,24 +421,37 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const releasePaths = (paths: string[]) => releaseClaimsOnDone(s, c => !paths.some(p => claimsOverlap(c, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER })), w.name, false)
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some(p => typeof p !== 'string')) return 'error: copy requires non-empty paths'
         const workerRoot = workerRoots.get(w)!
-        const files = copyFiles(workerRoot, a.paths as string[])
+        const files = await copyFiles(workerRoot, a.paths as string[])
         const modified = new Set(split(await gitWholeTree(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
         const tracked = new Set(split(await gitWholeTree(lead.dir, ['ls-files', '-z'])))
-        for (const p of files) {
+        const copyPlan: { p: string; source: NonNullable<FileIdentity>; destination: FileIdentity }[] = []
+        for (const [index, p] of files.entries()) {
+          if (index % COLLECT_YIELD_EVERY === 0) await setImmediate()
+          const src = safePath(workerRoot, p), source = fileIdentity(src)
+          if (!source) throw new Error('copy source vanished: ' + p)
           const dst = safePath(leadRoot, p)
-          if (fs.existsSync(dst) && !fs.statSync(dst).isFile()) return 'error: copy destination is not a regular file: ' + p
-          if (a.force !== true && (modified.has(p) || (!tracked.has(p) && fs.existsSync(dst)))) {
-            if (!fs.existsSync(dst) || !fs.readFileSync(dst).equals(fs.readFileSync(safePath(workerRoot, p)))) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
+          const destination = fileIdentity(dst)
+          if (a.force !== true && (modified.has(p) || (!tracked.has(p) && destination !== null))) {
+            // Large matching files are a conservative conflict. Explicit force can
+            // still copy them without bringing their bytes into JS for comparison.
+            if (destination === null || destination.size !== source.size || source.size > COLLECT_TEXT_LIMIT || !await sameFileBytes(dst, src, source.size)) return 'error: lead has modified ' + p + '; pass force=true to overwrite'
+            if (!sameIdentity(source, fileIdentity(src)) || !sameIdentity(destination, fileIdentity(dst))) throw new Error(p + ' changed during collection; nothing written, retry')
           }
+          copyPlan.push({ p, source, destination })
         }
-        releasePaths(files)
-        for (const p of files) {
+        // No await between this gate and the write phase. It covers the first path
+        // even when a later preflight yielded or the file grew in the meantime.
+        for (const { p, source, destination } of copyPlan) {
+          if (!sameIdentity(source, fileIdentity(safePath(workerRoot, p))) || !sameIdentity(destination, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
+        }
+        for (const { p, source } of copyPlan) {
           const dst = safePath(leadRoot, p)
           fs.mkdirSync(path.dirname(dst), { recursive: true })
-          fs.copyFileSync(safePath(workerRoot, p), dst)
-          fs.chmodSync(dst, fs.statSync(safePath(workerRoot, p)).mode & 0o777)
+          await fs.promises.copyFile(safePath(workerRoot, p), dst)
+          fs.chmodSync(dst, source.mode)
           out.push('copied ' + p)
         }
+        releasePaths(files)
         if (!files.length) out.push('nothing copied (empty directories)')
 
         // Named artifacts are only a partial collection; keep the worker recoverable.
@@ -409,11 +479,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         baseModes.set(w.name, addCarriedUntrackedModes(await gitTreeModes(lead.dir, base), w))
         unchangedCarried.set(w.name, carriedUnchangedPaths(workerBaseline(w)))
       }
+      const destinations: { p: string; identity: FileIdentity }[] = []
+      let preparedCount = 0
       for (const [p, text] of result.merged) {
+        if (preparedCount++ % COLLECT_YIELD_EVERY === 0) await setImmediate()
         const file = safePath(leadRoot, p)
-        const before = fs.existsSync(file) ? fs.readFileSync(file) : null
+        const identity = fileIdentity(file)
+        destinations.push({ p, identity })
+        const before = boundedCollectText(file, identity)
         if ((before === null ? null : before.toString('latin1')) !== result.initial.get(p)) throw new Error(p + ' changed during collection; nothing written, retry')
-        const oldMode = before !== null ? fs.statSync(file).mode & 0o777 : 0o644
+        const oldMode = identity?.mode ?? 0o644
         const mode = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w)!, baseModes: baseModes.get(w.name)!, ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) })))
         const after = text === null ? null : Buffer.from(text, 'latin1')
         if ((before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode) || (before === null && after === null)) continue
@@ -423,6 +498,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { w } of selected) if (w.id) {
         await registry.beginCollect(w.id)
         collectStarted.add(w.id)
+      }
+      for (const { p, identity } of destinations) {
+        if (!sameIdentity(identity, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
       }
       const written: typeof changes = []
       try {

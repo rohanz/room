@@ -36,6 +36,7 @@ import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenNam
 import { joinableRoot } from './repository.js'
 import type { HolderIn } from '@room/hub-core'
 import { currentToolTiming } from './timing.js'
+import { revokeLeadProjections } from './bridge.js'
 
 const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work)
 
@@ -493,6 +494,7 @@ export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicySt
 
 /** Keep a live daemon in sync when a sharing grant changes or settles. */
 export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy']): void {
+  revokeLeadProjections(daemon.roomDoc, daemon.name, daemon.fence, policy)
   daemon.applyInputs({ ...daemon.inputs, policy })
 }
 

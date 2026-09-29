@@ -137,14 +137,14 @@ function pair() {
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
-function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
+function fakeSession(room: RoomDoc, me: Identity, local = true, repoDir = dir, repoBase = base): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
-  const graph = new GraphIndex(room, me.name, dir); graph.start()
+  const graph = new GraphIndex(room, me.name, repoDir); graph.start()
   return {
-    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
+    graph, room, awareness, me, dir: repoDir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base, fence: 'test-fence' } as never,
+    daemon: { touch() {}, async stop() {}, dir: repoDir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: repoBase, fence: 'test-fence' } as never,
     shareMax: 'full', shareRequested: 'full',
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
   } as Session
@@ -908,15 +908,15 @@ describe('room_spawn / room_done / room_collect discard', () => {
   })
 })
 
-function setupLead() {
+function setupLead(repoDir = dir, repoBase = base) {
   const { a, b } = pair()
-  a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
-  let ls: Session | null = fakeSession(a, lead)
+  a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, repoBase)
+  let ls: Session | null = fakeSession(a, lead, true, repoDir, repoBase)
   const specs: SpawnSpec[] = []
   const exits: ((code: number | null) => void)[] = []
   const killed: number[] = []
   const leadTools = createTools({
-    getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2, probe: fixtureProbe,
+    getSession: () => ls, setSession: s => { ls = s }, cwd: repoDir, maxWorkers: 2, probe: fixtureProbe,
     spawner: spec => { specs.push(spec); const pid = 4242 + specs.length; spawnFixtureProcess(pid)
       const callbacks: ((code: number | null) => void)[] = []
       exits.push(code => { finishFixtureProcess(pid); for (const callback of callbacks) callback(code) })
@@ -927,6 +927,9 @@ function setupLead() {
 }
 
 async function ownedLegacyWorker(room: RoomDoc, tag: string, status: 'running' | 'done' | 'failed' | 'dismissed', pid: number): Promise<void> {
+  // Finish the one-time discovery pass before creating a synthetic checkout. These
+  // records model launched workers; the migration adapter would import an unowned one.
+  await registryForDir(dir)
   const prepared = await prepareWorktree(dir, tag, 'rohanz')
   // Synthetic registry identity and liveness agree for every lifecycle reader.
   await registerWorkers(fakeSession(room, lead), [{ tag, name: `rohanz+${tag}`, host: 'claude', task: 'x', dir: prepared.dir,
@@ -1231,20 +1234,21 @@ describe('worker safety', () => {
     expect(await t.leadTools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
   })
   it('does not relaunch a preexisting Room checkout as a new supplied-dir worker', async () => {
-    // The checkout exists before the lead opens its registry, so its migration scan imports it
-    // deterministically; created afterwards, the outcome depended on when that scan ran.
-    const prepared = await prepareWorktree(dir, 'same', 'rohanz')
-    const t = setupLead()
-    writeFileSync(join(dir, 'lead-only.txt'), 'lead edit')
+    // The one-time migration scan must see the checkout. Other tests open and close the
+    // shared fixture registry, so use a fresh repository for this startup assertion.
+    const { repo, head } = realRepo()
+    const prepared = await prepareWorktree(repo, 'same', 'rohanz')
+    const t = setupLead(repo, head)
+    writeFileSync(join(repo, 'lead-only.txt'), 'lead edit')
     try {
-      const registry = await registryForDir(dir)
+      const registry = await registryForDir(repo)
       await vi.waitFor(() => expect(registry.reserved('same')).toMatchObject({
         tag: 'same', phase: 'active', runs: [{ launch: { outcome: 'imported' } }],
       }), { timeout: 15_000 })
       const reply = await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir: prepared.dir, host: 'codex', model: 'worker-model' })
       expect(reply).toContain('tag in use: same')
       expect(t.specs).toHaveLength(0)
-    } finally { rmSync(join(dir, 'lead-only.txt'), { force: true }) }
+    } finally { rmSync(join(repo, 'lead-only.txt'), { force: true }) }
   })
 })
 
@@ -1547,6 +1551,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
 
   it('W5: after a lead restart, an unreadable process identity is never signalled', async () => {
     const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
+    await registryForDir(dir)
     // a stand-in for the worker process that outlived the lead: its own process group, so the signal cannot reach the test runner
     const child = spawn('sleep', ['100'], { detached: true, stdio: 'ignore' }); child.unref()
     const exited = new Promise<void>(r => child.once('exit', () => r()))
@@ -1798,6 +1803,7 @@ describe('retirement integration', () => {
 
   it('a merge preview retains a done worker with uncommitted work and zero commits', async () => {
     const t = setupLead()
+    await registryForDir(dir)
     const prepared = await prepareWorktree(dir, 'finished', 'rohanz')
     writeFileSync(join(prepared.dir, 'uncommitted-retirement-check'), 'dirty')
     await registerWorkers(t.session!, [{ tag: 'finished', name: 'rohanz+finished', host: 'codex', task: 'x', dir: prepared.dir, branch: prepared.branch, pid: -1, startedAt: 1, status: 'done', lead: 'rohanz', exitCode: 0 }])

@@ -41,6 +41,7 @@ export interface ParticipantSnapshot {
   roomSalt?: string
   fenceValid: boolean
 }
+export type ParticipantMetadataSnapshot = Omit<ParticipantSnapshot, 'texts'>
 
 export type Version =
   | { kind: 'text'; text: string; entry: ManifestEntry }
@@ -48,7 +49,7 @@ export type Version =
   | { kind: 'base'; text: string | undefined }
   | { kind: 'held'; entry: ManifestEntry; why: string }
   | { kind: 'excluded' }
-  | { kind: 'unknown'; why: 'intent' | 'not-publisher' | 'updating' | 'no-record' | 'fetch' | 'no-base-text'; detail: string }
+  | { kind: 'unknown'; why: 'intent' | 'not-publisher' | 'updating' | 'no-record' | 'fetch' | 'no-base-text' | 'too-large'; detail: string }
 
 export function manifestKey(name: string, fence: string): string { return `${name}\u0000${fence}` }
 
@@ -69,8 +70,8 @@ function fenceValid(head: ManifestHead, record: ParticipantRecord | undefined, v
   return !!expected && head.fence === expected
 }
 
-/** Copy the current incarnation in one synchronous read, including plain text values. */
-export function snapshot(room: RoomDoc, name: string, view: readonly ParticipantView[]): ParticipantSnapshot | undefined {
+/** Copy the current incarnation's metadata without converting overlay text. */
+export function snapshotMetadata(room: RoomDoc, name: string, view: readonly ParticipantView[]): ParticipantMetadataSnapshot | undefined {
   const head = room.manifestHead.get(name)
   if (!head) return undefined
   const record = participantRecord(room, name)
@@ -78,10 +79,17 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
   for (const [path, entry] of room.manifest.get(manifestKey(name, head.fence))?.entries() ?? []) {
     if (entry.fence === head.fence) entries.set(path, { ...entry })
   }
+  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
+}
+
+/** Copy the current incarnation in one synchronous read, including plain text values. */
+export function snapshot(room: RoomDoc, name: string, view: readonly ParticipantView[]): ParticipantSnapshot | undefined {
+  const meta = snapshotMetadata(room, name, view)
+  if (!meta) return undefined
   const texts = new Map<string, string>()
-  const overlay = room.overlays.get(manifestKey(name, head.fence))
+  const overlay = room.overlays.get(manifestKey(name, meta.head.fence))
   for (const [path, text] of overlay?.entries() ?? []) texts.set(path, text.toString())
-  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
+  return { ...meta, texts }
 }
 
 /** A single-file reader need not materialize every published overlay in the room. */
@@ -147,7 +155,10 @@ export async function versionOf(snap: ParticipantSnapshot | undefined, path: str
   if (head.excluded.includes(await digest(snap.roomSalt, path))) return { kind: 'excluded' }
   if (!env.gitAt) return { kind: 'unknown', why: 'no-base-text', detail: 'base text not in the room' }
   try { return { kind: 'base', text: await env.gitAt(head.base, path) } }
-  catch { return { kind: 'unknown', why: 'fetch', detail: 'base commit is unavailable' } }
+  catch (error) {
+    if ((error as { code?: string }).code === 'ROOM_TEXT_TOO_LARGE') return { kind: 'unknown', why: 'too-large', detail: 'historical text exceeds Room read limit' }
+    return { kind: 'unknown', why: 'fetch', detail: 'base commit is unavailable' }
+  }
 }
 
 /** Own-file reads are always from the caller's checkout, even at intent or as a non-publisher. */

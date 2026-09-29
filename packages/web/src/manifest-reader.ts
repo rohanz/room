@@ -1,5 +1,5 @@
 import {
-  manifestChangers, manifestKey, manifestPaths, normalizeCoordinationPath, snapshot, snapshotStillCurrent, versionOf,
+  manifestChangers, manifestKey, manifestPaths, normalizeCoordinationPath, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf,
   type ManifestEntry, type ParticipantView, type RoomDoc, type Version,
 } from '@room/shared'
 
@@ -48,7 +48,7 @@ export interface WebCoverage { complete: boolean; gaps: WebGap[]; shared: string
 
 /** Coverage is a participant property too: intent and unnamed excluded changes stay visible as gaps. */
 export function webCoverage(room: RoomDoc, name: string, view: readonly ParticipantView[] = []): WebCoverage {
-  const snap = snapshot(room, name, view)
+  const snap = snapshotMetadata(room, name, view)
   const gaps: WebGap[] = []
   const shared: string[] = [], held: string[] = []
   const unchanged: string[] = []

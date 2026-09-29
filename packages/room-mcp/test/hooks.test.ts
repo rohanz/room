@@ -1,4 +1,5 @@
 import { deleteFixture, publishFixture } from './fixtures/manifest.js'
+import fs from 'node:fs'
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync, execFile } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
@@ -104,11 +105,11 @@ it('maps a foreign claim into the caller checkout and labels unavailable mapping
     expect(room.openClaims()[0]).toMatchObject({ from: 1, to: 1 })
     expect(room.overlayText(manifestKey('Kieran', '1'), 'app.py')?.toString()).toBe(owner)
     expect(readFileSync(join(dir, 'app.py'), 'utf8')).toBe(caller)
-    bridge(s).write()
+    await bridge(s).write()
     expect(readSession('state.json').claims[0]).toMatchObject({ from: 2, to: 2, approximate: false })
     const head = room.manifestHead.get('Kieran')!
     room.manifestHead.set('Kieran', { ...head, coverage: { kind: 'none', reason: 'intent' }, semRev: 2 })
-    bridge(s).write()
+    await bridge(s).write()
     expect(readSession('state.json').claims[0]).toMatchObject({ from: 1, to: 2, approximate: true })
     const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: '*** Begin Patch\n*** Update File: app.py\n@@\n-old\n+changed\n*** End Patch\n' } }))
     expect(out).toContain('approximate whole-file warning')
@@ -473,6 +474,47 @@ describe('local notices are items (ledger test 9)', () => {
 })
 
 describe('hooks bridge state file', () => {
+  it('yields and reads one bounded local file for forty claims on a 2 MiB path', async () => {
+    const s = session(new RoomDoc())
+    const b = bridge(s)
+    writeFileSync(join(dir, 'app.py'), 'x'.repeat(2 * 1024 * 1024))
+    for (let i = 0; i < 40; i++) s.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: i + 1, to: i + 1, intent: `claim ${i}` })
+    const original = fs.promises.open.bind(fs.promises)
+    let opens = 0, turn = false
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation((...args) => {
+      if (String(args[0]).endsWith('/app.py')) opens++
+      return original(...args)
+    })
+    setImmediate(() => { turn = true })
+    try {
+      await b.write()
+      expect(turn).toBe(true)
+      expect(opens).toBe(1)
+      expect(readSession('state.json').claims).toHaveLength(40)
+      expect(readSession('state.json').claims.every((claim: { approximate: boolean }) => claim.approximate)).toBe(true)
+    } finally {
+      spy.mockRestore(); writeFileSync(join(dir, 'app.py'), 'x = 1\n'); b.stop(); s.awareness.destroy(); s.room.doc.destroy()
+    }
+  })
+  it('does not publish prepared hook state after its name fence is lost during the read', async () => {
+    const s = session(new RoomDoc())
+    s.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'edit' })
+    let fenced = true
+    const b = bridge(s, { fenced: () => fenced })
+    const original = fs.promises.open.bind(fs.promises)
+    let entered!: () => void, release!: () => void
+    const opened = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => { entered(); await gate; return original(...args) })
+    try {
+      const pending = b.write()
+      await opened
+      fenced = false
+      release()
+      await pending
+      expect(existsSync(join(sdir(), 'state.json'))).toBe(false)
+    } finally { spy.mockRestore(); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
+  })
   it('writes counts and coordination, never message content, only while fenced', async () => {
     const room = new RoomDoc()
     const s = session(room)
@@ -481,7 +523,7 @@ describe('hooks bridge state file', () => {
     addPresence(s, 'Kieran')
     hubAppend(room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'touching app.py?' } as never)
     room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Kieran', byKind: 'agent', intent: 'bump x', plans: [{ kind: 'rename', symbol: 'x', detail: 'y' }] })
-    b.write()
+    await b.write()
     const text = readFileSync(join(sdir(), 'state.json'), 'utf8')
     expect(text).not.toContain('touching app.py?')
     expect(JSON.parse(text)).toMatchObject({ owedCount: 1, company: true, claims: [{ path: 'app.py', by: 'Kieran', plans: 'rename x → y' }] })
@@ -490,7 +532,7 @@ describe('hooks bridge state file', () => {
     expect(out).toContain('[room] 1 message pending; Room is reconnecting.')
     rmSync(join(sdir(), 'state.json'))
     fenced = false
-    b.write()
+    await b.write()
     expect(existsSync(join(sdir(), 'state.json'))).toBe(false)
     b.stop(); s.awareness.destroy()
   })
@@ -499,7 +541,7 @@ describe('hooks bridge state file', () => {
     const s = session(new RoomDoc())
     const b = bridge(s, { paused: () => '[room] hub unreachable; coordination paused.' })
     addPresence(s, 'Kieran')
-    b.write()
+    await b.write()
     expect(context(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Read' }))).toContain('[room] hub unreachable; coordination paused.')
     b.stop(); s.awareness.destroy()
   })
@@ -508,9 +550,9 @@ describe('hooks bridge state file', () => {
     const s = session(new RoomDoc())
     let fenced = true
     const b = bridge(s, { fenced: () => fenced, paused: () => fenced ? undefined : '[room] name lease paused' })
-    b.write()
+    await b.write()
     fenced = false
-    b.write()
+    await b.write()
     expect(context(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Read' }))).toContain('[room] name lease paused')
     b.stop(); s.awareness.destroy()
   })
@@ -542,13 +584,13 @@ describe('hooks bridge state file', () => {
     } finally { b.stop(); s.awareness.destroy(); vi.useRealTimers() }
   })
 
-  it('hook snapshot excludes own agent claims but retains same-name non-agent claims as nearby work', () => {
+  it('hook snapshot excludes own agent claims but retains same-name non-agent claims as nearby work', async () => {
     const s = session(new RoomDoc())
     s.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'agent.py', from: 1, to: 1, intent: 'my edit' })
     s.room.addClaim({ by: 'Rohan', byKind: 'human', path: 'human.py', from: 1, to: 1, intent: 'human edit' })
     s.room.addClaim({ by: 'Rohan', byKind: undefined as never, path: 'legacy.py', from: 1, to: 1, intent: 'legacy edit' })
     const b = bridge(s)
-    b.write()
+    await b.write()
     const snapshot = readSession('state.json')
     expect(snapshot.ownClaims).toEqual([{ path: 'agent.py', from: 1, to: 1 }])
     expect(snapshot.claims).toMatchObject([{ path: 'human.py', by: 'Rohan', intent: 'human edit' }, { path: 'legacy.py', by: 'Rohan', intent: 'legacy edit' }])
@@ -600,7 +642,7 @@ describe('company and nearby work', () => {
     s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
     publishFixture(s.room, 'Bea', 'other.py', 'changed')
     const b = bridge(s, {}, 'near')
-    b.write()
+    await b.write()
     const snapshot = readSession('state.json', 'near')
     expect(snapshot.others).toEqual(["Ada's agent", 'Cy'])
     expect(snapshot.near).toEqual([{ by: 'Ada', path: 'api/', reason: 'scope' }, { by: 'Bea', path: 'other.py', reason: 'changed' }])
@@ -619,12 +661,12 @@ describe('company and nearby work', () => {
     const peer = addPresence(s, 'Ada')
     s.room.setScope({ by: 'Ada', byKind: 'agent', area: 'orders', summary: 'pricing', paths: ['api/'], at: Date.now() })
     const b = bridge(s, {}, 'near-once')
-    b.write()
+    await b.write()
     const input = { cwd: dir, session_id: 'near-once', tool_name: 'Write', tool_input: { file_path: 'api/tax.py' } }
     expect(await runHook('before-edit.mjs', input)).toContain('Claim before editing: Ada has scope on api/')
     expect(await runHook('before-edit.mjs', input)).toBe('')
     s.room.addClaim({ path: 'api/tax.py', from: 1, to: 1, by: s.me.name, byKind: 'agent', intent: 'tax rules' })
-    b.write()
+    await b.write()
     expect(await runHook('before-edit.mjs', input)).toBe('')
     b.stop(); peer.destroy(); s.awareness.destroy()
   })

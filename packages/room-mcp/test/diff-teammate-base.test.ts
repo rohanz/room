@@ -16,12 +16,12 @@ import { hubSeam } from './fixtures/hub.js'
 
 const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, onShow: undefined as ((ref: string, path: string) => void) | undefined }))
 const probeFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, stderr: '' }))
-vi.mock('@room/roomd/git', async importOriginal => {
-  const original = await importOriginal<typeof import('@room/roomd/git')>()
-  return { ...original, gitShow: async (...args: Parameters<typeof original.gitShow>) => {
+vi.mock('../src/tools/disk-text.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../src/tools/disk-text.js')>()
+  return { ...original, readBoundedHistoricalText: async (...args: Parameters<typeof original.readBoundedHistoricalText>) => {
     if (gitShowFailure.error) throw gitShowFailure.error
     gitShowFailure.onShow?.(args[1], args[2])
-    return original.gitShow(...args)
+    return original.readBoundedHistoricalText(...args)
   } }
 })
 vi.mock('node:child_process', async importOriginal => {

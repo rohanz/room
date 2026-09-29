@@ -68,4 +68,22 @@ describe('reanchorClaims', () => {
       { originals: new Map([[c.id, block]]), workBudget: 300_000 })
     expect(result).toEqual({ moves: [{ id: c.id, from: 3001, to: 6000 }], releases: [], uncertain: [] })
   })
+
+  it('resumes a digest-only candidate search and keeps a later cheap claim fair', async () => {
+    const text = 'other\n'.repeat(100)
+    const unknown = { ...claim(), id: 'unknown', path: 'unknown.txt', from: 1, to: 1, claimedHash: undefined }
+    const wide = { ...claim(), id: 'wide', from: 1, to: 20, claimedHash: 'missing' }
+    const cheap = { ...claim(), id: 'cheap', path: 'cheap.txt', from: 1, to: 1, claimedHash: 'missing' }
+    const progress = new Map()
+    const texts = new Map([['app.txt', text], ['cheap.txt', 'changed\n'], ['unknown.txt', 'changed\n']])
+    const first = await reanchorClaims('Alice', [unknown, cheap, wide], texts, { workBudget: 1000, progress, searchKey: c => c.id })
+    expect(first.uncertain).toContain(unknown.id)
+    expect(first.uncertain).toContain(wide.id)
+    expect(first.releases.map(release => release.id)).toContain(cheap.id)
+    let result = first
+    for (let tick = 0; tick < 100 && result.uncertain.includes(wide.id); tick++) {
+      result = await reanchorClaims('Alice', [wide], texts, { workBudget: 1000, progress, searchKey: c => c.id })
+    }
+    expect(result.releases.map(release => release.id)).toContain(wide.id)
+  })
 })

@@ -6,15 +6,16 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshot, type Presence, isAgentic } from '@room/shared'
+import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshotPath, snapshotStillCurrent, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
 import { ownWorkerNames } from './worker-registry.js'
 import { workerText } from './tools/context.js'
+import { DISK_TEXT_LIMIT } from './tools/disk-text.js'
+import { git, gitBlobInfoMany, gitShowManyCapped } from '@room/roomd/git'
 
 /** The bound session's write intents (recorded by before-edit.mjs): did this session write `p` in the last two minutes? */
 export function createWriteIntentReader(dir: string, sessionDir: () => string | undefined, now: () => number = Date.now): (p: string) => boolean | undefined {
@@ -53,6 +54,7 @@ export class HooksBridge {
   private timer: NodeJS.Timeout | null = null
   private unobserve: (() => void)[] = []
   private stopped = false
+  private revision = 0
   private written?: string
   constructor(private s: Session, private o: HooksBridgeOptions) {
     hookHealth.set(s, newHookHealth(this.now()))
@@ -68,6 +70,7 @@ export class HooksBridge {
 
   stop(): void {
     this.stopped = true
+    this.revision++
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.timer) clearTimeout(this.timer)
@@ -80,17 +83,21 @@ export class HooksBridge {
   /** Debounced: many small doc updates become one file write. */
   scheduleWrite(): void {
     if (this.stopped) return
+    this.revision++
     if (this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
-      try { this.write() } catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
+      try { void this.write().catch(e => this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`)) }
+      catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
     }, 150)
     this.timer.unref?.()
   }
 
   /** state.json: counts and coordination while fenced, or a minimal paused health state on lease loss. */
-  write(): void {
+  async write(): Promise<void> {
     if (this.stopped) return
+    const revision = this.revision
+    const leaseFence = this.s.lease?.fence()
     const dir = this.o.sessionDir()
     if (!dir) return
     const file = path.join(dir, 'state.json')
@@ -106,29 +113,52 @@ export class HooksBridge {
     const openClaims = this.s.room.openClaims()
     const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
     const views = participantsView(this.s.room, this.s.awareness, this.now())
-    const ownerSnapshots = new Map<string, ReturnType<typeof snapshot>>()
-    const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => {
-      if (!ownerSnapshots.has(c.by)) ownerSnapshots.set(c.by, snapshot(this.s.room, c.by, views))
-      const owner = ownerSnapshots.get(c.by)
+    const ownerSnapshots = new Map<string, ReturnType<typeof snapshotPath>>()
+    const ownerTexts = new Map<string, Promise<string | undefined>>()
+    const myTexts = new Map<string, Promise<string | null>>()
+    const claims = [] as { id: string; path: string; from: number; to: number; approximate: boolean; by: string; intent: string; plans?: string }[]
+    for (const c of openClaims.filter(c => !(c.by === me && isAgentic(c.byKind)))) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const key = `${c.by}\0${c.path}`
+      if (!ownerSnapshots.has(key)) ownerSnapshots.set(key, snapshotPath(this.s.room, c.by, views, c.path))
+      const owner = ownerSnapshots.get(key)
       const entry = owner?.entries.get(c.path)
-      let ownerText: string | undefined
-      if (owner?.fenceValid && owner.head.complete && owner.head.coverage.kind === 'all' && owner.head.base === owner.record?.git?.base && owner.head.fence === owner.record.git.fence) {
-        if (entry?.change === 'D') ownerText = ''
-        else if (entry?.hash) {
+      if (!ownerTexts.has(key)) ownerTexts.set(key, (async () => {
+        if (!owner?.fenceValid || !owner.head.complete || owner.head.coverage.kind !== 'all' || owner.head.base !== owner.record?.git?.base || owner.head.fence !== owner.record.git.fence) return undefined
+        if (entry?.change === 'D') return ''
+        if (entry?.hash) {
           try {
-            const text = entry.state === 'shared' ? owner.texts.get(c.path) : execFileSync('git', ['-C', this.s.dir, 'cat-file', '-p', entry.hash], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
-            if (text !== undefined && gitBlobHash(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) ownerText = text
+            let text: string | undefined
+            if (entry.state === 'shared') text = owner.texts.get(c.path)
+            else {
+              const size = Number((await git(this.s.dir, ['cat-file', '-s', entry.hash])).trim())
+              if (!Number.isSafeInteger(size) || size > DISK_TEXT_LIMIT) return undefined
+              text = await git(this.s.dir, ['cat-file', '-p', entry.hash])
+            }
+            if (text !== undefined && Buffer.byteLength(text) <= DISK_TEXT_LIMIT && gitBlobHash(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) return text
           } catch { /* whole-file approximate warning below */ }
         } else if (!entry && !(owner.roomSalt && owner.head.excluded.includes(digestPath(owner.roomSalt, c.path)))) {
-          try { ownerText = execFileSync('git', ['-C', this.s.dir, 'show', `${owner.head.base}:${c.path}`], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) }
-          catch { /* whole-file approximate warning below */ }
+          try {
+            const info = await gitBlobInfoMany(this.s.dir, owner.head.base, [c.path])
+            if ((info.get(c.path)?.size ?? Infinity) > DISK_TEXT_LIMIT) return undefined
+            return (await gitShowManyCapped(this.s.dir, owner.head.base, [c.path], DISK_TEXT_LIMIT, info)).get(c.path)
+          } catch { /* whole-file approximate warning below */ }
         }
-      }
-      let myText = ''
-      try { myText = workerText(this.s.dir, c.path) ?? '' } catch { /* unavailable file */ }
-      const mapped = c.path.endsWith('/') ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(c, ownerText, myText)
-      return { id: c.id, path: c.path, ...mapped, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }
-    })
+        return undefined
+      })())
+      if (!myTexts.has(c.path)) myTexts.set(c.path, workerText(this.s.dir, c.path).catch(() => null))
+      const ownerText = await ownerTexts.get(key)
+      const myText = await myTexts.get(c.path)
+      const mapped = c.path.endsWith('/') || myText == null ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(c, ownerText, myText)
+      claims.push({ id: c.id, path: c.path, ...mapped, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) })
+    }
+    const freshViews = participantsView(this.s.room, this.s.awareness, this.now())
+    if (this.stopped || revision !== this.revision || !this.o.fenced() || this.s.lease?.fence() !== leaseFence || this.o.sessionDir() !== dir ||
+        openClaims.map(c => c.id).join('\0') !== this.s.room.openClaims().map(c => c.id).join('\0') ||
+        [...ownerSnapshots.values()].some(owner => owner && !snapshotStillCurrent(this.s.room, owner, freshViews))) {
+      this.scheduleWrite()
+      return
+    }
     const near = coordinationPaths(this.s.room, neighbours(participantsView(this.s.room, this.s.awareness, this.now()), me), me, { includeOwnNonAgentClaims: true })
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.now())
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]

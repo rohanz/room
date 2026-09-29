@@ -1,4 +1,4 @@
-import { git, gitCommitMissing, gitShow, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
+import { git, gitCommitMissing, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
 import { ensureCommit, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch, diffLines } from 'diff'
 import { execFile, spawn } from 'node:child_process'
@@ -16,7 +16,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
-import { readBoundedDiskText } from './disk-text.js'
+import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -43,7 +43,7 @@ export function suggestedTestCommand(files: Readonly<Record<string, string | und
 export function testCommandFor(dir: string): string {
   const files: Record<string, string | undefined> = {}
   for (const file of ['package.json', 'pyproject.toml', 'uv.lock', 'Makefile']) {
-    try { files[file] = fs.readFileSync(path.join(dir, file), 'utf8') }
+    try { files[file] = readBoundedDiskTextSync(path.join(dir, file), 64 * 1024) }
     catch { files[file] = undefined }
   }
   return suggestedTestCommand(files)
@@ -58,7 +58,7 @@ async function ownDiskText(dir: string, rel: string): Promise<string | null> {
     const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
     if (!result.ok) throw new Error('unsafe room symlink: ' + rel)
     const real = result.path
-    return await readBoundedDiskText(real)
+    return await readBoundedDiskText(real, 'utf8', { root, path: candidate })
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw e
@@ -122,21 +122,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const one = async (p: string) => {
           let version: Version | undefined
           try { version = ownDisk || worker ? undefined : await versionOf(snap, p, {
-            gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
-            known: hash => git(s.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+            gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
+            known: hash => readBoundedCheckoutText(s.dir, hash, p, 'utf8', false).catch(() => undefined),
           }) }
           catch (error) { return reportGitFailure(error) }
           if (version?.kind === 'unknown' && version.why === 'fetch') {
             // versionOf cannot retain the Git error in a snapshot; probe this base directly.
-            try { await gitShow(s.dir, theirBase, p) }
+            try { await readBoundedHistoricalText(s.dir, theirBase, p) }
             catch (error) { return reportGitFailure(error) }
           }
           if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
           const l = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p)
             : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
           let b: string
-          try { b = (await gitShow(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
-          catch (error) { return reportGitFailure(error) }
+          try { b = (await readBoundedHistoricalText(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
+          catch (error) {
+            if (error instanceof HistoricalTextTooLarge) return `${p}: ${person}'s historical text exceeds Room read limit; diff unavailable`
+            return reportGitFailure(error)
+          }
           const live = l === null ? '' : l ?? b
           return live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
         }

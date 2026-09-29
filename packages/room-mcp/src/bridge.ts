@@ -13,11 +13,11 @@
  */
 import { git } from '@room/roomd/git'
 import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } from '@room/roomd'
-import { defaultExcludedPath } from '@room/roomd/policy'
+import { defaultExcludedPath, type SharingPolicy } from '@room/roomd/policy'
 import { ignoredTrackedPaths } from '@room/roomd/disk-scan'
 import * as Y from 'yjs'
 import { digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers } from '@room/shared'
-import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg } from '@room/shared'
+import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg, RoomDoc } from '@room/shared'
 import type { Session } from './session.js'
 import { registryForDir, type WorkerRegistry } from './worker-registry.js'
 import type { WorkerRecord } from './worker-status.js'
@@ -54,6 +54,48 @@ interface ProjectedFact { change: 'M' | 'A' | 'D'; hash?: string; size?: number;
 
 const headIdentity = (h: ManifestHead) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, textPrefixes: h.textPrefixes, complete: h.complete, projectedBy: h.projectedBy, projectedFrom: h.projectedFrom })
 const entryIdentity = (e: ManifestEntry | undefined) => e && JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence })
+
+/** Withdraw forbidden projected content in the PolicyStore callback, before a yielding bridge pass can run. */
+export function revokeLeadProjections(room: RoomDoc, lead: string, fence: string | undefined, policy: SharingPolicy): void {
+  if (!fence) return
+  room.doc.transact(() => {
+    for (const [name, head] of room.manifestHead) {
+      // A prior lease, or a different lead, owns its own projected incarnation.
+      if (head.projectedBy !== lead || head.fence !== fence || !head.projectedFrom) continue
+      const key = manifestKey(name, fence)
+      const entries = room.manifest.get(key)
+      const texts = room.overlays.get(key)
+      let changed = false
+      if (policy.level === 'intent' || !policy.publisher) {
+        if (entries?.size) { entries.clear(); changed = true }
+        if (texts) { room.overlays.delete(key); changed = true }
+      } else {
+        for (const [path, entry] of entries ?? []) {
+          if (authorizesText(policy, path)) continue
+          if (entry.hash !== undefined || entry.baseHash !== undefined || entry.size !== undefined) {
+            const { hash: _hash, baseHash: _baseHash, size: _size, ...safe } = entry
+            entries!.set(path, safe)
+            changed = true
+          }
+        }
+        for (const path of texts?.keys() ?? []) {
+          if (!authorizesText(policy, path)) { texts!.delete(path); changed = true }
+        }
+      }
+      const coverage: Coverage = !policy.publisher ? { kind: 'none', reason: 'not-publisher' }
+        : policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' } : head.coverage
+      const complete = policy.level === 'intent' || !policy.publisher ? false : head.complete
+      const textPrefixes = policy.level === 'declared' ? [...policy.textPrefixes] : undefined
+      if (changed || head.level !== policy.level || head.complete !== complete
+        || JSON.stringify(head.coverage) !== JSON.stringify(coverage)
+        || JSON.stringify(head.textPrefixes) !== JSON.stringify(textPrefixes)) {
+        const { textPrefixes: _previousPrefixes, ...previous } = head
+        room.manifestHead.set(name, { ...previous, level: policy.level, coverage, complete,
+          ...(textPrefixes ? { textPrefixes } : {}), rev: head.rev + 1, semRev: head.semRev + 1 })
+      }
+    }
+  })
+}
 
 export class Bridge {
   /** local claim id -> mirrored team claim id */
@@ -291,7 +333,8 @@ export class Bridge {
           && current?.id === record.id && current.phase === record.phase
           && !['retiring', 'retired', 'abandoned'].includes(current.phase)
       }
-      const coverage: Coverage = policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
+      const coverage: Coverage = !policy.publisher ? { kind: 'none', reason: 'not-publisher' }
+        : policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
         : !sourceHead || sourceHead.base !== C || (sourceRecord?.git?.base !== undefined && sourceRecord.git.base !== C) || !sourceFenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
         : sourceHead.coverage.kind === 'none' ? { kind: 'none', reason: sourceHead.coverage.reason === 'not-publisher' ? 'not-publisher' : sourceHead.coverage.reason === 'intent' ? 'intent' : 'starting' }
         : sourceHead.excluded.length ? { kind: 'none', reason: 'unprojectable' }

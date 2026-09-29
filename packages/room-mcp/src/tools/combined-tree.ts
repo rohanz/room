@@ -1,17 +1,17 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { git, gitWholeTree, isGitTimeout } from '@room/roomd/git'
+import { git, gitBlobInfoMany, gitWholeTree, isGitTimeout, type GitBlobInfo } from '@room/roomd/git'
 import { ensureCommit, roomRemote } from '@room/roomd'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
-import { baselineText, carriedPaths, carriesWork, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
+import { carriedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { acceptedGit, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
-import { readBoundedDiskText } from './disk-text.js'
+import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
 
 interface PreviewGap { person: string; path?: string; why: string }
 
@@ -95,8 +95,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const cached = versions.get(p)
     if (cached) return cached
     const version = await versionOf(snapshots.get(person)?.snap, p, {
-      gitAt: (sha, relpath) => checkoutText(caller.dir, `${sha}:${relpath}`, relpath),
-      known: hash => git(caller.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+      gitAt: (sha, relpath) => readBoundedCheckoutText(caller.dir, `${sha}:${relpath}`, relpath),
+      known: hash => readBoundedCheckoutText(caller.dir, hash, p, 'utf8', false).catch(() => undefined),
     })
     versions.set(p, version)
     return version
@@ -115,7 +115,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       const result = containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link' })
       if (!result.ok) throw new Error('unsafe preview symlink: ' + p)
       const file = result.path
-      return await readBoundedDiskText(file, options.encoding ?? 'utf8')
+      return await readBoundedDiskText(file, options.encoding ?? 'utf8', { root, path: path.join(root, p) })
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw e
@@ -236,12 +236,24 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (!theirPaths.has(p)) { pathSet.delete(p); callerOnly++ }
   }
   const baseTexts = new Map<string, string | null>()
+  const historicalInfo = new Map<string, Promise<Map<string, GitBlobInfo | undefined>>>()
   const textAt = async (sha: string, p: string) => {
     const key = sha + ':' + p
-    if (!baseTexts.has(key)) baseTexts.set(key, (await checkoutText(caller.dir, `${sha}:${p}`, p, options.encoding)) ?? null)
+    if (!baseTexts.has(key)) {
+      if (!historicalInfo.has(sha)) historicalInfo.set(sha, gitBlobInfoMany(caller.dir, sha, pathSet))
+      const blob = (await historicalInfo.get(sha)!).get(p)
+      if (blob && blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(p)
+      baseTexts.set(key, blob ? (await readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size)) ?? null : null)
+    }
     return baseTexts.get(key)!
   }
-  const baseAt = async (pair: Baseline | undefined, p: string) => pair ? (await baselineText(pair, p, textAt, options.encoding)) ?? null : textAt(ancestor, p)
+  const baseAt = async (pair: Baseline | undefined, p: string) => {
+    if (!pair) return textAt(ancestor, p)
+    if (!pair.untracked.has(p)) return textAt(pair.sha, p)
+    const carried = await readBoundedCheckoutText(pair.dir, pair.untracked.get(p)!.sha, p, options.encoding)
+    if (carried === undefined) throw new MissingBaseBlob(p)
+    return carried
+  }
   for (const pair of new Set([callerBaseline, ...pairs.values()])) for (const p of pair?.untracked.keys() ?? []) {
     await new Promise<void>(resolve => setImmediate(resolve))
     if (pathSet.has(p)) await baseAt(pair, p).catch(error => {
@@ -250,6 +262,19 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       ignoredNotes.push(error.message)
       gaps.push({ person: pair?.worker ?? caller.me.name, path: p, why: error.message })
     })
+  }
+  for (const p of [...pathSet]) {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    try {
+      await textAt(ancestor, p)
+      await baseAt(callerBaseline, p)
+      for (const pair of pairs.values()) await baseAt(pair, p)
+    } catch (error) {
+      if (!(error instanceof HistoricalTextTooLarge)) throw error
+      pathSet.delete(p)
+      gaps.push({ person: caller.me.name, path: p, why: error.message })
+      ignoredNotes.push(`NOT previewed (historical text exceeds Room read limit): ${p}`)
+    }
   }
   const paths = Array.from(pathSet).sort()
   const includedParticipants = participants.map(({ person, session }) => {

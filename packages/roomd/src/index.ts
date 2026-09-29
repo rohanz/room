@@ -25,7 +25,7 @@ export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-l
 export { policyFromLevel, authorizesText, rulesFromText, plan, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from './reanchor.js'
+import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease, type ClaimSearchProgress } from './reanchor.js'
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -270,6 +270,7 @@ class Daemon implements Roomd {
   private transitionPending = false
   /** Claims whose original anchors still need validation against the committed HEAD. */
   private pendingClaimValidation?: { head: string; fence: string; claims: Map<string, ClaimSnapshot> }
+  private readonly claimSearchProgress = new Map<string, ClaimSearchProgress>()
   /** Whether this daemon uses a local worker-room anchor rather than a room-remote anchor. */
   private readonly localRoom: boolean
   private readonly roomName: string
@@ -489,6 +490,7 @@ class Daemon implements Roomd {
     }, this)
     this.publisher.applyInputs(next)
     this.inputs = next
+    this.claimSearchProgress.clear()
     this.setStatus(this.currentStatus())
     void this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
   }
@@ -775,11 +777,14 @@ class Daemon implements Roomd {
     const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : []
     // A newer transition supersedes the old target, but unresolved original anchors survive it.
     const pending = this.pendingClaimValidation
+    const pendingIds = new Set<string>()
     if (pending?.fence === fence) {
       const byId = new Map(claimSnapshot.map(c => [c.id, c]))
       for (const [id, original] of pending.claims) {
-        const current = byId.get(id)
-        if (current && current.claimState === original.claimState) byId.set(id, original)
+        if (JSON.stringify(this.roomDoc.claims.get(id)) === original.claimState) {
+          byId.set(id, original)
+          pendingIds.add(id)
+        } else this.claimSearchProgress.delete(id)
       }
       claimSnapshot.splice(0, claimSnapshot.length, ...byId.values())
     }
@@ -790,7 +795,7 @@ class Daemon implements Roomd {
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
-    const claims = await this.reanchorOwnClaims(head, claimSnapshot, true)
+    const claims = await this.reanchorOwnClaims(head, claimSnapshot, true, pendingIds)
     const facts = await this.transitionFacts(inputs, resolved, promoted, fence)
     // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
     for (let attempt = 1; ; attempt++) {
@@ -938,7 +943,7 @@ class Daemon implements Roomd {
     const fence = this.fence
     if (!fence) return []
     const incarnation = manifestKey(this.name, fence)
-    const oldPaths = [...new Set(owned.filter(c => !c.claimedHash && !this.claimDigests.has(c.id) && this.roomDoc.text(c.path, incarnation) === undefined).map(c => c.path))]
+    const oldPaths = [...new Set(owned.filter(c => this.roomDoc.text(c.path, incarnation) === undefined).map(c => c.path))]
     const oldTexts = new Map<string, string | undefined>()
     const oldInfo = oldPaths.length ? await gitBlobInfoMany(this.dir, prev, oldPaths) : new Map()
     for (const rel of oldPaths) {
@@ -958,20 +963,20 @@ class Daemon implements Roomd {
         if (text === undefined || Buffer.byteLength(text) > this.sizeCap || claimDigest(text, range.from, range.to) !== hash) return undefined
         return text.split('\n').slice(range.from - 1, range.to).join('\n')
       }
-      snapshots.push({ ...c, ...range, claimedHash: hash, anchorText: block(overlay) ?? block(oldText), claimState: JSON.stringify(c) })
+      snapshots.push({ ...c, ...range, claimedHash: hash, anchorText: block(overlay) ?? block(oldText), oldText, claimState: JSON.stringify(c) })
     }
     return snapshots
   }
 
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
-  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[], onlyChanged = false): Promise<ClaimChanges> {
+  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[], onlyChanged = false, pendingIds: ReadonlySet<string> = new Set()): Promise<ClaimChanges> {
     if (!snapshot.length) return NO_CLAIM_CHANGES
     const fence = this.fence
     if (!fence) return NO_CLAIM_CHANGES
     const changedPaths = onlyChanged && this.appliedHead
       ? new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true))
       : undefined
-    const relevant = changedPaths ? snapshot.filter(c => changedPaths.has(c.path)) : snapshot
+    const relevant = changedPaths ? snapshot.filter(c => changedPaths.has(c.path) || pendingIds.has(c.id)) : snapshot
     if (!relevant.length) return NO_CLAIM_CHANGES
     const claimState = new Map(relevant.map(c => [c.id, (c as ClaimSnapshot).claimState ?? JSON.stringify(this.roomDoc.claims.get(c.id))]))
     const paths = [...new Set(relevant.map(c => c.path))]
@@ -1012,7 +1017,13 @@ class Daemon implements Roomd {
       const anchor = (c as ClaimSnapshot).anchorText
       return anchor === undefined ? [] : [[c.id, anchor] as const]
     }))
+    const previousTexts = new Map(relevant.flatMap(c => {
+      const oldText = (c as ClaimSnapshot).oldText
+      return oldText === undefined ? [] : [[c.id, oldText] as const]
+    }))
     const changes = await reanchorClaims(this.name, relevant, currentTexts, { originals, unreadable,
+      previousTexts, progress: this.claimSearchProgress,
+      searchKey: c => `${head}:${fence}:${claimState.get(c.id)}:${fileState.get(c.path)}`,
       valid: () => this.fence === fence && this.inputs === inputs && !this.stopped })
     const dirty = changes.releases.length || changes.uncertain.length ? new Set(await gitChanged(this.dir)) : new Set<string>()
     for (const c of relevant) if (changes.uncertain.includes(c.id) && unreadable.has(c.path) && !dirty.has(c.path)) {
@@ -1053,14 +1064,19 @@ class Daemon implements Roomd {
     const [id, original] = pending.claims.entries().next().value as [string, ClaimSnapshot]
     if (JSON.stringify(this.roomDoc.claims.get(id)) !== original.claimState) {
       pending.claims.delete(id)
+      this.claimSearchProgress.delete(id)
       if (!pending.claims.size) this.pendingClaimValidation = undefined
       return
     }
     const inputs = this.inputs
     const changes = await this.reanchorOwnClaims(head, [original])
-    if (this.stopped || this.fence !== fence || this.inputs !== inputs || await gitHead(this.dir) !== head || !this.claimFilesValid(changes)) return
+    const finalHead = await gitHead(this.dir)
+    if (this.stopped || this.fence !== fence || this.inputs !== inputs || this.pendingClaimValidation !== pending ||
+      pending.head !== head || pending.fence !== fence || pending.claims.get(id) !== original || finalHead !== head ||
+      !this.claimFilesValid(changes)) return
     if (JSON.stringify(this.roomDoc.claims.get(id)) !== original.claimState) {
       pending.claims.delete(id)
+      this.claimSearchProgress.delete(id)
       if (!pending.claims.size) this.pendingClaimValidation = undefined
       return
     }
@@ -1088,6 +1104,7 @@ class Daemon implements Roomd {
       }
     }, this)
     pending.claims.delete(id)
+    this.claimSearchProgress.delete(id)
     if (!pending.claims.size) this.pendingClaimValidation = undefined
     for (const notice of notices) this.post(notice.from, notice.body)
   }
@@ -1309,7 +1326,7 @@ class Daemon implements Roomd {
   }
 }
 
-type ClaimSnapshot = Claim & { anchorText?: string; claimState?: string }
+type ClaimSnapshot = Claim & { anchorText?: string; oldText?: string; claimState?: string }
 interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; uncertain: string[]; fileState: Map<string, string>; hashById: Map<string, string | undefined>; claimState: Map<string, string | undefined> }
 type PushedPending = NonNullable<ParticipantGit['pushedPending']>
 interface TransitionFacts { next?: ParticipantGit; pushed?: PushedPending }

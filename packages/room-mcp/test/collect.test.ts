@@ -867,6 +867,67 @@ describe('room_collect', () => {
     expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false); expect(release).not.toHaveBeenCalled()
     expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toBe('copied file.txt')
   })
+  it('yields through 2,000 copy paths without reading whole file contents into memory', async () => {
+    for (let i = 0; i < 2_000; i++) put(worker, `bulk/${i.toString().padStart(4, '0')}.txt`, 'x')
+    const t = setup()
+    let turnRan = false, copies = 0
+    const realCopy = fs.promises.copyFile.bind(fs.promises)
+    const copy = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
+      expect(turnRan).toBe(true)
+      copies++
+      return realCopy(...args)
+    })
+    const read = vi.spyOn(fs, 'readFileSync')
+    setImmediate(() => { turnRan = true })
+    try {
+      const reply = await t.call({ tag: 'test', mode: 'copy', paths: ['bulk'] })
+      expect(reply.match(/^copied bulk\//gm)).toHaveLength(2_000)
+      expect(copies).toBe(2_000)
+      expect(read.mock.calls.filter(([name]) => typeof name === 'string' && name.includes('/bulk/'))).toHaveLength(0)
+    } finally { copy.mockRestore(); read.mockRestore() }
+  })
+  it('refuses a destination that grows after apply preparation, before any write', async () => {
+    put(worker, 'file.txt', 'worker\n')
+    put(worker, 'new.txt', 'new\n')
+    const t = setup()
+    await t.sync()
+    const registry = await registryForDir(lead)
+    const begin = registry.beginCollect.bind(registry)
+    const seam = vi.spyOn(registry, 'beginCollect').mockImplementation(async id => {
+      await begin(id)
+      fs.appendFileSync(path.join(lead, 'file.txt'), 'x'.repeat(600_000))
+    })
+    try {
+      expect(await t.call({ tag: 'test' })).toMatch(/file\.txt changed during collection; nothing written, retry/)
+      expect(fs.readFileSync(path.join(lead, 'file.txt')).length).toBeGreaterThan(512 * 1024)
+      expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+      expect(workerByTag(lead, 'test')).toBeDefined()
+    } finally { seam.mockRestore() }
+  })
+  it('treats an oversized matching copy destination as a conflict until force is explicit', async () => {
+    const large = Buffer.alloc(512 * 1024 + 1, 65)
+    fs.writeFileSync(path.join(worker, 'large.bin'), large)
+    fs.writeFileSync(path.join(lead, 'large.bin'), large)
+    const t = setup()
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['large.bin'] })).toContain('lead has modified large.bin; pass force=true')
+    expect(release).not.toHaveBeenCalled()
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['large.bin'], force: true })).toBe('copied large.bin')
+  })
+  it('restores earlier destinations if a later apply write fails', async () => {
+    put(worker, 'a.txt', 'new a\n'); put(worker, 'b.txt', 'new b\n')
+    const t = setup()
+    const open = fs.openSync.bind(fs)
+    const seam = vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: string | number, mode?: fs.Mode) => {
+      if (file === path.join(lead, 'b.txt') && typeof flags === 'number' && (flags & fs.constants.O_WRONLY)) throw new Error('injected write failure')
+      return open(file, flags, mode)
+    }) as typeof fs.openSync)
+    try {
+      expect(await t.call({ tag: 'test' })).toContain('injected write failure')
+      expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false)
+      expect(fs.existsSync(path.join(lead, 'b.txt'))).toBe(false)
+      expect(workerByTag(lead, 'test')).toBeDefined()
+    } finally { seam.mockRestore() }
+  })
   it('guards running workers and invalid modes', async () => {
     const t = setup('running')
     expect(await t.call({ tag: 'test' })).toContain('skipped test: running')

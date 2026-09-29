@@ -9,6 +9,8 @@ import { RoomDoc, digestPath, gitBlobHash, manifestKey, participantRecord, parti
 import type { Identity, ClaimMsg, ManifestEntry, ManifestHead, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { Bridge } from '../src/bridge.js'
+import { PolicyStore } from '../src/policy-store.js'
+import { applySessionPolicy } from '../src/session.js'
 import { createAreas } from '../src/tools/scope.js'
 import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
@@ -237,6 +239,85 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 })
 
 describe('Bridge: the team projection of a local worker (manifest §5.5, registry §13)', () => {
+  async function withPolicyCallback(t: Awaited<ReturnType<typeof setup>>): Promise<PolicyStore> {
+    const daemon = t.teamLead.daemon
+    ;(daemon as unknown as { applyInputs: (inputs: typeof daemon.inputs) => void }).applyInputs = inputs => {
+      ;(daemon as unknown as { inputs: typeof daemon.inputs }).inputs = inputs
+    }
+    const store = await PolicyStore.open({ dir, room: TEAM, participant: lead.name, requested: 'full',
+      onChange: policy => applySessionPolicy(daemon, policy) })
+    t.teamLead.policyStore = store
+    return store
+  }
+
+  it('withdraws projected metadata and text before a narrowing policy mutation resolves', async () => {
+    const t = await setup({ start: false })
+    const store = await withPolicyCallback(t)
+    await store.declare(['src/'])
+    publishSource(t.local.b, {
+      'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6, baseHash: gitBlobHash('x = 1\n') },
+      'src/allowed.py': { change: 'A', state: 'shared', hash: gitBlobHash('allowed\n'), size: 8 },
+    })
+    await t.bridge.sync()
+    const key = manifestKey(worker.name, LEAD_FENCE)
+    const map = t.team.a.manifest.get(key)!
+    const overlay = new Y.Map<Y.Text>()
+    overlay.set('app.py', new Y.Text('x = 2\n'))
+    overlay.set('src/allowed.py', new Y.Text('allowed\n'))
+    t.team.a.overlays.set(key, overlay)
+    const otherKey = manifestKey('other+worker', LEAD_FENCE)
+    const otherEntry = { change: 'M' as const, state: 'held' as const, held: 'worker' as const,
+      hash: gitBlobHash('other\n'), size: 6, at: 1, fence: LEAD_FENCE }
+    const otherMap = new Y.Map<ManifestEntry>()
+    otherMap.set('other.py', otherEntry)
+    t.team.a.manifest.set(otherKey, otherMap)
+    t.team.a.manifestHead.set('other+worker', { ...t.team.a.manifestHead.get(worker.name)!,
+      projectedBy: 'other', projectedFrom: 'other-worker' })
+    expect(map.get('app.py')?.hash).toBeDefined()
+
+    await store.setRequested('declared')
+    expect(map.get('app.py')).not.toHaveProperty('hash')
+    expect(map.get('app.py')).not.toHaveProperty('baseHash')
+    expect(map.get('app.py')).not.toHaveProperty('size')
+    expect(t.team.a.overlays.get(key)?.has('app.py')).toBe(false)
+    expect(map.get('src/allowed.py')?.hash).toBe(gitBlobHash('allowed\n'))
+    expect(t.team.a.overlays.get(key)?.has('src/allowed.py')).toBe(true)
+    expect(t.team.a.manifestHead.get(worker.name)).toMatchObject({ level: 'declared', textPrefixes: ['src/'] })
+    expect(otherMap.get('other.py')).toEqual(otherEntry)
+
+    await store.setRequested('intent')
+    expect(map.size).toBe(0)
+    expect(t.team.a.manifestHead.get(worker.name)).toMatchObject({ level: 'intent', coverage: { kind: 'none', reason: 'unprojectable' }, complete: false })
+    expect(otherMap.get('other.py')).toEqual(otherEntry)
+  })
+
+  it('keeps synchronous withdrawal when an older projection prepare completes', async () => {
+    const t = await setup({ start: false })
+    const store = await withPolicyCallback(t)
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('x = 2\n'), size: 6 } })
+    await t.bridge.sync()
+    const key = manifestKey(worker.name, LEAD_FENCE)
+    const map = t.team.a.manifest.get(key)!
+    let entered!: () => void, release!: () => void
+    const preparing = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const target = t.bridge as unknown as { composeFacts: (...args: unknown[]) => Promise<unknown> }
+    const original = target.composeFacts.bind(t.bridge)
+    vi.spyOn(target, 'composeFacts').mockImplementation(async (...args) => {
+      const facts = await original(...args)
+      entered()
+      await gate
+      return facts
+    })
+    const oldPass = t.bridge.sync()
+    await preparing
+    await store.setRequested('intent')
+    expect(map.size).toBe(0)
+    release()
+    await oldPass
+    expect(map.size).toBe(0)
+    expect(t.team.a.manifestHead.get(worker.name)?.level).toBe('intent')
+  })
   it('F5 yields while preparing 3,000 B..C paths and does no map reads inside the atomic apply', async () => {
     const t = await setup({ start: false })
     git('checkout', '-q', C)
