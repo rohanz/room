@@ -234,7 +234,11 @@ export class Rooms {
   }
 
   /** Continue an exited, retained worker using a new durable run intent. */
-  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000): Promise<string | DeliveredResume> {
+  /**
+   * `beforeLaunch` runs once every check has passed and the run is reserved, just before the host starts; an
+   * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
+   */
+  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | undefined>): Promise<string | DeliveredResume> {
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
     const known = registry.reserved(w.tag)
@@ -264,6 +268,12 @@ export class Rooms {
         busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+    const refused = await beforeLaunch?.()
+    if (refused) {
+      await registry.update(record.id, old => ({ ...old, phase: 'active',
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: refused } }], seq: old.seq + 1 }))
+      return refused
+    }
     try {
       const { server, isWorker } = workerOrigin(s)
       const launched = await launchWorkerProcess({ session: s, id: record.id, tag: record.tag, dir: record.dir,

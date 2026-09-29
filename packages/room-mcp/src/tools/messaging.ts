@@ -2,7 +2,7 @@ import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageFor
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
-import { greeted, type PostResult } from '../post.js'
+import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -171,17 +171,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
         : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
-      if (resume) await greeted(s.hub)
-      const posted: PostResult = await s.post(s.me, body)
-      if (!posted.ok) return posted.text
-      const msg = posted.msg
+      // A follow-up to a finished worker is posted only once the worker can resume, and it resumes only once posted.
+      let posted: PostResult | undefined
+      const post = async () => { posted = await s.post(s.me, body); return posted.ok ? undefined : posted.text }
       let deliveredInPrompt = false
       if (resume) {
-        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log)
-        if (typeof result === 'string' && result.startsWith('error:')) return `sent [${msg.id}] ${formatMsg(msg)}; ${result}`
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, post)
+        if (posted?.ok === false) return posted.text
+        if (typeof result === 'string' && result.startsWith('error:')) return posted ? `sent [${posted.msg.id}] ${formatMsg(posted.msg)}; ${result}` : result
         deliveredInPrompt = true
         notes.push(typeof result === 'string' ? result : result.reply)
+      } else {
+        const refused = await post()
+        if (refused) return refused
       }
+      const msg = posted!.msg
       if (deliveredInPrompt) ledger.commitPrompt(s, to!, [msg.id])
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
       const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : undefined
