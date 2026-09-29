@@ -44,7 +44,7 @@ export function sharingSentence(s: Session): string {
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
   const secondary = secondaryPublishingLine(s)
   if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`
-  const description = sharingDescription(level)
+  const description = sharingDescription(level, !!s.daemon.retainedDeclared?.().length)
   const choices = sharingHumanChoices(level)
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }

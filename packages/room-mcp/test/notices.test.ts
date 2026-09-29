@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import { RoomDoc, formatMsg, type ClaimMsg, type PlanMsg, type Worker } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
@@ -37,6 +37,46 @@ function fixture() {
 }
 
 describe('unavailable addressed recipients', () => {
+  it.each(["Ada's agent", 'Ada’s agent', "ADA'S AGENT"])('addresses a displayed participant as %s', async to => {
+    const { s, tools } = fixture()
+    s.awareness.setLocalStateField('user', { name: 'lead', kind: 'agent' })
+    s.room.setOverlay('Ada', 'a.ts', 'work')
+    const peerDoc = new RoomDoc()
+    const peer = new Awareness(peerDoc.doc)
+    peer.setLocalState({ user: { name: 'Ada', kind: 'agent' } })
+    applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peerDoc.doc.clientID]), 'test')
+    const sent = await tools.room_send({ type: 'question', to, text: 'Review?' })
+    expect(sent).not.toMatch(/^error:/)
+    expect(s.room.messages().at(-1)).toMatchObject({ type: 'question', to: 'Ada' })
+    peer.destroy(); peerDoc.doc.destroy()
+  })
+
+  it('prefers an exact participant name over a display-name alias', async () => {
+    const { s, tools } = fixture()
+    s.room.setOverlay("Ada's agent", 'a.ts', 'work')
+    const doc = new RoomDoc(), awareness = new Awareness(doc.doc)
+    awareness.setLocalState({ user: { name: 'Ada', kind: 'agent' } })
+    applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(awareness, [doc.doc.clientID]), 'test')
+    const sent = await tools.room_send({ type: 'note', to: "Ada's agent", text: 'Hello' })
+    expect(sent).not.toMatch(/^error:/)
+    expect(s.room.messages().at(-1)).toMatchObject({ to: "Ada's agent" })
+    awareness.destroy(); doc.doc.destroy()
+  })
+
+  it('refuses a display label shared by two participants', async () => {
+    const { s, tools } = fixture()
+    const peers = [1, 2].map(i => {
+      const doc = new RoomDoc(), awareness = new Awareness(doc.doc)
+      awareness.setLocalState({ user: { name: `agent${i}`, kind: 'agent', owner: 'Ada' } })
+      applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(awareness, [doc.doc.clientID]), 'test')
+      return { doc, awareness }
+    })
+    expect(await tools.room_send({ type: 'question', to: "Ada's agent", text: 'Review?' }))
+      .toBe("error: Ada's agent is ambiguous; use a full name: agent1, agent2")
+    expect(s.room.messages()).toEqual([])
+    for (const peer of peers) { peer.awareness.destroy(); peer.doc.doc.destroy() }
+  })
+
   it('records questions to another lead\'s exited worker, and send and wait return the same one-line notice', async () => {
     const { s, tools } = fixture()
     s.room.setWorker(worker({ lead: 'other' }))

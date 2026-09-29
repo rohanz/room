@@ -82,7 +82,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       await loadAreas(s)
       const m = s.room.meta
-      const out: string[] = [s.local ? 'local: nothing leaves this machine' : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size} people`]
+      const otherCount = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.name)).size
+      const out: string[] = [s.local ? 'local: nothing leaves this machine' : `team room: sharing ${sharingDescription(shareOf(s, s.me.name), !!s.daemon.retainedDeclared?.().length)} with ${otherCount} other participant${otherCount === 1 ? '' : 's'}`]
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)

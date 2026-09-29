@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MessageKinds,
+  claimReleaseText,
+  parseClaimRelease,
   RoomDoc,
   formatMsg,
   messageEndsWait,
@@ -27,6 +29,21 @@ interface PingMsg extends MsgBase {
   type: 'ping'
   text: string
 }
+
+describe('claim release text', () => {
+  it('builds and parses the exact roomd notice', () => {
+    const text = claimReleaseText('src/app.py', 2, 4, 'abc123def0')
+    expect(text).toBe('released your claim on src/app.py:2-4: that code changed in abc123def0')
+    expect(parseClaimRelease(text)).toEqual({ path: 'src/app.py', from: 2, to: 4, sha: 'abc123def0' })
+  })
+
+  it('parses colons in paths and rejects unrelated text', () => {
+    expect(parseClaimRelease('released your claim on src/a:b.py:2-4: that code changed in abc123def0'))
+      .toEqual({ path: 'src/a:b.py', from: 2, to: 4, sha: 'abc123def0' })
+    expect(parseClaimRelease('released your claim on src/app.py:2-4: something else')).toBeUndefined()
+    expect(parseClaimRelease('prefix released your claim on src/app.py:2-4: that code changed in abc123def0')).toBeUndefined()
+  })
+})
 
 describe('MessageKinds', () => {
   afterEach(() => { delete MessageKinds.ping })

@@ -48,8 +48,9 @@ export function resolveServer(raw?: string, teamServer = DEFAULT_SERVER): string
 }
 
 /** Plain wording shared by join, state and sharing controls. */
-export function sharingDescription(level: ShareLevel): string {
-  return level === 'full' ? 'the full text of files you change' : level === 'declared' ? 'files in your declared area and changed files declared earlier' : 'only your plans, no file text'
+export function sharingDescription(level: ShareLevel, retainedDeclared = false): string {
+  return level === 'full' ? 'the full text of files you change' : level === 'declared'
+    ? `files in your declared area${retainedDeclared ? ' and changed files declared earlier' : ''}` : 'only your plans, no file text'
 }
 
 /** Spoken choices in disclosures; keep tool syntax out of notes relayed to a person. */

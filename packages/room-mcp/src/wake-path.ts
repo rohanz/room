@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import type { WakeEvent } from './wake.js'
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { sendChannelNotification } from './channel.js'
+import { parseClaimRelease } from '@room/shared'
 
 type Notification = { method: 'notifications/claude/channel'; params: { content: string; meta: Record<string, string> } }
 type WakeEnv = NodeJS.ProcessEnv
@@ -144,7 +145,7 @@ export class SocketWakeRouter {
     this.lastSentAt = Date.now()
     const count = items.length
     const shown = count > 5 ? 4 : 5
-    const phrases = items.slice(0, shown).map(w => `${(w.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(w.meta.type)}`)
+    const phrases = items.slice(0, shown).map(w => wakePhrase(w))
     if (count > shown) phrases.push(`${count - shown} more`)
     // Sequence makes consecutive bursts distinct even when sender and kind are unchanged.
     const collectHint = items.some(w => w.meta.type === 'done') ? ' (room_collect brings in finished workers)' : ''
@@ -156,6 +157,21 @@ export class SocketWakeRouter {
       if (mode(env) === 'auto' && this.channelAdmitted()) await this.channel({ content, meta: { type: 'room_wake', count: String(count) } })
     }
   }
+}
+
+function wakePhrase(wake: WakeEvent): string {
+  if (wake.meta.from === 'room' && wake.meta.from_kind === 'bot' && wake.meta.type === 'note') {
+    const raw = wake.content.slice(wake.content.indexOf('\n') + 1)
+    try {
+      const message = JSON.parse(raw) as { text?: unknown }
+      if (typeof message.text === 'string') {
+        const release = parseClaimRelease(message.text)
+        if (release) return `Room released your claim on ${release.path}:${release.from}-${release.to}`
+      }
+    } catch { /* keep the generic system notice */ }
+  }
+  const from = (wake.meta.from ?? 'someone').replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'
+  return `${from} ${kindPhrase(wake.meta.type)}`
 }
 
 function kindPhrase(type: string | undefined): string {

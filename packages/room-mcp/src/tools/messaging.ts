@@ -1,4 +1,4 @@
-import { formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
+import { displayName, formatMsg, formatPlans, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type Priority, type QuestionMsg, type WorkerStatus } from '@room/shared'
 import type { Session } from '../session.js'
 import { syncHookSeen } from '../hooks-bridge.js'
 import { isPrName } from '../prs.js'
@@ -45,6 +45,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workers.values(), w => w.name),
     ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
   ].filter(n => !isPrName(n)))
+  const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()
+  const resolveDisplayedName = (requested: string): { name?: string; ambiguous?: string[] } => {
+    if (rooms.all().some(room => knownNames(room).has(requested))) return { name: requested }
+    const candidates = new Set<string>()
+    for (const room of rooms.all()) {
+      for (const presence of presences(room)) {
+        if (addressKey(displayName(presence.user)) === addressKey(requested)) candidates.add(presence.user.name)
+      }
+      for (const scope of room.room.allScopes()) {
+        if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === addressKey(requested)) candidates.add(scope.by)
+      }
+      for (const claim of room.room.openClaims()) {
+        if (addressKey(displayName({ name: claim.by, kind: claim.byKind })) === addressKey(requested)) candidates.add(claim.by)
+      }
+    }
+    const names = [...candidates].sort()
+    return names.length > 1 ? { ambiguous: names } : { name: names[0] }
+  }
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
     const worker = s.room.workerOf(name)
@@ -88,7 +106,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const repliedNote = (a.type === 'note' || a.type === 'answer') ? byQuestion?.room.messages().find(m => m.id === a.inReplyTo && m.type === 'note') : undefined
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
-      const requestedTo = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
+      const requestedToRaw = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
+      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw) : undefined
+      if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(', ')}`
+      const requestedTo = resolvedDisplay?.name ?? requestedToRaw
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
