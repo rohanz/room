@@ -149,6 +149,16 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await mcp.call('room_leave')).toMatch(/^left local\/picked/)
     expect(await mcp.call('room_state')).toBe('error: not in the local room; room_join to join it.')
   }, 90_000)
+
+  it('a room joined with room_join writes its daemon events to room-mcp.log', async () => {
+    const dir = repo()
+    const mcp = await startMcp(dir)
+    await mcp.waitFor(/^room-mcp: ready$/, 30_000)
+    expect(await mcp.call('room_join', { room: 'picked' })).toContain('joined local/picked as Ada')
+    execFileSync('git', ['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'next'], { stdio: 'pipe' })
+    await mcp.waitFor(/^room-mcp: HEAD moved /, 20_000)
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(dir, '.git', 'room-mcp.log'), 'utf8')).toMatch(/HEAD moved /), { timeout: 5000 })
+  }, 60_000)
 })
 
 describe('AutoJoin (the ensure step)', () => {

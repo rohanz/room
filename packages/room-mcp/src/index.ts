@@ -95,7 +95,7 @@ async function main() {
       ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
       if (signal.aborted) throw new Error('Room is shutting down')
       // attachChannel is also handed to the tools so the workers room (opened by room_spawn next to a team session) pushes its wake-ups too.
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s) })
+      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) attachChannel(s) }, cwd: dir, config: startup, attachChannel: s => attachChannel(s), log })
       const adopt = async (s: Session) => {
         await prepareTeamSharingDisclosure(s)
         const disclosure = pendingTeamSharingDisclosure(s)
