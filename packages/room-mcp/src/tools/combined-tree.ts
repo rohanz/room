@@ -11,6 +11,7 @@ import { baselineText, carriedPaths, carriesWork, checkoutText, MissingBaseBlob,
 import { acceptedGit, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
+import { readBoundedDiskText } from './disk-text.js'
 
 interface PreviewGap { person: string; path?: string; why: string }
 
@@ -114,7 +115,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       const result = containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link' })
       if (!result.ok) throw new Error('unsafe preview symlink: ' + p)
       const file = result.path
-      return fs.readFileSync(file, options.encoding ?? 'utf8')
+      return await readBoundedDiskText(file, options.encoding ?? 'utf8')
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw e
@@ -150,6 +151,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // A lead's revert to HEAD clears its manifest entry, but still changes a file
   // the worker inherited at spawn. Compare those carried paths explicitly.
   for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
+    await new Promise<void>(resolve => setImmediate(resolve))
     pathSet.add(p)
     theirPaths.add(p)
   }
@@ -160,25 +162,39 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const ignored = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
     const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
     if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
-    if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
+    if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
+    }
     if (dir) {
-      for (const p of (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) add(p)
-      for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
+      for (const p of (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) {
+        await new Promise<void>(resolve => setImmediate(resolve)); add(p)
+      }
+      for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) {
+        await new Promise<void>(resolve => setImmediate(resolve)); add(p)
+      }
     }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of await committedPaths(item.person, ancestor, base)) add(p)
+      if (base !== ancestor) for (const p of await committedPaths(item.person, ancestor, base)) {
+        await new Promise<void>(resolve => setImmediate(resolve)); add(p)
+      }
     }
   }
   // ls-files represents nested repositories/submodules as directory entries.
   // They are not file text and cannot participate in a file merge preview.
+  const safetySides = [{ session: caller, person: caller.me.name }, ...participants].map(({ session, person }) => {
+    const worker = previewWorker(session, person)
+    const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
+    return { person, root: dir ? rootOf(dir) : undefined,
+      linkedInputs: workerOwnedPaths(localWorkerBaseline(session.dir, person)) }
+  })
+  const diskDirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
   for (const p of pathSet) {
+    await new Promise<void>(resolve => setImmediate(resolve))
     let excluded = false
-    for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
-      const worker = previewWorker(session, person)
-      const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : undefined)
-      let reason = workerOwnedPaths(localWorkerBaseline(session.dir, person)).includes(p) ? 'linked input' : undefined
-      if (!reason && dir) {
-        const root = rootOf(dir)
+    for (const { person, root, linkedInputs } of safetySides) {
+      let reason = linkedInputs.includes(p) ? 'linked input' : undefined
+      if (!reason && root) {
         try {
           if (!containedRepoPath(root, path.join(root, p), { leaf: 'read-contained-link', allowRoot: true }).ok) reason = 'symlink leaving the worktree'
         } catch (e) {
@@ -193,14 +209,14 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       }
     }
     if (excluded) { pathSet.delete(p); continue }
-    const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir): dir is string => !!dir)]
-    if (dirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
+    if (diskDirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
       pathSet.delete(p)
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
       gaps.push({ person: caller.me.name, path: p, why: 'directory or nested repository' })
     }
   }
   if (!options.diskOnly) for (const p of [...pathSet]) {
+    await new Promise<void>(resolve => setImmediate(resolve))
     for (const { person, session } of participants) {
       if (previewWorker(session, person)) continue
       const version = await remoteVersion(session, person, p)
@@ -215,7 +231,10 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // A path only the caller changed cannot conflict and keeps the caller's text. Skipping it avoids reading
   // gigabytes of a lead's untracked art when only the participants' changes matter (collect, preview without a run).
   let callerOnly = 0
-  if (options.skipCallerOnly) for (const p of pathSet) if (!theirPaths.has(p)) { pathSet.delete(p); callerOnly++ }
+  if (options.skipCallerOnly) for (const p of pathSet) {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    if (!theirPaths.has(p)) { pathSet.delete(p); callerOnly++ }
+  }
   const baseTexts = new Map<string, string | null>()
   const textAt = async (sha: string, p: string) => {
     const key = sha + ':' + p
@@ -224,6 +243,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
   const baseAt = async (pair: Baseline | undefined, p: string) => pair ? (await baselineText(pair, p, textAt, options.encoding)) ?? null : textAt(ancestor, p)
   for (const pair of new Set([callerBaseline, ...pairs.values()])) for (const p of pair?.untracked.keys() ?? []) {
+    await new Promise<void>(resolve => setImmediate(resolve))
     if (pathSet.has(p)) await baseAt(pair, p).catch(error => {
       if (!(error instanceof MissingBaseBlob)) throw error
       pathSet.delete(p)
@@ -243,6 +263,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const merged = new Map<string, string | null>()
   const owners = new Map<string, string[]>()
   for (const p of paths) {
+    await new Promise<void>(resolve => setImmediate(resolve))
     const mine = await previewText(caller, p, caller.me.name)
     const text = mine === undefined ? await textAt(ancestor, p) : mine
     merged.set(p, text)

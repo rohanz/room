@@ -201,17 +201,17 @@ it('refuses a worker root replaced by a symlink between files in one preview', a
   await registerWorkers(session, [{ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', pid: 0, startedAt: 1, base }])
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
   const parked = path.join(root, 'parked-worker')
-  const read = fs.readFileSync.bind(fs)
+  const open = fs.promises.open.bind(fs.promises)
   let swapped = false
-  vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
-    const result = read(file, options as BufferEncoding)
+  vi.spyOn(fs.promises, 'open').mockImplementation((async (file: fs.PathLike, flags: string | number, mode?: number) => {
+    const handle = await open(file, flags, mode)
     if (String(file) === path.join(worker, 'a.txt') && !swapped) {
       swapped = true
       fs.renameSync(worker, parked)
       fs.symlinkSync(outside, worker, 'dir')
     }
-    return result
-  }) as typeof fs.readFileSync)
+    return handle
+  }) as typeof fs.promises.open)
   try {
     await expect(buildCombinedTree(state, session, [{ person: 'lead+w', session }], { diskOnly: true }))
       .rejects.toThrow(/unsafe preview symlink: b\.txt/)

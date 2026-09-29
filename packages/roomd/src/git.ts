@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { performance } from 'node:perf_hooks'
+import { setImmediate } from 'node:timers/promises'
 
 export type GitObserver = (args: readonly string[], elapsedMs: number) => void
 let gitObserver: GitObserver | undefined
@@ -171,7 +172,11 @@ export interface GitBlobInfo { hash: string; size: number }
 
 /** Blob ids and sizes at one commit, without reading the blobs. NUL framing also permits newline paths. */
 export async function gitBlobInfoMany(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number): Promise<Map<string, GitBlobInfo | undefined>> {
-  const paths = Array.from(relpaths)
+  const paths: string[] = []
+  for (const p of relpaths) {
+    if (paths.length % 32 === 0) await setImmediate()
+    paths.push(p)
+  }
   const out = new Map<string, GitBlobInfo | undefined>()
   if (!paths.length) return out
   const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs)
@@ -191,10 +196,39 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
   const headers = raw.split('\0')
   if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`)
   for (const [i, p] of paths.entries()) {
+    if (i % 32 === 0) await setImmediate()
     const [hash, type, size] = headers[i].split(' ')
     out.set(p, type === 'blob' ? { hash, size: Number(size) } : undefined)
   }
   return out
+}
+
+/** Read only base blobs inside a caller's publication cap, in bounded output batches. */
+export async function gitShowManyCapped(dir: string, base: string, relpaths: Iterable<string>, perBlobCap: number,
+  knownInfo?: ReadonlyMap<string, GitBlobInfo | undefined>): Promise<Map<string, string | undefined>> {
+  const paths: string[] = []
+  for (const p of relpaths) { if (paths.length % 32 === 0) await setImmediate(); paths.push(p) }
+  const info = knownInfo ?? await gitBlobInfoMany(dir, base, paths)
+  const result = new Map<string, string | undefined>()
+  let group: string[] = []
+  let bytes = 0
+  const flush = async () => {
+    if (!group.length) return
+    for (const [p, text] of await gitShowMany(dir, base, group)) result.set(p, text)
+    group = []
+    bytes = 0
+  }
+  let i = 0
+  for (const p of paths) {
+    if (i++ % 32 === 0) await setImmediate()
+    const blob = info.get(p)
+    if (!blob || blob.size > perBlobCap) { result.set(p, undefined); continue }
+    if (group.length >= 32 || bytes + blob.size > 1024 * 1024) await flush()
+    group.push(p)
+    bytes += blob.size
+  }
+  await flush()
+  return result
 }
 
 /** Paths whose worktree or index differs from HEAD, untracked non-ignored files included: what an overlay seed must look at. */

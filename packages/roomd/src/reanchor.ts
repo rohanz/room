@@ -54,7 +54,8 @@ export async function reanchorClaims(owner: string, claims: readonly Claim[], te
     if (!await tick(text.length)) { uncertain.push(claim.id); continue }
     const lines = splitLines(text)
     const width = claim.to - claim.from + 1
-    if (!claim.claimedHash || !Number.isSafeInteger(width) || width <= 0) {
+    if (!claim.claimedHash) { uncertain.push(claim.id); continue }
+    if (!Number.isSafeInteger(width) || width <= 0) {
       releases.push({ id: claim.id, path: claim.path, from: claim.from, to: claim.to }); continue
     }
     const current = lines.slice(claim.from - 1, claim.to)

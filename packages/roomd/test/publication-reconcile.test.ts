@@ -7,9 +7,10 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { RoomDoc, manifestKey } from '@room/shared'
-import { MAX_PUBLICATION_PATHS } from '../src/policy.js'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
+import { Publisher } from '../src/publisher.js'
+import { rulesFromText } from '../src/policy.js'
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 const provider = (doc: Y.Doc) => {
@@ -219,10 +220,103 @@ it('yields while validating every text path before the atomic apply', async () =
   } finally { spy.mockRestore() }
 })
 
-it('marks coverage incomplete instead of accepting an oversized policy-narrowing transaction', async () => {
-  daemon = await startRoomd(options())
-  const map = daemon.roomDoc.manifest.get(manifestKey('Alice', daemon.fence!))!
-  for (let i = 0; i <= MAX_PUBLICATION_PATHS; i++) map.set(`bulk/${i}`, { change: 'M', state: 'held', held: 'scope', at: 1, fence: daemon.fence! })
-  daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('intent') })
-  expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, coverage: { kind: 'none', reason: 'starting' } })
+it('rejects a first validated path changed at a later validation boundary', async () => {
+  const checkout = repo()
+  const base = git(checkout, 'rev-parse', 'HEAD')
+  const roomDoc = new RoomDoc()
+  const host: any = { dir: checkout, name: 'Alice', fence: '1', roomDoc, base, stopped: false, phase: 'watch',
+    inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 1024, 1024 * 1024), head: base },
+    batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
+    log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
+    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
+  const publisher = new Publisher(host)
+  const paths = Array.from({ length: 96 }, (_, i) => `gate-${String(i).padStart(3, '0')}.txt`)
+  for (const p of paths) fs.writeFileSync(path.join(checkout, p), 'before\n')
+  const prepared = await publisher.prepare()
+  const original = fs.lstatSync
+  let first = true
+  const events: string[] = []
+  const spy = vi.spyOn(fs, 'lstatSync').mockImplementation(((p: fs.PathLike, options?: unknown) => {
+    if (first && String(p).endsWith(paths[0])) {
+      first = false
+      setImmediate(() => { fs.writeFileSync(path.join(checkout, paths[0]), 'after with different size\n'); events.push('changed') })
+    }
+    return (original as any)(p, options)
+  }) as typeof fs.lstatSync)
+  try {
+    expect(await publisher.validatePrepared(prepared)).toBe(true)
+    expect(events).toEqual(['changed'])
+    expect(publisher.identityValid(prepared)).toBe(false)
+    expect(roomDoc.manifestHead.get('Alice')).toBeUndefined()
+  } finally { spy.mockRestore() }
+  publisher.stop()
+})
+
+it('refuses the HEAD-transition transaction when an early validated path changes', async () => {
+  const config = options()
+  daemon = await startRoomd(config)
+  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void }; publisher: {
+    prepare(): Promise<any>; validatePrepared(prepared: any): Promise<boolean>
+  }; commitTransition(...args: any[]): boolean }
+  internal.watcher.removeAllListeners('all')
+  const paths = Array.from({ length: 96 }, (_, i) => `gate-${String(i).padStart(3, '0')}.txt`)
+  for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'before\n')
+  const prepared = await internal.publisher.prepare()
+  const original = fs.lstatSync
+  let first = true
+  const spy = vi.spyOn(fs, 'lstatSync').mockImplementation(((p: fs.PathLike, options?: unknown) => {
+    if (first && String(p).endsWith(paths[0])) {
+      first = false
+      setImmediate(() => fs.writeFileSync(path.join(config.dir, paths[0]), 'after with different size\n'))
+    }
+    return (original as any)(p, options)
+  }) as typeof fs.lstatSync)
+  try {
+    expect(await internal.publisher.validatePrepared(prepared)).toBe(true)
+    expect(internal.commitTransition({ head: daemon.base }, { moves: [], releases: [], hashById: new Map(), claimState: new Map() }, {}, prepared, true)).toBe(false)
+    expect(incarnationText(daemon.roomDoc, 'Alice', paths[0])).toBeUndefined()
+  } finally { spy.mockRestore() }
+})
+
+it('republishes, narrows, and deletes 2050 shared files without retaining content', async () => {
+  const checkout = repo()
+  const roomDoc = new RoomDoc()
+  const base = git(checkout, 'rev-parse', 'HEAD')
+  const host: any = { dir: checkout, name: 'Alice', fence: '1', roomDoc, base, stopped: false, phase: 'watch',
+    inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 512 * 1024, 8 * 1024 * 1024), head: base },
+    batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
+    log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
+    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
+  const publisher = new Publisher(host)
+  const paths = Array.from({ length: 2050 }, (_, i) => `many/f-${String(i).padStart(4, '0')}.txt`)
+  fs.mkdirSync(path.join(checkout, 'many'))
+  for (const p of paths) fs.writeFileSync(path.join(checkout, p), 'x')
+  expect(await publisher.reconcile()).toBeDefined()
+  const key = manifestKey('Alice', '1')
+  const entry = () => roomDoc.manifest.get(key)
+  const assertShared = () => {
+    expect(roomDoc.manifestHead.get('Alice')?.complete).toBe(true)
+    expect(entry()?.size).toBe(paths.length)
+    expect(incarnationText(roomDoc, 'Alice', paths[0])?.toString()).toBe('x')
+  }
+  assertShared()
+  expect(await publisher.reconcile()).toBeDefined()
+  assertShared()
+  host.inputs = { ...host.inputs, policy: policyFromLevel('intent') }
+  publisher.applyInputs(host.inputs)
+  expect(roomDoc.manifestHead.get('Alice')?.level).toBe('intent')
+  expect(entry()?.size).toBe(0)
+  expect(roomDoc.overlays.get(key)?.size ?? 0).toBe(0)
+  expect(roomDoc.ownedBaseTexts.size).toBe(0)
+  expect(incarnationText(roomDoc, 'Alice', paths[0])).toBeUndefined()
+  host.inputs = { ...host.inputs, policy: policyFromLevel('full') }
+  publisher.applyInputs(host.inputs)
+  expect(await publisher.reconcile()).toBeDefined()
+  assertShared()
+  for (const p of paths) fs.unlinkSync(path.join(checkout, p))
+  expect(await publisher.reconcile()).toBeDefined()
+  expect(entry()?.size).toBe(0)
+  expect(roomDoc.overlays.get(key)?.size ?? 0).toBe(0)
+  expect(incarnationText(roomDoc, 'Alice', paths[0])).toBeUndefined()
+  publisher.stop()
 })

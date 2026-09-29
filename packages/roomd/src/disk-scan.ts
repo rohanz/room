@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
-import { git, gitBlobInfoMany, wholeTreeTimeoutMs } from './git.js'
+import { git, gitBlobInfoMany, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
 import { defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
@@ -58,10 +58,12 @@ export async function changedSince(dir: string, base: string, previous: Iterable
 export async function readDisk(dir: string, inputs: PublicationInputs, previous: Iterable<string>, safe: (p: string) => boolean,
   oversizedCache: Map<string, { size: number; mtimeMs: number; base: string; hash: string }> = new Map(),
   carried: ReadonlyMap<string, { sha: string }> = new Map(),
-  valid: () => boolean = () => true): Promise<DiskFact[]> {
+  valid: () => boolean = () => true,
+  onBaseBlobs?: (blobs: ReadonlyMap<string, GitBlobInfo | undefined>) => void): Promise<DiskFact[]> {
   if (inputs.policy.level === 'intent' || !inputs.policy.publisher) return []
   const { paths, changed, indexed } = await changedSince(dir, inputs.head, previous)
   const [blobs, format, gitIgnored] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)])
+  onBaseBlobs?.(blobs)
   const facts: DiskFact[] = []
   let lastYield = performance.now()
   let sinceYield = 0
@@ -104,13 +106,25 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
       continue
     }
     let bytes: Buffer
-    try { bytes = fs.readFileSync(path.join(dir, p)) }
-    catch { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
+    let after: fs.Stats
     try {
-      const after = fs.lstatSync(path.join(dir, p))
-      if (!after.isFile() || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
-        facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) })
-        continue
+      const fd = fs.openSync(path.join(dir, p), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try {
+        const chunks: Buffer[] = []
+        let length = 0
+        while (length <= inputs.rules.sizeCap) {
+          const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, inputs.rules.sizeCap + 1 - length))
+          const n = fs.readSync(fd, chunk, 0, chunk.length, null)
+          if (n === 0) break
+          chunks.push(chunk.subarray(0, n))
+          length += n
+        }
+        after = fs.fstatSync(fd)
+        if (length > inputs.rules.sizeCap) { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
+        bytes = Buffer.concat(chunks, length)
+      } finally { fs.closeSync(fd) }
+      if (!after.isFile() || after.ino !== stat.ino || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
+        facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue
       }
     } catch { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
     const hash = createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
@@ -118,7 +132,7 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
     let binary = false
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
     catch { binary = true }
-    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, text, binary, at: stat.mtimeMs,
+    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, text, binary, at: stat.mtimeMs, ino: stat.ino,
       ...(!changed.has(p) && !baseHash ? { changed: false } : {}) })
   }
   return facts

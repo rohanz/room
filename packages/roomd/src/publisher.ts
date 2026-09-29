@@ -1,11 +1,11 @@
 import fs from 'node:fs'
 import { setImmediate } from 'node:timers/promises'
 import { manifestKey, type RoomDoc } from '@room/shared'
-import { gitHead, gitShowMany } from './git.js'
+import { gitHead, gitShowManyCapped, type GitBlobInfo } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk, StalePublication } from './disk-scan.js'
-import { markManifestIncomplete, publishManifest, type ManifestFact } from './manifest-publish.js'
-import { authorizesText, defaultExcludedPath, MAX_PUBLICATION_PATHS, planYielding, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
+import { markManifestIncomplete, prepareManifestPublication, prepareManifestPublicationYielding, type ManifestFact } from './manifest-publish.js'
+import { authorizesText, defaultExcludedPath, planYielding, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
 
 interface Host {
@@ -41,6 +41,8 @@ export interface PreparedPublication {
   readonly facts: readonly ManifestFact[]
   readonly textOps: ReadonlyMap<string, ReturnType<RoomDoc['prepareOverlayDiff']>>
   readonly baseTextDeletes: readonly string[]
+  readonly overlayDeletes: readonly string[]
+  readonly manifestPlan: ReturnType<typeof prepareManifestPublication>
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
@@ -52,6 +54,7 @@ const incarnationOverlayPaths = (room: RoomDoc, incarnation: string): string[] =
 /** Withdraw one observed publisher incarnation during a same-worktree handoff. Never touches a newer head. */
 export function withdrawFormerPublisher(room: RoomDoc, name: string, fence: string, successor: string): void {
   const key = manifestKey(name, fence)
+  const baseTextDeletes = [...room.ownedBaseTexts.keys()].filter(old => old.startsWith(`${name}\0`))
   room.doc.transact(() => {
     const head = room.manifestHead.get(name)
     if (!head || head.fence !== fence || head.coverage.kind === 'none') return
@@ -59,18 +62,8 @@ export function withdrawFormerPublisher(room: RoomDoc, name: string, fence: stri
     room.overlays.delete(key)
     room.manifestHead.set(name, { ...head, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: successor,
       excluded: [], rev: head.rev + 1, semRev: head.semRev + 1, scannedAt: Date.now() })
-    for (const old of [...room.ownedBaseTexts.keys()]) if (old.startsWith(`${name}\0`)) room.ownedBaseTexts.delete(old)
+    for (const old of baseTextDeletes) room.ownedBaseTexts.delete(old)
   })
-}
-
-/** A deletion mark can remain visible after its base text is no longer authorized. */
-function withdrawBaseTexts(host: Host, authorized: ReadonlySet<string>): void {
-  const prefix = `${host.name}\0`
-  for (const key of host.roomDoc.ownedBaseTexts.keys()) {
-    if (!key.startsWith(prefix)) continue
-    const separator = key.indexOf(':', prefix.length)
-    if (separator >= 0 && !authorized.has(key.slice(separator + 1))) host.roomDoc.ownedBaseTexts.delete(key)
-  }
 }
 
 /** One publisher path: capture inputs, read disk/Git, pure plan, synchronous guarded apply. */
@@ -107,11 +100,6 @@ export class Publisher {
     const incarnation = manifestKey(host.name, fence)
     const current = host.roomDoc.manifest.get(incarnation)
     const overlayPaths = incarnationOverlayPaths(host.roomDoc, incarnation)
-    if ((current?.size ?? 0) + this.excludedPaths.size + overlayPaths.length + host.roomDoc.ownedBaseTexts.size + host.roomDoc.manifest.size + host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
-      markManifestIncomplete(host.roomDoc, host.name, fence)
-      this.reconcileFailed(new Error('publication path limit exceeded during policy narrowing'))
-      return
-    }
     const facts: ManifestFact[] = []
     const factPaths = new Set<string>()
     const retainedText = new Set<string>()
@@ -140,16 +128,18 @@ export class Publisher {
       }
       for (const path of this.excludedPaths) if (!factPaths.has(path)) facts.push({ path, change: 'M', excluded: true })
     }
+    const manifestPlan = prepareManifestPublication({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
+      prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
+      ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
+    const wantedBase = new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => `${host.name}\0${next.head}:${f.path}`))
+    const baseTextDeletes = [...host.roomDoc.ownedBaseTexts.keys()].filter(key => key.startsWith(`${host.name}\0`) && !wantedBase.has(key))
     host.roomDoc.doc.transact(() => {
-      publishManifest({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
-        prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
-        ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
+      manifestPlan.commit(host.roomDoc.manifestHead.get(host.name)?.complete ?? false)
       for (const path of overlayPaths) {
         if (retainedText.has(path)) continue
         host.roomDoc.clearOverlay(incarnation, path, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host, next.head)
-      withdrawBaseTexts(host, new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => f.path)))
+      for (const key of baseTextDeletes) host.roomDoc.ownedBaseTexts.delete(key)
     }, host)
     this.markDirty()
   }
@@ -174,8 +164,11 @@ export class Publisher {
     const carried = this.host.carried()
     const capturedFence = this.host.fence
     const valid = () => !this.host.stopped && this.host.inputs === inputs && this.host.fence === capturedFence
-    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid)
-    for (const item of disk) await this.host.beforeBaseRead?.(item.path)
+    let baseBlobs: ReadonlyMap<string, GitBlobInfo | undefined> = new Map()
+    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid,
+      blobs => { baseBlobs = blobs })
+    let diskCount = 0
+    for (const item of disk) { if (diskCount++ % 32 === 0) await setImmediate(); await this.host.beforeBaseRead?.(item.path) }
     let desired: PublicationPlan
     try { desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt()) }
     catch (error) {
@@ -186,9 +179,18 @@ export class Publisher {
       if (this.host.fence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence)
       this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`))
     }
-    const textPaths = [...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)
-    const baseTexts = await gitShowMany(this.host.dir, inputs.head, textPaths)
+    const textPaths: string[] = []
+    let textCount = 0
+    for (const [p, entry] of desired.entries) {
+      if (textCount++ % 32 === 0) await setImmediate()
+      if (entry.state === 'shared' && authorizesText(inputs.policy, p)) textPaths.push(p)
+    }
+    const baseTextPaths: string[] = []
+    let basePathCount = 0
+    for (const p of textPaths) { if (basePathCount++ % 32 === 0) await setImmediate(); if (baseBlobs.get(p) !== undefined) baseTextPaths.push(p) }
+    const baseTexts = await gitShowManyCapped(this.host.dir, inputs.head, baseTextPaths, inputs.rules.sizeCap, baseBlobs)
     for (const p of textPaths) {
+      if (textCount++ % 32 === 0) await setImmediate()
       const sha = carried?.untracked.get(p)?.sha
       if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p))
     }
@@ -212,21 +214,31 @@ export class Publisher {
       if (!valid()) throw new StalePublication('publication inputs changed during prepare')
       facts.push({ path, change: 'M', excluded: true })
     }
-    const oldCount = capturedFence === undefined ? 0 : (this.host.roomDoc.manifest.get(incarnation!)?.size ?? 0) + incarnationOverlayPaths(this.host.roomDoc, incarnation!).length
     const baseTextDeletes: string[] = []
-    const wanted = new Set([...desired.entries].filter(([p, entry]) => entry.held !== 'scope' && authorizesText(inputs.policy, p)).map(([p]) => `${this.host.name}\0${inputs.head}:${p}`))
+    const wanted = new Set<string>()
+    let wantedCount = 0
+    for (const [p, entry] of desired.entries) {
+      if (wantedCount++ % 32 === 0) await setImmediate()
+      if (entry.held !== 'scope' && authorizesText(inputs.policy, p)) wanted.add(`${this.host.name}\0${inputs.head}:${p}`)
+    }
     let baseCount = 0
     for (const key of this.host.roomDoc.ownedBaseTexts.keys()) {
       if (++baseCount % 32 === 1) await setImmediate()
       if (!valid()) throw new StalePublication('publication inputs changed during prepare')
       if (key.startsWith(`${this.host.name}\0`) && !wanted.has(key)) baseTextDeletes.push(key)
-      if (baseCount + facts.length + oldCount > MAX_PUBLICATION_PATHS) break
     }
-    if (facts.length + oldCount + baseCount + this.host.roomDoc.manifest.size + this.host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
-      if (capturedFence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, capturedFence)
-      throw new Error('publication path limit exceeded during atomic apply')
+    const manifestPlan = await prepareManifestPublicationYielding({ room: this.host.roomDoc, name: this.host.name, fence: capturedFence ?? '',
+      base: inputs.head, level: inputs.policy.level, prefixes: inputs.policy.textPrefixes, complete: true,
+      ...(inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? 'another session' }) }, facts)
+    const overlayDeletes: string[] = []
+    if (incarnation) {
+      let overlayCount = 0
+      for (const p of incarnationOverlayPaths(this.host.roomDoc, incarnation)) {
+        if (overlayCount++ % 32 === 0) await setImmediate()
+        if (desired.entries.get(p)?.state !== 'shared' || desired.entries.get(p)?.change === 'D') overlayDeletes.push(p)
+      }
     }
-    return { fence: capturedFence, inputs, desired, baseTexts, facts, textOps, baseTextDeletes }
+    return { fence: capturedFence, inputs, desired, baseTexts, facts, textOps, baseTextDeletes, overlayDeletes, manifestPlan }
   }
 
   /** Final synchronous gate; called immediately before the Y transaction. */
@@ -234,6 +246,19 @@ export class Publisher {
     if (prepared.desired.unsettled.length) return false
     const { host } = this
     if (host.stopped || host.inputs !== prepared.inputs || host.fence === undefined || host.fence !== prepared.fence) return false
+    return true
+  }
+
+  /** No event-loop yield can occur between this check and the publication transaction. */
+  identityValid(prepared: PreparedPublication): boolean {
+    if (!this.valid(prepared)) return false
+    for (const p of prepared.desired.textPaths) {
+      const entry = prepared.desired.entries.get(p)!
+      try {
+        const stat = fs.lstatSync(this.host.abs(p))
+        if (!stat.isFile() || stat.size !== entry.size || stat.mtimeMs !== entry.at || stat.ino !== entry.ino) return false
+      } catch { return false }
+    }
     return true
   }
 
@@ -250,7 +275,7 @@ export class Publisher {
         const stat = fs.lstatSync(host.abs(p))
         // readDisk checked the read against a second stat. Rechecking file identity here
         // keeps the final synchronous transaction gate cheap even for many files.
-        if (!stat.isFile() || !host.isSafeRoomPath(p) || stat.size !== entry.size || stat.mtimeMs !== entry.at) return false
+        if (!stat.isFile() || !host.isSafeRoomPath(p) || stat.size !== entry.size || stat.mtimeMs !== entry.at || stat.ino !== entry.ino) return false
       } catch { return false }
     }
     return true
@@ -264,22 +289,17 @@ export class Publisher {
     const fence = host.fence!
     const incarnation = manifestKey(host.name, fence)
     host.roomDoc.doc.transact(() => {
-      publishManifest({ room: host.roomDoc, name: host.name, fence, base: inputs.head, level: inputs.policy.level,
-        prefixes: inputs.policy.textPrefixes, complete, ...(inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? 'another session' }) }, prepared.facts)
-      const old = new Set(incarnationOverlayPaths(host.roomDoc, incarnation))
-      for (const p of old) {
-        if (desired.entries.get(p)?.state === 'shared') continue
-        host.roomDoc.clearOverlay(incarnation, p, host)
-      }
+      prepared.manifestPlan.commit(complete)
+      for (const p of prepared.overlayDeletes) host.roomDoc.clearOverlay(incarnation, p, host)
       for (const [p, entry] of desired.entries) {
         if (entry.state !== 'shared') continue
         if (entry.change === 'D') {
           host.roomDoc.clearOverlay(incarnation, p, host)
         } else if (entry.text !== undefined) {
-          host.roomDoc.setOverlay(incarnation, p, entry.text, host, prepared.textOps.get(p))
+          host.roomDoc.applyPreparedOverlayDiff(incarnation, p, prepared.textOps.get(p)!, host)
         }
         const base = prepared.baseTexts.get(p)
-        if (base !== undefined) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host)
+        if (base !== undefined) host.roomDoc.ownedBaseTexts.set(`${host.name}\0${inputs.head}:${p}`, base)
       }
       for (const key of prepared.baseTextDeletes) host.roomDoc.ownedBaseTexts.delete(key)
     }, host)
@@ -305,7 +325,7 @@ export class Publisher {
         if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       }
       if (await gitHead(this.host.dir) !== this.host.base) throw new Error('HEAD moved during publication')
-      if (!await this.validatePrepared(prepared) || !this.apply(prepared, complete)) return undefined
+      if (!await this.validatePrepared(prepared) || !this.identityValid(prepared) || !this.apply(prepared, complete)) return undefined
       if (complete) await this.host.onFullScan?.(prepared.inputs.policy, prepared.desired.entries, prepared.desired.unsettled)
       if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       return prepared

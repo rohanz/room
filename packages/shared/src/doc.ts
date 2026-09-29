@@ -323,6 +323,23 @@ export class RoomDoc {
     }, origin)
   }
 
+  /** Publisher-only apply of an overlay diff prepared against its fenced incarnation. */
+  applyPreparedOverlayDiff(person: string, relpath: string, prepared: { before: string; ops: readonly TextOp[] }, origin?: unknown): void {
+    this.doc.transact(() => {
+      let text = this.overlayText(person, relpath)
+      if (!text) {
+        text = new Y.Text()
+        this.overlay(person).set(relpath, text)
+      }
+      let index = 0
+      for (const [kind, value] of prepared.ops) {
+        if (kind === 0) index += value.length
+        else if (kind === -1) text.delete(index, value.length)
+        else { text.insert(index, value); index += value.length }
+      }
+    }, origin)
+  }
+
   clearOverlay(person: string, relpath: string, origin?: unknown): void {
     const map = this.overlays.get(person)
     if (!map?.has(relpath)) return

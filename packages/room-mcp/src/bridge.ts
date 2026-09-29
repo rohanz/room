@@ -16,7 +16,7 @@ import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } fro
 import { defaultExcludedPath } from '@room/roomd/policy'
 import { ignoredTrackedPaths } from '@room/roomd/disk-scan'
 import * as Y from 'yjs'
-import { digestPath, formatMsg, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshot } from '@room/shared'
+import { digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers } from '@room/shared'
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg } from '@room/shared'
 import type { Session } from './session.js'
 import { registryForDir, type WorkerRegistry } from './worker-registry.js'
@@ -30,6 +30,14 @@ const RELAY_DEDUPE_MS = 60_000
 const RELAYED_MAX = 2000
 /** Backstop for inputs no observer reports (a policy change, a missed registry watch): manifest §12 "projection lag". */
 const PROJECT_TICK_MS = 30_000
+const PREPARE_BATCH = 64
+class ProjectionMoved extends Error {}
+async function projectionTurn(index: number, valid: () => boolean): Promise<void> {
+  if (index % PREPARE_BATCH === 0) {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    if (!valid()) throw new ProjectionMoved('projection inputs moved')
+  }
+}
 
 export interface BridgeOptions {
   log?: (line: string) => void
@@ -260,120 +268,158 @@ export class Bridge {
     const rules = this.team.daemon.inputs.rules
     if (!leadGit || !fence) return // no team base or live name lease: the lead will schedule another pass
     const B = leadGit.base, C = record.base
-    const view = participantsView(this.local.room, this.local.awareness, Date.now())
-    const source = snapshot(this.local.room, record.name, view)
-    const sourceHead = source?.head
-    const sourceHolder = participantRecord(this.local.room, record.name)?.holder
-    const valid = () => {
-      const current = this.registry?.read(record.id)
-      const latestSource = snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))
-      const latestLead = participantRecord(team, lead)?.git
-      return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id
-        && this.team.daemon.fence === fence
-        && latestLead?.base === B && latestLead?.fence === leadGit.fence
-        && JSON.stringify(participantRecord(this.local.room, record.name)?.holder) === JSON.stringify(sourceHolder)
-        && latestSource?.head.semRev === sourceHead?.semRev && latestSource?.head.fence === sourceHead?.fence
-        && (!sourceHead || !!latestSource?.fenceValid) && current?.id === record.id && current.phase === record.phase
-        && !['retiring', 'retired', 'abandoned'].includes(current.phase)
-    }
-    const coverage: Coverage = policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
-      : !sourceHead || sourceHead.base !== C || (source.record?.git?.base !== undefined && source.record.git.base !== C) || !source?.fenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
-      : sourceHead.coverage.kind === 'none' ? { kind: 'none', reason: sourceHead.coverage.reason === 'not-publisher' ? 'not-publisher' : sourceHead.coverage.reason === 'intent' ? 'intent' : 'starting' }
-      : sourceHead.excluded.length ? { kind: 'none', reason: 'unprojectable' }
-      : { kind: 'all' }
-    const entries = new Map<string, ManifestEntry>()
-    const excluded: string[] = []
-    let complete = coverage.kind === 'all'
-    if (coverage.kind === 'all' && C && source) {
-      const facts = await this.composeFacts(record, B, C, source.entries).catch(e => {
-        this.o.log?.(`bridge: cannot compose ${record.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`)
-        return undefined
-      })
-      if (!valid()) {
+    const sourceHead = this.local.room.manifestHead.get(record.name)
+    const sourceMap = sourceHead && this.local.room.manifest.get(manifestKey(record.name, sourceHead.fence))
+    const sourceRecord = participantRecord(this.local.room, record.name)
+    const sourceHolder = sourceRecord?.holder
+    const sourceFenceValid = !!sourceHead && liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence
+    let sourceChanged = false
+    const onSourceChange = () => { sourceChanged = true }
+    sourceMap?.observe(onSourceChange)
+    try {
+      const valid = () => {
         const current = this.registry?.read(record.id)
-        if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
-        return
+        const latestSource = this.local.room.manifestHead.get(record.name)
+        const latestLead = participantRecord(team, lead)?.git
+        return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id
+          && this.team.daemon.fence === fence
+          && latestLead?.base === B && latestLead?.fence === leadGit.fence
+          && !sourceChanged && (!sourceHead || this.local.room.manifest.get(manifestKey(record.name, sourceHead.fence)) === sourceMap)
+          && JSON.stringify(participantRecord(this.local.room, record.name)?.holder) === JSON.stringify(sourceHolder)
+          && latestSource?.semRev === sourceHead?.semRev && latestSource?.fence === sourceHead?.fence
+          && (!sourceHead || !sourceFenceValid || liveHolder(participantsView(this.local.room, this.local.awareness, Date.now()), record.name) === sourceHead.fence)
+          && current?.id === record.id && current.phase === record.phase
+          && !['retiring', 'retired', 'abandoned'].includes(current.phase)
       }
-      if (!facts) complete = false
-      else {
-        const salt = team.ensureRoomSalt()
-        const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()])
-        // The Git ignore read yields too. A newer policy, source or worker phase must win.
+      const coverage: Coverage = policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
+        : !sourceHead || sourceHead.base !== C || (sourceRecord?.git?.base !== undefined && sourceRecord.git.base !== C) || !sourceFenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
+        : sourceHead.coverage.kind === 'none' ? { kind: 'none', reason: sourceHead.coverage.reason === 'not-publisher' ? 'not-publisher' : sourceHead.coverage.reason === 'intent' ? 'intent' : 'starting' }
+        : sourceHead.excluded.length ? { kind: 'none', reason: 'unprojectable' }
+        : { kind: 'all' }
+      const entries = new Map<string, ManifestEntry>()
+      const excluded: string[] = []
+      let complete = coverage.kind === 'all'
+      if (coverage.kind === 'all' && C && sourceMap) {
+        const own = new Map<string, ManifestEntry>()
+        let sourceIndex = 0
+        for (const [path, entry] of sourceMap) {
+          await projectionTurn(sourceIndex++, valid)
+          if (entry.fence === sourceHead!.fence) own.set(path, { ...entry })
+        }
+        const facts = await this.composeFacts(record, B, C, own, valid).catch(e => {
+          this.o.log?.(`bridge: cannot compose ${record.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`)
+          return undefined
+        })
         if (!valid()) {
           const current = this.registry?.read(record.id)
           if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
           return
         }
-        let used = 0
-        for (const [path, fact] of facts.all) {
-          if (ignored.has(path) || rules.roomIgnore.ignores(path) || defaultIgnoredPath(path)
-            || defaultExcludedPath(path) || !validRepoPath(path, DISK_READ_PATH)
-            || (fact.change !== 'D' && fact.mode !== undefined && fact.mode !== 0o100644 && fact.mode !== 0o100755)
-            || (fact.change !== 'D' && fact.size !== undefined && (fact.size > rules.sizeCap
-              || (authorizesText(policy, path) && used + fact.size > rules.budget)))) {
-            excluded.push(digestPath(salt, path))
-            continue
+        if (!facts) complete = false
+        else {
+          const salt = team.ensureRoomSalt()
+          const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()])
+          // The Git ignore read yields too. A newer policy, source or worker phase must win.
+          if (!valid()) {
+            const current = this.registry?.read(record.id)
+            if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
+            return
           }
-          if (fact.change !== 'D' && authorizesText(policy, path) && fact.size !== undefined) used += fact.size
-          const entry: ManifestEntry = fact.change === 'D'
-            ? { change: 'D', state: 'shared', at: fact.at, fence }
-            : { change: fact.change, state: 'held', held: 'worker', at: fact.at, fence }
-          if (authorizesText(policy, path)) {
-            if (fact.change !== 'D' && fact.hash) {
-              entry.hash = fact.hash
-              if (fact.size !== undefined) entry.size = fact.size
-              if (fact.baseHash) entry.baseHash = fact.baseHash
-            } else if (fact.change === 'D' && fact.baseHash && (facts.carried.has(path) || source.entries.get(path)?.baseHash)) {
-              entry.baseHash = fact.baseHash
+          let used = 0, usedPaths = 0
+          for (const [path, fact] of facts.all) {
+            await projectionTurn(usedPaths++, valid)
+            if (ignored.has(path) || rules.roomIgnore.ignores(path) || defaultIgnoredPath(path)
+              || defaultExcludedPath(path) || !validRepoPath(path, DISK_READ_PATH)
+              || (fact.change !== 'D' && fact.mode !== undefined && fact.mode !== 0o100644 && fact.mode !== 0o100755)
+              || (fact.change !== 'D' && fact.size !== undefined && (fact.size > rules.sizeCap
+                || (authorizesText(policy, path) && used + fact.size > rules.budget)))) {
+              excluded.push(digestPath(salt, path))
+              continue
             }
+            if (fact.change !== 'D' && authorizesText(policy, path) && fact.size !== undefined) used += fact.size
+            const entry: ManifestEntry = fact.change === 'D'
+              ? { change: 'D', state: 'shared', at: fact.at, fence }
+              : { change: fact.change, state: 'held', held: 'worker', at: fact.at, fence }
+            if (authorizesText(policy, path)) {
+              if (fact.change !== 'D' && fact.hash) {
+                entry.hash = fact.hash
+                if (fact.size !== undefined) entry.size = fact.size
+                if (fact.baseHash) entry.baseHash = fact.baseHash
+              } else if (fact.change === 'D' && fact.baseHash && (facts.carried.has(path) || own.get(path)?.baseHash)) {
+                entry.baseHash = fact.baseHash
+              }
+            }
+            entries.set(path, entry)
           }
-          entries.set(path, entry)
         }
+      } else if (coverage.kind === 'all') complete = false
+      if (!valid()) return
+      excluded.sort()
+      const key = manifestKey(record.name, fence)
+      const prevHead = team.manifestHead.get(record.name)
+      const prevMap = team.manifest.get(key)
+      const deletes: string[] = [], writes: [string, ManifestEntry][] = []
+      let compareIndex = 0, entriesChanged = (prevMap?.size ?? 0) !== entries.size
+      for (const [p] of prevMap ?? []) {
+        await projectionTurn(compareIndex++, valid)
+        if (!entries.has(p)) deletes.push(p)
       }
-    } else if (coverage.kind === 'all') complete = false
-    if (!valid()) return
-    excluded.sort()
-    const key = manifestKey(record.name, fence)
-    const prevHead = team.manifestHead.get(record.name)
-    const prevMap = team.manifest.get(key)
-    const entriesChanged = (prevMap?.size ?? 0) !== entries.size || [...entries].some(([p, e]) => entryIdentity(prevMap?.get(p)) !== entryIdentity(e))
-    const exclusionChanged = JSON.stringify(prevHead?.excluded ?? []) !== JSON.stringify(excluded)
-    const head: ManifestHead = {
-      base: B, fence, coverage: complete ? coverage : coverage.kind === 'all' ? { kind: 'none', reason: 'starting' } : coverage,
-      projectedBy: lead, projectedFrom: record.id, level: policy.level,
-      ...(policy.level === 'declared' ? { textPrefixes: [...policy.textPrefixes] } : {}), excluded,
-      rev: (prevHead?.rev ?? 0) + (entriesChanged || exclusionChanged || prevHead?.fence !== fence ? 1 : 0), semRev: 0,
-      scannedAt: Date.now(), complete,
-    }
-    head.semRev = (prevHead?.semRev ?? 0) + (!prevHead || head.rev !== prevHead.rev || headIdentity(head) !== headIdentity(prevHead) ? 1 : 0)
-    const prevGit = participantRecord(team, record.name)?.git
-    const { rev: _leadRev, fence: _leadFence, ...leadFields } = leadGit
-    const git: ParticipantGit = { ...leadFields, base: B, rev: prevGit?.rev ?? 0, fence }
-    const { rev: _prevRev, ...prevFields } = prevGit ?? { rev: 0 }
-    const { rev: _nextRev, ...nextFields } = git
-    if (JSON.stringify(prevFields) !== JSON.stringify(nextFields)) git.rev += 1
-    const identity = { name: record.name, kind: 'agent' as const, owner: this.team.me.owner ?? lead, label: record.tag }
-    const proj = { projectedFrom: record.id, projectedBy: lead }
-    const unchanged = head.semRev === prevHead?.semRev && git.rev === prevGit?.rev
-      && JSON.stringify(team.participants.get(`${record.name}\u0000proj`)) === JSON.stringify(proj)
-    if (unchanged) {
+      for (const [p, e] of entries) {
+        await projectionTurn(compareIndex++, valid)
+        const previous = prevMap?.get(p)
+        if (entryIdentity(previous) !== entryIdentity(e)) entriesChanged = true
+        if (entryIdentity(previous) !== entryIdentity(e) || previous?.at !== e.at) writes.push([p, e])
+      }
+      const exclusionChanged = JSON.stringify(prevHead?.excluded ?? []) !== JSON.stringify(excluded)
+      const head: ManifestHead = {
+        base: B, fence, coverage: complete ? coverage : coverage.kind === 'all' ? { kind: 'none', reason: 'starting' } : coverage,
+        projectedBy: lead, projectedFrom: record.id, level: policy.level,
+        ...(policy.level === 'declared' ? { textPrefixes: [...policy.textPrefixes] } : {}), excluded,
+        rev: (prevHead?.rev ?? 0) + (entriesChanged || exclusionChanged || prevHead?.fence !== fence ? 1 : 0), semRev: 0,
+        scannedAt: Date.now(), complete,
+      }
+      head.semRev = (prevHead?.semRev ?? 0) + (!prevHead || head.rev !== prevHead.rev || headIdentity(head) !== headIdentity(prevHead) ? 1 : 0)
+      const prevGit = participantRecord(team, record.name)?.git
+      const { rev: _leadRev, fence: _leadFence, ...leadFields } = leadGit
+      const git: ParticipantGit = { ...leadFields, base: B, rev: prevGit?.rev ?? 0, fence }
+      const { rev: _prevRev, ...prevFields } = prevGit ?? { rev: 0 }
+      const { rev: _nextRev, ...nextFields } = git
+      if (JSON.stringify(prevFields) !== JSON.stringify(nextFields)) git.rev += 1
+      const identity = { name: record.name, kind: 'agent' as const, owner: this.team.me.owner ?? lead, label: record.tag }
+      const proj = { projectedFrom: record.id, projectedBy: lead }
+      const unchanged = head.semRev === prevHead?.semRev && git.rev === prevGit?.rev
+        && JSON.stringify(team.participants.get(`${record.name}\u0000proj`)) === JSON.stringify(proj)
+      const staleKeys: string[] = []
+      let staleIndex = 0
+      for (const k of team.manifest.keys()) {
+        await projectionTurn(staleIndex++, valid)
+        if (k.startsWith(`${record.name}\u0000`) && k !== key) staleKeys.push(k)
+      }
+      if (!valid() || team.manifestHead.get(record.name) !== prevHead || team.manifest.get(key) !== prevMap)
+        throw new ProjectionMoved('projection destination moved')
+      if (unchanged) {
+        team.doc.transact(() => {
+          if (prevMap) for (const [p, e] of writes) prevMap.set(p, e)
+          team.manifestHead.set(record.name, head)
+        }, this)
+        return
+      }
       team.doc.transact(() => {
-        if (prevMap) for (const [p, e] of entries) if (prevMap.get(p)?.at !== e.at) prevMap.set(p, e)
+        for (const k of staleKeys) team.manifest.delete(k)
+        let map = team.manifest.get(key)
+        if (!map) { map = new Y.Map<ManifestEntry>(); team.manifest.set(key, map) }
+        for (const p of deletes) map.delete(p)
+        for (const [p, e] of writes) map.set(p, e)
         team.manifestHead.set(record.name, head)
+        team.participants.set(`${record.name}\u0000id`, identity)
+        team.participants.set(`${record.name}\u0000proj`, proj)
+        team.participants.set(`${record.name}\u0000git`, git)
       }, this)
-      return
-    }
-    team.doc.transact(() => {
-      for (const k of [...team.manifest.keys()]) if (k.startsWith(`${record.name}\u0000`) && k !== key) team.manifest.delete(k)
-      let map = team.manifest.get(key)
-      if (!map) { map = new Y.Map<ManifestEntry>(); team.manifest.set(key, map) }
-      for (const p of [...map.keys()]) if (!entries.has(p)) map.delete(p)
-      for (const [p, e] of entries) if (entryIdentity(map.get(p)) !== entryIdentity(e) || map.get(p)?.at !== e.at) map.set(p, e)
-      team.manifestHead.set(record.name, head)
-      team.participants.set(`${record.name}\u0000id`, identity)
-      team.participants.set(`${record.name}\u0000proj`, proj)
-      team.participants.set(`${record.name}\u0000git`, git)
-    }, this)
+    } catch (error) {
+      if (!(error instanceof ProjectionMoved)) throw error
+      const current = this.registry?.read(record.id)
+      if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) await this.projectWorker(current, retry + 1)
+    } finally { sourceMap?.unobserve(onSourceChange) }
   }
 
   /**
@@ -381,23 +427,38 @@ export class Bridge {
    * untracked files for paths the worker did not touch. `carried` lists source-2 paths (they pass the lead's
    * exclusion rules). A path whose content equals B's blob has no entry.
    */
-  private async composeFacts(record: WorkerRecord, B: string, C: string, own: ReadonlyMap<string, ManifestEntry>): Promise<{ all: Map<string, ProjectedFact>; carried: Map<string, ProjectedFact> }> {
+  private async composeFacts(record: WorkerRecord, B: string, C: string, own: ReadonlyMap<string, ManifestEntry>, valid: () => boolean = () => true): Promise<{ all: Map<string, ProjectedFact>; carried: Map<string, ProjectedFact> }> {
     const dir = this.local.dir
     const between = new Map<string, { change: 'M' | 'A' | 'D'; oldBlob?: string; newBlob?: string }>()
     if (B !== C) {
       const raw = await git(dir, ['diff', '--raw', '--no-renames', '--no-abbrev', '-z', B, C])
-      const parts = raw.split('\0')
-      for (let i = 0; i + 1 < parts.length; i += 2) {
-        const meta = parts[i].replace(/^:/, '').split(' '), path = parts[i + 1]
+      let offset = 0, diffIndex = 0
+      while (offset < raw.length) {
+        await projectionTurn(diffIndex++, valid)
+        const metaEnd = raw.indexOf('\0', offset)
+        if (metaEnd < 0) break
+        const pathEnd = raw.indexOf('\0', metaEnd + 1)
+        if (pathEnd < 0) break
+        const meta = raw.slice(offset, metaEnd).replace(/^:/, '').split(' '), path = raw.slice(metaEnd + 1, pathEnd)
+        offset = pathEnd + 1
         if (meta.length < 5 || !path) continue
         const status = meta[4][0] as 'M' | 'A' | 'D'
         if (!['M', 'A', 'D'].includes(status)) continue
         between.set(path, { change: status, ...(status !== 'A' ? { oldBlob: meta[2] } : {}), ...(status !== 'D' ? { newBlob: meta[3] } : {}) })
       }
     }
-    const untracked = new Map((record.carriedUntracked ?? []).map(f => [f.path, f.sha]))
-    const candidates = new Set([...own.keys(), ...between.keys(), ...untracked.keys()])
-    const atB = await blobsAt(dir, B, candidates)
+    const untracked = new Map<string, { sha: string; mode?: number }>()
+    let index = 0
+    for (const f of record.carriedUntracked ?? []) {
+      await projectionTurn(index++, valid)
+      untracked.set(f.path, { sha: f.sha, mode: f.mode })
+    }
+    const candidates = new Set<string>()
+    index = 0
+    for (const p of own.keys()) { await projectionTurn(index++, valid); candidates.add(p) }
+    for (const p of between.keys()) { await projectionTurn(index++, valid); candidates.add(p) }
+    for (const p of untracked.keys()) { await projectionTurn(index++, valid); candidates.add(p) }
+    const atB = await blobsAt(dir, B, candidates, valid)
     const all = new Map<string, ProjectedFact>(), carried = new Map<string, ProjectedFact>()
     const now = Date.now()
     const put = (path: string, hash: string | undefined, at: number, size?: number, mode?: number): ProjectedFact | undefined => {
@@ -406,23 +467,36 @@ export class Bridge {
       if (base?.blob === hash) return undefined
       return { change: base ? 'M' : 'A', hash, ...(size !== undefined ? { size } : {}), ...(mode !== undefined ? { mode } : {}), ...(base ? { baseHash: base.blob } : {}), at }
     }
+    index = 0
     for (const [path, e] of own) {
+      await projectionTurn(index++, valid)
       // A hashless source entry (outside the worker's own text area) is still a change against B.
       const fact = e.change === 'D' ? put(path, undefined, e.at)
         : e.hash ? put(path, e.hash, e.at, e.size)
         : { change: atB.has(path) ? 'M' as const : 'A' as const, ...(atB.get(path) ? { baseHash: atB.get(path)!.blob } : {}), at: e.at }
       if (fact) all.set(path, fact)
     }
-    const sizes = await blobsAt(dir, C, [...between.keys()].filter(p => !own.has(p) && between.get(p)!.newBlob))
+    const sizePaths: string[] = []
+    index = 0
+    for (const [p, d] of between) {
+      await projectionTurn(index++, valid)
+      if (!own.has(p) && d.newBlob) sizePaths.push(p)
+    }
+    const sizes = await blobsAt(dir, C, sizePaths, valid)
+    index = 0
     for (const [path, d] of between) {
+      await projectionTurn(index++, valid)
       if (own.has(path) || untracked.has(path)) continue
       const fact = put(path, d.newBlob, now, sizes.get(path)?.size, sizes.get(path)?.mode)
       if (fact) { all.set(path, fact); carried.set(path, fact) }
     }
-    for (const [path, sha] of untracked) {
+    index = 0
+    for (const [path, untrackedFact] of untracked) {
+      await projectionTurn(index++, valid)
       if (own.has(path)) continue
-      const size = Number((await git(dir, ['cat-file', '-s', sha])).trim())
-      const fact = put(path, sha, now, size, record.carriedUntracked?.find(entry => entry.path === path)?.mode)
+      const size = Number((await git(dir, ['cat-file', '-s', untrackedFact.sha])).trim())
+      if (!valid()) throw new ProjectionMoved('projection inputs moved')
+      const fact = put(path, untrackedFact.sha, now, size, untrackedFact.mode)
       if (fact) { all.set(path, fact); carried.set(path, fact) }
     }
     return { all, carried }
@@ -510,14 +584,30 @@ export class Bridge {
 }
 
 /** Blob id and size of each path at a commit; absent when the commit has no such file. */
-async function blobsAt(dir: string, commit: string, paths: Iterable<string>): Promise<Map<string, { blob: string; size: number; mode: number }>> {
-  const list = [...paths]
+async function blobsAt(dir: string, commit: string, paths: Iterable<string>, valid: () => boolean = () => true): Promise<Map<string, { blob: string; size: number; mode: number }>> {
   const out = new Map<string, { blob: string; size: number; mode: number }>()
-  if (!list.length) return out
-  const raw = await git(dir, ['ls-tree', '-r', '-z', '--long', '--full-tree', commit, '--', ...list])
-  for (const line of raw.split('\0')) {
-    const m = line.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s)
-    if (m) out.set(m[4], { mode: Number.parseInt(m[1], 8), blob: m[2], size: Number(m[3]) })
+  let batch: string[] = [], index = 0
+  const flush = async () => {
+    if (!batch.length) return
+    const raw = await git(dir, ['ls-tree', '-r', '-z', '--long', '--full-tree', commit, '--', ...batch])
+    if (!valid()) throw new ProjectionMoved('projection inputs moved')
+    let offset = 0, row = 0
+    while (offset < raw.length) {
+      await projectionTurn(row++, valid)
+      const end = raw.indexOf('\0', offset)
+      if (end < 0) break
+      const line = raw.slice(offset, end)
+      offset = end + 1
+      const m = line.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s)
+      if (m) out.set(m[4], { mode: Number.parseInt(m[1], 8), blob: m[2], size: Number(m[3]) })
+    }
+    batch = []
   }
+  for (const path of paths) {
+    await projectionTurn(index++, valid)
+    batch.push(path)
+    if (batch.length === 128) await flush()
+  }
+  await flush()
   return out
 }

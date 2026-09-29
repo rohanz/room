@@ -237,6 +237,64 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 })
 
 describe('Bridge: the team projection of a local worker (manifest §5.5, registry §13)', () => {
+  it('F5 yields while preparing 3,000 B..C paths and does no map reads inside the atomic apply', async () => {
+    const t = await setup({ start: false })
+    git('checkout', '-q', C)
+    for (let i = 0; i < 3000; i++) writeFileSync(join(dir, `many-${String(i).padStart(4, '0')}.py`), 'x\n')
+    git('add', '.'); git('commit', '-qm', 'many carried files')
+    C = git('rev-parse', 'HEAD').trim()
+    git('checkout', '-q', B)
+    await t.registry.update(t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
+    publishSource(t.local.b, {}, { base: C })
+    await t.bridge.sync() // create the previous Y map so its reads can be observed
+
+    const key = manifestKey(worker.name, LEAD_FENCE)
+    const map = t.team.a.manifest.get(key)!
+    let inside = false, readsInside = 0, yielded = false, turnAtApply = false
+    const originalGet = map.get.bind(map)
+    vi.spyOn(map, 'get').mockImplementation((path: string) => {
+      if (inside) readsInside++
+      return originalGet(path)
+    })
+    t.team.a.doc.on('beforeTransaction', () => { inside = true; turnAtApply = yielded })
+    t.team.a.doc.on('afterTransaction', () => { inside = false })
+    const rules = t.teamLead.daemon.inputs.rules
+    const originalIgnores = rules.roomIgnore.ignores.bind(rules.roomIgnore)
+    let scheduled = false
+    rules.roomIgnore.ignores = (path: string) => {
+      if (!scheduled) { scheduled = true; setImmediate(() => { yielded = true }) }
+      return originalIgnores(path)
+    }
+    await t.bridge.sync()
+    expect(map.size).toBe(3001) // the earlier carried.py plus the new B..C paths
+    expect(turnAtApply).toBe(true)
+    expect(readsInside).toBe(0)
+    await t.teamLead.policyStore.setRequested('intent')
+    await t.bridge.sync()
+    expect(map.size).toBe(0)
+    expect(t.team.a.manifestHead.get(worker.name)).toMatchObject({ level: 'intent', complete: false })
+  })
+  it('F5 rechecks a narrowing policy after a preparation yield before writing hashes', async () => {
+    const policy = testPolicyStore()
+    const t = await setup({ policy, start: false })
+    const entries = Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`source-${i}.py`,
+      { change: 'A' as const, state: 'shared' as const, hash: gitBlobHash('x\n'), size: 2 }]))
+    publishSource(t.local.b, entries)
+    const rules = t.teamLead.daemon.inputs.rules
+    const originalIgnores = rules.roomIgnore.ignores.bind(rules.roomIgnore)
+    let scheduled = false
+    rules.roomIgnore.ignores = (path: string) => {
+      if (!scheduled) {
+        scheduled = true
+        setImmediate(() => { void policy.setRequested('intent') })
+      }
+      return originalIgnores(path)
+    }
+    await t.bridge.sync()
+    expect(scheduled).toBe(true)
+    expect(t.team.a.manifestHead.get(worker.name)?.level).toBe('intent')
+    expect(t.team.a.manifest.get(manifestKey(worker.name, LEAD_FENCE))?.size ?? 0).toBe(0)
+  })
   it('N6 renders accepted, stale and ended projected worker status in participant lines', async () => {
     const t = await setup({ start: false })
     await t.bridge.sync()

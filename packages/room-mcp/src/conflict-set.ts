@@ -218,9 +218,11 @@ export class ConflictSet {
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
     const stale = new Set<string>()
+    const peers = new Map<string, ParticipantSnapshot | undefined>()
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract') continue
-      const theirs = snapshot(room, slot.other, views)
+      if (!peers.has(slot.other)) peers.set(slot.other, snapshot(room, slot.other, views))
+      const theirs = peers.get(slot.other)
       if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.length ||
           slot.consumers.some(path => !this.contractPathAuthorized(mine, path))) this.slots.drop(key)
       else {
@@ -238,7 +240,7 @@ export class ConflictSet {
     if (!snap?.fenceValid || !head || !room.roomSalt) return false
     const textAllowed = head.level === 'full' || head.level === 'declared' &&
       (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
-    const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path)
+    const entry = snap.entries.get(path)
     return textAllowed && (!entry || entry.state === 'shared' && (entry.change === 'D' ? !entry.hash : !!entry.hash) && entry.fence === head.fence) &&
       !head.excluded.includes(digestPath(room.roomSalt, path))
   }

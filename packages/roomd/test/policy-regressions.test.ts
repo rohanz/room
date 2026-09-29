@@ -60,11 +60,11 @@ it('keeps an existing shared file and incomplete coverage when reading it fails'
   fs.writeFileSync(path.join(dir, 'x'), 'first')
   await (daemon as any).publisher.reconcile('all')
   expect(entries().get('x')?.state).toBe('shared')
-  const read = fs.readFileSync.bind(fs)
-  vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+  const open = fs.openSync.bind(fs)
+  vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
     if (p === path.join(dir, 'x')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
-    return read(p, ...(rest as []))
-  }) as typeof fs.readFileSync)
+    return open(p, ...(rest as [fs.OpenMode]))
+  }) as typeof fs.openSync)
   await (daemon as any).publisher.reconcile('all')
   expect(entries().get('x')?.state).toBe('shared')
   expect(manifestText(daemon.roomDoc, 'x', 'Ben')).toBe('first')
@@ -97,11 +97,11 @@ it('leaves a failed HEAD transition incomplete and retries without certifying eq
   fs.writeFileSync(path.join(dir, 'x'), 'committed')
   git('add', '-A'); git('commit', '-qm', 'move')
   fs.writeFileSync(path.join(dir, 'x'), 'dirty again')
-  const read = fs.readFileSync.bind(fs)
-  vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+  const open = fs.openSync.bind(fs)
+  vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
     if (p === path.join(dir, 'x')) throw Object.assign(new Error('denied'), { code: 'EACCES' })
-    return read(p, ...(rest as []))
-  }) as typeof fs.readFileSync)
+    return open(p, ...(rest as [fs.OpenMode]))
+  }) as typeof fs.openSync)
   await expect(pollHead(daemon)).rejects.toThrow()
   expect(entries().get('x')?.state).toBe('shared')
   expect(daemon.roomDoc.manifestHead.get('Ben')?.complete).toBe(false)

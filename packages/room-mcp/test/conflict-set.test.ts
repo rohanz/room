@@ -214,6 +214,27 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it('withdraws 1,000 contracts without per-slot full-text snapshots', () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+      for (let i = 0; i < 1_000; i++) f.room.setOverlay(manifestKey('B', '1'), `overlay-${i}`, 'x')
+      const slots = f.room.doc.getMap<any>('conflicts')
+      for (let i = 0; i < 1_000; i++) {
+        const key = slotKey('A', 'contract', 'B', 'x', `symbol-${i}`)
+        slots.set(key, { kind: 'contract', owner: 'A', other: 'B', path: 'x', subject: `symbol-${i}`,
+          status: 'conflict', inputs: 'i', factId: 'f', settled: 'conflict', epoch: 1, fence: '1', checkedAt: 1,
+          consumers: ['x'] })
+      }
+      const set = new ConflictSet(f.session('A'))
+      const toString = vi.spyOn(Y.Text.prototype, 'toString')
+      ;(set as any).withdrawUnauthorizedContracts()
+      expect(toString.mock.calls.length).toBeLessThanOrEqual(1_002)
+      toString.mockRestore()
+      expect(slots.size).toBe(1_000)
+    } finally { f.cleanup() }
+  })
+
   it('yields within a run of cached and held merge candidates', async () => {
     const f = fixture()
     try {

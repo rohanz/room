@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { setImmediate } from 'node:timers/promises'
 import { containsPath, digestPath, manifestKey, type ManifestEntry, type ManifestHead, type RoomDoc, type ShareLevel } from '@room/shared'
 
 export interface ManifestFact {
@@ -33,8 +34,8 @@ function olderEpoch(fence: string, than: string): boolean {
   return a !== undefined && b !== undefined && a < b
 }
 
-/** Whole-snapshot writer; old overlay publication remains untouched during rollout step 1. */
-export function publishManifest(input: ManifestPublication, facts: readonly ManifestFact[]): ManifestHead {
+/** Prepare every comparison and digest before the atomic Y transaction. */
+function* manifestPlanSteps(input: ManifestPublication, facts: readonly ManifestFact[]) {
   const { room, name, fence } = input
   const salt = room.ensureRoomSalt()
   const key = manifestKey(name, fence)
@@ -44,6 +45,7 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
   const excluded: string[] = []
   if (input.level !== 'intent' && !input.publisher) {
     for (const fact of facts) {
+      yield
       if (fact.excluded) { excluded.push(digestPath(salt, fact.path)); continue }
       const permit = authorized(input, fact.path)
       const prior = old?.get(fact.path)
@@ -59,37 +61,77 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
     }
   }
   excluded.sort()
-  const priorEntries = new Map(old?.entries() ?? [])
-  const entryChanged = entries.size !== priorEntries.size || [...entries].some(([p, e]) => contentIdentity(e) !== contentIdentity(priorEntries.get(p) ?? {} as ManifestEntry))
+  const priorEntries = new Map<string, ManifestEntry>()
+  for (const [p, e] of old?.entries() ?? []) { yield; priorEntries.set(p, e) }
+  let entryChanged = entries.size !== priorEntries.size
+  for (const [p, e] of entries) {
+    yield
+    if (contentIdentity(e) !== contentIdentity(priorEntries.get(p) ?? {} as ManifestEntry)) entryChanged = true
+  }
   const exclusionChanged = JSON.stringify(excluded) !== JSON.stringify(previous?.excluded ?? [])
   const rev = (previous?.rev ?? 0) + (entryChanged || exclusionChanged ? 1 : 0)
-  const head: ManifestHead = {
-    base: input.base, fence, coverage: input.publisher ? { kind: 'none', reason: 'not-publisher' } : input.level === 'intent' ? { kind: 'none', reason: 'intent' } : !input.complete ? { kind: 'none', reason: 'starting' } : { kind: 'all' },
-    level: input.level, ...(input.level === 'declared' ? { textPrefixes: [...input.prefixes] } : {}), excluded,
-    rev, semRev: 0, scannedAt: input.scannedAt ?? Date.now(), complete: input.complete,
-    ...(input.publisher ? { publisher: input.publisher } : {}),
+  const oldManifestKeys = [...room.manifest.keys()].filter(other => {
+    const split = other.lastIndexOf('\u0000')
+    return other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)
+  })
+  const oldOverlayKeys = [...room.overlays.keys()].filter(other => {
+    const split = other.lastIndexOf('\u0000')
+    return other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)
+  })
+  const deletes: string[] = []
+  for (const p of priorEntries.keys()) { yield; if (!entries.has(p)) deletes.push(p) }
+  const sets: [string, ManifestEntry][] = []
+  for (const [p, e] of entries) { yield; if (JSON.stringify(priorEntries.get(p)) !== JSON.stringify(e)) sets.push([p, e]) }
+  const scannedAt = input.scannedAt ?? Date.now()
+  const makeHead = (complete: boolean): ManifestHead => {
+    const head: ManifestHead = {
+      base: input.base, fence, coverage: input.publisher ? { kind: 'none', reason: 'not-publisher' } : input.level === 'intent' ? { kind: 'none', reason: 'intent' } : !complete ? { kind: 'none', reason: 'starting' } : { kind: 'all' },
+      level: input.level, ...(input.level === 'declared' ? { textPrefixes: [...input.prefixes] } : {}), excluded,
+      rev, semRev: 0, scannedAt, complete,
+      ...(input.publisher ? { publisher: input.publisher } : {}),
+    }
+    head.semRev = (previous?.semRev ?? 0) + (rev !== previous?.rev || !previous || headIdentity(head) !== headIdentity(previous) ? 1 : 0)
+    return head
   }
-  head.semRev = (previous?.semRev ?? 0) + (rev !== previous?.rev || !previous || headIdentity(head) !== headIdentity(previous) ? 1 : 0)
-  room.doc.transact(() => {
+  const heads = { complete: makeHead(true), incomplete: makeHead(false) }
+  return { heads, commit(complete: boolean): ManifestHead {
+    const head = complete ? heads.complete : heads.incomplete
     // The holder deletes its own participant's older incarnations (manifest §4.1). Epochs only grow, so a
     // stepped-down writer that has not noticed yet can never delete its successor's.
-    for (const other of [...room.manifest.keys()]) {
-      const split = other.lastIndexOf('\u0000')
-      if (other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)) room.manifest.delete(other)
-    }
+    for (const other of oldManifestKeys) room.manifest.delete(other)
     // Text is keyed by the same incarnation. An old map may outlive its manifest after a
     // prior partial cleanup, so enumerate overlays independently on every publication.
-    for (const other of [...room.overlays.keys()]) {
-      const split = other.lastIndexOf('\u0000')
-      if (other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)) room.overlays.delete(other)
-    }
+    for (const other of oldOverlayKeys) room.overlays.delete(other)
     let map = room.manifest.get(key)
     if (!map) { map = new Y.Map<ManifestEntry>(); room.manifest.set(key, map) }
-    for (const p of [...map.keys()]) if (!entries.has(p)) map.delete(p)
-    for (const [p, e] of entries) if (JSON.stringify(map.get(p)) !== JSON.stringify(e)) map.set(p, e)
+    for (const p of deletes) map.delete(p)
+    for (const [p, e] of sets) map.set(p, e)
     room.manifestHead.set(name, head)
-  })
-  return head
+    return head
+  } }
+}
+
+export function prepareManifestPublication(input: ManifestPublication, facts: readonly ManifestFact[]) {
+  const steps = manifestPlanSteps(input, facts)
+  for (;;) { const result = steps.next(); if (result.done) return result.value }
+}
+
+export async function prepareManifestPublicationYielding(input: ManifestPublication, facts: readonly ManifestFact[]) {
+  const steps = manifestPlanSteps(input, facts)
+  let count = 0
+  for (;;) {
+    if (count++ % 32 === 0) await setImmediate()
+    const result = steps.next()
+    if (result.done) return result.value
+  }
+}
+
+/** Whole-snapshot writer; old overlay publication remains untouched during rollout step 1. */
+export function publishManifest(input: ManifestPublication, facts: readonly ManifestFact[]): ManifestHead {
+  const prepared = prepareManifestPublication(input, facts)
+  let head: ManifestHead | undefined
+  input.room.doc.transact(() => { head = prepared.commit(input.complete) })
+  return head!
 }
 
 /** A HEAD transition has started (reporooms §B2 step 1): my complete head stops certifying until publishManifest completes it again. */

@@ -16,6 +16,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
+import { readBoundedDiskText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -48,7 +49,7 @@ export function testCommandFor(dir: string): string {
   return suggestedTestCommand(files)
 }
 
-function ownDiskText(dir: string, rel: string): string | null {
+async function ownDiskText(dir: string, rel: string): Promise<string | null> {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error('unsafe room path: ' + rel)
   const root = fs.realpathSync(dir)
   const candidate = path.resolve(root, rel)
@@ -57,8 +58,7 @@ function ownDiskText(dir: string, rel: string): string | null {
     const result = containedRepoPath(root, candidate, { leaf: 'read-contained-link' })
     if (!result.ok) throw new Error('unsafe room symlink: ' + rel)
     const real = result.path
-    if (!fs.statSync(real).isFile()) throw new Error('not a file: ' + rel)
-    return fs.readFileSync(real, 'utf8')
+    return await readBoundedDiskText(real)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw e
@@ -132,7 +132,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             catch (error) { return reportGitFailure(error) }
           }
           if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
-          const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
+          const l = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p)
             : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
           let b: string
           try { b = (await gitShow(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
@@ -177,7 +177,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ownDisk = person === s.me.name
       const version = ownDisk || worker ? undefined : await readVersion(s, p, person)
       if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
-      const t = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
+      const t = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p)
         : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
       if (t === null) {
         if (ownDisk && await baseText(s, p, person) === undefined) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`

@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { RoomDoc, digestPath, gitBlobHash, manifestKey, snapshot, versionOf } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { handlers } from '../src/tools/files.js'
+import { WorkerRegistry } from '../src/worker-registry.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -45,6 +46,50 @@ function fixture() {
   } as unknown as HandlerState
   return { room, head, entries, texts, session, state }
 }
+
+it('bounds an own-disk room_read before rendering file lines', async () => {
+  const { state } = fixture()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'x'.repeat(512 * 1024 + 1))
+  await expect(handlers(state).room_read({ path: 'app.py' })).rejects.toThrow('file too large for Room read')
+})
+
+it('yields during the path-safety pass before checking the last path', async () => {
+  const { entries, state } = fixture()
+  for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {
+    change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
+  })
+  const realpath = fs.realpathSync.bind(fs)
+  let turned = false, sawTurn = false
+  const registryReads = vi.spyOn(WorkerRegistry, 'snapshot')
+  const spy = vi.spyOn(fs, 'realpathSync').mockImplementation(((file: string) => {
+    if (file.endsWith('held-000')) setImmediate(() => { turned = true })
+    if (file.endsWith('held-095')) sawTurn = turned
+    return realpath(file)
+  }) as typeof fs.realpathSync)
+  try {
+    await handlers(state).room_preview_merge({ person: 'ben' })
+    expect(sawTurn).toBe(true)
+    expect(registryReads.mock.calls.length).toBeLessThanOrEqual(8)
+  } finally { spy.mockRestore(); registryReads.mockRestore() }
+})
+
+it('yields during the remote-gap pass even when every path is held', async () => {
+  const { entries, state } = fixture()
+  for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {
+    change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
+  })
+  const remove = Set.prototype.delete
+  let turned = false, sawTurn = false
+  const spy = vi.spyOn(Set.prototype, 'delete').mockImplementation(function(this: Set<unknown>, value: unknown) {
+    if (value === 'held-000') setImmediate(() => { turned = true })
+    if (value === 'held-095') sawTurn = turned
+    return remove.call(this, value)
+  })
+  try {
+    await handlers(state).room_preview_merge({ person: 'ben' })
+    expect(sawTurn).toBe(true)
+  } finally { spy.mockRestore() }
+})
 
 it('services an event-loop turn between merged file materialisations', async () => {
   const { entries, texts, state } = fixture()

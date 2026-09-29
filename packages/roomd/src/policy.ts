@@ -69,11 +69,12 @@ export interface DiskFact {
   ignored?: boolean
   exclusionReason?: 'untracked lockfile'
   at?: number
+  ino?: number
   /** Local comparison for an excluded large file, without retaining its hash. */
   changed?: boolean
 }
 
-export type PlannedEntry = Omit<ManifestEntry, 'at' | 'fence'> & { text?: string; at?: number }
+export type PlannedEntry = Omit<ManifestEntry, 'at' | 'fence'> & { text?: string; at?: number; ino?: number }
 export interface PublicationPlan {
   readonly entries: ReadonlyMap<string, PlannedEntry>
   readonly excluded: readonly string[]
@@ -83,12 +84,8 @@ export interface PublicationPlan {
   readonly excludedReasons: ReadonlyMap<string, 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile'>
 }
 
-/** One atomic Y transaction never accepts more than this many paths. Larger scans remain incomplete. */
-export const MAX_PUBLICATION_PATHS = 4096
-
 /** Pure, ordered policy decision. A digest is created only after the publication gate. */
 function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: string): Generator<void, PublicationPlan> {
-  if (disk.length > MAX_PUBLICATION_PATHS) throw new Error(`publication path limit (${MAX_PUBLICATION_PATHS}) exceeded`)
   const entries = new Map<string, PlannedEntry>()
   const excluded: string[] = []
   const excludedPaths: string[] = []
@@ -114,8 +111,8 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
     }
     if (fact.kind === 'unsafe' || fact.size === undefined || fact.size > inputs.rules.sizeCap || !fact.hash) { hide(fact.size !== undefined && fact.size > inputs.rules.sizeCap ? 'size' : 'unsafe'); continue }
     const change = fact.baseHash ? 'M' : 'A'
-    if (!authorizesText(policy, p)) { entries.set(p, { change, state: 'held', held: 'scope', at: fact.at }); continue }
-    const values = { change, hash: fact.hash, size: fact.size, ...(fact.baseHash ? { baseHash: fact.baseHash } : {}), at: fact.at } as const
+    if (!authorizesText(policy, p)) { entries.set(p, { change, state: 'held', held: 'scope', at: fact.at, ino: fact.ino }); continue }
+    const values = { change, hash: fact.hash, size: fact.size, ...(fact.baseHash ? { baseHash: fact.baseHash } : {}), at: fact.at, ino: fact.ino } as const
     if (fact.binary || fact.text === undefined) { entries.set(p, { ...values, state: 'held', held: 'binary' }); continue }
     if (used + fact.size > inputs.rules.budget) { hide('budget'); continue }
     used += fact.size

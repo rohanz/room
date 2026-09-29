@@ -41,3 +41,28 @@ it('keeps both exact alternatives without invoking diff3 on repeated-line small 
   expect(out.filter(line => line.conflict && line.side === 'b').map(line => line.text)).toEqual(b.trimEnd().split('\n'))
   expect(mergeCalls.work.every(work => work <= 2_000_000)).toBe(true)
 })
+
+it('returns exact MCP alternatives for 50,000 repetitive lines under the publication cap', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-bounded-merge-'))
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nexit 128\n', { mode: 0o755 })
+  vi.stubEnv('PATH', bin)
+  try {
+    const base = 'x\n'.repeat(50_000), ours = base + 'a\n', theirs = 'b\n' + base
+    const result = await gitMergeFile(base, ours, theirs, { ours: 'ours', base: 'base', theirs: 'theirs' })
+    expect(result.algorithm).toBe('fallback')
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0].a.join('\n')).toBe(ours)
+    expect(result.conflicts[0].o.join('\n')).toBe(base)
+    expect(result.conflicts[0].b.join('\n')).toBe(theirs)
+    expect(result.text).toContain('<<<<<<< ours\n')
+    expect(result.text).toContain('||||||| base\n')
+    expect(result.text).toContain('=======\n')
+  } finally { fs.rmSync(bin, { recursive: true, force: true }) }
+})
+
+it('returns both web alternatives for 150,000 repetitive lines under the publication cap', () => {
+  const base = 'x\n'.repeat(150_000), a = base + 'a\n', b = 'b\n' + base
+  const out = classifyThreeWay(base, a, b)
+  expect(out.filter(line => line.conflict && line.side === 'a').map(line => line.text).join('\n') + '\n').toBe(a)
+  expect(out.filter(line => line.conflict && line.side === 'b').map(line => line.text).join('\n') + '\n').toBe(b)
+})

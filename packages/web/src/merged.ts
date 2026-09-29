@@ -89,7 +89,7 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
     const next: NamedMergedLine[] = []
     for (const region of boundedMerge(before.map(l => l.text), prior.length ? pairBase(prior[0], participant) : O, lines(participant.text))) {
       if (region.ok) {
-        next.push(...region.ok.map(text => ({ text, side: 'common' as const, changedBy: [], conflict: false, lineNumbers: {} })))
+        for (const text of region.ok) next.push({ text, side: 'common', changedBy: [], conflict: false, lineNumbers: {} })
       } else if (region.conflict) {
         const c = region.conflict
         const previous = before.slice(c.aIndex, c.aIndex + c.a.length)
@@ -97,8 +97,8 @@ export function classifyNWay(base: string, participants: readonly MergeParticipa
         const opponent = previous.flatMap(l => l.changedBy)[0] ?? prior.find(p =>
           boundedMerge(lines(p.text), pairBase(p, participant), lines(participant.text)).some(r => r.conflict && r.conflict.oIndex <= c.oIndex + c.o.length && r.conflict.oIndex + r.conflict.o.length >= c.oIndex))?.name
         const pair: [string, string] = [opponent ?? prior[0]?.name ?? participant.name, participant.name]
-        next.push(...previous.map(l => ({ ...l, conflict: true, conflictPair: l.conflictPair ?? pair, conflictOwner: l.conflictOwner ?? l.changedBy[0] ?? pair[0] })))
-        next.push(...c.b.map(text => ({ text, side: 'common' as const, changedBy: [], lineNumbers: {}, conflict: true, conflictPair: pair, conflictOwner: participant.name })))
+        for (const l of previous) next.push({ ...l, conflict: true, conflictPair: l.conflictPair ?? pair, conflictOwner: l.conflictOwner ?? l.changedBy[0] ?? pair[0] })
+        for (const text of c.b) next.push({ text, side: 'common', changedBy: [], lineNumbers: {}, conflict: true, conflictPair: pair, conflictOwner: participant.name })
       }
     }
     const text = asText(next.map(l => l.text))

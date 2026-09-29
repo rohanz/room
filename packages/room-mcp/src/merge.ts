@@ -100,7 +100,7 @@ function fallback(base: string, ours: string, theirs: string, labels: { ours: st
   for (const part of raw) {
     if (part.ok) {
       chunks.push({ ok: part.ok })
-      rendered.push(...part.ok)
+      for (const text of part.ok) rendered.push(text)
       line += part.ok.length
       continue
     }
@@ -108,7 +108,13 @@ function fallback(base: string, ours: string, theirs: string, labels: { ours: st
     const conflict = { from: line, to: line + Math.max(0, part.conflict.o.length - 1), ...part.conflict }
     chunks.push({ conflict })
     conflicts.push(conflict)
-    rendered.push(`<<<<<<< ${labels.ours}`, ...conflict.a, `||||||| ${labels.base}`, ...conflict.o, '=======', ...conflict.b, `>>>>>>> ${labels.theirs}`)
+    rendered.push(`<<<<<<< ${labels.ours}`)
+    for (const text of conflict.a) rendered.push(text)
+    rendered.push(`||||||| ${labels.base}`)
+    for (const text of conflict.o) rendered.push(text)
+    rendered.push('=======')
+    for (const text of conflict.b) rendered.push(text)
+    rendered.push(`>>>>>>> ${labels.theirs}`)
     line += conflict.o.length
   }
   return { status: conflicts.length ? 'conflict' : 'clean', algorithm: 'fallback', fallbackReason, text: rendered.join('\n'), chunks, conflicts }

@@ -44,6 +44,11 @@ describe('reanchorClaims', () => {
     expect(await reanchorClaims('Alice', [{ ...claim(), from: 3, to: 4 }], new Map([['app.txt', moved]]))).toEqual({ moves: [], releases: [], uncertain: [] })
   })
 
+  it('keeps a claim uncertain when its original digest could not be captured', async () => {
+    const unknown = { ...claim(), claimedHash: undefined }
+    expect(await reanchorClaims('Alice', [unknown], new Map([['app.txt', 'different\n']]))).toEqual({ moves: [], releases: [], uncertain: [unknown.id] })
+  })
+
   it('leaves another participant claim untouched', async () => {
     expect(await reanchorClaims('Alice', [claim('Bob')], new Map([['app.txt', 'gone\n']]))).toEqual({ moves: [], releases: [], uncertain: [] })
   })

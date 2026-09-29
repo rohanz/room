@@ -33,7 +33,7 @@ import { RoomDoc, assertValidParticipantName, claimReleaseText, colorFor, holder
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
-import { git, gitBranch, gitChanged, gitHead, gitIgnored, gitPathsBetween, gitShowMany, gitTracked } from './git.js'
+import { git, gitBlobInfoMany, gitBranch, gitChanged, gitHead, gitIgnored, gitPathsBetween, gitShowMany, gitTracked } from './git.js'
 import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
 export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
 
@@ -268,6 +268,8 @@ class Daemon implements Roomd {
   private appliedAsPublisher?: boolean
   /** Set when a transition marks the manifest incomplete; no publication completes it until the transition commits. */
   private transitionPending = false
+  /** Claims whose original anchors still need validation against the committed HEAD. */
+  private pendingClaimValidation?: { head: string; fence: string; claims: Map<string, ClaimSnapshot> }
   /** Whether this daemon uses a local worker-room anchor rather than a room-remote anchor. */
   private readonly localRoom: boolean
   private readonly roomName: string
@@ -488,7 +490,7 @@ class Daemon implements Roomd {
     this.publisher.applyInputs(next)
     this.inputs = next
     this.setStatus(this.currentStatus())
-    void this.enqueue(async () => { await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending) })
+    void this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
   }
 
 
@@ -581,7 +583,7 @@ class Daemon implements Roomd {
           this.reconcilePass = pass
           this.reconcileDirty = false
           await this.pollHead()
-          await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending)
+          await this.publisher.reconcile('all', this.publicationComplete())
           if (!this.reconcileDirty || this.stopped) break
         }
       } finally {
@@ -599,6 +601,10 @@ class Daemon implements Roomd {
 
   private currentStatus(): string {
     return (this.provider.awareness.getLocalState() as Presence | null)?.status ?? 'synced'
+  }
+
+  private publicationComplete(): boolean {
+    return this.anchor.anchored && !this.transitionPending && !this.pendingClaimValidation?.claims.size
   }
 
   /** Mark this party active now (tool calls count as activity). */
@@ -699,7 +705,7 @@ class Daemon implements Roomd {
     this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = undefined
       this.roomDoc.reconcileBaseTexts(this.name, this, this.inputs.head)
-      await this.enqueue(async () => { await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending) })
+      await this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
     })
   }
 
@@ -755,7 +761,10 @@ class Daemon implements Roomd {
     }
     if (headMoved) invalidate()
     const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
-    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return
+    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) {
+      await this.retryPendingClaims(head, fence)
+      return
+    }
     // §B2 step 1: invalidate prior scans and coverage before waiting for Git's transient state.
     if (!headMoved) invalidate()
     if (headMoved) await this.waitForGitOperation(head)
@@ -764,6 +773,16 @@ class Daemon implements Roomd {
     const prev = this.appliedHead
     const firstTransition = this.appliedRefs === undefined
     const claimSnapshot = prev !== head || firstTransition ? await this.snapshotOwnClaims(prev) : []
+    // A newer transition supersedes the old target, but unresolved original anchors survive it.
+    const pending = this.pendingClaimValidation
+    if (pending?.fence === fence) {
+      const byId = new Map(claimSnapshot.map(c => [c.id, c]))
+      for (const [id, original] of pending.claims) {
+        const current = byId.get(id)
+        if (current && current.claimState === original.claimState) byId.set(id, original)
+      }
+      claimSnapshot.splice(0, claimSnapshot.length, ...byId.values())
+    }
     if (headMoved) {
       this.base = head
       this.branch = branch
@@ -780,7 +799,7 @@ class Daemon implements Roomd {
       catch (error) { if (!(error instanceof StalePublication)) throw error }
       if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
-      if (publication && await this.publisher.validatePrepared(publication) && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
+      if (publication && await this.publisher.validatePrepared(publication) && this.claimFilesValid(claims) && this.commitTransition(inputs, claims, facts, publication, resolved.anchored && !claims.uncertain.length)) break
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`)
     }
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
@@ -790,6 +809,7 @@ class Daemon implements Roomd {
     this.appliedRefs = refsKey(inputs)
     this.appliedAsPublisher = publishing
     this.appliedFence = fence
+    this.pendingClaimValidation = claims.uncertain.length ? { head, fence, claims: new Map(claimSnapshot.filter(c => claims.uncertain.includes(c.id)).map(c => [c.id, c])) } : undefined
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     // §B2 step 6, after the transaction.
     await this.postPushedPending()
@@ -866,6 +886,7 @@ class Daemon implements Roomd {
   private commitTransition({ head }: BaseInputs, claims: ClaimChanges, { next, pushed }: TransitionFacts, publication: PreparedPublication, anchored: boolean): boolean {
     if (!this.publisher.valid(publication)) return false
     for (const [id, state] of claims.claimState) if (JSON.stringify(this.roomDoc.claims.get(id)) !== state) return false
+    if (!this.publisher.identityValid(publication)) return false
     // Notices are posted after the transaction commits: the hub appends them (hub §8), by id where retried.
     const notices: { from: Identity; body: PostBody<Msg>; id?: string }[] = []
     this.roomDoc.doc.transact(() => {
@@ -912,20 +933,27 @@ class Daemon implements Roomd {
   }
 
   /** Capture the claimed code before a commit can clear its overlay. */
-  private async snapshotOwnClaims(prev: string): Promise<(Claim & { anchorText?: string; claimState?: string })[]> {
+  private async snapshotOwnClaims(prev: string): Promise<ClaimSnapshot[]> {
     const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
     const fence = this.fence
     if (!fence) return []
     const incarnation = manifestKey(this.name, fence)
-    const oldPaths = [...new Set(owned.map(c => c.path))]
-    const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
-    const snapshots: (Claim & { anchorText?: string; claimState?: string })[] = []
+    const oldPaths = [...new Set(owned.filter(c => !c.claimedHash && !this.claimDigests.has(c.id) && this.roomDoc.text(c.path, incarnation) === undefined).map(c => c.path))]
+    const oldTexts = new Map<string, string | undefined>()
+    const oldInfo = oldPaths.length ? await gitBlobInfoMany(this.dir, prev, oldPaths) : new Map()
+    for (const rel of oldPaths) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const info = oldInfo.get(rel)
+      if (info && info.size <= this.sizeCap) oldTexts.set(rel, (await gitShowMany(this.dir, prev, [rel])).get(rel))
+    }
+    const snapshots: ClaimSnapshot[] = []
     for (const c of owned) {
       await new Promise<void>(resolve => setImmediate(resolve))
       const overlay = this.roomDoc.text(c.path, incarnation)
       const oldText = oldTexts.get(c.path)
       const range = overlay !== undefined && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to }
-      const hash = c.claimedHash ?? this.claimDigests.get(c.id) ?? (overlay === undefined ? oldText === undefined ? undefined : claimDigest(oldText, range.from, range.to) : claimDigest(overlay, range.from, range.to))
+      const source = overlay === undefined ? oldText : overlay
+      const hash = c.claimedHash ?? this.claimDigests.get(c.id) ?? (source === undefined || Buffer.byteLength(source) > this.sizeCap ? undefined : claimDigest(source, range.from, range.to))
       const block = (text: string | undefined): string | undefined => {
         if (text === undefined || Buffer.byteLength(text) > this.sizeCap || claimDigest(text, range.from, range.to) !== hash) return undefined
         return text.split('\n').slice(range.from - 1, range.to).join('\n')
@@ -945,14 +973,15 @@ class Daemon implements Roomd {
       : undefined
     const relevant = changedPaths ? snapshot.filter(c => changedPaths.has(c.path)) : snapshot
     if (!relevant.length) return NO_CLAIM_CHANGES
-    const claimState = new Map(relevant.map(c => [c.id, (c as Claim & { claimState?: string }).claimState ?? JSON.stringify(this.roomDoc.claims.get(c.id))]))
+    const claimState = new Map(relevant.map(c => [c.id, (c as ClaimSnapshot).claimState ?? JSON.stringify(this.roomDoc.claims.get(c.id))]))
     const paths = [...new Set(relevant.map(c => c.path))]
     const currentTexts = new Map<string, string | undefined>()
-    const readable = new Set<string>()
+    const fileState = new Map<string, string>()
     const unreadable = new Set<string>()
     const inputs = this.inputs
     for (const rel of paths) {
       await new Promise<void>(resolve => setImmediate(resolve))
+      fileState.set(rel, this.claimFileIdentity(rel))
       if (!this.isSafeRoomPath(rel, false)) { currentTexts.set(rel, undefined); continue }
       try {
         const before = await fs.promises.lstat(this.abs(rel))
@@ -973,7 +1002,6 @@ class Daemon implements Roomd {
           const pathAfter = await fs.promises.lstat(this.abs(rel))
           if (count !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || pathAfter.ino !== opened.ino || !this.isSafeRoomPath(rel, false)) { unreadable.add(rel); continue }
           currentTexts.set(rel, bytes.subarray(0, count).toString('utf8'))
-          readable.add(rel)
         } finally { await handle.close() }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') currentTexts.set(rel, undefined)
@@ -981,23 +1009,87 @@ class Daemon implements Roomd {
       }
     }
     const originals = new Map(relevant.flatMap(c => {
-      const anchor = (c as Claim & { anchorText?: string }).anchorText
+      const anchor = (c as ClaimSnapshot).anchorText
       return anchor === undefined ? [] : [[c.id, anchor] as const]
     }))
     const changes = await reanchorClaims(this.name, relevant, currentTexts, { originals, unreadable,
       valid: () => this.fence === fence && this.inputs === inputs && !this.stopped })
-    if (changes.uncertain.length) {
-      this.log(`claim reanchor uncertain for ${changes.uncertain.length} claim(s); keeping them and retrying`)
-      this.publisher.markDirty()
+    const dirty = changes.releases.length || changes.uncertain.length ? new Set(await gitChanged(this.dir)) : new Set<string>()
+    for (const c of relevant) if (changes.uncertain.includes(c.id) && unreadable.has(c.path) && !dirty.has(c.path)) {
+      changes.releases.push({ id: c.id, path: c.path, from: c.from, to: c.to })
     }
-    const dirty = changes.releases.length ? new Set(await gitChanged(this.dir)) : new Set<string>()
+    const uncertain = changes.uncertain.filter(id => !changes.releases.some(release => release.id === id))
     const releases = changes.releases.filter(release => {
-      if (!readable.has(release.path) || !dirty.has(release.path)) return true
+      if (!dirty.has(release.path)) return true
       this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`)
+      uncertain.push(release.id)
       return false
     })
-    return { moves: changes.moves, releases, hashById: new Map(relevant.map(c => [c.id, c.claimedHash])),
+    if (uncertain.length) {
+      this.log(`claim reanchor uncertain for ${uncertain.length} claim(s); keeping them and retrying`)
+      this.publisher.markDirty()
+    }
+    return { moves: changes.moves, releases, uncertain, fileState, hashById: new Map(relevant.map(c => [c.id, c.claimedHash])),
       claimState }
+  }
+
+  private claimFileIdentity(rel: string): string {
+    if (!this.isSafeRoomPath(rel, false)) return 'unsafe'
+    try {
+      const stat = fs.lstatSync(this.abs(rel))
+      return `${stat.isFile()}:${stat.size}:${stat.mtimeMs}:${stat.ino}`
+    } catch (error) { return `error:${(error as NodeJS.ErrnoException).code ?? 'unknown'}` }
+  }
+
+  private claimFilesValid(changes: ClaimChanges): boolean {
+    for (const [rel, identity] of changes.fileState) if (this.claimFileIdentity(rel) !== identity) return false
+    return true
+  }
+
+  /** One bounded claim-validation slice per publisher tick, independent of later HEAD movement. */
+  private async retryPendingClaims(head: string, fence: string): Promise<void> {
+    const pending = this.pendingClaimValidation
+    if (!pending || pending.head !== head || pending.fence !== fence || !pending.claims.size) return
+    const [id, original] = pending.claims.entries().next().value as [string, ClaimSnapshot]
+    if (JSON.stringify(this.roomDoc.claims.get(id)) !== original.claimState) {
+      pending.claims.delete(id)
+      if (!pending.claims.size) this.pendingClaimValidation = undefined
+      return
+    }
+    const inputs = this.inputs
+    const changes = await this.reanchorOwnClaims(head, [original])
+    if (this.stopped || this.fence !== fence || this.inputs !== inputs || await gitHead(this.dir) !== head || !this.claimFilesValid(changes)) return
+    if (JSON.stringify(this.roomDoc.claims.get(id)) !== original.claimState) {
+      pending.claims.delete(id)
+      if (!pending.claims.size) this.pendingClaimValidation = undefined
+      return
+    }
+    if (changes.uncertain.includes(id)) {
+      // Rotation prevents an unreadable or individually expensive claim starving later claims.
+      pending.claims.delete(id)
+      pending.claims.set(id, original)
+      return
+    }
+    const notices: { from: Identity; body: PostBody<Msg> }[] = []
+    this.roomDoc.doc.transact(() => {
+      for (const move of changes.moves) {
+        const current = this.roomDoc.claims.get(move.id)
+        if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this,
+          authorizesText(this.inputs.policy, current.path) ? changes.hashById.get(move.id) : undefined)
+      }
+      for (const release of changes.releases) {
+        const current = this.roomDoc.claims.get(release.id)
+        if (current?.by !== this.name || current.mirrorOf) continue
+        this.roomDoc.removeClaim(release.id, this)
+        const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10))
+        notices.push({ from: { name: this.name, kind: this.kind }, body: { type: 'release', claimId: release.id, path: release.path, summary: text } as PostBody<ReleaseMsg> })
+        notices.push({ from: { name: 'room', kind: 'bot' }, body: { type: 'note', to: this.name, priority: 'notify', text } as PostBody<NoteMsg> })
+        this.log(text)
+      }
+    }, this)
+    pending.claims.delete(id)
+    if (!pending.claims.size) this.pendingClaimValidation = undefined
+    for (const notice of notices) this.post(notice.from, notice.body)
   }
 
   /** Validate claims recovered from a branch-room archive after the first repo-room join. */
@@ -1030,7 +1122,7 @@ class Daemon implements Roomd {
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
   private async seedLocalOverlay(): Promise<void> {
-    await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending)
+    await this.publisher.reconcile('all', this.publicationComplete())
   }
 
   abs(relpath: string): string {
@@ -1175,12 +1267,12 @@ class Daemon implements Roomd {
 
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
-    if (await gitIgnored(this.dir, relpath)) { this.tracked.delete(relpath); await this.publisher.reconcile('all'); return }
+    if (await gitIgnored(this.dir, relpath)) { this.tracked.delete(relpath); await this.publisher.reconcile('all', this.publicationComplete()); return }
     if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
       if (!isNew || !fs.existsSync(this.abs(relpath))) return
       this.tracked.add(relpath)
     }
-    await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending)
+    await this.publisher.reconcile('all', this.publicationComplete())
   }
 
   /** Does git track (or offer as untracked) any file under this directory? */
@@ -1217,14 +1309,15 @@ class Daemon implements Roomd {
   }
 }
 
-interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined>; claimState: Map<string, string | undefined> }
+type ClaimSnapshot = Claim & { anchorText?: string; claimState?: string }
+interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; uncertain: string[]; fileState: Map<string, string>; hashById: Map<string, string | undefined>; claimState: Map<string, string | undefined> }
 type PushedPending = NonNullable<ParticipantGit['pushedPending']>
 interface TransitionFacts { next?: ParticipantGit; pushed?: PushedPending }
 /** A post the hub took: a refusal resolves `{ ok: false }`, and no hub connection yet resolves undefined. */
 const hubAccepted = (result: unknown) => result != null && !(typeof result === 'object' && 'ok' in result && result.ok === false)
 /** Preparations a HEAD transition tries before it gives up until the next poll. */
 const TRANSITION_ATTEMPTS = 5
-const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map(), claimState: new Map() }
+const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], uncertain: [], fileState: new Map(), hashById: new Map(), claimState: new Map() }
 
 /** Detached HEAD has no branch: `''` in the record (reporooms §Participant record). */
 const branchName = (abbrev: string) => abbrev === 'HEAD' ? '' : abbrev
