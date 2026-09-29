@@ -244,11 +244,7 @@ export class Ledger {
 
   /** Only the current holder removes receipts whose retained message and outcome references are gone. */
   private prune(s: Session): void {
-    if (!this.fenced(s)) return
-    const refs = new Set([...s.room.messages().map(m => m.id), ...s.room.mail.keys(), ...s.room.outcomes.keys()])
-    const seen = s.room.seen(s.me.name)
-    const stale = [...seen.keys()].filter(id => !refs.has(id))
-    if (stale.length) s.room.doc.transact(() => { for (const id of stale) seen.delete(id) })
+    s.room.pruneSeen(s.me.name, () => this.fenced(s))
   }
 
   // ---- cursor (ledger "Cursor") -------------------------------------------------------------

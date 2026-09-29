@@ -167,6 +167,10 @@ describe('resumed worker boundaries', () => {
     append({ type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } })
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
     expect(t.room.seen(record.name).get(run.promptMsgIds[0])).toMatchObject({ via: 'prompt', s: record.hostSessionId })
+    t.room.bus.delete(0, t.room.bus.length)
+    t.room.mail.delete(run.promptMsgIds[0])
+    await projectWorkers(t.session, registry, 'rohanz', 'joined')
+    expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
   })
 
   it('shows a missing Claude session while leaving its follow-up owed', async () => {

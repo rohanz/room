@@ -78,6 +78,21 @@ describe('Runner', () => {
     expect(s.room.seen('Rohan').get(msg.id)).toMatchObject({ via: 'agent' })
   })
 
+  it('S2 prunes live roomagent receipts after their last bus, mail and outcome references disappear', async () => {
+    const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },
+      { type: 'question', to: 'Rohan', text: 'ready?' })
+    await s.runner.idle()
+    expect(s.room.seen('Rohan').has(msg.id)).toBe(true)
+    s.room.mail.set(msg.id, msg)
+    s.room.bus.delete(0, s.room.bus.length)
+    await s.runner.retryDelivery()
+    expect(s.room.seen('Rohan').has(msg.id)).toBe(true)
+    s.room.mail.delete(msg.id)
+    await s.runner.retryDelivery()
+    expect(s.room.seen('Rohan').has(msg.id)).toBe(false)
+    await s.runner.stop()
+  })
+
   it('leaves a message owed when Codex rejects before turn.started', async () => {
     s.backend.emitTurnStarted = false
     const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },

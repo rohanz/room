@@ -5,11 +5,19 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
 import { roomFilePath } from '../src/room-file.js'
 import { gitRoot, gitStatePath } from '../../../plugins/room/hooks/common.mjs'
-import { carryRecordSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, worktreeGitDirFromDotGit, worktreeGitDirSync } from '../src/git-dirs.js'
+import * as gitDirs from '../src/git-dirs.js'
+import { commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, worktreeGitDirFromDotGit, worktreeGitDirSync } from '../src/git-dirs.js'
+import * as workerState from '../../room-mcp/src/worker-state.js'
 
 const roots: string[] = []
 const run = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+
+it('N5 exposes no legacy carry writer or unused registry lifecycle adapter', () => {
+  for (const name of ['carryRecord', 'carryRecordSync', 'writeRecordSync', 'readRecordSync'])
+    expect(Object.keys(gitDirs)).not.toContain(name)
+  expect(Object.keys(workerState)).not.toContain('workerRealStateFromRegistry')
+})
 
 it('places room.json in each worktree private Git directory, including from a subdirectory', () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-git-dirs-')))
@@ -58,7 +66,6 @@ it('matches the dependency-free hook over clones, nested worktrees, subdirectori
     expect(gitStatePath(dir, 'room-state.json')).toBe(path.join(expectedPrivate, 'room-state.json'))
     expect(commonGitDirFromDotGit(dir)).toBe(expectedCommon)
     expect(await gitCommonDir(dir)).toBe(expectedCommon)
-    expect(carryRecordSync(dir, 'tag').file).toBe(path.join(expectedCommon, 'room-carry', 'tag.json'))
     expect(await realGitCommonDir(dir)).toBe(fs.realpathSync(expectedCommon))
     const subdir = path.join(dir, 'subdir')
     fs.mkdirSync(subdir)
@@ -67,7 +74,6 @@ it('matches the dependency-free hook over clones, nested worktrees, subdirectori
     expect(gitStatePath(subdir, 'room-state.json')).toBe(path.join(subdir, '.git', 'room-state.json'))
     expect(worktreeGitDirSync(subdir)).toBe(expectedPrivate)
     expect(await gitCommonDir(subdir)).toBe(expectedCommon)
-    expect(carryRecordSync(subdir, 'tag').file).toBe(path.join(expectedCommon, 'room-carry', 'tag.json'))
   }
   const missing = path.join(root, 'missing')
   fs.mkdirSync(missing)
@@ -82,7 +88,6 @@ it('matches the dependency-free hook over clones, nested worktrees, subdirectori
   expect(worktreeGitDirFromDotGit(outside)).toBe(path.join(outside, '.git'))
   expect(commonGitDirFromDotGit(outside)).toBe(path.join(outside, '.git'))
   expect(() => worktreeGitDirSync(outside)).toThrow()
-  expect(() => carryRecordSync(outside, 'tag')).toThrow()
   await expect(gitCommonDir(outside)).rejects.toThrow()
   const malformed = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-malformed-gitfile-')))
   roots.push(malformed)

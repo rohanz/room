@@ -39,7 +39,9 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
       if (ended && run?.mode === 'resume' && run.promptMsgIds.length && record.hostSessionId
         && resumeAccepted(logFile, record.host, record.hostSessionId, run.logStart)) {
-        s.room.markSeen(record.name, run.promptMsgIds, { s: record.hostSessionId, via: 'prompt' })
+        const retained = run.promptMsgIds.filter(id => s.room.message(id) || s.room.outcomes.has(id))
+        s.room.markSeen(record.name, retained, { s: record.hostSessionId, via: 'prompt' })
+        s.room.pruneSeen(record.name, () => s.daemon.fence === fence)
       }
       const missing = ended && record.host === 'claude' && run?.mode === 'resume' && record.hostSessionId
         && missingClaudeSession(logFile, record.hostSessionId, run.logStart)

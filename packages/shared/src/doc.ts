@@ -474,11 +474,21 @@ export class RoomDoc {
   // ---- read receipts ------------------------------------------------------
   /** `seen:<P>`: message ids P's agent was handed, after a confirmed handoff (ledger R2). Legacy receipts are a number. */
   seen(name: string): Y.Map<Receipt | number> { return this.doc.getMap<Receipt | number>(`seen:${encodeURIComponent(name)}`) }
-  /** Receipts for a confirmed handoff to session `s` by `via`; the Ledger (room-mcp/src/ledger.ts) is the writer. */
+  /** Receipts for a confirmed handoff to session `s` by `via`. */
   markSeen(name: string, ids: readonly string[], receipt: Omit<Receipt, 'at'>, origin?: unknown): void {
     if (!ids.length) return
     const value: Receipt = { ...receipt, at: Date.now() }
     this.doc.transact(() => { const m = this.seen(name); for (const id of ids) if (!m.has(id)) m.set(id, value) }, origin)
+  }
+  /** Remove orphaned receipts only while this writer still holds its authority fence. */
+  pruneSeen(name: string, current: () => boolean): void {
+    if (!current()) return
+    this.doc.transact(() => {
+      if (!current()) return
+      const refs = new Set([...this.messages().map(m => m.id), ...this.mail.keys(), ...this.outcomes.keys()])
+      const seen = this.seen(name)
+      for (const id of seen.keys()) if (!refs.has(id)) seen.delete(id)
+    })
   }
   seenBy(msgId: string): string[] {
     const out: string[] = []

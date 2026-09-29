@@ -6,7 +6,7 @@ import { git } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { RECORDED_PATH, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { workerProcessOwnership, type ProcessInfo, type ProcessOwnership } from './worker-process.js'
-import { realStateInput, type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import { type LocalWorker, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 
 /** A Room worker path is a chain of .room/workers/<name> directories ending on room/<name>. */
 export function roomWorkerPathMatchesBranch(leadDir: string, workerDir: string, branch: string, nested = false): boolean {
@@ -169,13 +169,6 @@ export async function workerRealState(leadDir: string, w: LocalWorker, options: 
     } catch { state.ahead = undefined }
   }
   return state
-}
-
-/** The durable-store adapter for the existing lifecycle probes. Callers from the rollout use this
- * instead of turning a replicated WorkerView into local authority. */
-export function workerRealStateFromRegistry(leadDir: string, record: WorkerRecord, status: WorkerStatusResult,
-  options: Parameters<typeof workerRealState>[2] = {}): Promise<WorkerRealState> {
-  return workerRealState(leadDir, realStateInput(record, status), options)
 }
 
 export type CollectDecision = 'skip-status' | 'skip-partial' | 'missing' | 'inspect'

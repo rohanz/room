@@ -1,7 +1,6 @@
-/** Owns Room's worktree-private and common Git directory rules, including carry records. */
+/** Owns Room's worktree-private and common Git directory rules. */
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomBytes } from 'node:crypto'
 import { boundedGitSync } from './baseline.js'
 import { git } from './git.js'
 
@@ -39,55 +38,7 @@ export async function gitCommonDir(dir: string): Promise<string> {
   return path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim())
 }
 
-/** Stop-state calls must remain synchronous and retain boundedGitSync's deadline. */
-function gitCommonDirSync(dir: string): string {
-  return path.resolve(dir, boundedGitSync(dir, ['rev-parse', '--git-common-dir']).toString().trim())
-}
-
-/** Worker ownership compares canonical common directories; carry paths remain lexical. */
+/** Worker ownership compares canonical common directories. */
 export async function realGitCommonDir(dir: string): Promise<string> {
   return fs.realpathSync(await gitCommonDir(dir))
-}
-
-function recordAbsent(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === 'ENOENT' }
-
-export function readRecordSync<T>(file: string): T | undefined {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
-  catch (error) { if (recordAbsent(error)) return undefined; throw error }
-}
-
-/** Atomically replace a private Git record; carry and retained sharing use this writer. */
-export function writeRecordSync(file: string, record: object): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const temp = file + '.' + process.pid + '.' + randomBytes(4).toString('hex') + '.tmp'
-  try { fs.writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(temp, file) }
-  finally { try { fs.rmSync(temp, { force: true }) } catch { /* rename already succeeded */ } }
-}
-
-/** One accessor for <common git dir>/room-carry/<tag>.json and its atomic reads/writes. */
-export async function carryRecord(repoDir: string, tag: string) {
-  const file = path.join(await gitCommonDir(repoDir), 'room-carry', tag + '.json')
-  return {
-    file,
-    async read<T>(): Promise<T | undefined> {
-      try { return JSON.parse(await fs.promises.readFile(file, 'utf8')) as T }
-      catch (error) { if (recordAbsent(error)) return undefined; throw error }
-    },
-    async write(record: object): Promise<void> {
-      await fs.promises.mkdir(path.dirname(file), { recursive: true })
-      const temp = file + '.' + process.pid + '.tmp'
-      try { await fs.promises.writeFile(temp, JSON.stringify(record), { mode: 0o600 }); await fs.promises.rename(temp, file) }
-      finally { await fs.promises.rm(temp, { force: true }) }
-    },
-  }
-}
-
-/** Sync carry stop-state operations use the bounded Git deadline and atomic writes. */
-export function carryRecordSync(repoDir: string, tag: string) {
-  const file = path.join(gitCommonDirSync(repoDir), 'room-carry', tag + '.json')
-  return {
-    file,
-    read: <T>(): T | undefined => readRecordSync<T>(file),
-    write(record: object): void { writeRecordSync(file, record) },
-  }
 }

@@ -76,6 +76,17 @@ export class Runner {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) this.onMsg(m)
     }
     bus.observe(onBus); this.unobserve.push(() => bus.unobserve(onBus))
+    const prune = () => room.pruneSeen(this.me.name, () => !this.stopped && this.opts.authority.current() !== undefined)
+    prune()
+    const onBusDelete = (ev: Y.YArrayEvent<Msg>) => {
+      if (ev.changes.delta.some(change => change.delete)) prune()
+    }
+    bus.observe(onBusDelete); this.unobserve.push(() => bus.unobserve(onBusDelete))
+    const onReferenceDelete = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
+      if ([...ev.changes.keys.values()].some(change => change.action === 'delete')) prune()
+    }
+    room.mail.observe(onReferenceDelete); this.unobserve.push(() => room.mail.unobserve(onReferenceDelete))
+    room.outcomes.observe(onReferenceDelete); this.unobserve.push(() => room.outcomes.unobserve(onReferenceDelete))
     // Addressed mail survives bus trimming and an agent restart.
     for (const m of owed(room, this.me, { frontier: this.frontier, routed: new Set() }, {})) {
       if (m.to === this.me.name) this.onMsg(m)
@@ -180,6 +191,7 @@ export class Runner {
   /** Retry owed delivery after a denied/lapsed lease or a transport reconnect. */
   async retryDelivery(): Promise<void> {
     if (this.stopped || this.paused) return
+    this.room.pruneSeen(this.me.name, () => this.opts.authority.current() !== undefined)
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined }
     for (const m of owed(this.room, this.me, { frontier: this.frontier, routed: new Set() }, {}))
       this.onMsg(m)
@@ -283,6 +295,7 @@ export class Runner {
         this.retryDelayMs = 1_000
         const ids = events.flatMap(q => this.room.message(q.msg.id) || this.room.mail.has(q.msg.id) ? [q.msg.id] : [])
         if (ids.length) this.room.markSeen(this.me.name, ids, { s: this.opts.authority.sessionId, via: 'agent' })
+        this.room.pruneSeen(this.me.name, () => this.opts.authority.current() === epoch)
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)

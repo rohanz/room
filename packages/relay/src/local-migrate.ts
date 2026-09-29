@@ -93,7 +93,10 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
     try { Y.applyUpdate(doc, fs.readFileSync(file)); loaded.push({ name, mtime, source: new RoomDoc(doc), doc }) }
     catch (error) { log(`local migration: cannot read ${file}: ${String(error)}`); unreadable = true; doc.destroy() }
   }
-  const occurrences = new Map<string, Set<string>>()
+  // Identity evidence is monotonic while catch-up is pending. A snapshot that
+  // temporarily fails to parse cannot make an ambiguous legacy name unique.
+  const occurrences = new Map<string, Set<string>>(Object.entries(ledger.identities)
+    .map(([person, names]) => [person, new Set(names)]))
   const mark = (person: string | undefined, source: string) => {
     if (!person) return
     let names = occurrences.get(person)
@@ -109,8 +112,10 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
   }
   const aliases = targetDoc.getMap<string>('aliases')
   const placeholder = (person: string, source: string) => `?${crypto.createHash('sha256').update(`${source}\0${person}`).digest('hex').slice(0, 16)}`
-  const translated = (person: string, source: string) => (occurrences.get(person)?.size ?? 0) > 1
-    ? aliases.get(placeholder(person, source)) ?? placeholder(person, source) : person
+  const translated = (person: string, source: string) => {
+    const by = placeholder(person, source)
+    return aliases.get(by) ?? ((occurrences.get(person)?.size ?? 0) > 1 ? by : person)
+  }
   const unresolved = targetDoc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
   let changed = false
   let scanned = false
@@ -123,7 +128,7 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
     }
     for (const [person, prior] of Object.entries(ledger.identities)) {
       if (prior.length !== 1 || (occurrences.get(person)?.size ?? 0) <= 1) continue
-      const source = prior[0], by = placeholder(person, source), key = `${source}\0${person}`
+      const source = prior[0], by = translated(person, source), key = `${source}\0${person}`
       const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
       const moved = [...old.claims]
       for (const [id, claim] of target.claims) {
@@ -142,7 +147,18 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
           ...(message.to === person ? { to: by } : {}) } as Msg)
         changed = true
       }
-      if (moved.length || scope) { unresolved.set(key, { placeholder: by, claims: moved, ...(scope ? { scope } : {}) }); changed = true }
+      if (by.startsWith('?')) {
+        if (moved.length || scope) { unresolved.set(key, { placeholder: by, claims: moved, ...(scope ? { scope } : {}) }); changed = true }
+      } else {
+        for (const claim of moved) if (!target.claims.has(claim.id)) { target.claims.set(claim.id, { ...claim, by }); changed = true }
+        if (scope && !target.scopes.has(by)) {
+          const copy = { ...scope, by }
+          target.scopes.set(by, copy)
+          ledger.scopeSnapshots[key] = JSON.stringify(copy)
+          changed = true
+        }
+        if (unresolved.has(key)) { unresolved.delete(key); changed = true }
+      }
     }
   })
   for (const { name, mtime, source, doc } of loaded) {
@@ -180,7 +196,7 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
         if (by.startsWith('?')) {
           const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
           unresolved.set(key, { ...old, scope: copy }); changed = true
-        } else if (!target.scopes.has(person)) { target.scopes.set(person, copy); ledger.scopeSnapshots[key] = JSON.stringify(copy); changed = true }
+        } else if (!target.scopes.has(by)) { target.scopes.set(by, copy); ledger.scopeSnapshots[key] = JSON.stringify(copy); changed = true }
         scopes.add(key)
       }
     })
