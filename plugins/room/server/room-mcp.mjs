@@ -42896,7 +42896,7 @@ var EVENT_LOOP_SAMPLE_MS = 500;
 var EVENT_LOOP_LAG_MS = 2e3;
 var PREVIEW_CHECK_MAX_AGE_MS = 6 * 6e4;
 var PREVIEW_CHECK_ENTRY_LIMIT = 500;
-var PREVIEW_CHECK_MARKERS = path.join(os.tmpdir(), `room-preview-checks-${process.getuid?.() ?? "user"}`);
+var PREVIEW_CHECK_MARKERS = process.getuid ? path.join(os.tmpdir(), `room-preview-checks-${process.getuid()}`) : void 0;
 var context = new AsyncLocalStorage();
 var ms = (value2) => `${Math.round(value2)}ms`;
 var ToolTiming = class {
@@ -42997,7 +42997,7 @@ var ToolTiming = class {
 function currentToolTiming() {
   return context.getStore();
 }
-function countOtherPreviewChecks(ownMarker, markerDir = PREVIEW_CHECK_MARKERS, now = Date.now(), readStat = (file) => fs2.lstatSync(file)) {
+function countOtherPreviewChecks(ownMarker, markerDir, now = Date.now(), readStat = (file) => fs2.lstatSync(file)) {
   try {
     const ownName = path.basename(ownMarker);
     let count = 0;
@@ -43013,22 +43013,11 @@ function countOtherPreviewChecks(ownMarker, markerDir = PREVIEW_CHECK_MARKERS, n
         try {
           const stat4 = readStat(file);
           if (!stat4.isFile()) continue;
-          const stale = stat4.mtimeMs > now + 1e3 || now - stat4.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS;
-          let dead = false;
-          if (!stale) {
-            try {
-              process.kill(Number(match[1]), 0);
-            } catch (error2) {
-              dead = error2.code === "ESRCH";
-            }
-          }
-          if (stale || dead) {
-            try {
-              fs2.unlinkSync(file);
-            } catch {
-            }
-            ;
-            continue;
+          if (stat4.mtimeMs > now + 1e3 || now - stat4.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS) continue;
+          try {
+            process.kill(Number(match[1]), 0);
+          } catch (error2) {
+            if (error2.code === "ESRCH") continue;
           }
           count++;
         } catch (error2) {
@@ -43052,9 +43041,10 @@ async function previewCheck(work, { markerDir = PREVIEW_CHECK_MARKERS, sample = 
   let marker;
   if (timing?.name === "room_preview_merge") {
     try {
+      if (!markerDir || !process.getuid) throw new Error("marker directory owner cannot be checked");
       fs2.mkdirSync(markerDir, { recursive: true, mode: 448 });
       const stat4 = fs2.lstatSync(markerDir);
-      if (!stat4.isDirectory() || process.getuid && stat4.uid !== process.getuid()) throw new Error("unsafe marker directory");
+      if (!stat4.isDirectory() || stat4.uid !== process.getuid()) throw new Error("unsafe marker directory");
       const file = path.join(markerDir, `${process.pid}-${randomBytes(8).toString("hex")}`);
       fs2.writeFileSync(file, "", { flag: "wx", mode: 384 });
       marker = file;
