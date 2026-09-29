@@ -31,8 +31,8 @@ export interface ConflictSlot {
   checkedAt: number
   retryAt?: number
   retrySource?: string
-  /** Opaque identities preserve notice epochs while restricted symbol names are withdrawn. */
-  redacted?: { keyHash: string; epoch: number; settled: 'conflict' | 'possible' | 'clean' | 'none'; factId: string }[]
+  /** Path-level notice history carried after identities are withdrawn. */
+  noticeFloor?: number
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource'>
 
@@ -72,19 +72,12 @@ export class ConflictSlots {
       for (const [key] of old) this.map.delete(key)
       for (const [path, slots] of byPath) {
         const prior = slots.find(slot => slot.settled === 'conflict') ?? slots.find(slot => slot.settled === 'possible') ?? slots[0]!
-        const identities = new Map<string, NonNullable<ConflictSlot['redacted']>[number]>()
-        for (const [key, slot] of old) {
-          if (slot.path !== path) continue
-          for (const identity of slot.redacted ?? []) identities.set(identity.keyHash, identity)
-          if (slot.subject && slot.subject !== '*') {
-            const identity = { keyHash: hash(key), epoch: slot.epoch, settled: slot.settled, factId: slot.factId }
-            const existing = identities.get(identity.keyHash)
-            if (!existing || existing.epoch <= identity.epoch) identities.set(identity.keyHash, identity)
-          }
-        }
+        // A path-level high water mark survives withdrawal without replicating a
+        // digest of any restricted symbol, signature, or slot key.
+        const epoch = Math.max(...slots.map(slot => slot.epoch))
         this.map.set(slotKey(owner, 'contract', other, path, '*'), { owner, other, kind: 'contract', path, subject: '*',
-          status: 'unknown', settled: prior.settled, epoch: prior.epoch, fence: prior.fence, checkedAt: this.now(),
-          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why, redacted: [...identities.values()] })
+          status: 'unknown', settled: prior.settled, epoch, fence: prior.fence, checkedAt: this.now(),
+          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why })
       }
     })
   }
@@ -92,10 +85,15 @@ export class ConflictSlots {
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
     let prev = this.map.get(key)
     if (!prev && result.kind === 'contract' && result.subject !== '*') {
-      const aggregate = this.map.get(slotKey(result.owner, 'contract', result.other, result.path, '*'))
-      const identity = aggregate?.redacted?.find(item => item.keyHash === hash(key))
-      if (aggregate && identity) prev = { ...aggregate, subject: result.subject, epoch: identity.epoch,
-        settled: identity.settled, factId: identity.factId, inputs: '' }
+      const prefix = slotKey(result.owner, 'contract', result.other, result.path, '')
+      const siblings = [...this.map.entries()].filter(([siblingKey]) => siblingKey.startsWith(prefix)).map(([, slot]) => slot)
+      const history = siblings.filter(slot => slot.subject === '*' || slot.noticeFloor !== undefined)
+      if (history.length) {
+        const epoch = Math.max(...history.map(slot => slot.epoch))
+        // A newly visible symbol starts a fresh episode after the highest prior
+        // path notice, even when the old symbol identity was deliberately erased.
+        prev = { ...history[0]!, subject: result.subject, epoch, settled: 'none', factId: '', inputs: '', noticeFloor: epoch }
+      }
     }
     const now = this.now()
     const fence = typeof this.fence === 'function' ? this.fence() : this.fence
@@ -108,6 +106,7 @@ export class ConflictSlots {
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
       ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now,
+      ...(prev?.noticeFloor !== undefined ? { noticeFloor: prev.noticeFloor } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
     }

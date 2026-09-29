@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId } from '../src/conflict-set.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
@@ -450,6 +451,126 @@ describe('derived pair slots', () => {
       expect(accepted).toContain(noticeId(key, 3))
       expect(f.post.mock.calls.filter(c => c[1]?.type === 'contract' && c[1]?.text?.includes('cleared'))).toEqual([])
       expect(f.room.doc.getMap<any>('conflicts').has(slotKey('A', 'contract', 'B', 'api.py', '*'))).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('N1 removes signature-derived identities from a newly synced redacted slot', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      const provider = 'def call(a, b):\n    pass\n'
+      const detail = 'call(a) → call(a, b)'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+        paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail }], truncated: false })
+      await new ConflictSet(f.session('A')).reconcile('visible')
+      const head = f.room.manifestHead.get('B')!
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+        f.room.clearOverlay(manifestKey('B', '1'), 'api.py')
+        f.room.manifestHead.set('B', { ...head, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+      })
+      await new ConflictSet(f.session('A')).reconcile('narrowed')
+      const fresh = new RoomDoc()
+      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const encoded = JSON.stringify([...fresh.doc.getMap('conflicts').values()])
+      const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+      for (const candidate of [detail, 'call', JSON.stringify(['call', detail, 'signature']), slotKey('A', 'contract', 'B', 'api.py', 'call')]) {
+        expect(encoded).not.toContain(candidate)
+        expect(encoded).not.toContain(sha(candidate))
+      }
+      fresh.doc.destroy()
+    } finally { f.cleanup() }
+  })
+
+  it('N2 advances an identical signature after redaction and a readable clean revert', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      const sent = new Set<string>(), accepted: string[] = []
+      f.post.mockImplementation(async (_from, _body, opts) => { if (!sent.has(opts.id)) { sent.add(opts.id); accepted.push(opts.id) }; return { ok: true } })
+      const graph = (rev: number, observed: boolean) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: observed ? ['api.py', 'consumer.py'] : ['consumer.py'], edges: observed ? [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }] : [],
+        observed: observed ? [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' }] : [], truncated: false })
+      const restore = (rev: number) => f.room.doc.transact(() => {
+        entries.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: rev, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev, semRev: rev })
+        f.room.graphs.set('B', graph(rev, true))
+      })
+      restore(1)
+      const set = new ConflictSet(f.session('A'))
+      await set.reconcile('first')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(accepted).toContain(noticeId(key, 1))
+      f.room.doc.transact(() => {
+        entries.set('api.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+        f.room.clearOverlay(manifestKey('B', '1'), 'api.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+      })
+      await set.reconcile('redacted')
+      f.room.doc.transact(() => {
+        entries.delete('api.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+        f.room.graphs.set('B', graph(3, false))
+      })
+      await set.reconcile('readable clean')
+      restore(4)
+      await set.reconcile('same conflict')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.epoch).toBeGreaterThanOrEqual(2)
+      expect(accepted).toContain(noticeId(key, 2))
+    } finally { f.cleanup() }
+  })
+
+  it('N2 retains an absent symbol epoch when only its sibling restores', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call, ping\ncall(1)\nping(1)\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      const sent = new Set<string>(), accepted: string[] = []
+      f.post.mockImplementation(async (_from, _body, opts) => { if (!sent.has(opts.id)) { sent.add(opts.id); accepted.push(opts.id) }; return { ok: true } })
+      const publish = (rev: number, symbols: string[]) => {
+        const provider = symbols.map(s => `def ${s}(a, b):\n    pass\n`).join('')
+        f.room.doc.transact(() => {
+          entries.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: rev, fence: '1' })
+          f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+          f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full', rev, semRev: rev })
+          f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready',
+            paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols }],
+            observed: symbols.map(symbol => ({ path: 'api.py', symbol, kind: 'signature' as const, detail: `${symbol}(a) → ${symbol}(a, b)` })), truncated: false })
+        })
+      }
+      publish(1, ['call', 'ping'])
+      const set = new ConflictSet(f.session('A'))
+      await set.reconcile('both')
+      const pingKey = slotKey('A', 'contract', 'B', 'api.py', 'ping')
+      expect(accepted).toContain(noticeId(pingKey, 1))
+      f.room.doc.transact(() => {
+        entries.set('api.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+        f.room.clearOverlay(manifestKey('B', '1'), 'api.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+      })
+      await set.reconcile('redacted')
+      publish(3, ['call'])
+      await set.reconcile('one returns')
+      expect(f.post.mock.calls.filter(c => c[1]?.type === 'contract' && c[1]?.text?.includes('cleared'))).toEqual([])
+      publish(4, ['call', 'ping'])
+      await set.reconcile('second returns')
+      const epoch = f.room.doc.getMap<any>('conflicts').get(pingKey)?.epoch
+      expect(epoch).toBeGreaterThanOrEqual(2)
+      expect(accepted).toContain(noticeId(pingKey, epoch))
     } finally { f.cleanup() }
   })
 

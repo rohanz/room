@@ -85,6 +85,47 @@ describe('GraphIndex overlay events', () => {
       expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
     } finally { gi.stop(); room.doc.destroy() }
   })
+  it('M2 withdraws an already published signature on a holder-only replacement', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t, secret_customer):\n    return t\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => JSON.stringify(room.graphs.get('Rohan')).includes('secret_customer'))
+      const holder = room.participants.get('Rohan\u0000holder')!
+      room.participants.set('Rohan\u0000holder', { ...holder, epoch: holder.epoch + 1, sessionId: 'replacement' })
+      expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
+      const fresh = new RoomDoc()
+      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+      expect(JSON.stringify(fresh.graphs.get('Rohan'))).not.toContain('secret_customer')
+      fresh.doc.destroy()
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it.each([{ name: 'default throttle', minPublishMs: undefined }, { name: 'zero throttle', minPublishMs: 0 }])(
+    'N2 does not republish a head-only excluded base path with $name', async ({ minPublishMs }) => {
+      const room = new RoomDoc()
+      room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+      publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
+      const initialHead = room.manifestHead.get('Rohan')!, key = manifestKey('Rohan', initialHead.fence)
+      room.manifest.get(key)!.delete('utils.py')
+      room.clearOverlay(key, 'utils.py')
+      const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, ...(minPublishMs === undefined ? {} : { minPublishMs }) })
+      try {
+        gi.start(); await gi.whenIdle()
+        await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')!.paths.includes('utils.py'))
+        writeFileSync(join(dir, 'utils.py'), 'def validate_token(secret_customer):\n    return secret_customer\n')
+        const head = room.manifestHead.get('Rohan')!
+        room.manifestHead.set('Rohan', { ...head, excluded: [digestPath(room.ensureRoomSalt(), 'utils.py')], rev: head.rev + 1, semRev: head.semRev + 1 })
+        expect(room.manifest.get(key)!.has('utils.py')).toBe(false)
+        expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
+        await gi.whenIdle()
+        await new Promise(resolve => setTimeout(resolve, minPublishMs === 0 ? 200 : 20_150))
+        expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
+        expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
+      } finally { gi.stop(); room.doc.destroy() }
+    }, 25_000)
   it('M1 rejects a published signature when its holder epoch changes during the base read', async () => {
     const room = new RoomDoc()
     room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)

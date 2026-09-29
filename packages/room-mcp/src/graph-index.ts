@@ -104,6 +104,14 @@ export class GraphIndex {
     this.publishedGraph = new SymbolGraph(path => this.publishedCache.get(path))
   }
 
+  private publicationKey(): string | undefined {
+    const head = this.room.manifestHead.get(this.me)
+    if (!head) return undefined
+    const holder = holderFence(participantRecord(this.room, this.me)?.holder)
+    return JSON.stringify([head.fence, head.level, head.textPrefixes, head.coverage, head.complete,
+      head.excluded, holder, this.room.roomSalt])
+  }
+
   start(): void {
     this.currentBuild = this.initialBuild()
     const observe = <T>(root: Y.Map<Y.Map<T>>) => {
@@ -118,15 +126,10 @@ export class GraphIndex {
     const onManifest = observe(this.room.manifest)
     this.room.manifest.observeDeep(onManifest)
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
-    const publicationKey = () => {
-      const head = this.room.manifestHead.get(this.me)
-      const holder = holderFence(participantRecord(this.room, this.me)?.holder)
-      return JSON.stringify(head && [head.fence, head.level, head.textPrefixes, head.coverage, head.complete, holder])
-    }
-    this.ownPublicationKey = publicationKey()
+    this.ownPublicationKey = this.publicationKey()
     const onHead = (event: { keysChanged: Set<string> }) => {
       if (!event.keysChanged.has(this.me)) return
-      const next = publicationKey()
+      const next = this.publicationKey()
       this.withdrawRestricted()
       if (next === this.ownPublicationKey) {
         // A revision can move without changing parsed symbols. Wait for all events in
@@ -149,7 +152,7 @@ export class GraphIndex {
         if (!this.stopped && this.initialStarted && base && base !== this.base) this.currentBuild = this.rebuild()
       }
       if (event.keysChanged.has(`${this.me}\u0000holder`)) {
-        const next = publicationKey()
+        const next = this.publicationKey()
         this.withdrawRestricted()
         if (next === this.ownPublicationKey) return
         const firstHead = this.ownPublicationKey === undefined
@@ -161,6 +164,17 @@ export class GraphIndex {
     }
     this.room.participants.observe(onParticipant)
     this.unobserve.push(() => this.room.participants.unobserve(onParticipant))
+    const onMeta = (event: { keysChanged: Set<string> }) => {
+      if (!event.keysChanged.has('roomSalt')) return
+      if (this.ownPublicationKey === undefined) return // first head/manifest publication already queues its paths
+      const next = this.publicationKey()
+      this.withdrawRestricted()
+      if (next === this.ownPublicationKey) return
+      this.ownPublicationKey = next
+      for (const path of new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path)) void this.refresh(path)
+    }
+    this.room.metaMap.observe(onMeta)
+    this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
   }
 
   stop(): void {
@@ -289,16 +303,24 @@ export class GraphIndex {
   /** A new reader must never receive derived text after its grant is withdrawn. */
   private withdrawRestricted(): void {
     const graph = this.room.graphs.get(this.me)
-    if (!graph) return
     const head = this.room.manifestHead.get(this.me)
-    if (!head && graph.sourceFence === undefined) return // base-only index before the first manifest
+    if (!head && graph?.sourceFence === undefined) return // base-only index before the first manifest
     const entries = head && this.room.manifest.get(manifestKey(this.me, head.fence))
     const allowed = (p: string) => {
-      if (!head?.complete || head.coverage.kind !== 'all' || graph.sourceFence !== head.fence) return false
+      if (!head?.complete || head.coverage.kind !== 'all' || graph?.sourceFence !== undefined && graph.sourceFence !== head.fence ||
+          holderFence(participantRecord(this.room, this.me)?.holder) !== head.fence) return false
       if (!this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, p))) return false
       const entry = entries?.get(p)
       return !entry || entry.fence === head.fence && entry.state === 'shared' && this.ownTextAuthorized(p)
     }
+    for (const path of this.publishedCache.keys()) if (!allowed(path)) {
+      this.publishedCache.delete(path)
+      this.publishedGraph.remove(path)
+      this.observedByPath.delete(path)
+      this.graphRevision++
+      this.observedRevision++
+    }
+    if (!graph) return
     const paths = graph.paths.filter(allowed)
     const edges = graph.edges.filter(e => allowed(e.source) && allowed(e.target))
     const observed = graph.observed?.filter(o => allowed(o.path))
@@ -456,7 +478,7 @@ export class GraphIndex {
     if (this.stopped) return
     if (generation !== this.generation) return
     if (this.degradedPaths.size) status = 'error'
-    const authorization = this.ownPublicationKey
+    const authorization = this.publicationKey()
     const sourceHead = this.room.manifestHead.get(this.me)
     const sourceFence = sourceHead?.fence, sourceRev = sourceHead?.rev
     const provenance = JSON.stringify([sourceFence, sourceRev])
@@ -497,7 +519,7 @@ export class GraphIndex {
     const now = Date.now()
     const currentHead = this.room.manifestHead.get(this.me)
     if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision ||
-        authorization !== this.ownPublicationKey || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return
+        authorization !== this.publicationKey() || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return
     if (key === this.lastPublished.key) {
       this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance }
       return
