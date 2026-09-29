@@ -16882,7 +16882,9 @@ function personLine(input) {
   const p = input.presences.find((x) => x.user.name === input.name && isAgentic(x.user.kind)) ?? input.presences.find((x) => x.user.name === input.name);
   const lastDone = [...input.messages].reverse().find((m) => m.from === input.name && m.text.startsWith("done"));
   let what;
-  if (input.scope) what = `working on ${scopeLine(input.scope)}`;
+  if (input.projectedStale) what = `projection stale/updating via ${input.projectedStale}`;
+  else if (input.projectedWorker) what = `${input.scope ? `working on ${scopeLine(input.scope)}; ` : ""}via ${input.projectedWorker.lead} (${input.projectedWorker.status})`;
+  else if (input.scope) what = `working on ${scopeLine(input.scope)}`;
   else if (p?.status?.startsWith("done")) what = p.status;
   else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
   else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status + ", " : ""}no task declared` : "offline";
@@ -16903,7 +16905,7 @@ function workerLine({ worker: w, dir, processGone = false, lastActive, changedCo
   const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status);
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
-    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
+    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${w.followUp ? ` \xB7 follow-up: ${w.followUp.slice(0, 120)}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
 function workerLines(inputs, options = {}) {
@@ -17123,7 +17125,7 @@ var init_messages = __esm({
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
-    conflictLabel = (m) => m.priority !== "fyi" ? "CONFLICT" : /cleared$/.test(m.text) ? "CONFLICT cleared" : "POSSIBLE conflict";
+    conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? "CONFLICT cleared" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
@@ -35051,6 +35053,25 @@ function markManifestIncomplete(room, name2, fence) {
 
 // packages/roomd/src/publisher.ts
 var message = (error2) => error2 instanceof Error ? error2.message : String(error2);
+function withdrawFormerPublisher(room, name2, fence, successor) {
+  const key2 = manifestKey(name2, fence);
+  room.doc.transact(() => {
+    const head = room.manifestHead.get(name2);
+    if (!head || head.fence !== fence || head.coverage.kind === "none") return;
+    room.manifest.delete(key2);
+    room.overlays.delete(key2);
+    room.manifestHead.set(name2, {
+      ...head,
+      coverage: { kind: "none", reason: "not-publisher" },
+      publisher: successor,
+      excluded: [],
+      rev: head.rev + 1,
+      semRev: head.semRev + 1,
+      scannedAt: Date.now()
+    });
+    for (const old of [...room.ownedBaseTexts.keys()]) if (old.startsWith(`${name2}\0`)) room.ownedBaseTexts.delete(old);
+  });
+}
 function withdrawBaseTexts(host, authorized2) {
   const prefix = `${host.name}\0`;
   for (const key2 of host.roomDoc.ownedBaseTexts.keys()) {
@@ -35067,12 +35088,16 @@ function withdrawBaseTexts(host, authorized2) {
 var Publisher = class {
   constructor(host) {
     this.host = host;
+    const name2 = host.inputs.policy.publisherName;
+    const fence = name2 && host.roomDoc.manifestHead.get(name2)?.fence;
+    if (name2 && name2 !== host.name && fence) this.formerPublisher = { name: name2, fence };
   }
   host;
   excludedPaths = /* @__PURE__ */ new Set();
   errors = /* @__PURE__ */ new Set();
   oversizedCache = /* @__PURE__ */ new Map();
   dirtyTimer;
+  formerPublisher;
   pathsToReconcile(extra = []) {
     const fence = this.host.fence;
     const current = fence === void 0 ? void 0 : this.host.roomDoc.manifest.get(manifestKey(this.host.name, fence));
@@ -35084,6 +35109,10 @@ var Publisher = class {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next) {
     const { host } = this;
+    if (next.policy.publisher && !host.inputs.policy.publisher && this.formerPublisher) {
+      withdrawFormerPublisher(host.roomDoc, this.formerPublisher.name, this.formerPublisher.fence, host.name);
+      this.formerPublisher = void 0;
+    }
     const fence = host.fence;
     if (fence === void 0) {
       this.markDirty();
@@ -39527,11 +39556,11 @@ function followUpAnswer(file, host, logStart) {
   }
   return result2 || assistant;
 }
-function workerLogTail(logFile) {
+function workerLogTail(logFile, logStart = 0) {
   let fd;
   try {
     fd = fs13.openSync(logFile, "r");
-    const size2 = fs13.fstatSync(fd).size, start2 = Math.max(0, size2 - 64 * 1024);
+    const size2 = fs13.fstatSync(fd).size, start2 = Math.max(Math.min(size2, logStart), size2 - 64 * 1024, 0);
     const buffer = Buffer.alloc(size2 - start2);
     fs13.readSync(fd, buffer, 0, buffer.length, start2);
     const text = stripVTControlCharacters(buffer.toString("utf8"));
@@ -39806,7 +39835,13 @@ function statusOf(record2, runs = record2.runs, reports = [], exits = [], livene
     { summary: report.done.summary, finishedAt: report.done.at, ...exit?.code != null ? { exitCode: exit.code } : {} }
   );
   if (record2.stop?.run === current.n) return result("stopped", current, record2.stop.reason, { finishedAt: record2.stop.at });
-  const earlierDone = ordered.some((r) => r.n < current.n && reports.some((p) => p.run === r.n && p.nonce === r.nonce && p.done));
+  const earlierDone = [...ordered].reverse().filter((r) => r.n < current.n).map((r) => reports.find((p) => p.run === r.n && p.nonce === r.nonce && p.done)).find(Boolean);
+  if (exit?.witnessed && exit.code === 0 && current.mode === "resume" && earlierDone)
+    return result("done", current, note, {
+      finishedAt: exit.at,
+      exitCode: 0,
+      summary: earlierDone.done.summary
+    });
   if (exit?.witnessed && exit.code === 0) return result("failed", current, "exited without room_done", { finishedAt: exit.at, exitCode: 0 });
   if (exit?.witnessed) return result("failed", current, exit.signal ?? `exit ${exit.code ?? "unknown"}`, { finishedAt: exit.at, ...exit.code != null ? { exitCode: exit.code } : {} });
   if (exit && current.mode === "resume" && earlierDone) return result("done", current, "follow-up outcome unknown: ended while no session of yours was running", { finishedAt: exit.at });
@@ -39875,6 +39910,7 @@ function workerView(record2, status, fence) {
     ...status.note ? { note: status.note } : {},
     run: status.run?.n ?? record2.runs.at(-1)?.n ?? 0,
     startedAt: record2.createdAt,
+    ...status.followUp ? { followUp: status.followUp } : {},
     ...status.finishedAt !== void 0 ? { finishedAt: status.finishedAt } : {},
     ...status.exitCode !== void 0 ? { exitCode: status.exitCode } : {},
     ...record2.stop ? { stopReason: record2.stop.reason } : {},
@@ -41016,7 +41052,12 @@ var WorkerRegistry = class _WorkerRegistry {
   status(id3) {
     const record2 = this.read(id3);
     if (!record2) return void 0;
-    return statusOf(record2, record2.runs, this.reports(id3), this.exits(id3), this.alive, this.now());
+    const reports = this.reports(id3), exits = this.exits(id3);
+    const status = statusOf(record2, record2.runs, reports, exits, this.alive, this.now());
+    const run2 = status.run;
+    if (status.status !== "done" || run2?.mode !== "resume" || reports.some((report) => report.run === run2.n && report.done) || !exits.some((exit) => exit.run === run2.n && exit.witnessed && exit.code === 0)) return status;
+    const logFile = path13.join(path13.dirname(record2.dir), `${record2.tag}.log`);
+    return { ...status, followUp: followUpAnswer(logFile, record2.host, run2.logStart) };
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead, tagOrName) {
@@ -41290,7 +41331,7 @@ var WorkerRegistry = class _WorkerRegistry {
     if (!record2 || !run2 || !status || !exit?.witnessed || run2.posted || report?.posted || status.status !== "failed" && !(record2.phase === "retiring" && !record2.stop) && !report?.done) return false;
     const logFile = path13.join(path13.dirname(record2.dir), `${record2.tag}.log`);
     const missing2 = record2.host === "claude" && run2.mode === "resume" && !!record2.hostSessionId && missingClaudeSession(logFile, record2.hostSessionId, run2.logStart);
-    const tail = workerLogTail(logFile);
+    const tail = workerLogTail(logFile, run2.logStart);
     const answer = run2.mode === "resume" ? followUpAnswer(logFile, record2.host, run2.logStart) : "";
     const detail = missing2 ? `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` : answer || tail !== "(log unavailable)" ? `${status.note ?? "exited before reporting done"}; ${answer || tail}` : status.note;
     const message2 = completionMessage(record2, run2, { ...status, status: record2.phase === "retiring" && !record2.stop && !report?.done ? "failed" : status.status, note: detail }, report);
@@ -42326,6 +42367,9 @@ function hubTransport(provider) {
 }
 var PAUSED = "[room] hub unreachable; coordination paused. Your files are unaffected; messages and claims resume when it is back.";
 var NOT_SENT = "not sent: hub unreachable";
+var NOT_SENT_LEASE = "not sent: name lease is no longer held; rejoin to take a new name";
+var NameLeaseUnavailable = class extends Error {
+};
 var HubClient = class {
   constructor(options) {
     this.options = options;
@@ -42491,12 +42535,12 @@ var HubClient = class {
   /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
   async post(msg, options) {
     this.assertOpen();
-    if (this.paused()) throw new Error(NOT_SENT);
-    if (this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT);
+    if (this.paused()) throw this.reachable() && this.lostLeases.has(options.lease.name) ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT);
+    if (this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw this.reachable() ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT);
     try {
       return await this.request({ op: "post", msg, ...options }, () => {
         if (this.paused() || this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) {
-          throw new Error(NOT_SENT);
+          throw this.reachable() ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT);
         }
       });
     } catch (error2) {
@@ -42640,7 +42684,7 @@ function releasePoster(post) {
     void post(from2, body2, { auto: true });
   };
 }
-function createPost(room, hub, lease) {
+function createPost(room, hub, lease, paused) {
   return (from2, body2, opts = {}) => {
     const id3 = opts.id ?? newId("m_");
     const sent = { ...outgoing(from2, body2, id3), at: Date.now() };
@@ -42649,13 +42693,18 @@ function createPost(room, hub, lease) {
         if (hub.paused()) await hub.hello().catch(() => {
         });
         const held = await lease();
-        if (!held) return { ok: false, msg: sent, reason: "unreachable", text: NOT_SENT2 };
+        if (!held) {
+          const namePause = paused?.()?.replace(/^\[room\]\s*/, "");
+          const nameHeld = hub.reachable() && !!namePause && /another session now holds|name lease|superseded|host session changed/.test(namePause);
+          return { ok: false, msg: sent, reason: nameHeld ? "stale" : "unreachable", text: nameHeld ? `not sent: ${namePause}` : NOT_SENT2 };
+        }
         const reply = await hub.post(outgoing(from2, body2, id3), { lease: held, ...opts.auto ? { auto: true } : {} });
         const seq = typeof reply.seq === "number" ? reply.seq : void 0;
         const at = typeof reply.at === "number" ? reply.at : sent.at;
         const msg = room.message(id3) ?? { ...sent, at, ...seq === void 0 ? {} : { seq } };
         return { ok: true, msg, ...seq === void 0 ? {} : { seq }, ...reply.duplicate ? { duplicate: true } : {} };
       } catch (error2) {
+        if (error2 instanceof NameLeaseUnavailable) return { ok: false, msg: sent, reason: "stale", text: error2.message };
         if (error2 instanceof HubError && TOLD.has(error2.reason)) return { ok: false, msg: sent, reason: error2.reason, text: error2.message };
         return { ok: false, msg: sent, reason: "unreachable", text: NOT_SENT2 };
       }
@@ -42668,7 +42717,7 @@ function createPost(room, hub, lease) {
 var inRole = (record2, roomKey2, role) => role === "joined" ? record2.room === roomKey2 : record2.projectedInto === roomKey2;
 async function projectWorkers(s, registry2, lead, role, origin) {
   const roomKey2 = s.roomName, fence = s.daemon.fence;
-  if (!fence) return [];
+  if (!fence) return void 0;
   const { write: all2, retire: retiring } = registry2.projectable(lead, roomKey2);
   const write2 = all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
   const retire = retiring.filter((record2) => inRole(record2, roomKey2, role));
@@ -42697,6 +42746,7 @@ async function projectWorkers(s, registry2, lead, role, origin) {
       if (known ? inRole(known, roomKey2, role) : role === "joined") s.room.workerViews.delete(id3);
     }
   }, origin);
+  const undelivered = /* @__PURE__ */ new Set();
   if (role === "joined") for (const { record: record2, status } of [
     ...write2,
     ...retire.flatMap((record3) => {
@@ -42706,23 +42756,34 @@ async function projectWorkers(s, registry2, lead, role, origin) {
   ]) {
     const run2 = status.run ?? record2.runs.at(-1);
     if (!run2) continue;
+    const logFile = path14.join(s.dir, ".room", "workers", `${record2.tag}.log`);
     const report = registry2.reports(record2.id).find((value2) => value2.run === run2.n);
+    const exit = registry2.exits(record2.id).find((value2) => value2.run === run2.n);
+    const terminal = record2.phase === "retiring" ? statusOf({ ...record2, phase: "active" }, record2.runs, registry2.reports(record2.id), registry2.exits(record2.id), () => "dead") : status;
     try {
-      if (report?.done && registry2.exits(record2.id).some((exit) => exit.run === run2.n)) await registry2.postCompletion(record2.id, run2.n, async (_id, current, done) => {
+      if (report?.done && exit) await registry2.postCompletion(record2.id, run2.n, async (_id, current, done) => {
         const message2 = completionMessage(current, run2, status, done);
         if (message2) await postWorkerMessage(s.post, current, message2);
       });
-      else if (status.status === "failed" || record2.phase === "retiring" && !record2.stop) await registry2.postObservedFailure(
-        record2.id,
-        run2.n,
-        (message2) => postWorkerMessage(s.post, record2, message2)
-      );
+      else if (terminal.status === "done" && run2.mode === "resume" && exit?.witnessed && exit.code === 0 && registry2.reports(record2.id).some((value2) => value2.run < run2.n && value2.done) && !run2.posted) {
+        const answer = followUpAnswer(logFile, record2.host, run2.logStart);
+        const message2 = completionMessage(record2, run2, { ...terminal, summary: answer || terminal.summary });
+        if (message2) {
+          await postWorkerMessage(s.post, record2, message2);
+          await registry2.update(record2.id, (old) => ({ ...old, runs: old.runs.map((value2) => value2.n === run2.n ? { ...value2, posted: message2.id } : value2), seq: old.seq + 1 }));
+        }
+      } else if (terminal.status === "failed" || record2.phase === "retiring" && !record2.stop && !report?.done) {
+        const posted = await registry2.postObservedFailure(record2.id, run2.n, (message2) => postWorkerMessage(s.post, record2, message2));
+        if (record2.phase === "retiring" && !record2.stop && exit?.witnessed && !posted && !run2.posted) undelivered.add(record2.id);
+      } else if (record2.phase === "retiring" && report?.done && !exit) undelivered.add(record2.id);
     } catch {
+      undelivered.add(record2.id);
     }
   }
   for (const record2 of retire) {
+    if (s.daemon.fence !== fence) return void 0;
     s.room.retireWorker(record2.id, { ...record2.archive ?? registry2.archiveOf(record2, { summary: "" }), id: record2.id }, post);
-    await registry2.finishCleanup(record2.id, roomKey2).catch(() => void 0);
+    if (!undelivered.has(record2.id)) await registry2.finishCleanup(record2.id, roomKey2).catch(() => void 0);
   }
   return write2.map(({ record: record2 }) => record2);
 }
@@ -42894,17 +42955,17 @@ var Bridge = class {
     if (this.registry) attach2(this.registry);
     else void registryForDir(this.local.dir).then(attach2, (e) => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`));
   }
-  /** Remove mirrored claims and the coordination record, and stop observing. Projections stay until retirement. */
-  stop() {
+  /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
+  stop(preserveFacts = false) {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     if (this.tick) clearInterval(this.tick);
     for (const u of this.unobserve) u();
     this.unobserve = [];
-    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this);
+    if (!preserveFacts) for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this);
     this.mirrored.clear();
     const lead = this.team.me.name;
-    if (this.team.room.coordination.has(lead)) this.team.room.doc.transact(() => {
+    if (!preserveFacts && this.team.room.coordination.has(lead)) this.team.room.doc.transact(() => {
       this.team.room.coordination.delete(lead);
     }, this);
   }
@@ -42941,7 +43002,7 @@ var Bridge = class {
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
   syncCoordination() {
-    if (this.stopped || !this.registry) return;
+    if (this.stopped || !this.registry || !this.team.daemon.fence) return;
     const lead = this.team.me.name;
     const paths = this.workerPaths();
     const workers = this.workers().map((w) => w.name).sort();
@@ -42978,7 +43039,11 @@ var Bridge = class {
    * whose worker is no longer in the set are deleted.
    */
   async projectOnce(registry2) {
+    const authority = this.team.daemon.fence;
+    if (!authority) return;
     const written = await projectWorkers(this.team, registry2, this.local.me.name, "projected", this);
+    const currentAuthority = () => this.team.daemon.fence === authority;
+    if (!written || !currentAuthority()) return;
     const keep = new Set(written.map((r) => r.id));
     const lead = this.team.me.name;
     const stale = [];
@@ -42987,11 +43052,11 @@ var Bridge = class {
       const proj = this.team.room.participants.get(key2);
       if (proj?.projectedBy === lead && !keep.has(proj.projectedFrom)) stale.push(key2.slice(0, -"\0proj".length));
     }
-    if (stale.length) this.team.room.doc.transact(() => {
+    if (stale.length && currentAuthority()) this.team.room.doc.transact(() => {
       for (const name2 of stale) this.dropProjection(name2);
     }, this);
     for (const record2 of written) {
-      if (this.stopped) return;
+      if (this.stopped || !currentAuthority()) return;
       await this.projectWorker(record2);
       await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record2.name });
     }
@@ -43020,6 +43085,13 @@ var Bridge = class {
     const view = participantsView(this.local.room, this.local.awareness, Date.now());
     const source = snapshot(this.local.room, record2.name, view);
     const sourceHead = source?.head;
+    const sourceHolder = participantRecord(this.local.room, record2.name)?.holder;
+    const valid = () => {
+      const current = this.registry?.read(record2.id);
+      const latestSource = snapshot(this.local.room, record2.name, participantsView(this.local.room, this.local.awareness, Date.now()));
+      const latestLead = participantRecord(team, lead)?.git;
+      return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id && this.team.daemon.fence === fence && latestLead?.base === B && latestLead?.fence === leadGit.fence && JSON.stringify(participantRecord(this.local.room, record2.name)?.holder) === JSON.stringify(sourceHolder) && latestSource?.head.semRev === sourceHead?.semRev && latestSource?.head.fence === sourceHead?.fence && (!sourceHead || !!latestSource?.fenceValid) && current?.id === record2.id && current.phase === record2.phase && !["retiring", "retired", "abandoned"].includes(current.phase);
+    };
     const coverage = policy.level === "intent" ? { kind: "none", reason: "unprojectable" } : !sourceHead || !source?.fenceValid || !sourceHead.complete ? { kind: "none", reason: "starting" } : sourceHead.coverage.kind === "none" ? { kind: "none", reason: sourceHead.coverage.reason === "not-publisher" ? "not-publisher" : sourceHead.coverage.reason === "intent" ? "intent" : "starting" } : sourceHead.excluded.length ? { kind: "none", reason: "unprojectable" } : { kind: "all" };
     const entries = /* @__PURE__ */ new Map();
     const excluded = [];
@@ -43029,27 +43101,23 @@ var Bridge = class {
         this.o.log?.(`bridge: cannot compose ${record2.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`);
         return void 0;
       });
+      if (!valid()) {
+        const current = this.registry?.read(record2.id);
+        if (retry < 1 && current && !["retiring", "retired", "abandoned"].includes(current.phase)) return this.projectWorker(current, retry + 1);
+        return;
+      }
       if (!facts) complete = false;
       else {
-        const current = this.registry?.read(record2.id);
-        const latestSource = snapshot(this.local.room, record2.name, participantsView(this.local.room, this.local.awareness, Date.now()));
-        const latestLead = participantRecord(team, lead)?.git;
-        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id || this.team.daemon.fence !== fence || latestLead?.base !== B || latestLead?.fence !== leadGit.fence || latestSource?.head.semRev !== sourceHead?.semRev || latestSource?.head.fence !== sourceHead?.fence || !latestSource?.fenceValid || current?.id !== record2.id || current?.phase !== record2.phase || ["retiring", "retired", "abandoned"].includes(current.phase)) {
-          this.o.log?.(`bridge: stale projection ${record2.tag}: ${JSON.stringify({ policy: this.team.policyStore.policy !== policy, rules: this.team.daemon.inputs.rules.id !== rules.id, fence: this.team.daemon.fence !== fence, base: latestLead?.base !== B, gitFence: latestLead?.fence !== leadGit.fence, semRev: latestSource?.head.semRev !== sourceHead?.semRev, sourceFence: latestSource?.head.fence !== sourceHead?.fence, sourceValid: latestSource?.fenceValid, id: current?.id !== record2.id, phase: current?.phase !== record2.phase })}`);
-          if (retry < 1 && current && !["retiring", "retired", "abandoned"].includes(current.phase)) return this.projectWorker(current, retry + 1);
-          team.doc.transact(() => this.dropProjection(record2.name), this);
-          return;
-        }
         const salt = team.ensureRoomSalt();
         const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()]);
-        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id || this.team.daemon.fence !== fence || participantRecord(team, lead)?.git?.base !== B || snapshot(this.local.room, record2.name, participantsView(this.local.room, this.local.awareness, Date.now()))?.head.semRev !== sourceHead?.semRev || this.registry?.read(record2.id)?.phase !== record2.phase) {
-          if (retry < 1) return this.projectWorker(this.registry?.read(record2.id) ?? record2, retry + 1);
-          team.doc.transact(() => this.dropProjection(record2.name), this);
+        if (!valid()) {
+          const current = this.registry?.read(record2.id);
+          if (retry < 1 && current && !["retiring", "retired", "abandoned"].includes(current.phase)) return this.projectWorker(current, retry + 1);
           return;
         }
         let used = 0;
         for (const [path43, fact] of facts.all) {
-          if (ignored.has(path43) || rules.roomIgnore.ignores(path43) || defaultIgnoredPath(path43) || defaultExcludedPath(path43) || !validRepoPath(path43, DISK_READ_PATH) || fact.change !== "D" && fact.size !== void 0 && (fact.size > rules.sizeCap || authorizesText(policy, path43) && used + fact.size > rules.budget)) {
+          if (ignored.has(path43) || rules.roomIgnore.ignores(path43) || defaultIgnoredPath(path43) || defaultExcludedPath(path43) || !validRepoPath(path43, DISK_READ_PATH) || fact.change !== "D" && fact.mode !== void 0 && fact.mode !== 33188 && fact.mode !== 33261 || fact.change !== "D" && fact.size !== void 0 && (fact.size > rules.sizeCap || authorizesText(policy, path43) && used + fact.size > rules.budget)) {
             excluded.push(digestPath(salt, path43));
             continue;
           }
@@ -43068,6 +43136,7 @@ var Bridge = class {
         }
       }
     } else if (coverage.kind === "all") complete = false;
+    if (!valid()) return;
     excluded.sort();
     const key2 = manifestKey(record2.name, fence);
     const prevHead = team.manifestHead.get(record2.name);
@@ -43146,11 +43215,11 @@ var Bridge = class {
     const atB = await blobsAt(dir, B, candidates);
     const all2 = /* @__PURE__ */ new Map(), carried = /* @__PURE__ */ new Map();
     const now = Date.now();
-    const put = (path43, hash2, at, size2) => {
+    const put = (path43, hash2, at, size2, mode2) => {
       const base = atB.get(path43);
       if (hash2 === void 0) return base ? { change: "D", baseHash: base.blob, at } : void 0;
       if (base?.blob === hash2) return void 0;
-      return { change: base ? "M" : "A", hash: hash2, ...size2 !== void 0 ? { size: size2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
+      return { change: base ? "M" : "A", hash: hash2, ...size2 !== void 0 ? { size: size2 } : {}, ...mode2 !== void 0 ? { mode: mode2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
     };
     for (const [path43, e] of own2) {
       const fact = e.change === "D" ? put(path43, void 0, e.at) : e.hash ? put(path43, e.hash, e.at, e.size) : { change: atB.has(path43) ? "M" : "A", ...atB.get(path43) ? { baseHash: atB.get(path43).blob } : {}, at: e.at };
@@ -43159,7 +43228,7 @@ var Bridge = class {
     const sizes = await blobsAt(dir, C2, [...between.keys()].filter((p) => !own2.has(p) && between.get(p).newBlob));
     for (const [path43, d] of between) {
       if (own2.has(path43) || untracked.has(path43)) continue;
-      const fact = put(path43, d.newBlob, now, sizes.get(path43)?.size);
+      const fact = put(path43, d.newBlob, now, sizes.get(path43)?.size, sizes.get(path43)?.mode);
       if (fact) {
         all2.set(path43, fact);
         carried.set(path43, fact);
@@ -43168,7 +43237,7 @@ var Bridge = class {
     for (const [path43, sha] of untracked) {
       if (own2.has(path43)) continue;
       const size2 = Number((await git(dir, ["cat-file", "-s", sha])).trim());
-      const fact = put(path43, sha, now, size2);
+      const fact = put(path43, sha, now, size2, record2.carriedUntracked?.find((entry) => entry.path === path43)?.mode);
       if (fact) {
         all2.set(path43, fact);
         carried.set(path43, fact);
@@ -43239,6 +43308,7 @@ var Bridge = class {
     if (!broadcast && !paths.length) return;
     const now = Date.now();
     const hit = this.workers().filter((w) => {
+      if (m.to && m.to !== w.name) return false;
       if (broadcast) return true;
       const sc = this.local.room.scope(w.name);
       const changed = this.changedPaths(w.name);
@@ -43269,8 +43339,8 @@ async function blobsAt(dir, commit, paths) {
   if (!list.length) return out2;
   const raw = await git(dir, ["ls-tree", "-r", "-z", "--long", "--full-tree", commit, "--", ...list]);
   for (const line of raw.split("\0")) {
-    const m = line.match(/^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s);
-    if (m) out2.set(m[3], { blob: m[1], size: Number(m[2]) });
+    const m = line.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s);
+    if (m) out2.set(m[4], { mode: Number.parseInt(m[1], 8), blob: m[2], size: Number(m[3]) });
   }
   return out2;
 }
@@ -45322,6 +45392,7 @@ var GraphIndex = class {
       const revision = this.revisions.get(path43), generation = this.generation;
       await ensureLanguages([path43]);
       const text = await this.textFor(path43);
+      const publicationSource = snapshot(this.room, this.me, []);
       const publicText = await this.publicationTextFor(path43, text);
       const heldBy = text === void 0 ? [...this.room.manifestHead.keys()].filter((person) => {
         if (person === this.me) return false;
@@ -45344,6 +45415,10 @@ var GraphIndex = class {
         (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
         (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
       ) : void 0;
+      if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
+        await this.yieldAfterIndex();
+        return false;
+      }
       if (this.stopped) return true;
       if (generation !== this.generation) return false;
       if (!symbols || text === void 0) {
@@ -45565,13 +45640,14 @@ var StaleConflictInputs = class extends Error {
 };
 var ConflictSlots = class {
   constructor(room, post, fence, now = Date.now, log2 = () => {
-  }, holderPost = post) {
+  }, holderPost = post, valid = () => true) {
     this.room = room;
     this.post = post;
     this.fence = fence;
     this.now = now;
     this.log = log2;
     this.holderPost = holderPost;
+    this.valid = valid;
     this.map = room.doc.getMap("conflicts");
   }
   room;
@@ -45580,6 +45656,7 @@ var ConflictSlots = class {
   now;
   log;
   holderPost;
+  valid;
   map;
   get(key2) {
     return this.map.get(key2);
@@ -45593,8 +45670,9 @@ var ConflictSlots = class {
   async settle(key2, result2) {
     const prev = this.map.get(key2);
     const now = this.now();
-    if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && (prev.retryAt ?? 0) > now) return prev;
-    if (prev?.inputs === result2.inputs && prev.status === result2.status && prev.factId === result2.factId && result2.status !== "unknown") return prev;
+    const fence = typeof this.fence === "function" ? this.fence() : this.fence;
+    if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev;
+    if (prev?.inputs === result2.inputs && prev.status === result2.status && prev.factId === result2.factId && prev.fence === fence && result2.status !== "unknown") return prev;
     const changedFact = result2.status === "conflict" || result2.status === "possible" ? prev?.settled !== result2.status || prev.factId !== result2.factId : false;
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
     const settled = result2.status === "unknown" ? prev?.settled ?? "none" : result2.status;
@@ -45604,8 +45682,9 @@ var ConflictSlots = class {
       ...result2.status === "unknown" && prev ? { factId: prev.factId } : {},
       settled,
       epoch,
-      fence: typeof this.fence === "function" ? this.fence() : this.fence,
+      fence,
       checkedAt: now,
+      ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
     };
     this.room.doc.transact(() => this.map.set(key2, slot));
@@ -45620,11 +45699,14 @@ var ConflictSlots = class {
     }
   }
   async postNotice(key2, slot) {
+    const current = () => this.valid() && this.map.get(key2) === slot && (typeof this.fence === "function" ? this.fence() : this.fence) === slot.fence;
+    if (!current()) return;
     const id3 = noticeId(key2, slot.epoch) + (slot.settled === "clean" ? ":clean" : "");
     const status = slot.settled;
     const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" ? "interrupt" : "notify";
-    const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `${slot.path}: the conflict with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
-    const body2 = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text };
+    const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `${slot.path}: the ${slot.clearedFrom === "possible" ? "possible conflict" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
+    const clearedFrom = status === "clean" ? slot.clearedFrom : void 0;
+    const body2 = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} };
     try {
       const posted = await this.post(ROOM, body2, { id: id3, auto: true });
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
@@ -45632,6 +45714,7 @@ var ConflictSlots = class {
       this.log(`conflict notice ${id3}: ${String(e)}`);
     }
     if (slot.kind === "edit-in-claim" && status === "conflict") {
+      if (!current()) return;
       try {
         const holder = await this.holderPost(ROOM, { ...body2, to: slot.other, priority: "notify", text: `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ""}` }, { id: `${noticeId(key2, slot.epoch)}:holder`, auto: true });
         if (!holder.ok) this.log(`conflict holder notice ${id3}: ${holder.text}`);
@@ -45657,7 +45740,7 @@ var ConflictSet = class {
     this.debounceMs = debounceMs;
     this.carriedFrom = carriedFrom2;
     const fence = () => team.lease?.fence() ?? "";
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post);
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post, () => this.guard?.() ?? false);
   }
   team;
   owner;
@@ -45778,11 +45861,14 @@ var ConflictSet = class {
     if (!leaseFence) return;
     const views = participantsView(room, this.team.awareness, Date.now());
     const mine = snapshot(room, this.owner, views);
-    const ownGit = acceptedGit(participantRecord(room, this.owner), views);
-    if (!mine || mine.head.fence !== leaseFence || ownGit === "updating") return;
+    if (!mine || mine.head.fence !== leaseFence) return;
+    const ownNonPublisher = mine.head.coverage.kind === "none" && mine.head.coverage.reason === "not-publisher" && !!mine.head.publisher;
+    const ownPublisher = ownNonPublisher ? snapshot(room, mine.head.publisher, views) : void 0;
+    const ownGit = acceptedGit(participantRecord(room, ownNonPublisher ? mine.head.publisher : this.owner), views);
+    if (ownGit === "updating" || ownNonPublisher && !ownPublisher) return;
     const authority = () => this.team.lease?.fence() === leaseFence;
     const claimInputs = JSON.stringify(room.openClaims());
-    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && JSON.stringify(room.openClaims()) === claimInputs;
+    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims()) === claimInputs;
     const nb = neighbours(views, this.owner);
     const names = new Set(nb.names());
     for (const [key2, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) this.drop(key2);
@@ -45794,11 +45880,25 @@ var ConflictSet = class {
       const graphInput = JSON.stringify(room.graphs.get(other));
       this.guard = () => {
         const current = participantsView(room, this.team.awareness, Date.now());
-        return authority() && snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) && JSON.stringify(room.openClaims()) === claimInputs && JSON.stringify(room.graphs.get(other)) === graphInput;
+        return authority() && snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, current)) && JSON.stringify(room.openClaims()) === claimInputs && JSON.stringify(room.graphs.get(other)) === graphInput;
       };
       const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other);
       if (!theirs && !participantRecord(room, other)) {
         for (const [key2] of existing) this.drop(key2);
+        continue;
+      }
+      if (ownNonPublisher) {
+        const pair2 = !theirs || theirGit === "updating" ? void 0 : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
+        if (pair2 && !("cannotCompare" in pair2)) {
+          const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
+          await this.claims(
+            ownPublisher,
+            theirs,
+            other,
+            pair2.mergeBase,
+            /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\n").filter(Boolean)])
+          );
+        }
         continue;
       }
       if (theirs?.head.coverage.kind === "none" && theirs.head.coverage.reason === "not-publisher" && theirs.head.publisher) {
@@ -45848,11 +45948,25 @@ var ConflictSet = class {
         for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
         continue;
       }
-      const candidates = new Set([...aPaths].filter((p) => bPaths.has(p)));
+      const ownMergePaths = new Set(aPaths);
+      const unchangedCarried = /* @__PURE__ */ new Set();
+      const carried = this.carriedFrom?.(this.owner);
+      if (carried?.lead === other && carriesWork(carried.baseline)) {
+        for (const path43 of aPaths) {
+          const baseline = await readBaseline(carried.baseline, path43, (sha, p) => gitShow(this.team.dir, sha, p));
+          if (baseline.kind === "unavailable") continue;
+          const ownText = asText(await this.read(mine, path43));
+          if (ownText !== void 0 && ownText === (baseline.kind === "absent" ? "" : baseline.text)) {
+            ownMergePaths.delete(path43);
+            unchangedCarried.add(path43);
+          }
+        }
+      }
+      const candidates = new Set([...ownMergePaths].filter((p) => bPaths.has(p)));
       for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
       for (const path43 of [...candidates].sort()) {
         const key2 = slotKey(this.owner, "merge", other, path43);
-        const bothChanged = aPaths.has(path43) && bPaths.has(path43);
+        const bothChanged = ownMergePaths.has(path43) && bPaths.has(path43);
         const inputs = hash(JSON.stringify([
           ownGit.base,
           theirGit.base,
@@ -45862,9 +45976,14 @@ var ConflictSet = class {
           mine.head.semRev,
           theirs.head.semRev,
           sideInput(mine, path43),
-          sideInput(theirs, path43)
+          sideInput(theirs, path43),
+          carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path43)] : void 0
         ]));
         const previous = this.slots.get(key2);
+        if (unchangedCarried.has(path43)) {
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path43, status: "clean", inputs, factId: "" });
+          continue;
+        }
         if (previous?.inputs === inputs && (previous.status !== "unknown" || (previous.retryAt ?? 0) > Date.now())) continue;
         const read2 = (snap) => this.read(snap, path43);
         const [a, b] = await Promise.all([read2(mine), read2(theirs)]);
@@ -45924,7 +46043,7 @@ var ConflictSet = class {
           lines
         });
       }
-      await this.claims(mine, theirs, other, mergeBase2, aPaths);
+      await this.claims(mine, theirs, other, mergeBase2, ownMergePaths);
     }
     if (this.guard && !this.guard()) throw new StaleConflictInputs();
     await this.slots.replay(this.owner);
@@ -48527,6 +48646,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       publicationTransition = publicationTransition.then(async () => {
         if (stopping) return;
         if (!fence) {
+          if (daemon && lease.epoch !== void 0) withdrawFormerPublisher(daemon.roomDoc, name2, String(lease.epoch), "another session");
           policyStore.setPublisher(false);
           const attachment = publishing;
           publishing = void 0;
@@ -48595,7 +48715,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   hub.attach(hubTransport(started.provider));
   greet(hub);
   closeProbe();
-  post = createPost(started.roomDoc, hub, () => lease.held());
+  post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused());
   {
     const stop3 = started.stop.bind(started);
     started.stop = async (reason) => {
@@ -50319,7 +50439,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const s = S();
       await loadAreas(s);
       const m = s.room.meta;
-      const out2 = [s.local ? "local: nothing leaves this machine" : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter((p) => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map((p) => p.user.owner ?? p.user.name)).size} people`];
+      const publisher = publisherLine(s);
+      const people = new Set(presences(s).filter((p) => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map((p) => p.user.owner ?? p.user.name)).size;
+      const out2 = [s.local ? "local: nothing leaves this machine" : publisher ? `team room: ${publisher} (${people} other people in the room)` : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${people} people`];
+      if (s.local && publisher) out2.push(publisher);
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, "company");
         if (wakeNote) out2.unshift(wakeNote);
@@ -50379,7 +50502,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
         const who2 = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n);
-          out2.push(`  - ${who2}: another session in this checkout${declaredScope ? `; scope ${scopeLine2(declaredScope)}` : ""} \xB7 ${ago}`);
+          out2.push(`  - ${who2}: another session in this checkout${n === checkoutPublisher(s) ? "; publishes this checkout" : ""}${declaredScope ? `; scope ${scopeLine2(declaredScope)}` : ""} \xB7 ${ago}`);
           continue;
         }
         const theirs = areasFor(s, n);
@@ -50540,6 +50663,8 @@ function createAreas(deps) {
   };
   const scopeLine2 = scopeLine;
   const personLine2 = (s, name2) => {
+    const accepted = s.room.acceptedWorkerViewOf(name2);
+    const raw = [...s.room.workerViews.values()].find((view) => view.name === name2 && view.mode === "local");
     return personLine({
       name: name2,
       scope: s.room.scope(name2),
@@ -50551,7 +50676,8 @@ function createAreas(deps) {
         const head = s.room.manifestHead.get(name2);
         return head ? [...s.room.manifest.get(`${name2}\0${head.fence}`)?.values() ?? []].filter((entry) => entry.fence === head.fence && entry.state === "held").length : 0;
       })(),
-      excludedCount: s.room.manifestHead.get(name2)?.excluded.length ?? 0
+      excludedCount: s.room.manifestHead.get(name2)?.excluded.length ?? 0,
+      ...accepted?.mode === "local" ? { projectedWorker: accepted } : raw && !accepted ? { projectedStale: raw.lead } : {}
     });
   };
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine: claimLine2, ledgerLines, scopeLine: scopeLine2, personLine: personLine2 };
@@ -52167,6 +52293,7 @@ function createHandlerState(ctx) {
   const doLeave = ctx.leave ?? leaveSession;
   const upgraded = /* @__PURE__ */ new Set();
   let roomBridge = null;
+  let preserveBridgeFacts = false;
   let primaryHooks = null;
   const doClose = ctx.close ?? (async (s) => {
     const a = await authFor(s);
@@ -52203,7 +52330,7 @@ function createHandlerState(ctx) {
         if (hooks && primaryHooks === hooks) primaryHooks = null;
         if (role === "primary") prs.stopPrSync();
         if (bridge) {
-          bridge.stop();
+          bridge.stop(preserveBridgeFacts);
           if (roomBridge === bridge) roomBridge = null;
         }
       },
@@ -52331,6 +52458,7 @@ function createHandlerState(ctx) {
     attachHooks: (s) => rooms.add(s, "primary"),
     clearStale: (s) => state.cleanupMine(s, "stale from an earlier session"),
     async shutdown() {
+      preserveBridgeFacts = true;
       wakes.stop();
       const s = ctx.getSession();
       if (!s) {
@@ -52925,7 +53053,20 @@ ${text}` : text;
       const offlineWithFacts = available.filter((person) => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0);
       const skipped = !explicit ? offlineWithFacts.filter((person) => !people.includes(person)) : [];
       const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with manifest facts: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
-      if (!people.length) return ["no present participants to merge", skippedNote, ...unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join("; ")}`] : []].filter(Boolean).join("\n");
+      const recordPartial = async (names, gaps, command = "", ranOk) => {
+        await caller.post(caller.me, {
+          type: "note",
+          priority: "fyi",
+          text: `partial preview with ${names.join(", ") || "no participants"}: ${gaps.join("; ")}${command ? `; command "${command}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
+        });
+      };
+      if (!people.length) {
+        if (unavailable.length || skippedNote) {
+          caller.lastPreview = { clean: false, complete: false, testsPassed: false };
+          await recordPartial([], [...unavailable, ...skippedNote ? [skippedNote] : []]);
+        }
+        return ["no present participants to merge", skippedNote, ...unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join("; ")}`] : []].filter(Boolean).join("\n");
+      }
       const participants = people.map((person) => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }));
       const missingNotes = [];
       for (const { person, session } of participants) {
@@ -52944,6 +53085,7 @@ ${text}` : text;
         const gapLines = [...gaps.map((gap) => `${gap.person}${gap.path ? ` ${gap.path}` : ""}: ${gap.why}`), ...unavailable];
         if (!paths.length && !result2.callerOnly && !run2) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false };
+          if (!complete) await recordPartial(people, gapLines);
           return [...missingNotes, ...out2, complete ? `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join("; ")}`, skippedNote].filter(Boolean).join("\n");
         }
         out2.unshift(...missingNotes);
@@ -52986,11 +53128,7 @@ ${text}--- end ${p} ---`);
           return `${people.join(", ")} moved during the preview; re-run. The combined code was NOT fully checked`;
         }
         caller.lastPreview = { clean: hardCount === 0, complete, ...run2 ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run2 } : {} };
-        if (!complete) await caller.post(caller.me, {
-          type: "note",
-          priority: "fyi",
-          text: `partial preview with ${people.join(", ")}: ${gapLines.join("; ")}${run2 ? `; command "${run2}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
-        });
+        if (!complete) await recordPartial(people, gapLines, run2, ranOk);
         if (complete && !hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
       } catch (error2) {
@@ -54471,11 +54609,12 @@ function hostKind(env = process.env, readParent = parentCommand) {
     return "interactive";
   }
 }
-async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs) {
+async function releaseIdleHeld(s, idleEpoch, idleMs, monotonicMs, pendingOnly = false) {
   const lease = s.lease;
   if (!lease) return false;
   const registry2 = await WorkerRegistry.open(await gitCommonDir(s.dir), { migrate: false, watch: false });
   try {
+    if (pendingOnly && !registry2.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) return false;
     const fence = lease.fence();
     if (!fence) {
       if (registry2.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error("idle claim notice pending while the name lease is paused");
@@ -54578,6 +54717,12 @@ var PresenceEnd = class {
       return;
     }
     if (this.options.hostKind !== "shared-app-server" || this.left) return;
+    try {
+      await this.options.replayPending?.();
+    } catch (error2) {
+      this.options.log?.(`idle claim notice replay pending: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      return;
+    }
     const idle = this.idleMs();
     if (idle >= IDLE_CLAIMS_MS) {
       try {
@@ -54744,6 +54889,9 @@ async function main() {
         },
         releaseHeld: async (idle, epoch) => {
           for (const joined2 of tools.joinedSessions()) await releaseIdleHeld(joined2, epoch, idle, presence.mono);
+        },
+        replayPending: async () => {
+          for (const joined2 of tools.joinedSessions()) await releaseIdleHeld(joined2, "replay", presence.idleMs(), presence.mono, true);
         },
         publishIdle: (minutes) => {
           for (const joined2 of tools.joinedSessions()) try {
