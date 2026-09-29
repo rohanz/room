@@ -110,7 +110,9 @@ export function snapshotPath(room: RoomDoc, name: string, view: readonly Partici
 export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, view: readonly ParticipantView[]): boolean {
   const head = room.manifestHead.get(snap.name)
   const record = participantRecord(room, snap.name)
-  if (!head || !snap.fenceValid || !fenceValid(snap.head, record, view) || !fenceValid(head, record, view)) return false
+  // An already unavailable snapshot stays a conservative gap until its captured identity changes.
+  // A once-authoritative snapshot that loses its fence must still be retried.
+  if (!head || fenceValid(snap.head, record, view) !== snap.fenceValid || fenceValid(head, record, view) !== snap.fenceValid) return false
   const a = snap.head, b = head
   return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base &&
     a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy &&
@@ -119,6 +121,12 @@ export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, v
     JSON.stringify(a.excluded) === JSON.stringify(b.excluded) &&
     JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) &&
     snap.roomSalt === room.roomSalt &&
+    snap.record?.id?.name === record?.id?.name && snap.record?.id?.kind === record?.id?.kind &&
+    snap.record?.holder?.sessionId === record?.holder?.sessionId &&
+    snap.record?.holder?.epoch === record?.holder?.epoch &&
+    snap.record?.holder?.ended === record?.holder?.ended &&
+    snap.record?.proj?.projectedBy === record?.proj?.projectedBy &&
+    snap.record?.proj?.projectedFrom === record?.proj?.projectedFrom &&
     snap.record?.git?.head === record?.git?.head && snap.record?.git?.base === record?.git?.base &&
     snap.record?.git?.fence === record?.git?.fence && snap.record?.git?.rev === record?.git?.rev
 }

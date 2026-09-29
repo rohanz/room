@@ -192,7 +192,7 @@ export class Publisher {
     for (const p of textPaths) {
       if (textCount++ % 32 === 0) await setImmediate()
       const sha = carried?.untracked.get(p)?.sha
-      if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p))
+      if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p, 'utf8', inputs.rules.sizeCap))
     }
     const facts: ManifestFact[] = []
     const textOps = new Map<string, ReturnType<RoomDoc['prepareOverlayDiff']>>()
@@ -216,16 +216,19 @@ export class Publisher {
     }
     const baseTextDeletes: string[] = []
     const wanted = new Set<string>()
+    const ownerBasePrefix = `${this.host.name}\0`
+    const currentBasePrefix = `${ownerBasePrefix}${inputs.head}:`
     let wantedCount = 0
     for (const [p, entry] of desired.entries) {
       if (wantedCount++ % 32 === 0) await setImmediate()
-      if (entry.held !== 'scope' && authorizesText(inputs.policy, p)) wanted.add(`${this.host.name}\0${inputs.head}:${p}`)
+      if (entry.held !== 'scope' && authorizesText(inputs.policy, p)) wanted.add(`${currentBasePrefix}${p}`)
     }
     let baseCount = 0
     for (const key of this.host.roomDoc.ownedBaseTexts.keys()) {
       if (++baseCount % 32 === 1) await setImmediate()
       if (!valid()) throw new StalePublication('publication inputs changed during prepare')
-      if (key.startsWith(`${this.host.name}\0`) && !wanted.has(key)) baseTextDeletes.push(key)
+      if (key.startsWith(ownerBasePrefix) && (!wanted.has(key) ||
+        (key.startsWith(currentBasePrefix) && baseTexts.get(key.slice(currentBasePrefix.length)) === undefined))) baseTextDeletes.push(key)
     }
     const manifestPlan = await prepareManifestPublicationYielding({ room: this.host.roomDoc, name: this.host.name, fence: capturedFence ?? '',
       base: inputs.head, level: inputs.policy.level, prefixes: inputs.policy.textPrefixes, complete: true,

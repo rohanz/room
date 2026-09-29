@@ -39,6 +39,26 @@ describe('reanchorClaims', () => {
     })
   })
 
+  it('uses digest uniqueness when previous text shows a cut and paste', async () => {
+    const before = 'a\nclaimed one\nclaimed two\nb\nc\nd\ne\nf\n'
+    const c = { ...claim(), claimedHash: claimDigest(before, 2, 3) }
+    const after = 'a\nb\nc\nd\ne\nf\nclaimed one\nclaimed two\n'
+    expect(await reanchorClaims('Alice', [c], new Map([['app.txt', after]]),
+      { previousTexts: new Map([[c.id, before]]) })).toEqual({
+      moves: [{ id: c.id, from: 7, to: 8 }], releases: [], uncertain: [],
+    })
+  })
+
+  it('releases an ambiguous digest even when a line diff maps one copy', async () => {
+    const before = 'a\nclaimed one\nclaimed two\nb\n'
+    const c = { ...claim(), claimedHash: claimDigest(before, 2, 3) }
+    const after = 'new\na\nclaimed one\nclaimed two\nb\nclaimed one\nclaimed two\n'
+    expect(await reanchorClaims('Alice', [c], new Map([['app.txt', after]]),
+      { previousTexts: new Map([[c.id, before]]) })).toEqual({
+      moves: [], releases: [{ id: c.id, path: 'app.txt', from: 2, to: 3 }], uncertain: [],
+    })
+  })
+
   it('keeps a claim whose digest already matches its range on retry', async () => {
     const moved = 'added\n' + original + original
     expect(await reanchorClaims('Alice', [{ ...claim(), from: 3, to: 4 }], new Map([['app.txt', moved]]))).toEqual({ moves: [], releases: [], uncertain: [] })

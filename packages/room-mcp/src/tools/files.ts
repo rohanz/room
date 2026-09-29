@@ -329,7 +329,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
             }))).filter((x): x is NonNullable<typeof x> => !!x)
             const modes = new Map<string, number>()
+            let modeCount = 0
             for (const p of merged.keys()) {
+              if (modeCount++ % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
               let leadMode = 0o644
               try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
@@ -367,24 +369,37 @@ export { supersetSide } from './combined-tree.js'
  * clone itself) are re-pointed at the same relative path inside the scratch tree, so tests there import
  * the merged sources rather than mine.
  */
-export function linkSharedDirs(cloneDir: string, scratchDir: string): void {
+export async function linkSharedDirs(cloneDir: string, scratchDir: string): Promise<void> {
+  const yieldTurn = () => new Promise<void>(resolve => setImmediate(resolve))
+  await yieldTurn()
+  ensureMergedDirectory(scratchDir, '')
   const venv = path.join(cloneDir, '.venv')
   if (fs.existsSync(venv) && !fs.existsSync(path.join(scratchDir, '.venv'))) fs.symlinkSync(venv, path.join(scratchDir, '.venv'))
   const candidates = ['node_modules']
   for (const top of ['packages', 'apps', 'libs']) {
+    await yieldTurn()
     const d = path.join(cloneDir, top)
     if (!fs.existsSync(d)) continue
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path.join(top, e.name, 'node_modules'))
+    let count = 0
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (count++ % 32 === 0) await yieldTurn()
+      if (e.isDirectory()) candidates.push(path.join(top, e.name, 'node_modules'))
+    }
   }
-  for (const rel of candidates) {
+  for (const [index, rel] of candidates.entries()) {
+    if (index % 32 === 0) await yieldTurn()
     const src = path.join(cloneDir, rel), dst = path.join(scratchDir, rel)
     if (!fs.existsSync(src) || fs.existsSync(dst)) continue
-    mirrorLinks(cloneDir, scratchDir, src, dst)
+    await mirrorLinks(cloneDir, scratchDir, src, dst)
   }
 }
-function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: string): void {
+async function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: string): Promise<void> {
   ensureMergedDirectory(scratchDir, path.relative(scratchDir, dst))
+  let count = 0
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    if (count++ % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
+    // Another task could replace a scratch ancestor during the yield.
+    ensureMergedDirectory(scratchDir, path.relative(scratchDir, dst))
     const from = path.join(src, e.name), to = path.join(dst, e.name)
     if (e.isSymbolicLink()) {
       const target = path.resolve(src, fs.readlinkSync(from))
@@ -392,7 +407,7 @@ function mirrorLinks(cloneDir: string, scratchDir: string, src: string, dst: str
       const isWorkspace = inside && !inside.startsWith('..') && !inside.split(path.sep).includes('node_modules')
       fs.symlinkSync(isWorkspace ? path.join(scratchDir, inside) : target, to)
     } else if (e.isDirectory() && e.name.startsWith('@')) {
-      mirrorLinks(cloneDir, scratchDir, from, to) // scoped packages: one level deeper
+      await mirrorLinks(cloneDir, scratchDir, from, to) // scoped packages: one level deeper
     } else {
       fs.symlinkSync(from, to)
     }
@@ -501,7 +516,7 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
         await new Promise<void>(resolve => setImmediate(resolve))
         materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
       }
-      linkSharedDirs(s.dir, dir)
+      await linkSharedDirs(s.dir, dir)
     })
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))

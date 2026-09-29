@@ -23,6 +23,7 @@ export interface ClaimSearchProgress {
   found: number
   at: number
   firstLineHash?: number
+  candidate?: number
 }
 
 const DEFAULT_WORK_BUDGET = 4_000_000
@@ -47,31 +48,26 @@ function lineHash(line: string): number {
   return h >>> 0
 }
 
-/** Map a verified old anchor through a bounded line diff. A touched line is a gone block. */
-function mappedByLineDiff(claim: Claim, before: string, after: string, budget: number): ClaimMove | ClaimRelease | undefined {
+/** A line diff only proposes a range; the caller verifies its digest and scans for duplicates. */
+function mappedCandidate(claim: Claim, before: string, after: string, budget: number): number | undefined {
   if (claimDigest(before, claim.from, claim.to) !== claim.claimedHash) return undefined
   const oldLines = splitLines(before), newLines = splitLines(after)
   const maxEditLength = Math.floor(budget / Math.max(1, oldLines.length + newLines.length))
   if (maxEditLength < 1) return undefined
   const changes = diffArrays(oldLines, newLines, { maxEditLength })
   if (!changes) return undefined
-  let oldAt = 1, newAt = 1, mapped: number | undefined, touched = false
+  let oldAt = 1, newAt = 1, mapped: number | undefined
   for (const change of changes) {
     const count = change.value.length
-    if (change.removed) {
-      if (oldAt <= claim.to && oldAt + count > claim.from) touched = true
-      oldAt += count
-    } else if (change.added) {
-      if (oldAt > claim.from && oldAt <= claim.to) touched = true
-      newAt += count
-    } else {
+    if (change.removed) oldAt += count
+    else if (change.added) newAt += count
+    else {
       if (claim.from >= oldAt && claim.to < oldAt + count) mapped = newAt + claim.from - oldAt
       oldAt += count
       newAt += count
     }
   }
-  if (touched) return { id: claim.id, path: claim.path, from: claim.from, to: claim.to }
-  return mapped === undefined ? undefined : { id: claim.id, from: mapped, to: mapped + claim.to - claim.from }
+  return mapped
 }
 
 /** Yield and count actual inspected characters, including exact candidate verification. */
@@ -107,21 +103,16 @@ export async function reanchorClaims(owner: string, claims: readonly Claim[], te
       continue
     }
     if (work > budget || stale) { uncertain.push(claim.id); continue }
+    // Previous text can supply a first-line filter when an exact anchor was not captured.
+    // It never decides identity: every relocated range must pass the full uniqueness scan.
+    let original = options.originals?.get(claim.id)
     const previous = options.previousTexts?.get(claim.id)
-    if (previous !== undefined && !progress) {
-      if (!await tick(previous.length + text.length)) { uncertain.push(claim.id); continue }
-      await setImmediate()
-      if (options.valid && !options.valid()) { uncertain.push(claim.id); continue }
-      const mapped = mappedByLineDiff(claim, previous, text, Math.max(1, budget - work))
-      if (options.valid && !options.valid()) { uncertain.push(claim.id); continue }
-      if (mapped) {
-        options.progress?.delete(claim.id)
-        if ('path' in mapped) releases.push(mapped)
-        else if (mapped.from !== claim.from || mapped.to !== claim.to) moves.push(mapped)
-        continue
-      }
+    if (original === undefined && previous !== undefined && !progress) {
+      if (!await tick(previous.length)) { uncertain.push(claim.id); continue }
+      const oldLines = splitLines(previous)
+      const block = oldLines.slice(claim.from - 1, claim.to)
+      if (block.length === width && digestLines(block) === claim.claimedHash) original = block.join('\n')
     }
-    const original = options.originals?.get(claim.id)
     if (!progress) {
       if (original !== undefined && !await tick(original.length)) { uncertain.push(claim.id); continue }
       const prefix = [0]
@@ -130,12 +121,31 @@ export async function reanchorClaims(owner: string, claims: readonly Claim[], te
       const firstLineHash = originalLines?.length === width && digestLines(originalLines) === claim.claimedHash
         ? lineHash(originalLines[0]) : undefined
       progress = { key, lines, prefix, next: 0, found: 0, at: -1, firstLineHash }
+      if (previous !== undefined) {
+        if (!await tick(previous.length + text.length)) { uncertain.push(claim.id); continue }
+        await setImmediate()
+        if (options.valid && !options.valid()) { uncertain.push(claim.id); continue }
+        const candidate = mappedCandidate(claim, previous, text, Math.max(1, budget - work))
+        if (options.valid && !options.valid()) { uncertain.push(claim.id); continue }
+        if (candidate !== undefined && candidate >= 1 && candidate + width - 1 <= lines.length) {
+          const at = candidate - 1
+          const chars = prefix[at + width] - prefix[at]
+          if (!await tick(chars + width + 1)) { uncertain.push(claim.id); continue }
+          if (digestLines(lines.slice(at, at + width)) === claim.claimedHash) {
+            progress.found = 1
+            progress.at = at
+            progress.candidate = at
+            progress.firstLineHash ??= lineHash(lines[at])
+          }
+        }
+      }
       options.progress?.set(claim.id, progress)
     }
     // Search resumes at the next candidate. The prefix table makes the per-candidate
     // work charge constant-time even when the claimed block spans thousands of lines.
     while (progress.next <= lines.length - width && progress.found <= 1) {
       const i = progress.next
+      if (i === progress.candidate) { progress.next++; continue }
       if (progress.firstLineHash !== undefined) {
         const first = lines[i]
         if (work + first.length + 1 > budget || stale) break

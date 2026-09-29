@@ -137,6 +137,27 @@ it('services an event-loop turn between merged file materialisations', async () 
   } finally { spy.mockRestore() }
 })
 
+it('services an event-loop turn within preview mode preparation', async () => {
+  const { entries, texts, state } = fixture()
+  for (let i = 0; i < 96; i++) {
+    const rel = `mode-${String(i).padStart(3, '0')}.txt`, value = `worker ${i}\n`
+    entries.set(rel, { change: 'A', state: 'shared', hash: gitBlobHash(value), size: Buffer.byteLength(value), at: 1, fence: '1' })
+    texts.set(rel, new Y.Text(value))
+  }
+  const lstat = fs.lstatSync.bind(fs)
+  let turned = false, lastSawTurn = false
+  const seam = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: fs.PathLike, options?: Parameters<typeof fs.lstatSync>[1]) => {
+    const inModePreparation = new Error().stack?.split('\n').slice(1, 4).join('\n').includes('Object.room_preview_merge')
+    if (inModePreparation && String(file) === path.join(root!, 'mode-000.txt')) setImmediate(() => { turned = true })
+    if (inModePreparation && String(file) === path.join(root!, 'mode-095.txt')) lastSawTurn = turned
+    return lstat(file, options as never)
+  }) as typeof fs.lstatSync)
+  try {
+    expect(await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })).toContain('tests: PASSED')
+    expect(lastSawTurn).toBe(true)
+  } finally { seam.mockRestore() }
+})
+
 it('marks a changed disk symlink as a named partial gap even if a scratch test passes', async () => {
   const { room, session, state } = fixture()
   fs.unlinkSync(path.join(root!, 'app.py'))

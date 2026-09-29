@@ -31,6 +31,7 @@ export const defs: ToolDef[] = [{
 const split = (value: string) => value.split('\0').filter(Boolean)
 const COLLECT_TEXT_LIMIT = 512 * 1024
 const COLLECT_YIELD_EVERY = 32
+const COPY_INSTALL_LIMIT = 4_096
 
 type FileIdentity = { size: number; mtimeMs: number; ino: number; dev: number; mode: number } | null
 
@@ -422,6 +423,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some(p => typeof p !== 'string')) return 'error: copy requires non-empty paths'
         const workerRoot = workerRoots.get(w)!
         const files = await copyFiles(workerRoot, a.paths as string[])
+        // Installation must have no await between its final gate and last rename.
+        if (files.length > COPY_INSTALL_LIMIT) return `error: copy has more than ${COPY_INSTALL_LIMIT} files; split the selection`
         const modified = new Set(split(await gitWholeTree(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
         const tracked = new Set(split(await gitWholeTree(lead.dir, ['ls-files', '-z'])))
         const copyPlan: { p: string; source: NonNullable<FileIdentity>; destination: FileIdentity }[] = []
@@ -439,17 +442,54 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           copyPlan.push({ p, source, destination })
         }
-        // No await between this gate and the write phase. It covers the first path
-        // even when a later preflight yielded or the file grew in the meantime.
-        for (const { p, source, destination } of copyPlan) {
-          if (!sameIdentity(source, fileIdentity(safePath(workerRoot, p))) || !sameIdentity(destination, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
-        }
-        for (const { p, source } of copyPlan) {
-          const dst = safePath(leadRoot, p)
-          fs.mkdirSync(path.dirname(dst), { recursive: true })
-          await fs.promises.copyFile(safePath(workerRoot, p), dst)
-          fs.chmodSync(dst, source.mode)
-          out.push('copied ' + p)
+        const stagedRoot = fs.mkdtempSync(path.join(leadRoot, '.room', 'collect-copy-'))
+        let keepRecovery = false
+        try {
+          const prepared = [] as (typeof copyPlan[number] & { staged: string; backup: string })[]
+          for (const [index, plan] of copyPlan.entries()) {
+            if (index % COLLECT_YIELD_EVERY === 0) await setImmediate()
+            const staged = path.join(stagedRoot, `${index}.new`)
+            await fs.promises.copyFile(safePath(workerRoot, plan.p), staged)
+            fs.chmodSync(staged, plan.source.mode)
+            prepared.push({ ...plan, staged, backup: path.join(stagedRoot, `${index}.old`) })
+          }
+          // Recheck every source and destination after all asynchronous preparation.
+          for (const { p, source, destination } of prepared) {
+            if (!sameIdentity(source, fileIdentity(safePath(workerRoot, p))) || !sameIdentity(destination, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
+          }
+          const installed: { dst: string; staged: string; backup: string; hadOriginal: boolean; copied: boolean }[] = []
+          try {
+            // Only bounded, synchronous metadata operations occur from the gate through
+            // the final rename. Retain old leaves for rollback if a later rename fails.
+            for (const { p, destination, staged, backup } of prepared) {
+              const dst = safePath(leadRoot, p)
+              if (!sameIdentity(destination, fileIdentity(dst))) throw new Error(p + ' changed during collection; nothing written, retry')
+              fs.mkdirSync(path.dirname(dst), { recursive: true })
+              const checked = safePath(leadRoot, p)
+              if (!sameIdentity(destination, fileIdentity(checked))) throw new Error(p + ' changed during collection; nothing written, retry')
+              const entry = { dst: checked, staged, backup, hadOriginal: destination !== null, copied: false }
+              if (entry.hadOriginal) fs.renameSync(checked, backup)
+              installed.push(entry)
+              fs.renameSync(staged, checked)
+              entry.copied = true
+            }
+          } catch (error) {
+            const rollbackErrors: string[] = []
+            for (const entry of installed.reverse()) {
+              try {
+                if (entry.copied) fs.unlinkSync(entry.dst)
+                if (entry.hadOriginal) fs.renameSync(entry.backup, entry.dst)
+              } catch (rollbackError) { rollbackErrors.push(rollbackError instanceof Error ? rollbackError.message : String(rollbackError)) }
+            }
+            if (rollbackErrors.length) {
+              keepRecovery = true
+              throw new Error(`copy failed; rollback incomplete; originals kept in ${stagedRoot}: ${rollbackErrors.join('; ')}`, { cause: error })
+            }
+            throw error
+          }
+          for (const { p } of prepared) out.push('copied ' + p)
+        } finally {
+          if (!keepRecovery) await fs.promises.rm(stagedRoot, { recursive: true, force: true })
         }
         releasePaths(files)
         if (!files.length) out.push('nothing copied (empty directories)')

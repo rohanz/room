@@ -474,6 +474,34 @@ describe('local notices are items (ledger test 9)', () => {
 })
 
 describe('hooks bridge state file', () => {
+  it('writes conservative stale-peer claims alongside healthy claims and pending counts without retrying', async () => {
+    const room = new RoomDoc(), s = session(room)
+    const stalePeer = addPresence(s, 'Kieran'), healthyPeer = addPresence(s, 'Quinn')
+    const b = bridge(s, { owedCount: () => 3, noticeCount: () => 2 })
+    const retry = vi.spyOn(b, 'scheduleWrite')
+    try {
+      room.participants.set('Kieran\0holder', { sessionId: 'new-holder', epoch: 2 })
+      room.participants.set('Kieran\0git', { branch: 'main', head: 'base', base: 'base', anchored: true, rev: 1, fence: '1' })
+      room.manifestHead.set('Kieran', { base: 'base', fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      room.participants.set('Quinn\0git', { branch: 'main', head: 'base', base: 'base', anchored: true, rev: 1, fence: '1' })
+      room.manifestHead.set('Quinn', { base: 'base', fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      const entries = new Y.Map<any>()
+      entries.set('api/tax.py', { change: 'M', state: 'shared', hash: gitBlobHash('x = 1\n'), at: 1, fence: '1' })
+      room.manifest.set(manifestKey('Quinn', '1'), entries)
+      room.setOverlay(manifestKey('Quinn', '1'), 'api/tax.py', 'x = 1\n')
+      for (let i = 0; i < 40; i++) room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: i + 1, to: i + 1, intent: `stale ${i}` })
+      room.addClaim({ by: 'Quinn', byKind: 'agent', path: 'api/tax.py', from: 1, to: 1, intent: 'healthy' })
+
+      await b.write()
+      const state = readSession('state.json')
+      expect(state).toMatchObject({ owedCount: 3, notices: 2, company: true })
+      expect(state.claims).toHaveLength(41)
+      expect(state.claims.filter((claim: { by: string; approximate: boolean }) => claim.by === 'Kieran' && claim.approximate)).toHaveLength(40)
+      expect(state.claims.find((claim: { by: string }) => claim.by === 'Quinn')).toMatchObject({ path: 'api/tax.py', from: 1, to: 1, approximate: false })
+      expect(retry).not.toHaveBeenCalled()
+    } finally { retry.mockRestore(); b.stop(); stalePeer.destroy(); healthyPeer.destroy(); s.awareness.destroy(); room.doc.destroy() }
+  })
+
   it('yields and reads one bounded local file for forty claims on a 2 MiB path', async () => {
     const s = session(new RoomDoc())
     const b = bridge(s)
@@ -500,7 +528,7 @@ describe('hooks bridge state file', () => {
     const s = session(new RoomDoc())
     s.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'edit' })
     let fenced = true
-    const b = bridge(s, { fenced: () => fenced })
+    const b = bridge(s, { fenced: () => fenced }, 'fence-loss')
     const original = fs.promises.open.bind(fs.promises)
     let entered!: () => void, release!: () => void
     const opened = new Promise<void>(resolve => { entered = resolve })
@@ -512,7 +540,7 @@ describe('hooks bridge state file', () => {
       fenced = false
       release()
       await pending
-      expect(existsSync(join(sdir(), 'state.json'))).toBe(false)
+      expect(existsSync(join(sdir('fence-loss'), 'state.json'))).toBe(false)
     } finally { spy.mockRestore(); b.stop(); s.awareness.destroy(); s.room.doc.destroy() }
   })
   it('writes counts and coordination, never message content, only while fenced', async () => {

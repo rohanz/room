@@ -867,6 +867,55 @@ describe('room_collect', () => {
     expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false); expect(release).not.toHaveBeenCalled()
     expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toBe('copied file.txt')
   })
+  it('preserves an original and a newly created later destination during copy preparation', async () => {
+    put(worker, 'file.txt', 'worker replacement\n'); put(worker, 'new.txt', 'worker new\n')
+    const t = setup()
+    const original = fs.readFileSync(path.join(lead, 'file.txt'))
+    const realCopy = fs.promises.copyFile.bind(fs.promises)
+    let copies = 0
+    const seam = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
+      await realCopy(...args)
+      if (++copies === 1) put(lead, 'new.txt', 'new lead edit during copy\n')
+    })
+    try {
+      expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt', 'new.txt'] })).toMatch(/new\.txt changed during collection; nothing written, retry/)
+      expect(fs.readFileSync(path.join(lead, 'file.txt'))).toEqual(original)
+      expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('new lead edit during copy\n')
+      expect(release).not.toHaveBeenCalled()
+    } finally { seam.mockRestore() }
+  })
+  it('refuses a source changed while an earlier copy is prepared', async () => {
+    put(worker, 'a.txt', 'worker a\n'); put(worker, 'b.txt', 'worker b\n')
+    const t = setup()
+    const realCopy = fs.promises.copyFile.bind(fs.promises)
+    let copies = 0
+    const seam = vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (...args) => {
+      await realCopy(...args)
+      if (++copies === 1) put(worker, 'b.txt', 'worker b changed during copy\n')
+    })
+    try {
+      expect(await t.call({ tag: 'test', mode: 'copy', paths: ['a.txt', 'b.txt'] })).toMatch(/b\.txt changed during collection; nothing written, retry/)
+      expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false)
+      expect(fs.existsSync(path.join(lead, 'b.txt'))).toBe(false)
+      expect(release).not.toHaveBeenCalled()
+    } finally { seam.mockRestore() }
+  })
+  it('rolls back copied files and restores original leaves when a later rename fails', async () => {
+    put(worker, 'file.txt', 'worker replacement\n'); put(worker, 'new.txt', 'worker new\n')
+    const t = setup()
+    const original = fs.readFileSync(path.join(lead, 'file.txt'))
+    const rename = fs.renameSync.bind(fs)
+    const seam = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from).includes('collect-copy-') && String(from).endsWith('.new') && to === path.join(lead, 'new.txt')) throw new Error('injected second rename failure')
+      return rename(from, to)
+    })
+    try {
+      expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt', 'new.txt'] })).toContain('injected second rename failure')
+      expect(fs.readFileSync(path.join(lead, 'file.txt'))).toEqual(original)
+      expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+      expect(release).not.toHaveBeenCalled()
+    } finally { seam.mockRestore() }
+  })
   it('yields through 2,000 copy paths without reading whole file contents into memory', async () => {
     for (let i = 0; i < 2_000; i++) put(worker, `bulk/${i.toString().padStart(4, '0')}.txt`, 'x')
     const t = setup()
@@ -953,14 +1002,49 @@ async function previewSetup() {
 }
 
 describe('worker preview', () => {
-  it('does not link dependencies through an archived symlink ancestor', () => {
+  it('does not link dependencies through an archived symlink ancestor', async () => {
     const scratch = path.join(root, 'scratch'), outside = path.join(root, 'outside')
     fs.mkdirSync(path.join(lead, 'packages', 'pkg', 'node_modules', 'dep'), { recursive: true })
     fs.mkdirSync(path.join(scratch, 'packages'), { recursive: true })
     fs.mkdirSync(outside)
     fs.symlinkSync(outside, path.join(scratch, 'packages', 'pkg'))
-    expect(() => linkSharedDirs(lead, scratch)).toThrow(/unsafe merged ancestor|escapes scratch tree/)
+    await expect(linkSharedDirs(lead, scratch)).rejects.toThrow(/unsafe merged ancestor|escapes scratch tree/)
     expect(fs.existsSync(path.join(outside, 'node_modules'))).toBe(false)
+  })
+
+  it('yields within package discovery, including skipped package directories', async () => {
+    const scratch = path.join(root, 'scratch')
+    fs.mkdirSync(scratch)
+    for (let i = 0; i < 2_000; i++) fs.mkdirSync(path.join(lead, 'packages', `pkg-${String(i).padStart(4, '0')}`), { recursive: true })
+    const exists = fs.existsSync.bind(fs)
+    let turned = false, lastSawTurn = false
+    const seam = vi.spyOn(fs, 'existsSync').mockImplementation((file: fs.PathLike) => {
+      if (String(file).endsWith('pkg-0000/node_modules')) setImmediate(() => { turned = true })
+      if (String(file).endsWith('pkg-1999/node_modules')) lastSawTurn = turned
+      return exists(file)
+    })
+    try {
+      await linkSharedDirs(lead, scratch)
+      expect(lastSawTurn).toBe(true)
+    } finally { seam.mockRestore() }
+  })
+
+  it('yields within scoped package links before creating the last symlink', async () => {
+    const scratch = path.join(root, 'scratch')
+    fs.mkdirSync(path.join(lead, 'node_modules', '@scope'), { recursive: true })
+    fs.mkdirSync(scratch)
+    for (let i = 0; i < 96; i++) fs.mkdirSync(path.join(lead, 'node_modules', '@scope', `lib-${String(i).padStart(3, '0')}`))
+    const symlink = fs.symlinkSync.bind(fs)
+    let turned = false, lastSawTurn = false
+    const seam = vi.spyOn(fs, 'symlinkSync').mockImplementation(((target: fs.PathLike, file: fs.PathLike, type?: fs.symlink.Type) => {
+      if (String(file).endsWith('lib-000')) setImmediate(() => { turned = true })
+      if (String(file).endsWith('lib-095')) lastSawTurn = turned
+      return symlink(target, file, type)
+    }) as typeof fs.symlinkSync)
+    try {
+      await linkSharedDirs(lead, scratch)
+      expect(lastSawTurn).toBe(true)
+    } finally { seam.mockRestore() }
   })
 
   it('refuses a symlink ancestor in the extracted scratch tree', () => {

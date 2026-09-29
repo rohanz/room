@@ -74,6 +74,30 @@ async function movedHead() {
   return { oldHead, newHead: git(dir, 'rev-parse', 'HEAD'), claim }
 }
 
+it.each([
+  { name: 'moves a uniquely cut-and-pasted block', after: 'a\nb\nc\nd\ne\nf\nclaimed one\nclaimed two\n', range: [7, 8] as const },
+  { name: 'releases a block duplicated after the commit', after: 'new\na\nclaimed one\nclaimed two\nb\nclaimed one\nclaimed two\n', range: undefined },
+])('$name with previous text available on a real HEAD transition', async ({ after, range }) => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-head-identity-'))
+  git(dir, 'init', '-q', '-b', 'main')
+  git(dir, 'config', 'user.email', 'test@example.com')
+  git(dir, 'config', 'user.name', 'Test')
+  const before = 'a\nclaimed one\nclaimed two\nb\nc\nd\ne\nf\n'
+  fs.writeFileSync(path.join(dir, 'app.txt'), before)
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-identity', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
+    basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
+  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 3, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(before, 2, 3) })
+  fs.writeFileSync(path.join(dir, 'app.txt'), after)
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'change claimed block')
+  await daemon.reconcileGitChanges()
+  expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.base).toBe(git(dir, 'rev-parse', 'HEAD'))
+  expect((daemon as Roomd & { pendingClaimValidation?: unknown }).pendingClaimValidation).toBeUndefined()
+  if (range) expect(daemon.roomDoc.claims.get(claim.id)).toMatchObject({ from: range[0], to: range[1] })
+  else expect(daemon.roomDoc.claims.has(claim.id)).toBe(false)
+})
+
 it('retries an injected Git failure through the whole HEAD transition', async () => {
   const { oldHead, newHead, claim } = await movedHead()
   probe.failTracked = true

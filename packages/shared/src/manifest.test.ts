@@ -151,4 +151,24 @@ describe('manifest step 1', () => {
     room.participants.set('ben\0git', { base: 'abc', head: 'h2', fence: '11' })
     expect(snapshotStillCurrent(room, snap, [])).toBe(false)
   })
+
+  it('keeps an already unavailable snapshot only while its captured identity and revision stay unchanged', () => {
+    const room = new RoomDoc()
+    room.participants.set('ben\0holder', { sessionId: 's2', epoch: 12 })
+    room.participants.set('ben\0git', { base: 'abc', head: 'h1', fence: '11', rev: 1 })
+    room.manifestHead.set('ben', head('11'))
+    const stable = snapshotPath(room, 'ben', [], 'x')!
+    expect(stable.fenceValid).toBe(false)
+    expect(snapshotStillCurrent(room, stable, [])).toBe(true)
+
+    room.participants.set('ben\0holder', { sessionId: 's3', epoch: 13 })
+    expect(snapshotStillCurrent(room, stable, [])).toBe(false)
+    const next = snapshotPath(room, 'ben', [], 'x')!
+    room.manifestHead.set('ben', { ...head('11'), rev: 2 })
+    expect(snapshotStillCurrent(room, next, [])).toBe(false)
+
+    const revised = snapshotPath(room, 'ben', [], 'x')!
+    room.participants.set('ben\0holder', { sessionId: 's1', epoch: 11 })
+    expect(snapshotStillCurrent(room, revised, [])).toBe(false)
+  })
 })

@@ -9,9 +9,10 @@ import { git, gitShow } from '@room/roomd/git'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
-import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/baseline'
+import type { BaselineRead } from '@room/roomd/baseline'
 import { carriedFrom } from './worker-registry.js'
 import { snapshotStillCurrent } from '@room/shared'
+import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
@@ -105,6 +106,19 @@ export class GraphIndex {
   constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
     this.publishedGraph = new SymbolGraph(path => this.publishedCache.get(path))
+  }
+
+  private historicalText(base: string, pathname: string): Promise<string | undefined> {
+    return this.opts.read ? this.opts.read(this.dir, base, pathname) : readBoundedHistoricalText(this.dir, base, pathname)
+  }
+
+  private async graphText(base: string, pathname: string): Promise<string | undefined> {
+    try { return await this.historicalText(base, pathname) }
+    catch (error) {
+      if (!(error instanceof HistoricalTextTooLarge)) throw error
+      this.log(`graph: historical text too large for ${pathname}; graph coverage degraded`)
+      return undefined
+    }
   }
 
   private publicationKey(): string | undefined {
@@ -335,13 +349,13 @@ export class GraphIndex {
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue
       const participant = snapshotPath(this.room, person, [], path)
-      const version = await versionOf(participant, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      const version = await versionOf(participant, path, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) })
       if (!participant?.entries.has(path) && version.kind !== 'excluded') continue
       if (version.kind === 'text') return version.text
       return undefined
     }
     if (!this.base) return undefined
-    return (this.opts.read ?? gitShow)(this.dir, this.base, path)
+    return this.graphText(this.base, path)
   }
 
   /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
@@ -358,7 +372,7 @@ export class GraphIndex {
     }
     if (mine?.entries.has(path)) {
       if (!this.ownTextAuthorized(path)) return undefined
-      const version = await versionOf(mine, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      const version = await versionOf(mine, path, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) })
       return version.kind === 'text' && version.entry.hash
         ? { text: version.text, source: { kind: 'entry', person: this.me, fence: mine.head.fence, hash: version.entry.hash } } : undefined
     }
@@ -370,15 +384,15 @@ export class GraphIndex {
       if (raw && raw.fence !== peer.head.fence) return undefined
       if (!peer.entries.has(path)) continue
       if (!this.entryAuthorized(person, path, raw)) return undefined
-      const version = await versionOf(peer, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      const version = await versionOf(peer, path, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) })
       return version.kind === 'text' && version.entry.hash
         ? { text: version.text, source: { kind: 'entry', person, fence: peer.head.fence, hash: version.entry.hash } } : undefined
     }
     if (!mine) {
-      const text = await (this.opts.read ?? gitShow)(this.dir, this.base, path)
+      const text = await this.graphText(this.base, path)
       return text === undefined ? undefined : { text, source: { kind: 'base', base: this.base } }
     }
-    const version = await versionOf(mine, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+    const version = await versionOf(mine, path, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) })
     return version.kind === 'base' && version.text !== undefined
       ? { text: version.text, source: { kind: 'base', base: mine.head.base } } : undefined
   }
@@ -539,9 +553,15 @@ export class GraphIndex {
       const mineDeleted = myEntry?.change === 'D'
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
       const own = carriedFrom(this.dir, this.me)?.baseline
-      const read = (sha: string, file: string) => (this.opts.read ?? gitShow)(this.dir, sha, file)
+      const read = (sha: string, file: string) => this.historicalText(sha, file)
       const baseRead: BaselineRead | undefined = mine !== undefined || mineDeleted
-        ? own ? await readBaseline(own, path, read) : await read(this.base, path).then(
+        ? await (own?.untracked.has(path)
+          // A carried blob the registry names is a fact: if git cannot produce it, coverage is degraded, not absent.
+          ? readBoundedCheckoutText(own.dir, own.untracked.get(path)!.sha, path).then(text => {
+            if (text === undefined) throw new Error(`carried baseline blob ${own.untracked.get(path)!.sha} for ${path} is unavailable`)
+            return text
+          })
+          : read(own?.sha ?? this.base, path)).then(
           text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined

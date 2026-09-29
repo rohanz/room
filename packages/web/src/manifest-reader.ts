@@ -1,5 +1,5 @@
 import {
-  manifestChangers, manifestKey, manifestPaths, normalizeCoordinationPath, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf,
+  manifestChangers, manifestKey, manifestPaths, normalizeCoordinationPath, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf,
   type ManifestEntry, type ParticipantView, type RoomDoc, type Version,
 } from '@room/shared'
 
@@ -29,7 +29,7 @@ async function browserPathDigest(salt: string, path: string): Promise<string> {
 /** The browser has no git. A missing stored base is a gap, even for an absent manifest entry. */
 export async function readWebVersion(room: RoomDoc, name: string, path: string, currentView: () => readonly ParticipantView[]): Promise<Version> {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const current = snapshot(room, name, currentView())
+    const current = snapshotPath(room, name, currentView(), path)
     const result = await versionOf(current, path, {
       gitAt: async (base, relpath) => room.baseText(name, base, relpath),
       hashText: browserBlobHash,

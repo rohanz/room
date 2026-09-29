@@ -5,7 +5,7 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import { neighbours, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
+import { neighbours, participantRecord, participantsView, snapshotPath, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
@@ -101,7 +101,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const view = participantsView(s.room, s.awareness, now())
-      const snap = snapshot(s.room, person, view)
+      const snap = snapshotPath(s.room, person, view, path)
       const result = await versionOf(snap, path, {
         gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
         known: hash => readBoundedCheckoutText(s.dir, hash, path, 'utf8', false).catch(() => undefined),

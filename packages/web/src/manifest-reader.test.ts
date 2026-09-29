@@ -16,6 +16,22 @@ function roomWith(name = 'Ben') {
 }
 
 describe('git-less manifest reader', () => {
+  it('converts only the selected overlay for repeated one-path reads', async () => {
+    const { room, entries, name, fence } = roomWith()
+    const overlay = new Y.Map<Y.Text>()
+    room.overlays.set(manifestKey(name, fence), overlay)
+    for (let i = 0; i < 1000; i++) {
+      const path = `src/file-${i}.ts`, text = `value ${i}\n`
+      entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence })
+      overlay.set(path, new Y.Text(text))
+    }
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString')
+    try {
+      for (let i = 0; i < 1000; i++)
+        expect(await readWebVersion(room, name, `src/file-${i}.ts`, () => [])).toMatchObject({ kind: 'text' })
+      expect(spy).toHaveBeenCalledTimes(1000)
+    } finally { spy.mockRestore(); room.doc.destroy() }
+  })
   it('computes coverage without converting a thousand overlay texts', () => {
     const { room, entries, name, fence } = roomWith()
     const overlay = new Y.Map<Y.Text>()

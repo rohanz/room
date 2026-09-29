@@ -31,6 +31,26 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('treats an oversized historical baseline as a coverage gap for a small new edit', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-graph-old-large-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    writeFileSync(join(repo, 'big.py'), 'x'.repeat(2 * 1024 * 1024) + '\n')
+    git('add', '.'); git('commit', '-qm', 'large baseline')
+    const old = git('rev-parse', 'HEAD')
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', old); setFixtureLocalRoot(room, 'Rohan', repo)
+    const logs: string[] = []
+    const gi = new GraphIndex(room, 'Rohan', repo, line => logs.push(line), { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(await (gi as unknown as { textFor(path: string): Promise<string | undefined> }).textFor('big.py')).toBeUndefined()
+      writeFileSync(join(repo, 'big.py'), 'def small():\n    return 1\n')
+      publishFixture(room, 'Rohan', 'big.py', 'def small():\n    return 1\n', { base: old })
+      await gi.whenIdle()
+      expect(logs.some(line => line.includes('baseline unavailable for big.py') && line.includes('exceeds Room'))).toBe(true)
+      expect(room.graphs.get('Rohan')?.observed?.some(change => change.path === 'big.py')).toBe(false)
+    } finally { gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
+  })
   it('rejects oversized own text before reading file contents', () => {
     const room = new RoomDoc()
     const file = join(dir, 'oversized.py')

@@ -1,12 +1,12 @@
 import { ConflictSet } from '../conflict-set.js'
 import { sameCheckoutSession } from '../company.js'
-import { git, gitShow } from '@room/roomd/git'
 import { authorizesText, claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { carriedFrom } from '../worker-registry.js'
+import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. File: symbol, or from and to (whole file: from=1, to=last line). Directory: path ending /. Declare public API plans.',
@@ -80,7 +80,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       if (superseded) await s.post<NoteMsg>(s.me, { type: 'note', priority: 'fyi', text: `${s.me.name} superseded ${superseded} plan(s)` })
-      const overlaps = (await Promise.all(s.room.openClaims().filter(c => c.id !== claim.id && nb.has(c.by) && !isMe(s, { name: c.by, kind: c.byKind })).map(async c => ({
+      const overlappingPaths = s.room.openClaims().filter(c => c.id !== claim.id && nb.has(c.by) &&
+        !isMe(s, { name: c.by, kind: c.byKind }) &&
+        claimsOverlap({ path: c.path, from: 1, to: Number.MAX_SAFE_INTEGER }, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER }))
+      const overlaps = (await Promise.all(overlappingPaths.map(async c => ({
         claim: c, range: await claimRangeInMyText(s, c, t ?? ''),
       })))).filter(({ claim: c, range }) => claimsOverlap({ path: c.path, ...range }, { path: p, ...r }))
       for (const { claim: o, range } of overlaps)
@@ -130,15 +133,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 /** A foreign claim names lines in its owner's text, not in this checkout. */
 async function claimRangeInMyText(s: Session, claim: Claim, myText: string): Promise<{ from: number; to: number; approximate: boolean }> {
   if (claim.path.endsWith('/')) return { from: claim.from, to: claim.to, approximate: false }
-  const view = participantsView(s.room, s.awareness, Date.now())
-  const raw = snapshot(s.room, claim.by, view)
-  const owner = raw?.head.publisher ? snapshot(s.room, raw.head.publisher, view) : raw
-  const version = await versionOf(owner, claim.path, {
-    gitAt: (sha, path) => gitShow(s.dir, sha, path),
-    known: blob => git(s.dir, ['cat-file', '-p', blob]).catch(() => undefined),
-  })
-  const ownerText = version.kind === 'text' ? version.text : version.kind === 'base' ? version.text ?? '' : version.kind === 'deleted' ? '' : undefined
-  return claimInMyLines(claim, ownerText, myText)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const view = participantsView(s.room, s.awareness, Date.now())
+    const raw = snapshotPath(s.room, claim.by, view, claim.path)
+    const owner = raw?.head.publisher ? snapshotPath(s.room, raw.head.publisher, view, claim.path) : raw
+    const version = await versionOf(owner, claim.path, {
+      gitAt: (sha, path) => readBoundedHistoricalText(s.dir, sha, path),
+      known: blob => readBoundedCheckoutText(s.dir, blob, claim.path, 'utf8', false).catch(() => undefined),
+    })
+    const currentView = participantsView(s.room, s.awareness, Date.now())
+    if (raw && !snapshotStillCurrent(s.room, raw, currentView)) continue
+    if (owner && owner !== raw && !snapshotStillCurrent(s.room, owner, currentView)) continue
+    const ownerText = version.kind === 'text' ? version.text : version.kind === 'base' ? version.text : version.kind === 'deleted' ? '' : undefined
+    return claimInMyLines(claim, ownerText, myText)
+  }
+  return claimInMyLines(claim, undefined, myText)
 }
 
 /** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. The fyi note is posted, not awaited. */

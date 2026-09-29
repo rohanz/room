@@ -1,7 +1,7 @@
 import { clearFixture, publishFixture as publishFixtureRaw, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -26,6 +26,7 @@ import { visiblePeer } from './fixtures/visible.js'
 import { catchUpLocal } from '@room/relay/local-migrate'
 import { claimDigest } from '@room/roomd'
 import { AutoJoin } from '../src/auto-join.js'
+import { createHandlerState } from '../src/tools/state.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -623,6 +624,78 @@ describe('one login, two agents', () => {
 })
 
 describe('reading', () => {
+  it('reads 1,000 selected peer paths with 1,000 overlay conversions', async () => {
+    const t = setup(), s = t.session!
+    publishFixture(t.room, 'Kieran', 'file-0.txt', 'value 0\n')
+    const key = manifestKey('Kieran', '1')
+    const entries = t.room.manifest.get(key)!, overlay = t.room.overlays.get(key)!
+    t.room.doc.transact(() => {
+      for (let i = 1; i < 1000; i++) {
+        const path = `file-${i}.txt`, text = `value ${i}\n`
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        overlay.set(path, new Y.Text(text))
+      }
+    })
+    const state = createHandlerState({ cwd: dir, getSession: () => s, setSession() {} })
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString')
+    try {
+      for (let i = 0; i < 1000; i++)
+        expect(await state.readVersion(s, `file-${i}.txt`, 'Kieran')).toMatchObject({ kind: 'text' })
+      expect(spy).toHaveBeenCalledTimes(1000)
+    } finally { spy.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  }, 30_000)
+
+  it('maps overlapping claim paths with linear overlay conversions', async () => {
+    const t = setup(), s = t.session!
+    publishFixture(t.room, 'Kieran', 'app.py', COMMITTED)
+    const key = manifestKey('Kieran', '1')
+    const entries = t.room.manifest.get(key)!, overlay = t.room.overlays.get(key)!
+    t.room.doc.transact(() => {
+      for (let i = 0; i < 1000; i++) {
+        const path = `other-${i}.txt`, text = `value ${i}\n`
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        overlay.set(path, new Y.Text(text))
+        t.room.addClaim({ by: 'Kieran', byKind: 'agent', path, from: 1, to: 1, intent: 'elsewhere' })
+        t.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'same file' })
+      }
+    })
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString')
+    try {
+      const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'mine' })
+      expect(out).toContain('CONFLICT: overlaps')
+      expect(spy.mock.calls.length).toBeLessThan(20_000)
+    } finally { spy.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  }, 30_000)
+
+  it('checks a large unchanged claim-owner blob before requesting its contents', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-claim-old-large-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    writeFileSync(join(repo, 'huge.py'), 'x'.repeat(2 * 1024 * 1024) + '\n')
+    git('add', '.'); git('commit', '-qm', 'large claim owner base')
+    const old = git('rev-parse', 'HEAD'), blob = git('rev-parse', `${old}:huge.py`)
+    writeFileSync(join(repo, 'huge.py'), 'small local edit\n')
+    const t = setup(), s = t.session!
+    s.dir = repo
+    publishFixture(t.room, 'Kieran', 'app.py', COMMITTED, { base: old })
+    t.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'huge.py', from: 1, to: 1, intent: 'owner lines' })
+    const trace = join(repo, 'git.trace'), previousTrace = process.env.GIT_TRACE
+    process.env.GIT_TRACE = trace
+    try {
+      const out = await t.tools.call('room_claim', { path: 'huge.py', from: 1, to: 1, intent: 'local lines' })
+      expect(out).toContain('CONFLICT: overlaps')
+      expect(out).toContain('approximate lines')
+      const commands = readFileSync(trace, 'utf8')
+      expect(commands).toContain('cat-file --batch-check')
+      expect(commands).not.toContain(`cat-file -p ${blob}`)
+      expect(commands).not.toContain(`show ${old}:huge.py`)
+    } finally {
+      if (previousTrace === undefined) delete process.env.GIT_TRACE
+      else process.env.GIT_TRACE = previousTrace
+      await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+      rmSync(repo, { recursive: true, force: true })
+    }
+  }, 30_000)
   it('treats another session watching this checkout as one local session, never peer WIP', async () => {
     const t = setup()
     const s = t.session!
@@ -1246,14 +1319,14 @@ describe('preview merge', () => {
 })
 
 describe('merge preview scratch tree', () => {
-  it('links third-party packages to my clone and workspace packages into the scratch tree', () => {
+  it('links third-party packages to my clone and workspace packages into the scratch tree', async () => {
     const clone = mkdtempSync(join(tmpdir(), 'room-clone-')), scratch = realpathSync(mkdtempSync(join(tmpdir(), 'room-scratch-')))
     mkdirSync(join(clone, 'packages/shared'), { recursive: true })
     mkdirSync(join(clone, 'node_modules/@room'), { recursive: true })
     mkdirSync(join(clone, 'node_modules/vitest'), { recursive: true })
     symlinkSync('../../packages/shared', join(clone, 'node_modules/@room/shared'))
     mkdirSync(join(clone, 'packages/shared/node_modules/lib0'), { recursive: true })
-    linkSharedDirs(clone, scratch)
+    await linkSharedDirs(clone, scratch)
     expect(readlinkSync(join(scratch, 'node_modules/vitest'))).toBe(join(clone, 'node_modules/vitest'))
     expect(readlinkSync(join(scratch, 'node_modules/@room/shared'))).toBe(join(scratch, 'packages/shared'))
     expect(readlinkSync(join(scratch, 'packages/shared/node_modules/lib0'))).toBe(join(clone, 'packages/shared/node_modules/lib0'))

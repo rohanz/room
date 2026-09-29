@@ -88,18 +88,18 @@ export async function pairBaseline(me: Baseline | undefined, other: Baseline | u
   return undefined
 }
 
-export function boundedGit(dir: string, args: string[], wholeTreePaths?: number, env?: NodeJS.ProcessEnv): Promise<Buffer> {
+export function boundedGit(dir: string, args: string[], wholeTreePaths?: number, env?: NodeJS.ProcessEnv, maxBuffer = 64 * 1024 * 1024): Promise<Buffer> {
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
   const done = observeGit(args)
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: dir, env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
+    execFile('git', args, { cwd: dir, env, encoding: 'buffer', maxBuffer, timeout }, (error, stdout, stderr) => {
       done()
       if (error) {
         const stopped = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
         const missing = missingGitCwd(dir, stopped)
         if (missing) { reject(missing); return }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr).trim() || error.message
-        reject(Object.assign(new Error(`git ${args.join(' ')} failed: ${detail}`), { stderr: String(stderr) }))
+        reject(Object.assign(new Error(`git ${args.join(' ')} failed: ${detail}`), { stderr: String(stderr), code: stopped.code }))
       }
       else resolve(stdout)
     })
@@ -111,9 +111,18 @@ export function boundedGit(dir: string, args: string[], wholeTreePaths?: number,
  * attributes and smudge filters applied), so it compares equal to an unchanged file on disk.
  * Undefined when the commit has no such path.
  */
-export async function checkoutText(dir: string, object: string, path: string, encoding: BufferEncoding = 'utf8'): Promise<string | undefined> {
-  try { return (await boundedGit(dir, ['cat-file', '--filters', `--path=${path}`, object])).toString(encoding) }
+export async function checkoutText(dir: string, object: string, path: string, encoding: BufferEncoding = 'utf8', maxBytes?: number): Promise<string | undefined> {
+  if (maxBytes !== undefined) {
+    const rawSize = Number((await boundedGit(dir, ['cat-file', '-s', object], undefined, undefined, 128)).toString().trim())
+    if (!Number.isSafeInteger(rawSize) || rawSize < 0) throw new Error(`invalid blob size for ${object}`)
+    if (rawSize > maxBytes) return undefined
+  }
+  try { return (await boundedGit(dir, ['cat-file', '--filters', `--path=${path}`, object], undefined, undefined,
+    maxBytes === undefined ? 64 * 1024 * 1024 : maxBytes + 1)).toString(encoding) }
   catch (error) {
+    // Checkout filters may expand a small blob past the raw-size bound.
+    if (maxBytes !== undefined && ((error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ||
+      /maxBuffer|ERR_CHILD_PROCESS_STDIO_MAXBUFFER/.test(String(error)))) return undefined
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String((error as { stderr?: string }).stderr))) return undefined
     throw error
   }

@@ -16790,9 +16790,9 @@ function snapshotPath(room, name2, view, path47) {
 function snapshotStillCurrent(room, snap, view) {
   const head = room.manifestHead.get(snap.name);
   const record2 = participantRecord(room, snap.name);
-  if (!head || !snap.fenceValid || !fenceValid(snap.head, record2, view) || !fenceValid(head, record2, view)) return false;
+  if (!head || fenceValid(snap.head, record2, view) !== snap.fenceValid || fenceValid(head, record2, view) !== snap.fenceValid) return false;
   const a = snap.head, b = head;
-  return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base && a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy && a.projectedFrom === b.projectedFrom && a.publisher === b.publisher && JSON.stringify(a.coverage) === JSON.stringify(b.coverage) && JSON.stringify(a.excluded) === JSON.stringify(b.excluded) && JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) && snap.roomSalt === room.roomSalt && snap.record?.git?.head === record2?.git?.head && snap.record?.git?.base === record2?.git?.base && snap.record?.git?.fence === record2?.git?.fence && snap.record?.git?.rev === record2?.git?.rev;
+  return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base && a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy && a.projectedFrom === b.projectedFrom && a.publisher === b.publisher && JSON.stringify(a.coverage) === JSON.stringify(b.coverage) && JSON.stringify(a.excluded) === JSON.stringify(b.excluded) && JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) && snap.roomSalt === room.roomSalt && snap.record?.id?.name === record2?.id?.name && snap.record?.id?.kind === record2?.id?.kind && snap.record?.holder?.sessionId === record2?.holder?.sessionId && snap.record?.holder?.epoch === record2?.holder?.epoch && snap.record?.holder?.ended === record2?.holder?.ended && snap.record?.proj?.projectedBy === record2?.proj?.projectedBy && snap.record?.proj?.projectedFrom === record2?.proj?.projectedFrom && snap.record?.git?.head === record2?.git?.head && snap.record?.git?.base === record2?.git?.base && snap.record?.git?.fence === record2?.git?.fence && snap.record?.git?.rev === record2?.git?.rev;
 }
 async function versionOf(snap, path47, env = {}) {
   if (!snap) return { kind: "unknown", why: "no-record", detail: "no manifest record" };
@@ -34391,11 +34391,11 @@ async function pairBaseline(me, other, ancestor, descends) {
   }
   return void 0;
 }
-function boundedGit(dir, args3, wholeTreePaths, env) {
+function boundedGit(dir, args3, wholeTreePaths, env, maxBuffer = 64 * 1024 * 1024) {
   const timeout = wholeTreePaths === void 0 ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths);
   const done = observeGit(args3);
   return new Promise((resolve5, reject) => {
-    execFile2("git", args3, { cwd: dir, env, encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout }, (error2, stdout, stderr2) => {
+    execFile2("git", args3, { cwd: dir, env, encoding: "buffer", maxBuffer, timeout }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         const stopped = error2;
@@ -34405,15 +34405,27 @@ function boundedGit(dir, args3, wholeTreePaths, env) {
           return;
         }
         const detail = stopped.killed || stopped.signal ? `timed out after ${timeout}ms` : String(stderr2).trim() || error2.message;
-        reject(Object.assign(new Error(`git ${args3.join(" ")} failed: ${detail}`), { stderr: String(stderr2) }));
+        reject(Object.assign(new Error(`git ${args3.join(" ")} failed: ${detail}`), { stderr: String(stderr2), code: stopped.code }));
       } else resolve5(stdout);
     });
   });
 }
-async function checkoutText(dir, object4, path47, encoding = "utf8") {
+async function checkoutText(dir, object4, path47, encoding = "utf8", maxBytes) {
+  if (maxBytes !== void 0) {
+    const rawSize = Number((await boundedGit(dir, ["cat-file", "-s", object4], void 0, void 0, 128)).toString().trim());
+    if (!Number.isSafeInteger(rawSize) || rawSize < 0) throw new Error(`invalid blob size for ${object4}`);
+    if (rawSize > maxBytes) return void 0;
+  }
   try {
-    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path47}`, object4])).toString(encoding);
+    return (await boundedGit(
+      dir,
+      ["cat-file", "--filters", `--path=${path47}`, object4],
+      void 0,
+      void 0,
+      maxBytes === void 0 ? 64 * 1024 * 1024 : maxBytes + 1
+    )).toString(encoding);
   } catch (error2) {
+    if (maxBytes !== void 0 && (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer|ERR_CHILD_PROCESS_STDIO_MAXBUFFER/.test(String(error2)))) return void 0;
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(error2.stderr))) return void 0;
     throw error2;
   }
@@ -34425,23 +34437,6 @@ var MissingBaseBlob = class extends Error {
   }
   path;
 };
-async function baselineText(baseline, path47, read2, encoding = "utf8") {
-  const carried = baseline.untracked.get(path47);
-  if (carried === void 0) return read2(baseline.sha, path47);
-  try {
-    return await checkoutText(baseline.dir, carried.sha, path47, encoding);
-  } catch {
-    throw new MissingBaseBlob(path47);
-  }
-}
-async function readBaseline(baseline, path47, read2, encoding = "utf8") {
-  try {
-    const text = await baselineText(baseline, path47, read2, encoding);
-    return text == null ? { kind: "absent" } : { kind: "available", text };
-  } catch (error2) {
-    return { kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) };
-  }
-}
 function carriedContentHash(dir, path47, write2 = false) {
   const source = nodePath2.join(dir, path47), stat4 = fs3.lstatSync(source);
   const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path47];
@@ -35343,7 +35338,7 @@ var Publisher = class {
     for (const p of textPaths) {
       if (textCount++ % 32 === 0) await setImmediate6();
       const sha = carried?.untracked.get(p)?.sha;
-      if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p));
+      if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p, "utf8", inputs.rules.sizeCap));
     }
     const facts = [];
     const textOps = /* @__PURE__ */ new Map();
@@ -35373,16 +35368,18 @@ var Publisher = class {
     }
     const baseTextDeletes = [];
     const wanted = /* @__PURE__ */ new Set();
+    const ownerBasePrefix = `${this.host.name}\0`;
+    const currentBasePrefix = `${ownerBasePrefix}${inputs.head}:`;
     let wantedCount = 0;
     for (const [p, entry] of desired.entries) {
       if (wantedCount++ % 32 === 0) await setImmediate6();
-      if (entry.held !== "scope" && authorizesText(inputs.policy, p)) wanted.add(`${this.host.name}\0${inputs.head}:${p}`);
+      if (entry.held !== "scope" && authorizesText(inputs.policy, p)) wanted.add(`${currentBasePrefix}${p}`);
     }
     let baseCount = 0;
     for (const key2 of this.host.roomDoc.ownedBaseTexts.keys()) {
       if (++baseCount % 32 === 1) await setImmediate6();
       if (!valid()) throw new StalePublication("publication inputs changed during prepare");
-      if (key2.startsWith(`${this.host.name}\0`) && !wanted.has(key2)) baseTextDeletes.push(key2);
+      if (key2.startsWith(ownerBasePrefix) && (!wanted.has(key2) || key2.startsWith(currentBasePrefix) && baseTexts.get(key2.slice(currentBasePrefix.length)) === void 0)) baseTextDeletes.push(key2);
     }
     const manifestPlan = await prepareManifestPublicationYielding({
       room: this.host.roomDoc,
@@ -36256,30 +36253,25 @@ function lineHash(line) {
   for (let i2 = 0; i2 < line.length; i2++) h = Math.imul(h ^ line.charCodeAt(i2), BASE);
   return h >>> 0;
 }
-function mappedByLineDiff(claim2, before, after, budget) {
+function mappedCandidate(claim2, before, after, budget) {
   if (claimDigest(before, claim2.from, claim2.to) !== claim2.claimedHash) return void 0;
   const oldLines = splitLines2(before), newLines = splitLines2(after);
   const maxEditLength = Math.floor(budget / Math.max(1, oldLines.length + newLines.length));
   if (maxEditLength < 1) return void 0;
   const changes = diffArrays(oldLines, newLines, { maxEditLength });
   if (!changes) return void 0;
-  let oldAt = 1, newAt = 1, mapped, touched = false;
+  let oldAt = 1, newAt = 1, mapped;
   for (const change of changes) {
     const count = change.value.length;
-    if (change.removed) {
-      if (oldAt <= claim2.to && oldAt + count > claim2.from) touched = true;
-      oldAt += count;
-    } else if (change.added) {
-      if (oldAt > claim2.from && oldAt <= claim2.to) touched = true;
-      newAt += count;
-    } else {
+    if (change.removed) oldAt += count;
+    else if (change.added) newAt += count;
+    else {
       if (claim2.from >= oldAt && claim2.to < oldAt + count) mapped = newAt + claim2.from - oldAt;
       oldAt += count;
       newAt += count;
     }
   }
-  if (touched) return { id: claim2.id, path: claim2.path, from: claim2.from, to: claim2.to };
-  return mapped === void 0 ? void 0 : { id: claim2.id, from: mapped, to: mapped + claim2.to - claim2.from };
+  return mapped;
 }
 async function reanchorClaims(owner, claims, texts, options = {}) {
   const moves = [], releases = [], uncertain = [];
@@ -36332,30 +36324,17 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
       uncertain.push(claim2.id);
       continue;
     }
+    let original = options.originals?.get(claim2.id);
     const previous = options.previousTexts?.get(claim2.id);
-    if (previous !== void 0 && !progress) {
-      if (!await tick(previous.length + text.length)) {
+    if (original === void 0 && previous !== void 0 && !progress) {
+      if (!await tick(previous.length)) {
         uncertain.push(claim2.id);
         continue;
       }
-      await setImmediate7();
-      if (options.valid && !options.valid()) {
-        uncertain.push(claim2.id);
-        continue;
-      }
-      const mapped = mappedByLineDiff(claim2, previous, text, Math.max(1, budget - work));
-      if (options.valid && !options.valid()) {
-        uncertain.push(claim2.id);
-        continue;
-      }
-      if (mapped) {
-        options.progress?.delete(claim2.id);
-        if ("path" in mapped) releases.push(mapped);
-        else if (mapped.from !== claim2.from || mapped.to !== claim2.to) moves.push(mapped);
-        continue;
-      }
+      const oldLines = splitLines2(previous);
+      const block = oldLines.slice(claim2.from - 1, claim2.to);
+      if (block.length === width && digestLines(block) === claim2.claimedHash) original = block.join("\n");
     }
-    const original = options.originals?.get(claim2.id);
     if (!progress) {
       if (original !== void 0 && !await tick(original.length)) {
         uncertain.push(claim2.id);
@@ -36366,10 +36345,44 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
       const originalLines = original?.split("\n");
       const firstLineHash = originalLines?.length === width && digestLines(originalLines) === claim2.claimedHash ? lineHash(originalLines[0]) : void 0;
       progress = { key: key2, lines, prefix, next: 0, found: 0, at: -1, firstLineHash };
+      if (previous !== void 0) {
+        if (!await tick(previous.length + text.length)) {
+          uncertain.push(claim2.id);
+          continue;
+        }
+        await setImmediate7();
+        if (options.valid && !options.valid()) {
+          uncertain.push(claim2.id);
+          continue;
+        }
+        const candidate = mappedCandidate(claim2, previous, text, Math.max(1, budget - work));
+        if (options.valid && !options.valid()) {
+          uncertain.push(claim2.id);
+          continue;
+        }
+        if (candidate !== void 0 && candidate >= 1 && candidate + width - 1 <= lines.length) {
+          const at = candidate - 1;
+          const chars = prefix[at + width] - prefix[at];
+          if (!await tick(chars + width + 1)) {
+            uncertain.push(claim2.id);
+            continue;
+          }
+          if (digestLines(lines.slice(at, at + width)) === claim2.claimedHash) {
+            progress.found = 1;
+            progress.at = at;
+            progress.candidate = at;
+            progress.firstLineHash ??= lineHash(lines[at]);
+          }
+        }
+      }
       options.progress?.set(claim2.id, progress);
     }
     while (progress.next <= lines.length - width && progress.found <= 1) {
       const i2 = progress.next;
+      if (i2 === progress.candidate) {
+        progress.next++;
+        continue;
+      }
       if (progress.firstLineHash !== void 0) {
         const first = lines[i2];
         if (work + first.length + 1 > budget || stale) break;
@@ -45481,8 +45494,113 @@ var parseFile = (path47, text) => {
 };
 
 // packages/room-mcp/src/graph-index.ts
-import fs18 from "node:fs";
+import fs19 from "node:fs";
 import path16 from "node:path";
+
+// packages/room-mcp/src/tools/disk-text.ts
+import fs18 from "node:fs";
+import { execFile as execFile6 } from "node:child_process";
+var DISK_TEXT_LIMIT = 512 * 1024;
+function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
+  const fd = fs18.openSync(file, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat4 = fs18.fstatSync(fd);
+    if (!stat4.isFile() || stat4.size > limit) throw new Error(`file too large for Room read: ${file}`);
+    const bytes = Buffer.allocUnsafe(limit + 1);
+    let used = 0;
+    while (used <= limit) {
+      const count = fs18.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
+      if (count === 0) return bytes.subarray(0, used).toString("utf8");
+      used += count;
+    }
+    throw new Error(`file too large for Room read: ${file}`);
+  } finally {
+    fs18.closeSync(fd);
+  }
+}
+var HistoricalTextTooLarge = class extends Error {
+  constructor(path47) {
+    super(`historical text exceeds Room's ${DISK_TEXT_LIMIT}-byte read limit: ${path47}`);
+    this.path = path47;
+  }
+  path;
+  code = "ROOM_TEXT_TOO_LARGE";
+};
+async function readBoundedHistoricalText(dir, base, rel) {
+  const info2 = await gitBlobInfoMany(dir, base, [rel]);
+  const blob = info2.get(rel);
+  if (!blob) {
+    if (await gitCommitMissing(dir, base)) throw new Error(`historical base ${base} is unavailable`);
+    return void 0;
+  }
+  if (blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
+  return readBoundedCheckoutText(dir, blob.hash, rel, "utf8", false, blob.size);
+}
+async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize) {
+  const size2 = knownSize ?? await new Promise((resolve5, reject) => {
+    const args3 = ["cat-file", "-s", object4], done = observeGit(args3);
+    execFile6("git", args3, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
+      done();
+      if (error2) {
+        if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr2))) resolve5(void 0);
+        else reject(error2);
+        return;
+      }
+      resolve5(Number(String(stdout).trim()));
+    });
+  });
+  if (size2 === void 0) return void 0;
+  if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
+  return new Promise((resolve5, reject) => {
+    const args3 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
+    const done = observeGit(args3);
+    execFile6("git", args3, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
+      done();
+      if (error2) {
+        if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
+        else if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(stderr2))) resolve5(void 0);
+        else reject(error2);
+        return;
+      }
+      if (stdout.length > DISK_TEXT_LIMIT) {
+        reject(new HistoricalTextTooLarge(rel));
+        return;
+      }
+      resolve5(stdout.toString(encoding));
+    });
+  });
+}
+async function readBoundedDiskText(file, encoding = "utf8", boundary) {
+  const handle2 = await fs18.promises.open(file, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat4 = await handle2.stat();
+    const verify = () => {
+      if (!boundary) return;
+      const resolved = containedRepoPath(boundary.root, boundary.path, { leaf: "read-contained-link" });
+      if (!resolved.ok) throw new Error("unsafe Room read path: " + boundary.path);
+      const current = fs18.lstatSync(resolved.path);
+      if (current.dev !== stat4.dev || current.ino !== stat4.ino) throw new Error("unsafe Room read path changed: " + boundary.path);
+    };
+    verify();
+    if (!stat4.isFile()) throw new Error("not a file: " + file);
+    if (stat4.size > DISK_TEXT_LIMIT) throw new Error(`file too large for Room read (${stat4.size} bytes): ${file}`);
+    const bytes = Buffer.allocUnsafe(DISK_TEXT_LIMIT + 1);
+    let used = 0;
+    while (used <= DISK_TEXT_LIMIT) {
+      const { bytesRead } = await handle2.read(bytes, used, Math.min(64 * 1024, bytes.length - used), null);
+      if (bytesRead === 0) {
+        verify();
+        return bytes.subarray(0, used).toString(encoding);
+      }
+      used += bytesRead;
+    }
+    throw new Error(`file too large for Room read (over ${DISK_TEXT_LIMIT} bytes): ${file}`);
+  } finally {
+    await handle2.close();
+  }
+}
+
+// packages/room-mcp/src/graph-index.ts
 var isSourcePath = (path47) => specForPath(path47) !== void 0;
 var MAX_FILES = 3e3;
 var MAX_BYTES2 = 256 * 1024;
@@ -45576,6 +45694,18 @@ var GraphIndex = class {
       }
       if (this.stopped) throw new Error("graph index is closed");
       if (build === this.currentBuild) return;
+    }
+  }
+  historicalText(base, pathname) {
+    return this.opts.read ? this.opts.read(this.dir, base, pathname) : readBoundedHistoricalText(this.dir, base, pathname);
+  }
+  async graphText(base, pathname) {
+    try {
+      return await this.historicalText(base, pathname);
+    } catch (error2) {
+      if (!(error2 instanceof HistoricalTextTooLarge)) throw error2;
+      this.log(`graph: historical text too large for ${pathname}; graph coverage degraded`);
+      return void 0;
     }
   }
   publicationKey() {
@@ -45805,23 +45935,23 @@ var GraphIndex = class {
   ownText(pathname) {
     if (!validRepoPath(pathname, DISK_READ_PATH)) return void 0;
     try {
-      const root = fs18.realpathSync(this.dir);
+      const root = fs19.realpathSync(this.dir);
       const file = containedRepoPath(root, path16.join(root, pathname), { leaf: "read-contained-link" });
       if (!file.ok) return void 0;
-      const fd = fs18.openSync(file.path, "r");
+      const fd = fs19.openSync(file.path, "r");
       try {
-        const stat4 = fs18.fstatSync(fd);
+        const stat4 = fs19.fstatSync(fd);
         if (!stat4.isFile() || stat4.size > MAX_BYTES2) return void 0;
         const bytes = Buffer.allocUnsafe(MAX_BYTES2 + 1);
         let used = 0;
         while (used < bytes.length) {
-          const count = fs18.readSync(fd, bytes, used, bytes.length - used, used);
+          const count = fs19.readSync(fd, bytes, used, bytes.length - used, used);
           if (!count) break;
           used += count;
         }
         return used > MAX_BYTES2 ? void 0 : bytes.toString("utf8", 0, used);
       } finally {
-        fs18.closeSync(fd);
+        fs19.closeSync(fd);
       }
     } catch (error2) {
       if (error2.code === "ENOENT") return void 0;
@@ -45838,13 +45968,13 @@ var GraphIndex = class {
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
       const participant = snapshotPath(this.room, person, [], path47);
-      const version3 = await versionOf(participant, path47, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      const version3 = await versionOf(participant, path47, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) });
       if (!participant?.entries.has(path47) && version3.kind !== "excluded") continue;
       if (version3.kind === "text") return version3.text;
       return void 0;
     }
     if (!this.base) return void 0;
-    return (this.opts.read ?? gitShow)(this.dir, this.base, path47);
+    return this.graphText(this.base, path47);
   }
   /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
   async publicationTextFor(path47) {
@@ -45858,7 +45988,7 @@ var GraphIndex = class {
     }
     if (mine?.entries.has(path47)) {
       if (!this.ownTextAuthorized(path47)) return void 0;
-      const version4 = await versionOf(mine, path47, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      const version4 = await versionOf(mine, path47, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) });
       return version4.kind === "text" && version4.entry.hash ? { text: version4.text, source: { kind: "entry", person: this.me, fence: mine.head.fence, hash: version4.entry.hash } } : void 0;
     }
     for (const person of this.room.manifestHead.keys()) {
@@ -45869,14 +45999,14 @@ var GraphIndex = class {
       if (raw && raw.fence !== peer.head.fence) return void 0;
       if (!peer.entries.has(path47)) continue;
       if (!this.entryAuthorized(person, path47, raw)) return void 0;
-      const version4 = await versionOf(peer, path47, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      const version4 = await versionOf(peer, path47, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) });
       return version4.kind === "text" && version4.entry.hash ? { text: version4.text, source: { kind: "entry", person, fence: peer.head.fence, hash: version4.entry.hash } } : void 0;
     }
     if (!mine) {
-      const text = await (this.opts.read ?? gitShow)(this.dir, this.base, path47);
+      const text = await this.graphText(this.base, path47);
       return text === void 0 ? void 0 : { text, source: { kind: "base", base: this.base } };
     }
-    const version3 = await versionOf(mine, path47, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+    const version3 = await versionOf(mine, path47, { gitAt: (sha, relpath) => this.historicalText(sha, relpath) });
     return version3.kind === "base" && version3.text !== void 0 ? { text: version3.text, source: { kind: "base", base: mine.head.base } } : void 0;
   }
   ownTextAuthorized(path47) {
@@ -46038,8 +46168,11 @@ var GraphIndex = class {
       const mine = myEntry && myEntry.change !== "D" ? this.ownText(path47) : void 0;
       const mineDeleted = myEntry?.change === "D";
       const own2 = carriedFrom(this.dir, this.me)?.baseline;
-      const read2 = (sha, file) => (this.opts.read ?? gitShow)(this.dir, sha, file);
-      const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path47, read2) : await read2(this.base, path47).then(
+      const read2 = (sha, file) => this.historicalText(sha, file);
+      const baseRead = mine !== void 0 || mineDeleted ? await (own2?.untracked.has(path47) ? readBoundedCheckoutText(own2.dir, own2.untracked.get(path47).sha, path47).then((text2) => {
+        if (text2 === void 0) throw new Error(`carried baseline blob ${own2.untracked.get(path47).sha} for ${path47} is unavailable`);
+        return text2;
+      }) : read2(own2?.sha ?? this.base, path47)).then(
         (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
         (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
       ) : void 0;
@@ -46233,111 +46366,6 @@ function hashOf(text) {
 // packages/room-mcp/src/tools/context.ts
 import fs20 from "node:fs";
 import path17 from "node:path";
-
-// packages/room-mcp/src/tools/disk-text.ts
-import fs19 from "node:fs";
-import { execFile as execFile6 } from "node:child_process";
-var DISK_TEXT_LIMIT = 512 * 1024;
-function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
-  const fd = fs19.openSync(file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0));
-  try {
-    const stat4 = fs19.fstatSync(fd);
-    if (!stat4.isFile() || stat4.size > limit) throw new Error(`file too large for Room read: ${file}`);
-    const bytes = Buffer.allocUnsafe(limit + 1);
-    let used = 0;
-    while (used <= limit) {
-      const count = fs19.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
-      if (count === 0) return bytes.subarray(0, used).toString("utf8");
-      used += count;
-    }
-    throw new Error(`file too large for Room read: ${file}`);
-  } finally {
-    fs19.closeSync(fd);
-  }
-}
-var HistoricalTextTooLarge = class extends Error {
-  constructor(path47) {
-    super(`historical text exceeds Room's ${DISK_TEXT_LIMIT}-byte read limit: ${path47}`);
-    this.path = path47;
-  }
-  path;
-  code = "ROOM_TEXT_TOO_LARGE";
-};
-async function readBoundedHistoricalText(dir, base, rel) {
-  const info2 = await gitBlobInfoMany(dir, base, [rel]);
-  const blob = info2.get(rel);
-  if (!blob) {
-    if (await gitCommitMissing(dir, base)) throw new Error(`historical base ${base} is unavailable`);
-    return void 0;
-  }
-  if (blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
-  return readBoundedCheckoutText(dir, blob.hash, rel, "utf8", false, blob.size);
-}
-async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize) {
-  const size2 = knownSize ?? await new Promise((resolve5, reject) => {
-    const args3 = ["cat-file", "-s", object4], done = observeGit(args3);
-    execFile6("git", args3, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
-      done();
-      if (error2) {
-        if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr2))) resolve5(void 0);
-        else reject(error2);
-        return;
-      }
-      resolve5(Number(String(stdout).trim()));
-    });
-  });
-  if (size2 === void 0) return void 0;
-  if (!Number.isSafeInteger(size2) || size2 < 0 || size2 > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(rel);
-  return new Promise((resolve5, reject) => {
-    const args3 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
-    const done = observeGit(args3);
-    execFile6("git", args3, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
-      done();
-      if (error2) {
-        if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
-        else if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(stderr2))) resolve5(void 0);
-        else reject(error2);
-        return;
-      }
-      if (stdout.length > DISK_TEXT_LIMIT) {
-        reject(new HistoricalTextTooLarge(rel));
-        return;
-      }
-      resolve5(stdout.toString(encoding));
-    });
-  });
-}
-async function readBoundedDiskText(file, encoding = "utf8", boundary) {
-  const handle2 = await fs19.promises.open(file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0));
-  try {
-    const stat4 = await handle2.stat();
-    const verify = () => {
-      if (!boundary) return;
-      const resolved = containedRepoPath(boundary.root, boundary.path, { leaf: "read-contained-link" });
-      if (!resolved.ok) throw new Error("unsafe Room read path: " + boundary.path);
-      const current = fs19.lstatSync(resolved.path);
-      if (current.dev !== stat4.dev || current.ino !== stat4.ino) throw new Error("unsafe Room read path changed: " + boundary.path);
-    };
-    verify();
-    if (!stat4.isFile()) throw new Error("not a file: " + file);
-    if (stat4.size > DISK_TEXT_LIMIT) throw new Error(`file too large for Room read (${stat4.size} bytes): ${file}`);
-    const bytes = Buffer.allocUnsafe(DISK_TEXT_LIMIT + 1);
-    let used = 0;
-    while (used <= DISK_TEXT_LIMIT) {
-      const { bytesRead } = await handle2.read(bytes, used, Math.min(64 * 1024, bytes.length - used), null);
-      if (bytesRead === 0) {
-        verify();
-        return bytes.subarray(0, used).toString(encoding);
-      }
-      used += bytesRead;
-    }
-    throw new Error(`file too large for Room read (over ${DISK_TEXT_LIMIT} bytes): ${file}`);
-  } finally {
-    await handle2.close();
-  }
-}
-
-// packages/room-mcp/src/tools/context.ts
 var REPLY_BATCH = /* @__PURE__ */ Symbol("reply batch");
 var RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 var RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -47320,7 +47348,8 @@ function handlers(state) {
         }
       }
       if (superseded) await s.post(s.me, { type: "note", priority: "fyi", text: `${s.me.name} superseded ${superseded} plan(s)` });
-      const overlaps = (await Promise.all(s.room.openClaims().filter((c) => c.id !== claim2.id && nb.has(c.by) && !isMe(s, { name: c.by, kind: c.byKind })).map(async (c) => ({
+      const overlappingPaths = s.room.openClaims().filter((c) => c.id !== claim2.id && nb.has(c.by) && !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap({ path: c.path, from: 1, to: Number.MAX_SAFE_INTEGER }, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER }));
+      const overlaps = (await Promise.all(overlappingPaths.map(async (c) => ({
         claim: c,
         range: await claimRangeInMyText(s, c, t ?? "")
       })))).filter(({ claim: c, range: range2 }) => claimsOverlap({ path: c.path, ...range2 }, { path: p, ...r }));
@@ -47367,15 +47396,21 @@ function handlers(state) {
 }
 async function claimRangeInMyText(s, claim2, myText) {
   if (claim2.path.endsWith("/")) return { from: claim2.from, to: claim2.to, approximate: false };
-  const view = participantsView(s.room, s.awareness, Date.now());
-  const raw = snapshot(s.room, claim2.by, view);
-  const owner = raw?.head.publisher ? snapshot(s.room, raw.head.publisher, view) : raw;
-  const version3 = await versionOf(owner, claim2.path, {
-    gitAt: (sha, path47) => gitShow(s.dir, sha, path47),
-    known: (blob) => git(s.dir, ["cat-file", "-p", blob]).catch(() => void 0)
-  });
-  const ownerText = version3.kind === "text" ? version3.text : version3.kind === "base" ? version3.text ?? "" : version3.kind === "deleted" ? "" : void 0;
-  return claimInMyLines(claim2, ownerText, myText);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const view = participantsView(s.room, s.awareness, Date.now());
+    const raw = snapshotPath(s.room, claim2.by, view, claim2.path);
+    const owner = raw?.head.publisher ? snapshotPath(s.room, raw.head.publisher, view, claim2.path) : raw;
+    const version3 = await versionOf(owner, claim2.path, {
+      gitAt: (sha, path47) => readBoundedHistoricalText(s.dir, sha, path47),
+      known: (blob) => readBoundedCheckoutText(s.dir, blob, claim2.path, "utf8", false).catch(() => void 0)
+    });
+    const currentView = participantsView(s.room, s.awareness, Date.now());
+    if (raw && !snapshotStillCurrent(s.room, raw, currentView)) continue;
+    if (owner && owner !== raw && !snapshotStillCurrent(s.room, owner, currentView)) continue;
+    const ownerText = version3.kind === "text" ? version3.text : version3.kind === "base" ? version3.text : version3.kind === "deleted" ? "" : void 0;
+    return claimInMyLines(claim2, ownerText, myText);
+  }
+  return claimInMyLines(claim2, void 0, myText);
 }
 function releaseClaimsOnDone(s, keep, name2 = s.me.name, clearScope = true) {
   const released = s.room.openClaims().filter((c) => c.by === name2 && c.byKind !== "human" && !keep?.(c));
@@ -54432,7 +54467,7 @@ function createHandlerState(ctx) {
   const readVersion = async (s, path47, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const view = participantsView(s.room, s.awareness, now());
-      const snap = snapshot(s.room, person, view);
+      const snap = snapshotPath(s.room, person, view, path47);
       const result2 = await versionOf(snap, path47, {
         gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
         known: (hash2) => readBoundedCheckoutText(s.dir, hash2, path47, "utf8", false).catch(() => void 0)
@@ -55427,7 +55462,9 @@ ${text}--- end ${p} ---`);
               return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result2.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
             }))).filter((x) => !!x);
             const modes = /* @__PURE__ */ new Map();
+            let modeCount = 0;
             for (const p of merged.keys()) {
+              if (modeCount++ % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
               let leadMode = 420;
               try {
                 const stat4 = fs44.lstatSync(path42.join(caller.dir, p));
@@ -55466,24 +55503,36 @@ ${text}--- end ${p} ---`);
   };
   return handlers10;
 }
-function linkSharedDirs(cloneDir, scratchDir) {
+async function linkSharedDirs(cloneDir, scratchDir) {
+  const yieldTurn = () => new Promise((resolve5) => setImmediate(resolve5));
+  await yieldTurn();
+  ensureMergedDirectory(scratchDir, "");
   const venv = path42.join(cloneDir, ".venv");
   if (fs44.existsSync(venv) && !fs44.existsSync(path42.join(scratchDir, ".venv"))) fs44.symlinkSync(venv, path42.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
+    await yieldTurn();
     const d = path42.join(cloneDir, top);
     if (!fs44.existsSync(d)) continue;
-    for (const e of fs44.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path42.join(top, e.name, "node_modules"));
+    let count = 0;
+    for (const e of fs44.readdirSync(d, { withFileTypes: true })) {
+      if (count++ % 32 === 0) await yieldTurn();
+      if (e.isDirectory()) candidates.push(path42.join(top, e.name, "node_modules"));
+    }
   }
-  for (const rel of candidates) {
+  for (const [index, rel] of candidates.entries()) {
+    if (index % 32 === 0) await yieldTurn();
     const src = path42.join(cloneDir, rel), dst = path42.join(scratchDir, rel);
     if (!fs44.existsSync(src) || fs44.existsSync(dst)) continue;
-    mirrorLinks(cloneDir, scratchDir, src, dst);
+    await mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
-function mirrorLinks(cloneDir, scratchDir, src, dst) {
+async function mirrorLinks(cloneDir, scratchDir, src, dst) {
   ensureMergedDirectory(scratchDir, path42.relative(scratchDir, dst));
+  let count = 0;
   for (const e of fs44.readdirSync(src, { withFileTypes: true })) {
+    if (count++ % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
+    ensureMergedDirectory(scratchDir, path42.relative(scratchDir, dst));
     const from2 = path42.join(src, e.name), to2 = path42.join(dst, e.name);
     if (e.isSymbolicLink()) {
       const target = path42.resolve(src, fs44.readlinkSync(from2));
@@ -55491,7 +55540,7 @@ function mirrorLinks(cloneDir, scratchDir, src, dst) {
       const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path42.sep).includes("node_modules");
       fs44.symlinkSync(isWorkspace ? path42.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
-      mirrorLinks(cloneDir, scratchDir, from2, to2);
+      await mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
       fs44.symlinkSync(from2, to2);
     }
@@ -55598,7 +55647,7 @@ async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */
         await new Promise((resolve5) => setImmediate(resolve5));
         materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
       }
-      linkSharedDirs(s.dir, dir);
+      await linkSharedDirs(s.dir, dir);
     });
     const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs44.existsSync(candidate));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("ROOM_")));
@@ -55709,6 +55758,7 @@ var defs9 = [{
 var split = (value2) => value2.split("\0").filter(Boolean);
 var COLLECT_TEXT_LIMIT = 512 * 1024;
 var COLLECT_YIELD_EVERY = 32;
+var COPY_INSTALL_LIMIT = 4096;
 function fileIdentity(file) {
   let stat4;
   try {
@@ -56136,6 +56186,7 @@ repeat with force=true to delete them`;
         if (!Array.isArray(a.paths) || !a.paths.length || a.paths.some((p) => typeof p !== "string")) return "error: copy requires non-empty paths";
         const workerRoot = workerRoots.get(w);
         const files2 = await copyFiles(workerRoot, a.paths);
+        if (files2.length > COPY_INSTALL_LIMIT) return `error: copy has more than ${COPY_INSTALL_LIMIT} files; split the selection`;
         const modified = new Set(split(await gitWholeTree(lead.dir, ["diff", "--name-only", "-z", "HEAD", "--"])));
         const tracked = new Set(split(await gitWholeTree(lead.dir, ["ls-files", "-z"])));
         const copyPlan = [];
@@ -56151,15 +56202,53 @@ repeat with force=true to delete them`;
           }
           copyPlan.push({ p, source, destination });
         }
-        for (const { p, source, destination } of copyPlan) {
-          if (!sameIdentity(source, fileIdentity(safePath(workerRoot, p))) || !sameIdentity(destination, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + " changed during collection; nothing written, retry");
-        }
-        for (const { p, source } of copyPlan) {
-          const dst = safePath(leadRoot, p);
-          fs45.mkdirSync(path43.dirname(dst), { recursive: true });
-          await fs45.promises.copyFile(safePath(workerRoot, p), dst);
-          fs45.chmodSync(dst, source.mode);
-          out2.push("copied " + p);
+        const stagedRoot = fs45.mkdtempSync(path43.join(leadRoot, ".room", "collect-copy-"));
+        let keepRecovery = false;
+        try {
+          const prepared = [];
+          for (const [index, plan2] of copyPlan.entries()) {
+            if (index % COLLECT_YIELD_EVERY === 0) await setImmediate8();
+            const staged = path43.join(stagedRoot, `${index}.new`);
+            await fs45.promises.copyFile(safePath(workerRoot, plan2.p), staged);
+            fs45.chmodSync(staged, plan2.source.mode);
+            prepared.push({ ...plan2, staged, backup: path43.join(stagedRoot, `${index}.old`) });
+          }
+          for (const { p, source, destination } of prepared) {
+            if (!sameIdentity(source, fileIdentity(safePath(workerRoot, p))) || !sameIdentity(destination, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + " changed during collection; nothing written, retry");
+          }
+          const installed = [];
+          try {
+            for (const { p, destination, staged, backup } of prepared) {
+              const dst = safePath(leadRoot, p);
+              if (!sameIdentity(destination, fileIdentity(dst))) throw new Error(p + " changed during collection; nothing written, retry");
+              fs45.mkdirSync(path43.dirname(dst), { recursive: true });
+              const checked = safePath(leadRoot, p);
+              if (!sameIdentity(destination, fileIdentity(checked))) throw new Error(p + " changed during collection; nothing written, retry");
+              const entry = { dst: checked, staged, backup, hadOriginal: destination !== null, copied: false };
+              if (entry.hadOriginal) fs45.renameSync(checked, backup);
+              installed.push(entry);
+              fs45.renameSync(staged, checked);
+              entry.copied = true;
+            }
+          } catch (error2) {
+            const rollbackErrors = [];
+            for (const entry of installed.reverse()) {
+              try {
+                if (entry.copied) fs45.unlinkSync(entry.dst);
+                if (entry.hadOriginal) fs45.renameSync(entry.backup, entry.dst);
+              } catch (rollbackError) {
+                rollbackErrors.push(rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
+              }
+            }
+            if (rollbackErrors.length) {
+              keepRecovery = true;
+              throw new Error(`copy failed; rollback incomplete; originals kept in ${stagedRoot}: ${rollbackErrors.join("; ")}`, { cause: error2 });
+            }
+            throw error2;
+          }
+          for (const { p } of prepared) out2.push("copied " + p);
+        } finally {
+          if (!keepRecovery) await fs45.promises.rm(stagedRoot, { recursive: true, force: true });
         }
         releasePaths(files2);
         if (!files2.length) out2.push("nothing copied (empty directories)");

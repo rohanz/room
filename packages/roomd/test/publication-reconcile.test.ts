@@ -11,6 +11,8 @@ import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 import { Publisher } from '../src/publisher.js'
 import { rulesFromText } from '../src/policy.js'
+import { setGitObserver } from '../src/git.js'
+import { checkoutText } from '../src/baseline.js'
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 const provider = (doc: Y.Doc) => {
@@ -319,4 +321,40 @@ it('republishes, narrows, and deletes 2050 shared files without retaining conten
   expect(roomDoc.overlays.get(key)?.size ?? 0).toBe(0)
   expect(incarnationText(roomDoc, 'Alice', paths[0])).toBeUndefined()
   publisher.stop()
+})
+
+it('leaves an explicit base gap for an oversized carried blob replaced by six bytes', async () => {
+  const checkout = repo()
+  const base = git(checkout, 'rev-parse', 'HEAD')
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: checkout, input: Buffer.alloc(2 * 1024 * 1024, 97), encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(checkout, 'carried.txt'), 'small\n')
+  const roomDoc = new RoomDoc()
+  roomDoc.ownedBaseTexts.set(`Alice\0${base}:carried.txt`, 'stale base')
+  const host: any = { dir: checkout, name: 'Alice', fence: '1', roomDoc, base, stopped: false, phase: 'watch',
+    inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 512 * 1024, 1024 * 1024), head: base },
+    batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
+    log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
+    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => ({
+      worker: 'Alice', sha: base, dir: checkout, carriedCommit: false, untracked: new Map([['carried.txt', { sha: blob }]]),
+    }) }
+  const calls: string[][] = []
+  setGitObserver(args => { calls.push([...args]) })
+  const publisher = new Publisher(host)
+  try {
+    const prepared = await publisher.prepare()
+    expect(prepared.desired.entries.get('carried.txt')?.text).toBe('small\n')
+    expect(prepared.baseTexts.get('carried.txt')).toBeUndefined()
+    expect(calls.some(args => args[0] === 'cat-file' && args[1] === '-s' && args[2] === blob)).toBe(true)
+    expect(calls.some(args => args[0] === 'cat-file' && args[1] === '--filters' && args.at(-1) === blob)).toBe(false)
+    expect(publisher.apply(prepared, true)).toBe(true)
+    expect(roomDoc.ownedBaseTexts.has(`Alice\0${base}:carried.txt`)).toBe(false)
+  } finally { setGitObserver(undefined); publisher.stop() }
+})
+
+it('treats checkout-filter expansion past the byte cap as a base gap', async () => {
+  const checkout = repo()
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: checkout, input: 'small\n', encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(checkout, '.gitattributes'), 'inflated.txt filter=inflate\n')
+  git(checkout, 'config', 'filter.inflate.smudge', 'node -e "process.stdout.write(\'a\'.repeat(2097152))"')
+  expect(await checkoutText(checkout, blob, 'inflated.txt', 'utf8', 512 * 1024)).toBeUndefined()
 })
