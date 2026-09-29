@@ -103,6 +103,123 @@ describe('GraphIndex overlay events', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
+  it.each(['full', 'declared'] as const)('publishes a fenced %s deletion observation to fresh readers', async level => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-delete-graph-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString()
+    const room = new RoomDoc()
+    try {
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+      writeFileSync(join(repo, 'api.py'), 'def call(a):\n    return a\n')
+      git('add', '.'); git('commit', '-qm', 'base')
+      const commit = git('rev-parse', 'HEAD').trim()
+      room.setMeta({ base: commit }); setFixtureLocalRoot(room, 'B', repo)
+      publishFixture(room, 'B', 'api.py', 'def call(a):\n    return a\n', { base: commit })
+      publishFixture(room, 'A', 'consumer.py', 'from api import call\ncall(1)\n', { base: commit })
+      if (level === 'declared') {
+        const head = room.manifestHead.get('B')!
+        room.manifestHead.set('B', { ...head, level, textPrefixes: ['api.py'], rev: head.rev + 1 })
+      }
+      const gi = new GraphIndex(room, 'B', repo, undefined, { random: () => 0, minPublishMs: 0 })
+      try {
+        gi.start(); await gi.whenIdle()
+        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')!.edges.some(e => e.source === 'api.py' && e.target === 'consumer.py'))
+        deleteFixture(room, 'B', 'api.py', { base: commit })
+        if (level === 'declared') {
+          const head = room.manifestHead.get('B')!
+          room.manifestHead.set('B', { ...head, level, textPrefixes: ['api.py'], rev: head.rev + 1 })
+        }
+        await gi.whenIdle()
+        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === room.manifestHead.get('B')?.rev)
+        const fresh = new RoomDoc()
+        try {
+          Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+          const graph = fresh.graphs.get('B')!
+          expect(graph.paths).not.toContain('api.py')
+          expect(graph.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
+        } finally { fresh.doc.destroy() }
+      } finally { gi.stop() }
+    } finally { room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
+  })
+
+  it.each(['outside declared area', 'invalid entry fence'] as const)('withholds symbol detail for a deletion with %s', async reason => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
+    const head = room.manifestHead.get('Rohan')!
+    room.manifestHead.set('Rohan', { ...head, level: reason === 'outside declared area' ? 'declared' : 'full',
+      textPrefixes: reason === 'outside declared area' ? [] : undefined, rev: head.rev + 1 })
+    deleteFixture(room, 'Rohan', 'utils.py')
+    const narrowed = room.manifestHead.get('Rohan')!
+    if (reason === 'invalid entry fence') {
+      const entries = room.manifest.get(manifestKey('Rohan', narrowed.fence))!
+      entries.set('utils.py', { ...entries.get('utils.py')!, fence: 'wrong' })
+    } else {
+      const entries = room.manifest.get(manifestKey('Rohan', narrowed.fence))!
+      entries.set('utils.py', { ...entries.get('utils.py')!, state: 'held', held: 'scope' })
+      room.manifestHead.set('Rohan', { ...narrowed, level: 'declared', textPrefixes: [], rev: narrowed.rev + 1 })
+    }
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      const fresh = new RoomDoc()
+      try {
+        Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+        expect(JSON.stringify(fresh.graphs.get('Rohan'))).not.toContain('validate_token')
+      } finally { fresh.doc.destroy() }
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it.each(['holder', 'git'] as const)('withdraws a peer-sourced edge synchronously on a %s-only fence change', async field => {
+    const room = graphRoom()
+    publishFixture(room, 'Kieran', 'remote.py', 'def remote_only():\n    pass\n')
+    publishFixture(room, 'Rohan', 'consumer.py', 'from remote import remote_only\nremote_only()\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')!.edges.some(e => e.source === 'remote.py'))
+      await new Promise(resolve => setTimeout(resolve, 200))
+      if (field === 'holder') {
+        const holder = room.participants.get('Kieran\u0000holder')!
+        room.participants.set('Kieran\u0000holder', { ...holder, epoch: holder.epoch + 1, sessionId: 'replacement' })
+      } else {
+        const git = room.participants.get('Kieran\u0000git')!
+        room.participants.set('Kieran\u0000git', { ...git, fence: 'replacement' })
+      }
+      const fresh = new RoomDoc()
+      try {
+        Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+        expect(fresh.graphs.get('Rohan')?.edges.some(e => e.source === 'remote.py')).toBe(false)
+      } finally { fresh.doc.destroy() }
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it.each(['grant', 'completeness'] as const)('restores a peer edge and ready status after %s head-only withdrawal', async kind => {
+    const room = graphRoom()
+    publishFixture(room, 'Kieran', 'remote.py', 'def remote_only():\n    pass\n')
+    publishFixture(room, 'Rohan', 'consumer.py', 'from remote import remote_only\nremote_only()\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')!.edges.some(e => e.source === 'remote.py'))
+      await new Promise(resolve => setTimeout(resolve, 200))
+      const head = room.manifestHead.get('Kieran')!
+      room.manifestHead.set('Kieran', kind === 'grant'
+        ? { ...head, level: 'declared', textPrefixes: [], rev: head.rev + 1, semRev: head.semRev + 1 }
+        : { ...head, complete: false, rev: head.rev + 1, semRev: head.semRev + 1 })
+      expect(room.graphs.get('Rohan')?.edges.some(e => e.source === 'remote.py')).toBe(false)
+      const withdrawn = room.manifestHead.get('Kieran')!
+      room.manifestHead.set('Kieran', { ...withdrawn, level: 'full', complete: true, rev: withdrawn.rev + 1, semRev: withdrawn.semRev + 1 })
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')!.edges.some(e => e.source === 'remote.py'))
+      const fresh = new RoomDoc()
+      try {
+        Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+        expect(fresh.graphs.get('Rohan')?.edges.some(e => e.source === 'remote.py')).toBe(true)
+      } finally { fresh.doc.destroy() }
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
   it.each([{ name: 'default throttle', minPublishMs: undefined }, { name: 'zero throttle', minPublishMs: 0 }])(
     'N2 does not republish a head-only excluded base path with $name', async ({ minPublishMs }) => {
       const room = new RoomDoc()

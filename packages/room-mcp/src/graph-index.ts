@@ -25,7 +25,8 @@ const MIN_PUBLISH_MS = 20_000
 const YIELD_EVERY = 100
 const YIELD_AFTER_MS = 50
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
-type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string }
+type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string } |
+  { kind: 'deletion'; person: string; fence: string; base: string; baseline: string }
 
 /** Read references from live worker text, including calls in the definition's own file. */
 async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
@@ -116,12 +117,45 @@ export class GraphIndex {
 
   start(): void {
     this.currentBuild = this.initialBuild()
+    const touchedInTransaction = new WeakMap<Y.Transaction, Set<string>>()
+    const peerRefreshInTransaction = new WeakMap<Y.Transaction, Set<string>>()
+    const peerPublicationKey = (person: string) => {
+      const head = this.room.manifestHead.get(person)
+      const record = participantRecord(this.room, person)
+      return JSON.stringify([head?.fence, head?.level, head?.textPrefixes, head?.coverage, head?.complete,
+        head?.excluded, head?.base, holderFence(record?.holder), record?.git?.base, record?.git?.fence])
+    }
+    const peerKeys = new Map([...this.room.manifestHead.keys()].filter(person => person !== this.me).map(person => [person, peerPublicationKey(person)]))
+    const refreshPeerPublication = (person: string, transaction: Y.Transaction) => {
+      const next = peerPublicationKey(person)
+      if (next === peerKeys.get(person)) return
+      peerKeys.set(person, next)
+      const paths = peerRefreshInTransaction.get(transaction) ?? new Set<string>()
+      for (const [path, source] of this.publishedSource) if (source.kind === 'entry' && source.person === person) paths.add(path)
+      for (const path of manifestPaths(this.room, person)) paths.add(path)
+      peerRefreshInTransaction.set(transaction, paths)
+      this.withdrawRestricted()
+    }
+    const afterTransaction = (transaction: Y.Transaction) => {
+      const paths = peerRefreshInTransaction.get(transaction)
+      if (!paths || !this.base || this.stopped) return
+      const touched = touchedInTransaction.get(transaction)
+      for (const path of paths) if (isSourcePath(path) && !touched?.has(path)) void this.refresh(path)
+      if (![...paths].some(isSourcePath) && !touched?.size) void this.publish(this.phase)
+    }
+    this.room.doc.on('afterTransaction', afterTransaction)
+    this.unobserve.push(() => this.room.doc.off('afterTransaction', afterTransaction))
     const observe = <T>(root: Y.Map<Y.Map<T>>) => {
       const known = new Map([...root].map(([person, map]) => [person, new Set(map.keys())]))
       return (events: Y.YEvent<any>[]) => {
         if (this.stopped) return
         this.withdrawRestricted()
         const paths = touchedPaths(events, root, known)
+        for (const event of events) {
+          const touched = touchedInTransaction.get(event.transaction) ?? new Set<string>()
+          for (const path of paths) touched.add(path)
+          touchedInTransaction.set(event.transaction, touched)
+        }
         if (this.base) for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
       }
     }
@@ -129,8 +163,8 @@ export class GraphIndex {
     this.room.manifest.observeDeep(onManifest)
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
     this.ownPublicationKey = this.publicationKey()
-    const onHead = (event: { keysChanged: Set<string> }) => {
-      if ([...event.keysChanged].some(person => person !== this.me)) this.withdrawRestricted()
+    const onHead = (event: { keysChanged: Set<string>; transaction: Y.Transaction }) => {
+      for (const person of event.keysChanged) if (person !== this.me) refreshPeerPublication(person, event.transaction)
       if (!event.keysChanged.has(this.me)) return
       const next = this.publicationKey()
       this.withdrawRestricted()
@@ -149,7 +183,13 @@ export class GraphIndex {
     }
     this.room.manifestHead.observe(onHead)
     this.unobserve.push(() => this.room.manifestHead.unobserve(onHead))
-    const onParticipant = (event: { keysChanged: Set<string> }) => {
+    const onParticipant = (event: { keysChanged: Set<string>; transaction: Y.Transaction }) => {
+      for (const key of event.keysChanged) {
+        const divider = key.indexOf('\u0000')
+        if (divider < 0) continue
+        const person = key.slice(0, divider), field = key.slice(divider + 1)
+        if (person !== this.me && (field === 'holder' || field === 'git')) refreshPeerPublication(person, event.transaction)
+      }
       if (event.keysChanged.has(`${this.me}\u0000git`)) {
         const base = participantRecord(this.room, this.me)?.git?.base
         if (!this.stopped && this.initialStarted && base && base !== this.base) this.currentBuild = this.rebuild()
@@ -327,12 +367,18 @@ export class GraphIndex {
     return !!head && (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path)))
   }
 
-  private entryAuthorized(person: string, path: string, entry: { state: string; fence: string; hash?: string } | undefined): boolean {
+  /** The baseline read for a deletion may include a worker's carried, untracked blob. */
+  private deletionBaseline(path: string): string {
+    const baseline = carriedFrom(this.dir, this.me)?.baseline
+    return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path)?.sha, baseline?.carriedCommit ?? false])
+  }
+
+  private entryAuthorized(person: string, path: string, entry: { change: string; state: string; fence: string; hash?: string } | undefined): boolean {
     const head = this.room.manifestHead.get(person)
     const record = participantRecord(this.room, person)
     return !!head && !!entry && head.complete && head.coverage.kind === 'all' &&
       holderFence(record?.holder) === head.fence && record?.git?.base === head.base && record.git.fence === head.fence &&
-      entry.fence === head.fence && entry.state === 'shared' && !!entry.hash &&
+      entry.fence === head.fence && entry.state === 'shared' && (entry.change === 'D' ? !entry.hash : !!entry.hash) &&
       (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))) &&
       !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path))
   }
@@ -347,10 +393,12 @@ export class GraphIndex {
         !this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) ||
         head.excluded.includes(digestPath(this.room.roomSalt, path))) return false
     const ownEntry = this.room.manifest.get(manifestKey(this.me, head.fence))?.get(path)
-    if (ownEntry) return source.kind === 'entry' && source.person === this.me && source.fence === head.fence &&
-      source.hash === ownEntry.hash && this.entryAuthorized(this.me, path, ownEntry)
+    if (ownEntry) return this.entryAuthorized(this.me, path, ownEntry) && (ownEntry.change === 'D'
+      ? source.kind === 'deletion' && source.person === this.me && source.fence === head.fence &&
+        source.base === this.base && source.baseline === this.deletionBaseline(path)
+      : source.kind === 'entry' && source.person === this.me && source.fence === head.fence && source.hash === ownEntry.hash)
     if (source.kind === 'base') return source.base === head.base && source.base === this.base
-    if (source.person === this.me) return false
+    if (source.person === this.me || source.kind === 'deletion') return false
     const peerEntry = this.room.manifest.get(manifestKey(source.person, source.fence))?.get(path)
     return source.fence === this.room.manifestHead.get(source.person)?.fence && source.hash === peerEntry?.hash &&
       this.entryAuthorized(source.person, path, peerEntry)
@@ -362,7 +410,7 @@ export class GraphIndex {
     const head = this.room.manifestHead.get(this.me)
     if (!head && graph?.sourceFence === undefined) return // base-only index before the first manifest
     const allowed = (p: string) => (graph?.sourceFence === undefined || graph.sourceFence === head?.fence) && this.publicationAllowed(p)
-    for (const path of this.publishedCache.keys()) if (!allowed(path)) {
+    for (const path of this.publishedSource.keys()) if (!allowed(path)) {
       this.publishedCache.delete(path)
       this.publishedSource.delete(path)
       this.publishedGraph.remove(path)
@@ -377,6 +425,8 @@ export class GraphIndex {
     if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length) return
     this.room.graphs.set(this.me, { ...graph, status: 'indexing', paths, edges, observed,
       sourceFence: head?.fence, sourceRev: head?.rev, at: Date.now() })
+    this.lastPublished.key = ''
+    this.lastPublishedRevision = { graph: -1, observed: -1, base: '', provenance: '' }
   }
 
   refresh(path: string): Promise<void> {
@@ -496,6 +546,11 @@ export class GraphIndex {
         }
         this.degradedPaths.delete(path)
         const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : publicText ?? '', path, parseFile).map(change => ({ path, ...change }))
+        if (changes.length && mineDeleted && baseRead?.kind === 'available' &&
+            this.entryAuthorized(this.me, path, myEntry) && publicationSource?.fenceValid &&
+            snapshotStillCurrent(this.room, publicationSource, []))
+          this.publishedSource.set(path, { kind: 'deletion', person: this.me, fence: myEntry.fence,
+            base: this.base, baseline: JSON.stringify([own?.sha ?? this.base, own?.untracked.get(path)?.sha, own?.carriedCommit ?? false]) })
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else {
@@ -560,7 +615,9 @@ export class GraphIndex {
       }
     }
     let edgeList = [...edges.values()]
-    const allObserved = [...this.observedByPath.values()].flat().filter(change => allowedPaths.has(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    const allObserved = [...this.observedByPath.values()].flat().filter(change =>
+      (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === 'deletion') &&
+      this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
     let observedTruncated = allObserved.length > MAX_OBSERVED
     const observed = allObserved.slice(0, MAX_OBSERVED)
     let body = JSON.stringify({ paths, edges: edgeList, observed })
