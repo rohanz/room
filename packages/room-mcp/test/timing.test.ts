@@ -3,9 +3,25 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
+import { Awareness } from 'y-protocols/awareness'
+import type { WebsocketProvider } from 'y-websocket'
+import { RoomDoc } from '@room/shared'
 import { carriedContentHash } from '@room/roomd/baseline'
 import { setGitObserver } from '@room/roomd/git'
+import { startAutoTaggedRoomd } from '../src/session.js'
 import { currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
+
+const joinClock = vi.hoisted(() => ({ now: 0 }))
+vi.mock('@room/roomd', async importOriginal => ({
+  ...await importOriginal<typeof import('@room/roomd')>(),
+  startRoomd: vi.fn(async options => {
+    joinClock.now += 900
+    const roomDoc = new RoomDoc(), awareness = new Awareness(roomDoc.doc)
+    awareness.setLocalState({ user: { name: options.name, kind: 'agent' } })
+    return { name: options.name, roomDoc, provider: { awareness }, touch() {}, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
+  }),
+}))
 
 describe('tool timing', () => {
   it('records phases and nested git worktree calls, and logs only slow calls', async () => {
@@ -102,6 +118,31 @@ describe('tool timing', () => {
       await timing.phase('daemon start', () => { now += 900 })
     })
     expect(lines).toEqual(['slow tool room_join 4350ms: resolve 100ms, preflight 1200ms, connect 50ms, sync 2100ms, daemon start 900ms'])
+  })
+
+  it('records connect, delayed sync, and daemon start through startAutoTaggedRoomd', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-join-timing-'))
+    execFileSync('git', ['init', '-q', dir])
+    joinClock.now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => joinClock.now, log: line => lines.push(line) })
+    try {
+      await tracker.run('room_join', async () => {
+        const { daemon } = await startAutoTaggedRoomd({
+          dir, room: 'ws://unused/room', name: 'Timing', kind: 'agent', log: () => {},
+          providerFactory: (_server, _room, doc): WebsocketProvider => {
+            joinClock.now += 50
+            const events = new EventEmitter(), awareness = new Awareness(doc)
+            const provider = Object.assign(events, { synced: false, awareness, destroy() { events.removeAllListeners() } })
+            setTimeout(() => { joinClock.now += 2100; provider.synced = true; events.emit('sync', true) }, 0)
+            return provider as unknown as WebsocketProvider
+          },
+        })
+        await daemon.stop()
+      })
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toMatch(/connect 50ms, sync 2100ms, daemon start 900ms/)
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('counts baseline hash-object Git during a real preparation path', async () => {

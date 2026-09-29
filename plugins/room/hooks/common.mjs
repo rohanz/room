@@ -181,6 +181,10 @@ function writeTargets(input, powerShell = false) {
   const targets = []
   let cwd = ''
   const add = value => targets.push(cwd && !/^(?:[a-z]:[\\/]|[\\/])/.test(value) ? `${cwd}/${value}` : value)
+  for (const raw of inputStrings(input?.command ?? input?.cmd ?? input)) {
+    if (raw.length > 20_000 || !/(?:^|[;&|\n])\s*(?:[^\s/]+\/)?apply_patch(?:\s|$)/m.test(raw)) continue
+    for (const match of raw.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) add((match[1] ?? match[2]).trim())
+  }
   for (const command of shellCommands(input)) {
     const tokens = shellWords(command)
     const words = tokens.map(token => token.text)
@@ -201,11 +205,19 @@ function writeTargets(input, powerShell = false) {
       }
       if (/^(?:set-content|add-content|out-file|new-item|remove-item|sc|ac|ni|ri|del)$/.test(name)) take('-path', '-literalpath', '-filepath')
       else if (name === 'rename-item' || name === 'ren') {
+        const source = args.findIndex(a => /^-(?:path|literalpath)$/i.test(a))
+        if (source >= 0 && args[source + 1]) add(args[source + 1])
+        else if (positional[0]) add(positional[0])
         const i = args.findIndex(a => /^-newname$/i.test(a))
         if (i >= 0 && args[i + 1]) add(args[i + 1])
         else if (last) add(last)
       }
       else if (/^(?:move-item|copy-item|mv|cp)$/.test(name)) {
+        if (name === 'move-item' || name === 'mv') {
+          const source = args.findIndex(a => /^-(?:path|literalpath)$/i.test(a))
+          if (source >= 0 && args[source + 1]) add(args[source + 1])
+          else if (positional[0]) add(positional[0])
+        }
         const i = args.findIndex(a => /^-destination$/i.test(a))
         if (i >= 0 && args[i + 1]) add(args[i + 1])
         else if (last) add(last)
@@ -214,7 +226,20 @@ function writeTargets(input, powerShell = false) {
     }
     if (name === 'sed' || name === 'perl') {
       const inPlace = args.some(a => name === 'sed' ? /^-(?:[^-\s]*i[^\s]*|i)$/.test(a) || a === '--in-place' : /^-[^-\s]*i/.test(a))
-      if (inPlace && last) add(last)
+      if (inPlace) {
+        let scriptSupplied = false, scriptSkipped = false
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i]
+          if (arg === '--') continue
+          if ((name === 'sed' && ['-e', '-f', '--expression', '--file'].includes(arg)) || (name === 'perl' && arg === '-e')) { scriptSupplied = true; i++; continue }
+          if (name === 'sed' && /^(?:--expression=|--file=|-e.+|-f.+)/.test(arg)) { scriptSupplied = true; continue }
+          if (name === 'perl' && /^-e.+/.test(arg)) { scriptSupplied = true; continue }
+          if (name === 'sed' && arg === '-i' && args[i + 1] === '') { i++; continue }
+          if (arg.startsWith('-')) continue
+          if (name === 'sed' && !scriptSupplied && !scriptSkipped) { scriptSkipped = true; continue }
+          add(arg)
+        }
+      }
     } else if (name === 'patch') {
       if (!command.includes('<') && positional[0]) add(positional[0])
     } else if (['tee', 'rm', 'touch', 'truncate', 'apply_patch'].includes(name)) {
@@ -232,8 +257,14 @@ function writeTargets(input, powerShell = false) {
       const action = args[0]
       if (action === 'mv' || action === 'rm') {
         for (const arg of args.slice(1).filter(a => !a.startsWith('-'))) add(arg)
-      } else if (action === 'restore' || (action === 'checkout' && args.includes('--')) || (action === 'stash' && args.includes('--'))) {
-        if (last && last !== action) add(last)
+      } else if (action === 'restore') {
+        const files = args.slice(1)
+        for (let i = 0; i < files.length; i++) {
+          if (files[i] === '-s' || files[i] === '--source') { i++; continue }
+          if (files[i] !== '--' && !files[i].startsWith('-')) add(files[i])
+        }
+      } else if ((action === 'checkout' || action === 'stash') && args.includes('--')) {
+        for (const arg of args.slice(args.indexOf('--') + 1)) add(arg)
       }
     }
   }

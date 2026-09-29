@@ -935,16 +935,21 @@ class Daemon implements Roomd {
     if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return
     await this.waitForGitOperation(head)
     const paths = [...new Set(snapshot.map(c => c.path))]
-    const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head))
+    // Claims need both sides of a rename; base announcements retain Git's normal rename display.
+    const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true))
     const changed = paths.filter(p => changedPaths.has(p) && this.isSafeRoomPath(p, false))
     if (!changed.length) return
     const changedClaims = new Set(changed)
     const headTexts = await gitShowMany(this.dir, head, changed)
     if (this.stopped || await gitHead(this.dir) !== head) return
+    const dirtyPaths = new Set<string>()
     const currentTexts = new Map(changed.map(p => {
-      try { return [p, fs.readFileSync(this.abs(p), 'utf8')] as const }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      try {
+        if (!fs.lstatSync(this.abs(p)).isFile()) return [p, headTexts.get(p)] as const
+        const disk = fs.readFileSync(this.abs(p), 'utf8')
+        if (disk !== headTexts.get(p)) dirtyPaths.add(p)
+        return [p, disk] as const
+      } catch {
         return [p, headTexts.get(p)] as const
       }
     }))
@@ -958,6 +963,10 @@ class Daemon implements Roomd {
       for (const release of releases) {
         const current = this.roomDoc.claims.get(release.id)
         if (current?.by !== this.name || current.mirrorOf) continue
+        if (dirtyPaths.has(release.path)) {
+          this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`)
+          continue
+        }
         this.roomDoc.removeClaim(release.id, this)
         const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10))
         this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
@@ -1164,10 +1173,11 @@ class Daemon implements Roomd {
     const next = await gitTracked(this.dir)
     const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
     const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath) && this.skips.ignore.has(relpath))
+    const demoted = Array.from(this.indexed).filter(relpath => !next.indexed.has(relpath) && next.paths.has(relpath))
     const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.paths.has(relpath))
     this.tracked = next.paths
     this.indexed = next.indexed
-    for (const relpath of new Set([...added, ...promoted])) {
+    for (const relpath of new Set([...added, ...promoted, ...demoted])) {
       if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
         this.scheduleDisk(relpath, true)
         if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
