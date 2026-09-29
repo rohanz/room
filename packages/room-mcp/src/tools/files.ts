@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { acceptedGit, coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantRecord, participantsView, snapshot, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
+import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
 import type { LocalWorker } from '../worker-status.js'
 import type { Session } from '../session.js'
@@ -212,20 +212,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       }
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
-      const callerBase = baseFor(caller, caller.me.name)
-      const anchors = participants.flatMap(({ person, session }) => {
-        const base = baseFor(session, person)
-        const view = participantsView(session.room, session.awareness, Date.now())
-        const gitRecord = acceptedGit(participantRecord(session.room, person), view)
+      const anchorsFor = (result: Awaited<ReturnType<typeof buildCombinedTree>>) => result.includedParticipants.flatMap(({ person, base, gitRecord, liveShared }) => {
         // Only name a commit already published by this participant's accepted git record.
-        if (base === callerBase || gitRecord === 'updating' || gitRecord.base !== base) return []
+        if (base === result.callerBase || !gitRecord || gitRecord.base !== base) return []
         const location = gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base
           ? ` (pushed to ${gitRecord.upstream})`
           : gitRecord.branch ? ` (on ${gitRecord.branch})` : ''
-        const live = [...snapshot(session.room, person, view)?.entries.values() ?? []].some(entry => entry.state === 'shared') ? ' + live changes' : ''
+        const live = liveShared ? ' + live changes' : ''
         return [`${person} at ${base.slice(0, 10)}${location}${live}`]
       })
-      const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
         const ownLocalWorker = session.local && localWorkers(session.dir, record => record.name === person)[0]
@@ -238,6 +233,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
         const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
+        const anchors = anchorsFor(result)
+        const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
         const complete = result.complete && unavailable.length === 0
         const gapLines = [...gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`), ...unavailable]
