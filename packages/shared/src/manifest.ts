@@ -1,7 +1,5 @@
-import { createHash } from 'node:crypto'
 import type { RoomDoc, ParticipantRecord } from './doc.js'
 import { participantRecord } from './doc.js'
-import { normalizeCoordinationPath } from './near.js'
 import { liveHolder, type ParticipantView } from './views.js'
 import type { ShareLevel } from './types.js'
 
@@ -65,17 +63,6 @@ export function manifestChangers(room: RoomDoc, path: string): string[] {
   return [...room.manifestHead.keys()].filter(name => manifestPaths(room, name).includes(path)).sort()
 }
 
-/** Path digests contain no path bytes and use the room's decoded 32-byte salt. */
-export function digestPath(roomSalt: string, path: string): string {
-  if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error('invalid roomSalt')
-  return createHash('sha256').update(Buffer.from(roomSalt, 'hex')).update(normalizeCoordinationPath(path), 'utf8').digest('hex')
-}
-
-export function gitBlobHash(text: string, format: 'sha1' | 'sha256' = 'sha1'): string {
-  const bytes = Buffer.from(text)
-  return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
-}
-
 function fenceValid(head: ManifestHead, record: ParticipantRecord | undefined, view: readonly ParticipantView[]): boolean {
   const expected = head.projectedFrom ? liveHolder(view, head.projectedBy ?? '') : record?.holder?.sessionId
   return !!expected && head.fence === expected
@@ -116,6 +103,8 @@ export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, v
 export async function versionOf(snap: ParticipantSnapshot | undefined, path: string, env: {
   gitAt?: (sha: string, path: string) => Promise<string | undefined>
   known?: (hash: string) => Promise<string | undefined>
+  hashText?: (text: string, format: 'sha1' | 'sha256') => Promise<string> | string
+  digest?: (roomSalt: string, path: string) => Promise<string> | string
 } = {}): Promise<Version> {
   if (!snap) return { kind: 'unknown', why: 'no-record', detail: 'no manifest record' }
   const { head } = snap
@@ -127,11 +116,13 @@ export async function versionOf(snap: ParticipantSnapshot | undefined, path: str
   if (entry) {
     if (entry.change === 'D') return { kind: 'deleted', entry }
     const text = entry.state === 'shared' ? snap.texts.get(path) : entry.hash ? await env.known?.(entry.hash) : undefined
-    if (text !== undefined && entry.hash && gitBlobHash(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) return { kind: 'text', text, entry }
+    const hashText = env.hashText ?? (async (value: string, format: 'sha1' | 'sha256') => (await import('./manifest-node.js')).gitBlobHash(value, format))
+    if (text !== undefined && entry.hash && await hashText(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) return { kind: 'text', text, entry }
     if (entry.state === 'held') return { kind: 'held', entry, why: entry.held ?? 'text not shared' }
     return { kind: 'unknown', why: 'updating', detail: 'shared text is missing or does not match its hash' }
   }
-  if (snap.roomSalt && head.excluded.includes(digestPath(snap.roomSalt, path))) return { kind: 'excluded' }
+  const digest = env.digest ?? (async (salt: string, value: string) => (await import('./manifest-node.js')).digestPath(salt, value))
+  if (snap.roomSalt && head.excluded.includes(await digest(snap.roomSalt, path))) return { kind: 'excluded' }
   if (!env.gitAt) return { kind: 'unknown', why: 'no-base-text', detail: 'base text not in the room' }
   try { return { kind: 'base', text: await env.gitAt(head.base, path) } }
   catch { return { kind: 'unknown', why: 'fetch', detail: 'base commit is unavailable' } }

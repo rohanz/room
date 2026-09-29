@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { digestPath, gitBlobHash, localVersionOf, manifestKey, snapshot, snapshotStillCurrent, versionOf, type ManifestHead } from './manifest.js'
+import { localVersionOf, manifestKey, snapshot, snapshotStillCurrent, versionOf, type ManifestHead } from './manifest.js'
+import { digestPath, gitBlobHash } from './manifest-node.js'
 
 const head = (fence = 's1'): ManifestHead => ({ base: 'abc', fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
 

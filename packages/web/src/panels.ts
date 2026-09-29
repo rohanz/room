@@ -18,6 +18,7 @@ import {
   formatPlans,
   participantClaimLine,
   presentPeople,
+  participantsView,
   scopeCovers,
   roomNameParts,
   type Claim,
@@ -31,6 +32,7 @@ import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { classifyNWay, unifiedDiffLines, type MergedLine } from './merged.ts'
 import { collapseConflictTimeline, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
+import { manifestPeople, readWebVersion, versionGap, webChangedPaths, webCoverage } from './manifest-reader.ts'
 
 export const h = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -140,19 +142,18 @@ function deriveFileRows(
 }
 
 function changesByPerson(room: RoomDoc): Map<string, string[]> {
-  const names = new Set([...room.overlays.keys(), ...room.deleted.keys()])
-  return new Map(Array.from(names, name => [name, room.changedPaths(name)]))
+  return new Map(manifestPeople(room).map(name => [name, webChangedPaths(room, name)]))
 }
 
 export function participantInput(conn: Conn): ParticipantInput {
-  const names = new Set([...conn.room.overlays.keys(), ...conn.room.deleted.keys(), ...conn.room.scopes.keys()])
+  const names = new Set([...manifestPeople(conn.room), ...conn.room.scopes.keys()])
   const changes = new Map<string, string[]>()
-  for (const name of names) changes.set(name, conn.room.changedPaths(name))
+  for (const name of names) changes.set(name, webChangedPaths(conn.room, name))
   return {
     presences: presences(conn.provider, conn.room),
     workers: [...conn.room.workerViews.values()],
     scopes: Array.from(conn.room.scopes.entries()),
-    overlayPeople: Array.from(conn.room.overlays.keys()),
+    overlayPeople: manifestPeople(conn.room),
     changesByPerson: changes,
     claims: conn.room.openClaims(),
     roomBase: conn.room.meta.base,
@@ -667,11 +668,12 @@ function textIdentity(text: string | undefined): string {
 export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   const fileList = h('div', { class: 'file-list scroll' })
   const pathLabel = h('span', { class: 'selected-path mono muted' }, 'no file selected')
-  const personSelect = h('select', { class: 'person-select', title: 'Person whose overlay to display' })
+  const personSelect = h('select', { class: 'person-select', title: 'Person whose version to display' })
   const compareLabel = h('span', { class: 'compare-label muted' })
   const legend = h('div', { class: 'legend' })
   const chips = h('div', { class: 'merge-chips', role: 'group', ariaLabel: 'Participants in merge' })
   const chipHint = h('div', { class: 'merge-hint muted' })
+  const coverageBlock = h('div', { class: 'merge-coverage muted' })
   const excluded = new Map<string, Set<string>>()
   const included = (path: string, people: readonly string[]) => {
     if (!excluded.has(path)) {
@@ -693,6 +695,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
   let showAllFiles = false
   let selectedPath: string | null = null
   let selectedPerson: string | null = null
+  let renderGeneration = 0
   let render = () => {}
   const tabStrip = h('div', { class: 'tabs' }, ...tabs.map(value => {
     const button = h('button', { class: `tab${value === tab ? ' active' : ''}` }, value)
@@ -703,7 +706,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     h('section', { class: 'center-files' }, h('div', { class: 'panel-title' }, 'Changed files'), fileList),
     h('section', { class: 'viewer' },
       h('div', { class: 'viewer-top' }, tabStrip, h('div', { class: 'toolbar' }, pathLabel, h('span', { class: 'sp' }), compareLabel, personSelect)),
-      chips, chipHint, legend,
+      chips, chipHint, coverageBlock, legend,
       host))
 
   const empty = (message: string) => {
@@ -712,7 +715,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     if (paintedKey === key) return
     editor.empty(message); paintedKey = key
   }
-  const showViewer = (rows: FileRow[]) => {
+  const showViewer = async (rows: FileRow[], generation: number) => {
     chipHint.hidden = true
     chipHint.textContent = ''
     chips.replaceChildren()
@@ -728,11 +731,11 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     }
     pathLabel.textContent = selected.path
     pathLabel.classList.remove('muted')
-    const people = recentPeople(conn.room, selected.path, selected.people)
+    const people = recentPeople(conn.room, selected.path, [...new Set([...selected.people, ...manifestPeople(conn.room)])])
     if (focus.person && people.includes(focus.person)) selectedPerson = focus.person
     if (!selectedPerson || !people.includes(selectedPerson)) selectedPerson = people[0]
     const key = `${selectedPath}\0${tab}\0${selectedPerson}`
-    if (key !== windowKey) { windowState = {}; windowKey = key }
+    if (key !== windowKey) { windowState = {}; windowKey = key; paintedKey = '' }
     personSelect.replaceChildren(...people.map(person => h('option', { value: person, selected: person === selectedPerson }, participantLabel(conn, person))))
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
@@ -741,7 +744,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     // Text computations and annotations have separate invalidation: new claims must
     // repaint gutters, but cannot make us repeat an unchanged merge or diff.
     const paint = (names: string[], texts: (string | undefined)[], compute: () => MergedLine[], merged: boolean, spans = conflicts) => {
-      const inputKey = JSON.stringify([selected.path, tab, names, texts.map(textIdentity), names.map(name => conn.room.deleted.get(name)?.has(selected.path) ?? false)])
+      const inputKey = JSON.stringify([selected.path, tab, names, texts.map(textIdentity)])
       if (cached?.key !== inputKey) cached = { key: inputKey, lines: compute() }
       const claims = conn.room.claimsFor(selected.path)
       const domKey = JSON.stringify([inputKey, windowKey, claims, spans, names.map(name => colorFor(name, conn.room))])
@@ -754,12 +757,20 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       legend.replaceChildren()
       compareLabel.textContent = ''
       const person = selectedPerson!
-      if (conn.room.deleted.get(person)?.has(selected.path)) return empty(`deleted by ${person}`)
-      const text = conn.room.text(selected.path, person)
-      if (text === undefined) return empty(`No overlay available for ${person}`)
-      const sha = conn.room.baseOf(person)
-      const base = sha ? conn.room.baseText(person, sha, selected.path) : undefined
-      paint([person], [base, text], () => classifyNWay(base ?? '', [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] })), false)
+      const version = await readWebVersion(conn.room, person, selected.path, participantsView(conn.room, conn.provider.awareness, Date.now()))
+      if (generation !== renderGeneration || typeof document === 'undefined') return
+      if (version.kind === 'deleted') return empty(`deleted by ${person}`)
+      const gap = versionGap(version)
+      if (gap) return empty(`${person}: ${gap}`)
+      if (version.kind !== 'text' && version.kind !== 'base') return empty(`${person}: version unavailable`)
+      const text = version.text
+      if (text === undefined) return empty(`${person}: base text not in the room`)
+      const baseSha = conn.room.manifestHead.get(person)?.base
+      const base = baseSha ? conn.room.baseText(person, baseSha, selected.path) : undefined
+      if (base === undefined) {
+        legend.append(h('span', { class: 'muted' }, 'Base text not in the room; showing shared file only'))
+        paint([person], [text], () => text.split('\n').filter((line, i, lines) => i < lines.length - 1 || line !== '').map((line, i) => ({ text: line, side: 'a' as const, changedBy: [person], conflict: false, aLine: i + 1 })), false)
+      } else paint([person], [base, text], () => classifyNWay(base, [{ name: person, text }]).map(line => ({ ...line, aLine: line.lineNumbers[person] })), false)
       return
     }
     if (tab === 'Merged') {
@@ -781,17 +792,19 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         : !online.size && active.length === people.length ? `Showing ${active.length} participants' changes` : ''
       chipHint.hidden = !chipHint.textContent
       legend.replaceChildren(...active.map(person => h('span', {}, dot(person, person, conn.room), ` lines by ${person}`)))
-      // Each version is measured against its own base (a carried worker's is its carried commit), as the tools do.
-      const sha = conn.room.meta.base ?? conn.room.baseOf(people[0])
-      const baseOwner = people.find(person => conn.room.baseOf(person) === sha && conn.room.baseText(person, sha!, selected.path) !== undefined)
-      const base = sha && baseOwner ? conn.room.baseText(baseOwner, sha, selected.path) : undefined
-      if (base === undefined) legend.append(h('span', { class: 'muted' }, 'Base unavailable; showing changes against an empty file'))
-      const versions = active.map(name => {
-        const own = conn.room.baseOf(name)
-        const ownBase = own ? conn.room.baseText(name, own, selected.path) : undefined
-        return { name, text: conn.room.text(selected.path, name) ?? '', ...(ownBase === undefined || ownBase === base ? {} : { base: ownBase }) }
-      })
-      paint(active, [base, ...versions.flatMap(v => [v.text, v.base])], () => classifyNWay(base ?? '', versions), true, conflicts.filter(s => s.people.every(p => active.includes(p))))
+      const views = participantsView(conn.room, conn.provider.awareness, Date.now())
+      const resolved = await Promise.all(active.map(async name => ({ name, version: await readWebVersion(conn.room, name, selected.path, views) })))
+      if (generation !== renderGeneration || typeof document === 'undefined') return
+      const gaps = resolved.flatMap(({ name, version }) => versionGap(version) ? [`${name}: ${versionGap(version)}`] : [])
+      if (gaps.length) legend.append(h('span', { class: 'muted' }, `PARTIAL · ${gaps.join('; ')}`))
+      const mergeable = resolved.filter(({ version }) => version.kind === 'text' || version.kind === 'base' || version.kind === 'deleted')
+      if (!mergeable.length) return empty(gaps.length ? `PARTIAL · ${gaps.join('; ')}` : 'Select participants to merge')
+      const bases = [...new Set(mergeable.map(({ name }) => conn.room.manifestHead.get(name)?.base).filter(Boolean))]
+      if (bases.length !== 1) return empty(`PARTIAL · branches differ; an agent's room_preview_merge checks the combination${gaps.length ? '; ' + gaps.join('; ') : ''}`)
+      const base = mergeable.map(({ name }) => conn.room.baseText(name, bases[0]!, selected.path)).find(text => text !== undefined)
+      if (base === undefined) return empty(`PARTIAL · base text not in the room${gaps.length ? '; ' + gaps.join('; ') : ''}`)
+      const versions = mergeable.map(({ name, version }) => ({ name, text: version.kind === 'deleted' ? '' : 'text' in version ? version.text ?? '' : '' }))
+      paint(mergeable.map(v => v.name), [base, ...versions.map(v => v.text)], () => classifyNWay(base, versions), true, conflicts.filter(s => s.people.every(p => active.includes(p))))
       return
     }
 
@@ -799,11 +812,25 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other, other, conn.room), ` removed from ${other}`), h('span', {}, dot(person, person, conn.room), ` added by ${person}`))
-    const before = conn.room.text(selected.path, other), after = conn.room.text(selected.path, person)
-    paint([other, person], [before, after], () => unifiedDiffLines(before ?? '', after ?? ''), false)
+    const views = participantsView(conn.room, conn.provider.awareness, Date.now())
+    const [beforeVersion, afterVersion] = await Promise.all([readWebVersion(conn.room, other, selected.path, views), readWebVersion(conn.room, person, selected.path, views)])
+    if (generation !== renderGeneration || typeof document === 'undefined') return
+    const gaps = [[other, beforeVersion], [person, afterVersion]].flatMap(([name, version]) => versionGap(version as typeof beforeVersion) ? [`${name}: ${versionGap(version as typeof beforeVersion)}`] : [])
+    if (gaps.length) return empty(`PARTIAL · ${gaps.join('; ')}`)
+    const before = beforeVersion.kind === 'deleted' ? '' : 'text' in beforeVersion ? beforeVersion.text ?? '' : ''
+    const after = afterVersion.kind === 'deleted' ? '' : 'text' in afterVersion ? afterVersion.text ?? '' : ''
+    paint([other, person], [before, after], () => unifiedDiffLines(before, after), false)
   }
 
   render = () => {
+    const generation = ++renderGeneration
+    const view = participantsView(conn.room, conn.provider.awareness, Date.now())
+    coverageBlock.replaceChildren(...manifestPeople(conn.room).map(name => {
+      const coverage = webCoverage(conn.room, name, view)
+      const head = conn.room.manifestHead.get(name)
+      return h('div', { class: coverage.complete ? 'coverage-complete' : 'coverage-partial' },
+        `${coverage.complete ? 'Complete' : 'PARTIAL'} · ${name} (${head?.level ?? 'unknown'}): ${coverage.shared.length} shared, ${coverage.held.length} not shared${coverage.unchanged.length ? ` · unchanged so far: ${coverage.unchanged.join(', ')}` : ''}${coverage.declaredDirectories ? ` · ${coverage.declaredDirectories} declared directories` : ''}${coverage.gaps.length ? ` · ${coverage.gaps.map(g => `${g.path ? `${g.path}: ` : ''}${g.why}`).join('; ')}` : ''}`)
+    }))
     for (const button of tabStrip.querySelectorAll('.tab')) button.classList.toggle('active', button.textContent === tab)
     const claims = conn.room.openClaims()
     const rows = deriveFileRows(changesByPerson(conn.room), conn.room.allScopes(), claims).filter(row => !focus.person || row.people.includes(focus.person))
@@ -838,7 +865,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       fileList.append(more)
     }
     if (!rows.length) fileList.append(h('div', { class: 'empty-note muted' }, 'No changed files'))
-    showViewer(rows)
+    void showViewer(rows, generation)
   }
   personSelect.onchange = () => { selectedPerson = personSelect.value; render() }
   subscribeRender(conn, render)
