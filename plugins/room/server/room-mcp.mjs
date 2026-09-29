@@ -17953,7 +17953,7 @@ var init_git = __esm({
     gitHead = (dir) => git(dir, ["rev-parse", "HEAD"]).then((s) => s.trim());
     gitBranch = (dir) => git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).then((s) => s.trim());
     gitCountBetween = (dir, from2, to2) => git(dir, ["rev-list", "--count", `${from2}..${to2}`]).then((s) => Number(s.trim()) || 0);
-    gitPathsBetween = (dir, from2, to2) => gitWholeTree(dir, ["diff", "--name-only", "-z", from2, to2]).then((s) => s.split("\0").filter(Boolean));
+    gitPathsBetween = (dir, from2, to2, noRenames = false) => gitWholeTree(dir, ["diff", "--name-only", "-z", ...noRenames ? ["--no-renames"] : [], from2, to2]).then((s) => s.split("\0").filter(Boolean));
     gitSubject = (dir, rev) => git(dir, ["log", "-1", "--format=%s", rev]).then((s) => s.trim());
   }
 });
@@ -18860,7 +18860,7 @@ var init_publisher = __esm({
           this.host.skips.size.delete(relpath);
           this.host.skips.budget.delete(relpath);
           const trackedOnly = TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf("/") + 1));
-          if (trackedOnly && !this.host.isTracked(relpath)) {
+          if (trackedOnly && fs7.existsSync(this.host.abs(relpath)) && !this.host.isTracked(relpath)) {
             this.withdrawIgnored(relpath, "untracked lockfile");
             return;
           }
@@ -26061,17 +26061,20 @@ var init_src2 = __esm({
         if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return;
         await this.waitForGitOperation(head);
         const paths = [...new Set(snapshot.map((c) => c.path))];
-        const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head));
+        const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true));
         const changed = paths.filter((p) => changedPaths.has(p) && this.isSafeRoomPath(p, false));
         if (!changed.length) return;
         const changedClaims = new Set(changed);
         const headTexts = await gitShowMany(this.dir, head, changed);
         if (this.stopped || await gitHead(this.dir) !== head) return;
+        const dirtyPaths = /* @__PURE__ */ new Set();
         const currentTexts = new Map(changed.map((p) => {
           try {
-            return [p, fs8.readFileSync(this.abs(p), "utf8")];
-          } catch (error2) {
-            if (error2.code !== "ENOENT") throw error2;
+            if (!fs8.lstatSync(this.abs(p)).isFile()) return [p, headTexts.get(p)];
+            const disk = fs8.readFileSync(this.abs(p), "utf8");
+            if (disk !== headTexts.get(p)) dirtyPaths.add(p);
+            return [p, disk];
+          } catch {
             return [p, headTexts.get(p)];
           }
         }));
@@ -26085,6 +26088,10 @@ var init_src2 = __esm({
           for (const release of releases) {
             const current = this.roomDoc.claims.get(release.id);
             if (current?.by !== this.name || current.mirrorOf) continue;
+            if (dirtyPaths.has(release.path)) {
+              this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`);
+              continue;
+            }
             this.roomDoc.removeClaim(release.id, this);
             const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
             this.roomDoc.post({ name: this.name, kind: this.kind }, { type: "release", claimId: release.id, path: release.path, summary: text }, this);
@@ -26295,10 +26302,11 @@ var init_src2 = __esm({
         const next = await gitTracked(this.dir);
         const added = Array.from(next.paths).filter((relpath) => !this.tracked.has(relpath));
         const promoted = Array.from(next.indexed).filter((relpath) => !this.indexed.has(relpath) && this.skips.ignore.has(relpath));
+        const demoted = Array.from(this.indexed).filter((relpath) => !next.indexed.has(relpath) && next.paths.has(relpath));
         const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter((relpath) => !next.paths.has(relpath));
         this.tracked = next.paths;
         this.indexed = next.indexed;
-        for (const relpath of /* @__PURE__ */ new Set([...added, ...promoted])) {
+        for (const relpath of /* @__PURE__ */ new Set([...added, ...promoted, ...demoted])) {
           if (!this.isIgnoredPath(relpath) && fs8.existsSync(this.abs(relpath))) {
             this.scheduleDisk(relpath, true);
             if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath));
