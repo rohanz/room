@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
@@ -60,6 +60,20 @@ export class ConflictSlots {
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
   owned(owner: string): [string, ConflictSlot][] { return [...this.map.entries()].filter(([, slot]) => slot.owner === owner) }
   drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)) }
+
+  /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
+  markContractsUnknown(owner: string, other: string, why: string): void {
+    const now = this.now()
+    const fence = typeof this.fence === 'function' ? this.fence() : this.fence
+    this.room.doc.transact(() => {
+      for (const [key, slot] of this.owned(owner)) {
+        if (slot.kind !== 'contract' || slot.other !== other) continue
+        if (slot.status === 'unknown' && slot.why === why && slot.fence === fence) continue
+        this.map.set(key, { ...slot, status: 'unknown', inputs: hash(`${key}\0${why}`), why,
+          fence, checkedAt: now, retryAt: now + retryMinutes[0]! * 60_000 })
+      }
+    })
+  }
 
   /** Remove signature detail when the provider's current text is no longer readable. */
   redactContracts(owner: string, other: string, why: string): void {
@@ -215,8 +229,24 @@ export class ConflictSet {
         graph.sourceFence !== head.fence || graph.sourceRev !== head.rev
       const hidden = this.slots.owned(this.owner).some(([, slot]) => slot.kind === 'contract' && slot.other === other &&
         (entries?.get(slot.path)?.state === 'held' || !!head && !!room.roomSalt && head.excluded.includes(digestPath(room.roomSalt, slot.path))))
-      if (stale || hidden) this.slots.redactContracts(this.owner, other, 'provider graph or manifest coverage is updating')
+      if (stale || hidden) this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', snap)
     }
+  }
+  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
+  private unknownOrRedactContracts(other: string, why: string, snap?: ParticipantSnapshot): void {
+    const room = this.team.room
+    const head = snap?.head
+    const entries = head && room.manifest.get(manifestKey(other, head.fence))
+    const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
+    const stillReadable = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === 'all' &&
+      head.base === snap.record?.git?.base && !!room.roomSalt && slots.every(([, slot]) => {
+        const entry = entries?.get(slot.path)
+        return slot.subject !== '*' && entry?.state === 'shared' && !!entry.hash && entry.fence === head.fence &&
+          (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, slot.path))) &&
+          !head.excluded.includes(digestPath(room.roomSalt!, slot.path))
+      })
+    if (stillReadable) this.slots.markContractsUnknown(this.owner, other, why)
+    else this.slots.redactContracts(this.owner, other, why)
   }
   stop(): void {
     for (const stop of this.stops) stop()
@@ -447,7 +477,7 @@ export class ConflictSet {
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
     if (!carriedProvider && (!graph || graph.status !== 'ready' || graph.base !== theirs.head.base ||
         graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
-      this.slots.redactContracts(this.owner, other, 'provider graph or manifest coverage is updating')
+      this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', theirs)
       return
     }
     const live = new Set<string>()

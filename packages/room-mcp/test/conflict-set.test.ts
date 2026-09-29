@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId } from '../src/conflict-set.js'
+import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
 
@@ -157,11 +158,12 @@ describe('ConflictSlots', () => {
 })
 
 describe('derived pair slots', () => {
-  function fixture() {
+  function fixture(baseFiles: Record<string, string> = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'room-slot-'))
     const run = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
     run('init', '-q'); run('config', 'user.email', 't@t'); run('config', 'user.name', 't')
     writeFileSync(join(dir, 'x'), 'old\n')
+    for (const [path, content] of Object.entries(baseFiles)) writeFileSync(join(dir, path), content)
     run('add', '.'); run('commit', '-qm', 'init')
     const base = run('rev-parse', 'HEAD')
     const room = new RoomDoc()
@@ -486,6 +488,96 @@ describe('derived pair slots', () => {
       }
       fresh.doc.destroy()
     } finally { f.cleanup() }
+  })
+
+  it('keeps one accepted contract notice across a graph revision lag and MCP restart', async () => {
+    const f = fixture()
+    let restarted: RoomDoc | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      const graph = (rev: number) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' }], truncated: false })
+      f.room.graphs.set('B', graph(1))
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      const set = new ConflictSet(f.session('A'))
+      set.start()
+      await set.reconcile('first')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(accepted.filter(id => id.startsWith('cf:'))).toContain(noticeId(key, 1))
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
+      set.stop()
+      restarted = new RoomDoc()
+      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
+      await resumed.reconcile('still stale after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
+      restarted.graphs.set('B', graph(2))
+      await resumed.reconcile('provenance caught up after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([noticeId(key, 1)])
+    } finally { restarted?.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps one contract episode through README-only provenance catch-up in the running graph pipeline', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      writeFileSync(join(f.dir, 'api.py'), provider)
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start()
+      await graph.whenIdle()
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const ready = async () => {
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
+          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready()
+      set = new ConflictSet(f.session('A'))
+      set.start()
+      await set.reconcile('first graph')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      const head = f.room.manifestHead.get('B')!
+      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 2, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
+        f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
+      })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', epoch: 1 })
+      await graph.whenIdle()
+      await ready()
+      await set.reconcile('graph caught up')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([noticeId(key, 1)])
+    } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
   it('N2 advances an identical signature after redaction and a readable clean revert', async () => {
