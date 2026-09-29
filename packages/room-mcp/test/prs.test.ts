@@ -36,7 +36,7 @@ function session(room: RoomDoc, me: Identity, roomName = ROOM, branch = 'main'):
   room.participants.set(`${me.name}\0git`, { branch, head: base, base, anchored: true, rev: 1, fence: holderFence(participantRecord(room, me.name)?.holder)! })
   awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   return {
-    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: `ws://127.0.0.1:9/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch, base },
     ...(roomName.startsWith('local/') ? { local: { url: 'ws://x', key: 'k' } } : {}),
@@ -289,7 +289,7 @@ it('room_export loads an authenticated legacy archive instead of the current roo
   try {
     expect(await tools.call('room_export', { room: `${legacyRepo}/main`, path: output })).toContain('exported archive')
     expect(readFileSync(output, 'utf8')).toContain('from the old branch')
-    expect(fetch).toHaveBeenCalledWith('http://x/archive/export', expect.objectContaining({ method: 'POST' }))
+    expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:9/archive/export', expect.objectContaining({ method: 'POST' }))
     expect(await tools.call('room_export', { room: `archive:${legacyRepo}:old-id`, path: output })).toContain('exported archive')
   } finally { vi.unstubAllGlobals(); await tools.shutdown() }
 })

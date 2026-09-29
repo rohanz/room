@@ -12,7 +12,7 @@ export function memorySession(me: Identity, dir: string, room = new RoomDoc(new 
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const policyStore = testPolicyStore()
   return {
-    room, awareness, me, dir, roomUrl: `ws://x/${roomName}`, roomName, browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full',
+    room, awareness, me, dir, roomUrl: `ws://127.0.0.1:9/${roomName}`, roomName, browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full',
     provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: 'base',
       inputs: { policy: policyStore.policy, rules: rulesFromText('', 512 * 1024, 8 * 1024 * 1024), head: 'base' } } as unknown as Session['daemon'],

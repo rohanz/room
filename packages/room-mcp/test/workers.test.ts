@@ -718,7 +718,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await workerTools.call('room_done', { summary: 'cents done' })
     const current = await leadTools.call('room_state', {})
     expect(current).toContain('workers (1):')
-    expect(current).toContain('money (claude, done')
+    // §6 row 8: a done report with the process still alive reads as running until it exits.
+    expect(current).toContain('money (claude, running')
     expect(current).toContain('finished: cents done')
     // A reported worker with a live launch handle still blocks an unforced leave.
     expect(await leadTools.call('room_leave', {})).toContain('worker(s) still running: money')
@@ -826,7 +827,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(done.to).toBe('rohanz'); expect(done.tag).toBe('money'); expect(done.changed).toEqual(['app.py'])
     expect(shouldWakeOnMsg(lead, done).wake).toBe(true)
     expect(shouldWakeOnMsg({ name: 'someone', kind: 'agent' }, done).wake).toBe(false)
-    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', summary: 'Money type in cents, 7 tests pass' })
+    // §6 row 8: the process is still alive, so the worker reads as running with its report's summary.
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', summary: 'Money type in cents, 7 tests pass' })
     // The lead's next tool call shows the done line in its inbox.
     const st = await t.leadTools.call('room_state', {})
     expect(st).toContain('finished: Money type in cents')
@@ -966,8 +968,8 @@ describe('worker safety', () => {
     }) as typeof post)
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
-    // The stop remains durable even when the notification fails. Synthetic test pids have no OS liveness.
-    expect(workerByTag(dir, 'erroring')).toMatchObject({ id: before.id, status: 'dismissed', stopReason: 'lead-session-ended' })
+    // §9: the durable stop is mirrored even though the note failed; §6 row 8 keeps it running.
+    expect(workerByTag(dir, 'erroring')).toEqual({ ...before, stopReason: 'lead-session-ended' })
     expect((await registryForDir(dir)).read(before.id!)?.stop?.reason).toBe('lead-session-ended')
   })
 
@@ -1038,14 +1040,15 @@ describe('worker safety', () => {
     const left = await t.leadTools.call('room_leave', { force: true })
     expect(left).toContain('left local/x')
     expect(t.killed).toHaveLength(1)
-    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    // §9 / §6 row 8: stopping until the exit is witnessed.
+    expect(workerByTag(dir, 'a')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
     expect(t.a.messages().some(m => m.type === 'note' && /dismissed worker a .*the lead left/.test((m as { text: string }).text))).toBe(true)
     // shutdown path
     const t2 = setupLead()
     await t2.leadTools.call('room_spawn', { tag: 'b', task: 'y' })
     await t2.leadTools.shutdown()
     expect(t2.killed).toHaveLength(1)
-    expect(workerByTag(dir, 'b')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    expect(workerByTag(dir, 'b')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
     t2.exits[0](null)
     await vi.waitFor(async () => {
       const registry = await registryForDir(dir)
@@ -1180,8 +1183,10 @@ describe('worker safety', () => {
     expect(await t.leadTools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
   })
   it('does not relaunch a preexisting Room checkout as a new supplied-dir worker', async () => {
-    const t = setupLead()
+    // The checkout exists before the lead opens its registry, so its migration scan imports it
+    // deterministically; created afterwards, the outcome depended on when that scan ran.
     const prepared = await prepareWorktree(dir, 'same', 'rohanz')
+    const t = setupLead()
     writeFileSync(join(dir, 'lead-only.txt'), 'lead edit')
     try {
       const reply = await t.leadTools.call('room_spawn', { tag: 'same', task: 'inspect', dir: prepared.dir, host: 'codex', model: 'worker-model' })
@@ -1233,7 +1238,8 @@ describe('review fixes: workers', () => {
     let ws: Session | null = fakeSession(t.b, workerId)
     const workerTools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: dir })
     await workerTools.call('room_done', { summary: 'done but still running' })
-    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', summary: 'done but still running' })
+    // §6 row 8 precedes row 10: a live process reads as running even after its done report.
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', summary: 'done but still running' })
     const discarding = t.leadTools.call('room_collect', { discard: true, tag: 'money' })
     await vi.waitFor(() => expect(t.killed).toHaveLength(1), { timeout: 10_000 })
     t.exits[0](0)
@@ -1481,8 +1487,8 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
       expect(reply).toContain(stopped ? 'stopped after' : 'stop unconfirmed')
       expect(existsSync(checkout)).toBe(true)
       expect(readFileSync(join(checkout, 'partial.txt'), 'utf8')).toBe('keep me')
-      // The stop intent remains durable, while the worktree remains available for recovery.
-      expect(workerByTag(dir, 'after-start')?.status).toBe('dismissed')
+      // §9: an unconfirmed stop leaves it running ("stopping", §6 row 8).
+      expect(workerByTag(dir, 'after-start')?.status).toBe(stopped ? 'dismissed' : 'running')
     } finally { dir = previousDir; base = previousBase }
   })
 

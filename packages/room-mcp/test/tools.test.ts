@@ -71,7 +71,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
     lease: { sessionId: heldSessionId, fence: leaseFence, check: () => {},
       paused: () => leaseFence() ? undefined : '[room] fixture name lease paused' } as Session['lease'],
     policyStore,
-    room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
     daemon: { touch() {}, rememberClaimDigest() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' },
   }
@@ -369,7 +369,7 @@ describe('session gating', () => {
     session.provider.wsconnected = false
     expect(await tools.call('room_state', {})).not.toContain('OFFLINE')
     clock += 2001
-    expect(await tools.call('room_state', {})).toMatch(/OFFLINE: not connected to ws:\/\/x since .*; showing the last known state in r\nroom:/)
+    expect(await tools.call('room_state', {})).toMatch(/OFFLINE: not connected to ws:\/\/127.0.0.1:9 since .*; showing the last known state in r\nroom:/)
     setHubReachable(session, false)
     expect(await tools.call('room_send', { type: 'note', text: 'queued' })).toContain('not sent: hub unreachable')
     expect(a.messages().some(m => 'text' in m && m.text === 'queued')).toBe(false)
@@ -594,7 +594,7 @@ describe('one login, two agents', () => {
     const mk = (room: RoomDoc, id: Identity, awareness: Awareness) => {
       awareness.setLocalState({ user: { ...id, color: '#000' }, status: 'idle', lastActive: Date.now() })
       const graph = new GraphIndex(room, id.name, dir); graph.start()
-      const s: Session = { graph, room, awareness, me: id, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+      const s: Session = { graph, room, awareness, me: id, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
         ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
         daemon: { touch() {}, async stop() {}, dir, name: id.name, roomDoc: room, provider: null as never, branch: 'main', base } }
       return createTools({ getSession: () => s, setSession: () => {}, cwd: dir })

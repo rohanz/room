@@ -278,7 +278,7 @@ describe('wakes (ledger test 11, MF8)', () => {
 
   /** A bound Codex session's Room MCP: tools, ledger, wakes and the hooks' arbitration endpoint. */
   async function mcp(send: SendWake, room = new RoomDoc(), hookLeaseMs = 10_000) {
-    const s = { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '',
+    const s = { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: '',
       shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true }, daemon: { touch() {}, async stop() {} } } as unknown as Session
     const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: sdir, commonDir: () => join(dir, '.git') }
     const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, hookLeaseMs })

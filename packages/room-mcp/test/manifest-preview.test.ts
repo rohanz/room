@@ -270,4 +270,5 @@ it('S1 keeps a manifest-overlapping peer when committed paths exceed the preview
   expect(explicit).toContain('app.py')
   expect(explicit).toContain('committed path enumeration')
   expect(session.lastPreview?.complete).toBe(false)
-})
+  // 2,001 real files, a commit and two previews: the assertions are on outcomes; the limit only bounds a stuck run.
+}, 120_000)

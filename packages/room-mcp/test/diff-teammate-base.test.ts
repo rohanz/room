@@ -70,7 +70,7 @@ function flaskChanges() {
   awareness.setLocalState({ user: { name: 'Ana', kind: 'agent', color: '#000' }, status: 'idle' })
   const session = {
     room, awareness, me: { name: 'Ana', kind: 'agent' }, dir,
-    roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced: true, awareness },
     daemon: { touch() {}, async stop() {}, dir, name: 'Ana', roomDoc: room, base: readerBase, fence: '1' },
     policyStore: testPolicyStore('full'),

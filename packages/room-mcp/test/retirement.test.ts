@@ -251,7 +251,7 @@ describe('git facts and lead evaluation', () => {
     r.rooms.dropHandle(r.s, fixtureId(w), proc)
     await r.rooms.autoRetire()
     expect(r.room.retiredWorkers()).toMatchObject([{ id: fixtureId(w), outcome: 'clean', files: ['a'], summary: 'done' }])
-    await registerWorkers(r.s, [{ ...w, id: 'w_second', startedAt: 2, status: 'failed' }])
+    await registerWorkers(r.s, [{ ...w, id: 'w_second', startedAt: 2, status: 'failed', exitCode: 1 }])
     await r.rooms.autoRetire(); expect(r.has(w.tag)).toBe(true)
     await finishWorker(r.s, w.tag, { status: 'dismissed' })
     await r.rooms.autoRetire(); expect(r.room.retiredWorkers().at(-1)).toMatchObject({ id: 'w_second', outcome: 'dismissed' })

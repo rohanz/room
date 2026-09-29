@@ -39,7 +39,7 @@ async function session(dir: string, base: string, person: string, sha: string, r
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Bob', kind: 'agent', color: '#000' }, status: 'idle' })
   const s: Session = {
-    room, awareness, me: { name: 'Bob', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full',
+    room, awareness, me: { name: 'Bob', kind: 'agent' }, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x', shareMax: 'full', shareRequested: 'full',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Bob', roomDoc: room, provider: null as never, branch: 'main', base } as unknown as Session['daemon'],
   }

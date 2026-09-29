@@ -63,7 +63,7 @@ function addPresence(s: Session, name: string) {
 async function liveMcp() {
   const room = new RoomDoc()
   const awareness = new Awareness(room.doc)
-  const s = { room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '', shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never } as Session
+  const s = { room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: '', shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never } as Session
   const binding: SessionBinding = { bound: () => ({ id: SID, host: 'claude' }), id: () => SID, dir: () => sdir(), commonDir: () => join(dir, '.git') }
   const tools: Tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding })
   tools.attachHooks(s)

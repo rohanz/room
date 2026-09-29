@@ -112,8 +112,10 @@ export function createTools(ctx: ToolCtx): Tools {
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
       const joinDir = CHOOSES_ROOM.has(name) && typeof args?.dir === 'string' && args.dir ? args.dir : undefined
-      if (name !== 'room_login') {
-        const problem = await repositoryProblem(joinDir ?? ctx.getSession()?.dir ?? ctx.cwd)
+      // An existing session has already passed the join preflight. Recheck only when
+      // choosing another checkout or before the first join.
+      if (name !== 'room_login' && (joinDir || !ctx.getSession())) {
+        const problem = await repositoryProblem(joinDir ?? ctx.cwd ?? process.cwd())
         if (problem) return problem
       }
       if (autoJoin && CHOOSES_ROOM.has(name)) {

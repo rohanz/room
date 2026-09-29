@@ -28,7 +28,7 @@ it('aborting room_wait removes its listeners and leaves a later answer unread', 
   awareness.setLocalState({ user: { ...asker, color: '#000' }, status: 'idle' })
   const session: Session = {
     policyStore: testPolicyStore(),
-    room, awareness, me: asker, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    room, awareness, me: asker, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: asker.name, roomDoc: room, provider: null as never, branch: 'main', base: 'base' },
   }

@@ -55,7 +55,7 @@ function setup(opts: { share?: ShareLevel; shareMax?: ShareLevel; requested?: Sh
   const graph = new GraphIndex(a, 'Rohan', dir); graph.start()
   const session: Session = {
     policyStore,
-    graph, room: a, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    graph, room: a, awareness, me, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(a), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: daemon as unknown as Session['daemon'],
     shareMax: opts.shareMax ?? 'full',

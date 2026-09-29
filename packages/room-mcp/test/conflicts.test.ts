@@ -31,7 +31,7 @@ function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
   return {
     policyStore: testPolicyStore(),
-    room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr', roomName: 'github.com/o/r', browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:9/github.com%2Fo%2Fr', roomName: 'github.com/o/r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
     ...extra,

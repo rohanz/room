@@ -218,14 +218,15 @@ describe('worker identity and durable exits', () => {
     expect(completionMessage(w, w.runs[0], status)).toBeUndefined()
   })
 
-  it.each([0, 1, null] as const)('a witnessed exit %s without room_done produces a failure interrupt', code => {
+  it.each([0, 1, null] as const)('a witnessed exit %s without room_done follows the fresh-run outcome', code => {
     const root = storeRoot(), w = record(root, 'w_exit')
     const status = statusOf(w, w.runs, [], [{ run: 1, code, at: 10, witnessed: true }], () => 'dead')
-    expect(status.status).toBe('failed')
+    expect(status.status).toBe(code === 0 ? 'done' : 'failed')
+    if (code === 0) expect(status.noReport).toBe(true)
     const message = completionMessage(w, w.runs[0], status)
     expect(message?.id).toBe('wk:w_exit:1')
-    expect(message?.body.type).toBe('note')
-    expect(message?.body.priority).toBe('interrupt')
+    expect(message?.body.type).toBe(code === 0 ? 'done' : 'note')
+    expect(message?.body.priority).toBe(code === 0 ? 'notify' : 'interrupt')
   })
 
   it('keeps a reported completion and its host session for explicit collection', () => {

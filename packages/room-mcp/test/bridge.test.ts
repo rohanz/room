@@ -41,7 +41,7 @@ function fakeSession(room: RoomDoc, me: Identity, roomName: string, local: boole
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', sessionId: LEAD_FENCE })
   return {
     policyStore: policy,
-    room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: `ws://127.0.0.1:9/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: B,
       fence: LEAD_FENCE, inputs: { policy: policy.policy, rules: rulesFromText('secret/\n', 1 << 20, 1 << 24), head: B } } as never,

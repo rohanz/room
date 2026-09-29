@@ -622,7 +622,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.",
+      "description": "Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of it, not a built-in subagent. Collect with room_collect.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -632,7 +632,7 @@
           },
           "task": {
             "type": "string",
-            "description": "self-contained task"
+            "description": "task"
           },
           "host": {
             "type": "string",
@@ -640,11 +640,11 @@
               "claude",
               "codex"
             ],
-            "description": "host (default: caller host)"
+            "description": "default: caller host"
           },
           "model": {
             "type": "string",
-            "description": "model override for that host (optional)"
+            "description": "host model override"
           },
           "effort": {
             "type": "string",
@@ -661,16 +661,16 @@
             "items": {
               "type": "string"
             },
-            "description": "read-only input paths; default .roomlinks; [] disables"
+            "description": "input paths; default .roomlinks; [] disables"
           },
           "carry": {
             "type": "boolean",
-            "description": "false starts from HEAD without lead changes"
+            "description": "false: start from HEAD"
           },
           "threads": {
             "type": "integer",
             "minimum": 1,
-            "description": "math-library thread budget for this worker (optional)"
+            "description": "worker thread budget"
           },
           "share": {
             "type": "string",
@@ -681,9 +681,13 @@
             ],
             "description": "intent: plans only; declared: scoped files; full: all changed files"
           },
+          "allowOutside": {
+            "type": "boolean",
+            "description": "allow a team worker outside this repo"
+          },
           "dir": {
             "type": "string",
-            "description": "use an existing directory in this repo instead of creating a worktree"
+            "description": "existing directory; no new worktree"
           },
           "where": {
             "type": "string",
@@ -691,7 +695,7 @@
               "here",
               "local"
             ],
-            "description": "here (default), or local workers bridged to this room"
+            "description": "here (default) or local workers room"
           }
         },
         "required": [

@@ -53,7 +53,7 @@ function agent(room: RoomDoc, me: Identity, r: { dir: string; base: string }, hu
   awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   const s: Session = {
     policyStore: testPolicyStore(),
-    room, awareness, me, dir: r.dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
+    room, awareness, me, dir: r.dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(hubRoom), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, rememberClaimDigest() {}, async stop() {}, dir: r.dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: r.base } as never,
   }

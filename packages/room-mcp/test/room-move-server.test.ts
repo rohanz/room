@@ -65,8 +65,9 @@ it('two branches share one repository room with distinct names, and a branch swi
   const sessions: Session[] = []
   let a: Session | null = null, b: Session | null = null
   try {
-    a = await joinSession({ dir, server }); sessions.push(a)
-    b = await joinSession({ dir: other, server }); sessions.push(b)
+    // These are two host sessions; the fixture runs both in one test process.
+    a = await joinSession({ dir, server, sessionId: 'branch-main' }); sessions.push(a)
+    b = await joinSession({ dir: other, server, sessionId: 'branch-feat' }); sessions.push(b)
     expect(a.roomName).toBe('github.com/rohanz/x')
     expect(b.roomName).toBe('github.com/rohanz/x')
     expect(a.me.name).toBe('rohanz')
