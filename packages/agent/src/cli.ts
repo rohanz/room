@@ -67,7 +67,8 @@ const mcpEntry = resolve(here, '../../room-mcp/src/index.ts')
 const doc = new Y.Doc()
 const room = new RoomDoc(doc)
 const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket, params })
-provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(name) }, status: 'idle' })
+const sessionId = `roomagent:${process.pid}`
+provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(name) }, sessionId, status: 'idle' })
 
 let temporaryCredentialsDir: string | undefined
 let credentialsPath = args.credentials ?? process.env.ROOM_CREDENTIALS
@@ -93,7 +94,6 @@ const backend = new CodexBackend({
   } },
 })
 // Posts go through the room's hub, the sole appender of its bus; hello now and on every reconnect.
-const sessionId = `roomagent:${process.pid}`
 const hub = new HubClient({ transport: hubTransport(provider), client: 'roomagent', sessionId })
 provider.once('sync', () => { void hub.hello().catch(() => {}) })
 // Its posts carry its own name lease (hub §2.3), taken again if it lapsed; its Codex thread's MCP joins under another name.
@@ -104,7 +104,10 @@ const lease = async () => {
     .finally(() => { acquiring = undefined }))
   return epoch === undefined ? undefined : { name, epoch }
 }
-const runner = new Runner({ name, room, post: createPost(room, hub, lease), awareness: provider.awareness, backend, log: l => console.error(`[roomagent] ${l}`) })
+const runner = new Runner({ name, room, post: createPost(room, hub, lease), awareness: provider.awareness, backend,
+  authority: { sessionId, acquire: async () => (await lease())?.epoch, current: () => hub.reachable() ? hub.lease(name) : undefined },
+  log: l => console.error(`[roomagent] ${l}`) })
+provider.on('sync', () => { void runner.retryDelivery() })
 
 // Mirror the transcript to the terminal so the browser view is optional.
 room.chat(name).observe(ev => {

@@ -757,7 +757,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       legend.replaceChildren()
       compareLabel.textContent = ''
       const person = selectedPerson!
-      const version = await readWebVersion(conn.room, person, selected.path, participantsView(conn.room, conn.provider.awareness, Date.now()))
+      const version = await readWebVersion(conn.room, person, selected.path, () => participantsView(conn.room, conn.provider.awareness, Date.now()))
       if (generation !== renderGeneration || typeof document === 'undefined') return
       if (version.kind === 'deleted') return empty(`deleted by ${person}`)
       const gap = versionGap(version)
@@ -792,8 +792,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
         : !online.size && active.length === people.length ? `Showing ${active.length} participants' changes` : ''
       chipHint.hidden = !chipHint.textContent
       legend.replaceChildren(...active.map(person => h('span', {}, dot(person, person, conn.room), ` lines by ${person}`)))
-      const views = participantsView(conn.room, conn.provider.awareness, Date.now())
-      const resolved = await Promise.all(active.map(async name => ({ name, version: await readWebVersion(conn.room, name, selected.path, views) })))
+      const currentView = () => participantsView(conn.room, conn.provider.awareness, Date.now())
+      const resolved = await Promise.all(active.map(async name => ({ name, version: await readWebVersion(conn.room, name, selected.path, currentView) })))
       if (generation !== renderGeneration || typeof document === 'undefined') return
       const gaps = resolved.flatMap(({ name, version }) => versionGap(version) ? [`${name}: ${versionGap(version)}`] : [])
       if (gaps.length) legend.append(h('span', { class: 'muted' }, `PARTIAL · ${gaps.join('; ')}`))
@@ -812,8 +812,8 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const other = people.length > 2 ? (people[0] === person ? people[1] : people[0]) : people.find(value => value !== person) ?? person
     compareLabel.textContent = `vs ${other}`
     legend.replaceChildren(h('span', {}, dot(other, other, conn.room), ` removed from ${other}`), h('span', {}, dot(person, person, conn.room), ` added by ${person}`))
-    const views = participantsView(conn.room, conn.provider.awareness, Date.now())
-    const [beforeVersion, afterVersion] = await Promise.all([readWebVersion(conn.room, other, selected.path, views), readWebVersion(conn.room, person, selected.path, views)])
+    const currentView = () => participantsView(conn.room, conn.provider.awareness, Date.now())
+    const [beforeVersion, afterVersion] = await Promise.all([readWebVersion(conn.room, other, selected.path, currentView), readWebVersion(conn.room, person, selected.path, currentView)])
     if (generation !== renderGeneration || typeof document === 'undefined') return
     const gaps = [[other, beforeVersion], [person, afterVersion]].flatMap(([name, version]) => versionGap(version as typeof beforeVersion) ? [`${name}: ${versionGap(version as typeof beforeVersion)}`] : [])
     if (gaps.length) return empty(`PARTIAL · ${gaps.join('; ')}`)

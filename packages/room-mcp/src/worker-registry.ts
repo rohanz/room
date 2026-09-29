@@ -27,10 +27,10 @@ export interface RegistryOptions {
   sources?: (commonDir: string) => LegacySource[]; migrate?: boolean; watch?: boolean
 }
 export interface IdleClaimsAction {
-  roomKey: string; sessionId: string; participant: string; idleEpoch: string
+  roomKey: string; sessionId: string; participant: string; idleEpoch: string; epoch?: string
   host: 'shared-app-server' | 'interactive'; lastActivityMs: number; monotonicMs: () => number
-  doc: RoomDoc; postNotice: (id: string, text: string) => void
-  /** Legacy fallback until a holder record has been published; must check the local name lease. */
+  doc: RoomDoc; postNotice: (id: string, text: string) => void | { ok: boolean; text?: string } | Promise<{ ok: boolean; text?: string }>
+  /** The local name lease must still belong to this process and epoch after guard acquisition. */
   ownsParticipant?: () => boolean
 }
 interface IdleReleaseRecord { state: 'pending' | 'done'; claimIds: string[]; claimNames: string[]; hadScope: boolean }
@@ -378,12 +378,22 @@ export class WorkerRegistry {
   private changed(id?: string): void { for (const listener of this.listeners) listener(id) }
   onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
+  private idleClaimsFile(roomKey: string, sessionId: string, idleEpoch: string): string {
+    const key = createHash('sha256').update(`${roomKey}\0${sessionId}\0${idleEpoch}`).digest('hex')
+    return path.join(this.commonDir, 'room', 'sessions', sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), 'idle-claims', `${key}.json`)
+  }
+
+  hasPendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string): boolean {
+    return readJson<IdleReleaseRecord>(this.idleClaimsFile(roomKey, sessionId, idleEpoch))?.state === 'pending'
+  }
+
   /** Callable by the wave-4 presence loop; its durable journal makes crash replay idempotent. */
   async reconcileIdleClaims(action: IdleClaimsAction): Promise<boolean> {
     const { doc, participant } = action
     const ownsNow = (): boolean => {
       const holder = participantRecord(doc, participant)?.holder
-      return holder ? holder.sessionId === action.sessionId : action.ownsParticipant?.() === true
+      if (action.ownsParticipant?.() !== true) return false
+      return holder ? holder.sessionId === action.sessionId && action.epoch === String(holder.epoch) : true
     }
     if (!ownsNow()) return false
     const claims = [...doc.claims.values()].filter(c => c.by === participant && c.byKind !== 'human')

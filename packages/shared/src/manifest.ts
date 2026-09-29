@@ -109,10 +109,14 @@ export async function versionOf(snap: ParticipantSnapshot | undefined, path: str
 } = {}): Promise<Version> {
   if (!snap) return { kind: 'unknown', why: 'no-record', detail: 'no manifest record' }
   const { head } = snap
-  if (!head.complete || !snap.fenceValid || head.base !== snap.record?.git?.base || snap.record.git.fence !== head.fence) {
+  if (!head.complete || !snap.fenceValid) {
     return { kind: 'unknown', why: 'updating', detail: 'manifest is updating' }
   }
-  if (head.coverage.kind === 'none') return { kind: 'unknown', why: head.coverage.reason === 'not-publisher' ? 'not-publisher' : 'intent', detail: head.coverage.reason }
+  if (head.coverage.kind === 'none' && head.coverage.reason === 'not-publisher')
+    return { kind: 'unknown', why: 'not-publisher', detail: `not publisher; ${head.publisher ?? 'another participant'} publishes this worktree` }
+  if (head.base !== snap.record?.git?.base || snap.record.git.fence !== head.fence)
+    return { kind: 'unknown', why: 'updating', detail: 'manifest is updating' }
+  if (head.coverage.kind === 'none') return { kind: 'unknown', why: 'intent', detail: head.coverage.reason }
   const entry = snap.entries.get(path)
   if (entry) {
     if (entry.change === 'D') return { kind: 'deleted', entry }

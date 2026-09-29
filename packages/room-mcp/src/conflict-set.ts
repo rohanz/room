@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, gitBlobHash, holderFence, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, gitBlobHash, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
@@ -141,7 +141,7 @@ export class ConflictSet {
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined) {
-    const fence = () => holderFence(participantRecord(team.room, owner === team.me.name ? owner : team.me.name)?.holder) ?? ''
+    const fence = () => team.lease?.fence() ?? ''
     this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post)
   }
 
@@ -226,12 +226,15 @@ export class ConflictSet {
 
   private async run(reason: string): Promise<void> {
     const room = this.team.room
+    const leaseFence = this.team.lease?.fence()
+    if (!leaseFence) return
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
     const ownGit = acceptedGit(participantRecord(room, this.owner), views)
-    if (!mine || ownGit === 'updating') return
+    if (!mine || mine.head.fence !== leaseFence || ownGit === 'updating') return
+    const authority = () => this.team.lease?.fence() === leaseFence
     const claimInputs = JSON.stringify(room.openClaims())
-    this.guard = () => snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) &&
+    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) &&
       JSON.stringify(room.openClaims()) === claimInputs
     const nb = neighbours(views, this.owner)
     const names = new Set(nb.names())
@@ -244,7 +247,7 @@ export class ConflictSet {
       const graphInput = JSON.stringify(room.graphs.get(other))
       this.guard = () => {
         const current = participantsView(room, this.team.awareness, Date.now())
-        return snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) &&
+        return authority() && snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) &&
           JSON.stringify(room.openClaims()) === claimInputs && JSON.stringify(room.graphs.get(other)) === graphInput
       }
       const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other)

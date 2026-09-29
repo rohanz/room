@@ -22,13 +22,24 @@ export function hostKind(env: NodeJS.ProcessEnv = process.env, readParent: Paren
 
 /** H1 (registry §18): release this session's own claims and scope after eight idle hours, journaled so a crash replays once. */
 export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: number, monotonicMs: () => number): Promise<boolean> {
-  if (!s.lease) return false
+  const lease = s.lease
+  if (!lease) return false
   const registry = await WorkerRegistry.open(await gitCommonDir(s.dir), { migrate: false, watch: false })
   try {
+    const fence = lease.fence()
+    if (!fence) {
+      if (registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending while the name lease is paused')
+      return false
+    }
     return await registry.reconcileIdleClaims({
-      roomKey: s.roomName, sessionId: s.lease.sessionId, participant: s.me.name, idleEpoch,
+      roomKey: s.roomName, sessionId: lease.sessionId, participant: s.me.name, idleEpoch, epoch: fence,
       host: 'shared-app-server', lastActivityMs: monotonicMs() - idleMs, monotonicMs, doc: s.room,
-      postNotice: (id, text) => { void s.post<NoteMsg>(s.me, { type: 'note', text, priority: 'notify' }, { id, auto: true }) },
+      ownsParticipant: () => lease.fence() === fence,
+      postNotice: async (id, text) => {
+        const posted = await s.post<NoteMsg>(s.me, { type: 'note', text, priority: 'notify' }, { id, auto: true })
+        if (!posted.ok) throw new Error(posted.text)
+        return posted
+      },
     })
   } finally { registry.close() }
 }

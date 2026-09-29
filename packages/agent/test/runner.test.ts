@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { RoomDoc, type AnswerMsg, type ConflictMsg, type QuestionMsg, type NoteMsg, type ChangedMsg } from '@room/shared'
 import { Runner } from '../src/runner.js'
 import type { Post } from '@room/room-mcp'
@@ -19,7 +19,8 @@ function setup() {
   const backend = new FakeBackend()
   // pre-existing human message that must be ignored
   room.say('Rohan', { role: 'human', text: 'old message' })
-  const runner = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, preamble: 'PREAMBLE' })
+  const runner = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, preamble: 'PREAMBLE',
+    authority: { sessionId: 'roomagent:test', acquire: async () => 1, current: () => 1 } })
   runner.start()
   return { room, backend, runner, statuses }
 }
@@ -27,6 +28,48 @@ function setup() {
 describe('Runner', () => {
   let s: ReturnType<typeof setup>
   beforeEach(() => { s = setup() })
+
+  it('does not deliver or receipt addressed mail until its own epoch is held', async () => {
+    const room = new RoomDoc(), backend = new FakeBackend()
+    let epoch: number | undefined
+    const runner = new Runner({ name: 'P', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend,
+      authority: { sessionId: 'stale-session', acquire: async () => epoch, current: () => epoch } })
+    runner.start()
+    const msg = hubAppend<QuestionMsg>(room, { name: 'Q', kind: 'agent' }, { type: 'question', to: 'P', text: 'ready?' })
+    await tick()
+    expect(backend.inputs).toHaveLength(0)
+    expect(room.seen('P').has(msg.id)).toBe(false)
+    epoch = 55
+    await runner.retryDelivery()
+    await runner.idle()
+    expect(backend.inputs).toHaveLength(1)
+    expect(room.seen('P').get(msg.id)).toMatchObject({ s: 'stale-session', via: 'agent' })
+    await runner.stop()
+  })
+
+  it('rejects a delayed acceptance callback after the epoch lapses', async () => {
+    const room = new RoomDoc()
+    let epoch: number | undefined = 55
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const inputs: string[] = []
+    const backend = { async run(input: string, _item: unknown, _status: unknown, _signal: unknown, onTurnStarted?: () => void) {
+      inputs.push(input)
+      await gate
+      onTurnStarted?.()
+      return { finalResponse: '' }
+    } } as unknown as FakeBackend
+    const runner = new Runner({ name: 'P', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend,
+      authority: { sessionId: 'stale-session', acquire: async () => epoch, current: () => epoch } })
+    runner.start()
+    const msg = hubAppend<QuestionMsg>(room, { name: 'Q', kind: 'agent' }, { type: 'question', to: 'P', text: 'ready?' })
+    await vi.waitFor(() => expect(inputs).toHaveLength(1))
+    epoch = undefined
+    release()
+    await tick()
+    expect(room.seen('P').has(msg.id)).toBe(false)
+    await runner.stop()
+  })
 
   it('receipts an addressed event only after its Codex turn starts', async () => {
     const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },
@@ -219,7 +262,8 @@ describe('/stop', () => {
     const room = new RoomDoc()
     const backend = new FakeBackend(); backend.hold = true
     const awareness = { setLocalStateField() {} }
-    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, log: () => {} })
+    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness, backend, log: () => {},
+      authority: { sessionId: 'roomagent:test', acquire: async () => 1, current: () => 1 } })
     r.start()
     room.addClaim({ path: 'a.py', from: 1, to: 3, by: 'Rohan', byKind: 'agent', intent: 'edit a' })
     room.addClaim({ path: 'b.py', from: 2, to: 4, by: 'Rohan', byKind: 'agent', intent: 'edit b' })
@@ -252,7 +296,8 @@ describe('conflict preemption', () => {
   it('aborts a running turn and handles the conflict before queued work', async () => {
     const room = new RoomDoc()
     const backend = new FakeBackend(); backend.hold = true
-    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend })
+    const r = new Runner({ name: 'Rohan', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend,
+      authority: { sessionId: 'roomagent:test', acquire: async () => 1, current: () => 1 } })
     r.start()
     room.say('Rohan', { role: 'human', text: 'long task' })
     await tick()

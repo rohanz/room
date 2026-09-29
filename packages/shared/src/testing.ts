@@ -2,6 +2,15 @@ import { newId } from './identity.js'
 import { outgoing, type PostBody, type RoomDoc } from './doc.js'
 import type { Identity, Msg } from './types.js'
 
+/** Tests only: a coherent hub-epoch holder and publisher facts for manifest readers. */
+export function epochPublication(room: Pick<RoomDoc, 'participants' | 'manifestHead'>, name: string, base: string, epoch = 1, sessionId = `session-${name}`): string {
+  const fence = String(epoch)
+  room.participants.set(`${name}\0holder`, { sessionId, epoch })
+  room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
+  room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+  return fence
+}
+
 /**
  * Tests only: append a message the way the room's hub does (hub §2.3), so a test can stand in for
  * another participant without a hub. An id already in bus, mail, archive or outcomes appends nothing.

@@ -16,7 +16,8 @@ export interface RunnerOptions {
   backend: AgentBackend
   preamble?: string
   log?: (line: string) => void
-  sessionId?: string
+  /** Live hub name authority; an epoch is valid only while current() still returns it. */
+  authority: { sessionId: string; acquire(): Promise<number | undefined>; current(): number | undefined }
 }
 
 type Queued = { kind: 'human'; text: string } | { kind: 'event'; msg: Msg; line: string }
@@ -35,6 +36,7 @@ export class Runner {
   private paused = false
   private frontier = 0
   private queuedIds = new Set<string>()
+  private retryTimer?: ReturnType<typeof setTimeout>
 
   constructor(private opts: RunnerOptions) {
     this.me = { name: opts.name, kind: 'agent' }
@@ -93,8 +95,10 @@ export class Runner {
 
   async stop(waitMs = 1000): Promise<void> {
     this.stopped = true
+    if (this.retryTimer) clearTimeout(this.retryTimer)
     this.queue.length = 0
     this.queuedIds.clear()
+    for (const resolve of this.idleWaiters.splice(0)) resolve()
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.abort) {
@@ -154,14 +158,35 @@ export class Runner {
     this.running = true
     try {
       while (this.queue.length && !this.stopped) {
+        const epoch = await this.opts.authority.acquire()
+        if (epoch === undefined || this.opts.authority.current() !== epoch) {
+          this.scheduleRetry()
+          break
+        }
         const batch = this.nextBatch()
-        await this.turn(batch)
+        await this.turn(batch, epoch)
       }
     } finally {
       this.running = false
-      const w = this.idleWaiters; this.idleWaiters = []
-      for (const r of w) r()
+      if (!this.queue.length || this.stopped) {
+        const w = this.idleWaiters; this.idleWaiters = []
+        for (const r of w) r()
+      }
     }
+  }
+
+  /** Retry owed delivery after a denied/lapsed lease or a transport reconnect. */
+  async retryDelivery(): Promise<void> {
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined }
+    for (const m of owed(this.room, this.me, { frontier: this.frontier, routed: new Set() }, {}))
+      if (m.to === this.me.name) this.onMsg(m)
+    await this.drain()
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer || this.stopped) return
+    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; void this.retryDelivery() }, 1_000)
+    this.retryTimer.unref?.()
   }
 
   /** Human messages run alone; consecutive events are coalesced into one input. */
@@ -181,7 +206,7 @@ export class Runner {
     this.paused = true
     this.queue.length = 0
     this.queuedIds.clear()
-    const mine = this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
+    const mine = this.opts.authority.current() === undefined ? [] : this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
     for (const c of mine) {
       this.room.removeClaim(c.id, this)
       void this.opts.post<ReleaseMsg>(this.me, { type: 'release', claimId: c.id, path: c.path, summary: 'released by /stop' })
@@ -217,7 +242,7 @@ export class Runner {
     void this.drain()
   }
 
-  private async turn(batch: Queued[]) {
+  private async turn(batch: Queued[], epoch: number) {
     const say = (item: Omit<ChatItem, 'id' | 'at'>) => this.room.say(this.me.name, item)
     const extra = owed(this.room, this.me, { frontier: this.frontier, routed: new Set() },
       { claims: this.room.openClaims().filter(c => c.by === this.me.name) })
@@ -240,13 +265,13 @@ export class Runner {
     const { signal } = controller
     try {
       await this.opts.backend.run(input, item => {
-        if (this.stopped || this.abort !== controller) return
+        if (this.stopped || this.abort !== controller || this.opts.authority.current() !== epoch) return
         const c = itemToChat(item)
         if (c) say(c)
-      }, s => { if (!this.stopped && this.abort === controller) this.setStatus(s) }, signal, () => {
-        if (this.stopped || this.abort !== controller) return
+      }, s => { if (!this.stopped && this.abort === controller && this.opts.authority.current() === epoch) this.setStatus(s) }, signal, () => {
+        if (this.stopped || this.abort !== controller || this.opts.authority.current() !== epoch) return
         const ids = events.flatMap(q => this.room.message(q.msg.id) || this.room.mail.has(q.msg.id) ? [q.msg.id] : [])
-        if (ids.length) this.room.markSeen(this.me.name, ids, { s: this.opts.sessionId ?? `roomagent:${process.pid}`, via: 'agent' })
+        if (ids.length) this.room.markSeen(this.me.name, ids, { s: this.opts.authority.sessionId, via: 'agent' })
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -257,6 +282,7 @@ export class Runner {
       else { this.log(`turn failed: ${msg}`); say({ role: 'status', text: `turn failed: ${msg}` }) }
     } finally {
       for (const q of batch) if (q.kind === 'event') this.queuedIds.delete(q.msg.id)
+      if (!this.stopped && this.opts.authority.current() !== epoch) this.scheduleRetry()
       if (this.abort === controller) {
         this.abort = null
         this.abortReason = null
