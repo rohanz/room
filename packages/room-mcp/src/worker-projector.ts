@@ -126,7 +126,8 @@ export class WorkerProjector {
   private onReferenceDelete = (event: { changes: { keys: Map<string, { action: string }> } }) => {
     if ([...event.changes.keys.values()].some(change => change.action === 'delete')) void this.project()
   }
-  private running: Promise<void> = Promise.resolve()
+  private running?: Promise<void>
+  private dirty = false
   private stopped = false
 
   constructor(private s: Session, private registry: WorkerRegistry, private log: (line: string) => void = () => {}) {}
@@ -149,14 +150,25 @@ export class WorkerProjector {
     this.s.room.outcomes.unobserve(this.onReferenceDelete)
   }
 
-  /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */
+  /** A request waits for a pass started after that request; concurrent requests share the next pass. */
   project(): Promise<void> {
-    const next = this.running.then(async () => {
-      if (this.stopped) return
-      try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this) }
-      catch (e) { this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`) }
-    })
-    this.running = next
-    return next
+    if (this.stopped) return Promise.resolve()
+    this.dirty = true
+    if (!this.running) this.running = Promise.resolve().then(() => this.drain())
+    return this.running
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.dirty && !this.stopped) {
+        this.dirty = false
+        // projectWorkers reads the current registry and checks the current fence on each pass.
+        // Changes arriving during an awaited pass request just one follow-up pass.
+        try { await projectWorkers(this.s, this.registry, this.s.me.name, 'joined', this) }
+        catch (e) { this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`) }
+      }
+    } finally {
+      this.running = undefined
+    }
   }
 }

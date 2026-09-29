@@ -249,6 +249,55 @@ describe('resumed worker boundaries', () => {
     } finally { projector.stop() }
   })
 
+  it('N1: coalesces a burst of reference deletions while a projection pass is blocked', async () => {
+    const t = setup()
+    await t.seed('burst')
+    const registry = await registryForDir(t.dir)
+    const record = (await t.record('burst'))!
+    const messages = Array.from({ length: 100 }, (_, n) => hubAppend(t.room,
+      { name: 'teammate', kind: 'agent' }, { type: 'note', to: record.name, text: `burst ${n}` }))
+    for (const message of messages) {
+      t.room.mail.set(message.id, message)
+      t.room.outcomes.set(message.id, { to: record.name, from: message.from, outcome: 'expired', at: Date.now() })
+    }
+    t.room.markSeen(record.name, [messages[0].id], { s: record.hostSessionId!, via: 'prompt' })
+    let entered!: () => void, release!: () => void
+    const blocked = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const post = registry.postCompletion.bind(registry)
+    vi.spyOn(registry, 'postCompletion').mockImplementationOnce(async (...args) => {
+      entered()
+      await gate
+      return post(...args)
+    })
+    const passes = vi.spyOn(registry, 'projectable')
+    const projector = new WorkerProjector(t.session, registry)
+    projector.start()
+    try {
+      await blocked
+      for (const message of messages) t.room.doc.transact(() => {
+        const index = t.room.bus.toArray().findIndex(item => item.id === message.id)
+        expect(index).toBeGreaterThanOrEqual(0)
+        t.room.bus.delete(index, 1)
+        t.room.mail.delete(message.id)
+        t.room.outcomes.delete(message.id)
+      })
+      const drained = projector.project()
+      release()
+      await drained
+      expect(passes.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(passes.mock.calls.length).toBeLessThanOrEqual(3)
+      expect(t.room.seen(record.name).has(messages[0].id)).toBe(false)
+      projector.stop()
+      const stoppedAt = passes.mock.calls.length
+      const afterStop = hubAppend(t.room, { name: 'teammate', kind: 'agent' },
+        { type: 'note', to: record.name, text: 'after stop' })
+      t.room.bus.delete(t.room.bus.toArray().findIndex(item => item.id === afterStop.id), 1)
+      await projector.project()
+      expect(passes.mock.calls.length).toBe(stoppedAt)
+    } finally { release(); projector.stop() }
+  })
+
   it('shows a missing Claude session while leaving its follow-up owed', async () => {
     const t = setup()
     await t.seed('missing')
