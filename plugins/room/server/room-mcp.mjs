@@ -38472,10 +38472,15 @@ var Daemon = class {
     const claims = await this.reanchorOwnClaims(head, claimSnapshot, true);
     const facts = await this.transitionFacts(inputs, resolved, promoted, fence);
     for (let attempt = 1; ; attempt++) {
-      const publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base });
+      let publication;
+      try {
+        publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base });
+      } catch (error2) {
+        if (!(error2 instanceof StalePublication)) throw error2;
+      }
       if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
       if (this.fence !== fence) throw new Error("the name lease changed during the HEAD transition");
-      if (this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break;
+      if (publication && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break;
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`);
     }
     this.anchor = { base: resolved.base, anchored: resolved.anchored };

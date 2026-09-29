@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { CoalescedPoll } from './poll.js'
 import { Publisher, type PreparedPublication } from './publisher.js'
+import { StalePublication } from './disk-scan.js'
 import { markManifestIncomplete } from './manifest-publish.js'
 import { authorizesText, rulesFromText, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
 import type { ShareLevel } from './share-level.js'
@@ -771,10 +772,12 @@ class Daemon implements Roomd {
     const facts = await this.transitionFacts(inputs, resolved, promoted, fence)
     // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
     for (let attempt = 1; ; attempt++) {
-      const publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base })
+      let publication: PreparedPublication | undefined
+      try { publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base }) }
+      catch (error) { if (!(error instanceof StalePublication)) throw error }
       if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
-      if (this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
+      if (publication && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`)
     }
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
