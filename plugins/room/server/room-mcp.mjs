@@ -53785,11 +53785,11 @@ ${text}` : text;
       const offlineWithFacts = available.filter((person) => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0);
       const skipped = !explicit ? offlineWithFacts.filter((person) => !people.includes(person)) : [];
       const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with manifest facts: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
-      const recordPartial = async (names, gaps, command = "", ranOk) => {
+      const recordPartial = async (names, gaps, command = "", ranOk, anchors2 = "") => {
         await caller.post(caller.me, {
           type: "note",
           priority: "fyi",
-          text: `partial preview with ${names.join(", ") || "no participants"}: ${gaps.join("; ")}${command ? `; command "${command}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
+          text: `partial preview with ${names.join(", ") || "no participants"}: ${gaps.join("; ")}${anchors2}${command ? `; command "${command}" ran on a partial tree (${ranOk ? "passed" : "failed or not run"})` : "; tests not run"}; combined work not verified`
         });
       };
       if (!people.length) {
@@ -53800,6 +53800,17 @@ ${text}` : text;
         return ["no present participants to merge", skippedNote, ...unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join("; ")}`] : []].filter(Boolean).join("\n");
       }
       const participants = people.map((person) => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }));
+      const callerBase = baseFor(caller, caller.me.name);
+      const anchors = participants.flatMap(({ person, session }) => {
+        const base = baseFor(session, person);
+        const view = participantsView(session.room, session.awareness, Date.now());
+        const gitRecord = acceptedGit(participantRecord(session.room, person), view);
+        if (base === callerBase || gitRecord === "updating" || gitRecord.base !== base) return [];
+        const location2 = gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base ? ` (pushed to ${gitRecord.upstream})` : gitRecord.branch ? ` (on ${gitRecord.branch})` : "";
+        const live = [...snapshot(session.room, person, view)?.entries.values() ?? []].some((entry) => entry.state === "shared") ? " + live changes" : "";
+        return [`${person} at ${base.slice(0, 10)}${location2}${live}`];
+      });
+      const anchorNote = anchors.length ? `; included ${anchors.join(", ")}` : "";
       const missingNotes = [];
       for (const { person, session } of participants) {
         const ownLocalWorker = session.local && localWorkers(session.dir, (record2) => record2.name === person)[0];
@@ -53817,8 +53828,8 @@ ${text}` : text;
         const gapLines = [...gaps.map((gap) => `${gap.person}${gap.path ? ` ${gap.path}` : ""}: ${gap.why}`), ...unavailable];
         if (!paths.length && !result2.callerOnly && !run2) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false };
-          if (!complete) await recordPartial(people, gapLines);
-          return [...missingNotes, ...out2, complete ? `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join("; ")}`, skippedNote].filter(Boolean).join("\n");
+          if (!complete) await recordPartial(people, gapLines, "", void 0, anchorNote);
+          return [...missingNotes, ...out2, complete ? `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join("; ")}`, ...anchors.length ? [`included ${anchors.join(", ")}`] : [], skippedNote].filter(Boolean).join("\n");
         }
         out2.unshift(...missingNotes);
         if (skippedNote) out2.push(skippedNote);
@@ -53826,6 +53837,7 @@ ${text}` : text;
         for (const [p, text] of resolvedText) out2.push(`--- resolved ${p} (write this to your clone) ---
 ${text}--- end ${p} ---`);
         out2.push(`final combined tree: ${merged.size} path(s) applied${result2.callerOnly ? ` (plus ${result2.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
+        if (anchors.length) out2.push(`included ${anchors.join(", ")}`);
         if (noTestsNote) out2.push(noTestsNote);
         let ranOk = !run2;
         if (run2) {
@@ -53865,8 +53877,8 @@ ${text}--- end ${p} ---`);
           testsPassed: run2 ? complete && hardCount === 0 && ranOk : false,
           ...run2 ? { partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run2 } : {}
         };
-        if (!complete) await recordPartial(people, gapLines, run2, ranOk);
-        if (complete && !hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
+        if (!complete) await recordPartial(people, gapLines, run2, ranOk, anchorNote);
+        if (complete && !hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${anchorNote}${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
       } catch (error2) {
         const message2 = error2 instanceof Error ? error2.message : String(error2);
