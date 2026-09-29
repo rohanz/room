@@ -7954,7 +7954,7 @@ function boundedTextDiff(before, after) {
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
   const out2 = head ? [[0, before.slice(0, head)]] : [];
   if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
-    out2.push(...hunk(a, b, WORK)[0]);
+    out2.push(...hunk(a, b, SMALL_WORK)[0]);
     if (tail) out2.push([0, before.slice(before.length - tail)]);
     return out2.filter(([, value2]) => value2.length);
   }
@@ -7986,13 +7986,14 @@ function boundedTextDiff(before, after) {
   if (tail) out2.push([0, before.slice(before.length - tail)]);
   return out2.filter(([, value2]) => value2.length);
 }
-var WORK, SMALL_MIDDLE, isHigh, isLow, editBudget, replace;
+var WORK, SMALL_MIDDLE, SMALL_WORK, isHigh, isLow, editBudget, replace;
 var init_text_diff = __esm({
   "packages/shared/src/text-diff.ts"() {
     "use strict";
     init_libesm();
     WORK = 2e6;
     SMALL_MIDDLE = 4096;
+    SMALL_WORK = 5e5;
     isHigh = (code) => code >= 55296 && code <= 56319;
     isLow = (code) => code >= 56320 && code <= 57343;
     editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
@@ -25250,6 +25251,7 @@ var init_src2 = __esm({
       periodicReconcileSchedule;
       cancelPeriodicReconcile;
       reconcileQueued = false;
+      reconcileDirty = false;
       beforeWatcherReady;
       sizeCap;
       totalBudget;
@@ -25616,12 +25618,23 @@ var init_src2 = __esm({
       }
       /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
       reconcileGitChanges() {
-        if (this.reconcileQueued || this.stopped) return this.workQueue;
+        if (this.stopped) return this.workQueue;
+        if (this.reconcileQueued) {
+          this.reconcileDirty = true;
+          return this.workQueue;
+        }
         this.reconcileQueued = true;
         return this.enqueue(async () => {
           try {
-            await this.pollHead();
-            await this.publisher.reconcile(await gitChanged(this.dir));
+            do {
+              this.reconcileDirty = false;
+              try {
+                await this.pollHead();
+                await this.publisher.reconcile(await gitChanged(this.dir));
+              } catch (error2) {
+                if (!this.reconcileDirty || this.stopped) throw error2;
+              }
+            } while (this.reconcileDirty && !this.stopped);
           } finally {
             this.reconcileQueued = false;
           }
