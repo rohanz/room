@@ -131,7 +131,7 @@ for (const addedAbove of [0, 5]) {
   })
 }
 
-async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: number, transient = true, shifted = false) {
+async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: number, transient = true, shifted = false, claimBeforeEdit = false, localEditLine = 6) {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-autostash-'))
   const remote = path.join(root, 'remote.git')
   const local = path.join(root, 'local')
@@ -147,15 +147,19 @@ async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: 
   git(root, 'clone', '-q', remote, peer)
   git(peer, 'config', 'user.email', 'peer@example.com')
   git(peer, 'config', 'user.name', 'Peer')
+  const logs: string[] = []
   daemon = await startRoomd({ dir: local, room: 'ws://memory/autostash', name: 'Alice', kind: 'agent',
-    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: line => logs.push(line),
   })
-  const edited = shifted ? 'mine\n'.repeat(5) + original.replace('line 11\n', 'my line 11\n') : original.replace('line 6\n', 'my line 6\n')
+  const edited = shifted ? 'mine\n'.repeat(5) + original.replace('line 11\n', 'my line 11\n') : original.replace(`line ${localEditLine}\n`, `my line ${localEditLine}\n`)
   const from = shifted ? 15 : 6
   const to = shifted ? 19 : 6
+  const claim = claimBeforeEdit
+    ? daemon.roomDoc.addClaim({ path: 'app.txt', from, to, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, from, to) })
+    : undefined
   fs.writeFileSync(path.join(local, 'app.txt'), edited)
   daemon.roomDoc.setOverlay('Alice', 'app.txt', edited)
-  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from, to, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(edited, from, to) })
+  const actualClaim = claim ?? daemon.roomDoc.addClaim({ path: 'app.txt', from, to, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(edited, from, to) })
   const changed = incomingLine === 0 ? 'peer insertion\n' + original : original.replace(`line ${incomingLine}\n`, `peer line ${incomingLine}\n`)
   fs.writeFileSync(path.join(peer, incomingPath), changed)
   git(peer, 'add', '-A'); git(peer, 'commit', '-qm', 'peer edit'); git(peer, 'push', '-q', 'origin', 'HEAD:main')
@@ -173,8 +177,24 @@ async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: 
   }
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
   await restore
-  return { local, claim, edited }
+  return { local, claim: actualClaim, edited, logs }
 }
+
+it('keeps a claim made before editing its lines through a real autostash pull on other lines', async () => {
+  const { local, claim, edited, logs } = await pulledClaim('app.txt', 20, false, false, true)
+  expect(fs.readFileSync(path.join(local, 'app.txt'), 'utf8')).toContain('my line 6')
+  expect(edited).toContain('my line 6')
+  expect(daemon!.roomDoc.claims.get(claim.id)).toEqual(claim)
+  expect(daemon!.roomDoc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toEqual([])
+  expect(logs.filter(line => line.startsWith('kept claim on app.txt:6-6 after '))).toHaveLength(1)
+})
+
+it('conservatively keeps a pre-edit claim when a teammate rewrites its lines and local edits are elsewhere', async () => {
+  const { local, claim, logs } = await pulledClaim('app.txt', 6, false, false, true, 20)
+  expect(fs.readFileSync(path.join(local, 'app.txt'), 'utf8')).toContain('peer line 6')
+  expect(daemon!.roomDoc.claims.get(claim.id)).toEqual(claim)
+  expect(logs.filter(line => line.startsWith('kept claim on app.txt:6-6 after '))).toHaveLength(1)
+})
 
 it('keeps an edited claim when a pull changes other lines in the same file', async () => {
   const { claim } = await pulledClaim('app.txt', 10)
@@ -246,4 +266,30 @@ it('releases a claim when an incoming commit changes its claimed line', async ()
   expect(daemon.roomDoc.messages()).toContainEqual(expect.objectContaining({
     type: 'note', from: 'room', to: 'Alice', text: `released your claim on app.txt:2-2: that code changed in ${commit}`,
   }))
+})
+
+it.each(['directory', 'rename'] as const)('releases the old-path claim when a commit replaces its file with a %s', async replacement => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-claim-path-'))
+  git(root, 'init', '-q', '-b', 'main')
+  git(root, 'config', 'user.email', 'test@example.com')
+  git(root, 'config', 'user.name', 'Test')
+  const original = 'first\nclaimed\nlast\n'
+  fs.writeFileSync(path.join(root, 'app.txt'), original)
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-path', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
+  if (replacement === 'rename') git(root, 'mv', 'app.txt', 'moved.txt')
+  else {
+    git(root, 'rm', '-q', 'app.txt')
+    fs.mkdirSync(path.join(root, 'app.txt'))
+    fs.writeFileSync(path.join(root, 'app.txt', 'child.txt'), 'new\n')
+    git(root, 'add', '-A')
+  }
+  git(root, 'commit', '-qm', 'replace claimed path')
+  const head = git(root, 'rev-parse', 'HEAD')
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })

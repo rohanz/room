@@ -294,7 +294,7 @@ export class Publisher {
       this.host.skips.size.delete(relpath)
       this.host.skips.budget.delete(relpath)
       const trackedOnly = TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf('/') + 1))
-      if (trackedOnly && !this.host.isTracked(relpath)) {
+      if (trackedOnly && fs.existsSync(this.host.abs(relpath)) && !this.host.isTracked(relpath)) {
         this.withdrawIgnored(relpath, 'untracked lockfile')
         return
       }

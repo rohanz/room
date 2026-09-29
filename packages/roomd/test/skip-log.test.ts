@@ -96,3 +96,31 @@ it.each(['full', 'declared'] as const)('shares an untracked lockfile after git a
     expect(daemon.skipped().ignore).not.toContain('uv.lock')
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+it('keeps a tracked lockfile deletion published before and after the tracked refresh', async () => {
+  const dir = repo({ 'uv.lock': 'tracked base\n', 'app.py': 'x = 1\n' })
+  const daemon = await start(dir, () => {}, { trackedRefreshMs: 60_000, basePollMs: 0, reconcileIntervalMs: 0 })
+  try {
+    execFileSync('git', ['rm', '-q', '--', 'uv.lock'], { cwd: dir })
+    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
+    expect(daemon.roomDoc.deletedFor('Test').has('uv.lock')).toBe(true)
+    await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
+    await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
+    expect(daemon.roomDoc.deletedFor('Test').has('uv.lock')).toBe(true)
+  } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it.each(['rm --cached', 'restore --staged'] as const)('withdraws a newly added lockfile after git %s', async command => {
+  const dir = repo({ 'app.py': 'x = 1\n' })
+  fs.writeFileSync(path.join(dir, 'uv.lock'), 'generated\n')
+  const daemon = await start(dir, () => {}, { trackedRefreshMs: 60_000, basePollMs: 0, reconcileIntervalMs: 0 })
+  try {
+    execFileSync('git', ['add', '--', 'uv.lock'], { cwd: dir })
+    await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
+    await until(() => daemon.roomDoc.overlayText('Test', 'uv.lock')?.toString() === 'generated\n')
+    execFileSync('git', [...command.split(' '), '--', 'uv.lock'], { cwd: dir })
+    await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
+    await until(() => daemon.roomDoc.overlayText('Test', 'uv.lock') === undefined)
+    expect(daemon.skipped().ignore).toContain('uv.lock')
+  } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
