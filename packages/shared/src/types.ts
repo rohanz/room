@@ -54,6 +54,8 @@ export interface Claim {
   msgId?: string
   /** Set on a lead's team-room claim that mirrors a worker's local claim: the worker's tag. */
   mirrorOf?: string
+  /** Legacy source until the owner's first schema-2 join adopts this claim. */
+  origin?: string
 }
 
 export interface Scope {
@@ -63,6 +65,8 @@ export interface Scope {
   area: string
   summary: string
   paths: string[]
+  /** Legacy source until the owner's first schema-2 join adopts this scope. */
+  origin?: string
   /** Areas (CODEOWNERS prefixes or top-level dirs) covering `paths` plus the person's changed paths; see areas.ts. */
   areas?: string[]
   /** epoch ms */

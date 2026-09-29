@@ -20,6 +20,19 @@ const legacyMemoryFile = (commonDir: string, room: string) => path.join(commonDi
 it('refuses a worker launched by an older Room before it can publish', async () => {
   await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("this worker runs Room 0.17 but its lead runs an older Room")
 })
+it.each(['local/repo/special', 'git/gitlab.com/group/subgroup/repo'])('admits a current worker in the exact explicit room %s', async room => {
+  const dir = common()
+  execFileSync('git', ['-C', dir, 'init', '-q'])
+  const registry = await registryForDir(dir)
+  const read = vi.spyOn(registry, 'read').mockReturnValue({ ...intent(), room } as WorkerRecord)
+  const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
+  try {
+    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: room })).resolves.toBeUndefined()
+    expect(admit).toHaveBeenCalledOnce()
+    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: room + '/other' })).rejects.toThrow()
+    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce' })).rejects.toThrow()
+  } finally { read.mockRestore(); admit.mockRestore(); await closeRegistryForDir(dir) }
+})
 it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root', async () => {
   const dir = common(), alias = `${dir}-alias`
   execFileSync('git', ['-C', dir, 'init', '-q'])
@@ -27,7 +40,8 @@ it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root'
   const registry = await registryForDir(dir)
   const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
   try {
-    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_REGISTRY: path.join(alias, '.git', 'room', 'registry') })).resolves.toBeUndefined()
+    vi.spyOn(registry, 'read').mockReturnValue({ ...intent(), room: 'local/repo' } as WorkerRecord)
+    await expect(admitWorkerEnvironment(dir, { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: 'local/repo', ROOM_REGISTRY: path.join(alias, '.git', 'room', 'registry') })).resolves.toBeUndefined()
     expect(admit).toHaveBeenCalledOnce()
   } finally { await closeRegistryForDir(dir) }
 })

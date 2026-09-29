@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
 import { catchUpLocal, forgetLegacyLocal } from '../src/local-migrate.js'
@@ -10,6 +11,7 @@ import { owed } from '@room/shared'
 import { probeProcess } from '../src/process.js'
 
 let common: string
+const ledgerFile = (room: string) => path.join(common, 'room', 'relay', `migrated-${crypto.createHash('sha256').update(room).digest('hex').slice(0, 16)}.json`)
 beforeEach(() => { common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-migrate-')) })
 afterEach(() => { fs.rmSync(common, { recursive: true, force: true }) })
 
@@ -39,7 +41,7 @@ it('catches up a running old relay by ID without resurrecting a released claim',
   expect(target.metaMap.get('localMigrating')).toBe(0)
   forgetLegacyLocal(common, room)
   expect(fs.existsSync(oldFile)).toBe(false)
-  expect(fs.existsSync(path.join(common, 'room', 'relay', 'migrated.json'))).toBe(false)
+  expect(fs.existsSync(ledgerFile(room))).toBe(false)
 })
 
 it('keeps names from two legacy branches separate until their owners claim them', () => {
@@ -109,11 +111,11 @@ it('saves imported state before advancing the ledger on a failed save retry', ()
   const target = new RoomDoc(new Y.Doc()), file = memoryFile(common, room)
   fs.mkdirSync(file, { recursive: true })
   expect(() => catchUpLocal(common, room, target.doc, () => {})).toThrow('could not save')
-  expect(fs.existsSync(path.join(common, 'room', 'relay', 'migrated.json'))).toBe(false)
+  expect(fs.existsSync(ledgerFile(room))).toBe(false)
   fs.rmSync(file, { recursive: true })
   catchUpLocal(common, room, target.doc)
   expect(new RoomDoc(loadMemory(common, room)).mail.has('retry-q')).toBe(true)
-  expect(JSON.parse(fs.readFileSync(path.join(common, 'room', 'relay', 'migrated.json'), 'utf8')).messages).toContain('retry-q')
+  expect(JSON.parse(fs.readFileSync(ledgerFile(room), 'utf8')).messages).toContain('retry-q')
 })
 
 it('replays safely if ledger rename fails after the snapshot is durable', () => {
@@ -122,7 +124,7 @@ it('replays safely if ledger rename fails after the snapshot is durable', () => 
   const source = new RoomDoc(new Y.Doc())
   source.mail.set('q-ledger', { id: 'q-ledger', type: 'question', from: 'ada', fromKind: 'agent', to: 'ben', text: 'ledger?', at: 1, priority: 'notify' })
   fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/main`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
-  const ledger = path.join(common, 'room', 'relay', 'migrated.json')
+  const ledger = ledgerFile(room)
   fs.mkdirSync(ledger, { recursive: true })
   const target = new RoomDoc(new Y.Doc())
   expect(() => catchUpLocal(common, room, target.doc)).toThrow()
@@ -174,4 +176,104 @@ it('freezes completed legacy imports and treats a reused pid as gone', () => {
   expect(catchUpLocal(common, room, target.doc)).toBe(false)
   expect(target.bus.toArray().map(m => m.id)).toEqual(['first'])
   expect(probeProcess(process.pid)?.startTime).not.toBe('reused-pid')
+})
+
+it('routes late catch-up mail through a reclaimed identity, including mail-only ambiguity', () => {
+  const room = 'local/shop', dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid: process.pid }))
+  const put = (branch: string, messages: { id: string; from: string; to: string }[]) => {
+    const source = new RoomDoc(new Y.Doc())
+    for (const m of messages) source.mail.set(m.id, { ...m, type: 'question', fromKind: 'agent', text: m.id, at: 1, priority: 'notify' })
+    fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/${branch}`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  }
+  put('main', [{ id: 'q1', from: 'ben', to: 'cy' }])
+  put('feature', [{ id: 'q2', from: 'ben', to: 'cy' }])
+  const target = new RoomDoc(new Y.Doc())
+  catchUpLocal(common, room, target.doc)
+  const key = `${room}/main\0ben`, unresolved = target.doc.getMap<{ placeholder: string }>('unresolved')
+  expect(unresolved.get(key)?.placeholder).toMatch(/^\?/)
+  const placeholder = unresolved.get(key)!.placeholder
+  target.doc.getMap<string>('aliases').set(placeholder, 'ben-new')
+  unresolved.delete(key)
+  put('main', [{ id: 'q1', from: 'ben', to: 'cy' }, { id: 'q3', from: 'cy', to: 'ben' }, { id: 'q4', from: 'ben', to: 'cy' }])
+  catchUpLocal(common, room, target.doc)
+  expect(target.mail.get('q3')?.to).toBe('ben-new')
+  expect(target.mail.get('q4')?.from).toBe('ben-new')
+  expect(unresolved.has(key)).toBe(false)
+  expect(target.mail.get('q1')?.from).toBe(placeholder)
+})
+
+it('keeps a newly authored scope when a later snapshot makes its name ambiguous', () => {
+  const room = 'local/shop', dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid: process.pid }))
+  const put = (branch: string) => {
+    const source = new RoomDoc(new Y.Doc())
+    source.setScope({ by: 'ben', byKind: 'agent', area: branch, summary: branch, paths: [`${branch}.py`] })
+    fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/${branch}`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  }
+  put('main')
+  const target = new RoomDoc(new Y.Doc())
+  catchUpLocal(common, room, target.doc)
+  target.setScope({ by: 'ben', byKind: 'agent', area: 'new', summary: 'authored in schema2', paths: ['new.py'] })
+  put('feature')
+  catchUpLocal(common, room, target.doc)
+  expect(target.scope('ben')?.summary).toBe('authored in schema2')
+  expect(target.doc.getMap<{ scope?: { summary: string } }>('unresolved').get(`${room}/main\0ben`)?.scope).toBeUndefined()
+})
+
+it('retries an unreadable final snapshot after repair instead of completing migration', () => {
+  const room = 'local/shop', dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${encodeURIComponent(`${room}/main`)}.ydoc`)
+  const source = new RoomDoc(new Y.Doc())
+  source.setScope({ by: 'ben', byKind: 'agent', area: 'main', summary: 'restored', paths: ['main.py'] })
+  const bytes = Y.encodeStateAsUpdate(source.doc)
+  fs.writeFileSync(file, 'broken')
+  const target = new RoomDoc(new Y.Doc()), diagnostics: string[] = []
+  catchUpLocal(common, room, target.doc, line => diagnostics.push(line))
+  expect(diagnostics.some(line => line.includes('cannot read'))).toBe(true)
+  expect(target.metaMap.get('localMigrating')).toBe(1)
+  fs.writeFileSync(file, bytes)
+  catchUpLocal(common, room, target.doc)
+  expect(target.scope('ben')?.summary).toBe('restored')
+})
+
+it('tracks completion and forgetting independently for explicit local rooms', () => {
+  const dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  for (const room of ['local/one', 'local/two']) {
+    const source = new RoomDoc(new Y.Doc())
+    source.setScope({ by: room, byKind: 'agent', area: 'work', summary: room, paths: ['x.py'] })
+    fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/main`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  }
+  const one = new RoomDoc(new Y.Doc()), two = new RoomDoc(new Y.Doc())
+  catchUpLocal(common, 'local/one', one.doc)
+  catchUpLocal(common, 'local/two', two.doc)
+  expect(one.scopes.size).toBe(1)
+  expect(two.scopes.size).toBe(1)
+  forgetLegacyLocal(common, 'local/one')
+  expect(fs.readdirSync(dir)).toHaveLength(1)
+  expect(catchUpLocal(common, 'local/two', two.doc)).toBe(false)
+  expect(two.scopes.size).toBe(1)
+})
+
+it('uses a prior global ledger only for the room proved by its source names', () => {
+  const oldLedger = path.join(common, 'room', 'relay', 'migrated.json')
+  fs.mkdirSync(path.dirname(oldLedger), { recursive: true })
+  fs.writeFileSync(oldLedger, JSON.stringify({ messages: ['old'], claims: [], scopes: [], sources: { 'local/one/main': 1 }, messageSources: {}, identities: {}, complete: true }))
+  const dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  const source = new RoomDoc(new Y.Doc())
+  source.setScope({ by: 'ben', byKind: 'agent', area: 'two', summary: 'two', paths: ['x.py'] })
+  fs.writeFileSync(path.join(dir, `${encodeURIComponent('local/two/main')}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  const one = new RoomDoc(new Y.Doc()), two = new RoomDoc(new Y.Doc())
+  expect(catchUpLocal(common, 'local/one', one.doc)).toBe(false)
+  expect(fs.existsSync(ledgerFile('local/one'))).toBe(true)
+  catchUpLocal(common, 'local/two', two.doc)
+  expect(two.scope('ben')?.summary).toBe('two')
+  forgetLegacyLocal(common, 'local/one')
+  expect(fs.existsSync(oldLedger)).toBe(false)
+  expect(fs.existsSync(ledgerFile('local/two'))).toBe(true)
 })
