@@ -9,7 +9,7 @@ import { completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } fro
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { probeProcess } from './worker-process.js'
+import { followUpAnswer, missingClaudeSession, probeProcess, workerLogTail } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
@@ -665,7 +665,15 @@ export class WorkerRegistry {
     const status = this.status(id)
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
       || (status.status !== 'failed' && !report?.done)) return false
-    const message = completionMessage(record, run, status, report)
+    const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+    const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
+      && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
+    const tail = workerLogTail(logFile)
+    const answer = run.mode === 'resume' ? followUpAnswer(logFile, record.host, run.logStart) : ''
+    const detail = missing
+      ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`
+      : (answer || tail !== '(log unavailable)') ? `${status.note ?? 'exited before reporting done'}; ${answer || tail}` : status.note
+    const message = completionMessage(record, run, { ...status, note: detail }, report)
     if (!message) return false
     await post(message)
     await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))

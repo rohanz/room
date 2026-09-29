@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { boundSession, sessionDirectory, syntheticSessionId } from './session.js'
 import { probeProcess } from './worker-process.js'
+import { migrateLocalState } from './local-migration.js'
 
 export interface SessionBinding {
   /** The bound host session, or undefined (the shared Codex app-server; registry §17). */
@@ -24,6 +25,8 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
   let cached: { at: number; value: ReturnType<SessionBinding['bound']> } | undefined
+  let ownGitDir: string | undefined
+  const migrated = new Set<string>()
   const common = () => {
     if (commonDir === undefined) {
       try { commonDir = path.resolve(cwd, execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()) }
@@ -46,7 +49,19 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   return {
     bound,
     id: () => bound()?.id ?? syntheticSessionId(self ?? { pid: process.pid, startTime: '', executable: '' }),
-    dir: () => { const b = bound(), dir = common(); return b && dir ? sessionDirectory(dir, b.id) : undefined },
+    dir: () => {
+      const b = bound(), dir = common()
+      if (!b || !dir) return undefined
+      const target = sessionDirectory(dir, b.id)
+      if (!migrated.has(b.id)) {
+        try {
+          ownGitDir ??= execFileSync('git', ['-C', cwd, 'rev-parse', '--absolute-git-dir'],
+            { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+          if (migrateLocalState(ownGitDir, target, b.id, path.join(dir, 'room', 'registry'))) migrated.add(b.id)
+        } catch { /* retry on the next call; local migration must never block Room */ }
+      }
+      return target
+    },
     commonDir: common,
   }
 }

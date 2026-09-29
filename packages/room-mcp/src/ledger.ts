@@ -113,7 +113,8 @@ export class Ledger {
   candidates(s: Session): Msg[] {
     if (!this.fenced(s)) return []
     const cursor = this.route(s)
-    return owed(s.room, s.me, cursor, this.o.route(s), m => this.o.relevant?.(s, m) ?? true)
+    const prompt = new Set(this.promptIds(s))
+    return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && (this.o.relevant?.(s, m) ?? true))
   }
 
   /** Receipts for a confirmed handoff; a late commit for an expired batch still writes (a real handoff). */
@@ -149,12 +150,21 @@ export class Ledger {
     batch.notices.length = 0
   }
 
-  /**
-   * The lead's receipt for a follow-up it put in a resumed worker's prompt. Until resume acceptance
-   * (ledger "Resume prompt", wave 4) moves it to the worker's own MCP, the lead writes it after the post.
-   */
-  commitPrompt(s: Session, participant: string, ids: readonly string[]): void {
-    s.room.markSeen(participant, ids, { s: this.o.sessionId(), via: 'prompt' })
+  /** A model action in the resumed worker run proves its one prompt-bearing turn was accepted. */
+  acceptPrompt(s: Session): void {
+    const ids = this.promptIds(s)
+    if (ids.length && this.fenced(s)) s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via: 'prompt' })
+  }
+
+  private promptIds(s: Session): string[] {
+    const id = process.env.ROOM_WORKER_ID, number = Number(process.env.ROOM_WORKER_RUN)
+    if (!id || !Number.isSafeInteger(number) || !process.env.ROOM_LAUNCH_NONCE) return []
+    try {
+      const record = registrySnapshotForDir(s.dir).read(id), run = record?.runs.at(-1)
+      if (record?.room !== s.roomName || record.name !== s.me.name || record.hostSessionId !== this.o.sessionId()
+        || run?.n !== number || run.nonce !== process.env.ROOM_LAUNCH_NONCE || run.mode !== 'resume') return []
+      return run.promptMsgIds
+    } catch { return [] }
   }
 
   /** The handoff failed or was cancelled: the ids are selectable again. */

@@ -132,7 +132,7 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
+    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base, fence: 'test-fence' } as never,
     shareMax: 'full', shareRequested: 'full',
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
   } as Session
@@ -1657,13 +1657,13 @@ describe('worker scheduling priority', () => {
 
 it('passes documented effort and session flags to Claude and Codex', () => {
   expect(workerCommand('claude', undefined, 'task', '', 'medium', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', maxBudgetUsd: '2.50' }).args)
-    .toEqual(['-p', 'task', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--effort', 'medium', '--name', 'money', '--session-id', '550e8400-e29b-41d4-a716-446655440000', '--max-budget-usd', '2.50'])
+    .toEqual(['-p', 'task', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--effort', 'medium', '--name', 'money', '--session-id', '550e8400-e29b-41d4-a716-446655440000', '--max-budget-usd', '2.50'])
   expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
   expect(workerCommand('claude', undefined, 'task', '', 'minimal').args).toContain('low')
   expect(workerCommand('codex', undefined, 'task', '', 'medium').args).toContain('model_reasoning_effort=medium')
   expect(workerCommand('codex', undefined, 'task').args).not.toContain('-c')
   expect(workerCommand('claude', 'opus', 'fix', '', 'high', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
-    .toEqual(['-p', '--resume', '550e8400-e29b-41d4-a716-446655440000', 'fix', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money'])
+    .toEqual(['-p', '--resume', '550e8400-e29b-41d4-a716-446655440000', 'fix', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money'])
   expect(workerCommand('codex', 'gpt-6-sol', 'fix', '', 'high', { sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
     .toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'fix'])
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
@@ -1871,7 +1871,7 @@ describe('worker follow-up sessions', () => {
     expect(t.specs[1].env).toMatchObject({ ...t.specs[0].env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: t.specs[1].env.ROOM_LAUNCH_NONCE })
     expect(t.specs[1].env.ROOM_LAUNCH_NONCE).not.toBe(t.specs[0].env.ROOM_LAUNCH_NONCE)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
-    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
+    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
 

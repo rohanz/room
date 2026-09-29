@@ -1,0 +1,4 @@
+{"type":"system","subtype":"hook_started","session_id":"session-123"}
+{"type":"system","subtype":"init","session_id":"session-123"}
+{"type":"assistant","session_id":"session-123","message":{"content":[{"type":"text","text":"Working through the follow-up."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"session-123","result":"Follow-up complete."}

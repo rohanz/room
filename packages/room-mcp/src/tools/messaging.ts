@@ -1,4 +1,4 @@
-import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
+import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
@@ -174,21 +174,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // A follow-up to a finished worker is posted only once the worker can resume, and it resumes only once posted.
       let posted: PostResult | undefined
       const post = async () => { posted = await s.post(s.me, body); return posted.ok ? undefined : posted.text }
-      let deliveredInPrompt = false
+      let resumed = false
       if (resume) {
-        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, post)
+        const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, async () => {
+          const refused = await post()
+          if (refused) return refused
+          const ids = owed(s.room, { name: to! }, { frontier: 0, routed: new Set() }, {})
+            .filter(m => m.to === to).map(m => m.id)
+          return { ids }
+        })
         if (posted?.ok === false) return posted.text
         if (typeof result === 'string' && result.startsWith('error:')) return posted ? `sent [${posted.msg.id}] ${formatMsg(posted.msg)}; ${result}` : result
-        deliveredInPrompt = true
+        resumed = true
         notes.push(typeof result === 'string' ? result : result.reply)
       } else {
         const refused = await post()
         if (refused) return refused
       }
       const msg = posted!.msg
-      if (deliveredInPrompt) ledger.commitPrompt(s, to!, [msg.id])
       if (msg.type === 'changed') notes.push(...await upgrade(s, msg, paths, symbols))
-      const notice = msg.to && !deliveredInPrompt ? recipientNotice(s, msg.to) : undefined
+      const notice = msg.to && !resumed ? recipientNotice(s, msg.to) : undefined
       if (notice) notes.push(msg.type === 'question' && notice.terminal ? unavailableQuestion(s, msg.id)! : notice.text)
       if (msg.type === 'question' && !notice?.terminal) notes.push(`room_wait questionId=${msg.id} to block for the answer`)
       s.daemon.touch()

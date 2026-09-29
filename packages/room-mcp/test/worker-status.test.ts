@@ -68,12 +68,13 @@ describe('statusOf', () => {
     expect(statusOf(launched, undefined, [], [{ run: 1, code: null, at: 5, witnessed: false }], dead).status).toBe('stopped')
   })
 
-  it('preserves earlier done after a witnessed successful follow-up', () => {
+  it('requires a fresh room_done for a witnessed successful follow-up', () => {
     const first = run({ outcome: 'launched', pid: 42 })
     const second = { ...run({ outcome: 'launched', pid: 43 }, 'resume'), n: 2 }
     const r = { ...record('active', first), runs: [first, second] }
     const reports = [{ run: 1, nonce: 'n', chain: [], joinedAt: 2, done: { at: 3, summary: 'done', changed: [] } }]
-    expect(statusOf(r, undefined, reports, [{ run: 2, code: 0, at: 5, witnessed: true }], dead).status).toBe('done')
+    expect(statusOf(r, undefined, reports, [{ run: 2, code: 0, at: 5, witnessed: true }], dead))
+      .toMatchObject({ status: 'failed', note: 'exited without room_done' })
   })
 
   it('maps ambiguous and imported to safe legacy decision inputs', () => {

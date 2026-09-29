@@ -10,10 +10,11 @@ const files = (dir: string, match: RegExp): string[] => readdirSync(dir).flatMap
   return match.test(name) && !/\.test\.ts$/.test(name) ? [full] : []
 })
 
-it('markSeen( appears only in ledger.ts, delivery.ts and doc.ts', () => {
+it('markSeen( appears only at confirmed delivery boundaries and in shared primitives', () => {
   const sources = readdirSync(join(ROOT, 'packages')).flatMap(p => { try { return files(join(ROOT, 'packages', p, 'src'), /\.ts$/) } catch { return [] } })
   const writers = sources.filter(f => readFileSync(f, 'utf8').includes('markSeen(')).map(f => relative(ROOT, f)).sort()
-  const allowed = ['packages/room-mcp/src/ledger.ts', 'packages/shared/src/delivery.ts', 'packages/shared/src/doc.ts']
+  const allowed = ['packages/room-mcp/src/ledger.ts', 'packages/room-mcp/src/worker-projector.ts',
+    'packages/agent/src/runner.ts', 'packages/shared/src/delivery.ts', 'packages/shared/src/doc.ts']
   expect(writers.filter(f => !allowed.includes(f))).toEqual([])
 })
 

@@ -28,6 +28,33 @@ describe('Runner', () => {
   let s: ReturnType<typeof setup>
   beforeEach(() => { s = setup() })
 
+  it('receipts an addressed event only after its Codex turn starts', async () => {
+    const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },
+      { type: 'question', to: 'Rohan', text: 'ready?' })
+    await s.runner.idle()
+    expect(s.room.seen('Rohan').get(msg.id)).toMatchObject({ via: 'agent' })
+  })
+
+  it('leaves a message owed when Codex rejects before turn.started', async () => {
+    s.backend.emitTurnStarted = false
+    const msg = hubAppend<QuestionMsg>(s.room, { name: 'Kieran', kind: 'agent' },
+      { type: 'question', to: 'Rohan', text: 'ready?' })
+    await s.runner.idle()
+    expect(s.room.seen('Rohan').has(msg.id)).toBe(false)
+  })
+
+  it('includes a non-waking worker progress note in the next human turn', async () => {
+    s.room.workerViews.set('worker-1', { id: 'worker-1', name: 'Kieran', lead: 'Rohan' } as never)
+    const msg = hubAppend<NoteMsg>(s.room, { name: 'Kieran', kind: 'agent' },
+      { type: 'note', to: 'Rohan', text: 'quiet update' })
+    await s.runner.idle()
+    expect(s.backend.inputs).toHaveLength(0)
+    s.room.say('Rohan', { role: 'human', text: 'continue' })
+    await s.runner.idle()
+    expect(s.backend.inputs[0]).toContain('quiet update')
+    expect(s.room.seen('Rohan').get(msg.id)).toMatchObject({ via: 'agent' })
+  })
+
   it('forwards human messages with the preamble on the first turn only', async () => {
     s.room.say('Rohan', { role: 'human', text: 'refactor validation' })
     await s.runner.idle()

@@ -5,10 +5,12 @@
  * projected into the team room. Input is the registry's level-triggered `projectable()`.
  */
 import type { Session } from './session.js'
+import path from 'node:path'
 import type { WorkerView } from '@room/shared'
 import { registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
 import { workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
+import { missingClaudeSession, resumeAccepted } from './worker-process.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
 export type ProjectorRole = 'joined' | 'projected'
@@ -31,7 +33,17 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   const listed = new Set([...write.map(({ record }) => record.id), ...retire.map(record => record.id)])
   s.room.doc.transact(() => {
     for (const { record, status } of write) {
-      const view = workerView(record, status, fence)
+      const run = status.run
+      const ended = ['done', 'failed', 'stopped'].includes(status.status)
+      const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
+      if (ended && run?.mode === 'resume' && run.promptMsgIds.length && record.hostSessionId
+        && resumeAccepted(logFile, record.host, record.hostSessionId, run.logStart)) {
+        s.room.markSeen(record.name, run.promptMsgIds, { s: record.hostSessionId, via: 'prompt' })
+      }
+      const missing = ended && record.host === 'claude' && run?.mode === 'resume' && record.hostSessionId
+        && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
+      const shown = missing ? { ...status, note: `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed` } : status
+      const view = workerView(record, shown, fence)
       if (JSON.stringify(s.room.workerViews.get(record.id)) !== JSON.stringify(view)) s.room.workerViews.set(record.id, view)
       // A host that ended without room_done can no longer act: its claims and scope stop blocking others.
       const stopped = status.status === 'failed' || status.status === 'stopped'
