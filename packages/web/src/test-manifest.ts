@@ -3,9 +3,9 @@ import { gitBlobHash, manifestKey, type ManifestEntry, type RoomDoc } from '@roo
 
 /** Schema-2 publication fixture for web tests; mirrors the daemon's current incarnation. */
 export function publish(room: RoomDoc, name: string, path: string, text: string, baseText = '', base = 'base'): void {
-  const fence = `lease-${name}`
+  const fence = '1'
   if (!room.participants.has(`${name}\0holder`)) {
-    room.participants.set(`${name}\0holder`, { sessionId: fence, machine: 'test', pid: 1, startTime: '', executable: '' })
+    room.participants.set(`${name}\0holder`, { sessionId: `lease-${name}`, epoch: 1, pid: 1, startTime: '', executable: '', at: 1 })
     room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
     room.manifestHead.set(name, { base, fence, level: 'full', coverage: { kind: 'all' }, excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
     room.manifest.set(manifestKey(name, fence), new Y.Map<ManifestEntry>())

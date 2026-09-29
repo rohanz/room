@@ -80,7 +80,7 @@ async function nestedBatch(opts: { leadStatus?: FixtureWorker['status']; catStat
 
 /** The human's session after a crash: a fresh session in the top clone, with no process handles. */
 async function humanCollect(room: RoomDoc, workers: readonly FixtureWorker[]) {
-  const s = { ...hubSeam(room), dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top/shop', room, awareness: { getStates: () => new Map() }, daemon: {} }
+  const s = { ...hubSeam(room), dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top/shop', room, awareness: { getStates: () => new Map() }, daemon: { fence: '1' } }
   const registry = await registerWorkers(s as unknown as Session, workers)
   const state = {
     S: () => s,
@@ -219,7 +219,7 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Ftop%2Fshop', roomName: 'local/top/shop', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'shop', base } as never,
+    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'shop', base, fence: '1' } as never,
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
   } as Session

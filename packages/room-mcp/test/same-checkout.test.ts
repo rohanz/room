@@ -14,20 +14,24 @@ import { createTools } from '../src/tools.js'
 import { startArbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
 import { memorySession } from './fixtures/session.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 it('counts a teammate with a different machine checkout id, while deduping the same physical checkout', () => {
   const own = new Y.Doc(), foreign = new Y.Doc(), remote = new Y.Doc()
   const awareness = new Awareness(own), peer = new Awareness(foreign), remotePeer = new Awareness(remote)
+  const room = new RoomDoc(own)
   try {
-    awareness.setLocalState({ user: { name: 'Ada', kind: 'agent' }, watchedDirectory: 'machine-a:path' })
-    peer.setLocalState({ user: { name: 'Bea', kind: 'agent' }, watchedDirectory: 'machine-b:path' })
+    visiblePeer(room, 'Ada', 'agent', 'ada-session')
+    visiblePeer(room, 'Bea', 'agent', 'bea-session')
+    awareness.setLocalState({ user: { name: 'Ada', kind: 'agent' }, sessionId: 'ada-session', watchedDirectory: 'machine-a:path' })
+    peer.setLocalState({ user: { name: 'Bea', kind: 'agent' }, sessionId: 'bea-session', watchedDirectory: 'machine-b:path' })
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer, [foreign.clientID]), 'test')
-    const session = { awareness, me: { name: 'Ada', kind: 'agent' } } as Session
+    const session = { room, awareness, me: { name: 'Ada', kind: 'agent' } } as Session
     expect(hasCompany(session)).toEqual({ company: true, others: ['Bea'] })
     peer.setLocalStateField('watchedDirectory', 'machine-a:path')
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer, [foreign.clientID]), 'test')
     expect(hasCompany(session)).toEqual({ company: false, others: [] })
-    remotePeer.setLocalState({ user: { name: 'Bea', kind: 'agent' }, watchedDirectory: 'machine-b:path' })
+    remotePeer.setLocalState({ user: { name: 'Bea', kind: 'agent' }, sessionId: 'bea-session', watchedDirectory: 'machine-b:path' })
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(remotePeer, [remote.clientID]), 'test')
     expect(hasCompany(session)).toEqual({ company: true, others: ['Bea'] })
   } finally {
@@ -39,9 +43,12 @@ it('announces an untagged agent with its marker and a human by the bare name', (
   const own = new RoomDoc(), beaDoc = new Y.Doc(), cyDoc = new Y.Doc()
   const awareness = new Awareness(own.doc), bea = new Awareness(beaDoc), cy = new Awareness(cyDoc)
   try {
-    awareness.setLocalState({ user: { name: 'Ada', kind: 'agent' } })
-    bea.setLocalState({ user: { name: 'Bea', kind: 'agent' } })
-    cy.setLocalState({ user: { name: 'Cy', kind: 'human' } })
+    visiblePeer(own, 'Ada', 'agent', 'ada-session')
+    visiblePeer(own, 'Bea', 'agent', 'bea-session')
+    visiblePeer(own, 'Cy', 'human', 'cy-session')
+    awareness.setLocalState({ user: { name: 'Ada', kind: 'agent' }, sessionId: 'ada-session' })
+    bea.setLocalState({ user: { name: 'Bea', kind: 'agent' }, sessionId: 'bea-session' })
+    cy.setLocalState({ user: { name: 'Cy', kind: 'human' }, sessionId: 'cy-session' })
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(bea, [beaDoc.clientID]), 'test')
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(cy, [cyDoc.clientID]), 'test')
     own.setScope({ by: 'Bea', byKind: 'agent', area: 'api', summary: 'parser', paths: ['src/'] })

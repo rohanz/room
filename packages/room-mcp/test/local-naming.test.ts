@@ -137,6 +137,7 @@ it('same-room rejoin is a no-op even with a running worker, preserving scope', a
   expect(t.leave).not.toHaveBeenCalled()
   expect(cur.room.scope('Ada')).toEqual(scope)
   expect(reply.split('\n')[1]).toContain('local/custom')
-  expect(reply).toContain('browser view: ' + cur.browserUrl)
+  expect(reply).not.toContain('browser view:')
+  expect(await t.tools.call('room_state', { link: true })).toContain('browser view: ' + cur.browserUrl)
   expect(reply).not.toContain('moved from')
 })

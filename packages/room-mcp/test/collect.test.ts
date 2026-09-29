@@ -50,7 +50,7 @@ function setup(status: FixtureWorker['status'] = 'done') {
   const pending = new Map<string, FixtureWorker>([['test', w]])
   const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, roomName: 'local/test', roomUrl: 'ws://127.0.0.1:1/local%2Ftest', me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() }, daemon: { fence: 'test' } } as unknown as Session
   const autoRetire = vi.fn(async () => {})
-  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire, project: () => projectAll(s), hasHandle: () => false, tracking: () => true }, workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
+  const state = { S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire, project: () => projectAll(s), hasHandle: () => false, tracking: () => true }, myWorkers: () => localWorkers(lead), workerAlive: () => false, ctx: { listCwdProcesses: () => [] } } as unknown as HandlerState
   const sync = async () => { if (pending.size) { await registerWorkers(s, [...pending.values()]); pending.clear() } }
   const set = (tag: string, value: FixtureWorker) => { pending.set(tag, value) }
   const get = (tag: string): FixtureWorker => { const found = pending.get(tag); if (!found) throw new Error(`worker ${tag} is already registered`); return found }

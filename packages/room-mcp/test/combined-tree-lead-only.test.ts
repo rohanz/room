@@ -10,7 +10,7 @@ import type { HandlerState } from '../src/tools/context.js'
 import { RoomDoc } from '@room/shared'
 import * as Y from 'yjs'
 import type { Session } from '../src/session.js'
-import { closeRegistryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, localWorkers } from '../src/worker-registry.js'
 import { registerWorkers } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -38,7 +38,7 @@ async function setup() {
   const s = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, local: {}, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', room, awareness: { getStates: () => new Map() }, daemon: {} }
   await registerWorkers(s as unknown as Session, [{ tag: 'test', name: 'lead+test', lead: 'lead', dir: worker, branch: 'room/test', status: 'done', exitCode: 0, summary: 'finished', base, host: 'codex', task: 'task', pid: 0, startedAt: 1 }])
   const state = {
-    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: vi.fn(async () => {}), project: vi.fn(async () => {}) }, workerAlive: () => false,
+    S: () => s, rooms: { all: () => [s], holding: () => s, holdingWorker: () => s, reserve: () => true, unreserve() {}, autoRetire: vi.fn(async () => {}), project: vi.fn(async () => {}) }, myWorkers: () => localWorkers(lead), workerAlive: () => false,
     others: () => ['lead+test'], presences: () => [], withheld: () => undefined, baseFor: () => base, shareOf: () => 'full', liveText: async () => undefined,
   } as unknown as HandlerState
   return { state }

@@ -20,7 +20,9 @@ const self = { startTime: 'fixture-start', executable: 'fixture-node' }
 const fixtureProbe = (pid: number) => pid === process.pid ? self : undefined
 const token = (sessionId: string, nonce = randomUUID()): InstanceToken => ({ pid: process.pid, ...self, sessionId, nonce })
 const takeLocalName = (file: string, candidate: NameLease, options: TakeOptions = {}) => takeName(file, candidate, { ...options, probe: options.probe ?? fixtureProbe })
-const holderOf = (t: InstanceToken) => ({ sessionId: t.sessionId, pid: t.pid, startTime: t.startTime, executable: t.executable })
+// The relay probes actual processes; an unreadable birth marker must remain live until TTL.
+// Keep the fake marker for the isolated local lease tests below.
+const holderOf = (t: InstanceToken) => ({ sessionId: t.sessionId, pid: t.pid, startTime: '', executable: '' })
 function commonDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-names-'))
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }))
