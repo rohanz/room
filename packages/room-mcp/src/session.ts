@@ -24,10 +24,15 @@ import { createClaudeTranscriptModelRefresh, DEFAULT_SERVER, LOCAL, normaliseWhe
 import { isFresh } from './presence.js'
 import { readChoice, rememberTag, worktreePath } from './choice.js'
 import { acquireOwnedFile } from './owned-file.js'
+import { currentToolTiming } from './timing.js'
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
 const DEFAULT_WEB = 'http://localhost:5173'
+
+function joinPhase<T>(name: string, work: () => Promise<T> | T): Promise<T> {
+  return currentToolTiming()?.phase(name, () => inPhase(name, async () => work())) ?? inPhase(name, async () => work())
+}
 
 export interface Session {
   room: RoomDoc
@@ -354,14 +359,14 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
     const url = new URL(options.room)
     const room = url.pathname.split('/').pop()!
     url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/'))
-    const provider = options.providerFactory
+    const provider = await joinPhase('connect', () => options.providerFactory
       ? options.providerFactory(url.toString().replace(/\/$/, ''), room, doc)
       : new WebsocketProvider(url.toString().replace(/\/$/, ''), room, doc, {
           WebSocketPolyfill: WebSocket as any,
           params: { ...(options.token ? { token: options.token } : {}), ...(options.session ? { session: options.session } : {}), ...(options.localKey ? { key: options.localKey } : {}) },
-        })
+        }))
     try {
-      if (!provider.synced) await inPhase('sync', () => new Promise<void>((resolve, reject) => {
+      if (!provider.synced) await joinPhase('sync', () => new Promise<void>((resolve, reject) => {
         const onSync = (synced: boolean) => { if (synced) { clearTimeout(timer); provider.off('sync', onSync); resolve() } }
         const timer = setTimeout(() => {
           provider.off('sync', onSync)
@@ -405,7 +410,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
     }
   }
   let daemon: Roomd
-  try { daemon = await startRoomd({ ...options, name, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }) }
+  try { daemon = await joinPhase('daemon start', () => startRoomd({ ...options, name, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) })) }
   catch (e) { releaseName?.(); throw e }
   if (releaseName) {
     const stop = daemon.stop.bind(daemon)
@@ -443,7 +448,7 @@ export async function startAutoTaggedRoomd(options: Parameters<typeof startRoomd
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
   const dir = resolve(opts.dir)
-  const config = await resolveConfig({ dir, env: process.env, args: opts })
+  const config = await joinPhase('resolve', () => resolveConfig({ dir, env: process.env, args: opts }))
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
@@ -464,36 +469,36 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
 
   let roomName = config.room
   if (!roomName) {
-    const d = await deriveRoomName(dir)
+    const d = await joinPhase('resolve', () => deriveRoomName(dir))
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop/main")`, 2)
     roomName = d.roomName
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
-  const auth = await resolveAuth(server, roomName, token)
+  const auth = await joinPhase('resolve', () => resolveAuth(server, roomName, token))
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
   // makes this a second principal under the same owner: name = login+label (e.g. rohanz+codex).
   const label = config.tag?.replace(/[^A-Za-z0-9_-]/g, '') || undefined
   const kindEnv = config.kind
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
-  const owner = auth.login ?? config.owner ?? config.name ?? await defaultName(dir)
+  const owner = auth.login ?? config.owner ?? config.name ?? await joinPhase('resolve', () => defaultName(dir))
   if (!owner) throw new RoomdError('could not determine your name: pass name or set git config user.name', 2)
   assertValidParticipantName(owner)
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
-  let pre = await preflight(server, roomName, creds)
+  let pre = await joinPhase('preflight', () => preflight(server, roomName, creds))
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2)
-    const err = await createRoom(server, roomName, { ...creds, by: name })
+    const err = await joinPhase('preflight', () => createRoom(server, roomName, { ...creds, by: name }))
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
-    pre = await preflight(server, roomName, creds)
+    pre = await joinPhase('preflight', () => preflight(server, roomName, creds))
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
   if (pre?.missing) throw new NoRoom(roomName, pre.reason, server)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
   const shareRequested = requestedShare(config.share)
-  const shareMax = await serverShareMax(server, shareRequested)
+  const shareMax = await joinPhase('preflight', () => serverShareMax(server, shareRequested))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config.tag, () => shareMaxCache.get(server) ?? shareMax)

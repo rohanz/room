@@ -31,7 +31,7 @@ import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegener
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTracked } from './git.js'
+import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTrackedWithIndex } from './git.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -186,7 +186,7 @@ export class RoomdError extends Error {
 
 export const DEFAULT_IGNORED_DIRS = new Set(['node_modules', '.venv', 'dist', 'build', '.git', '.room', 'target', '.next', 'coverage'])
 export function defaultIgnoredPath(relpath: string): boolean {
-  return relpath.split('/').some(segment => DEFAULT_IGNORED_DIRS.has(segment) || segment === '.DS_Store' || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith('~') || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment))
+  return relpath.split('/').some(segment => DEFAULT_IGNORED_DIRS.has(segment) || segment === '__pycache__' || segment === '.DS_Store' || segment === '.coverage' || /\.(?:pyc|pyo)$/i.test(segment) || segment.endsWith('.egg-info') || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith('~') || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment))
 }
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
@@ -290,6 +290,7 @@ class Daemon implements Roomd {
   private onScanned?: (relpath: string) => void
 
   private tracked = new Set<string>()
+  private indexed = new Set<string>()
   private watcher: FSWatcher | null = null
   private timers = new Set<NodeJS.Timeout>()
   private readonly gitPolls: CoalescedPoll[] = []
@@ -397,12 +398,13 @@ class Daemon implements Roomd {
       gitBranch(this.dir),
       gitHead(this.dir),
       gitOrigin(this.dir),
-      gitTracked(this.dir),
+      gitTrackedWithIndex(this.dir),
     ]))
     this.branch = branch
     this.base = base
     this.appliedHead = base
-    this.tracked = tracked
+    this.tracked = tracked.paths
+    this.indexed = tracked.indexed
     this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl))
     // Scope can change during sync or seed. Keep the observer live before either await.
     this.roomDoc.scopes.observe(ev => {
@@ -775,7 +777,9 @@ class Daemon implements Roomd {
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
     this.base = head
     this.branch = branch
-    this.tracked = await gitTracked(this.dir)
+    const tracked = await gitTrackedWithIndex(this.dir)
+    this.tracked = tracked.paths
+    this.indexed = tracked.indexed
     await this.refreshShared()
     // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
     this.roomDoc.doc.transact(() => {
@@ -933,6 +937,8 @@ class Daemon implements Roomd {
   abs(relpath: string): string {
     return path.join(this.dir, ...relpath.split('/'))
   }
+
+  isTracked(relpath: string): boolean { return this.indexed.has(relpath) }
 
   private isIgnoredPath(relpath: string): boolean {
     if (!relpath || relpath === ROOM_FILE) return true
@@ -1117,11 +1123,13 @@ class Daemon implements Roomd {
 
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
-    const next = await gitTracked(this.dir)
-    const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
-    const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
-    this.tracked = next
-    for (const relpath of added) {
+    const next = await gitTrackedWithIndex(this.dir)
+    const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
+    const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath) && this.skips.ignore.has(relpath))
+    const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.paths.has(relpath))
+    this.tracked = next.paths
+    this.indexed = next.indexed
+    for (const relpath of new Set([...added, ...promoted])) {
       if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
         this.scheduleDisk(relpath, true)
         if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))

@@ -68,7 +68,8 @@ export class ToolTiming {
     if (total < threshold && [...this.phases.values()].every(value => value < threshold)) return undefined
     const pieces: string[] = []
     const spawnPhases = this.phases.has('prepare') || this.phases.has('launch') || this.phases.has('lease')
-    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : ['settle', 'body']
+    const joinPhases = (this.name === 'room_join' || this.name === 'room_create') && ['resolve', 'preflight', 'connect', 'sync', 'daemon start'].some(name => this.phases.has(name))
+    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : joinPhases ? ['settle', 'resolve', 'preflight', 'connect', 'sync', 'daemon start'] : ['settle', 'body']
     for (const name of names) {
       const elapsed = name === 'body' ? Math.max(0, (this.phases.get('body') ?? 0) - (this.phases.get('settle') ?? 0)) : this.phases.get(name)
       if (elapsed === undefined) continue
@@ -80,7 +81,7 @@ export class ToolTiming {
       }
       pieces.push(piece)
     }
-    if (spawnPhases) {
+    if (spawnPhases || joinPhases) {
       const accounted = names.reduce((sum, name) => sum + (this.phases.get(name) ?? 0), 0)
       const other = Math.max(0, total - accounted)
       if (Math.round(other) > 0) pieces.push(`other ${ms(other)}`)

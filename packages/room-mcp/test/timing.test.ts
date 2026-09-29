@@ -89,6 +89,21 @@ describe('tool timing', () => {
     expect(lines).toEqual(['slow tool room_state 3100ms: settle 3000ms, body 100ms'])
   })
 
+  it('prints join phases instead of collapsing them into body', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_join', async () => {
+      const timing = currentToolTiming()!
+      await timing.phase('resolve', () => { now += 100 })
+      await timing.phase('preflight', () => { now += 1200 })
+      await timing.phase('connect', () => { now += 50 })
+      await timing.phase('sync', () => { now += 2100 })
+      await timing.phase('daemon start', () => { now += 900 })
+    })
+    expect(lines).toEqual(['slow tool room_join 4350ms: resolve 100ms, preflight 1200ms, connect 50ms, sync 2100ms, daemon start 900ms'])
+  })
+
   it('counts baseline hash-object Git during a real preparation path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-timing-'))
     try {

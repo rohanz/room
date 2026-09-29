@@ -209,8 +209,20 @@ export async function gitChanged(dir: string): Promise<string[]> {
  * creates api/notify.py rarely stages it, and a teammate's tests still need it.
  */
 export async function gitTracked(dir: string): Promise<Set<string>> {
-  const out = await gitWholeTree(dir, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
-  return new Set(out.split('\0').filter(Boolean))
+  return (await gitTrackedWithIndex(dir)).paths
+}
+
+/** One scan distinguishes Git-index files from untracked paths while retaining both for the watcher. */
+export async function gitTrackedWithIndex(dir: string): Promise<{ paths: Set<string>; indexed: Set<string> }> {
+  const out = await gitWholeTree(dir, ['ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard'])
+  const paths = new Set<string>(), indexed = new Set<string>()
+  for (const entry of out.split('\0')) {
+    if (!entry) continue
+    const relpath = entry.slice(2)
+    paths.add(relpath)
+    if (entry[0] !== '?') indexed.add(relpath)
+  }
+  return { paths, indexed }
 }
 
 /** True when git would ignore this path (so it must not be synced). */

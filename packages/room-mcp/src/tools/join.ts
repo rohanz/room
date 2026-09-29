@@ -210,7 +210,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         try {
           // The exact identity: an untagged session goes back untagged ('' is an explicit empty label). Only a rollback
           // does this; branch-following and other joins keep the collision-aware automatic name.
-          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), tag: cur!.me.label ?? '' })
+          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), tag: cur!.me.label ?? '', log })
           if (!cur!.pinnedRoom) delete back.pinnedRoom
           markHistorySeenOnJoin(back, seen)
           rooms.add(back, 'primary')
@@ -237,6 +237,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         create: a.create === true,
         confirm: a.confirm === true,
         share: resolved.share,
+        log,
       }) } catch (e) {
         if (!cur) return refused(e, '')
         return rollBack(message(e))
@@ -386,7 +387,7 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
       const target = `${repo}/${branch}`
       log(`branch changed ${current} -> ${branch}; moving room`)
       try {
-        const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target })
+        const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target, log })
         delete n.pinnedRoom
         const stale = s.room.messages().filter(m => m.type === 'note' && m.from === 'room' && m.to === s.me.name && m.text.startsWith(`you switched to ${branch}; the room is for ${current};`)).map(m => m.id)
         if (stale.length) { s.room.markSeen(s.me.name, stale); for (const id of stale) seen.add(id) }
