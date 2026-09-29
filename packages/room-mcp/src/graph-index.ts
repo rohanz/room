@@ -1,7 +1,7 @@
 /**
  * Keeps a SymbolGraph current for one room from local files and shared manifest versions.
  */
-import { bareSymbol, containsPath, digestPath, holderFence, manifestKey, manifestPaths, observedContractChanges, participantRecord, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, containsPath, digestPath, holderFence, manifestKey, manifestPaths, observedContractChanges, participantRecord, snapshotPath, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import type * as Y from 'yjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -286,12 +286,12 @@ export class GraphIndex {
     const refreshes: Promise<void>[] = []
     let lastYield = Date.now()
     for (let i = 0; i < pathsToRefresh.length; i++) {
-      refreshes.push(this.refresh(pathsToRefresh[i]))
-      if ((i + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+      if (i > 0 && (i % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
         await yieldToEventLoop()
         if (generation !== this.generation || this.stopped) return
         lastYield = Date.now()
       }
+      refreshes.push(this.refresh(pathsToRefresh[i]))
     }
     await Promise.all(refreshes)
     if (generation !== this.generation || this.stopped) return
@@ -306,7 +306,19 @@ export class GraphIndex {
       const root = fs.realpathSync(this.dir)
       const file = containedRepoPath(root, path.join(root, pathname), { leaf: 'read-contained-link' })
       if (!file.ok) return undefined
-      return fs.readFileSync(file.path, 'utf8')
+      const fd = fs.openSync(file.path, 'r')
+      try {
+        const stat = fs.fstatSync(fd)
+        if (!stat.isFile() || stat.size > MAX_BYTES) return undefined
+        const bytes = Buffer.allocUnsafe(MAX_BYTES + 1)
+        let used = 0
+        while (used < bytes.length) {
+          const count = fs.readSync(fd, bytes, used, bytes.length - used, used)
+          if (!count) break
+          used += count
+        }
+        return used > MAX_BYTES ? undefined : bytes.toString('utf8', 0, used)
+      } finally { fs.closeSync(fd) }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
       throw error
@@ -322,7 +334,7 @@ export class GraphIndex {
     if (mine !== undefined) return mine
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue
-      const participant = snapshot(this.room, person, [])
+      const participant = snapshotPath(this.room, person, [], path)
       const version = await versionOf(participant, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
       if (!participant?.entries.has(path) && version.kind !== 'excluded') continue
       if (version.kind === 'text') return version.text
@@ -334,7 +346,7 @@ export class GraphIndex {
 
   /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
   private async publicationTextFor(path: string): Promise<{ text: string; source: PublicationSource } | undefined> {
-    const mine = snapshot(this.room, this.me, [])
+    const mine = snapshotPath(this.room, this.me, [], path)
     if (mine) {
       if (!this.ownTextAuthorized(path)) return undefined
       if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== 'all') return undefined
@@ -352,7 +364,7 @@ export class GraphIndex {
     }
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue
-      const peer = snapshot(this.room, person, [])
+      const peer = snapshotPath(this.room, person, [], path)
       if (!peer) continue
       const raw = this.room.manifest.get(manifestKey(person, peer.head.fence))?.get(path)
       if (raw && raw.fence !== peer.head.fence) return undefined
@@ -505,7 +517,7 @@ export class GraphIndex {
       const revision = this.revisions.get(path), generation = this.generation
       await ensureLanguages([path])
       const text = await this.textFor(path)
-      const publicationSource = snapshot(this.room, this.me, [])
+      const publicationSource = snapshotPath(this.room, this.me, [], path)
       const publication = await this.publicationTextFor(path)
       const publicText = publication?.text
       const heldBy = text === undefined && this.ownTextAuthorized(path) ? [...this.room.manifestHead.keys()].filter(person => {

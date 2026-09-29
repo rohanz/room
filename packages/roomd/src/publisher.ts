@@ -5,7 +5,7 @@ import { gitHead, gitShowMany } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk, StalePublication } from './disk-scan.js'
 import { markManifestIncomplete, publishManifest, type ManifestFact } from './manifest-publish.js'
-import { authorizesText, defaultExcludedPath, plan, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
+import { authorizesText, defaultExcludedPath, MAX_PUBLICATION_PATHS, planYielding, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
 
 interface Host {
@@ -34,11 +34,13 @@ interface Host {
 }
 
 export interface PreparedPublication {
+  readonly fence: string | undefined
   readonly inputs: PublicationInputs
   readonly desired: PublicationPlan
   readonly baseTexts: ReadonlyMap<string, string | undefined>
   readonly facts: readonly ManifestFact[]
   readonly textOps: ReadonlyMap<string, ReturnType<RoomDoc['prepareOverlayDiff']>>
+  readonly baseTextDeletes: readonly string[]
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
@@ -104,12 +106,21 @@ export class Publisher {
     if (fence === undefined) { this.markDirty(); return }
     const incarnation = manifestKey(host.name, fence)
     const current = host.roomDoc.manifest.get(incarnation)
+    const overlayPaths = incarnationOverlayPaths(host.roomDoc, incarnation)
+    if ((current?.size ?? 0) + this.excludedPaths.size + overlayPaths.length + host.roomDoc.ownedBaseTexts.size + host.roomDoc.manifest.size + host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
+      markManifestIncomplete(host.roomDoc, host.name, fence)
+      this.reconcileFailed(new Error('publication path limit exceeded during policy narrowing'))
+      return
+    }
     const facts: ManifestFact[] = []
+    const factPaths = new Set<string>()
+    const retainedText = new Set<string>()
     let budget = 0
     if (next.policy.level !== 'intent' && next.policy.publisher) {
       for (const [path, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
         if (defaultExcludedPath(path) || next.rules.roomIgnore.ignores(path) || (entry.size !== undefined && entry.size > next.rules.sizeCap)) {
           facts.push({ path, change: entry.change, excluded: true })
+          factPaths.add(path)
           this.excludedPaths.add(path)
           continue
         }
@@ -117,21 +128,24 @@ export class Publisher {
         const text = permit && entry.change !== 'D' && entry.state === 'shared' ? host.roomDoc.overlayText(incarnation, path)?.toString() : undefined
         if (text !== undefined && budget + Buffer.byteLength(text) > next.rules.budget) {
           facts.push({ path, change: entry.change, excluded: true })
+          factPaths.add(path)
           this.excludedPaths.add(path)
           continue
         }
         if (text !== undefined) budget += Buffer.byteLength(text)
         facts.push({ path, change: entry.change, ...(permit ? { hash: entry.hash, size: entry.size, baseHash: entry.baseHash } : {}),
           ...(text !== undefined ? { text } : {}), binary: entry.held === 'binary', at: entry.at })
+        factPaths.add(path)
+        if (text !== undefined || entry.change === 'D') retainedText.add(path)
       }
-      for (const path of this.excludedPaths) if (!facts.some(f => f.path === path)) facts.push({ path, change: 'M', excluded: true })
+      for (const path of this.excludedPaths) if (!factPaths.has(path)) facts.push({ path, change: 'M', excluded: true })
     }
     host.roomDoc.doc.transact(() => {
       publishManifest({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
         prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
-      for (const path of incarnationOverlayPaths(host.roomDoc, incarnation)) {
-        if (facts.some(f => f.path === path && f.text !== undefined || f.path === path && f.change === 'D' && !f.excluded)) continue
+      for (const path of overlayPaths) {
+        if (retainedText.has(path)) continue
         host.roomDoc.clearOverlay(incarnation, path, host)
       }
       host.roomDoc.reconcileBaseTexts(host.name, host, next.head)
@@ -162,7 +176,12 @@ export class Publisher {
     const valid = () => !this.host.stopped && this.host.inputs === inputs && this.host.fence === capturedFence
     const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid)
     for (const item of disk) await this.host.beforeBaseRead?.(item.path)
-    const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt())
+    let desired: PublicationPlan
+    try { desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt()) }
+    catch (error) {
+      if (capturedFence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, capturedFence)
+      throw error
+    }
     if (desired.unsettled.length) {
       if (this.host.fence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence)
       this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`))
@@ -179,28 +198,53 @@ export class Publisher {
     let sinceYield = 0
     const incarnation = capturedFence === undefined ? undefined : manifestKey(this.host.name, capturedFence)
     for (const [path, entry] of desired.entries) {
+      if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
+        await setImmediate(); lastYield = performance.now(); sinceYield = 0
+      }
       if (!valid()) throw new StalePublication('publication inputs changed during prepare')
       facts.push({ path, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === 'binary', at: entry.at })
       if (entry.text !== undefined && incarnation) {
         textOps.set(path, this.host.roomDoc.prepareOverlayDiff(incarnation, path, entry.text))
       }
-      if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
-        await setImmediate()
-        lastYield = performance.now()
-        sinceYield = 0
-        if (!valid()) throw new StalePublication('publication inputs changed during prepare')
-      }
     }
-    for (const path of desired.excludedPaths) facts.push({ path, change: 'M', excluded: true })
-    return { inputs, desired, baseTexts, facts, textOps }
+    for (const path of desired.excludedPaths) {
+      if (++sinceYield >= 32 || performance.now() - lastYield >= 15) { await setImmediate(); lastYield = performance.now(); sinceYield = 0 }
+      if (!valid()) throw new StalePublication('publication inputs changed during prepare')
+      facts.push({ path, change: 'M', excluded: true })
+    }
+    const oldCount = capturedFence === undefined ? 0 : (this.host.roomDoc.manifest.get(incarnation!)?.size ?? 0) + incarnationOverlayPaths(this.host.roomDoc, incarnation!).length
+    const baseTextDeletes: string[] = []
+    const wanted = new Set([...desired.entries].filter(([p, entry]) => entry.held !== 'scope' && authorizesText(inputs.policy, p)).map(([p]) => `${this.host.name}\0${inputs.head}:${p}`))
+    let baseCount = 0
+    for (const key of this.host.roomDoc.ownedBaseTexts.keys()) {
+      if (++baseCount % 32 === 1) await setImmediate()
+      if (!valid()) throw new StalePublication('publication inputs changed during prepare')
+      if (key.startsWith(`${this.host.name}\0`) && !wanted.has(key)) baseTextDeletes.push(key)
+      if (baseCount + facts.length + oldCount > MAX_PUBLICATION_PATHS) break
+    }
+    if (facts.length + oldCount + baseCount + this.host.roomDoc.manifest.size + this.host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
+      if (capturedFence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, capturedFence)
+      throw new Error('publication path limit exceeded during atomic apply')
+    }
+    return { fence: capturedFence, inputs, desired, baseTexts, facts, textOps, baseTextDeletes }
   }
 
   /** Final synchronous gate; called immediately before the Y transaction. */
   valid(prepared: PreparedPublication): boolean {
     if (prepared.desired.unsettled.length) return false
     const { host } = this
-    if (host.stopped || host.inputs !== prepared.inputs || host.fence === undefined) return false
+    if (host.stopped || host.inputs !== prepared.inputs || host.fence === undefined || host.fence !== prepared.fence) return false
+    return true
+  }
+
+  /** Filesystem checks run in yielding prepare, before any Y transaction. */
+  async validatePrepared(prepared: PreparedPublication): Promise<boolean> {
+    if (!this.valid(prepared)) return false
+    const { host } = this
+    let count = 0
     for (const p of prepared.desired.textPaths) {
+      if (++count % 32 === 1) await setImmediate()
+      if (!this.valid(prepared)) return false
       const entry = prepared.desired.entries.get(p)!
       try {
         const stat = fs.lstatSync(host.abs(p))
@@ -237,8 +281,7 @@ export class Publisher {
         const base = prepared.baseTexts.get(p)
         if (base !== undefined) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host, inputs.head)
-      withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)))
+      for (const key of prepared.baseTextDeletes) host.roomDoc.ownedBaseTexts.delete(key)
     }, host)
     this.excludedPaths.clear()
     for (const p of desired.excludedPaths) this.excludedPaths.add(p)
@@ -262,7 +305,7 @@ export class Publisher {
         if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       }
       if (await gitHead(this.host.dir) !== this.host.base) throw new Error('HEAD moved during publication')
-      if (!this.apply(prepared, complete)) return undefined
+      if (!await this.validatePrepared(prepared) || !this.apply(prepared, complete)) return undefined
       if (complete) await this.host.onFullScan?.(prepared.inputs.policy, prepared.desired.entries, prepared.desired.unsettled)
       if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       return prepared

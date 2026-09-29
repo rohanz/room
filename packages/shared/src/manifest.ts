@@ -84,6 +84,21 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
   return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
 }
 
+/** A single-file reader need not materialize every published overlay in the room. */
+export function snapshotPath(room: RoomDoc, name: string, view: readonly ParticipantView[], path: string): ParticipantSnapshot | undefined {
+  const head = room.manifestHead.get(name)
+  if (!head) return undefined
+  const record = participantRecord(room, name)
+  const key = manifestKey(name, head.fence)
+  const entry = room.manifest.get(key)?.get(path)
+  const entries = new Map<string, ManifestEntry>()
+  if (entry?.fence === head.fence) entries.set(path, { ...entry })
+  const texts = new Map<string, string>()
+  const value = entry?.fence === head.fence ? room.overlays.get(key)?.get(path) : undefined
+  if (value) texts.set(path, value.toString())
+  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
+}
+
 export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, view: readonly ParticipantView[]): boolean {
   const head = room.manifestHead.get(snap.name)
   const record = participantRecord(room, snap.name)

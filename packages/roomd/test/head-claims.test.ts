@@ -182,7 +182,7 @@ async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: 
       try { git(local, 'stash', 'pop', '-q'); fs.rmSync(marker); resolve() } catch (error) { reject(error) }
     }, 200))
   }
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   await restore
   return { local, claim: actualClaim, edited, logs }
 }
@@ -268,7 +268,7 @@ it('releases a claim when an incoming commit changes its claimed line', async ()
   git(peer, 'add', '-A'); git(peer, 'commit', '-qm', 'change claimed line'); git(peer, 'push', '-q', 'origin', 'HEAD:main')
   git(local, 'pull', '-q', '--ff-only', '--autostash')
   const commit = git(local, 'rev-parse', '--short=10', 'HEAD')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
   expect(daemon.roomDoc.messages()).toContainEqual(expect.objectContaining({
     type: 'note', from: 'room', to: 'Alice', text: `released your claim on app.txt:2-2: that code changed in ${commit}`,
@@ -296,7 +296,7 @@ it.each(['directory', 'rename'] as const)('releases the old-path claim when a co
   }
   git(root, 'commit', '-qm', 'replace claimed path')
   const head = git(root, 'rev-parse', 'HEAD')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })
@@ -322,7 +322,7 @@ it('releases a committed claim with autocrlf even when disk bytes differ from HE
   expect(git(root, 'status', '--porcelain')).toBe('')
 
   const head = git(root, 'rev-parse', 'HEAD')
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })
@@ -345,7 +345,7 @@ it('releases a claim when a commit replaces its file with a symlink', async () =
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'replace claimed file with symlink')
   const head = git(root, 'rev-parse', 'HEAD')
 
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })

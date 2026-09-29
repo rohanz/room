@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, manifestKey } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey } from '@room/shared'
 import { startRoomd, type Roomd } from '@room/roomd'
 import { createTools } from '../src/tools.js'
 import { PolicyStore } from '../src/policy-store.js'
@@ -94,13 +94,34 @@ it('room_done retains declared text in the manifest while out-of-area edits rema
   expect(all).toContain('-base b.py')
   expect(all).toContain('private.py changed by Owner')
   expect(all).not.toContain('private edit')
+  const preview = await readerTools.call('room_preview_merge', { person: 'Owner' })
+  expect(preview).toContain('a.py (Owner only)')
+  expect(preview).toContain('b.py (Owner only)')
+  expect(preview).not.toContain('edited a: not shared')
 
-  // A stale overlay from an earlier full-sharing incarnation is never a read authority.
-  readerRoom.setOverlay('Owner', 'private.py', 'stale full-sharing text\n')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).not.toContain('stale full-sharing text')
+  // The current incarnation once shared this text. Narrowing must withdraw authority even
+  // while its overlay update is still in flight; a legacy-key overlay cannot test that race.
+  const fence = readerRoom.manifestHead.get('Owner')!.fence
+  const key = manifestKey('Owner', fence)
+  const entries = readerRoom.manifest.get(key)!
+  const oldPrivate = entries.get('private.py')!
+  const staleText = 'stale full-sharing text\n'
+  readerRoom.setOverlay(key, 'private.py', staleText)
+  entries.set('private.py', { ...oldPrivate, state: 'shared', held: undefined, hash: gitBlobHash(staleText), size: staleText.length })
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain(staleText.trim())
+  entries.set('private.py', oldPrivate)
+  expect(readerRoom.overlays.get(key)?.get('private.py')?.toString()).toBe(staleText)
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('outside their declared area')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py', diff: true })).not.toContain(staleText.trim())
   writeFileSync(join(ownerDir, 'a.py'), 'base a.py\n')
   await (daemon as unknown as { publisher: { reconcile(paths: 'all'): Promise<void> } }).publisher.reconcile('all')
   await vi.waitFor(() => expect(store.retained).toEqual([]))
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('base a.py')
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py', diff: true })).toContain('no difference')
+  writeFileSync(join(ownerDir, 'b.py'), 'base b.py\n')
+  await (daemon as unknown as { publisher: { reconcile(paths: 'all'): Promise<void> } }).publisher.reconcile('all')
+  await vi.waitFor(() => expect(readerRoom.manifest.get(manifestKey('Owner', readerRoom.manifestHead.get('Owner')!.fence))?.has('b.py')).toBe(false))
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('base b.py')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py', diff: true })).toContain('no difference')
+  expect(await readerTools.call('room_preview_merge', { person: 'Owner' })).not.toContain('b.py (Owner only)')
 })

@@ -180,6 +180,8 @@ const sideInput = (snap: ParticipantSnapshot, path: string): unknown => {
 
 /** Reconciles one owner's slots against all other comparable bases. */
 export class ConflictSet {
+  private static readonly MAX_PAIR_FILES = 2000
+  private fileWork = 0
   private readonly slots: ConflictSlots
   private readonly stops: (() => void)[] = []
   private timer: NodeJS.Timeout | undefined
@@ -335,6 +337,7 @@ export class ConflictSet {
   }
 
   private async run(reason: string): Promise<void> {
+    this.fileWork = 0
     const room = this.team.room
     const leaseFence = this.team.lease?.fence()
     if (!leaseFence) return
@@ -427,11 +430,22 @@ export class ConflictSet {
         for (const [key, slot] of existing) if (slot.kind === 'merge') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0failed enumeration`), why: 'cannot enumerate changed paths' })
         continue
       }
+      if (aPaths.size + bPaths.size > ConflictSet.MAX_PAIR_FILES) {
+        const why = 'too many changed paths to compare'
+        await this.settle(slotKey(this.owner, 'merge', other, '*'), { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(`${retrySource}\0${why}`), retrySource, factId: '', why })
+        for (const [key, slot] of existing) {
+          await this.fileTurn()
+          if (slot.kind === 'merge') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
+        }
+        await this.claims(mine, theirs, other, pair.mergeBase, aPaths)
+        continue
+      }
       const ownMergePaths = new Set(aPaths)
       const unchangedCarried = new Set<string>()
       const carried = this.carriedFrom?.(this.owner)
       if (carried?.lead === other && carriesWork(carried.baseline)) {
         for (const path of aPaths) {
+          await this.fileTurn()
           const baseline = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
           if (baseline.kind === 'unavailable') continue
           const ownText = asText(await this.read(mine, path))
@@ -444,6 +458,7 @@ export class ConflictSet {
       const candidates = new Set([...ownMergePaths].filter(p => bPaths.has(p)))
       for (const [, slot] of existing) if (slot.kind === 'merge' && slot.path !== '*') candidates.add(slot.path)
       for (const path of [...candidates].sort()) {
+        await this.fileTurn()
         const key = slotKey(this.owner, 'merge', other, path)
         const bothChanged = ownMergePaths.has(path) && bPaths.has(path)
         const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
@@ -508,6 +523,7 @@ export class ConflictSet {
       const paths = new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()])
       const observed: typeof changes = []
       for (const path of paths) {
+        await this.fileTurn()
         if (!this.contractPathAuthorized(theirs, path)) continue
         const before = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
         if (before.kind === 'unavailable') {
@@ -538,6 +554,7 @@ export class ConflictSet {
       changes = observed
     }
     for (const change of changes) {
+      await this.fileTurn()
       if (change.kind === 'add') continue
       if (!this.contractPathAuthorized(theirs, change.path)) continue
       const provider = await this.read(theirs, change.path)
@@ -554,6 +571,7 @@ export class ConflictSet {
       }
       const uses: string[] = []
       for (const path of myPaths) {
+        await this.fileTurn()
         if (!this.contractPathAuthorized(mine, path)) continue
         const text = await this.readableConsumer(mine, path)
         if (text === undefined) { this.unknownContracts(other, 'consumer version is not readable'); return }
@@ -596,6 +614,7 @@ export class ConflictSet {
     ])
     const read = (snap: ParticipantSnapshot, path: string) => this.read(snap, path)
     for (const path of paths) {
+      await this.fileTurn()
       if (path.endsWith('/')) continue
       const [ownV, theirV] = await Promise.all([read(mine, path), read(theirs, path)])
       const ownText = asText(ownV), theirText = asText(theirV)
@@ -647,6 +666,11 @@ export class ConflictSet {
     this.starts = this.starts.filter(t => now - t < 10_000)
     if (this.starts.length >= 4) await new Promise(resolve => setTimeout(resolve, 10_000 - (now - this.starts[0]!)))
     this.starts.push(Date.now())
+  }
+
+  /** Yield before fast as well as slow file branches, so cached/held paths count. */
+  private async fileTurn(): Promise<void> {
+    if (++this.fileWork % 32 === 0) await new Promise<void>(resolve => setImmediate(resolve))
   }
 }
 

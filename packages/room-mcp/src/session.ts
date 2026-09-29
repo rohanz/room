@@ -748,12 +748,12 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const name = label ? `${owner}+${label}` : owner
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`)
   const { login: _login, ...creds } = auth
-  let pre = await preflight(server, roomName, creds)
+  let pre = await timed('preflight', () => preflight(server, roomName!, creds))
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
-    const err = await createRoom(server, roomName, { ...creds, by: name })
+    const err = await timed('preflight', () => createRoom(server, roomName!, { ...creds, by: name }))
     if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
-    pre = await preflight(server, roomName, creds)
+    pre = await timed('preflight', () => preflight(server, roomName!, creds))
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
   if (pre?.missing) throw new NoRoom(roomName, pre.reason, server)
@@ -765,11 +765,11 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`
   const shareRequested = requestedShare(config.share)
-  const shareMax = await serverShareMax(server, shareRequested)
+  const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
-  const view = await viewToken(server, roomName, creds)
+  const view = await timed('view token', () => viewToken(server, roomName, creds))
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
@@ -1012,7 +1012,7 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
     const u = new URL(s.browserUrl)
     const web = `${u.protocol}//${u.host}`
     const a = await authFor(s)
-    const view = await viewToken(server, s.roomName, a)
+    const view = await timed('view token', () => viewToken(server, s.roomName, a))
     if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`
   } catch { /* keep the stored link */ }
   return s.browserUrl

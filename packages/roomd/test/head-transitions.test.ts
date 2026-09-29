@@ -9,6 +9,7 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
 import { claimDigest } from '../src/reanchor.js'
+import { pollHead } from './poll-head.js'
 
 const probe = vi.hoisted(() => ({ failTracked: false }))
 vi.mock('../src/git.js', async importOriginal => {
@@ -90,6 +91,30 @@ it('leaves migrated claims intact if the name fence lapses during validation', a
   internal.reanchorOwnClaims = async (head, claims) => { const result = await original(head, claims); fence = undefined as unknown as string; return result }
   await daemon!.validateMigratedClaims()
   expect(daemon!.roomDoc.claims.get(stale.id)).toEqual(stale)
+})
+
+it('keeps a claim uncertain when its disk file exceeds the publication size cap', async () => {
+  const { newHead, claim } = await movedHead()
+  fs.writeFileSync(path.join(dir!, 'app.txt'), 'other\n'.repeat(120_000))
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<{ moves: unknown[]; releases: unknown[] }> }
+  const result = await internal.reanchorOwnClaims(newHead, [claim])
+  expect(result.moves).toEqual([])
+  expect(result.releases).toEqual([])
+  expect(daemon!.roomDoc.claims.get(claim.id)).toEqual(claim)
+})
+
+it('refuses a prepared claim move when the claim changes before the final transaction', async () => {
+  const { claim } = await movedHead()
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown> }
+  const original = internal.reanchorOwnClaims.bind(internal)
+  internal.reanchorOwnClaims = async (head, claims) => {
+    const changes = await original(head, claims)
+    daemon!.roomDoc.claims.set(claim.id, { ...claim, from: 1, to: 1, claimedHash: 'replacement' })
+    return changes
+  }
+  await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 1, to: 1, claimedHash: 'replacement' })
+  expect(daemon!.roomDoc.manifestHead.get('Alice')?.complete).toBe(false)
 })
 
 it('keeps the new baseline after publishing a dirty overlay', async () => {
@@ -176,6 +201,30 @@ it('retries when Git operation markers remain past the deadline', async () => {
         .rejects.toThrow('Git operation or worktree is still changing')
     } finally { now.mockRestore(); fs.rmSync(marker, { force: true }); if (name.includes('/')) fs.rmSync(path.dirname(marker), { recursive: true, force: true }) }
   }
+})
+
+it('invalidates complete coverage before a held autostash wait and keeps it incomplete on busy timeout', async () => {
+  await movedHead()
+  const marker = path.join(dir!, '.git', 'MERGE_AUTOSTASH')
+  fs.writeFileSync(marker, 'busy\n')
+  const oldInputs = daemon!.inputs
+  let entered!: () => void
+  const atWait = new Promise<void>(resolve => { entered = resolve })
+  let resume!: () => void
+  const gate = new Promise<void>(resolve => { resume = resolve })
+  const internal = daemon as Roomd & { waitForGitOperation(head: string): Promise<void> }
+  const original = internal.waitForGitOperation.bind(internal)
+  internal.waitForGitOperation = async head => { entered(); await gate; await original(head) }
+  const pending = pollHead(daemon!)
+  await atWait
+  expect(daemon!.inputs).not.toBe(oldInputs)
+  expect(daemon!.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, coverage: { kind: 'none', reason: 'starting' } })
+  let tick = 0
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => ++tick * 1_000)
+  resume()
+  try { await expect(pending).rejects.toThrow('Git operation or worktree is still changing') }
+  finally { now.mockRestore(); fs.rmSync(marker) }
+  expect(daemon!.roomDoc.manifestHead.get('Alice')?.complete).toBe(false)
 })
 
 it('proceeds after the deadline when only claimed file content keeps changing', async () => {

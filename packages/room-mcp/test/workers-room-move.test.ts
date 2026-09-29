@@ -13,6 +13,8 @@ import { closeRegistryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { prepareWorktree } from '../src/worker-git.js'
+import { registryForDir } from '../src/worker-registry.js'
 
 let dir: string
 const dispose: (() => Promise<void> | void)[] = []
@@ -45,15 +47,26 @@ function fakeSession(local: boolean): Session {
   } as Session
 }
 
-function setup(join: (options: JoinOptions) => Promise<Session> = async () => fakeSession(true)) {
+function setup(join: (options: JoinOptions) => Promise<Session> = async () => fakeSession(true),
+  options: { leave?: (s: Session) => Promise<void>; worktree?: typeof prepareWorktree } = {}) {
   let current: Session | null = fakeSession(false)
   const old = current
   const left: Session[] = []
+  const exits: Array<(code: number | null) => void> = []
+  let nextPid = 5000
+  const alive = new Set<number>()
   const tools = createTools({ cwd: dir, getSession: () => current, setSession: s => { current = s },
-    join, leave: async s => { left.push(s) } })
+    join, leave: async s => { await options.leave?.(s); left.push(s) },
+    probe: pid => alive.has(pid) ? { startTime: `fixture:${pid}`, executable: 'node' } : undefined,
+    spawner: () => { const pid = ++nextPid; alive.add(pid); const callbacks: Array<(code: number | null) => void> = []
+      exits.push(code => { alive.delete(pid); for (const callback of callbacks) callback(code) })
+      return { pid, started: Promise.resolve(), onExit: cb => { callbacks.push(cb) }, kill: () => true } },
+    worktree: options.worktree ?? ((repo, tag) => prepareWorktree(repo, tag, 'rohanz')) })
   dispose.push(() => tools.shutdown())
-  return { tools, old, left, current: () => current }
+  return { tools, old, left, exits, current: () => current }
 }
+
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve))
 
 it('refuses to move while a finished local worker is uncollected, then moves after retirement', async () => {
   const t = setup()
@@ -81,10 +94,94 @@ it('a send requested during a move posts in the room reached by that move', asyn
   const moving = t.tools.call('room_join', { where: 'local' })
   await reached
   const sending = t.tools.call('room_send', { type: 'note', text: 'after the move' })
+  let sent = false
+  void sending.then(() => { sent = true })
+  await nextTurn()
+  expect(sent).toBe(false)
   expect(t.old.room.messages().some(m => m.type === 'note' && m.text === 'after the move')).toBe(false)
   release()
   await moving
   await sending
   expect(target.room.messages().some(m => m.type === 'note' && m.text === 'after the move')).toBe(true)
   expect(t.old.room.messages().some(m => m.type === 'note' && m.text === 'after the move')).toBe(false)
+})
+
+it('keeps the workers room when its shutdown fails and reuses it for the next spawn', async () => {
+  let fail = true
+  let joins = 0
+  const t = setup(async () => { joins++; return fakeSession(true) }, { leave: async s => {
+    if (fail && s.local) throw new Error('stop failed')
+  } })
+  expect(await t.tools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })).toContain('spawned money')
+  t.exits[0](0)
+  const registry = await registryForDir(dir)
+  await vi.waitFor(() => expect(registry.exits(registry.reserved('money')!.id)).toHaveLength(1))
+  expect(await t.tools.call('room_collect', { tag: 'money', discard: true })).toContain('discarded money')
+  expect(await t.tools.call('room_join', { where: 'local' })).toContain('closing the workers room failed (stop failed)')
+  expect(t.current()).toBe(t.old)
+  expect(await t.tools.call('room_spawn', { tag: 'more', task: 'again', where: 'local' })).toContain('spawned more')
+  expect(joins).toBe(1)
+  fail = false
+  t.exits[1](0)
+})
+
+it('a spawn requested during a move starts in the destination room', async () => {
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const joined = new Promise<void>(resolve => { reached = resolve })
+  const target = fakeSession(true)
+  const t = setup(async () => { reached(); await gate; return target })
+  const moving = t.tools.call('room_join', { where: 'local' })
+  await joined
+  const spawning = t.tools.call('room_spawn', { tag: 'late', task: 'after move', where: 'local' })
+  let spawned = false
+  void spawning.then(() => { spawned = true })
+  await nextTurn()
+  expect(spawned).toBe(false)
+  expect((await registryForDir(dir)).reserved('late')).toBeUndefined()
+  release()
+  expect(await moving).toContain('moved from')
+  expect(await spawning).toContain('spawned late')
+  expect((await registryForDir(dir)).reserved('late')?.room).toBe(target.roomName)
+  expect(t.current()).toBe(target)
+  t.exits[0](0)
+})
+
+it('a move requested during spawn preparation waits, then refuses the new worker', async () => {
+  let release!: () => void, reached!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const preparing = new Promise<void>(resolve => { reached = resolve })
+  const t = setup(undefined, { worktree: async (repo, tag, ...rest) => {
+    reached(); await gate; return prepareWorktree(repo, tag, ...rest)
+  } })
+  const spawning = t.tools.call('room_spawn', { tag: 'early', task: 'before move', where: 'local' })
+  await preparing
+  const moving = t.tools.call('room_join', { where: 'local' })
+  let moved = false
+  void moving.then(() => { moved = true })
+  await nextTurn()
+  expect(moved).toBe(false)
+  release()
+  expect(await spawning).toContain('spawned early')
+  expect(await moving).toContain('You have 1 worker(s) (early). Collect or discard them first')
+  expect(t.current()).toBe(t.old)
+  t.exits[0](0)
+})
+
+it('a move requested during discard waits for retirement and then moves', async () => {
+  const t = setup()
+  expect(await t.tools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })).toContain('spawned money')
+  const registry = await registryForDir(dir)
+  const discarding = t.tools.call('room_collect', { tag: 'money', discard: true })
+  await vi.waitFor(() => expect(registry.reserved('money')?.phase).toBe('discarding'))
+  const moving = t.tools.call('room_join', { where: 'local' })
+  let moved = false
+  void moving.then(() => { moved = true })
+  await nextTurn()
+  expect(moved).toBe(false)
+  expect(t.left).toEqual([])
+  t.exits[0](1)
+  expect(await discarding).toContain('discarded money')
+  expect(await moving).toContain('moved from')
+  expect(t.left).toContain(t.old)
 })

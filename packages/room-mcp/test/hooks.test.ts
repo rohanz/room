@@ -328,10 +328,24 @@ describe('shell edit hooks', () => {
   it('bounds path candidates across input strings and supports shell argv', async () => {
     const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     expect(pathsOf('exec', { cmd: 'sed -i "s/x/y/" "api/tax.py"' }, dir)).toContain('api/tax.py')
+    expect(pathsOf('exec', { cmd: "sed -i '' -e 's/x/y/' api/tax.py app.py" }, dir)).toEqual(['api/tax.py', 'app.py'])
+    expect(pathsOf('exec', { cmd: 'git restore -s HEAD --staged --worktree api/tax.py app.py' }, dir)).toEqual(['api/tax.py', 'app.py'])
+    expect(pathsOf('exec', { cmd: "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: app.py\n*** Move to: api/tax.py\n*** End Patch\nEOF" }, dir)).toEqual(['app.py', 'api/tax.py'])
     expect(pathsOf('exec', { cmd: 'x '.repeat(200), extra: 'api/tax.py' }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual([])
     expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'rm ../outside.py /etc/hosts' }, dir)).toEqual([])
+  })
+
+  it('separates redirect outputs from command operands', async () => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >/dev/null' }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py other.py 2>api/tax.py' }, dir)).toEqual(['api/tax.py', 'other.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py &>run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >>run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py 2>&1' }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('Bash', { command: 'tee api/tax.py <app.py' }, dir)).toEqual(['api/tax.py'])
   })
 
   it('skips a 1 MB command and still delivers company', async () => {

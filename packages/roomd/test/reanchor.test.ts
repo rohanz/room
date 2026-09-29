@@ -20,31 +20,47 @@ describe('reanchorClaims', () => {
     expect(JSON.stringify(room.claims.get(made.id))).not.toContain('claimed two')
   })
 
-  it('moves an unchanged claimed block down five lines', () => {
+  it('moves an unchanged claimed block down five lines', async () => {
     const moved = 'added\n'.repeat(5) + original
-    expect(reanchorClaims('Alice', [claim()], new Map([['app.txt', moved]]))).toEqual({
-      moves: [{ id: 'claim-Alice', from: 7, to: 8 }], releases: [],
+    expect(await reanchorClaims('Alice', [claim()], new Map([['app.txt', moved]]))).toEqual({
+      moves: [{ id: 'claim-Alice', from: 7, to: 8 }], releases: [], uncertain: [],
     })
   })
 
-  it('releases a deleted block', () => {
-    expect(reanchorClaims('Alice', [claim()], new Map([['app.txt', 'first\nlast\n']]))).toEqual({
-      moves: [], releases: [{ id: 'claim-Alice', path: 'app.txt', from: 2, to: 3 }],
+  it('releases a deleted block', async () => {
+    expect(await reanchorClaims('Alice', [claim()], new Map([['app.txt', 'first\nlast\n']]))).toEqual({
+      moves: [], releases: [{ id: 'claim-Alice', path: 'app.txt', from: 2, to: 3 }], uncertain: [],
     })
   })
 
-  it('releases an ambiguous duplicate', () => {
-    expect(reanchorClaims('Alice', [claim()], new Map([['app.txt', 'added\n' + original + original]]))).toEqual({
-      moves: [], releases: [{ id: 'claim-Alice', path: 'app.txt', from: 2, to: 3 }],
+  it('releases an ambiguous duplicate', async () => {
+    expect(await reanchorClaims('Alice', [claim()], new Map([['app.txt', 'added\n' + original + original]]))).toEqual({
+      moves: [], releases: [{ id: 'claim-Alice', path: 'app.txt', from: 2, to: 3 }], uncertain: [],
     })
   })
 
-  it('keeps a claim whose digest already matches its range on retry', () => {
+  it('keeps a claim whose digest already matches its range on retry', async () => {
     const moved = 'added\n' + original + original
-    expect(reanchorClaims('Alice', [{ ...claim(), from: 3, to: 4 }], new Map([['app.txt', moved]]))).toEqual({ moves: [], releases: [] })
+    expect(await reanchorClaims('Alice', [{ ...claim(), from: 3, to: 4 }], new Map([['app.txt', moved]]))).toEqual({ moves: [], releases: [], uncertain: [] })
   })
 
-  it('leaves another participant claim untouched', () => {
-    expect(reanchorClaims('Alice', [claim('Bob')], new Map([['app.txt', 'gone\n']]))).toEqual({ moves: [], releases: [] })
+  it('leaves another participant claim untouched', async () => {
+    expect(await reanchorClaims('Alice', [claim('Bob')], new Map([['app.txt', 'gone\n']]))).toEqual({ moves: [], releases: [], uncertain: [] })
+  })
+
+  it('keeps an uncertain claim when candidate work exceeds the total budget', async () => {
+    const c = { ...claim(), from: 1, to: 4000, claimedHash: 'absent' }
+    const result = await reanchorClaims('Alice', [c], new Map([['app.txt', 'different\n'.repeat(8000)]]), { workBudget: 100 })
+    expect(result).toEqual({ moves: [], releases: [], uncertain: [c.id] })
+  })
+
+  it('filters rolling candidates before hashing a wide moved block', async () => {
+    const block = Array.from({ length: 3000 }, (_, i) => `unique ${i}`).join('\n')
+    const before = `${block}\n`
+    const c = { ...claim(), from: 1, to: 3000, claimedHash: claimDigest(before, 1, 3000) }
+    const after = `${'other\n'.repeat(3000)}${before}`
+    const result = await reanchorClaims('Alice', [c], new Map([['app.txt', after]]),
+      { originals: new Map([[c.id, block]]), workBudget: 300_000 })
+    expect(result).toEqual({ moves: [{ id: c.id, from: 3001, to: 6000 }], releases: [], uncertain: [] })
   })
 })

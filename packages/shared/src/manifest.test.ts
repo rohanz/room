@@ -1,13 +1,33 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { localVersionOf, manifestKey, snapshot, snapshotStillCurrent, versionOf, type ManifestHead } from './manifest.js'
+import { localVersionOf, manifestKey, snapshot, snapshotPath, snapshotStillCurrent, versionOf, type ManifestHead } from './manifest.js'
 import { digestPath, gitBlobHash } from './manifest-node.js'
 
 /** Fences are hub lease epochs (hub §4.1): session s1 holds epoch 11, s2 epoch 12, winner 1, loser 2. */
 const head = (fence = '11'): ManifestHead => ({ base: 'abc', fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
 
 describe('manifest step 1', () => {
+  it('copies only the requested path text into a per-path snapshot', async () => {
+    const room = new RoomDoc()
+    room.participants.set('ben\0holder', { sessionId: 's1', epoch: 11 })
+    room.participants.set('ben\0git', { base: 'abc', fence: '11' })
+    room.manifestHead.set('ben', head())
+    const entries = new Y.Map<any>(), texts = new Y.Map<Y.Text>()
+    room.manifest.set(manifestKey('ben', '11'), entries)
+    room.overlays.set(manifestKey('ben', '11'), texts)
+    entries.set('wanted', { change: 'M', state: 'shared', hash: gitBlobHash('yes'), size: 3, at: 1, fence: '11' })
+    texts.set('wanted', new Y.Text('yes'))
+    const untouched = new Y.Text('x'.repeat(100_000))
+    texts.set('other', untouched)
+    const spy = vi.spyOn(untouched as { toString(): string }, 'toString')
+    const snap = snapshotPath(room, 'ben', [], 'wanted')!
+    expect(snap.entries.size).toBe(1)
+    expect(snap.texts.size).toBe(1)
+    expect(spy).not.toHaveBeenCalled()
+    expect(await versionOf(snap, 'wanted')).toMatchObject({ kind: 'text', text: 'yes' })
+    expect(snapshotStillCurrent(room, snap, [])).toBe(true)
+  })
   it('identifies a complete non-publisher without a git record', async () => {
     const room = new RoomDoc()
     room.participants.set('ben\0holder', { sessionId: 's1', epoch: 11 })

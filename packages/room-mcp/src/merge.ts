@@ -28,6 +28,22 @@ export interface GitMergeResult {
 
 let warnedFallback = false
 
+/** node-diff3 scans each matching equivalence class against its LCS candidates. */
+function diff3WithinBudget(a: string[], o: string[], b: string[]): boolean {
+  if ((a.length + b.length) * o.length > 2_000_000 || a.length + o.length + b.length > 4096) return false
+  const counts = new Map<string, number>()
+  for (const line of o) counts.set(line, (counts.get(line) ?? 0) + 1)
+  let work = 0
+  for (const side of [a, b]) {
+    const candidates = Math.min(side.length, o.length) + 1
+    for (const line of side) {
+      work += (counts.get(line) ?? 0) * candidates
+      if (work > 2_000_000) return false
+    }
+  }
+  return true
+}
+
 /** Merge three file texts with Git's own merge algorithm, falling back only when Git is unavailable. */
 export async function gitMergeFile(
   base: string,
@@ -73,7 +89,7 @@ function fallback(base: string, ours: string, theirs: string, labels: { ours: st
   }
   const a = ours.split('\n'), o = base.split('\n'), b = theirs.split('\n')
   const edits = Math.max(1, Math.min(128, Math.floor(2_000_000 / Math.max(1, a.length + o.length + b.length))))
-  const bounded = diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits })
+  const bounded = diff3WithinBudget(a, o, b) && diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits })
   // A distant rewrite is an uncertain whole-file conflict. Its alternatives stay exact.
   const raw: ReturnType<typeof diff3Merge<string>> = bounded ? diff3Merge(a, o, b)
     : [{ conflict: { a, o, b, aIndex: 0, oIndex: 0, bIndex: 0 } }]

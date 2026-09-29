@@ -16725,6 +16725,19 @@ function snapshot(room, name2, view) {
   for (const [path47, text] of overlay?.entries() ?? []) texts.set(path47, text.toString());
   return { name: name2, head: { ...head, excluded: [...head.excluded] }, record: record2, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record2, view) };
 }
+function snapshotPath(room, name2, view, path47) {
+  const head = room.manifestHead.get(name2);
+  if (!head) return void 0;
+  const record2 = participantRecord(room, name2);
+  const key2 = manifestKey(name2, head.fence);
+  const entry = room.manifest.get(key2)?.get(path47);
+  const entries = /* @__PURE__ */ new Map();
+  if (entry?.fence === head.fence) entries.set(path47, { ...entry });
+  const texts = /* @__PURE__ */ new Map();
+  const value2 = entry?.fence === head.fence ? room.overlays.get(key2)?.get(path47) : void 0;
+  if (value2) texts.set(path47, value2.toString());
+  return { name: name2, head: { ...head, excluded: [...head.excluded] }, record: record2, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record2, view) };
+}
 function snapshotStillCurrent(room, snap, view) {
   const head = room.manifestHead.get(snap.name);
   const record2 = participantRecord(room, snap.name);
@@ -34626,17 +34639,18 @@ var CoalescedPoll = class {
 
 // packages/roomd/src/publisher.ts
 import fs7 from "node:fs";
-import { setImmediate as setImmediate3 } from "node:timers/promises";
+import { setImmediate as setImmediate4 } from "node:timers/promises";
 
 // packages/roomd/src/disk-scan.ts
 import fs6 from "node:fs";
 import path4 from "node:path";
 import { createHash as createHash3 } from "node:crypto";
 import { spawn as spawn2 } from "node:child_process";
-import { setImmediate as setImmediate2 } from "node:timers/promises";
+import { setImmediate as setImmediate3 } from "node:timers/promises";
 
 // packages/roomd/src/policy.ts
 import { createHash as createHash2 } from "node:crypto";
+import { setImmediate as setImmediate2 } from "node:timers/promises";
 
 // packages/roomd/src/share-level.ts
 var SHARE_LEVELS = ["intent", "declared", "full"];
@@ -34704,7 +34718,9 @@ var isTrackedOnlyLockfile = (relpath) => TRACKED_ONLY_LOCKFILES.has(relpath.slic
 function rulesFromText(text, sizeCap, budget) {
   return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash2("sha256").update(JSON.stringify([text, sizeCap, budget])).digest("hex") });
 }
-function plan(inputs, disk, salt) {
+var MAX_PUBLICATION_PATHS = 4096;
+function* planSteps(inputs, disk, salt) {
+  if (disk.length > MAX_PUBLICATION_PATHS) throw new Error(`publication path limit (${MAX_PUBLICATION_PATHS}) exceeded`);
   const entries = /* @__PURE__ */ new Map();
   const excluded = [];
   const excludedPaths = [];
@@ -34715,6 +34731,7 @@ function plan(inputs, disk, salt) {
   if (policy.level === "intent" || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons };
   let used = 0;
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
+    yield;
     const p = normalizeCoordinationPath(fact.path);
     const changed = fact.changed ?? (fact.kind === "absent" ? !!fact.baseHash : fact.kind === "unsafe" || fact.hash !== fact.baseHash);
     const hide2 = (reason) => {
@@ -34760,6 +34777,15 @@ function plan(inputs, disk, salt) {
     textPaths.push(p);
   }
   return { entries, excluded: excluded.sort(), excludedPaths, unsettled, textPaths, excludedReasons };
+}
+async function planYielding(inputs, disk, salt) {
+  const steps = planSteps(inputs, disk, salt);
+  let count = 0;
+  for (; ; ) {
+    if (++count % 32 === 1) await setImmediate2();
+    const result2 = steps.next();
+    if (result2.done) return result2.value;
+  }
 }
 
 // packages/roomd/src/disk-scan.ts
@@ -34824,7 +34850,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
   for (const p of paths) {
     if (!valid()) throw new StalePublication("publication inputs changed during disk scan");
     if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
-      await setImmediate2();
+      await setImmediate3();
       lastYield = performance.now();
       sinceYield = 0;
       if (!valid()) throw new StalePublication("publication inputs changed during disk scan");
@@ -35056,12 +35082,21 @@ var Publisher = class {
     }
     const incarnation = manifestKey(host.name, fence);
     const current = host.roomDoc.manifest.get(incarnation);
+    const overlayPaths = incarnationOverlayPaths(host.roomDoc, incarnation);
+    if ((current?.size ?? 0) + this.excludedPaths.size + overlayPaths.length + host.roomDoc.ownedBaseTexts.size + host.roomDoc.manifest.size + host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
+      markManifestIncomplete(host.roomDoc, host.name, fence);
+      this.reconcileFailed(new Error("publication path limit exceeded during policy narrowing"));
+      return;
+    }
     const facts = [];
+    const factPaths = /* @__PURE__ */ new Set();
+    const retainedText = /* @__PURE__ */ new Set();
     let budget = 0;
     if (next.policy.level !== "intent" && next.policy.publisher) {
       for (const [path47, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
         if (defaultExcludedPath(path47) || next.rules.roomIgnore.ignores(path47) || entry.size !== void 0 && entry.size > next.rules.sizeCap) {
           facts.push({ path: path47, change: entry.change, excluded: true });
+          factPaths.add(path47);
           this.excludedPaths.add(path47);
           continue;
         }
@@ -35069,6 +35104,7 @@ var Publisher = class {
         const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path47)?.toString() : void 0;
         if (text !== void 0 && budget + Buffer.byteLength(text) > next.rules.budget) {
           facts.push({ path: path47, change: entry.change, excluded: true });
+          factPaths.add(path47);
           this.excludedPaths.add(path47);
           continue;
         }
@@ -35081,8 +35117,10 @@ var Publisher = class {
           binary: entry.held === "binary",
           at: entry.at
         });
+        factPaths.add(path47);
+        if (text !== void 0 || entry.change === "D") retainedText.add(path47);
       }
-      for (const path47 of this.excludedPaths) if (!facts.some((f) => f.path === path47)) facts.push({ path: path47, change: "M", excluded: true });
+      for (const path47 of this.excludedPaths) if (!factPaths.has(path47)) facts.push({ path: path47, change: "M", excluded: true });
     }
     host.roomDoc.doc.transact(() => {
       publishManifest({
@@ -35095,8 +35133,8 @@ var Publisher = class {
         complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? "another session" }
       }, facts);
-      for (const path47 of incarnationOverlayPaths(host.roomDoc, incarnation)) {
-        if (facts.some((f) => f.path === path47 && f.text !== void 0 || f.path === path47 && f.change === "D" && !f.excluded)) continue;
+      for (const path47 of overlayPaths) {
+        if (retainedText.has(path47)) continue;
         host.roomDoc.clearOverlay(incarnation, path47, host);
       }
       host.roomDoc.reconcileBaseTexts(host.name, host, next.head);
@@ -35127,7 +35165,13 @@ var Publisher = class {
     const valid = () => !this.host.stopped && this.host.inputs === inputs && this.host.fence === capturedFence;
     const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), (p) => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid);
     for (const item of disk) await this.host.beforeBaseRead?.(item.path);
-    const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt());
+    let desired;
+    try {
+      desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt());
+    } catch (error2) {
+      if (capturedFence !== void 0) markManifestIncomplete(this.host.roomDoc, this.host.name, capturedFence);
+      throw error2;
+    }
     if (desired.unsettled.length) {
       if (this.host.fence !== void 0) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence);
       this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`));
@@ -35144,27 +35188,57 @@ var Publisher = class {
     let sinceYield = 0;
     const incarnation = capturedFence === void 0 ? void 0 : manifestKey(this.host.name, capturedFence);
     for (const [path47, entry] of desired.entries) {
+      if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
+        await setImmediate4();
+        lastYield = performance.now();
+        sinceYield = 0;
+      }
       if (!valid()) throw new StalePublication("publication inputs changed during prepare");
       facts.push({ path: path47, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === "binary", at: entry.at });
       if (entry.text !== void 0 && incarnation) {
         textOps.set(path47, this.host.roomDoc.prepareOverlayDiff(incarnation, path47, entry.text));
       }
+    }
+    for (const path47 of desired.excludedPaths) {
       if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
-        await setImmediate3();
+        await setImmediate4();
         lastYield = performance.now();
         sinceYield = 0;
-        if (!valid()) throw new StalePublication("publication inputs changed during prepare");
       }
+      if (!valid()) throw new StalePublication("publication inputs changed during prepare");
+      facts.push({ path: path47, change: "M", excluded: true });
     }
-    for (const path47 of desired.excludedPaths) facts.push({ path: path47, change: "M", excluded: true });
-    return { inputs, desired, baseTexts, facts, textOps };
+    const oldCount = capturedFence === void 0 ? 0 : (this.host.roomDoc.manifest.get(incarnation)?.size ?? 0) + incarnationOverlayPaths(this.host.roomDoc, incarnation).length;
+    const baseTextDeletes = [];
+    const wanted = new Set([...desired.entries].filter(([p, entry]) => entry.held !== "scope" && authorizesText(inputs.policy, p)).map(([p]) => `${this.host.name}\0${inputs.head}:${p}`));
+    let baseCount = 0;
+    for (const key2 of this.host.roomDoc.ownedBaseTexts.keys()) {
+      if (++baseCount % 32 === 1) await setImmediate4();
+      if (!valid()) throw new StalePublication("publication inputs changed during prepare");
+      if (key2.startsWith(`${this.host.name}\0`) && !wanted.has(key2)) baseTextDeletes.push(key2);
+      if (baseCount + facts.length + oldCount > MAX_PUBLICATION_PATHS) break;
+    }
+    if (facts.length + oldCount + baseCount + this.host.roomDoc.manifest.size + this.host.roomDoc.overlays.size > MAX_PUBLICATION_PATHS) {
+      if (capturedFence !== void 0) markManifestIncomplete(this.host.roomDoc, this.host.name, capturedFence);
+      throw new Error("publication path limit exceeded during atomic apply");
+    }
+    return { fence: capturedFence, inputs, desired, baseTexts, facts, textOps, baseTextDeletes };
   }
   /** Final synchronous gate; called immediately before the Y transaction. */
   valid(prepared) {
     if (prepared.desired.unsettled.length) return false;
     const { host } = this;
-    if (host.stopped || host.inputs !== prepared.inputs || host.fence === void 0) return false;
+    if (host.stopped || host.inputs !== prepared.inputs || host.fence === void 0 || host.fence !== prepared.fence) return false;
+    return true;
+  }
+  /** Filesystem checks run in yielding prepare, before any Y transaction. */
+  async validatePrepared(prepared) {
+    if (!this.valid(prepared)) return false;
+    const { host } = this;
+    let count = 0;
     for (const p of prepared.desired.textPaths) {
+      if (++count % 32 === 1) await setImmediate4();
+      if (!this.valid(prepared)) return false;
       const entry = prepared.desired.entries.get(p);
       try {
         const stat4 = fs7.lstatSync(host.abs(p));
@@ -35211,8 +35285,7 @@ var Publisher = class {
         const base = prepared.baseTexts.get(p);
         if (base !== void 0) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host);
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host, inputs.head);
-      withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === "shared" && authorizesText(inputs.policy, p)).map(([p]) => p)));
+      for (const key2 of prepared.baseTextDeletes) host.roomDoc.ownedBaseTexts.delete(key2);
     }, host);
     this.excludedPaths.clear();
     for (const p of desired.excludedPaths) this.excludedPaths.add(p);
@@ -35237,7 +35310,7 @@ var Publisher = class {
         if (this.host.phase === "seed" || this.host.phase === "watch") this.host.onSeedProgress?.();
       }
       if (await gitHead(this.host.dir) !== this.host.base) throw new Error("HEAD moved during publication");
-      if (!this.apply(prepared, complete)) return void 0;
+      if (!await this.validatePrepared(prepared) || !this.apply(prepared, complete)) return void 0;
       if (complete) await this.host.onFullScan?.(prepared.inputs.policy, prepared.desired.entries, prepared.desired.unsettled);
       if (this.host.phase === "seed" || this.host.phase === "watch") this.host.onSeedProgress?.();
       return prepared;
@@ -35982,42 +36055,119 @@ var WebsocketProvider = class extends ObservableV2 {
 
 // packages/roomd/src/reanchor.ts
 import { createHash as createHash4 } from "node:crypto";
-function digestLines(lines) {
-  return createHash4("sha256").update(lines.join("\n"), "utf8").digest("hex");
-}
-function claimDigest(text, from2, to2) {
-  if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
+import { setImmediate as setImmediate5 } from "node:timers/promises";
+var DEFAULT_WORK_BUDGET = 4e6;
+var BASE = 16777619;
+var digestLines = (lines) => createHash4("sha256").update(lines.join("\n"), "utf8").digest("hex");
+var splitLines2 = (text) => {
   const lines = text.split("\n");
   if (text.endsWith("\n")) lines.pop();
-  if (to2 > lines.length) return void 0;
-  return digestLines(lines.slice(from2 - 1, to2));
+  return lines;
+};
+function claimDigest(text, from2, to2) {
+  if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
+  const lines = splitLines2(text);
+  return to2 <= lines.length ? digestLines(lines.slice(from2 - 1, to2)) : void 0;
 }
-function reanchorClaims(owner, claims, texts) {
-  const moves = [];
-  const releases = [];
+function lineHash(line) {
+  let h = 2166136261;
+  for (let i2 = 0; i2 < line.length; i2++) h = Math.imul(h ^ line.charCodeAt(i2), BASE);
+  return h >>> 0;
+}
+async function reanchorClaims(owner, claims, texts, options = {}) {
+  const moves = [], releases = [], uncertain = [];
+  const budget = options.workBudget ?? DEFAULT_WORK_BUDGET;
+  let work = 0, steps = 0, stale = false;
+  const tick = async (units) => {
+    work += units;
+    if (++steps % 128 === 0) await setImmediate5();
+    if (options.valid && !options.valid()) stale = true;
+    return work <= budget && !stale;
+  };
   for (const claim2 of claims) {
+    await setImmediate5();
     if (claim2.by !== owner || claim2.path.endsWith("/")) continue;
+    if (options.unreadable?.has(claim2.path)) {
+      uncertain.push(claim2.id);
+      continue;
+    }
     const text = texts.get(claim2.path);
-    if (text !== void 0 && claim2.claimedHash && claimDigest(text, claim2.from, claim2.to) === claim2.claimedHash) continue;
-    const lines = text?.split("\n");
-    if (text?.endsWith("\n")) lines?.pop();
+    if (text === void 0) {
+      releases.push({ id: claim2.id, path: claim2.path, from: claim2.from, to: claim2.to });
+      continue;
+    }
+    if (!await tick(text.length)) {
+      uncertain.push(claim2.id);
+      continue;
+    }
+    const lines = splitLines2(text);
     const width = claim2.to - claim2.from + 1;
-    let found = 0;
-    let at = -1;
-    if (lines && claim2.claimedHash && Number.isSafeInteger(width) && width > 0) {
-      for (let i2 = 0; i2 <= lines.length - width; i2++) {
-        const hash2 = digestLines(lines.slice(i2, i2 + width));
-        if (hash2 === claim2.claimedHash) {
-          found++;
-          at = i2;
-        }
-        if (found > 1) break;
+    if (!claim2.claimedHash || !Number.isSafeInteger(width) || width <= 0) {
+      releases.push({ id: claim2.id, path: claim2.path, from: claim2.from, to: claim2.to });
+      continue;
+    }
+    const current = lines.slice(claim2.from - 1, claim2.to);
+    if (current.length === width && await tick(current.reduce((n, s) => n + s.length, 0)) && digestLines(current) === claim2.claimedHash) continue;
+    if (work > budget || stale) {
+      uncertain.push(claim2.id);
+      continue;
+    }
+    const original = options.originals?.get(claim2.id);
+    if (original !== void 0 && !await tick(original.length)) {
+      uncertain.push(claim2.id);
+      continue;
+    }
+    const originalLines = original === void 0 ? void 0 : original.split("\n");
+    const filter = originalLines?.length === width && digestLines(originalLines) === claim2.claimedHash;
+    let target = 0, rolling = 0, power = 1;
+    const hashes = [];
+    if (filter) {
+      for (let i2 = 1; i2 < width; i2++) {
+        if (!await tick(1)) break;
+        power = Math.imul(power, BASE) >>> 0;
+      }
+      if (work > budget || stale) {
+        uncertain.push(claim2.id);
+        continue;
+      }
+      for (const line of originalLines) {
+        if (!await tick(line.length + 1)) break;
+        target = Math.imul(target, BASE) + lineHash(line) >>> 0;
+      }
+      if (work > budget || stale) {
+        uncertain.push(claim2.id);
+        continue;
+      }
+      for (const line of lines) {
+        if (!await tick(line.length + 1)) break;
+        hashes.push(lineHash(line));
       }
     }
-    if (found === 1) moves.push({ id: claim2.id, from: at + 1, to: at + width });
+    if (work > budget || stale || filter && hashes.length !== lines.length) {
+      uncertain.push(claim2.id);
+      continue;
+    }
+    let found = 0, at = -1;
+    for (let i2 = 0; i2 <= lines.length - width; i2++) {
+      if (!await tick(1)) break;
+      if (filter) {
+        if (i2 === 0) for (let j = 0; j < width; j++) rolling = Math.imul(rolling, BASE) + hashes[j] >>> 0;
+        else rolling = Math.imul(rolling - Math.imul(hashes[i2 - 1], power) >>> 0, BASE) + hashes[i2 + width - 1] >>> 0;
+        if (rolling !== target) continue;
+      }
+      const candidate = lines.slice(i2, i2 + width);
+      if (!await tick(candidate.reduce((n, s) => n + s.length, 0))) break;
+      if (digestLines(candidate) === claim2.claimedHash) {
+        found++;
+        at = i2;
+      }
+      if (found > 1) break;
+    }
+    if (work > budget || stale) uncertain.push(claim2.id);
+    else if (found === 1) moves.push({ id: claim2.id, from: at + 1, to: at + width });
     else releases.push({ id: claim2.id, path: claim2.path, from: claim2.from, to: claim2.to });
   }
-  return { moves, releases };
+  return { moves, releases, uncertain };
 }
 
 // packages/roomd/src/index.ts
@@ -38448,16 +38598,20 @@ var Daemon = class {
     await this.postPushedPending();
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)]);
     const branch = branchName(rawBranch);
-    const inputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) };
     const headMoved = head !== this.appliedHead || branch !== this.branch;
     const publishing = this.publishesBaseFacts();
+    const invalidate = () => {
+      this.inputs = { ...this.inputs };
+      if (publishing) {
+        this.transitionPending = true;
+        markManifestIncomplete(this.roomDoc, this.name, fence);
+      }
+    };
+    if (headMoved) invalidate();
+    const inputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) };
     if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return;
+    if (!headMoved) invalidate();
     if (headMoved) await this.waitForGitOperation(head);
-    this.inputs = { ...this.inputs };
-    if (publishing) {
-      this.transitionPending = true;
-      markManifestIncomplete(this.roomDoc, this.name, fence);
-    }
     const promoted = publishing && this.appliedAsPublisher === false;
     const prev = this.appliedHead;
     const firstTransition = this.appliedRefs === void 0;
@@ -38480,7 +38634,7 @@ var Daemon = class {
       }
       if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during reconciliation");
       if (this.fence !== fence) throw new Error("the name lease changed during the HEAD transition");
-      if (publication && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break;
+      if (publication && await this.publisher.validatePrepared(publication) && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break;
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`);
     }
     this.anchor = { base: resolved.base, anchored: resolved.anchored };
@@ -38569,6 +38723,7 @@ var Daemon = class {
    */
   commitTransition({ head }, claims, { next, pushed }, publication, anchored) {
     if (!this.publisher.valid(publication)) return false;
+    for (const [id3, state] of claims.claimState) if (JSON.stringify(this.roomDoc.claims.get(id3)) !== state) return false;
     const notices = [];
     this.roomDoc.doc.transact(() => {
       this.publisher.apply(publication, anchored);
@@ -38619,18 +38774,22 @@ var Daemon = class {
     const fence = this.fence;
     if (!fence) return [];
     const incarnation = manifestKey(this.name, fence);
-    const oldPaths = [...new Set(owned.filter((c) => !this.roomDoc.overlayText(incarnation, c.path) && !c.claimedHash).map((c) => c.path))];
+    const oldPaths = [...new Set(owned.map((c) => c.path))];
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : /* @__PURE__ */ new Map();
-    return owned.map((c) => {
+    const snapshots = [];
+    for (const c of owned) {
+      await new Promise((resolve5) => setImmediate(resolve5));
       const overlay = this.roomDoc.text(c.path, incarnation);
-      if (c.claimedHash || this.claimDigests.has(c.id)) return { ...c, claimedHash: c.claimedHash ?? this.claimDigests.get(c.id) };
-      if (overlay !== void 0) {
-        const range = this.roomDoc.claimRange(c);
-        return { ...c, ...range, claimedHash: claimDigest(overlay, range.from, range.to) };
-      }
       const oldText = oldTexts.get(c.path);
-      return { ...c, claimedHash: oldText === void 0 ? void 0 : claimDigest(oldText, c.from, c.to) };
-    });
+      const range = overlay !== void 0 && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to };
+      const hash2 = c.claimedHash ?? this.claimDigests.get(c.id) ?? (overlay === void 0 ? oldText === void 0 ? void 0 : claimDigest(oldText, range.from, range.to) : claimDigest(overlay, range.from, range.to));
+      const block = (text) => {
+        if (text === void 0 || Buffer.byteLength(text) > this.sizeCap || claimDigest(text, range.from, range.to) !== hash2) return void 0;
+        return text.split("\n").slice(range.from - 1, range.to).join("\n");
+      };
+      snapshots.push({ ...c, ...range, claimedHash: hash2, anchorText: block(overlay) ?? block(oldText), claimState: JSON.stringify(c) });
+    }
+    return snapshots;
   }
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
   async reanchorOwnClaims(head, snapshot2, onlyChanged = false) {
@@ -38640,33 +38799,83 @@ var Daemon = class {
     const changedPaths = onlyChanged && this.appliedHead ? new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true)) : void 0;
     const relevant = changedPaths ? snapshot2.filter((c) => changedPaths.has(c.path)) : snapshot2;
     if (!relevant.length) return NO_CLAIM_CHANGES;
+    const claimState = new Map(relevant.map((c) => [c.id, c.claimState ?? JSON.stringify(this.roomDoc.claims.get(c.id))]));
     const paths = [...new Set(relevant.map((c) => c.path))];
     const currentTexts = /* @__PURE__ */ new Map();
     const readable = /* @__PURE__ */ new Set();
+    const unreadable = /* @__PURE__ */ new Set();
+    const inputs = this.inputs;
     for (const rel of paths) {
+      await new Promise((resolve5) => setImmediate(resolve5));
       if (!this.isSafeRoomPath(rel, false)) {
         currentTexts.set(rel, void 0);
         continue;
       }
       try {
-        if (!fs8.lstatSync(this.abs(rel)).isFile()) {
+        const before = await fs8.promises.lstat(this.abs(rel));
+        if (!before.isFile()) {
           currentTexts.set(rel, void 0);
           continue;
         }
-        currentTexts.set(rel, fs8.readFileSync(this.abs(rel), "utf8"));
-        readable.add(rel);
-      } catch {
-        currentTexts.set(rel, void 0);
+        if (before.size > this.sizeCap) {
+          unreadable.add(rel);
+          continue;
+        }
+        const handle2 = await fs8.promises.open(this.abs(rel), fs8.constants.O_RDONLY | fs8.constants.O_NOFOLLOW);
+        try {
+          const opened = await handle2.stat();
+          if (!opened.isFile() || opened.size > this.sizeCap || opened.ino !== before.ino || opened.mtimeMs !== before.mtimeMs) {
+            unreadable.add(rel);
+            continue;
+          }
+          const bytes = Buffer.allocUnsafe(opened.size + 1);
+          let count = 0;
+          while (count < bytes.length) {
+            const read2 = await handle2.read(bytes, count, bytes.length - count, count);
+            if (!read2.bytesRead) break;
+            count += read2.bytesRead;
+          }
+          const after = await handle2.stat();
+          const pathAfter = await fs8.promises.lstat(this.abs(rel));
+          if (count !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || pathAfter.ino !== opened.ino || !this.isSafeRoomPath(rel, false)) {
+            unreadable.add(rel);
+            continue;
+          }
+          currentTexts.set(rel, bytes.subarray(0, count).toString("utf8"));
+          readable.add(rel);
+        } finally {
+          await handle2.close();
+        }
+      } catch (error2) {
+        if (error2.code === "ENOENT") currentTexts.set(rel, void 0);
+        else unreadable.add(rel);
       }
     }
-    const changes = reanchorClaims(this.name, relevant, currentTexts);
+    const originals = new Map(relevant.flatMap((c) => {
+      const anchor3 = c.anchorText;
+      return anchor3 === void 0 ? [] : [[c.id, anchor3]];
+    }));
+    const changes = await reanchorClaims(this.name, relevant, currentTexts, {
+      originals,
+      unreadable,
+      valid: () => this.fence === fence && this.inputs === inputs && !this.stopped
+    });
+    if (changes.uncertain.length) {
+      this.log(`claim reanchor uncertain for ${changes.uncertain.length} claim(s); keeping them and retrying`);
+      this.publisher.markDirty();
+    }
     const dirty = changes.releases.length ? new Set(await gitChanged(this.dir)) : /* @__PURE__ */ new Set();
     const releases = changes.releases.filter((release) => {
       if (!readable.has(release.path) || !dirty.has(release.path)) return true;
       this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`);
       return false;
     });
-    return { moves: changes.moves, releases, hashById: new Map(relevant.map((c) => [c.id, c.claimedHash])) };
+    return {
+      moves: changes.moves,
+      releases,
+      hashById: new Map(relevant.map((c) => [c.id, c.claimedHash])),
+      claimState
+    };
   }
   /** Validate claims recovered from a branch-room archive after the first repo-room join. */
   async validateMigratedClaims() {
@@ -38899,7 +39108,7 @@ var Daemon = class {
 };
 var hubAccepted = (result2) => result2 != null && !(typeof result2 === "object" && "ok" in result2 && result2.ok === false);
 var TRANSITION_ATTEMPTS = 5;
-var NO_CLAIM_CHANGES = { moves: [], releases: [], hashById: /* @__PURE__ */ new Map() };
+var NO_CLAIM_CHANGES = { moves: [], releases: [], hashById: /* @__PURE__ */ new Map(), claimState: /* @__PURE__ */ new Map() };
 var branchName = (abbrev) => abbrev === "HEAD" ? "" : abbrev;
 function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
@@ -43698,6 +43907,20 @@ function diff3Merge(a, o, b, options) {
 // packages/room-mcp/src/merge.ts
 init_libesm();
 var warnedFallback = false;
+function diff3WithinBudget(a, o, b) {
+  if ((a.length + b.length) * o.length > 2e6 || a.length + o.length + b.length > 4096) return false;
+  const counts = /* @__PURE__ */ new Map();
+  for (const line of o) counts.set(line, (counts.get(line) ?? 0) + 1);
+  let work = 0;
+  for (const side of [a, b]) {
+    const candidates = Math.min(side.length, o.length) + 1;
+    for (const line of side) {
+      work += (counts.get(line) ?? 0) * candidates;
+      if (work > 2e6) return false;
+    }
+  }
+  return true;
+}
 async function gitMergeFile(base, ours, theirs, labels) {
   const clean2 = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
   if (ours === theirs || theirs === base) return clean2(ours);
@@ -43742,7 +43965,7 @@ function fallback(base, ours, theirs, labels, fallbackReason) {
   }
   const a = ours.split("\n"), o = base.split("\n"), b = theirs.split("\n");
   const edits = Math.max(1, Math.min(128, Math.floor(2e6 / Math.max(1, a.length + o.length + b.length))));
-  const bounded = diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits });
+  const bounded = diff3WithinBudget(a, o, b) && diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits });
   const raw = bounded ? diff3Merge(a, o, b) : [{ conflict: { a, o, b, aIndex: 0, oIndex: 0, bIndex: 0 } }];
   const chunks = [];
   const rendered = [];
@@ -45068,12 +45291,12 @@ var GraphIndex = class {
     const refreshes = [];
     let lastYield = Date.now();
     for (let i2 = 0; i2 < pathsToRefresh.length; i2++) {
-      refreshes.push(this.refresh(pathsToRefresh[i2]));
-      if ((i2 + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
+      if (i2 > 0 && (i2 % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
         await yieldToEventLoop();
         if (generation !== this.generation || this.stopped) return;
         lastYield = Date.now();
       }
+      refreshes.push(this.refresh(pathsToRefresh[i2]));
     }
     await Promise.all(refreshes);
     if (generation !== this.generation || this.stopped) return;
@@ -45087,7 +45310,21 @@ var GraphIndex = class {
       const root = fs18.realpathSync(this.dir);
       const file = containedRepoPath(root, path16.join(root, pathname), { leaf: "read-contained-link" });
       if (!file.ok) return void 0;
-      return fs18.readFileSync(file.path, "utf8");
+      const fd = fs18.openSync(file.path, "r");
+      try {
+        const stat4 = fs18.fstatSync(fd);
+        if (!stat4.isFile() || stat4.size > MAX_BYTES2) return void 0;
+        const bytes = Buffer.allocUnsafe(MAX_BYTES2 + 1);
+        let used = 0;
+        while (used < bytes.length) {
+          const count = fs18.readSync(fd, bytes, used, bytes.length - used, used);
+          if (!count) break;
+          used += count;
+        }
+        return used > MAX_BYTES2 ? void 0 : bytes.toString("utf8", 0, used);
+      } finally {
+        fs18.closeSync(fd);
+      }
     } catch (error2) {
       if (error2.code === "ENOENT") return void 0;
       throw error2;
@@ -45102,7 +45339,7 @@ var GraphIndex = class {
     if (mine !== void 0) return mine;
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
-      const participant = snapshot(this.room, person, []);
+      const participant = snapshotPath(this.room, person, [], path47);
       const version3 = await versionOf(participant, path47, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
       if (!participant?.entries.has(path47) && version3.kind !== "excluded") continue;
       if (version3.kind === "text") return version3.text;
@@ -45113,7 +45350,7 @@ var GraphIndex = class {
   }
   /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
   async publicationTextFor(path47) {
-    const mine = snapshot(this.room, this.me, []);
+    const mine = snapshotPath(this.room, this.me, [], path47);
     if (mine) {
       if (!this.ownTextAuthorized(path47)) return void 0;
       if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== "all") return void 0;
@@ -45128,7 +45365,7 @@ var GraphIndex = class {
     }
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
-      const peer = snapshot(this.room, person, []);
+      const peer = snapshotPath(this.room, person, [], path47);
       if (!peer) continue;
       const raw = this.room.manifest.get(manifestKey(person, peer.head.fence))?.get(path47);
       if (raw && raw.fence !== peer.head.fence) return void 0;
@@ -45282,7 +45519,7 @@ var GraphIndex = class {
       const revision = this.revisions.get(path47), generation = this.generation;
       await ensureLanguages([path47]);
       const text = await this.textFor(path47);
-      const publicationSource = snapshot(this.room, this.me, []);
+      const publicationSource = snapshotPath(this.room, this.me, [], path47);
       const publication = await this.publicationTextFor(path47);
       const publicText = publication?.text;
       const heldBy = text === void 0 && this.ownTextAuthorized(path47) ? [...this.room.manifestHead.keys()].filter((person) => {
@@ -45704,7 +45941,7 @@ var sideInput = (snap, path47) => {
   const entry = snap.entries.get(path47);
   return entry ? entry.state === "held" && !entry.hash ? { change: entry.change, state: entry.state, held: entry.held } : { hash: entry.hash, state: entry.state, change: entry.change } : { committed: snap.head.base };
 };
-var ConflictSet = class {
+var ConflictSet = class _ConflictSet {
   constructor(team, owner = team.me.name, notices = team, log2 = (line) => process.stderr.write(`room-mcp: ${line}
 `), debounceMs = 2e3, carriedFrom2) {
     this.team = team;
@@ -45722,6 +45959,8 @@ var ConflictSet = class {
   log;
   debounceMs;
   carriedFrom;
+  static MAX_PAIR_FILES = 2e3;
+  fileWork = 0;
   slots;
   stops = [];
   timer;
@@ -45884,6 +46123,7 @@ var ConflictSet = class {
     await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${key2}\0${why}`), why });
   }
   async run(reason) {
+    this.fileWork = 0;
     const room = this.team.room;
     const leaseFence = this.team.lease?.fence();
     if (!leaseFence) return;
@@ -45979,11 +46219,22 @@ var ConflictSet = class {
         for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
         continue;
       }
+      if (aPaths.size + bPaths.size > _ConflictSet.MAX_PAIR_FILES) {
+        const why = "too many changed paths to compare";
+        await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(`${retrySource}\0${why}`), retrySource, factId: "", why });
+        for (const [key2, slot] of existing) {
+          await this.fileTurn();
+          if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+        }
+        await this.claims(mine, theirs, other, pair.mergeBase, aPaths);
+        continue;
+      }
       const ownMergePaths = new Set(aPaths);
       const unchangedCarried = /* @__PURE__ */ new Set();
       const carried = this.carriedFrom?.(this.owner);
       if (carried?.lead === other && carriesWork(carried.baseline)) {
         for (const path47 of aPaths) {
+          await this.fileTurn();
           const baseline = await readBaseline(carried.baseline, path47, (sha, p) => gitShow(this.team.dir, sha, p));
           if (baseline.kind === "unavailable") continue;
           const ownText = asText(await this.read(mine, path47));
@@ -45996,6 +46247,7 @@ var ConflictSet = class {
       const candidates = new Set([...ownMergePaths].filter((p) => bPaths.has(p)));
       for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
       for (const path47 of [...candidates].sort()) {
+        await this.fileTurn();
         const key2 = slotKey(this.owner, "merge", other, path47);
         const bothChanged = ownMergePaths.has(path47) && bPaths.has(path47);
         const inputs = hash(JSON.stringify([
@@ -46095,6 +46347,7 @@ var ConflictSet = class {
       const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()]);
       const observed = [];
       for (const path47 of paths) {
+        await this.fileTurn();
         if (!this.contractPathAuthorized(theirs, path47)) continue;
         const before = await readBaseline(carried.baseline, path47, (sha, p) => gitShow(this.team.dir, sha, p));
         if (before.kind === "unavailable") {
@@ -46141,6 +46394,7 @@ var ConflictSet = class {
       changes = observed;
     }
     for (const change of changes) {
+      await this.fileTurn();
       if (change.kind === "add") continue;
       if (!this.contractPathAuthorized(theirs, change.path)) continue;
       const provider = await this.read(theirs, change.path);
@@ -46157,6 +46411,7 @@ var ConflictSet = class {
       }
       const uses = [];
       for (const path47 of myPaths) {
+        await this.fileTurn();
         if (!this.contractPathAuthorized(mine, path47)) continue;
         const text = await this.readableConsumer(mine, path47);
         if (text === void 0) {
@@ -46220,6 +46475,7 @@ var ConflictSet = class {
     ]);
     const read2 = (snap, path47) => this.read(snap, path47);
     for (const path47 of paths) {
+      await this.fileTurn();
       if (path47.endsWith("/")) continue;
       const [ownV, theirV] = await Promise.all([read2(mine, path47), read2(theirs, path47)]);
       const ownText = asText(ownV), theirText = asText(theirV);
@@ -46305,6 +46561,10 @@ var ConflictSet = class {
     this.starts = this.starts.filter((t) => now - t < 1e4);
     if (this.starts.length >= 4) await new Promise((resolve5) => setTimeout(resolve5, 1e4 - (now - this.starts[0])));
     this.starts.push(Date.now());
+  }
+  /** Yield before fast as well as slow file branches, so cached/held paths count. */
+  async fileTurn() {
+    if (++this.fileWork % 32 === 0) await new Promise((resolve5) => setImmediate(resolve5));
   }
 };
 var projectedSets = /* @__PURE__ */ new WeakMap();
@@ -48754,11 +49014,11 @@ var ToolTiming = class {
     if (total < threshold && [...this.phases.values()].every((value2) => value2 < threshold)) return void 0;
     const pieces = [];
     const spawnPhases = this.phases.has("prepare") || this.phases.has("launch") || this.phases.has("lease");
-    const joinPhases = (this.name === "room_join" || this.name === "room_create") && ["resolve", "preflight", "connect", "sync", "daemon start"].some((name2) => this.phases.has(name2));
+    const joinPhases = (this.name === "room_join" || this.name === "room_create") && ["resolve", "preflight", "connect", "sync", "name", "daemon start", "share", "disclosure", "state", "view token"].some((name2) => this.phases.has(name2));
     const previewPhases = this.name === "room_preview_merge" && ["merge", "setup", "check", "collect"].some((name2) => this.phases.has(name2));
-    const names = spawnPhases ? ["settle", "queue", "lease", "prepare", "launch"] : joinPhases ? ["settle", "resolve", "preflight", "connect", "sync", "daemon start"] : previewPhases ? ["settle", "merge", "setup", "check", "collect"] : ["settle", "body"];
+    const names = spawnPhases ? ["settle", "queue", "lease", "prepare", "launch"] : joinPhases ? ["settle", "resolve", "preflight", "connect", "sync", "name", "daemon start", "share", "disclosure", "state", "view token"] : previewPhases ? ["settle", "merge", "setup", "check", "collect"] : ["settle", "body"];
     for (const name2 of names) {
-      const elapsed = name2 === "body" ? Math.max(0, (this.phases.get("body") ?? 0) - (this.phases.get("settle") ?? 0)) : this.phases.get(name2);
+      const elapsed = name2 === "body" ? Math.max(0, (this.phases.get("body") ?? 0) - (this.phases.get("settle") ?? 0)) : name2 === "state" && this.phases.has("state") ? Math.max(0, this.phases.get("state") - (this.phases.get("view token") ?? 0)) : this.phases.get(name2);
       if (elapsed === void 0) continue;
       let piece = `${name2} ${ms(elapsed)}`;
       if (name2 === "prepare" && this.gitCalls) {
@@ -48770,7 +49030,7 @@ var ToolTiming = class {
       if (name2 === "check" && previewPhases && this.overlappingPreviewChecks !== void 0) pieces.push(`overlapped ${this.overlappingPreviewChecks} other preview check(s)`);
     }
     if (spawnPhases || joinPhases || previewPhases) {
-      const accounted = names.reduce((sum, name2) => sum + (this.phases.get(name2) ?? 0), 0);
+      const accounted = names.reduce((sum, name2) => sum + (name2 === "state" ? Math.max(0, (this.phases.get(name2) ?? 0) - (this.phases.get("view token") ?? 0)) : this.phases.get(name2) ?? 0), 0);
       const other = Math.max(0, total - accounted);
       if (Math.round(other) > 0) pieces.push(`other ${ms(other)}`);
     }
@@ -49558,12 +49818,12 @@ async function joinSession(opts) {
   const name2 = label ? `${owner}+${label}` : owner;
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
-  let pre = await preflight(server, roomName, creds);
+  let pre = await timed("preflight", () => preflight(server, roomName, creds));
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
-    const err2 = await createRoom(server, roomName, { ...creds, by: name2 });
+    const err2 = await timed("preflight", () => createRoom(server, roomName, { ...creds, by: name2 }));
     if (err2) throw new RoomdError(`${server} would not open ${roomName}: ${err2}`, 2);
-    pre = await preflight(server, roomName, creds);
+    pre = await timed("preflight", () => preflight(server, roomName, creds));
   }
   if (pre?.missing) throw new NoRoom(roomName, pre.reason, server);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
@@ -49574,11 +49834,11 @@ async function joinSession(opts) {
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
   const shareRequested = requestedShare(config2.share);
-  const shareMax = await serverShareMax(server, shareRequested);
+  const shareMax = await timed("preflight", () => serverShareMax(server, shareRequested));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
-  const view = await viewToken(server, roomName, creds);
+  const view = await timed("view token", () => viewToken(server, roomName, creds));
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
@@ -49829,7 +50089,7 @@ async function refreshBrowserUrl(s) {
     const u = new URL(s.browserUrl);
     const web = `${u.protocol}//${u.host}`;
     const a = await authFor(s);
-    const view = await viewToken(server, s.roomName, a);
+    const view = await timed("view token", () => viewToken(server, s.roomName, a));
     if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`;
   } catch {
   }
@@ -51089,12 +51349,12 @@ function createWorkerRuntime(deps) {
   const closeWorkersRoom = async (preserveFacts = false) => {
     const ws = rooms.workers();
     if (!ws) return;
-    rooms.remove(ws);
     if (!preserveFacts) try {
       cleanupMine(ws, "lead left");
     } catch {
     }
     await doLeave(ws);
+    rooms.remove(ws);
   };
   const runningWorkers = (s) => registryRunningWorkers(s, rooms);
   const dismissWorker = async (s, w, why, stopReason, cancelled) => {
@@ -51865,9 +52125,9 @@ function handlers5(state) {
       cur?.lease?.check();
       const terminalNameLoss = cur?.lease?.state === "taken" || cur?.lease?.state === "superseded";
       const currentReply = async () => {
-        const sharing = a.share !== void 0 ? await handlers2(state).room_share({ level: a.share }) : "";
-        if (cur) await offerTeamSharingDisclosure(cur, ledger2);
-        return [sharing, await handlers4(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join("\n");
+        const sharing = a.share !== void 0 ? await timed2("share", () => handlers2(state).room_share({ level: a.share })) : "";
+        if (cur) await timed2("disclosure", () => offerTeamSharingDisclosure(cur, ledger2));
+        return [sharing, await timed2("state", () => handlers4(state).room_state({ link: cur ? state.hasCompany(cur).company : false }))].filter(Boolean).join("\n");
       };
       if (cur && !terminalNameLoss && a.create !== true && a.where === void 0 && a.server === void 0 && a.room === void 0 && a.dir === void 0 && a.takeover !== true) {
         return currentReply();
@@ -54255,59 +54515,77 @@ function handlers8(state) {
     return `${p}: ${person}'s version is unknown: ${version3.kind === "unknown" ? version3.detail : "unavailable"}`;
   };
   const readDiff = async (a) => {
-    const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
-    const s = rooms.holding(person, S());
-    const worker = await trustedWorker(s, person);
+    const caller = S();
+    const person = typeof a.person === "string" && a.person ? a.person : caller.me.name;
+    const s = rooms.holding(person, caller);
     const ownDisk = person === s.me.name;
-    const myBase = baseFor(S(), S().me.name);
-    const theirBase = worker?.base ?? baseFor(s, person);
-    const note = !worker && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const snap = ownDisk ? void 0 : snapshot(s.room, person, participantsView(s.room, s.awareness, Date.now()));
+      const callerSnap = !ownDisk ? snapshot(caller.room, caller.me.name, participantsView(caller.room, caller.awareness, Date.now())) : void 0;
+      const myBase = callerSnap?.head.base ?? baseFor(caller, caller.me.name);
+      const worker = await trustedWorker(s, person);
+      const theirBase = worker?.base ?? (ownDisk ? baseFor(s, person) : snap?.head.base ?? baseFor(s, person));
+      const note = !worker && !ownDisk && theirBase !== myBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes
 ` : "";
-    const label = (text) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text}`;
-    const reportGitFailure = async (error2) => {
-      if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
-        throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`);
-      throw error2;
-    };
-    const one = async (p) => {
-      let version3;
-      try {
-        version3 = ownDisk || worker ? void 0 : await readVersion(s, p, person);
-      } catch (error2) {
-        return reportGitFailure(error2);
-      }
-      if (version3?.kind === "unknown" && version3.why === "fetch") {
+      const label = (text) => `${worker ? WORKTREE_NOTE + "\n" : ""}${note}${text}`;
+      const current = () => ownDisk || !!worker || (snap ? snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, Date.now())) : !s.room.manifestHead.has(person)) && (callerSnap ? snapshotStillCurrent(caller.room, callerSnap, participantsView(caller.room, caller.awareness, Date.now())) : baseFor(caller, caller.me.name) === myBase);
+      const reportGitFailure = async (error2) => {
+        if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
+          throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`);
+        throw error2;
+      };
+      const one = async (p) => {
+        let version3;
         try {
-          await gitShow(s.dir, theirBase, p);
+          version3 = ownDisk || worker ? void 0 : await versionOf(snap, p, {
+            gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
+            known: (hash2) => git(s.dir, ["cat-file", "blob", hash2]).catch(() => void 0)
+          });
         } catch (error2) {
           return reportGitFailure(error2);
         }
-      }
-      if (version3 && !["text", "base", "deleted"].includes(version3.kind)) return gapLine(person, p, version3);
-      const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
-      let b;
+        if (version3?.kind === "unknown" && version3.why === "fetch") {
+          try {
+            await gitShow(s.dir, theirBase, p);
+          } catch (error2) {
+            return reportGitFailure(error2);
+          }
+        }
+        if (version3 && !["text", "base", "deleted"].includes(version3.kind)) return gapLine(person, p, version3);
+        const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p) : version3?.kind === "text" ? version3.text : version3?.kind === "base" ? version3.text : null;
+        let b;
+        try {
+          b = await gitShow(worker?.dir ?? s.dir, theirBase, p) ?? "";
+        } catch (error2) {
+          return reportGitFailure(error2);
+        }
+        const live = l === null ? "" : l ?? b;
+        return live === b ? "" : boundedTwoFilesPatch(p, b, live, person);
+      };
       try {
-        b = await gitShow(worker?.dir ?? s.dir, theirBase, p) ?? "";
+        let result2;
+        if (typeof a.path === "string" && a.path) result2 = label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
+        else {
+          const parts2 = [];
+          const paths = worker || ownDisk ? new Set([
+            ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", theirBase, "--"])).split("\0"),
+            ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
+          ].filter(Boolean)) : [...snap?.entries.keys() ?? []].sort();
+          for (const p of paths) {
+            await new Promise((resolve5) => setImmediate(resolve5));
+            const d = await one(p);
+            if (d) parts2.push(d);
+          }
+          const head = snap?.head;
+          if (head) parts2.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === "none" ? ` (${head.coverage.reason})` : ""}; ${head.excluded.length} changed path(s) excluded (names not shared)`);
+          result2 = label(parts2.length ? parts2.join("\n") : `${person} has no uncommitted changes`);
+        }
+        if (current()) return result2;
       } catch (error2) {
-        return reportGitFailure(error2);
+        if (current()) throw error2;
       }
-      const live = l === null ? "" : l ?? b;
-      return live === b ? "" : boundedTwoFilesPatch(p, b, live, person);
-    };
-    if (typeof a.path === "string" && a.path) return label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
-    const parts2 = [];
-    const paths = worker || ownDisk ? new Set([
-      ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", theirBase, "--"])).split("\0"),
-      ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
-    ].filter(Boolean)) : manifestPaths(s.room, person);
-    for (const p of paths) {
-      const d = await one(p);
-      if (d) parts2.push(d);
-      await new Promise((resolve5) => setImmediate(resolve5));
     }
-    const head = s.room.manifestHead.get(person);
-    if (head) parts2.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === "none" ? ` (${head.coverage.reason})` : ""}; ${head.excluded.length} changed path(s) excluded (names not shared)`);
-    return label(parts2.length ? parts2.join("\n") : `${person} has no uncommitted changes`);
+    return `${person}'s changes moved during the diff; re-run`;
   };
   const handlers10 = {
     async room_read(a) {
@@ -54630,7 +54908,10 @@ async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */
   try {
     await previewPhase("setup", async () => {
       await materializeGitTree(s.dir, ancestor, dir);
-      for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
+      for (const [rel, text] of merged) {
+        await new Promise((resolve5) => setImmediate(resolve5));
+        materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
+      }
       linkSharedDirs(s.dir, dir);
     });
     const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs43.existsSync(candidate));

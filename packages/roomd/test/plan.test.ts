@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { plan, policyFromLevel, type DiskFact, type PublicationInputs } from '../src/policy.js'
+import { plan, planYielding, MAX_PUBLICATION_PATHS, policyFromLevel, type DiskFact, type PublicationInputs } from '../src/policy.js'
 
 const policy = policyFromLevel('declared', ['src/'])
 const inputs: PublicationInputs = { policy, rules: { roomIgnore: { patterns: 0, ignores: () => false }, sizeCap: 100, budget: 4, id: 'one' }, head: 'base' }
@@ -24,4 +24,16 @@ it('excludes changed paths before a deletion can disclose its name and orders bu
   expect(desired.entries.get('private/z')).toMatchObject({ held: 'scope' })
   expect(desired.entries.has('secret')).toBe(false)
   expect(desired.excluded).toHaveLength(1)
+})
+
+it('yields during excluded-path planning and bounds the accepted path count', async () => {
+  const facts = Array.from({ length: 96 }, (_, i): DiskFact => ({ path: `private/${i}`, kind: 'file', hash: 'new', baseHash: 'old', excluded: true }))
+  const events: string[] = []
+  setImmediate(() => events.push('timer'))
+  const desired = await planYielding(inputs, facts, 'a'.repeat(64))
+  events.push('planned')
+  expect(events).toEqual(['timer', 'planned'])
+  expect(desired.excludedPaths).toHaveLength(facts.length)
+  await expect(planYielding(inputs, Array.from({ length: MAX_PUBLICATION_PATHS + 1 }, (_, i) => ({ ...facts[0], path: `private/${i}` })), 'a'.repeat(64)))
+    .rejects.toThrow('publication path limit')
 })

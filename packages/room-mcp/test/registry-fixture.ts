@@ -6,8 +6,8 @@ import type { Session } from '../src/session.js'
 import { localWorkers, registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import type { LocalWorker, WorkerRecord } from '../src/worker-status.js'
-import { probeProcess } from '../src/worker-process.js'
 import { stampFixtureWorker } from './fixtures/manifest.js'
+import { finishFixtureProcess, fixtureProcess } from './fixtures/process-liveness.js'
 
 /** A local artifact sink for direct saveDiscardPatch tests. */
 export function patchPublisher(dir: string, tag: string): (bytes: Buffer) => Promise<string> {
@@ -93,10 +93,10 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
       }
       try { await registry.writeIntent(initial) }
       catch { continue }
+      const process = w.pid ? fixtureProcess(w.pid, w.processStartTime ?? `fixture:${id}`, w.host, w.status === 'running') : undefined
       record = await registry.update(id, old => ({ ...old, phase: 'active',
         runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: w.pid ?? 0,
-          ...(w.pid ? { process: { pid: w.pid, startTime: w.processStartTime ?? 'fixture:unknown',
-            executable: probeProcess(w.pid)?.executable ?? w.host } } : {}) } }], seq: old.seq + 1 }))
+          ...(process ? { process } : {}) } }], seq: old.seq + 1 }))
       await registry.finishOperation(id)
     }
     stampFixtureWorker(session.room, w.name, id)
@@ -112,6 +112,7 @@ export async function finishWorker(session: Session, tag: string, facts: Partial
   const record = registry.list().find(r => r.tag === tag && !['retired', 'abandoned'].includes(r.phase))
   if (!record) throw new Error(`no fixture worker ${tag}`)
   const status = facts.status ?? 'done', run = record.runs.at(-1)!
+  if (run.launch?.outcome === 'launched') finishFixtureProcess(run.launch.pid)
   if (!registry.exits(record.id).some(exit => exit.run === run.n)) await registry.writeExit(record.id,
     { run: run.n, code: facts.exitCode ?? (status === 'failed' ? 1 : 0), at: facts.finishedAt ?? Date.now(), witnessed: true })
   if (status === 'done' && !registry.reports(record.id).some(report => report.done)) {

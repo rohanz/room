@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
+import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, snapshot, snapshotStillCurrent, versionOf, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
 import type { LocalWorker } from '../worker-status.js'
 import type { Session } from '../session.js'
@@ -94,54 +94,76 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     return `${p}: ${person}'s version is unknown: ${version.kind === 'unknown' ? version.detail : 'unavailable'}`
   }
   const readDiff: Handler = async a => {
-      const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
-      const s = rooms.holding(person, S())
-      const worker = await trustedWorker(s, person)
+      const caller = S()
+      const person = typeof a.person === 'string' && a.person ? a.person : caller.me.name
+      const s = rooms.holding(person, caller)
       const ownDisk = person === s.me.name
-      const myBase = baseFor(S(), S().me.name)
-      const theirBase = worker?.base ?? baseFor(s, person)
-      const note = !worker && !ownDisk && theirBase !== myBase
-        ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes\n`
-        : ''
-      const label = (text: string) => `${worker ? WORKTREE_NOTE + '\n' : ''}${note}${text}`
-      const reportGitFailure = async (error: unknown): Promise<never> => {
-        if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
-          throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`)
-        throw error
-      }
-      const one = async (p: string) => {
-        let version: Version | undefined
-        try { version = ownDisk || worker ? undefined : await readVersion(s, p, person) }
-        catch (error) { return reportGitFailure(error) }
-        if (version?.kind === 'unknown' && version.why === 'fetch') {
-          // versionOf cannot retain the Git error in a snapshot; probe this base directly
-          // so a timeout or permission failure is not reported as a fetch instruction.
-          try { await gitShow(s.dir, theirBase, p) }
-          catch (error) { return reportGitFailure(error) }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // One immutable publication view supplies the base, path set, text and coverage.
+        const snap = ownDisk ? undefined : snapshot(s.room, person, participantsView(s.room, s.awareness, Date.now()))
+        const callerSnap = !ownDisk ? snapshot(caller.room, caller.me.name, participantsView(caller.room, caller.awareness, Date.now())) : undefined
+        const myBase = callerSnap?.head.base ?? baseFor(caller, caller.me.name)
+        const worker = await trustedWorker(s, person)
+        const theirBase = worker?.base ?? (ownDisk ? baseFor(s, person) : snap?.head.base ?? baseFor(s, person))
+        const note = !worker && !ownDisk && theirBase !== myBase
+          ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes\n`
+          : ''
+        const label = (text: string) => `${worker ? WORKTREE_NOTE + '\n' : ''}${note}${text}`
+        const current = () => ownDisk || !!worker || ((snap
+          ? snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, Date.now()))
+          : !s.room.manifestHead.has(person)) && (callerSnap
+          ? snapshotStillCurrent(caller.room, callerSnap, participantsView(caller.room, caller.awareness, Date.now()))
+          : baseFor(caller, caller.me.name) === myBase))
+        const reportGitFailure = async (error: unknown): Promise<never> => {
+          if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
+            throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`)
+          throw error
         }
-        if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
-        const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
-          : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
-        let b: string
-        try { b = (await gitShow(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
-        catch (error) { return reportGitFailure(error) }
-        const live = l === null ? '' : l ?? b
-        return live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
+        const one = async (p: string) => {
+          let version: Version | undefined
+          try { version = ownDisk || worker ? undefined : await versionOf(snap, p, {
+            gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
+            known: hash => git(s.dir, ['cat-file', 'blob', hash]).catch(() => undefined),
+          }) }
+          catch (error) { return reportGitFailure(error) }
+          if (version?.kind === 'unknown' && version.why === 'fetch') {
+            // versionOf cannot retain the Git error in a snapshot; probe this base directly.
+            try { await gitShow(s.dir, theirBase, p) }
+            catch (error) { return reportGitFailure(error) }
+          }
+          if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
+          const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
+            : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
+          let b: string
+          try { b = (await gitShow(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
+          catch (error) { return reportGitFailure(error) }
+          const live = l === null ? '' : l ?? b
+          return live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
+        }
+        try {
+          let result: string
+          if (typeof a.path === 'string' && a.path) result = label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
+          else {
+            const parts: string[] = []
+            const paths = worker || ownDisk ? new Set([
+              ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', theirBase, '--'])).split('\0'),
+              ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
+            ].filter(Boolean)) : [...snap?.entries.keys() ?? []].sort()
+            for (const p of paths) {
+              await new Promise<void>(resolve => setImmediate(resolve))
+              const d = await one(p)
+              if (d) parts.push(d)
+            }
+            const head = snap?.head
+            if (head) parts.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === 'none' ? ` (${head.coverage.reason})` : ''}; ${head.excluded.length} changed path(s) excluded (names not shared)`)
+            result = label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
+          }
+          if (current()) return result
+        } catch (error) {
+          if (current()) throw error
+        }
       }
-      if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
-      const parts: string[] = []
-      const paths = worker || ownDisk ? new Set([
-        ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', theirBase, '--'])).split('\0'),
-        ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
-      ].filter(Boolean)) : manifestPaths(s.room, person)
-      for (const p of paths) {
-        const d = await one(p)
-        if (d) parts.push(d)
-        await new Promise<void>(resolve => setImmediate(resolve))
-      }
-      const head = s.room.manifestHead.get(person)
-      if (head) parts.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === 'none' ? ` (${head.coverage.reason})` : ''}; ${head.excluded.length} changed path(s) excluded (names not shared)`)
-      return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
+      return `${person}'s changes moved during the diff; re-run`
   }
   const handlers: Record<string, Handler> = {
     async room_read(a) {
@@ -472,7 +494,10 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
   try {
     await previewPhase('setup', async () => {
       await materializeGitTree(s.dir, ancestor, dir)
-      for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
+      for (const [rel, text] of merged) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
+      }
       linkSharedDirs(s.dir, dir)
     })
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))

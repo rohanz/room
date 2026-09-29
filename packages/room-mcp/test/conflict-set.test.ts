@@ -214,6 +214,53 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it('yields within a run of cached and held merge candidates', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', undefined, true)
+      const a = f.room.manifest.get(manifestKey('A', '1'))!
+      const b = f.room.manifest.get(manifestKey('B', '1'))!
+      for (let i = 0; i < 96; i++) {
+        const path = `file-${String(i).padStart(3, '0')}`
+        a.set(path, { change: 'M', state: 'shared', hash: gitBlobHash('A\n'), at: 1, fence: '1' })
+        b.set(path, { change: 'M', state: 'held', held: 'scope', at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('A', '1'), path, 'A\n')
+      }
+      const set = new ConflictSet(f.session('A'))
+      await set.reconcile('populate')
+      let turnRan = false, sawLast = false
+      const slots = (set as unknown as { slots: ConflictSlots }).slots
+      const original = slots.get.bind(slots)
+      const spy = vi.spyOn(slots, 'get').mockImplementation(key => {
+        if (key === slotKey('A', 'merge', 'B', 'file-000')) setImmediate(() => { turnRan = true })
+        if (key === slotKey('A', 'merge', 'B', 'file-095')) sawLast = turnRan
+        return original(key)
+      })
+      await set.reconcile('cached')
+      expect(spy).toHaveBeenCalled()
+      expect(sawLast).toBe(true)
+    } finally { f.cleanup() }
+  })
+
+  it('reports one conservative unknown pair beyond the per-pair file budget', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+      const a = f.room.manifest.get(manifestKey('A', '1'))!
+      const b = f.room.manifest.get(manifestKey('B', '1'))!
+      for (let i = 0; i < 1001; i++) {
+        const path = `file-${i}`
+        a.set(path, { change: 'M', state: 'held', held: 'scope', at: 1, fence: '1' })
+        b.set(path, { change: 'M', state: 'held', held: 'scope', at: 1, fence: '1' })
+      }
+      await new ConflictSet(f.session('A')).reconcile('bounded')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'merge', 'B', '*'))).toMatchObject({
+        status: 'unknown', why: 'too many changed paths to compare',
+      })
+      expect([...f.room.doc.getMap<any>('conflicts').values()].filter(slot => slot.kind === 'merge')).toHaveLength(1)
+    } finally { f.cleanup() }
+  })
+
   it('writes the current owner epoch into slots and stops while its local lease is paused', async () => {
     const f = fixture()
     try {

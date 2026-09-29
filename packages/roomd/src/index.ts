@@ -744,18 +744,21 @@ class Daemon implements Roomd {
     await this.postPushedPending()
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
     const branch = branchName(rawBranch)
-    const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
     const headMoved = head !== this.appliedHead || branch !== this.branch
     const publishing = this.publishesBaseFacts()
-    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return
-    if (headMoved) await this.waitForGitOperation(head)
-    // Invalidate disk scans captured before the settled transition is prepared.
-    this.inputs = { ...this.inputs }
-    // §B2 step 1, before any awaited work: readers stop trusting my manifest until the transition completes.
-    if (publishing) {
-      this.transitionPending = true
-      markManifestIncomplete(this.roomDoc, this.name, fence)
+    const invalidate = () => {
+      this.inputs = { ...this.inputs }
+      if (publishing) {
+        this.transitionPending = true
+        markManifestIncomplete(this.roomDoc, this.name, fence)
+      }
     }
+    if (headMoved) invalidate()
+    const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
+    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return
+    // §B2 step 1: invalidate prior scans and coverage before waiting for Git's transient state.
+    if (!headMoved) invalidate()
+    if (headMoved) await this.waitForGitOperation(head)
     // A promoted session's own record predates the other publisher's tenure: it yields no pushed (§B4).
     const promoted = publishing && this.appliedAsPublisher === false
     const prev = this.appliedHead
@@ -777,7 +780,7 @@ class Daemon implements Roomd {
       catch (error) { if (!(error instanceof StalePublication)) throw error }
       if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
-      if (publication && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
+      if (publication && await this.publisher.validatePrepared(publication) && this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`)
     }
     this.anchor = { base: resolved.base, anchored: resolved.anchored }
@@ -862,6 +865,7 @@ class Daemon implements Roomd {
    */
   private commitTransition({ head }: BaseInputs, claims: ClaimChanges, { next, pushed }: TransitionFacts, publication: PreparedPublication, anchored: boolean): boolean {
     if (!this.publisher.valid(publication)) return false
+    for (const [id, state] of claims.claimState) if (JSON.stringify(this.roomDoc.claims.get(id)) !== state) return false
     // Notices are posted after the transaction commits: the hub appends them (hub §8), by id where retried.
     const notices: { from: Identity; body: PostBody<Msg>; id?: string }[] = []
     this.roomDoc.doc.transact(() => {
@@ -908,23 +912,27 @@ class Daemon implements Roomd {
   }
 
   /** Capture the claimed code before a commit can clear its overlay. */
-  private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
+  private async snapshotOwnClaims(prev: string): Promise<(Claim & { anchorText?: string; claimState?: string })[]> {
     const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
     const fence = this.fence
     if (!fence) return []
     const incarnation = manifestKey(this.name, fence)
-    const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(incarnation, c.path) && !c.claimedHash).map(c => c.path))]
+    const oldPaths = [...new Set(owned.map(c => c.path))]
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
-    return owned.map(c => {
+    const snapshots: (Claim & { anchorText?: string; claimState?: string })[] = []
+    for (const c of owned) {
+      await new Promise<void>(resolve => setImmediate(resolve))
       const overlay = this.roomDoc.text(c.path, incarnation)
-      if (c.claimedHash || this.claimDigests.has(c.id)) return { ...c, claimedHash: c.claimedHash ?? this.claimDigests.get(c.id) }
-      if (overlay !== undefined) {
-        const range = this.roomDoc.claimRange(c)
-        return { ...c, ...range, claimedHash: claimDigest(overlay, range.from, range.to) }
-      }
       const oldText = oldTexts.get(c.path)
-      return { ...c, claimedHash: oldText === undefined ? undefined : claimDigest(oldText, c.from, c.to) }
-    })
+      const range = overlay !== undefined && !c.claimedHash ? this.roomDoc.claimRange(c) : { from: c.from, to: c.to }
+      const hash = c.claimedHash ?? this.claimDigests.get(c.id) ?? (overlay === undefined ? oldText === undefined ? undefined : claimDigest(oldText, range.from, range.to) : claimDigest(overlay, range.from, range.to))
+      const block = (text: string | undefined): string | undefined => {
+        if (text === undefined || Buffer.byteLength(text) > this.sizeCap || claimDigest(text, range.from, range.to) !== hash) return undefined
+        return text.split('\n').slice(range.from - 1, range.to).join('\n')
+      }
+      snapshots.push({ ...c, ...range, claimedHash: hash, anchorText: block(overlay) ?? block(oldText), claimState: JSON.stringify(c) })
+    }
+    return snapshots
   }
 
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
@@ -937,25 +945,59 @@ class Daemon implements Roomd {
       : undefined
     const relevant = changedPaths ? snapshot.filter(c => changedPaths.has(c.path)) : snapshot
     if (!relevant.length) return NO_CLAIM_CHANGES
+    const claimState = new Map(relevant.map(c => [c.id, (c as Claim & { claimState?: string }).claimState ?? JSON.stringify(this.roomDoc.claims.get(c.id))]))
     const paths = [...new Set(relevant.map(c => c.path))]
     const currentTexts = new Map<string, string | undefined>()
     const readable = new Set<string>()
+    const unreadable = new Set<string>()
+    const inputs = this.inputs
     for (const rel of paths) {
+      await new Promise<void>(resolve => setImmediate(resolve))
       if (!this.isSafeRoomPath(rel, false)) { currentTexts.set(rel, undefined); continue }
       try {
-        if (!fs.lstatSync(this.abs(rel)).isFile()) { currentTexts.set(rel, undefined); continue }
-        currentTexts.set(rel, fs.readFileSync(this.abs(rel), 'utf8'))
-        readable.add(rel)
-      } catch { currentTexts.set(rel, undefined) }
+        const before = await fs.promises.lstat(this.abs(rel))
+        if (!before.isFile()) { currentTexts.set(rel, undefined); continue }
+        if (before.size > this.sizeCap) { unreadable.add(rel); continue }
+        const handle = await fs.promises.open(this.abs(rel), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        try {
+          const opened = await handle.stat()
+          if (!opened.isFile() || opened.size > this.sizeCap || opened.ino !== before.ino || opened.mtimeMs !== before.mtimeMs) { unreadable.add(rel); continue }
+          const bytes = Buffer.allocUnsafe(opened.size + 1)
+          let count = 0
+          while (count < bytes.length) {
+            const read = await handle.read(bytes, count, bytes.length - count, count)
+            if (!read.bytesRead) break
+            count += read.bytesRead
+          }
+          const after = await handle.stat()
+          const pathAfter = await fs.promises.lstat(this.abs(rel))
+          if (count !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || pathAfter.ino !== opened.ino || !this.isSafeRoomPath(rel, false)) { unreadable.add(rel); continue }
+          currentTexts.set(rel, bytes.subarray(0, count).toString('utf8'))
+          readable.add(rel)
+        } finally { await handle.close() }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') currentTexts.set(rel, undefined)
+        else unreadable.add(rel)
+      }
     }
-    const changes = reanchorClaims(this.name, relevant, currentTexts)
+    const originals = new Map(relevant.flatMap(c => {
+      const anchor = (c as Claim & { anchorText?: string }).anchorText
+      return anchor === undefined ? [] : [[c.id, anchor] as const]
+    }))
+    const changes = await reanchorClaims(this.name, relevant, currentTexts, { originals, unreadable,
+      valid: () => this.fence === fence && this.inputs === inputs && !this.stopped })
+    if (changes.uncertain.length) {
+      this.log(`claim reanchor uncertain for ${changes.uncertain.length} claim(s); keeping them and retrying`)
+      this.publisher.markDirty()
+    }
     const dirty = changes.releases.length ? new Set(await gitChanged(this.dir)) : new Set<string>()
     const releases = changes.releases.filter(release => {
       if (!readable.has(release.path) || !dirty.has(release.path)) return true
       this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`)
       return false
     })
-    return { moves: changes.moves, releases, hashById: new Map(relevant.map(c => [c.id, c.claimedHash])) }
+    return { moves: changes.moves, releases, hashById: new Map(relevant.map(c => [c.id, c.claimedHash])),
+      claimState }
   }
 
   /** Validate claims recovered from a branch-room archive after the first repo-room join. */
@@ -1175,14 +1217,14 @@ class Daemon implements Roomd {
   }
 }
 
-interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined> }
+interface ClaimChanges { moves: ClaimMove[]; releases: ClaimRelease[]; hashById: Map<string, string | undefined>; claimState: Map<string, string | undefined> }
 type PushedPending = NonNullable<ParticipantGit['pushedPending']>
 interface TransitionFacts { next?: ParticipantGit; pushed?: PushedPending }
 /** A post the hub took: a refusal resolves `{ ok: false }`, and no hub connection yet resolves undefined. */
 const hubAccepted = (result: unknown) => result != null && !(typeof result === 'object' && 'ok' in result && result.ok === false)
 /** Preparations a HEAD transition tries before it gives up until the next poll. */
 const TRANSITION_ATTEMPTS = 5
-const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map() }
+const NO_CLAIM_CHANGES: ClaimChanges = { moves: [], releases: [], hashById: new Map(), claimState: new Map() }
 
 /** Detached HEAD has no branch: `''` in the record (reporooms §Participant record). */
 const branchName = (abbrev: string) => abbrev === 'HEAD' ? '' : abbrev

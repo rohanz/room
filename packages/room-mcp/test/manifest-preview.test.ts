@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { RoomDoc, digestPath, gitBlobHash, manifestKey, snapshot, versionOf } from '@room/shared'
 import { gitShow } from '@room/roomd/git'
 import { handlers } from '../src/tools/files.js'
@@ -45,6 +45,31 @@ function fixture() {
   } as unknown as HandlerState
   return { room, head, entries, texts, session, state }
 }
+
+it('services an event-loop turn between merged file materialisations', async () => {
+  const { entries, texts, state } = fixture()
+  for (const [rel, value] of [['app.py', 'changed app\n'], ['tests.txt', 'changed tests\n']] as const) {
+    entries.set(rel, { change: 'M', state: 'shared', hash: gitBlobHash(value), size: Buffer.byteLength(value), at: Date.now(), fence: '1' })
+    texts.set(rel, new Y.Text(value))
+  }
+  const write = fs.writeFileSync.bind(fs)
+  let first = false
+  let turned = false
+  let secondSawTurn = false
+  const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: Parameters<typeof fs.writeFileSync>[0], data: Parameters<typeof fs.writeFileSync>[1], options?: Parameters<typeof fs.writeFileSync>[2]) => {
+    if (typeof file === 'number' && Buffer.isBuffer(data) && (data.toString() === 'changed app\n' || data.toString() === 'changed tests\n')) {
+      if (first) secondSawTurn = turned
+      else { first = true; setImmediate(() => { turned = true }) }
+    }
+    return write(file, data, options)
+  }) as typeof fs.writeFileSync)
+  try {
+    const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })
+    expect(result).toContain('tests: PASSED')
+    expect(first).toBe(true)
+    expect(secondSawTurn).toBe(true)
+  } finally { spy.mockRestore() }
+})
 
 it('marks a changed disk symlink as a named partial gap even if a scratch test passes', async () => {
   const { room, session, state } = fixture()

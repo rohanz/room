@@ -1,6 +1,7 @@
 import { clearFixture, deleteFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,6 +31,17 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('rejects oversized own text before reading file contents', () => {
+    const room = new RoomDoc()
+    const file = join(dir, 'oversized.py')
+    writeFileSync(file, 'x'.repeat(256 * 1024 + 1))
+    const read = vi.spyOn(fs, 'readFileSync')
+    try {
+      const gi = new GraphIndex(room, 'Rohan', dir)
+      expect((gi as unknown as { ownText(path: string): string | undefined }).ownText('oversized.py')).toBeUndefined()
+      expect(read).not.toHaveBeenCalled()
+    } finally { read.mockRestore(); rmSync(file, { force: true }); room.doc.destroy() }
+  })
   it('resolves initial readiness while a path is continually superseded', async () => {
     const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     let edits = 0

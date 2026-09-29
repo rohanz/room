@@ -334,9 +334,9 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
   const closeWorkersRoom = async (preserveFacts = false): Promise<void> => {
       const ws = rooms.workers()
       if (!ws) return
-      rooms.remove(ws)
       if (!preserveFacts) try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
       await doLeave(ws)
+      rooms.remove(ws)
     }
   const runningWorkers = (s: Session): { s: Session; w: LocalWorker }[] => registryRunningWorkers(s, rooms)
   const dismissWorker = async (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal): Promise<string> => {

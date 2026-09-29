@@ -157,6 +157,22 @@ function lineMap(side: string, after: string): (number | undefined)[] {
 const DIFF_WORK = 2_000_000
 const editBudget = (...sizes: number[]) => Math.max(1, Math.min(128, Math.floor(DIFF_WORK / Math.max(1, sizes.reduce((a, b) => a + b, 0)))))
 
+/** Bound node-diff3's LCS equivalence-class scans, including repeated lines. */
+function diff3WithinBudget(a: string[], o: string[], b: string[]): boolean {
+  if ((a.length + b.length) * o.length > DIFF_WORK || a.length + o.length + b.length > 4096) return false
+  const counts = new Map<string, number>()
+  for (const line of o) counts.set(line, (counts.get(line) ?? 0) + 1)
+  let work = 0
+  for (const side of [a, b]) {
+    const candidates = Math.min(side.length, o.length) + 1
+    for (const line of side) {
+      work += (counts.get(line) ?? 0) * candidates
+      if (work > DIFF_WORK) return false
+    }
+  }
+  return true
+}
+
 /** Trivial cases never enter Myers; large edits have a fixed edit-distance budget. */
 function boundedDiff(before: string, after: string): { value: string; added?: boolean; removed?: boolean }[] {
   if (before === after) return before ? [{ value: before }] : []
@@ -183,7 +199,7 @@ function boundedMerge(a: string[], o: string[], b: string[]): ReturnType<typeof 
   if (equal(a, b) || equal(o, b)) return [{ ok: a }]
   if (equal(a, o)) return [{ ok: b }]
   const maxEditLength = editBudget(a.length, o.length, b.length)
-  if (diffLines(asText(a), asText(o), { maxEditLength }) &&
+  if (diff3WithinBudget(a, o, b) && diffLines(asText(a), asText(o), { maxEditLength }) &&
       diffLines(asText(b), asText(o), { maxEditLength })) return diff3Merge(a, o, b)
   let from = 0, tail = 0
   const shortest = Math.min(a.length, o.length, b.length)

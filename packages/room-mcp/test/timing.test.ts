@@ -4,12 +4,16 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
-import { Awareness } from 'y-protocols/awareness'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
 import { RoomDoc } from '@room/shared'
 import { carriedContentHash } from '@room/roomd/baseline'
 import { setGitObserver } from '@room/roomd/git'
-import { startAutoTaggedRoomd } from '../src/session.js'
+import { joinSession, startAutoTaggedRoomd, type Session } from '../src/session.js'
+import { createTools } from '../src/tools.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
+import { visiblePeer } from './fixtures/visible.js'
 import { countOtherPreviewChecks, currentToolTiming, previewCheck, previewPhase, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 
 const joinClock = vi.hoisted(() => ({ now: 0 }))
@@ -118,6 +122,9 @@ describe('tool timing', () => {
       await timing.phase('daemon start', () => { now += 900 })
     })
     expect(lines).toEqual(['slow tool room_join 4350ms: resolve 100ms, preflight 1200ms, connect 50ms, sync 2100ms, daemon start 900ms'])
+    lines.length = 0
+    await tracker.run('room_join', async () => { await currentToolTiming()!.phase('name', () => { now += 2100 }) })
+    expect(lines).toEqual(['slow tool room_join 2100ms: name 2100ms'])
   })
 
   it('logs preview merge, setup, check, collect, remainder, and sampled concurrent checks', async () => {
@@ -296,8 +303,63 @@ describe('tool timing', () => {
         await daemon.stop()
       })
       expect(lines).toHaveLength(1)
-      expect(lines[0]).toMatch(/sync 2100ms.*daemon start 900ms/)
+      expect(lines[0]).toMatch(/connect 50ms, sync 2100ms, name \d+ms, daemon start 900ms/)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('attributes delayed HTTP preflight in direct joinSession before a server refusal', async () => {
+    vi.stubEnv('ROOM_WORKER_ID', undefined)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-direct-join-timing-'))
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', ['-C', dir, '-c', 'user.name=Timing', '-c', 'user.email=timing@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'initial'])
+    joinClock.now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => joinClock.now, log: line => lines.push(line) })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/auth/config')) return new Response(JSON.stringify({ providers: [] }), { status: 200 })
+      if (url.endsWith('/view-token')) { joinClock.now += 2100; return new Response('refused', { status: 403 }) }
+      throw new Error(`unexpected request ${url}`)
+    })
+    try {
+      await expect(tracker.run('room_join', () => joinSession({ dir, server: 'ws://127.0.0.1:9', room: 'git/test/repo', name: 'Timing' }))).rejects.toThrow('refused')
+      expect(lines).toEqual(['slow tool room_join 2100ms: preflight 2100ms'])
+    } finally { fetch.mockRestore(); vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('attributes share, disclosure, state and view-token work in an already joined room_join handler', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-current-join-timing-'))
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', ['-C', dir, '-c', 'user.name=Timing', '-c', 'user.email=timing@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'initial'])
+    const room = new RoomDoc(), awareness = new Awareness(room.doc)
+    visiblePeer(room, 'Timing', 'agent', 'timing-host')
+    visiblePeer(room, 'Peer')
+    awareness.setLocalState({ user: { name: 'Timing', kind: 'agent' }, sessionId: 'timing-host', status: 'idle', lastActive: Date.now() })
+    const peer = new Awareness(new RoomDoc().doc)
+    peer.setLocalState({ user: { name: 'Peer', kind: 'agent' }, sessionId: 'fixture:Peer', status: 'idle', lastActive: Date.now() })
+    applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    const policyStore = testPolicyStore()
+    const setRequested = policyStore.setRequested.bind(policyStore)
+    policyStore.setRequested = async level => { joinClock.now += 100; return setRequested(level) }
+    const session: Session = { room, awareness, me: { name: 'Timing', kind: 'agent' }, dir,
+      roomUrl: 'ws://127.0.0.1:9/git/test/repo', roomName: 'git/test/repo', browserUrl: 'http://example.test/',
+      shareMax: 'full', shareRequested: 'full', token: 'test-token', policyStore,
+      provider: { synced: true, awareness } as Session['provider'], daemon: { share: 'full', touch() {}, stop: async () => {} } as unknown as Session['daemon'], ...hubSeam(room) }
+    const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
+    joinClock.now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => joinClock.now, log: line => lines.push(line) })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/auth/config')) return new Response(JSON.stringify({ providers: [] }), { status: 200 })
+      if (url.endsWith('/view-token')) { joinClock.now += 2100; return new Response(JSON.stringify({ view: 'v' }), { status: 200 }) }
+      throw new Error(`unexpected request ${url}`)
+    })
+    try {
+      const out = await tracker.run('room_join', () => tools.call('room_join', { share: 'full' }))
+      expect(out).toContain('browser view:')
+      expect(lines[0]).toMatch(/share 100ms.*disclosure \d+ms.*state 0ms, view token 2100ms/)
+    } finally { fetch.mockRestore(); await tools.shutdown(); peer.destroy(); awareness.destroy(); room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('counts baseline hash-object Git during a real preparation path', async () => {

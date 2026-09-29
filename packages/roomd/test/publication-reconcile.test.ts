@@ -6,7 +6,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, manifestKey } from '@room/shared'
+import { MAX_PUBLICATION_PATHS } from '../src/policy.js'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 
@@ -191,4 +192,37 @@ it('applies the prepared text operations when the overlay has not changed', asyn
   expect(publisher.apply(prepared, true)).toBe(true)
   expect(iterations).toBe(1)
   expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('new text\n')
+})
+
+it('yields while validating every text path before the atomic apply', async () => {
+  const config = options()
+  const paths = Array.from({ length: 96 }, (_, i) => `gate-${String(i).padStart(3, '0')}.txt`)
+  for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'changed\n')
+  daemon = await startRoomd(config)
+  const publisher = (daemon as unknown as { publisher: { prepare(): Promise<any>; validatePrepared(prepared: any): Promise<boolean> } }).publisher
+  const prepared = await publisher.prepare()
+  const events: string[] = []
+  const stat = fs.lstatSync
+  let checked = 0
+  const spy = vi.spyOn(fs, 'lstatSync').mockImplementation(((p: fs.PathLike, options?: unknown) => {
+    if (String(p).includes('gate-') && ++checked === 1) setImmediate(() => {
+      events.push('timer')
+      fs.writeFileSync(path.join(config.dir, paths.at(-1)!), 'changed again\n')
+    })
+    return (stat as any)(p, options)
+  }) as typeof fs.lstatSync)
+  try {
+    expect(await publisher.validatePrepared(prepared)).toBe(false)
+    events.push('validated')
+    expect(events).toEqual(['timer', 'validated'])
+    expect(checked).toBeGreaterThan(32)
+  } finally { spy.mockRestore() }
+})
+
+it('marks coverage incomplete instead of accepting an oversized policy-narrowing transaction', async () => {
+  daemon = await startRoomd(options())
+  const map = daemon.roomDoc.manifest.get(manifestKey('Alice', daemon.fence!))!
+  for (let i = 0; i <= MAX_PUBLICATION_PATHS; i++) map.set(`bulk/${i}`, { change: 'M', state: 'held', held: 'scope', at: 1, fence: daemon.fence! })
+  daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('intent') })
+  expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false, coverage: { kind: 'none', reason: 'starting' } })
 })

@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { sessionDirectory } from '../src/session.js'
+import { createWriteIntentReader } from '../src/hooks-bridge.js'
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 const SID = 'port-shell-session'
@@ -119,6 +120,45 @@ describe('0.16.38 shell write classifier in the redesign hook', () => {
 
   it.each(['cp app.py api/tax.py >/dev/null', 'git checkout HEAD api/tax.py', 'git checkout main api/tax.py', 'git checkout api/tax.py', 'cd api && git checkout tax.py'])('names the file operand: %s', async command => {
     expect(await run(command, 'Bash')).toContain('Kieran changed api/tax.py')
+  })
+
+  it.each([
+    'cp app.py api/tax.py >/dev/null', 'cp app.py api/tax.py >run.log',
+    'mv app.py api/tax.py 2>/dev/null', 'rm api/tax.py &>run.log',
+    'touch api/tax.py >>run.log', 'tee api/tax.py <app.py',
+    'sed -i "s/x/y/" api/tax.py >run.log', 'perl -pi -e "s/x/y/" api/tax.py 2>&1',
+    'truncate -s 0 api/tax.py >run.log', 'git mv app.py api/tax.py >run.log',
+    'git rm api/tax.py 2>/dev/null', 'git restore api/tax.py >run.log',
+  ])('warns and records redirected file operands: %s', async command => {
+    const out = await run(command, 'Bash')
+    expect(out, command).toContain('Kieran changed api/tax.py')
+    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
+    expect(read('api/tax.py'), command).toBe(true)
+  })
+
+  it.each(['git checkout main', 'git checkout feature/x', 'git checkout -b x', 'git switch api/tax.py'])('does not warn or record a branch checkout: %s', async command => {
+    expect(await run(command, 'Bash')).toBe('')
+    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
+    expect(read('api/tax.py'), command).not.toBe(true)
+  })
+
+  it.each([
+    ['Bash', 'sed -i "s/x/y/" api/tax.py app.py'],
+    ['Bash', "sed -i '' -e 's/x/y/' api/tax.py app.py"],
+    ['Bash', "sed -i.bak -f changes.sed api/tax.py app.py"],
+    ['Bash', "perl -pi -e 's/x/y/' api/tax.py app.py"],
+    ['Bash', 'git restore --source=HEAD api/tax.py app.py'],
+    ['Bash', 'git restore -s HEAD --staged --worktree api/tax.py app.py'],
+    ['Bash', 'git checkout -- api/tax.py app.py'],
+    ['Bash', 'git stash -- api/tax.py app.py'],
+    ['PowerShell', 'Move-Item api/tax.py old.py'],
+    ['PowerShell', 'Rename-Item -Path api/tax.py -NewName old.py'],
+    ['Bash', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: api/tax.py\n@@\n-x = 1\n+x = 2\n*** End Patch\nEOF"],
+  ] as const)('warns and records the first file operand: %s %s', async (tool_name, command) => {
+    const out = await run(command, tool_name)
+    expect(out, command).toContain('Kieran changed api/tax.py')
+    const read = createWriteIntentReader(dir, () => sessionDirectory(join(dir, '.git'), SID))
+    expect(read('api/tax.py'), command).toBe(true)
   })
 })
 

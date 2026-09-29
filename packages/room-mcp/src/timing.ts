@@ -82,11 +82,11 @@ export class ToolTiming {
     if (total < threshold && [...this.phases.values()].every(value => value < threshold)) return undefined
     const pieces: string[] = []
     const spawnPhases = this.phases.has('prepare') || this.phases.has('launch') || this.phases.has('lease')
-    const joinPhases = (this.name === 'room_join' || this.name === 'room_create') && ['resolve', 'preflight', 'connect', 'sync', 'daemon start'].some(name => this.phases.has(name))
+    const joinPhases = (this.name === 'room_join' || this.name === 'room_create') && ['resolve', 'preflight', 'connect', 'sync', 'name', 'daemon start', 'share', 'disclosure', 'state', 'view token'].some(name => this.phases.has(name))
     const previewPhases = this.name === 'room_preview_merge' && ['merge', 'setup', 'check', 'collect'].some(name => this.phases.has(name))
-    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : joinPhases ? ['settle', 'resolve', 'preflight', 'connect', 'sync', 'daemon start'] : previewPhases ? ['settle', 'merge', 'setup', 'check', 'collect'] : ['settle', 'body']
+    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : joinPhases ? ['settle', 'resolve', 'preflight', 'connect', 'sync', 'name', 'daemon start', 'share', 'disclosure', 'state', 'view token'] : previewPhases ? ['settle', 'merge', 'setup', 'check', 'collect'] : ['settle', 'body']
     for (const name of names) {
-      const elapsed = name === 'body' ? Math.max(0, (this.phases.get('body') ?? 0) - (this.phases.get('settle') ?? 0)) : this.phases.get(name)
+      const elapsed = name === 'body' ? Math.max(0, (this.phases.get('body') ?? 0) - (this.phases.get('settle') ?? 0)) : name === 'state' && this.phases.has('state') ? Math.max(0, this.phases.get('state')! - (this.phases.get('view token') ?? 0)) : this.phases.get(name)
       if (elapsed === undefined) continue
       let piece = `${name} ${ms(elapsed)}`
       if (name === 'prepare' && this.gitCalls) {
@@ -98,7 +98,7 @@ export class ToolTiming {
       if (name === 'check' && previewPhases && this.overlappingPreviewChecks !== undefined) pieces.push(`overlapped ${this.overlappingPreviewChecks} other preview check(s)`)
     }
     if (spawnPhases || joinPhases || previewPhases) {
-      const accounted = names.reduce((sum, name) => sum + (this.phases.get(name) ?? 0), 0)
+      const accounted = names.reduce((sum, name) => sum + (name === 'state' ? Math.max(0, (this.phases.get(name) ?? 0) - (this.phases.get('view token') ?? 0)) : (this.phases.get(name) ?? 0)), 0)
       const other = Math.max(0, total - accounted)
       if (Math.round(other) > 0) pieces.push(`other ${ms(other)}`)
     }

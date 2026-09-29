@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { setImmediate } from 'node:timers/promises'
 import { containsPath, normalizeCoordinationPath, type ManifestEntry } from '@room/shared'
 import { clampShare, type ShareLevel } from './share-level.js'
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
@@ -82,8 +83,12 @@ export interface PublicationPlan {
   readonly excludedReasons: ReadonlyMap<string, 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile'>
 }
 
+/** One atomic Y transaction never accepts more than this many paths. Larger scans remain incomplete. */
+export const MAX_PUBLICATION_PATHS = 4096
+
 /** Pure, ordered policy decision. A digest is created only after the publication gate. */
-export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt: string): PublicationPlan {
+function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: string): Generator<void, PublicationPlan> {
+  if (disk.length > MAX_PUBLICATION_PATHS) throw new Error(`publication path limit (${MAX_PUBLICATION_PATHS}) exceeded`)
   const entries = new Map<string, PlannedEntry>()
   const excluded: string[] = []
   const excludedPaths: string[] = []
@@ -94,6 +99,7 @@ export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt:
   if (policy.level === 'intent' || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons }
   let used = 0
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
+    yield
     const p = normalizeCoordinationPath(fact.path)
     const changed = fact.changed ?? (fact.kind === 'absent' ? !!fact.baseHash : fact.kind === 'unsafe' || fact.hash !== fact.baseHash)
     const hide = (reason: 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile') => { excludedPaths.push(p); excludedReasons.set(p, reason); excluded.push(createHash('sha256').update(Buffer.from(salt, 'hex')).update(p, 'utf8').digest('hex')) }
@@ -117,4 +123,22 @@ export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt:
     textPaths.push(p)
   }
   return { entries, excluded: excluded.sort(), excludedPaths, unsettled, textPaths, excludedReasons }
+}
+
+export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt: string): PublicationPlan {
+  const steps = planSteps(inputs, disk, salt)
+  for (;;) {
+    const result = steps.next()
+    if (result.done) return result.value
+  }
+}
+
+export async function planYielding(inputs: PublicationInputs, disk: readonly DiskFact[], salt: string): Promise<PublicationPlan> {
+  const steps = planSteps(inputs, disk, salt)
+  let count = 0
+  for (;;) {
+    if (++count % 32 === 1) await setImmediate()
+    const result = steps.next()
+    if (result.done) return result.value
+  }
 }

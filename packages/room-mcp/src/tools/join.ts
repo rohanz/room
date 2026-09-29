@@ -142,9 +142,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       cur?.lease?.check()
       const terminalNameLoss = cur?.lease?.state === 'taken' || cur?.lease?.state === 'superseded'
       const currentReply = async () => {
-        const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
-        if (cur) await offerTeamSharingDisclosure(cur, ledger)
-        return [sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
+        const sharing = a.share !== undefined ? await timed('share', () => shareHandlers(state).room_share({ level: a.share })) : ''
+        if (cur) await timed('disclosure', () => offerTeamSharingDisclosure(cur, ledger))
+        return [sharing, await timed('state', () => scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false }))].filter(Boolean).join('\n')
       }
       if (cur && !terminalNameLoss && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined && a.takeover !== true) {
         return currentReply()

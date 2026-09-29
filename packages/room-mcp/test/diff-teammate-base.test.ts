@@ -14,12 +14,13 @@ import { registerWorkers } from './registry-fixture.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 
-const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined }))
+const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, onShow: undefined as ((ref: string, path: string) => void) | undefined }))
 const probeFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, stderr: '' }))
 vi.mock('@room/roomd/git', async importOriginal => {
   const original = await importOriginal<typeof import('@room/roomd/git')>()
   return { ...original, gitShow: async (...args: Parameters<typeof original.gitShow>) => {
     if (gitShowFailure.error) throw gitShowFailure.error
+    gitShowFailure.onShow?.(args[1], args[2])
     return original.gitShow(...args)
   } }
 })
@@ -38,9 +39,43 @@ vi.mock('node:child_process', async importOriginal => {
 const dirs: string[] = []
 afterEach(() => {
   gitShowFailure.error = undefined
+  gitShowFailure.onShow = undefined
   probeFailure.error = undefined
   probeFailure.stderr = ''
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+it.each(['single path', 'all paths'])('restarts the whole %s diff when Ben commits during its base read', async shape => {
+  const t = flaskChanges()
+  try {
+    const second = 'SECOND.txt'
+    const secondText = 'Ben second committed file\n'
+    if (shape === 'all paths') publishFixture(t.room, 'Ben', second, secondText, { base: t.oldBase })
+    writeFileSync(join(t.dir, 'CHANGES.rst'), `Changelog\n=========\n\nExisting release notes.\n${t.anaEntry}${t.benEntry}`)
+    if (shape === 'all paths') writeFileSync(join(t.dir, second), secondText)
+    t.git('add', '.')
+    t.git('commit', '-qm', 'Ben committed both files')
+    const committed = t.git('rev-parse', 'HEAD')
+    let reads = 0
+    gitShowFailure.onShow = (ref, pathname) => {
+      if (ref !== t.oldBase || pathname !== (shape === 'all paths' ? second : 'CHANGES.rst')) return
+      reads++
+      if (reads !== 1) return
+      publishFixture(t.room, 'Ben', 'CHANGES.rst', `Changelog\n=========\n\nExisting release notes.\n${t.anaEntry}${t.benEntry}`, { base: committed })
+      if (shape === 'all paths') publishFixture(t.room, 'Ben', second, secondText, { base: committed })
+    }
+    const diff = await t.tools.call('room_read', { person: 'Ben', diff: true, ...(shape === 'single path' ? { path: 'CHANGES.rst' } : {}) })
+    expect(reads).toBe(1)
+    expect(diff).not.toContain(`+${t.benEntry}`)
+    expect(diff).not.toContain(`+${secondText}`)
+    expect(diff).not.toContain(`Ben is on base ${t.oldBase.slice(0, 10)}`)
+    expect(diff).toContain(`Ben is on base ${committed.slice(0, 10)}`)
+    expect(diff).toContain(shape === 'single path' ? 'no difference between base' : 'Ben coverage: all')
+  } finally {
+    await t.tools.shutdown()
+    t.awareness.destroy()
+    t.room.doc.destroy()
+  }
 })
 
 function flaskChanges() {
