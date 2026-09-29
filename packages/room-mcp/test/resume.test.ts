@@ -81,6 +81,52 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
+  it.each(['mcp', 'projector'] as const)('M1: resume %s receipts only messages present in its prompt', async acceptance => {
+    const t = setup()
+    await t.seed('backlog')
+    const old = hubAppend(t.room, { name: 'teammate', kind: 'agent' },
+      { type: 'question', to: 'rohanz+backlog', text: 'OLD_SECRET_QUESTION' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'backlog', text: 'NEW_FOLLOW_UP' })).toContain('resumed backlog')
+    const record = (await t.record('backlog'))!, run = record.runs.at(-1)!
+    const followUp = t.room.messages().find(m => m.to === record.name && 'text' in m && m.text === 'NEW_FOLLOW_UP')!
+    const prompt = t.specs[0].args.join(' ')
+    for (const m of [old, followUp]) {
+      expect(run.promptMsgIds).toContain(m.id)
+      expect(prompt).toContain(m.id)
+      expect(prompt).toContain('text' in m ? m.text : '')
+    }
+    if (acceptance === 'mcp') {
+      const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
+      vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
+      new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) }).acceptPrompt(worker)
+    } else {
+      writeFileSync(join(t.dir, '.room', 'workers', 'backlog.log'), JSON.stringify({
+        type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] },
+      }) + '\n')
+      t.exits[0](0)
+      const registry = await registryForDir(t.dir)
+      await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('done'))
+      await projectWorkers(t.session, registry, 'rohanz', 'joined')
+    }
+    for (const m of [old, followUp]) expect(t.room.seen(record.name).get(m.id)).toMatchObject({ via: 'prompt' })
+  })
+
+  it('M1: an oversized older message stays owed when excluded from the resume prompt', async () => {
+    const t = setup()
+    await t.seed('large')
+    const old = hubAppend(t.room, { name: 'teammate', kind: 'agent' },
+      { type: 'question', to: 'rohanz+large', text: 'OLD_OVERSIZED_' + 'x'.repeat(7_000) })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'large', text: 'NEW_FOLLOW_UP' })).toContain('resumed large')
+    const record = (await t.record('large'))!, run = record.runs.at(-1)!
+    expect(run.promptMsgIds).not.toContain(old.id)
+    expect(t.specs[0].args.join(' ')).not.toContain('OLD_OVERSIZED_')
+    const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
+    vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
+    const ledger = new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) })
+    ledger.acceptPrompt(worker)
+    expect(t.room.seen(record.name).has(old.id)).toBe(false)
+    expect(ledger.candidates(worker).map(m => m.id)).toContain(old.id)
+  })
   it('keeps a posted follow-up owed until the resumed turn is accepted', async () => {
     const t = setup()
     await t.seed('owed')

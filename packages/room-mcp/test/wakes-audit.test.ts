@@ -210,6 +210,20 @@ it('caps oversized waits at 100 seconds and says to call again', async () => {
   expect(await waiting).toContain('waited 100 s (the most per call); call again')
 })
 
+it('S1: a 100-second wait consumes an answer arriving after the 60-second reply lease', async () => {
+  vi.useFakeTimers()
+  const { main, tools, state } = fixture()
+  main.room.colors.set('Ada', 0)
+  const question = hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'question', to: 'Ada', text: 'ready?' })
+  const waiting = tools.room_wait({ questionId: question.id, timeoutMs: 100_000 })
+  expect(state.setPresence).toHaveBeenCalledWith(main, { status: `waiting for answer to ${question.id}` })
+  await vi.advanceTimersByTimeAsync(61_000)
+  const answer = hubAppend(main.room, { name: 'Ada', kind: 'agent' },
+    { type: 'answer', to: 'lead', inReplyTo: question.id, text: 'yes after 61 seconds' })
+  expect(await waiting).toContain('yes after 61 seconds')
+  expect(main.room.seen('lead').get(answer.id)).toMatchObject({ via: 'wait' })
+})
+
 it('surfaces an addressed worker question before a routine note while waiting', async () => {
   const { main, rooms, makeSession, addWorker, tools } = fixture()
   const workers = makeSession('workers'); rooms.add(workers, 'workers')
