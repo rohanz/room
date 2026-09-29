@@ -380,6 +380,8 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const after = leadState()
     expect(after.head).toBe(before.head); expect(after.index).toBe(before.index); expect(after.cached).toBe(before.cached)
     expect(reply).toContain('cleaned up two')
+    // The branch tip is the lead's carry commit, not the worker's own work: no recovery ref is left behind.
+    expect(git(repo, 'for-each-ref', 'refs/room/recovery')).toBe('')
   })
 
   it('(3) two workers spawned at different moments of the lead\'s WIP are collected together', async () => {

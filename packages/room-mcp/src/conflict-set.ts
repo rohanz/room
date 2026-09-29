@@ -12,7 +12,7 @@ import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
-import { registrySnapshotForDir } from './worker-registry.js'
+import { registryForDir, registrySnapshotForDir } from './worker-registry.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -56,7 +56,8 @@ class StaleConflictInputs extends Error {}
 const samePath = (a: string, b: string): boolean => {
   try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false }
 }
-type LandedWorkerState = { id: string; name?: string; lead?: string; dir?: string; status: string; run: string; seq?: number; busy: boolean }
+type LandedWorkerState = { id: string; name?: string; lead?: string; dir?: string; reported: string; run: string; seq: number; busy: boolean }
+type TrustedLandedWorker = { id: string; status: string; dir: string; run: string; seq: number }
 
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
 export class ConflictSlots {
@@ -229,7 +230,14 @@ export class ConflictSet {
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined,
-    private readonly localWorker: (name: string) => Promise<{ id: string; status: string; dir: string } | undefined> = name => trustedWorker(team, name),
+    private readonly localWorker: (name: string) => Promise<TrustedLandedWorker | undefined> = async name => {
+      const registry = await registryForDir(team.dir)
+      const trusted = await registry.trusted({ participant: team.me.name, room: team.roomName, dir: team.dir }, name)
+      if (!trusted || trusted.record.name !== name) return undefined
+      const run = trusted.status.run
+      return { id: trusted.record.id, status: trusted.status.status, dir: fs.realpathSync(trusted.record.dir),
+        run: run ? `${run.n}:${run.nonce}` : '', seq: trusted.record.seq }
+    },
     private readonly workerState: (id: string) => LandedWorkerState | undefined = id => {
       const registry = registrySnapshotForDir(team.dir)
       return registry.freshness(id)
@@ -563,14 +571,15 @@ export class ConflictSet {
       list.push(claim); groups.set(claim.by, list)
     }
     for (const [name, claims] of groups) {
+      const holder = JSON.stringify(participantRecord(room, name)?.holder)
+      if (!holder) continue
       const worker = await this.localWorker(name)
-      if (worker?.status !== 'done' || !claims.length) continue
+      if (worker?.status !== 'done' || !worker.run || !claims.length) continue
       const initial = this.workerState(worker.id)
       if (!initial || initial.id !== worker.id || initial.name && initial.name !== name ||
           initial.lead && initial.lead !== this.owner || initial.dir && !samePath(initial.dir, worker.dir) ||
-          initial.status !== 'done' || initial.busy) continue
-      const holder = JSON.stringify(participantRecord(room, name)?.holder)
-      if (!holder) continue
+          initial.run !== worker.run || initial.seq !== worker.seq || initial.busy ||
+          JSON.stringify(participantRecord(room, name)?.holder) !== holder) continue
       const currentClaims = () => room.openClaims().filter(claim => claim.by === name)
         .sort((a, b) => a.id.localeCompare(b.id))
       const claimSnapshot = JSON.stringify(currentClaims())

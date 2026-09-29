@@ -31,16 +31,24 @@ export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> 
     .sort()
 }
 
-export type WorkerCleanupPreservation = { ignored: string[]; uncollected: string[] }
+export type WorkerCleanupPreservation = {
+  ignored: string[]; uncollected: string[]
+  commitsAfterCollection?: { sha: string; paths: string[] }
+  recoveryRef?: string
+}
 
-/** Work added after an owner was collected can still be sitting in its shared checkout. */
-async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker): Promise<string[]> {
+export const collectHeadRef = (tag: string, id: string) => `refs/room/collect-head/${tag}/${id}`
+export const collectBaseRef = (tag: string, id: string) => `refs/room/collect-base/${tag}/${id}`
+
+/** Compare checkout output against the lead, including commits after collection's captured HEAD. */
+async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedHead?: string): Promise<string[]> {
   const exclusions = workerOwnedPaths(w).exclusions
-  const [changed, untracked] = await Promise.all([
+  const [changed, untracked, committed] = await Promise.all([
     git(w.dir, ['diff', '--name-only', '-z', 'HEAD', '--', '.', ...exclusions]),
     git(w.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions]),
+    capturedHead ? git(w.dir, ['diff', '--name-only', '-z', capturedHead, 'HEAD', '--', '.', ...exclusions]) : '',
   ])
-  const paths = [...new Set((changed + untracked).split('\0').filter(Boolean))]
+  const paths = [...new Set((changed + untracked + committed).split('\0').filter(Boolean))]
   const same = async (rel: string): Promise<boolean> => {
     const left = path.join(w.dir, rel), right = path.join(leadDir, rel)
     const stat = (file: string) => { try { return fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e } }
@@ -363,19 +371,55 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
     const { removePreviewCache } = await import('./tools/files.js')
     await removePreviewCache(w.dir, leadDir)
     if (!await available()) return false
+    // A shared checkout kept after its owner was collected can gain work later (a borrower, or anything
+    // writing there); ordinary collection already applied the worker's final tree under its operation lease.
+    let retainedOwner = false
     if (!discarded && w.id) {
       const { registryForDir } = await import('./worker-registry.js')
       const owner = (await registryForDir(leadDir)).read(w.id)
-      if (owner?.phase === 'retired' && owner.keptWorktree && owner.archive?.keptReason?.startsWith('shared checkout: ')) {
-        const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w)])
-        if (preservation) { preservation.ignored = ignored; preservation.uncollected = uncollected }
-        if (ignored.length || uncollected.length) return false
+      retainedOwner = owner?.phase === 'retired' && !!owner.keptWorktree && !!owner.archive?.keptReason?.startsWith('shared checkout: ')
+    }
+    if (retainedOwner) {
+      let capturedHead: string | undefined
+      try { capturedHead = (await git(leadDir, ['rev-parse', '--verify', collectHeadRef(w.tag, w.id)])).trim() } catch { /* legacy collection */ }
+      const currentHead = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
+      const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w, capturedHead)])
+      const committedPaths = capturedHead && capturedHead !== currentHead
+        ? (await git(w.dir, ['diff', '--name-only', '-z', capturedHead, currentHead, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort()
+        : undefined
+      if (preservation) {
+        preservation.ignored = ignored; preservation.uncollected = uncollected
+        if (committedPaths) preservation.commitsAfterCollection = { sha: currentHead.slice(0, 12), paths: committedPaths }
       }
+      if (ignored.length || uncollected.length || committedPaths) return false
     }
     if (!await available()) return false
+    // Deleting a branch must not strand a commit absent from the lead's history.
+    // Discard already has a patch, but a named Git ref also preserves the exact tip.
+    const tip = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
+    if (tip !== head && !discarded) {
+      if (preservation) preservation.commitsAfterCollection = {
+        sha: tip.slice(0, 12),
+        paths: (await git(w.dir, ['diff', '--name-only', '-z', head, tip, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort(),
+      }
+      return false
+    }
+    // Only the worker's own commits need a handle: a tip that is the lead's carry commit or the base is the lead's.
+    const ownCommits = tip !== refs.get(carryRef(w.tag)) && tip !== w.base
+    let reachable = true
+    if (ownCommits) try { await git(leadDir, ['merge-base', '--is-ancestor', tip, 'HEAD']) } catch { reachable = false }
+    if (!reachable) {
+      const ref = `refs/room/recovery/${w.tag}/${tip}`
+      await internalGit(leadDir, ['update-ref', ref, tip])
+      if (preservation) preservation.recoveryRef = ref
+      else console.info(`worker ${w.tag} branch recovery ref: ${ref}`)
+    }
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     await internalGit(leadDir, ['branch', '-D', w.branch])
     for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])
+    for (const ref of [collectHeadRef(w.tag, w.id), collectBaseRef(w.tag, w.id)]) {
+      try { await internalGit(leadDir, ['update-ref', '-d', ref]) } catch { /* legacy collection */ }
+    }
   } catch (error) {
     const recovery = w.id ? path.join(await realGitCommonDir(leadDir), 'room', 'registry', 'patches', `${w.id}.patch`) : undefined
     const recoveryNote = recovery && fs.existsSync(recovery) ? `actual worker edits are in ${recovery}` : `collected edits are in ${leadDir}`

@@ -757,6 +757,8 @@ describe('room_collect', () => {
     const t = httpxWorkers('running')
     put(worker, 'new.txt', 'shared output')
     expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    expect(git(lead, 'rev-parse', 'refs/room/collect-head/port-fix/w_port-fix')).toBe(git(worker, 'rev-parse', 'HEAD'))
+    expect(git(lead, 'rev-parse', 'refs/room/collect-base/port-fix/w_port-fix')).toBe(base)
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
     expect(fs.existsSync(worker)).toBe(true)
@@ -802,6 +804,44 @@ describe('room_collect', () => {
     expect(result).toContain('detached port-bools; the worktree belongs to port-fix')
     expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
     expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBe(worker)
+  })
+  it.each([false, true])('keeps late output at the borrower retirement boundary (committed=%s)', async committed => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    const project = t.state.rooms.project
+    let wrote = false
+    t.state.rooms.project = async () => {
+      await project()
+      const registry = await registryForDir(lead)
+      if (!wrote && registry.read('w_port-bools')?.phase === 'retired') {
+        wrote = true
+        put(worker, 'late.txt', 'uncopied late output')
+        if (committed) { git(worker, 'add', 'late.txt'); git(worker, 'commit', '-qm', 'late work') }
+      }
+    }
+    const result = await t.call({ tag: 'port-bools' })
+    expect(wrote).toBe(true)
+    expect(result).toContain("kept port-fix's worktree")
+    expect(result).toContain('late.txt')
+    if (committed) expect(result).toMatch(/commits after collection: [0-9a-f]{7,12} late\.txt/)
+    expect(fs.readFileSync(path.join(worker, 'late.txt'), 'utf8')).toBe('uncopied late output')
+    expect(fs.existsSync(path.join(lead, 'late.txt'))).toBe(false)
+    expect(git(lead, 'show-ref', '--verify', 'refs/heads/room/port-fix')).toBeTruthy()
+  })
+  it('removes an unchanged checkout while naming a recovery ref for its unmerged branch tip', async () => {
+    const t = setup()
+    put(worker, 'committed.txt', 'worker output')
+    git(worker, 'add', 'committed.txt'); git(worker, 'commit', '-qm', 'worker output')
+    const tip = git(worker, 'rev-parse', 'HEAD')
+    const result = await t.call({ tag: 'test' })
+    const ref = `refs/room/recovery/test/${tip}`
+    expect(result).toContain('cleaned up test')
+    expect(result).toContain(`branch recovery ref: ${ref}`)
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(git(lead, 'rev-parse', ref)).toBe(tip)
+    expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
   })
   it('keeps uncollected changes made after the owner was collected', async () => {
     const t = httpxWorkers('running')

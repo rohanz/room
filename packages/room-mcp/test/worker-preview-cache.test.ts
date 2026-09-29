@@ -8,7 +8,7 @@ import { previewCachePath, runInMergedTree } from '../src/tools/files.js'
 import type { LocalWorker } from '../src/worker-status.js'
 import type { Session } from '../src/session.js'
 
-it.each([false, true])('removes the preview checkout after worker %s cleanup', async discarded => {
+it.each([false, true])('leaves a live preview slot after worker %s cleanup', async discarded => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-worker-preview-'))
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
   try {
@@ -31,12 +31,12 @@ it.each([false, true])('removes the preview checkout after worker %s cleanup', a
       dir: workerDir, branch: 'room/w1', pid: 0, startedAt: 1, status: 'done', exitCode: 0,
       budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' } as LocalWorker
     expect(await cleanupWorker(root, worker, true, discarded, [], { list: () => [] })).toBe(true)
-    expect(fs.existsSync(cache)).toBe(false)
-    expect(git('worktree', 'list', '--porcelain')).not.toContain(cache)
+    expect(fs.existsSync(cache)).toBe(true)
+    expect(git('worktree', 'list', '--porcelain')).toContain(cache)
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 }, 30_000)
 
-it('prunes a preview cache when the worker checkout has already vanished', async () => {
+it('leaves a live preview slot when the worker checkout has already vanished', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-missing-worker-preview-'))
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
   try {
@@ -57,7 +57,7 @@ it('prunes a preview cache when the worker checkout has already vanished', async
       dir: workerDir, branch: 'room/w1', pid: 0, startedAt: 1, status: 'done', exitCode: 0,
       budget: { threads: 1, memGb: 1, nice: 10 }, share: 'full' } as LocalWorker
     await pruneMissingWorkerWorktree(root, worker)
-    expect(fs.existsSync(cache)).toBe(false)
-    expect(git('worktree', 'list', '--porcelain')).not.toContain(cache)
+    expect(fs.existsSync(cache)).toBe(true)
+    expect(git('worktree', 'list', '--porcelain')).toContain(cache)
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 }, 30_000)

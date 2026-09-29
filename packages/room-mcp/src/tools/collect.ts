@@ -5,7 +5,7 @@ import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -154,6 +154,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const details = [
           ...(preservation.ignored.length ? [`ignored files not copied: ${preservation.ignored.join(', ')}`] : []),
           ...(preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(', ')}`] : []),
+          ...(preservation.commitsAfterCollection ? [`commits after collection: ${preservation.commitsAfterCollection.sha} ${preservation.commitsAfterCollection.paths.join(', ') || '(no changed paths)'}`] : []),
         ]
         if (!details.length) return `kept ${fresh.tag}'s worktree: cleanup incomplete`
         const reason = `shared checkout: no borrowers; ${details.join('; ')}`
@@ -178,6 +179,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           list.insert(index, [entry])
         })
       }
+      if (preservation.recoveryRef) return `cleaned up ${fresh.tag}; branch recovery ref: ${preservation.recoveryRef}`
     } finally { await registry.finishOperation(owner.id) }
   }
   const missingCapability = (s: Session, w: LocalWorker): string => {
@@ -270,7 +272,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           await registry.markDiscardStep(active.id, 'stop')
           const patch = missing || borrowed ? undefined : await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(active.id, bytes))
           await registry.markDiscardStep(active.id, 'patch')
-          if (!missing && !borrowed && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+          const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+          if (!missing && !borrowed && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s), preservation)) throw new Error('worker is not an owned Room worktree')
           await registry.markDiscardStep(active.id, 'cleanup')
           const archive = s.room.doc.getArray<RetiredWorker>('retiredWorkers')
           const index = archive.toArray().findIndex(item => item.id === active.id)
@@ -281,7 +284,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           await registry.markDiscardStep(active.id, 'prune')
           await retireWorker(rooms, s, active.id, { ...r, summary: 'discarded', disposition: 'discarded', keptWorktree: undefined }, { keptWorktree: undefined })
-          return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
+          return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRef ? '; branch recovery ref: ' + preservation.recoveryRef : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { await registry.finishOperation(active.id) }
       }
@@ -389,7 +392,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const patch = ownedWorktree ? await saveDiscardPatch(s.dir, w, bytes => registry.recordDiscardPatch(lock, bytes)) : undefined
         await registry.markDiscardStep(lock, 'patch')
-        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error('worker is not an owned Room worktree')
+        const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+        if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s), preservation)) throw new Error('worker is not an owned Room worktree')
         if (borrowed) cleanupWorkerLogs(s.dir, w)
         await registry.markDiscardStep(lock, 'cleanup')
         releaseClaimsOnDone(s, () => false, w.name, false)
@@ -402,7 +406,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         })
         return [...sharedResults, ...childResults, (borrowed
           ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}`
-          : decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
+          : decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (preservation.recoveryRef ? '; branch recovery ref: ' + preservation.recoveryRef : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
       } catch (e) {
         await registry.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {})
         return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir
@@ -615,6 +619,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { p, identity } of destinations) {
         if (!sameIdentity(identity, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
       }
+      // Keep the exact source HEAD and merge baseline used by this collection. A
+      // retained shared checkout may receive another commit before its last user exits.
+      for (const { w } of selected) {
+        await git(lead.dir, ['update-ref', collectHeadRef(w.tag, w.id), heads.get(w.name)!])
+        await git(lead.dir, ['update-ref', collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!])
+      }
       const written: typeof changes = []
       try {
         for (const change of changes) {
@@ -687,11 +697,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             continue
           }
           const terminated: string[] = []
-          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) {
+          const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+          if (await cleanupWorker(s.dir, w, true, false, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s), preservation)) {
             retire(w.summary ?? '')
             out.push('cleaned up ' + w.tag + ': temporary files, branch and logs')
+            if (preservation.recoveryRef) out.push('branch recovery ref: ' + preservation.recoveryRef)
             if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
-          } else { out.push('kept ' + w.tag + ': cleanup incomplete'); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
+          } else {
+            const details = [
+              ...(preservation.ignored.length ? [`ignored files not copied: ${preservation.ignored.join(', ')}`] : []),
+              ...(preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(', ')}`] : []),
+              ...(preservation.commitsAfterCollection ? [`commits after collection: ${preservation.commitsAfterCollection.sha} ${preservation.commitsAfterCollection.paths.join(', ') || '(no changed paths)'}`] : []),
+            ]
+            const reason = details.join('; ') || 'cleanup incomplete'
+            out.push(`kept ${w.tag}'s worktree: ${reason}`)
+            retire(w.summary ?? '', w.dir, reason)
+          }
         } catch (e) { out.push('cleanup incomplete for ' + w.tag + ': ' + (e instanceof Error ? e.message : String(e))); retire(w.summary ?? '', w.dir, 'cleanup incomplete') }
         await finishOne()
       }

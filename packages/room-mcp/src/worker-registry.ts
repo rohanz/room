@@ -564,13 +564,14 @@ export class WorkerRegistry {
     catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
   }
   /** One worker's durable run and lease facts for a trusted caller; never probes processes or scans peers. */
-  freshness(id: string): { id: string; name: string; lead: string; dir: string; status: WorkerStatusResult['status']; run: string; seq: number; busy: boolean } | undefined {
+  freshness(id: string): { id: string; name: string; lead: string; dir: string; reported: 'done' | 'exited' | 'none'; run: string; seq: number; busy: boolean } | undefined {
     if (!safeId(id)) return undefined
     const record = this.read(id)
     if (!record) return undefined
-    const status = statusOf(record, record.runs, this.reports(id), this.exits(id), () => 'dead', this.now())
-    const run = status.run ?? record.runs.at(-1)
-    return { id: record.id, name: record.name, lead: record.lead.participant, dir: record.dir, status: status.status,
+    const run = record.runs.at(-1)
+    const reported = run && this.reports(id).some(report => report.run === run.n && report.nonce === run.nonce && !!report.done)
+      ? 'done' : run && this.exits(id).some(exit => exit.run === run.n) ? 'exited' : 'none'
+    return { id: record.id, name: record.name, lead: record.lead.participant, dir: record.dir, reported,
       run: run ? `${run.n}:${run.nonce}` : '', seq: record.seq, busy: this.operationInProgress(id) }
   }
   private async adoptLegacy(record: WorkerRecord, lead: { participant: string; room: string; dir: string }): Promise<WorkerRecord | undefined> {

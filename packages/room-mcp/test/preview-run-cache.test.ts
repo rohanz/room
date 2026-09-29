@@ -70,7 +70,6 @@ it('repairs a dirty cache before the check and retains ignored build outputs', a
   fs.writeFileSync(path.join(cache, 'scratch-leak'), 'dirty untracked\n')
   fs.mkdirSync(path.join(cache, 'target'), { recursive: true })
   fs.writeFileSync(path.join(cache, 'target', 'warm-cache'), 'keep me\n')
-  fs.writeFileSync(`${cache}.lock`, '999999999') // abandoned by a dead preview process
   const result = await runInMergedTree(session(), ancestor, merged,
     `${command} && test ! -e scratch-leak && test -f target/warm-cache && echo "1 passed"`)
   expect(result.passed, result.text).toBe(true)

@@ -396,7 +396,7 @@ describe('derived pair slots', () => {
       writeFileSync(join(f.dir, 'x'), 'worker\n')
       f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
       f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
-      const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
+      const state = { id: 'w_123', status: 'done', run: '1:first', seq: 2, busy: false }
       const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
         async name => name === 'L+w' ? { ...state, dir: workerDir } : undefined,
         () => ({ ...state }))
@@ -409,6 +409,67 @@ describe('derived pair slots', () => {
     } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
   })
 
+  it('keeps claims when a reported, live run resumes during the trusted lookup', async () => {
+    const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-lookup-race-'))
+    try {
+      f.holder('L'); f.holder('L+w', 'L')
+      writeFileSync(join(workerDir, 'x'), 'worker\n')
+      writeFileSync(join(f.dir, 'x'), 'worker\n')
+      f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+      const claim = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const registry = registrySnapshotForDir(f.dir)
+      const workers = join(f.dir, '.git', 'room', 'registry', 'workers')
+      const runs = join(f.dir, '.git', 'room', 'registry', 'runs', 'w_123')
+      mkdirSync(workers, { recursive: true }); mkdirSync(runs, { recursive: true })
+      const token = { pid: process.pid, startTime: 'live', executable: 'node', sessionId: 'test', nonce: 'token' }
+      const record = {
+        v: 1, id: 'w_123', tag: 'w', name: 'L+w', mode: 'local', room: 'local/test',
+        lead: { participant: 'L', room: 'local/test', instance: token }, host: 'codex',
+        budget: { threads: 1, memGb: 1, nice: 10 }, share: 'declared', task: 'test',
+        dir: workerDir, outside: false, branch: 'room/w', prep: { step: 'prepared' },
+        capabilities: { resume: true, signal: true, collect: 'delta' }, phase: 'active',
+        runs: [
+          { n: 1, mode: 'fresh', intentAt: 1, nonce: 'first', busFrontier: 0, promptMsgIds: [], launcher: token,
+            logStart: 0, launch: { outcome: 'launched', pid: 999999999 } },
+          { n: 2, mode: 'resume', intentAt: 2, nonce: 'second', busFrontier: 0, promptMsgIds: [], launcher: token,
+            logStart: 0, launch: { outcome: 'launched', pid: process.pid, process: token } },
+        ], createdAt: 1, seq: 3,
+      }
+      const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+        async () => {
+          writeFileSync(join(workers, 'w_123.json'), JSON.stringify(record))
+          writeFileSync(join(runs, '2.report.json'), JSON.stringify({ run: 2, nonce: 'second', chain: [], joinedAt: 2,
+            done: { at: 3, summary: 'reported while host still running', changed: ['x'] } }))
+          return { id: 'w_123', status: 'done', dir: workerDir, run: '1:first', seq: 2 }
+        })
+      expect(registry.freshness('w_123')).toBeUndefined()
+      await (set as any).releaseLandedWorkerClaims('1')
+      expect(registry.freshness('w_123')).toMatchObject({ reported: 'done', run: '2:second', seq: 3 })
+      expect(f.room.claims.has(claim.id)).toBe(true)
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(0)
+    } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
+  it('keeps claims when the holder changes during the trusted lookup', async () => {
+    const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-holder-race-'))
+    try {
+      f.holder('L'); f.holder('L+w', 'L')
+      writeFileSync(join(workerDir, 'x'), 'worker\n')
+      writeFileSync(join(f.dir, 'x'), 'worker\n')
+      f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+      const claim = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const state = { id: 'w_123', name: 'L+w', lead: 'L', dir: workerDir, reported: 'done', run: '1:first', seq: 2, busy: false }
+      const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+        async () => {
+          f.holder('L+w', 'L', 2)
+          return { id: state.id, status: 'done', dir: workerDir, run: state.run, seq: state.seq }
+        }, () => ({ ...state }))
+      await (set as any).releaseLandedWorkerClaims('1')
+      expect(f.room.claims.has(claim.id)).toBe(true)
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(0)
+    } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
   it('releases when the registry records the worker dir through a symlink (/tmp vs /private/tmp)', async () => {
     const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-link-')), linked = `${workerDir}-link`
     try {
@@ -418,7 +479,7 @@ describe('derived pair slots', () => {
       writeFileSync(join(f.dir, 'x'), 'worker\n')
       f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
       f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
-      const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
+      const state = { id: 'w_123', status: 'done', run: '1:first', seq: 2, busy: false }
       // trustedWorker reports the real path; the registry record keeps the path it was created with.
       const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
         async name => name === 'L+w' ? { ...state, dir: workerDir } : undefined,
@@ -437,7 +498,7 @@ describe('derived pair slots', () => {
         writeFileSync(join(f.dir, 'x'), 'worker\n')
         f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
         const original = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
-        const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
+        const state = { id: 'w_123', status: 'done', run: '1:first', seq: 2, busy: false }
         let unblock!: () => void, entered!: () => void
         const blocked = new Promise<void>(resolve => { unblock = resolve })
         const reading = new Promise<void>(resolve => { entered = resolve })
@@ -525,7 +586,7 @@ describe('derived pair slots', () => {
         await (untrusted as any).releaseLandedWorkerClaims('1')
         expect(recordReads).toBe(0)
         const done = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
-          async () => ({ id: 'w_123', status: 'done', dir: workerDir }))
+          async () => ({ id: 'w_123', status: 'done', dir: workerDir, run: '1:run', seq: 2 }))
         await (done as any).releaseLandedWorkerClaims('1')
         expect(recordReads).toBe(2)
         expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])

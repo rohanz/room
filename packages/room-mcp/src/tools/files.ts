@@ -21,7 +21,7 @@ import { buildCombinedTree } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { probeProcess } from '@room/relay/process'
+import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -559,163 +559,207 @@ function canonicalPreviewClonePath(cloneDir: string): string {
   return path.join(fs.realpathSync(existing), ...missing)
 }
 
-/** Each clone gets one worktree under its common Git dir. The lock is outside the tree so Git clean cannot remove it. */
-export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Promise<string> {
+/** Private per-process worktree slots live beneath a clone-key directory. */
+async function previewKeyPath(cloneDir: string, repoDir = cloneDir): Promise<string> {
   const common = await fs.promises.realpath(await gitCommonDir(repoDir))
   const key = createHash('sha256').update(canonicalPreviewClonePath(cloneDir)).digest('hex').slice(0, 20)
-  return path.join(common, 'room-preview', key)
+  const root = path.join(common, 'room-preview')
+  await rejectPreviewLink(root)
+  return path.join(root, key)
+}
+
+async function rejectPreviewLink(file: string): Promise<void> {
+  try { if ((await fs.promises.lstat(file)).isSymbolicLink()) throw new Error('unsafe preview cache link') }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
 }
 
 const SETUP_TIMEOUT_MS = 10 * 60_000
 const gitSetup = (dir: string, args: string[]) => git(dir, args, SETUP_TIMEOUT_MS)
-
-/** Remove a clone's preview worktree before that clone is collected or discarded. repoDir supports vanished clones. */
-export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
-  const cache = await previewCachePath(cloneDir, repoDir)
-  await fs.promises.mkdir(path.dirname(cache), { recursive: true, mode: 0o700 })
-  const release = await acquirePreviewLock(`${cache}.lock`)
-  if (!release) throw new Error(`preview cache is in use or its lock is uncertain: ${cache}`)
-  try {
-    let present = false
-    try { await fs.promises.lstat(cache); present = true }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    if (present) {
-      try { await gitSetup(repoDir, ['worktree', 'remove', '--force', cache]) }
-      catch {
-        // A broken registration cannot be removed through Git; remove only our derived private path.
-        await fs.promises.rm(cache, { recursive: true, force: true })
-      }
-    }
-    await gitSetup(repoDir, ['worktree', 'prune'])
-  } finally { await release() }
+const LEGACY_PREVIEW_RESIDUE_MS = 10 * 60_000
+const PROBE_TIMEOUT_MS = 3000
+let ownStartPromise: Promise<string | undefined> | undefined
+let processProbeForTests: ((pid: number) => Promise<string | null | undefined>) | undefined
+/** Test seam: null means dead, undefined means an uncertain live process. */
+export function setPreviewProcessProbeForTests(probe?: (pid: number) => Promise<string | null | undefined>): void {
+  processProbeForTests = probe
 }
 
-const LEGACY_PREVIEW_RESIDUE_MS = 10 * 60_000
-const previewStartTime = probeProcess(process.pid)?.startTime ?? ''
-const unreleasedPreviewGates = new Map<string, string>()
-interface PreviewOwner { pid: number; startTime: string; nonce: string }
-const previewToken = (): string => JSON.stringify({ pid: process.pid, startTime: previewStartTime, nonce: randomUUID() } satisfies PreviewOwner)
-
-function parsedPreviewOwner(value: string): PreviewOwner | undefined {
+async function boundedProbe<T>(operation: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
   try {
-    const token = JSON.parse(value) as Partial<PreviewOwner>
-    if (Number.isSafeInteger(token.pid) && token.pid! > 0 && typeof token.startTime === 'string' && typeof token.nonce === 'string' && token.nonce) return token as PreviewOwner
-  } catch { /* legacy PID-only lock */ }
+    return await Promise.race([operation, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('process probe timed out')), PROBE_TIMEOUT_MS)
+      timer.unref?.()
+    })])
+  } finally { if (timer) clearTimeout(timer) }
+}
+
+async function processCommand(file: string, args: string[]): Promise<string> {
+  return boundedProbe(new Promise<string>((resolve, reject) => {
+    execFile(file, args, { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } },
+      (error, stdout) => error ? reject(error) : resolve(stdout))
+  }))
+}
+
+/** Kernel birth marker only; errors and timeouts preserve the owner's slot. */
+async function probePreviewStart(pid: number): Promise<string | null | undefined> {
+  if (processProbeForTests) return boundedProbe(processProbeForTests(pid)).catch(() => undefined)
+  if (!pidAlive(pid)) return null
+  try {
+    if (process.platform === 'linux') {
+      const stat = await boundedProbe(fs.promises.readFile(`/proc/${pid}/stat`, 'utf8'))
+      const close = stat.lastIndexOf(')')
+      const ticks = close < 0 ? undefined : stat.slice(close + 1).trim().split(/\s+/)[19]
+      const boot = await boundedProbe(fs.promises.readFile('/proc/sys/kernel/random/boot_id', 'utf8'))
+      if (/^\d+$/.test(ticks ?? '') && boot.trim()) return `linux:${boot.trim()}:${ticks}`
+    } else if (process.platform === 'darwin') {
+      const seconds = parsePsLstartUtc(await processCommand('ps', ['-o', 'lstart=', '-p', String(pid)]))
+      const boot = (await processCommand('sysctl', ['-n', 'kern.boottime'])).match(/sec\s*=\s*(\d+)/)?.[1]
+      if (seconds !== undefined && boot) return `darwin:${boot}:${seconds}`
+    }
+  } catch { /* An unreadable live process is uncertain. */ }
   return undefined
 }
 
-function deadPreviewOwner(value: string, mtimeMs: number): boolean {
-  const owner = parsedPreviewOwner(value)
-  const legacyPid = /^([1-9]\d*)(?::\d+:[0-9a-f-]+)?$/.exec(value.trim())?.[1]
-  const pid = owner?.pid ?? (legacyPid ? Number(legacyPid) : 0)
-  if (Number.isSafeInteger(pid) && pid > 0) {
-    const observed = probeProcess(pid)
-    if (!observed) return true
-    return !!owner?.startTime && !!observed.startTime && owner.startTime !== observed.startTime
+function ownPreviewStart(): Promise<string | undefined> {
+  // A private marker still distinguishes our own slot when the host hides ps/sysctl.
+  // Other processes treat that marker as uncertain while its PID lives.
+  return ownStartPromise ??= probePreviewStart(process.pid).then(start => start ?? `opaque:${randomUUID()}`)
+}
+
+function slotName(pid: number, start: string): string { return `${pid}-${encodeURIComponent(start)}` }
+function slotOwner(name: string): { pid: number; start: string } | undefined {
+  const match = /^([1-9]\d*)-(.+)$/.exec(name)
+  if (!match || !Number.isSafeInteger(Number(match[1]))) return undefined
+  try { return { pid: Number(match[1]), start: decodeURIComponent(match[2]) } } catch { return undefined }
+}
+async function isDeadSlot(name: string): Promise<boolean> {
+  const owner = slotOwner(name)
+  if (!owner) return false
+  const observed = await probePreviewStart(owner.pid)
+  return observed === null || (observed !== undefined && !owner.start.startsWith('opaque:') && observed !== owner.start)
+}
+
+async function isLegacyTree(key: string): Promise<boolean> {
+  try { return (await fs.promises.lstat(path.join(key, '.git'))).isFile() }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
+}
+
+async function legacyIsDead(key: string): Promise<boolean> {
+  // A live old recovery gate may still be replacing the lock. Preserve that tree.
+  const gate = `${key}.lock.recover`
+  try {
+    const gateStat = await fs.promises.lstat(gate)
+    let gateToken = ''
+    if (gateStat.isFile()) gateToken = await fs.promises.readFile(gate, 'utf8')
+    if (!await legacyOwnerDead(gateToken, gateStat.mtimeMs)) return false
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  let stat: fs.Stats
+  try { stat = await fs.promises.lstat(`${key}.lock`) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    stat = await fs.promises.lstat(key)
   }
-  // Link publication never exposes an incomplete token. Old empty files/directories
-  // predate that protocol; only sufficiently old residue is reclaimable.
+  let token = ''
+  try { token = await fs.promises.readFile(`${key}.lock`, 'utf8') }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  return legacyOwnerDead(token, stat.mtimeMs)
+}
+
+async function legacyOwnerDead(token: string, mtimeMs: number): Promise<boolean> {
+  let pid: number | undefined
+  try {
+    const parsed = JSON.parse(token) as { pid?: number }
+    if (Number.isSafeInteger(parsed.pid) && parsed.pid! > 0) pid = parsed.pid
+  } catch { /* Legacy PID-only lock. */ }
+  if (!pid) {
+    const match = /^([1-9]\d*)(?::\d+:[0-9a-f-]+)?$/.exec(token.trim())
+    if (match) pid = Number(match[1])
+  }
+  // Older builds recorded start times in another format, so a live pid never proves a different
+  // process here: only a missing process makes a legacy owner dead.
+  if (pid) return await probePreviewStart(pid) === null
   return Date.now() - mtimeMs > LEGACY_PREVIEW_RESIDUE_MS
 }
 
-async function previewOwnerAt(file: string): Promise<{ value: string; stat: fs.Stats } | undefined> {
-  try {
-    const stat = await fs.promises.lstat(file)
-    if (!stat.isFile()) return { value: '', stat }
-    return { value: await fs.promises.readFile(file, 'utf8'), stat }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }
+/** A legacy live worktree occupies the key, so new slots temporarily use its sidecar. */
+async function slotRoot(key: string): Promise<string> {
+  await rejectPreviewLink(key)
+  if (await isLegacyTree(key)) { await rejectPreviewLink(`${key}.slots`); return `${key}.slots` }
+  try { await rejectPreviewLink(`${key}.slots`); await fs.promises.lstat(`${key}.slots`); return `${key}.slots` }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  return key
 }
 
-async function previewTokenTemp(file: string, token: string): Promise<string> {
-  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`
-  await fs.promises.writeFile(temp, token, { flag: 'wx', mode: 0o600 })
-  return temp
+export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Promise<string> {
+  const start = await ownPreviewStart()
+  if (!start) throw new Error('preview process identity is unavailable')
+  return path.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start))
 }
 
-async function publishPreviewToken(file: string, token: string): Promise<boolean> {
-  const temp = await previewTokenTemp(file, token)
-  let published = false
-  try {
-    try { await fs.promises.link(temp, file); published = true; return true }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false; throw error }
-  } finally {
-    try { await fs.promises.rm(temp, { force: true }) }
-    catch (error) { if (!published) throw error /* an owned lock must still return its release handle */ }
+async function renameDeadSlot(slot: string, destination: string): Promise<boolean> {
+  if (!await isDeadSlot(path.basename(slot))) return false
+  try { await fs.promises.rename(slot, destination); return true }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
   }
 }
 
-async function releasePreviewToken(file: string, token: string): Promise<void> {
-  const current = await previewOwnerAt(file)
-  if (current?.value === token) await fs.promises.rm(file, { force: true })
+async function deleteClaimedSlot(repoDir: string, trash: string): Promise<void> {
+  try {
+    await gitSetup(repoDir, ['worktree', 'repair', trash])
+    await gitSetup(repoDir, ['worktree', 'remove', '--force', trash])
+  } catch { await fs.promises.rm(trash, { recursive: true, force: true }) }
+  await gitSetup(repoDir, ['worktree', 'prune'])
 }
 
-/** Rename a dead gate aside, then verify what was actually renamed before claiming it. */
-async function recoverPreviewGate(gate: string): Promise<void> {
-  const old = await previewOwnerAt(gate)
-  if (!old || !deadPreviewOwner(old.value, old.stat.mtimeMs)) return
-  const tomb = `${gate}.${randomUUID()}.tomb`
-  try { await fs.promises.rename(gate, tomb) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
-  try {
-    const moved = await previewOwnerAt(tomb)
-    if (!moved) return
-    if (moved.stat.ino !== old.stat.ino || moved.value !== old.value || !deadPreviewOwner(moved.value, moved.stat.mtimeMs)) {
-      // A rival replaced the dead gate between our read and rename. Restore its
-      // exact inode if the name is still free; never install our own gate here.
-      try {
-        if (moved.stat.isDirectory()) await fs.promises.rename(tomb, gate)
-        else await fs.promises.link(tomb, gate)
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+/** Delete only provably dead slots; a live preview may outlast worker cleanup. */
+export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
+  const key = await previewKeyPath(cloneDir, repoDir)
+  for (const root of [key, `${key}.slots`]) {
+    await rejectPreviewLink(root)
+    if (await isLegacyTree(root)) continue
+    let names: string[]
+    try { names = await fs.promises.readdir(root) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
+    for (const name of names) {
+      if (!slotOwner(name)) continue
+      const trash = path.join(path.dirname(key), `${path.basename(key)}.trash-${randomUUID()}`)
+      if (await renameDeadSlot(path.join(root, name), trash)) await deleteClaimedSlot(repoDir, trash)
     }
-  } finally { await fs.promises.rm(tomb, { recursive: true, force: true }) }
+  }
+  if (await isLegacyTree(key) && await legacyIsDead(key)) {
+    const trash = path.join(path.dirname(key), `${path.basename(key)}.trash-${randomUUID()}`)
+    try { await fs.promises.rename(key, trash); await deleteClaimedSlot(repoDir, trash) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
 }
 
-async function acquirePreviewLock(file: string): Promise<(() => Promise<void>) | undefined> {
-  const token = previewToken(), gate = `${file}.recover`
-  const stranded = unreleasedPreviewGates.get(gate)
-  if (stranded) {
-    try { await releasePreviewToken(gate, stranded); unreleasedPreviewGates.delete(gate) }
-    catch { return undefined }
-  }
-  // A live recoverer has exclusive access to the lock's replacement operation.
-  // In doubt, callers materialize a fresh tree instead.
-  if (await previewOwnerAt(gate)) await recoverPreviewGate(gate)
-  if (await previewOwnerAt(gate)) return undefined
-  if (await publishPreviewToken(file, token)) return () => releasePreviewToken(file, token)
-  const stale = await previewOwnerAt(file)
-  if (!stale || !deadPreviewOwner(stale.value, stale.stat.mtimeMs)) return undefined
-  const gateToken = previewToken()
-  if (!await publishPreviewToken(gate, gateToken)) return undefined
-  let acquired = false
-  let gateReleasePending = false
-  try {
-    const current = await previewOwnerAt(file)
-    if (!current || current.stat.ino !== stale.stat.ino || current.value !== stale.value || !deadPreviewOwner(current.value, current.stat.mtimeMs)) return undefined
-    const temp = await previewTokenTemp(file, token)
+const previewSlotTurns = new Map<string, Promise<void>>()
+
+/** Atomically claim one dead checkout by renaming it out of its old owner name. */
+async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void> {
+  const key = await previewKeyPath(cloneDir)
+  const root = path.dirname(slot)
+  await fs.promises.mkdir(root === key ? path.dirname(key) : root, { recursive: true, mode: 0o700 })
+  await rejectPreviewLink(root)
+  try { await fs.promises.lstat(slot); return }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  if (root === `${key}.slots` && await isLegacyTree(key) && await legacyIsDead(key)) {
     try {
-      // The gate serializes recoverers. Rename replaces the dead lock without an
-      // unlocked instant in which a direct caller could acquire the cache.
-      if ((await previewOwnerAt(gate))?.value !== gateToken) return undefined
-      await fs.promises.rename(temp, file)
-      acquired = true
-    } finally {
-      try { await fs.promises.rm(temp, { force: true }) }
-      catch (error) { if (!acquired) throw error }
-    }
-  } finally {
-    // Losing gate cleanup must not discard a successfully acquired lock handle.
-    try { await releasePreviewToken(gate, gateToken) }
-    catch { gateReleasePending = true; unreleasedPreviewGates.set(gate, gateToken) }
+      await fs.promises.rename(key, slot)
+      await gitSetup(cloneDir, ['worktree', 'repair', slot])
+      return
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   }
-  return acquired ? async () => {
-    try { await releasePreviewToken(file, token) }
-    finally {
-      if (gateReleasePending) {
-        await releasePreviewToken(gate, gateToken)
-        if (unreleasedPreviewGates.get(gate) === gateToken) unreleasedPreviewGates.delete(gate)
-      }
-    }
-  } : undefined
+  await fs.promises.mkdir(root, { recursive: true, mode: 0o700 })
+  for (const name of await fs.promises.readdir(root)) {
+    if (name === path.basename(slot) || !slotOwner(name)) continue
+    if (!await renameDeadSlot(path.join(root, name), slot)) continue
+    await gitSetup(cloneDir, ['worktree', 'repair', slot])
+    return
+  }
 }
 
 async function resetPreviewTree(dir: string, ancestor: string): Promise<void> {
@@ -749,7 +793,7 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   return !!stat
 }
 
-/** Run against a whole ancestor tree with only merged paths changed. Cache use is exclusive per clone. */
+/** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
 export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
   let dir: string | undefined
   let release: (() => Promise<void>) | undefined
@@ -762,12 +806,21 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
   const setupStart = performance.now()
   try {
     await previewPhase('setup', async () => {
-      const cache = await previewCachePath(s.dir)
-      await fs.promises.mkdir(path.dirname(cache), { recursive: true, mode: 0o700 })
-      release = await acquirePreviewLock(`${cache}.lock`)
+      let cache: string | undefined
+      try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
+      if (cache && !previewSlotTurns.has(cache)) {
+        let finish!: () => void
+        const turn = new Promise<void>(resolve => { finish = resolve })
+        previewSlotTurns.set(cache, turn)
+        release = async () => {
+          if (previewSlotTurns.get(cache!) === turn) previewSlotTurns.delete(cache!)
+          finish()
+        }
+      }
       cached = !!release
       if (cached) {
-        dir = cache
+        dir = cache!
+        await preparePreviewSlot(s.dir, dir)
         reused = await preparePreviewCache(s.dir, dir, ancestor, observe)
         cacheReady = true
       } else {
@@ -806,7 +859,7 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
   } finally {
     try {
       if (dir) {
-        if (cached && cacheReady) await resetPreviewTree(dir, ancestor)
+        if (cached) { if (cacheReady) await resetPreviewTree(dir, ancestor) }
         else await fs.promises.rm(dir, { recursive: true, force: true })
       }
     } finally { await release?.() }
