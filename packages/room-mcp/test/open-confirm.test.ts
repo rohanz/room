@@ -61,6 +61,32 @@ describe('opening requires user consent', () => {
     expect(posts).toEqual(['/rooms'])
     expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
   })
+  it.each(['room_join', 'room_create'])('%s where=team uses ROOM_SERVER', async tool => {
+    vi.stubEnv('ROOM_SERVER', 'ws://custom-room.test:4403')
+    const { tools, requests } = server(false)
+    const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
+    if (tool === 'room_join') expect(result).toContain('custom-room.test:4403')
+    else expect(result).toBe('error: reached daemon')
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
+  })
+  it.each(['room_join', 'room_create'])('%s where=team uses the server in ROOM_URL', async tool => {
+    vi.stubEnv('ROOM_URL', 'ws://runner-room.test:4403/o/r')
+    const { tools, requests } = server(false)
+    const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
+    if (tool === 'room_join') expect(result).toContain('runner-room.test:4403')
+    else expect(result).toBe('error: reached daemon')
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.every(url => new URL(url).host === 'runner-room.test:4403')).toBe(true)
+  })
+  it.each([
+    [{ ROOM_SERVER: 'ws://custom-room.test:4403' }, 'custom-room.test:4403'],
+    [{ ROOM_URL: 'ws://runner-room.test:4403/o/r' }, 'runner-room.test:4403'],
+  ])('room_login server=team uses the configured server (%j)', async (env, host) => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value)
+    const { tools } = server(false)
+    expect(await tools.call('room_login', { server: 'team' })).toContain(`ws://${host} has no login provider`)
+  })
   it('room_create explicit where outranks ROOM_SERVER', async () => {
     vi.stubEnv('ROOM_SERVER', 'ws://lower-priority.test:4403')
     const { tools, requests } = server(false)

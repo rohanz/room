@@ -18,7 +18,7 @@ const CHOICE_FILE = 'room-choice.json'
 
 export interface RoomChoice { where: string; at: number; by?: string; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string> }
 
-/** "team"/"hosted" → the hosted server; "local" or empty → local; anything else is a server URL. */
+/** "team"/"hosted" → this person's team server; "local" or empty → local; anything else is a server URL. */
 export { normaliseWhere }
 
 export async function choiceFile(dir: string): Promise<string> {

@@ -9,6 +9,8 @@ on the first Room request; the shared app-server daemon was observed in 0.157.1.
 "join the room" once per session is enough. `room_state` says which room on its first line.
 
 Where to be is the user's call, by instruction:
+- "team" means your team server (`ROOM_SERVER`, otherwise the server in `ROOM_URL`,
+  otherwise the hosted default). A server URL selects that exact server.
 - "join the room" / "join the team room": `room_leave` if you are
   in a local room, then `room_join(where="team")`. Relay the returned `note for your human`
   sharing sentence once, exactly as written. The choice is remembered for

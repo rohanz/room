@@ -39,10 +39,20 @@ export function normaliseWhere(where?: string): string | undefined {
   if (['team', 'hosted', 'web', 'shared'].includes(w)) return 'team'
   return w
 }
-export function resolveServer(raw?: string): string {
+/** "team" follows this session's server setting, then ROOM_URL's server, then the hosted default. */
+export function resolveServer(raw?: string, env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): string {
   const w = normaliseWhere(raw)
   if (!w || w === LOCAL) return LOCAL
-  return w === 'team' ? DEFAULT_SERVER : w
+  if (w !== 'team') return w
+  const configured = normaliseWhere(env.ROOM_SERVER)
+  if (configured) return configured === 'team' ? DEFAULT_SERVER : configured
+  const roomUrl = value(env.ROOM_URL)
+  if (roomUrl) {
+    const url = new URL(roomUrl)
+    if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
+    return `${url.protocol}//${url.host}${url.search}`
+  }
+  return DEFAULT_SERVER
 }
 
 /** Plain wording shared by join, state and sharing controls. */
@@ -101,7 +111,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID),
-    roomUrl, dir: path.resolve(dir), server: resolveServer(where), where, whereRule, whereEnv,
+    roomUrl, dir: path.resolve(dir), server: resolveServer(where, e), where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit: args.shareExplicit ?? rawShare !== undefined, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),

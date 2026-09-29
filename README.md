@@ -196,6 +196,9 @@ ROOM_SERVER=hosted codex          # team server, wss://room-rohanz.fly.dev
 ROOM_SERVER=wss://room.example.com codex   # your own (see deploy/self-hosting.md)
 ```
 
+`where="team"` in a Room tool uses your team server: `ROOM_SERVER`, otherwise the
+server in `ROOM_URL`, otherwise the hosted default. An explicit server URL takes priority.
+
 The first person on a repo opens it once: ask **"Open a room for this repo"** (the agent
 calls `room_create`). From then on every branch of that repo joins one repository room:
 `github.com/<owner>/<repo>`. Each participant's branch and base are shown separately.
