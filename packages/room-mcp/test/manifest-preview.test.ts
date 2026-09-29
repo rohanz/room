@@ -74,10 +74,24 @@ it('reports anonymous exclusion and intent gaps even with no mergeable paths', a
   expect(excluded).toContain('PARTIAL preview')
   expect(excluded).toContain('names not shared')
   expect(session.lastPreview?.complete).toBe(false)
+  expect(room.messages().filter(m => m.type === 'note' && m.text.includes('partial preview'))).toHaveLength(1)
   room.manifestHead.set('ben', { ...head, coverage: { kind: 'none', reason: 'intent' }, semRev: 3 })
   const intent = await handlers(state).room_preview_merge({ person: 'ben' })
   expect(intent).toContain('PARTIAL preview')
   expect(intent).toContain('coverage intent')
+  expect(room.messages().filter(m => m.type === 'note' && m.text.includes('partial preview'))).toHaveLength(2)
+})
+
+it('records a partial ledger note when automatic selection cannot enumerate a present peer', async () => {
+  const { room, head, state, session } = fixture()
+  room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
+  room.setScope('ben', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
+  state.presences = () => [{ user: { name: 'ben', kind: 'agent' } }] as never
+  state.baseFor = (_s: Session, person: string) => person === 'ben' ? 'unavailable-commit' : head.base
+  const result = await handlers(state).room_preview_merge({})
+  expect(result).toContain('PARTIAL preview')
+  expect(session.lastPreview?.complete).toBe(false)
+  expect(room.messages().filter(m => m.type === 'note' && m.text.includes('partial preview'))).toHaveLength(1)
 })
 
 it('default preview includes a present neighbour whose only overlapping change is committed', async () => {

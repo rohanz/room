@@ -296,6 +296,8 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
     }
   const scopeLine = formatScopeLine
   const personLine = (s: Session, name: string): string => {
+      const accepted = s.room.acceptedWorkerViewOf(name)
+      const raw = [...s.room.workerViews.values()].find(view => view.name === name && view.mode === 'local')
       return formatPersonLine({
         name,
         scope: s.room.scope(name),
@@ -307,6 +309,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
         share: shareOf(s, name),
         heldCount: (() => { const head = s.room.manifestHead.get(name); return head ? [...s.room.manifest.get(`${name}\u0000${head.fence}`)?.values() ?? []].filter(entry => entry.fence === head.fence && entry.state === 'held').length : 0 })(),
         excludedCount: s.room.manifestHead.get(name)?.excluded.length ?? 0,
+        ...(accepted?.mode === 'local' ? { projectedWorker: accepted } : raw && !accepted ? { projectedStale: raw.lead } : {}),
       })
     }
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine }

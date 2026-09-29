@@ -172,6 +172,8 @@ it('uses consistent activity wording at the action and worker thresholds', async
   expect(workerLine({ worker, changedCount: 0, now: 360_000 })[0]).toContain('running · quiet 6m')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, lastActive: 350_000 })[0]).not.toContain('quiet')
   expect(workerLine({ worker, changedCount: 0, now: 360_000, processGone: true })[0]).toContain('stopped while no session of yours was running; reason unknown')
+  expect(workerLine({ worker: { ...worker, status: 'done', summary: 'original task', followUp: 'answered the follow-up' }, changedCount: 0, now: 360_000 })[1])
+    .toContain('original task · follow-up: answered the follow-up')
 })
 
  it.each(['done', 'failed', 'stopped'] as const)('uses completion time for %s worker activity', async status => {
@@ -183,4 +185,15 @@ it('uses consistent activity wording at the action and worker thresholds', async
 
 it.each([undefined, 'idle', 'synced'])('omits duplicate recency for status %s', status => {
   expect(personLine({ name: 'Ada', presences: [{ user: { name: 'Ada', kind: 'agent', color: '#000' }, status, lastActive: Date.now() }], changedPaths: [], messages: [], share: 'full' })).toBe('no task declared')
+})
+
+it('N6 describes projected running, stale and ended workers without calling them offline', () => {
+  const common = { name: 'Ada+test', presences: [], changedPaths: [], messages: [], share: 'full' as const }
+  expect(personLine({ ...common, projectedWorker: { lead: 'Ada', status: 'running' } })).toContain('via Ada (running)')
+  expect(personLine({ ...common, projectedStale: 'Ada' })).toContain('projection stale/updating via Ada')
+  expect(personLine({ ...common, projectedWorker: { lead: 'Ada', status: 'done' } })).toContain('via Ada (done)')
+  for (const line of [personLine({ ...common, projectedWorker: { lead: 'Ada', status: 'running' } }),
+    personLine({ ...common, projectedStale: 'Ada' }), personLine({ ...common, projectedWorker: { lead: 'Ada', status: 'done' } })]) {
+    expect(line).not.toContain('offline')
+  }
 })

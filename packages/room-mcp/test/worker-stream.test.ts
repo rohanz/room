@@ -72,4 +72,11 @@ describe('Claude stream-json worker runs', () => {
     writeFileSync(file, '{"type":"assistant"\n', { flag: 'a' })
     expect(workerLogTail(file)).toBe('Working.\nFinished.')
   })
+
+  it('starts a resumed failure tail at this run, even when the prior done is near the end', () => {
+    const prior = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Done. marked done' } }) + '\n'
+    const file = join(dir, 'run.log')
+    writeFileSync(file, prior + JSON.stringify({ type: 'turn.failed', error: { message: 'Current run failed' } }) + '\n')
+    expect(workerLogTail(file, Buffer.byteLength(prior))).toBe('Current run failed')
+  })
 })

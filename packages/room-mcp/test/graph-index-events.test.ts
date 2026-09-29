@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestKey } from '@room/shared'
 import { GraphIndex } from '../src/graph-index.js'
+import { gitShow } from '@room/roomd/git'
 import * as Y from 'yjs'
 
 async function eventually(check: () => boolean): Promise<void> {
@@ -31,6 +32,31 @@ beforeEach(() => {
 })
 
 describe('GraphIndex overlay events', () => {
+  it('M1 rejects a published signature when its holder epoch changes during the base read', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
+    let block = false, entered!: () => void, release!: () => void
+    const inside = new Promise<void>(resolve => { entered = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const read: typeof gitShow = async (root, sha, file) => {
+      if (block && file === 'utils.py') { block = false; entered(); await gate }
+      return gitShow(root, sha, file)
+    }
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0, read })
+    try {
+      gi.start(); await gi.whenIdle()
+      block = true
+      publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t, secret_customer):\n    return t\n')
+      await inside
+      const holder = room.participants.get('Rohan\u0000holder')!
+      room.participants.set('Rohan\u0000holder', { ...holder, epoch: 2, sessionId: 'replacement' })
+      release()
+      await gi.whenIdle()
+      await new Promise(resolve => setTimeout(resolve, 200))
+      expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
+    } finally { release(); gi.stop(); room.doc.destroy() }
+  })
   it('keeps held own contracts out of the replicated graph and withdraws them when sharing narrows', async () => {
     const room = new RoomDoc()
     room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
