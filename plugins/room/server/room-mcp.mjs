@@ -16352,11 +16352,6 @@ var init_doc = __esm({
       get metaMap() {
         return this.doc.getMap("meta");
       }
-      /** Legacy shared base text, keyed "<sha>:<path>". New clients only read it as a fallback;
-       * these entries age out with legacy clients, which still depend on and manage them. */
-      get baseTexts() {
-        return this.doc.getMap("basetext");
-      }
       /** Flat keys merge even when two sessions first publish under the same participant tag. */
       get ownedBaseTexts() {
         return this.doc.getMap("basetextFlat");
@@ -16370,12 +16365,8 @@ var init_doc = __esm({
       isPersonBaseTextKey(key2, person) {
         return key2.startsWith(this.baseTextPrefix(person)) && !key2.slice(person.length + 1).includes("\0");
       }
-      oldOwnedBaseTexts(person) {
-        return this.doc.getMap("basetextByPerson").get(person);
-      }
       baseText(person, sha, relpath) {
-        const key2 = `${sha}:${relpath}`;
-        return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath)) ?? this.oldOwnedBaseTexts(person)?.get(key2) ?? this.baseTexts.get(key2);
+        return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath));
       }
       /** Remove only this participant's entries that no longer back their live work. */
       reconcileBaseTexts(person, origin, baseSha) {
@@ -16388,17 +16379,11 @@ var init_doc = __esm({
           for (const key2 of this.ownedBaseTexts.keys()) {
             if (this.isPersonBaseTextKey(key2, person) && !wanted.has(key2.slice(prefix.length))) this.ownedBaseTexts.delete(key2);
           }
-          const oldOwned = this.oldOwnedBaseTexts(person);
-          if (oldOwned) {
-            for (const key2 of oldOwned.keys()) if (!wanted.has(key2)) oldOwned.delete(key2);
-            if (oldOwned.size === 0) this.doc.getMap("basetextByPerson").delete(person);
-          }
         }, origin);
       }
       /** Only eviction/retirement may remove another participant's entries: that owner has stopped. */
       clearPersonBaseTexts(person) {
         for (const key2 of this.ownedBaseTexts.keys()) if (this.isPersonBaseTextKey(key2, person)) this.ownedBaseTexts.delete(key2);
-        this.doc.getMap("basetextByPerson").delete(person);
       }
       setBaseText(person, sha, relpath, text, origin) {
         const key2 = this.baseTextKey(person, sha, relpath);
@@ -16601,7 +16586,7 @@ var init_doc = __esm({
       seen(name2) {
         return this.doc.getMap(`seen:${encodeURIComponent(name2)}`);
       }
-      /** Receipts for a confirmed handoff to session `s` by `via`; the Ledger (room-mcp/src/ledger.ts) is the writer. */
+      /** Receipts for a confirmed handoff to session `s` by `via`. */
       markSeen(name2, ids, receipt, origin) {
         if (!ids.length) return;
         const value2 = { ...receipt, at: Date.now() };
@@ -16609,6 +16594,16 @@ var init_doc = __esm({
           const m = this.seen(name2);
           for (const id3 of ids) if (!m.has(id3)) m.set(id3, value2);
         }, origin);
+      }
+      /** Remove orphaned receipts only while this writer still holds its authority fence. */
+      pruneSeen(name2, current) {
+        if (!current()) return;
+        this.doc.transact(() => {
+          if (!current()) return;
+          const refs = /* @__PURE__ */ new Set([...this.messages().map((m) => m.id), ...this.mail.keys(), ...this.outcomes.keys()]);
+          const seen = this.seen(name2);
+          for (const id3 of seen.keys()) if (!refs.has(id3)) seen.delete(id3);
+        });
       }
       seenBy(msgId) {
         const out2 = [];
@@ -35004,11 +34999,6 @@ function withdrawBaseTexts(host, authorized2) {
     const separator = key2.indexOf(":", prefix.length);
     if (separator >= 0 && !authorized2.has(key2.slice(separator + 1))) host.roomDoc.ownedBaseTexts.delete(key2);
   }
-  const oldOwned = host.roomDoc.doc.getMap("basetextByPerson").get(host.name);
-  if (oldOwned) for (const key2 of oldOwned.keys()) {
-    const separator = key2.indexOf(":");
-    if (separator >= 0 && !authorized2.has(key2.slice(separator + 1))) oldOwned.delete(key2);
-  }
 }
 var Publisher = class {
   constructor(host) {
@@ -41763,10 +41753,10 @@ var WorkerRegistry = class _WorkerRegistry {
       return;
     }
     const token = this.identity;
-    const carryRecord2 = readJson(carryFile);
-    const base = commitExists(this.commonDir, carryRecord2?.base) ? carryRecord2.base : void 0;
-    const carriedBase = commitExists(this.commonDir, carryRecord2?.carriedBase) ? carryRecord2.carriedBase : void 0;
-    const carry = base && (!carryRecord2?.carriedBase || carriedBase) ? "delta" : "copy";
+    const carryRecord = readJson(carryFile);
+    const base = commitExists(this.commonDir, carryRecord?.base) ? carryRecord.base : void 0;
+    const carriedBase = commitExists(this.commonDir, carryRecord?.carriedBase) ? carryRecord.carriedBase : void 0;
+    const carry = base && (!carryRecord?.carriedBase || carriedBase) ? "delta" : "copy";
     const hostSessionId = legacySession(source.dir, source.oldId, source.host);
     const record2 = {
       v: 1,
@@ -42696,7 +42686,9 @@ async function projectWorkers(s, registry2, lead, role, origin) {
       const ended = ["done", "failed", "stopped"].includes(status.status);
       const logFile = path14.join(s.dir, ".room", "workers", `${record2.tag}.log`);
       if (ended && run2?.mode === "resume" && run2.promptMsgIds.length && record2.hostSessionId && resumeAccepted(logFile, record2.host, record2.hostSessionId, run2.logStart)) {
-        s.room.markSeen(record2.name, run2.promptMsgIds, { s: record2.hostSessionId, via: "prompt" });
+        const retained = run2.promptMsgIds.filter((id3) => s.room.message(id3) || s.room.outcomes.has(id3));
+        s.room.markSeen(record2.name, retained, { s: record2.hostSessionId, via: "prompt" });
+        s.room.pruneSeen(record2.name, () => s.daemon.fence === fence);
       }
       const missing2 = ended && record2.host === "claude" && run2?.mode === "resume" && record2.hostSessionId && missingClaudeSession(logFile, record2.hostSessionId, run2.logStart);
       const shown = missing2 ? { ...status, note: `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` } : status;
@@ -45093,7 +45085,7 @@ var GraphIndex = class {
   truncated = false;
   publishing;
   lastPublished = { at: 0, key: "", status: "" };
-  lastPublishedRevision = { graph: -1, observed: -1, base: "" };
+  lastPublishedRevision = { graph: -1, observed: -1, base: "", provenance: "" };
   publication = Promise.resolve();
   phase = "indexing";
   base = "";
@@ -45147,12 +45139,18 @@ var GraphIndex = class {
       if (!event.keysChanged.has(this.me)) return;
       const next = publicationKey();
       this.withdrawRestricted();
-      if (next === this.ownPublicationKey) return;
+      if (next === this.ownPublicationKey) {
+        setImmediate(() => {
+          if (!this.stopped) void this.whenIdle().then(() => this.publish(this.phase)).catch((e) => this.log(`graph: provenance refresh failed: ${String(e)}`));
+        });
+        return;
+      }
       const firstHead = this.ownPublicationKey === void 0;
       this.ownPublicationKey = next;
       if (firstHead) return;
       const paths = /* @__PURE__ */ new Set([...this.room.manifestHead.get(this.me) ? manifestPaths(this.room, this.me) : [], ...this.cache.keys()]);
       for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
+      if (![...paths].some(isSourcePath)) void this.publish(this.phase);
     };
     this.room.manifestHead.observe(onHead);
     this.unobserve.push(() => this.room.manifestHead.unobserve(onHead));
@@ -45293,6 +45291,10 @@ var GraphIndex = class {
   /** Publication reads only a fenced shared version, never the caller's unshared disk text. */
   async publicationTextFor(path45, fallback2) {
     const mine = snapshot(this.room, this.me, []);
+    if (mine) {
+      if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== "all") return void 0;
+      if (!mine.roomSalt || !/^[a-f0-9]{64}$/i.test(mine.roomSalt) || mine.head.excluded.includes(digestPath(mine.roomSalt, path45))) return void 0;
+    }
     if (mine?.entries.has(path45)) {
       if (!this.ownTextAuthorized(path45)) return void 0;
       const version2 = await versionOf(mine, path45, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
@@ -45312,9 +45314,10 @@ var GraphIndex = class {
     if (!head && graph.sourceFence === void 0) return;
     const entries = head && this.room.manifest.get(manifestKey(this.me, head.fence));
     const allowed = (p) => {
-      if (!head?.complete || head.coverage.kind !== "all") return false;
+      if (!head?.complete || head.coverage.kind !== "all" || graph.sourceFence !== head.fence) return false;
+      if (!this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, p))) return false;
       const entry = entries?.get(p);
-      return !entry || entry.state === "shared" && this.ownTextAuthorized(p);
+      return !entry || entry.fence === head.fence && entry.state === "shared" && this.ownTextAuthorized(p);
     };
     const paths = graph.paths.filter(allowed);
     const edges = graph.edges.filter((e) => allowed(e.source) && allowed(e.target));
@@ -45500,8 +45503,9 @@ var GraphIndex = class {
     const authorization = this.ownPublicationKey;
     const sourceHead = this.room.manifestHead.get(this.me);
     const sourceFence = sourceHead?.fence, sourceRev = sourceHead?.rev;
+    const provenance = JSON.stringify([sourceFence, sourceRev]);
     const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base;
-    if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision && this.lastPublishedRevision.base === base && this.lastPublished.status === status) return;
+    if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision && this.lastPublishedRevision.base === base && this.lastPublishedRevision.provenance === provenance && this.lastPublished.status === status) return;
     const paths = Array.from(this.publishedCache.keys()).sort();
     const edges = /* @__PURE__ */ new Map();
     let truncated = this.truncated;
@@ -45540,12 +45544,12 @@ var GraphIndex = class {
       observedTruncated = true;
       body2 = JSON.stringify({ paths, observed });
     }
-    const key2 = `${this.base}|${status}|${body2.length}|${hashOf(body2)}`;
+    const key2 = `${this.base}|${status}|${provenance}|${body2.length}|${hashOf(body2)}`;
     const now = Date.now();
     const currentHead = this.room.manifestHead.get(this.me);
     if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision || authorization !== this.ownPublicationKey || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return;
     if (key2 === this.lastPublished.key) {
-      this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base };
+      this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance };
       return;
     }
     const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS;
@@ -45557,7 +45561,7 @@ var GraphIndex = class {
       return;
     }
     this.lastPublished = { at: now, key: key2, status };
-    this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base };
+    this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance };
     this.room.graphs.set(this.me, {
       version: 1,
       base: this.base,
@@ -45705,6 +45709,16 @@ var ConflictSlots = class {
       for (const [key2] of old) this.map.delete(key2);
       for (const [path45, slots] of byPath) {
         const prior = slots.find((slot) => slot.settled === "conflict") ?? slots.find((slot) => slot.settled === "possible") ?? slots[0];
+        const identities = /* @__PURE__ */ new Map();
+        for (const [key2, slot] of old) {
+          if (slot.path !== path45) continue;
+          for (const identity2 of slot.redacted ?? []) identities.set(identity2.keyHash, identity2);
+          if (slot.subject && slot.subject !== "*") {
+            const identity2 = { keyHash: hash(key2), epoch: slot.epoch, settled: slot.settled, factId: slot.factId };
+            const existing = identities.get(identity2.keyHash);
+            if (!existing || existing.epoch <= identity2.epoch) identities.set(identity2.keyHash, identity2);
+          }
+        }
         this.map.set(slotKey(owner, "contract", other, path45, "*"), {
           owner,
           other,
@@ -45718,13 +45732,26 @@ var ConflictSlots = class {
           checkedAt: this.now(),
           inputs: hash(`${owner}\0${other}\0${path45}\0${why}`),
           factId: "",
-          why
+          why,
+          redacted: [...identities.values()]
         });
       }
     });
   }
   async settle(key2, result2) {
-    const prev = this.map.get(key2);
+    let prev = this.map.get(key2);
+    if (!prev && result2.kind === "contract" && result2.subject !== "*") {
+      const aggregate = this.map.get(slotKey(result2.owner, "contract", result2.other, result2.path, "*"));
+      const identity2 = aggregate?.redacted?.find((item) => item.keyHash === hash(key2));
+      if (aggregate && identity2) prev = {
+        ...aggregate,
+        subject: result2.subject,
+        epoch: identity2.epoch,
+        settled: identity2.settled,
+        factId: identity2.factId,
+        inputs: ""
+      };
+    }
     const now = this.now();
     const fence = typeof this.fence === "function" ? this.fence() : this.fence;
     if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev;
@@ -46185,7 +46212,7 @@ var ConflictSet = class {
     for (const change of changes) {
       if (change.kind === "add") continue;
       const provider = await this.read(theirs, change.path);
-      if (asText(provider) === void 0 || provider.kind === "base") {
+      if (asText(provider) === void 0 || !carriedProvider && provider.kind === "base") {
         this.slots.redactContracts(this.owner, other, "provider version is not readable");
         return;
       }
@@ -46229,6 +46256,10 @@ var ConflictSet = class {
     }
     for (const [key2, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== "contract" || slot.other !== other || live.has(key2)) continue;
+      if (slot.subject === "*" && [...live].some((liveKey) => liveKey.startsWith(slotKey(this.owner, "contract", other, slot.path, "")))) {
+        this.slots.drop(key2);
+        continue;
+      }
       const provider = await this.read(theirs, slot.path);
       if (asText(provider) === void 0) {
         this.slots.redactContracts(this.owner, other, "provider version is not readable");
@@ -46935,7 +46966,7 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
       doc.destroy();
     }
   }
-  const occurrences = /* @__PURE__ */ new Map();
+  const occurrences = new Map(Object.entries(ledger2.identities).map(([person, names]) => [person, new Set(names)]));
   const mark = (person, source) => {
     if (!person) return;
     let names = occurrences.get(person);
@@ -46957,7 +46988,10 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
   }
   const aliases = targetDoc.getMap("aliases");
   const placeholder = (person, source) => `?${crypto2.createHash("sha256").update(`${source}\0${person}`).digest("hex").slice(0, 16)}`;
-  const translated = (person, source) => (occurrences.get(person)?.size ?? 0) > 1 ? aliases.get(placeholder(person, source)) ?? placeholder(person, source) : person;
+  const translated = (person, source) => {
+    const by = placeholder(person, source);
+    return aliases.get(by) ?? ((occurrences.get(person)?.size ?? 0) > 1 ? by : person);
+  };
   const unresolved = targetDoc.getMap("unresolved");
   let changed = false;
   let scanned = false;
@@ -46971,7 +47005,7 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
     }
     for (const [person, prior] of Object.entries(ledger2.identities)) {
       if (prior.length !== 1 || (occurrences.get(person)?.size ?? 0) <= 1) continue;
-      const source = prior[0], by = placeholder(person, source), key2 = `${source}\0${person}`;
+      const source = prior[0], by = translated(person, source), key2 = `${source}\0${person}`;
       const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
       const moved = [...old.claims];
       for (const [id3, claim2] of target.claims) {
@@ -46996,9 +47030,26 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
         });
         changed = true;
       }
-      if (moved.length || scope) {
-        unresolved.set(key2, { placeholder: by, claims: moved, ...scope ? { scope } : {} });
-        changed = true;
+      if (by.startsWith("?")) {
+        if (moved.length || scope) {
+          unresolved.set(key2, { placeholder: by, claims: moved, ...scope ? { scope } : {} });
+          changed = true;
+        }
+      } else {
+        for (const claim2 of moved) if (!target.claims.has(claim2.id)) {
+          target.claims.set(claim2.id, { ...claim2, by });
+          changed = true;
+        }
+        if (scope && !target.scopes.has(by)) {
+          const copy2 = { ...scope, by };
+          target.scopes.set(by, copy2);
+          ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
+          changed = true;
+        }
+        if (unresolved.has(key2)) {
+          unresolved.delete(key2);
+          changed = true;
+        }
       }
     }
   });
@@ -47055,8 +47106,8 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
           const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
           unresolved.set(key2, { ...old, scope: copy2 });
           changed = true;
-        } else if (!target.scopes.has(person)) {
-          target.scopes.set(person, copy2);
+        } else if (!target.scopes.has(by)) {
+          target.scopes.set(by, copy2);
           ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
           changed = true;
         }
@@ -52740,13 +52791,7 @@ var Ledger = class {
   }
   /** Only the current holder removes receipts whose retained message and outcome references are gone. */
   prune(s) {
-    if (!this.fenced(s)) return;
-    const refs = /* @__PURE__ */ new Set([...s.room.messages().map((m) => m.id), ...s.room.mail.keys(), ...s.room.outcomes.keys()]);
-    const seen = s.room.seen(s.me.name);
-    const stale = [...seen.keys()].filter((id3) => !refs.has(id3));
-    if (stale.length) s.room.doc.transact(() => {
-      for (const id3 of stale) seen.delete(id3);
-    });
+    s.room.pruneSeen(s.me.name, () => this.fenced(s));
   }
   // ---- cursor (ledger "Cursor") -------------------------------------------------------------
   /** The cursor, with this call's routing decisions recorded: a broadcast `messageForMe` rejects goes to `routed` (MF2). */
@@ -53234,9 +53279,9 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   const theirPaths = /* @__PURE__ */ new Set();
   const ignoredNotes = [];
   const committedPaths2 = async (person, from2, to2) => {
-    const paths2 = (await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", from2, to2])).split("\0").filter(Boolean);
-    if (paths2.length > 2e3) gaps.push({ person, why: `committed path enumeration truncated at 2000 of ${paths2.length}` });
-    return paths2.slice(0, 2e3);
+    const paths2 = [...new Set((await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", from2, to2])).split("\0").filter(Boolean))];
+    if (paths2.length > 2e3) gaps.push({ person, why: `committed path enumeration exceeded 2000 (${paths2.length}); using manifest paths only` });
+    return paths2.length > 2e3 ? [] : paths2;
   };
   for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
     pathSet.add(p);
@@ -53639,11 +53684,13 @@ ${text}` : text;
           const remote = await roomRemote(caller.dir, caller.roomName);
           if (!await ensureCommit(caller.dir, remote, mineBase) || !await ensureCommit(caller.dir, remote, theirBase)) throw new Error("anchor commit unavailable");
           const ancestor = (await git(caller.dir, ["merge-base", mineBase, theirBase])).trim();
-          const changed = async (base) => base === ancestor ? [] : (await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", ancestor, base])).split("\0").filter(Boolean);
-          const mine = [...myPaths, ...await changed(mineBase)];
-          theirs.push(...await changed(theirBase));
-          if (mine.length > 2e3 || theirs.length > 2e3) throw new Error("more than 2000 committed paths; explicit preview required");
-          return theirs.some((p) => mine.some((path45) => coversPath(p, path45)));
+          const changed = async (base) => base === ancestor ? [] : [...new Set((await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", ancestor, base])).split("\0").filter(Boolean))];
+          const mineCommitted = await changed(mineBase), theirCommitted = await changed(theirBase);
+          const overBound = mineCommitted.length > 2e3 || theirCommitted.length > 2e3;
+          if (overBound) unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`);
+          const mine = [.../* @__PURE__ */ new Set([...myPaths, ...!overBound ? mineCommitted : []])];
+          const peer = [.../* @__PURE__ */ new Set([...theirs, ...!overBound ? theirCommitted : []])];
+          return peer.some((p) => mine.some((path45) => coversPath(p, path45)));
         } catch (error2) {
           unavailable.push(`${person}: committed changes unavailable (${error2 instanceof Error ? error2.message : String(error2)})`);
           return false;
@@ -53729,7 +53776,12 @@ ${text}--- end ${p} ---`);
           caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...run2 ? { testsCommand: run2 } : {} };
           return `${people.join(", ")} moved during the preview; re-run. The combined code was NOT fully checked`;
         }
-        caller.lastPreview = { clean: hardCount === 0, complete, ...run2 ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run2 } : {} };
+        caller.lastPreview = {
+          clean: hardCount === 0,
+          complete,
+          testsPassed: run2 ? complete && hardCount === 0 && ranOk : false,
+          ...run2 ? { partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run2 } : {}
+        };
         if (!complete) await recordPartial(people, gapLines, run2, ranOk);
         if (complete && !hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
