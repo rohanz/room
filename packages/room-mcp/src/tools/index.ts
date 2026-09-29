@@ -57,6 +57,10 @@ export interface Tools {
   flushConflicts(): Promise<void>
   /** A room_wait is in progress (the idle lease never ends presence during one, registry §18). */
   waiting(): boolean
+  /** Current primary and workers-room sessions, for the host's presence lease. */
+  joinedSessions(): Session[]
+  /** Reattach the secondary workers room after a host-session rebind. */
+  attachWorkersRoom(s: Session, lead: Session): void
 }
 
 /** What the tools need of the automatic join (auto-join.ts). */
@@ -150,6 +154,8 @@ export function createTools(ctx: ToolCtx): Tools {
     shutdown: state.shutdown,
     flushConflicts: state.flushConflicts,
     waiting: () => waits > 0,
+    joinedSessions: () => state.rooms.all(),
+    attachWorkersRoom: (s, lead) => state.rooms.add(s, 'workers', lead),
     startupNotice(text) { startup = ledger.notice('startup', text); withdrawStartup() },
     hookSelect(budget = INBOX_BUDGET) {
       const batch = ledger.open('hook')

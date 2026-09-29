@@ -10,6 +10,7 @@ import { sessionDirectory, startAutoTaggedRoomd, type Session } from '../src/ses
 import { hubRoom } from './fixtures/hub-provider.js'
 import { createTools } from '../src/tools.js'
 import { hubSeam } from './fixtures/hub.js'
+import { PresenceEnd } from '../src/presence-end.js'
 
 vi.mock('@room/roomd', async importOriginal => ({
   ...await importOriginal<typeof import('@room/roomd')>(),
@@ -74,6 +75,42 @@ it('touches for new hook activity of the bound session only', async () => {
     await daemon.stop()
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+it('S3 counts only a bound hook contact as monotonic presence activity', async () => {
+  const { dir, write } = boundWorker()
+  const named = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
+  let now = 0
+  const presence = new PresenceEnd({ hostKind: 'interactive', tickMs: 0, mono: () => now, hostAlive: () => true,
+    holds: () => false, leadsWorkers: () => false, waiting: () => false, hostEnded() {}, leave: async () => {}, releaseHeld: async () => {} })
+  try {
+    named.onHookActivity(() => presence.activity())
+    now = 12 * 60_000
+    await new Promise(r => setTimeout(r, 20))
+    write('hook-activity.json', { session_id: 'worker-thread', event: 'PreToolUse', at: Date.now() })
+    await expect.poll(() => presence.idleMin()).toBe(0)
+    now += 60_000
+    await new Promise(r => setTimeout(r, 20))
+    write('hook-activity.json', { session_id: 'foreign-thread', event: 'PreToolUse', at: Date.now() })
+    await new Promise(r => setTimeout(r, 700))
+    expect(presence.idleMin()).toBe(1)
+  } finally { presence.stop(); await named.daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('M13 pauses the old grant and reports a same-chain host session rebind', async () => {
+  const { dir } = boundWorker('claude')
+  const named = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
+  const next = vi.fn()
+  try {
+    expect(named.lease.fence()).toBeDefined()
+    named.onRebind(next)
+    const newDir = sessionDirectory(path.join(dir, '.git'), 'after-clear')
+    fs.mkdirSync(newDir, { recursive: true })
+    fs.writeFileSync(path.join(newDir, 'session.json'), JSON.stringify({ session_id: 'after-clear', host: 'claude', worker_id: 'w1', at: Date.now(), chain: [], hostPid: 1 }))
+    await expect.poll(() => next.mock.calls.length, { timeout: 3_000 }).toBe(1)
+    expect(next).toHaveBeenCalledWith('after-clear')
+    expect(named.lease.fence()).toBeUndefined()
+  } finally { await named.daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
 it('publishes a model the hook found in the Claude transcript on the next room tool call', async () => {

@@ -17,7 +17,7 @@ import { FlushedStdioTransport } from './transport.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
-import { PresenceEnd, hostKind, hostSessionAlive, releaseIdleHeld } from './presence-end.js'
+import { PresenceEnd, hostKind, hostSessionAlive, joinedPresenceHolds, joinedPresenceWorkers, releaseIdleHeld } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { ownWorkerNames } from './worker-registry.js'
 
@@ -90,37 +90,64 @@ async function main() {
       ROOM_LOG_FILE = await gitCommonDir(dir).then(common => path.join(common, ROOM_LOG), () => undefined)
       if (signal.aborted) throw new Error('Room is shutting down')
       const sessionBinding = createSessionBinding(dir)
+      let rebinding: Promise<void> | undefined
+      let rebindHost: (sessionId: string) => Promise<void> = async () => {}
       // Content-free wakes of this host session: the Codex queue, or Claude Code's inbox socket, then the channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, binding: sessionBinding })
+      let presence: PresenceEnd | undefined
       // The hooks take message content only from this endpoint, never from a file.
-      const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(), log })
-      const adopt = async (s: Session) => {
+      const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
+        canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
+        onContact: () => presence?.activity(), log })
+      const adopt = async (s: Session, clearStale = true) => {
         // Offered before any tool call, so the first hook or reply can hand it off.
         await offerTeamSharingDisclosure(s, tools.ledger)
         session = s
         joined(s)
         tools.attachHooks(s)
-        const n = tools.clearStale(s)
-        if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
+        if (clearStale) {
+          const n = tools.clearStale(s)
+          if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
+        }
       }
 
       // Presence ends once the host session has finished (registry §18): its process gone, or the idle lease.
-      const presence: PresenceEnd = new PresenceEnd({
+      presence = new PresenceEnd({
         hostKind: hostKind(),
         hostAlive: () => hostSessionAlive(dir),
-        holds: () => !!session && (!!session.room.scope(session.me.name) || session.room.openClaims().some(c => c.by === session!.me.name)),
-        leadsWorkers: () => !!session && [...session.room.workerViews.values()].some(w => w.lead === session!.me.name && w.status === 'running'),
+        holds: () => joinedPresenceHolds(tools.joinedSessions()),
+        leadsWorkers: () => joinedPresenceWorkers(tools.joinedSessions()),
         waiting: () => tools.waiting(),
         hostEnded: reason => { void bye(reason) },
-        leave: async idle => { if (session) await tools.drop(session, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
-        releaseHeld: (idle, epoch): Promise<unknown> => session ? releaseIdleHeld(session, epoch, idle, presence.mono) : Promise.resolve(),
-        publishIdle: minutes => { try { session?.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
+        leave: async idle => { for (const joined of [...tools.joinedSessions()].reverse()) await tools.drop(joined, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
+        releaseHeld: async (idle, epoch) => { for (const joined of tools.joinedSessions()) await releaseIdleHeld(joined, epoch, idle, presence!.mono) },
+        publishIdle: minutes => { for (const joined of tools.joinedSessions()) try { joined.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
         log,
       })
+      rebindHost = async nextId => {
+        if (rebinding) return rebinding
+        const joined = tools.joinedSessions()
+        const primary = joined[0]
+        if (!primary || primary.lease?.sessionId === nextId) return
+        rebinding = (async () => {
+          log(`host session changed from ${primary.lease?.sessionId ?? '?'} to ${nextId}; rebinding room leases`)
+          for (const old of [...joined].reverse()) await tools.drop(old, 'host session rebound')
+          const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), sessionId: nextId, log })
+          await adopt(fresh, false)
+          for (const old of joined.slice(1)) {
+            const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), sessionId: nextId, log })
+            tools.attachWorkersRoom(secondary, fresh)
+          }
+        })().finally(() => { rebinding = undefined })
+        return rebinding
+      }
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
-        const away = presence.hasLeft
-        const idle = presence.activity()
+        const bound = sessionBinding.bound()
+        if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
+        else if (rebinding) await rebinding
+        const away = presence!.hasLeft
+        const idle = presence!.activity()
         await autoJoin.settle() // a join in progress decides which session the reply is about
         const body = await tools.call(req.params.name, req.params.arguments ?? {}, signal, handoff)
         const updateNotice = bundleUpdateNotice()
@@ -128,7 +155,7 @@ async function main() {
         return (rejoined ? rejoined + '\n\n' : '') + (updateNotice ? updateNotice + '\n\n' : '') + body
       }
 
-      const joined = (s: Session) => log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
+      const joined = (s: Session) => { s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) }); log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`) }
 
       // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.

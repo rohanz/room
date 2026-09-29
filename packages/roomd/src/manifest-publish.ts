@@ -77,6 +77,12 @@ export function publishManifest(input: ManifestPublication, facts: readonly Mani
       const split = other.lastIndexOf('\u0000')
       if (other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)) room.manifest.delete(other)
     }
+    // Text is keyed by the same incarnation. An old map may outlive its manifest after a
+    // prior partial cleanup, so enumerate overlays independently on every publication.
+    for (const other of [...room.overlays.keys()]) {
+      const split = other.lastIndexOf('\u0000')
+      if (other.slice(0, split) === name && olderEpoch(other.slice(split + 1), fence)) room.overlays.delete(other)
+    }
     let map = room.manifest.get(key)
     if (!map) { map = new Y.Map<ManifestEntry>(); room.manifest.set(key, map) }
     for (const p of [...map.keys()]) if (!entries.has(p)) map.delete(p)

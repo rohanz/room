@@ -495,6 +495,17 @@ describe('hooks bridge state file', () => {
     b.stop(); s.awareness.destroy()
   })
 
+  it('M12 prints a minimal paused state after the name fence is lost while alone', async () => {
+    const s = session(new RoomDoc())
+    let fenced = true
+    const b = bridge(s, { fenced: () => fenced, paused: () => fenced ? undefined : '[room] name lease paused' })
+    b.write()
+    fenced = false
+    b.write()
+    expect(context(await runHook('before-edit.mjs', { cwd: dir, tool_name: 'Read' }))).toContain('[room] name lease paused')
+    b.stop(); s.awareness.destroy()
+  })
+
   it('does not wake an idle session merely because another participant joins', async () => {
     const s = session(new RoomDoc())
     const send = vi.fn(async () => 'queue' as const)

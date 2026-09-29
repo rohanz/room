@@ -240,6 +240,8 @@ export interface ParticipantLeaseOptions {
   holder: HolderIn
   hub: HubClient
   epoch?: number
+  /** The host session this lease was granted for still owns this MCP binding. */
+  hostCurrent?: () => boolean
   /** Called with the new fence after a (re-)grant, and with undefined when the lease stops being valid. */
   onChange?: (fence: string | undefined) => void
   log?: (line: string) => void
@@ -275,7 +277,7 @@ export class ParticipantLease {
 
   /** The fence records carry, while every fenced write may go ahead. */
   fence(): string | undefined {
-    if (this.stateValue !== 'held' || this.epochValue === undefined) return undefined
+    if (this.stateValue !== 'held' || this.epochValue === undefined || this.options.hostCurrent?.() === false) return undefined
     return this.options.hub.lease(this.name) === this.epochValue && ownsLocalName(this.options.file, this.options.token) ? String(this.epochValue) : undefined
   }
 
@@ -287,6 +289,7 @@ export class ParticipantLease {
   /** The paused line for tool replies and state.json, or undefined while the lease is good. */
   paused(): string | undefined {
     this.check()
+    if (this.stateValue === 'held' && this.options.hostCurrent?.() === false) return `[room] host session changed; ${this.name} is rebinding. Coordination is paused.`
     switch (this.stateValue) {
       case 'held': return undefined
       case 'taken': return `[room] another session now holds ${this.name}; rejoin to take a new name. Coordination is paused; your files are unaffected.`

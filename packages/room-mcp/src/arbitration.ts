@@ -24,6 +24,10 @@ export interface ArbitrationOptions {
   ledger: Ledger
   /** What the joined rooms owe now, reserved in a hook batch within the hook's character budget. */
   select(): { batch: Batch; items: HookItem[]; notices: string[]; more: number }
+  /** A verified select from this bound host session counts as presence activity. */
+  onContact?: () => void
+  /** False while a host-session rebind has not acquired its new name lease. */
+  canSelect?: () => boolean
   log?: (line: string) => void
   /** How often to look for a new binding (a SessionStart after /clear); default 2 s. */
   rebindMs?: number
@@ -35,23 +39,29 @@ export interface Arbitration { readonly port: number; close(): Promise<void> }
 
 export async function startArbitration(o: ArbitrationOptions): Promise<Arbitration> {
   const key = randomBytes(24).toString('hex')
-  const batches = new Map<string, Batch>()
+  const batches = new Map<string, { batch: Batch; sessionId: string }>()
   const handle = (req: Record<string, unknown>): object => {
     if (req.key !== key) return { ok: false, reason: 'key' }
     if (req.op === 'confirm') {
-      const batch = typeof req.batch === 'string' ? batches.get(req.batch) : undefined
-      if (batch) { batches.delete(batch.id); o.ledger.commit(batch) }
-      return { ok: !!batch }
+      const pending = typeof req.batch === 'string' ? batches.get(req.batch) : undefined
+      if (pending) {
+        batches.delete(pending.batch.id)
+        if (o.binding.bound()?.id === pending.sessionId && o.canSelect?.() !== false) { o.ledger.commit(pending.batch); return { ok: true } }
+        o.ledger.release(pending.batch)
+      }
+      return { ok: false }
     }
     if ((req.op !== 'select' && req.op !== 'ping') || typeof req.sessionId !== 'string') return { ok: false, reason: 'invalid' }
     const bound = o.binding.bound()
     if (!bound) return { ok: false, reason: 'unbound' }
     if (bound.id !== req.sessionId) return { ok: false, reason: 'foreign' }
+    if (o.canSelect?.() === false) return { ok: false, reason: 'unbound' }
     // A hook that must not select (one inside a subagent) asks only whether this session's MCP is up.
     if (req.op === 'ping') return { ok: true }
+    o.onContact?.()
     const { batch, items, notices, more } = o.select()
     if (!items.length && !notices.length) { o.ledger.release(batch); return { ok: true, batch: batch.id, items, notices, more, leaseMs: 0 } }
-    batches.set(batch.id, batch)
+    batches.set(batch.id, { batch, sessionId: bound.id })
     // A lease that ends first releases the batch; a late confirm still records a real handoff.
     const forget = setTimeout(() => batches.delete(batch.id), 60_000)
     forget.unref?.()

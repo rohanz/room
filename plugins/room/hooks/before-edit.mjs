@@ -57,7 +57,7 @@ const subagent = typeof ev.agent_id === 'string' && ev.agent_id !== ''
 // While alone with nothing owed, only the records above: no endpoint round trip, no scans. state.json is
 // rewritten only when something changes, so while this session's MCP is up its age means nothing; without
 // the MCP, a stale file is not trusted.
-if (stateFresh && state.company !== true && !(state.owedCount ?? 0) && !(state.notices ?? 0)) process.exit(0)
+if (stateFresh && state.company !== true && !(state.owedCount ?? 0) && !(state.notices ?? 0) && typeof state.paused !== 'string') process.exit(0)
 if (!stateFresh && !fs.existsSync(path.join(dir, 'mcp.json'))) process.exit(0)
 
 const inbox = []

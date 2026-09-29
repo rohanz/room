@@ -85,7 +85,7 @@ export interface HandlerState {
   myWorkers: (s: Session) => LocalWorker[]
   workerAlive: (s: Session, w: LocalWorker) => boolean
   ensureWorkersRoom: (lead: Session) => Promise<Session>
-  closeWorkersRoom: () => Promise<void>
+  closeWorkersRoom: (preserveFacts?: boolean) => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: LocalWorker }[]
   hasCompany: (s: Session) => CompanyState
   dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>

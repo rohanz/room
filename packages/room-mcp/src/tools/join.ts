@@ -25,7 +25,7 @@ export const defs: ToolDef[] = [
   { name: 'room_create', annotations: RW, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' }, where: str('team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Join local or a requested team server; remember explicit choices for this clone and its worktrees. Priority: argument, ROOM_SERVER, ROOM_URL, remembered, local.',
-    inputSchema: { type: 'object', properties: { where: str('local | team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
+    inputSchema: { type: 'object', properties: { where: str('local | team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE, takeover: { type: 'boolean', description: 'take a local name only when its process identity is unknown' } } } },
   { name: 'room_leave', annotations: RW, description: 'Leave and release your work claims. force dismisses running workers; forget clears this clone’s remembered destination.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'On explicit request, export history then delete local room memory or all branch rooms for everyone on the team server. Leaves clone files intact.',
@@ -131,13 +131,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_create(a) { return handlers.room_join({ ...a, where: a.where ?? a.server ?? 'team', create: true }) },
     async room_join(a) {
+      if (a.takeover !== undefined && typeof a.takeover !== 'boolean') return 'error: takeover must be true or false'
       const cur = ctx.getSession()
+      cur?.lease?.check()
+      const terminalNameLoss = cur?.lease?.state === 'taken' || cur?.lease?.state === 'superseded'
       const currentReply = async () => {
         const sharing = a.share !== undefined ? await shareHandlers(state).room_share({ level: a.share }) : ''
         if (cur) await offerTeamSharingDisclosure(cur, ledger)
         return [sharing, await scopeHandlers(state).room_state({ link: cur ? state.hasCompany(cur).company : false })].filter(Boolean).join('\n')
       }
-      if (cur && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined) {
+      if (cur && !terminalNameLoss && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined && a.takeover !== true) {
         return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
@@ -151,7 +154,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur) {
         const sameServer = choice.server === LOCAL ? !!cur.local
           : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
-        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir) {
+        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir && !terminalNameLoss && a.takeover !== true) {
           return currentReply()
         }
         const running = runningWorkers(cur)
@@ -165,7 +168,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (cur) {
         await closeWorkersRoom()
-        cleanupMine(cur, 'moved to another room')
+        if (!terminalNameLoss) cleanupMine(cur, 'moved to another room')
         rooms.remove(cur)
         await doLeave(cur)
       }
@@ -180,6 +183,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         confirm: a.confirm === true,
         share: resolved.share,
         shareExplicit: resolved.shareExplicit,
+        takeover: a.takeover === true,
       }) } catch (e) {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
         if (!(e instanceof NoRoom)) throw e

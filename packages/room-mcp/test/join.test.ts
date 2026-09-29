@@ -143,6 +143,23 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server, server])
 })
 
+it('S2 exposes takeover=true through room_join and passes it to the join helper', async () => {
+  const current = session('local/current/main', { local: true })
+  const t = branchTools(current)
+  expect(t.tools.list().find(tool => tool.name === 'room_join')?.inputSchema.properties).toHaveProperty('takeover')
+  await t.tools.call('room_join', { where: 'local', room: 'local/other/main', takeover: true })
+  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ takeover: true }))
+})
+
+it('M2 rejoins a taken same-room session instead of returning its stale state', async () => {
+  const current = session('local/current/main', { local: true })
+  current.lease = { state: 'taken', check() {}, fence: () => undefined, paused: () => 'name taken' } as never
+  const t = branchTools(current)
+  await t.tools.call('room_join', { where: 'local', room: 'local/current/main' })
+  expect(t.leave).toHaveBeenCalledWith(current)
+  expect(t.joiner).toHaveBeenCalledOnce()
+})
+
 describe('owed mail survives the trim (ledger test 5)', () => {
   const pat = { name: 'Pat', kind: 'agent' as const }, quinn = { name: 'Quinn', kind: 'agent' as const }
   const inbox = (text: string) => /\[inbox \d+\]\n((?: {2}.*\n)*)/.exec(text)?.[1] ?? ''

@@ -318,11 +318,11 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       log(`workers room: ${ws.roomName} (${ws.local?.url ?? 'local'}), bridged to ${lead.roomName}`)
       return ws
     }
-  const closeWorkersRoom = async (): Promise<void> => {
+  const closeWorkersRoom = async (preserveFacts = false): Promise<void> => {
       const ws = rooms.workers()
       if (!ws) return
       rooms.remove(ws)
-      try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+      if (!preserveFacts) try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
       await doLeave(ws)
     }
   const runningWorkers = (s: Session): { s: Session; w: LocalWorker }[] => registryRunningWorkers(s, rooms)

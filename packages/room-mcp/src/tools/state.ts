@@ -163,7 +163,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     async shutdown() {
       wakes.stop()
       const s = ctx.getSession()
-      if (!s) return
+      if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
       const running = (await Promise.all(state.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')
       const cancellation = new AbortController()
       const pending = new Set(running.map(r => r.w.tag))
@@ -184,14 +184,12 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
           for (const tag of pending) log(`shutdown dismissal timed out for ${tag}; worker record kept for restart`)
         }
       }
-      await state.closeWorkersRoom().catch(() => {})
-      try { state.cleanupMine(s, 'session ended') } catch { /* best effort */ }
+      await state.closeWorkersRoom(true).catch(() => {})
       rooms.remove(s)
       await doLeave(s)
     },
     async drop(s: Session, reason: string) {
       log(`leaving ${s.roomName}: ${reason}`)
-      try { state.cleanupMine(s, reason) } catch { /* best effort */ }
       rooms.remove(s)
       await doLeave(s)
     },

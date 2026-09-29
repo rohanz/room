@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshot, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
@@ -48,6 +49,7 @@ export interface HooksBridgeOptions {
 }
 
 export class HooksBridge {
+  private readonly writer = randomUUID()
   private timer: NodeJS.Timeout | null = null
   private unobserve: (() => void)[] = []
   private stopped = false
@@ -69,7 +71,10 @@ export class HooksBridge {
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.timer) clearTimeout(this.timer)
-    if (this.written) { try { fs.rmSync(this.written, { force: true }) } catch { /* ignore */ } }
+    if (this.written) {
+      try { if (JSON.parse(fs.readFileSync(this.written, 'utf8')).writer === this.writer) fs.rmSync(this.written, { force: true }) }
+      catch { /* another instance or already gone */ }
+    }
   }
 
   /** Debounced: many small doc updates become one file write. */
@@ -83,11 +88,20 @@ export class HooksBridge {
     this.timer.unref?.()
   }
 
-  /** state.json: counts and coordination for the hooks, written only while fenced (ledger "Local files"). */
+  /** state.json: counts and coordination while fenced, or a minimal paused health state on lease loss. */
   write(): void {
     if (this.stopped) return
     const dir = this.o.sessionDir()
-    if (!dir || !this.o.fenced()) return
+    if (!dir) return
+    const file = path.join(dir, 'state.json')
+    if (!this.o.fenced()) {
+      const paused = this.o.paused?.()
+      if (!paused || this.written !== file) return
+      // A newer MCP may already own this same bound-session endpoint. Never replace its state.
+      try { if (JSON.parse(fs.readFileSync(file, 'utf8')).writer !== this.writer) return } catch { return }
+      writeAtomic(file, { name: this.s.me.name, room: this.s.roomName, at: this.now(), paused, writer: this.writer })
+      return
+    }
     const me = this.s.me.name
     const openClaims = this.s.room.openClaims()
     const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
@@ -120,9 +134,8 @@ export class HooksBridge {
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
     const others = company.others.map(name => displayName({ name, kind: (presences.find(p => p.user?.name === name && p.user.kind === 'agent') ?? presences.find(p => p.user?.name === name))?.user?.kind ?? this.s.room.scope(name)?.byKind ?? 'agent' }))
     const paused = this.o.paused?.()
-    const file = path.join(dir, 'state.json')
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-    writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...(paused ? { paused } : {}) })
+    writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...(paused ? { paused } : {}), writer: this.writer })
     this.written = file
   }
 

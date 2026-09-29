@@ -27,13 +27,17 @@ export interface RegistryOptions {
   sources?: (commonDir: string) => LegacySource[]; migrate?: boolean; watch?: boolean
 }
 export interface IdleClaimsAction {
-  roomKey: string; sessionId: string; participant: string; idleEpoch: string
+  roomKey: string; sessionId: string; participant: string; idleEpoch: string; epoch?: string
   host: 'shared-app-server' | 'interactive'; lastActivityMs: number; monotonicMs: () => number
-  doc: RoomDoc; postNotice: (id: string, text: string) => void
-  /** Legacy fallback until a holder record has been published; must check the local name lease. */
+  doc: RoomDoc; postNotice: (id: string, text: string) => void | { ok: boolean; text?: string } | Promise<{ ok: boolean; text?: string }>
+  /** The local name lease must still belong to this process and epoch after guard acquisition. */
   ownsParticipant?: () => boolean
 }
-interface IdleReleaseRecord { state: 'pending' | 'done'; claimIds: string[]; claimNames: string[]; hadScope: boolean }
+interface IdleReleaseRecord {
+  state: 'pending' | 'done'; claimIds: string[]; claimNames: string[]; hadScope: boolean
+  /** Replay identity is stored in the record: a restarted presence clock need not repeat its old idle epoch. */
+  roomKey?: string; sessionId?: string; participant?: string; idleEpoch?: string; scopeAt?: number
+}
 interface MigrationMap { v: 1; sources: Record<string, { id: string; state: 'assigned' | 'imported' }>; done: boolean }
 const readJson = <T>(file: string): T | undefined => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T }
@@ -378,28 +382,58 @@ export class WorkerRegistry {
   private changed(id?: string): void { for (const listener of this.listeners) listener(id) }
   onChange(listener: (id?: string) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
 
+  private idleClaimsDir(sessionId: string): string {
+    return path.join(this.commonDir, 'room', 'sessions', sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), 'idle-claims')
+  }
+
+  private idleClaimsFile(roomKey: string, sessionId: string, idleEpoch: string): string {
+    const key = createHash('sha256').update(`${roomKey}\0${sessionId}\0${idleEpoch}`).digest('hex')
+    return path.join(this.idleClaimsDir(sessionId), `${key}.json`)
+  }
+
+  private pendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string, participant?: string): { file: string; record: IdleReleaseRecord } | undefined {
+    const direct = this.idleClaimsFile(roomKey, sessionId, idleEpoch)
+    const candidates = [direct, ...files(this.idleClaimsDir(sessionId), '.json').filter(file => file !== direct)]
+    for (const file of candidates) {
+      let record: IdleReleaseRecord | undefined
+      try { record = readJson<IdleReleaseRecord>(file) } catch (error) { this.quarantine(file, error); continue }
+      if (!record || record.state !== 'pending' || !Array.isArray(record.claimIds) || !Array.isArray(record.claimNames)) continue
+      if (file !== direct && (record.roomKey !== roomKey || record.sessionId !== sessionId || !record.idleEpoch)) continue
+      if (participant && record.participant && record.participant !== participant) continue
+      return { file, record }
+    }
+    return undefined
+  }
+
+  hasPendingIdleClaims(roomKey: string, sessionId: string, idleEpoch: string): boolean {
+    return !!this.pendingIdleClaims(roomKey, sessionId, idleEpoch)
+  }
+
   /** Callable by the wave-4 presence loop; its durable journal makes crash replay idempotent. */
   async reconcileIdleClaims(action: IdleClaimsAction): Promise<boolean> {
     const { doc, participant } = action
     const ownsNow = (): boolean => {
       const holder = participantRecord(doc, participant)?.holder
-      return holder ? holder.sessionId === action.sessionId : action.ownsParticipant?.() === true
+      if (action.ownsParticipant?.() !== true) return false
+      return holder ? holder.sessionId === action.sessionId && action.epoch === String(holder.epoch) : true
     }
     if (!ownsNow()) return false
     const claims = [...doc.claims.values()].filter(c => c.by === participant && c.byKind !== 'human')
     const hasScope = doc.scopes.has(participant)
-    const key = createHash('sha256').update(`${action.roomKey}\0${action.sessionId}\0${action.idleEpoch}`).digest('hex')
-    const file = path.join(this.commonDir, 'room', 'sessions', action.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), 'idle-claims', `${key}.json`)
-    if (!fs.existsSync(file) && !idleClaimsDue({ host: action.host, lastActivityMs: action.lastActivityMs,
+    const replay = this.pendingIdleClaims(action.roomKey, action.sessionId, action.idleEpoch, participant)
+    const file = replay?.file ?? this.idleClaimsFile(action.roomKey, action.sessionId, action.idleEpoch)
+    if (!replay && !fs.existsSync(file) && !idleClaimsDue({ host: action.host, lastActivityMs: action.lastActivityMs,
       nowMs: action.monotonicMs(), heldClaims: claims.length, hasScope })) return false
-    return guarded(file, () => {
+    const pending = await guarded(file, () => {
       // Async guard acquisition may outlive this participant's name lease.
       if (!ownsNow()) return false
       let journal = readJson<IdleReleaseRecord>(file)
       if (journal?.state === 'done') return false
       if (!journal) {
         journal = { state: 'pending', claimIds: claims.map(c => c.id),
-          claimNames: claims.map(c => c.path.endsWith('/') ? c.path : `${c.path}:${c.from}-${c.to}`), hadScope: hasScope }
+          claimNames: claims.map(c => c.path.endsWith('/') ? c.path : `${c.path}:${c.from}-${c.to}`), hadScope: hasScope,
+          roomKey: action.roomKey, sessionId: action.sessionId, participant, idleEpoch: action.idleEpoch,
+          ...(hasScope ? { scopeAt: doc.scope(participant)?.at } : {}) }
         writeAtomic(file, journal)
       }
       const pending = journal
@@ -408,12 +442,19 @@ export class WorkerRegistry {
           const current = doc.claims.get(claimId)
           if (current?.by === participant && current.byKind !== 'human') doc.removeClaim(claimId)
         }
-        if (pending.hadScope) doc.clearScope(participant)
+        if (pending.hadScope && (pending.scopeAt === undefined || doc.scope(participant)?.at === pending.scopeAt)) doc.clearScope(participant)
       })
-      const noticeId = `idle-claims:${action.sessionId}:${action.idleEpoch}`
-      const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(', ')}` : 'released no claims'
-      action.postNotice(noticeId, `${participant} ${names}${pending.hadScope ? ' and cleared its scope' : ''} after 8 h idle`)
-      writeAtomic(file, { ...pending, state: 'done' })
+      return pending
+    })
+    if (!pending) return false
+    const noticeId = `idle-claims:${pending.sessionId ?? action.sessionId}:${pending.idleEpoch ?? action.idleEpoch}`
+    const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(', ')}` : 'released no claims'
+    const posted = await action.postNotice(noticeId, `${participant} ${names}${pending.hadScope ? ' and cleared its scope' : ''} after 8 h idle`)
+    if (posted?.ok === false) return false
+    return guarded(file, () => {
+      const current = readJson<IdleReleaseRecord>(file)
+      if (!current || current.state === 'done') return false
+      writeAtomic(file, { ...current, state: 'done' })
       return true
     })
   }
