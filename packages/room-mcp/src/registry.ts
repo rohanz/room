@@ -247,7 +247,7 @@ export class Rooms {
    * `beforeLaunch` runs once every check has passed and the run is reserved, just before the host starts; an
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
-  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | { ids: string[]; prompt?: string } | undefined>): Promise<string | DeliveredResume> {
+  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | { ids: string[]; prompt: string } | undefined>): Promise<string | DeliveredResume> {
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
     const known = registry.reserved(w.tag)
@@ -277,7 +277,7 @@ export class Rooms {
         busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
-    let posting: string | { ids: string[]; prompt?: string } | undefined
+    let posting: string | { ids: string[]; prompt: string } | undefined
     try {
     try {
       posting = await beforeLaunch?.()
@@ -307,7 +307,7 @@ export class Rooms {
         effort: record.effort, share: record.share, run: run.n, nonce: run.nonce, registry: registry.root,
         budget: record.budget, server, isWorker, token: s.local ? undefined : s.token, claudeChannel,
         preferredPort: record.port, spawner, probe: this.probe.bind(this), log, at },
-      { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt ?? followUp : followUp, oldPort: record.port },
+      { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),
         watch: (_id, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
       async pid => { await registry.update(record.id, old => ({ ...old,

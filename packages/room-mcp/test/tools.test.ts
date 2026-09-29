@@ -23,6 +23,8 @@ import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } fr
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { visiblePeer } from './fixtures/visible.js'
+import { catchUpLocal } from '../../relay/src/local-migrate.js'
+import { claimDigest } from '@room/roomd'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -413,6 +415,28 @@ describe('session gating', () => {
     expect(t.session).toBeNull()
     expect(t.room.scope('Rohan')).toMatchObject({ area: 'x' })
     expect(t.room.openClaims()).toMatchObject([{ path: 'app.py', by: 'Rohan' }])
+  })
+
+  it('adopts validated migrated claims and scope once, then clears later stale facts', async () => {
+    const t = setup({ joined: false })
+    const old = new RoomDoc(new Y.Doc())
+    old.setScope({ by: 'Rohan', byKind: 'agent', area: 'legacy', summary: 'migrated', paths: ['app.py'] })
+    const claim = old.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'migrated' })
+    old.claims.set(claim.id, { ...claim, claimedHash: claimDigest(COMMITTED, 1, 1) })
+    const common = join(dir, '.git'), oldDir = join(common, 'room-local')
+    mkdirSync(oldDir, { recursive: true })
+    writeFileSync(join(oldDir, `${encodeURIComponent('local/repo/main')}.ydoc`), Y.encodeStateAsUpdate(old.doc))
+    catchUpLocal(common, 'local/repo', t.room.doc)
+    expect(t.room.claims.get(claim.id)?.origin).toBe('local/repo/main')
+    await t.tools.call('room_join', {})
+    expect(t.room.scope('Rohan')).toMatchObject({ area: 'legacy' })
+    expect(t.room.openClaims()).toMatchObject([{ id: claim.id, by: 'Rohan' }])
+    expect(t.room.scope('Rohan')?.origin).toBeUndefined()
+    expect(t.room.claims.get(claim.id)?.origin).toBeUndefined()
+    const next = createTools({ getSession: () => null, setSession: () => {}, cwd: dir, join: async () => fakeSession(t.room), leave: async () => {} })
+    await next.call('room_join', {})
+    expect(t.room.scope('Rohan')).toBeUndefined()
+    expect(t.room.openClaims()).toEqual([])
   })
 
   it('room_done releases, clears scope, posts a done note, keeps the session', async () => {

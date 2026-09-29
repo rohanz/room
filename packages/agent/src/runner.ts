@@ -37,6 +37,7 @@ export class Runner {
   private frontier = 0
   private queuedIds = new Set<string>()
   private retryTimer?: ReturnType<typeof setTimeout>
+  private retryDelayMs = 1_000
 
   constructor(private opts: RunnerOptions) {
     this.me = { name: opts.name, kind: 'agent' }
@@ -126,6 +127,7 @@ export class Runner {
 
   private onMsg(m: Msg) {
     if (m.type === 'claim') this.seenClaimIds.add(m.claimId)
+    if (this.paused || this.stopped) return
     if (this.queuedIds.has(m.id) || !owed(this.room, this.me, { frontier: this.frontier, routed: new Set() },
       { claims: this.room.openClaims().filter(c => c.by === this.me.name) }).some(candidate => candidate.id === m.id)) return
     const ownWorkers = new Set(Array.from(this.room.workerViews.values()).filter(w => w.lead === this.me.name).map(w => w.name))
@@ -177,15 +179,18 @@ export class Runner {
 
   /** Retry owed delivery after a denied/lapsed lease or a transport reconnect. */
   async retryDelivery(): Promise<void> {
+    if (this.stopped || this.paused) return
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined }
     for (const m of owed(this.room, this.me, { frontier: this.frontier, routed: new Set() }, {}))
-      if (m.to === this.me.name) this.onMsg(m)
+      this.onMsg(m)
     await this.drain()
   }
 
   private scheduleRetry(): void {
-    if (this.retryTimer || this.stopped) return
-    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; void this.retryDelivery() }, 1_000)
+    if (this.retryTimer || this.stopped || this.paused) return
+    const delay = this.retryDelayMs
+    this.retryDelayMs = Math.min(this.retryDelayMs * 2, 30_000)
+    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; void this.retryDelivery() }, delay)
     this.retryTimer.unref?.()
   }
 
@@ -204,6 +209,7 @@ export class Runner {
   /** Interrupt, release our claims, and pause until an explicit /resume. */
   stopTurn(): void {
     this.paused = true
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = undefined }
     this.queue.length = 0
     this.queuedIds.clear()
     const mine = this.opts.authority.current() === undefined ? [] : this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
@@ -228,6 +234,7 @@ export class Runner {
     this.paused = false
     this.room.say(this.me.name, { role: 'status', text: 'resumed' })
     this.setStatus('idle')
+    void this.retryDelivery()
   }
 
   private preemptForConflict(q: Queued): void {
@@ -257,12 +264,14 @@ export class Runner {
       body = events.map(q => formatEvent(q.msg, q.line)).join('\n\n')
     }
     let input = body
-    if (this.firstTurn) { input = `${this.opts.preamble ?? preamble(this.me.name)}\n\n---\n\n${body}`; this.firstTurn = false }
+    const first = this.firstTurn
+    if (first) { input = `${this.opts.preamble ?? preamble(this.me.name)}\n\n---\n\n${body}`; this.firstTurn = false }
 
     this.setStatus('thinking')
     const controller = new AbortController()
     this.abort = controller
     const { signal } = controller
+    let accepted = false
     try {
       await this.opts.backend.run(input, item => {
         if (this.stopped || this.abort !== controller || this.opts.authority.current() !== epoch) return
@@ -270,6 +279,8 @@ export class Runner {
         if (c) say(c)
       }, s => { if (!this.stopped && this.abort === controller && this.opts.authority.current() === epoch) this.setStatus(s) }, signal, () => {
         if (this.stopped || this.abort !== controller || this.opts.authority.current() !== epoch) return
+        accepted = true
+        this.retryDelayMs = 1_000
         const ids = events.flatMap(q => this.room.message(q.msg.id) || this.room.mail.has(q.msg.id) ? [q.msg.id] : [])
         if (ids.length) this.room.markSeen(this.me.name, ids, { s: this.opts.authority.sessionId, via: 'agent' })
       })
@@ -282,7 +293,8 @@ export class Runner {
       else { this.log(`turn failed: ${msg}`); say({ role: 'status', text: `turn failed: ${msg}` }) }
     } finally {
       for (const q of batch) if (q.kind === 'event') this.queuedIds.delete(q.msg.id)
-      if (!this.stopped && this.opts.authority.current() !== epoch) this.scheduleRetry()
+      if (!accepted && first) this.firstTurn = true
+      if (!this.stopped && !this.paused && (!accepted && events.length || this.opts.authority.current() !== epoch)) this.scheduleRetry()
       if (this.abort === controller) {
         this.abort = null
         this.abortReason = null

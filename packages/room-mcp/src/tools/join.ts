@@ -307,7 +307,26 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 
 export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | 'doLeave' | 'rooms' | 'now' | 'presences' | 'runningWorkers'>): Pick<HandlerState, 'cleanupMine' | 'serverOf' | 'LOCAL_LOGIN' | 'codeLine'> {
   const { ctx } = deps
-  const cleanupMine = (s: Session, _why: string, keep?: (c: Claim) => boolean): number => releaseClaimsOnDone(s, keep)
+  const cleanupMine = (s: Session, why: string, keep?: (c: Claim) => boolean): number => {
+    if (why !== 'stale from an earlier session') return releaseClaimsOnDone(s, keep)
+    const scope = s.room.scope(s.me.name)
+    const migrated = s.room.openClaims().filter(c => c.by === s.me.name && !!c.origin)
+    const released = releaseClaimsOnDone(s, c => !!c.origin || !!keep?.(c), s.me.name, !scope?.origin)
+    s.room.doc.transact(() => {
+      for (const claim of migrated) {
+        const current = s.room.claims.get(claim.id)
+        if (current?.by === s.me.name && current.origin) {
+          const { origin: _origin, ...adopted } = current
+          s.room.claims.set(claim.id, adopted)
+        }
+      }
+      if (scope?.origin && s.room.scope(s.me.name)?.origin === scope.origin) {
+        const { origin: _origin, ...adopted } = scope
+        s.room.scopes.set(s.me.name, adopted)
+      }
+    }, s.me)
+    return released
+  }
   const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
