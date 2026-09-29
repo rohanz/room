@@ -207,6 +207,27 @@ describe('shell edit hooks', () => {
     expect(peer('app.py')).toBe(false)
   })
 
+  it.each([
+    ['Bash', 'sed -i "s/x/y/" api/tax.py app.py'],
+    ['Bash', "sed -i '' -e 's/x/y/' api/tax.py app.py"],
+    ['Bash', "sed -i.bak -f changes.sed api/tax.py app.py"],
+    ['Bash', "perl -pi -e 's/x/y/' api/tax.py app.py"],
+    ['Bash', 'git restore --source=HEAD api/tax.py app.py'],
+    ['Bash', 'git restore -s HEAD --staged --worktree api/tax.py app.py'],
+    ['Bash', 'git checkout -- api/tax.py app.py'],
+    ['Bash', 'git stash -- api/tax.py app.py'],
+    ['PowerShell', 'Move-Item api/tax.py old.py'],
+    ['PowerShell', 'Rename-Item -Path api/tax.py -NewName old.py'],
+    ['Bash', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: api/tax.py\n@@\n-x = 1\n+x = 2\n*** End Patch\nEOF"],
+  ] as const)('warns and records the first file operand: %s %s', async (tool_name, command) => {
+    state()
+    const session_id = `operand-${Math.random()}`
+    await runHook('session-start.mjs', { session_id, cwd: dir })
+    const out = await runHook('before-edit.mjs', { session_id, tool_name, cwd: dir, tool_input: { command } })
+    expect(out, command).toContain("Kieran's agent holds api/tax.py:1-1")
+    expect(createWriteIntentReader(dir)('api/tax.py'), command).toBe(true)
+  })
+
   it('keeps a before-edit receipt file per session, so a later session does not erase an earlier one', async () => {
     rmSync(join(dir, '.git/room-hook-receipts'), { force: true, recursive: true })
     await runHook('session-start.mjs', { session_id: 'receipt-claude', cwd: dir })
@@ -445,6 +466,9 @@ describe('shell edit hooks', () => {
   it('bounds path candidates across input strings and supports shell argv', async () => {
     const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     expect(pathsOf('exec', { cmd: 'sed -i "s/x/y/" "api/tax.py"' }, dir)).toContain('api/tax.py')
+    expect(pathsOf('exec', { cmd: "sed -i '' -e 's/x/y/' api/tax.py app.py" }, dir)).toEqual(['api/tax.py', 'app.py'])
+    expect(pathsOf('exec', { cmd: 'git restore -s HEAD --staged --worktree api/tax.py app.py' }, dir)).toEqual(['api/tax.py', 'app.py'])
+    expect(pathsOf('exec', { cmd: "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: app.py\n*** Move to: api/tax.py\n*** End Patch\nEOF" }, dir)).toEqual(['app.py', 'api/tax.py'])
     expect(pathsOf('exec', { cmd: 'x '.repeat(200), extra: 'api/tax.py' }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual([])
     expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual([])
