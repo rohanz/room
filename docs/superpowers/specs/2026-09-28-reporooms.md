@@ -54,7 +54,7 @@ deletion. 0.16.32's name lock gives way to the registry lease keyed by `roomKey`
 4. `git.base` is an anchor every reader can try to resolve (R3c); with none, `anchored: false` and peers report "cannot compare", and base resolution never throws.
 5. A pair is compared at `merge-base(A.base, B.base)`, and a commit that cannot be fetched yields "cannot compare" for that pair only, never an error, "equals base" or a daemon stop.
 6. A HEAD transition ends in one Y transaction writing the `git` record (with `pushedPending` when a `pushed` is owed), the manifest entries and head (manifest §5.4), and the owner's claim moves and releases; the `pushed` notice is then posted to the hub by its deterministic ID (§B4; hub §2.3).
-7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` or `possible` only on a clean evaluation at current inputs, never because its path left the candidate set. A slot is `conflict` only when both sides' versions were read; a side that is a hashless held entry (manifest invariant 16, D1) makes it at most `possible`.
+7. A conflict slot has a deterministic key, one fenced writer and deterministic notice IDs, and it leaves `conflict` or `possible` only on a clean evaluation at current inputs, never because its path left the candidate set. Contract slots are the exception: they are removed silently when either path leaves its owner's text-authorized area. A slot is `conflict` only when both sides' versions were read; a side that is a hashless held entry (manifest invariant 16, D1) makes it at most `possible`.
 8. A branch switch never changes the room, the participant name, the cursor or the receipts.
 9. Admitted means trusted (SF6; confirmed by the human as D3, 2026-09-28): single-writer rules are client discipline plus fences, and a write the server drops is surfaced to its writer as a rejected state. Validated operations are post-redesign roadmap work.
 10. A participant's presence ends within a bounded time once its host session has finished, even when its MCP process lives on (D5; registry §18). A quiet session holding scope or claims whose host is still alive is shown idle, never dropped; a shared app-server session idle for eight hours releases its own claims and scope first (H1, registry §18).
@@ -353,6 +353,8 @@ team room, projected worker (bridge): base = the lead's current team-room base (
 
 ### B5. Conflicts: one derived slot set (audit item 4; MF1, MF2, MF13, SF3)
 
+At `declared` and `intent`, files outside each owner's text-authorized area yield no contract or graph notice or evidence, beyond their manifest path and state. A contract exists only while both provider and consumer paths are authorized (or their owners share at `full`). Withdrawal removes every involved contract slot and graph fact synchronously without `:clean` or retained identity; re-entry is evaluated afresh. An authorized path with lagging graph provenance keeps its current `unknown` episode.
+
 `ConflictWatcher` (`room-mcp/src/conflicts.ts:88-421`) becomes `ConflictSet` with one method,
 `reconcile(reason)`. It is single-flight and keeps today's merge budget (four starts per 10 s).
 
@@ -389,8 +391,8 @@ team room, projected worker (bridge): base = the lead's current team-room base (
    is not retried on a timer: its inputs change only when a side's entry does.
    `conflict` → `clean` sets `settled: 'clean'` and posts `…:clean` (`fyi`). `unknown` posts nothing, keeps
    `settled` and `epoch`, and retries at `retryAt` (1, 2, 4, then 8 min) whatever its inputs; so
-   conflict→unknown→the same conflict is silent. A slot is deleted only when `clean` and out of the
-   candidates, when `b` expires, or when its owner retires.
+   conflict→unknown→the same conflict is silent. A non-contract slot is deleted only when `clean` and out of the
+   candidates, when `b` expires, or when its owner retires; contract withdrawal follows the area rule above.
    **Every owner, on start and reconnect (hub):** for each slot it evaluates with `settled` of `conflict`
    or `possible` at epoch e, it posts `cf:<h>:<e>` by ID; the hub returns the existing copy if there is one.
    **Projected workers (N1).** A projected worker's notice lives in the workers-room doc, so it cannot share

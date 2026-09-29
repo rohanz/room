@@ -1,18 +1,15 @@
 import { createHash } from 'node:crypto'
-import fs from 'node:fs'
-import path from 'node:path'
-import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
-import { commonGitDirFromDotGit, comparePair } from '@room/roomd'
+import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { structuredPatch } from 'diff'
 import { carriedPaths, carriesWork, readBaseline, type Baseline } from '@room/roomd/baseline'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
-import { writeAtomic } from './leases.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -34,10 +31,10 @@ export interface ConflictSlot {
   checkedAt: number
   retryAt?: number
   retrySource?: string
-  /** Path-level notice history carried after identities are withdrawn. */
-  noticeFloor?: number
+  /** Consumer paths are published only while their text grants remain valid. */
+  consumers?: string[]
 }
-export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource'>
+export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource' | 'consumers'>
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
@@ -46,35 +43,6 @@ export const noticeId = (key: string, epoch: number): string => `cf:${hash(key)}
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
-
-// Prior consumer paths are private to the clone. Never put them (or content
-// digests) in a replicated slot. A file per room and owner avoids cross-owner
-// writes and survives a fresh MCP process.
-class ConsumerEvidence {
-  private readonly paths = new Map<string, readonly string[]>()
-  constructor(private readonly file?: string, private readonly roomSalt?: string) {
-    if (!file) return
-    try {
-      const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { v?: number; roomSalt?: string; slots?: Record<string, unknown> }
-      if (stored.v !== 1 || stored.roomSalt !== roomSalt || !stored.slots || typeof stored.slots !== 'object') return
-      for (const [key, paths] of Object.entries(stored.slots)) {
-        if (Array.isArray(paths) && paths.length && paths.every(p => typeof p === 'string')) this.paths.set(key, paths)
-      }
-    } catch { /* Missing or damaged local evidence requires conservative reconstruction. */ }
-  }
-  static forSession(dir: string, room: RoomDoc, owner: string): ConsumerEvidence {
-    const salt = room.roomSalt
-    if (!salt) return new ConsumerEvidence()
-    const name = hash(`${salt}\0${owner}`)
-    return new ConsumerEvidence(path.join(commonGitDirFromDotGit(dir), 'room', 'contract-consumers', `${name}.json`), salt)
-  }
-  get(key: string): readonly string[] | undefined { return this.paths.get(key) }
-  set(key: string, paths: readonly string[]): void { this.paths.set(key, [...new Set(paths)].sort()); this.save() }
-  delete(key: string): void { if (this.paths.delete(key)) this.save() }
-  private save(): void {
-    if (this.file) writeAtomic(this.file, { v: 1, roomSalt: this.roomSalt, slots: Object.fromEntries(this.paths) })
-  }
-}
 
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
 export class ConflictSlots {
@@ -87,12 +55,11 @@ export class ConflictSlots {
     private readonly log: (line: string) => void = () => {},
     private readonly holderPost: Post = post,
     private readonly valid: () => boolean = () => true,
-    private readonly evidence: ConsumerEvidence = new ConsumerEvidence(),
   ) { this.map = room.doc.getMap<ConflictSlot>('conflicts') }
 
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
   owned(owner: string): [string, ConflictSlot][] { return [...this.map.entries()].filter(([, slot]) => slot.owner === owner) }
-  drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)); this.evidence.delete(key) }
+  drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)) }
 
   /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
   markContractsUnknown(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
@@ -108,46 +75,8 @@ export class ConflictSlots {
     })
   }
 
-  /** Remove signature detail when the provider's current text is no longer readable. */
-  redactContracts(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
-    const old = this.owned(owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other &&
-      (!paths || paths.has(slot.path)))
-    if (old.every(([key, slot]) => key === slotKey(owner, 'contract', other, slot.path, '*') &&
-      slot.status === 'unknown' && slot.why === why)) return
-    const byPath = new Map<string, ConflictSlot[]>()
-    for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot])
-    for (const [path] of byPath) {
-      const supporting = new Set(old.filter(([, slot]) => slot.path === path).flatMap(([key]) => this.evidence.get(key) ?? []))
-      if (supporting.size) this.evidence.set(slotKey(owner, 'contract', other, path, '*'), [...supporting].sort())
-    }
-    this.room.doc.transact(() => {
-      for (const [key] of old) this.map.delete(key)
-      for (const [path, slots] of byPath) {
-        const prior = slots.find(slot => slot.settled === 'conflict') ?? slots.find(slot => slot.settled === 'possible') ?? slots[0]!
-        // A path-level high water mark survives withdrawal without replicating a
-        // digest of any restricted symbol, signature, or slot key.
-        const epoch = Math.max(...slots.map(slot => slot.epoch))
-        this.map.set(slotKey(owner, 'contract', other, path, '*'), { owner, other, kind: 'contract', path, subject: '*',
-          status: 'unknown', settled: prior.settled, epoch, fence: prior.fence, checkedAt: this.now(),
-          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why })
-      }
-    })
-    for (const [key, slot] of old) if (key !== slotKey(owner, 'contract', other, slot.path, '*')) this.evidence.delete(key)
-  }
-
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
-    let prev = this.map.get(key)
-    if (!prev && result.kind === 'contract' && result.subject !== '*') {
-      const prefix = slotKey(result.owner, 'contract', result.other, result.path, '')
-      const siblings = [...this.map.entries()].filter(([siblingKey]) => siblingKey.startsWith(prefix)).map(([, slot]) => slot)
-      const history = siblings.filter(slot => slot.subject === '*' || slot.noticeFloor !== undefined)
-      if (history.length) {
-        const epoch = Math.max(...history.map(slot => slot.epoch))
-        // A newly visible symbol starts a fresh episode after the highest prior
-        // path notice, even when the old symbol identity was deliberately erased.
-        prev = { ...history[0]!, subject: result.subject, epoch, settled: 'none', factId: '', inputs: '', noticeFloor: epoch }
-      }
-    }
+    const prev = this.map.get(key)
     const now = this.now()
     const fence = typeof this.fence === 'function' ? this.fence() : this.fence
     if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev
@@ -159,7 +88,6 @@ export class ConflictSlots {
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
       ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now,
-      ...(prev?.noticeFloor !== undefined ? { noticeFloor: prev.noticeFloor } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
     }
@@ -172,15 +100,11 @@ export class ConflictSlots {
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner: string): Promise<void> {
     for (const [key, slot] of this.owned(owner)) {
-      // A redaction wildcard retains only path-level episode history. It is
-      // not a contract fact and has no notice identity to replay.
-      if (slot.kind === 'contract' && slot.subject === '*') continue
       if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot)
     }
   }
 
   async postNotice(key: string, slot: ConflictSlot): Promise<void> {
-    if (slot.kind === 'contract' && slot.subject === '*') return
     const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
     if (!current()) return
     const id = noticeId(key, slot.epoch) + (slot.settled === 'clean' ? ':clean' : '')
@@ -237,18 +161,16 @@ export class ConflictSet {
   private rerun = false
   private starts: number[] = []
   private readonly contractCache = new Map<string, ReturnType<typeof observedContractChanges>>()
-  private readonly consumerEvidence: ConsumerEvidence
   private guard: (() => boolean) | undefined
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined) {
     const fence = () => team.lease?.fence() ?? ''
-    this.consumerEvidence = ConsumerEvidence.forSession(team.dir, team.room, owner)
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false, this.consumerEvidence)
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
   }
 
   start(): void {
-    const schedule = () => { this.withdrawContractDetails(); this.schedule() }
+    const schedule = () => { this.withdrawUnauthorizedContracts(); this.schedule() }
     for (const map of [this.team.room.manifest, this.team.room.manifestHead, this.team.room.participants, this.team.room.claims, this.team.room.graphs]) {
       map.observe(schedule)
       this.stops.push(() => map.unobserve(schedule))
@@ -260,44 +182,40 @@ export class ConflictSet {
     this.tick.unref?.()
     if (this.team.provider.synced) this.schedule(0)
   }
-  /** Strip old derived signatures in the same event turn as a manifest or graph withdrawal. */
-  private withdrawContractDetails(): void {
+  /** Remove every contract whose provider or consumer has left its text grant. */
+  private withdrawUnauthorizedContracts(): void {
     if (!this.team.lease?.fence()) return
     const room = this.team.room
-    const others = new Set(this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract').map(([, slot]) => slot.other))
-    for (const other of others) {
-      const head = room.manifestHead.get(other), graph = room.graphs.get(other)
-      const snap = snapshot(room, other, participantsView(room, this.team.awareness, Date.now()))
-      const stale = !head?.complete || head.coverage.kind !== 'all' || !snap?.fenceValid || head.base !== snap.record?.git?.base ||
-        !graph || graph.status !== 'ready' ||
-        graph.sourceFence !== head.fence || graph.sourceRev !== head.rev
-      this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', snap, stale)
+    const views = participantsView(room, this.team.awareness, Date.now())
+    const mine = snapshot(room, this.owner, views)
+    const stale = new Set<string>()
+    for (const [key, slot] of this.slots.owned(this.owner)) {
+      if (slot.kind !== 'contract') continue
+      const theirs = snapshot(room, slot.other, views)
+      if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.length ||
+          slot.consumers.some(path => !this.contractPathAuthorized(mine, path))) this.slots.drop(key)
+      else {
+        const graph = room.graphs.get(slot.other)
+        if (!theirs?.head.complete || theirs.head.coverage.kind !== 'all' ||
+            !graph || graph.status !== 'ready' || graph.sourceFence !== theirs.head.fence ||
+            graph.sourceRev !== theirs.head.rev) stale.add(slot.other)
+      }
     }
+    for (const other of stale) this.slots.markContractsUnknown(this.owner, other, 'provider graph or manifest coverage is updating')
   }
-  private contractPathReadable(snap: ParticipantSnapshot | undefined, path: string): boolean {
+  private contractPathAuthorized(snap: ParticipantSnapshot | undefined, path: string): boolean {
     const room = this.team.room
     const head = snap?.head
-    if (!snap?.fenceValid || !head?.complete || head.coverage.kind !== 'all' ||
-        head.base !== snap.record?.git?.base || !room.roomSalt) return false
+    if (!snap?.fenceValid || !head || !room.roomSalt) return false
     const textAllowed = head.level === 'full' || head.level === 'declared' &&
       (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
     const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path)
     return textAllowed && (!entry || entry.state === 'shared' && (entry.change === 'D' ? !entry.hash : !!entry.hash) && entry.fence === head.fence) &&
       !head.excluded.includes(digestPath(room.roomSalt, path))
   }
-  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
-  private unknownOrRedactContracts(other: string, why: string, snap?: ParticipantSnapshot, markReadableUnknown = true): void {
-    const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
-    const readable = new Set<string>(), withdrawn = new Set<string>()
-    for (const [, slot] of slots) {
-      const path = slot.path
-      // No entry under complete coverage means the path is readable at the
-      // accepted base. A held or invalid entry withdraws only its own path.
-      if (this.contractPathReadable(snap, path)) readable.add(path)
-      else withdrawn.add(path)
-    }
-    if (markReadableUnknown && readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable)
-    if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn)
+  private unknownContracts(other: string, why: string): void {
+    this.withdrawUnauthorizedContracts()
+    this.slots.markContractsUnknown(this.owner, other, why)
   }
   stop(): void {
     for (const stop of this.stops) stop()
@@ -367,6 +285,7 @@ export class ConflictSet {
 
   /** A filtered snapshot cannot turn a wrong-fenced raw entry into certified base. */
   private async readableConsumer(snap: ParticipantSnapshot, path: string): Promise<string | undefined> {
+    if (!this.contractPathAuthorized(snap, path) || !snap.head.complete || snap.head.coverage.kind !== 'all') return undefined
     if (!snap.roomSalt || snap.head.excluded.includes(digestPath(snap.roomSalt, path))) return undefined
     const raw = this.team.room.manifest.get(manifestKey(snap.name, snap.head.fence))?.get(path)
     if (raw && raw.fence !== snap.head.fence) return undefined
@@ -375,26 +294,11 @@ export class ConflictSet {
     return asText(version)
   }
 
-  /** Existing slots may change only after every path that established them is readable now. */
+  /** Authorized but stale consumer text leaves an existing episode unknown. */
   private async priorConsumersReadable(key: string, mine: ParticipantSnapshot): Promise<boolean> {
     const prior = this.slots.get(key)
     if (!prior || prior.settled === 'none') return true
-    const paths = this.consumerEvidence.get(key)
-    if (!paths?.length) return this.canReconstructConsumers(mine)
-    for (const path of paths) if (await this.readableConsumer(mine, path) === undefined) return false
-    return true
-  }
-
-  /** With no history, only a complete full publication can prove absence. */
-  private canReconstructConsumers(mine: ParticipantSnapshot): boolean {
-    const head = mine.head
-    if (!mine.fenceValid || !head.complete || head.coverage.kind !== 'all' || head.level !== 'full' ||
-        head.base !== mine.record?.git?.base || !mine.roomSalt || head.excluded.length) return false
-    const raw = this.team.room.manifest.get(manifestKey(mine.name, head.fence))
-    for (const entry of raw?.values() ?? []) {
-      if (entry.fence !== head.fence || entry.state !== 'shared' ||
-          (entry.change === 'D' ? !!entry.hash : !entry.hash)) return false
-    }
+    for (const path of prior.consumers ?? []) if (await this.readableConsumer(mine, path) === undefined) return false
     return true
   }
 
@@ -407,6 +311,7 @@ export class ConflictSet {
     const room = this.team.room
     const leaseFence = this.team.lease?.fence()
     if (!leaseFence) return
+    this.withdrawUnauthorizedContracts()
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
     if (!mine || mine.head.fence !== leaseFence) return
@@ -466,7 +371,7 @@ export class ConflictSet {
         const why = `${other}'s manifest or base is updating`
         await this.settle(slotKey(this.owner, 'merge', other, '*'), { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(why), factId: '', why })
         for (const [key, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
-        this.unknownOrRedactContracts(other, why, theirs)
+        this.unknownContracts(other, why)
         continue
       }
       const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]))
@@ -477,7 +382,7 @@ export class ConflictSet {
         const key = slotKey(this.owner, 'merge', other, '*')
         await this.settle(key, { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: '', why })
         for (const [existingKey, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(existingKey, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
-        this.unknownOrRedactContracts(other, why, theirs)
+        this.unknownContracts(other, why)
         continue
       }
       await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), mine, theirs)
@@ -561,13 +466,13 @@ export class ConflictSet {
   }
 
   private async contracts(other: string, myPaths: Set<string>, mine: ParticipantSnapshot, theirs: ParticipantSnapshot): Promise<void> {
-    this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', theirs, false)
+    this.withdrawUnauthorizedContracts()
     const graph = this.team.room.graphs.get(other)
     const carried = this.carriedFrom?.(this.owner)
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
     if (!carriedProvider && (!graph || graph.status !== 'ready' || graph.base !== theirs.head.base ||
         graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
-      this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', theirs)
+      this.unknownContracts(other, 'provider graph or manifest coverage is updating')
       return
     }
     const live = new Set<string>()
@@ -576,6 +481,7 @@ export class ConflictSet {
       const paths = new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()])
       const observed: typeof changes = []
       for (const path of paths) {
+        if (!this.contractPathAuthorized(theirs, path)) continue
         const before = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
         if (before.kind === 'unavailable') {
           const key = slotKey(this.owner, 'contract', other, path, '*')
@@ -590,7 +496,7 @@ export class ConflictSet {
         }
         const version = await versionOf(theirs, path, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: blob => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) })
         const after = asText(version)
-        if (after === undefined) { this.unknownOrRedactContracts(other, 'provider version is not readable', theirs); return }
+        if (after === undefined) { this.unknownContracts(other, 'provider version is not readable'); return }
         const oldText = before.kind === 'absent' ? '' : before.text
         const cacheKey = hash(JSON.stringify([carried.baseline.sha, path, oldText, after]))
         let parsed = this.contractCache.get(cacheKey)
@@ -606,11 +512,11 @@ export class ConflictSet {
     }
     for (const change of changes) {
       if (change.kind === 'add') continue
-      if (!this.contractPathReadable(theirs, change.path)) continue
+      if (!this.contractPathAuthorized(theirs, change.path)) continue
       const provider = await this.read(theirs, change.path)
       const deleted = change.kind === 'delete' && provider.kind === 'deleted'
       if (!deleted && (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base'))) {
-        this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
+        this.unknownContracts(other, 'provider version is not readable')
         return
       }
       const key = slotKey(this.owner, 'contract', other, change.path, change.symbol)
@@ -619,39 +525,23 @@ export class ConflictSet {
         await this.unknownConsumer(key, prior)
         continue
       }
-      let uses: string[]
-      if (carriedProvider || deleted) {
-        uses = []
-        for (const path of myPaths) {
-          const text = await this.readableConsumer(mine, path)
-          if (text === undefined) { this.unknownOrRedactContracts(other, 'consumer version is not readable', theirs); return }
-          if (text && await consumesSymbol(path, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path)
-        }
-        uses.sort()
-      } else {
-        uses = []
-        for (const edge of graph!.edges.filter(edge => edge.source === change.path && myPaths.has(edge.target) &&
-          edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol)))) {
-          const text = await this.readableConsumer(mine, edge.target)
-          if (text === undefined) { this.unknownOrRedactContracts(other, 'consumer version is not readable', theirs); return }
-          if (await consumesSymbol(edge.target, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(edge.target)
-        }
-        uses.sort()
+      const uses: string[] = []
+      for (const path of myPaths) {
+        if (!this.contractPathAuthorized(mine, path)) continue
+        const text = await this.readableConsumer(mine, path)
+        if (text === undefined) { this.unknownContracts(other, 'consumer version is not readable'); return }
+        if (text && await consumesSymbol(path, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path)
       }
+      uses.sort()
       if (!uses.length) continue
       live.add(key)
       const input = hash(JSON.stringify([change, uses]))
       await this.settle(key, { owner: this.owner, other, kind: 'contract', path: change.path, subject: change.symbol,
-        status: 'conflict', inputs: input, factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])), why: change.detail })
-      this.consumerEvidence.set(key, uses)
+        status: 'conflict', inputs: input, factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])), why: change.detail, consumers: uses })
     }
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
-      if (!this.contractPathReadable(theirs, slot.path)) {
-        this.slots.redactContracts(this.owner, other, 'provider version is not readable', new Set([slot.path]))
-        continue
-      }
-      if (slot.subject === '*' && [...live].some(liveKey => liveKey.startsWith(slotKey(this.owner, 'contract', other, slot.path, '')))) {
+      if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.every(path => this.contractPathAuthorized(mine, path))) {
         this.drop(key)
         continue
       }
@@ -661,11 +551,11 @@ export class ConflictSet {
       }
       const provider = await this.read(theirs, slot.path)
       if (asText(provider) === undefined) {
-        this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
+        this.unknownContracts(other, 'provider version is not readable')
         return
       }
       await this.settle(key, { owner: this.owner, other, kind: 'contract', path: slot.path, subject: slot.subject,
-        status: 'clean', inputs: hash(`clean\0${key}`), factId: '' })
+        status: 'clean', inputs: hash(`clean\0${key}`), factId: '', consumers: slot.consumers })
     }
   }
 
