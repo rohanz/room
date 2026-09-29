@@ -131,6 +131,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     if (s.room.deleted.get(person)?.has(path)) return null
     const ov = s.room.text(path, person)
     if (ov !== undefined) return ov
+    return fetchedBaseText(s, path, person)
+  }
+  /** A person's base text; throws NeedFetch when their base is not in this clone. */
+  const fetchedBaseText = async (s: Session, path: string, person: string): Promise<string | undefined> => {
     try { return await baseText(s, path, person) }
     catch (e) {
       const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker)
@@ -158,7 +162,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, seen, rooms, S, isMe, mine, 
     hasCompany: company, others, presences,
-    shareOf, withheld, setPresence, base, baseFor, baseText, liveText, lines, 
+    shareOf, withheld, setPresence, base, baseFor, baseText, fetchedBaseText, liveText, lines, 
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded, conflictPairs,

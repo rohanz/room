@@ -138,13 +138,14 @@ describe('tool timing', () => {
     expect(lines[1]).toBe('slow tool room_preview_merge 2100ms: merge 2100ms')
   })
 
-  it('counts fresh scratch previews across processes but ignores stale directories and its own', () => {
+  it('counts fresh scratch previews across processes but ignores stale directories, file merges and its own', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-count-'))
     const own = path.join(root, 'room-merge-own')
     const fresh = path.join(root, 'room-merge-fresh')
     const stale = path.join(root, 'room-merge-stale')
     const unrelated = path.join(root, 'unrelated')
-    for (const dir of [own, fresh, stale, unrelated]) fs.mkdirSync(dir)
+    const mergeFile = path.join(root, 'room-merge-file-abc') // merge.ts's per-file three-way merge, not a preview check
+    for (const dir of [own, fresh, stale, unrelated, mergeFile]) fs.mkdirSync(dir)
     const now = Date.now()
     try {
       const count = countOtherPreviewChecks(own, root, now, file => {

@@ -56,8 +56,8 @@ it.each([
     const diff = await t.tools.call('room_read', { person: 'Ben', diff: true, ...options })
     expect(diff).toContain(`+${t.benEntry}`)
     expect(diff).not.toContain(`-${t.anaEntry}`)
-    expect(diff).toContain(`Ben's base ${t.oldBase.slice(0, 10)}`)
-    expect(diff).toContain(`your base ${t.readerBase.slice(0, 10)}`)
+    expect(diff).toContain(`Ben is on base ${t.oldBase.slice(0, 10)}`)
+    expect(diff).toContain(`you are on ${t.readerBase.slice(0, 10)}`)
   } finally {
     await t.tools.shutdown()
     t.awareness.destroy()

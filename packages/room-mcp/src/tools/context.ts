@@ -91,6 +91,7 @@ export interface HandlerState {
   base: (s: Session) => string
   baseFor: (s: Session, person: string) => string
   baseText: (s: Session, path: string, person?: string) => Promise<string | undefined>
+  fetchedBaseText: (s: Session, path: string, person: string) => Promise<string | undefined>
   liveText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
   lines: (text: string) => number
   loadAreas: (s: Session) => Promise<Areas>

@@ -107,7 +107,7 @@ export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), no
     const ownName = path.basename(ownDir)
     let count = 0
     for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name === ownName) continue
+      if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name.startsWith('room-merge-file-') || entry.name === ownName) continue
       try {
         const stat = readStat(path.join(tmpDir, entry.name))
         if (!stat.isDirectory()) continue
