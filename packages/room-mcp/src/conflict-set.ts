@@ -242,7 +242,7 @@ export class ConflictSet {
     const textAllowed = head.level === 'full' || head.level === 'declared' &&
       (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
     const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path)
-    return textAllowed && (!entry || entry.state === 'shared' && !!entry.hash && entry.fence === head.fence) &&
+    return textAllowed && (!entry || entry.state === 'shared' && (entry.change === 'D' ? !entry.hash : !!entry.hash) && entry.fence === head.fence) &&
       !head.excluded.includes(digestPath(room.roomSalt, path))
   }
   /** Only a current text grant permits an old signature identity to remain in replicated slots. */
@@ -530,12 +530,13 @@ export class ConflictSet {
       if (change.kind === 'add') continue
       if (!this.contractPathReadable(theirs, change.path)) continue
       const provider = await this.read(theirs, change.path)
-      if (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base')) {
+      const deleted = change.kind === 'delete' && provider.kind === 'deleted'
+      if (!deleted && (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base'))) {
         this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
         return
       }
       let uses: string[]
-      if (carriedProvider) {
+      if (carriedProvider || deleted) {
         uses = []
         for (const path of myPaths) {
           const version = await this.read(mine, path)

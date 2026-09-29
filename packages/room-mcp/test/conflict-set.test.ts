@@ -587,6 +587,43 @@ describe('derived pair slots', () => {
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
+  it('notifies a consumer of an authorized whole-file deletion from the running graph', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle()
+      const ready = async (rev: number) => {
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.status !== 'ready' || f.room.graphs.get('B')?.sourceRev !== rev) {
+          if (Date.now() >= deadline) throw new Error('graph did not publish deletion revision')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready(1)
+      expect(f.room.graphs.get('B')?.edges).toContainEqual(expect.objectContaining({ source: 'api.py', target: 'consumer.py' }))
+      rmSync(join(f.dir, 'api.py'))
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle(); await ready(2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      expect(reader.graphs.get('B')?.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
+      await new ConflictSet({ ...f.session('A'), room: reader } as Session).reconcile('deleted provider')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }), expect.objectContaining({ id: noticeId(key, 1) }))
+    } finally { graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
   it('keeps an active contract episode when a clean sibling has no manifest entry, including after restart', async () => {
     const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
     const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
