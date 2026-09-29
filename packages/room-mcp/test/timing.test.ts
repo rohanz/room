@@ -138,7 +138,7 @@ describe('tool timing', () => {
     expect(lines[1]).toBe('slow tool room_preview_merge 2100ms: merge 2100ms')
   })
 
-  it('counts other fresh markers and cleans up stale-age and dead-pid markers', () => {
+  it('counts other fresh markers, ignores stale-age and dead-pid markers, and removes none of them', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-marker-test-'))
     const markerDir = path.join(root, 'room-preview-checks')
     fs.mkdirSync(markerDir)
@@ -153,8 +153,8 @@ describe('tool timing', () => {
       expect(countOtherPreviewChecks(own, markerDir)).toBe(1)
       expect(fs.existsSync(own)).toBe(true)
       expect(fs.existsSync(fresh)).toBe(true)
-      expect(fs.existsSync(stale)).toBe(false)
-      expect(fs.existsSync(dead)).toBe(false)
+      expect(fs.existsSync(stale)).toBe(true) // only a check's own marker is ever removed
+      expect(fs.existsSync(dead)).toBe(true)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
@@ -188,28 +188,23 @@ describe('tool timing', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('attributes cleanup after an awaited collect phase to other time', async () => {
+  it('does not sample overlap where the marker directory owner cannot be checked (no process.getuid)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-nouid-'))
+    const getuid = Object.getOwnPropertyDescriptor(process, 'getuid')!
     let now = 0
     const lines: string[] = []
     const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
-    await tracker.run('room_preview_merge', async () => {
-      try { return await previewPhase('collect', () => { now += 100; return 'result' }) }
-      finally { now += 2100 }
-    })
-    expect(lines).toEqual(['slow tool room_preview_merge 2200ms: collect 100ms, other 2100ms'])
-  })
-
-  it.each([[undefined, 0], [0, undefined]])('omits overlap when either sample is unknown (%s, %s)', async (first, second) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-unknown-'))
-    let now = 0
-    const lines: string[] = []
-    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
-    const sample = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    const sample = vi.fn(() => 3)
     try {
-      await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100 }, { markerDir: root, sample }))
-      expect(sample).toHaveBeenCalledTimes(2)
+      Object.defineProperty(process, 'getuid', { value: undefined, configurable: true })
+      await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100 }, { markerDir: path.join(root, 'markers'), sample }))
+      expect(sample).not.toHaveBeenCalled()
+      expect(fs.readdirSync(root)).toEqual([])
       expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
-    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+    } finally {
+      Object.defineProperty(process, 'getuid', getuid)
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('removes its marker after a failed check', async () => {

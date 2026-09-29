@@ -11,7 +11,8 @@ const EVENT_LOOP_SAMPLE_MS = 500
 const EVENT_LOOP_LAG_MS = 2_000
 const PREVIEW_CHECK_MAX_AGE_MS = 6 * 60_000 // five-minute command timeout plus one minute for setup and teardown
 const PREVIEW_CHECK_ENTRY_LIMIT = 500
-const PREVIEW_CHECK_MARKERS = path.join(os.tmpdir(), `room-preview-checks-${process.getuid?.() ?? 'user'}`)
+// Without a uid (Windows) the directory's owner cannot be checked, so the overlap is not sampled there.
+const PREVIEW_CHECK_MARKERS = process.getuid ? path.join(os.tmpdir(), `room-preview-checks-${process.getuid()}`) : undefined
 
 type Clock = () => number
 type Logger = (line: string) => void
@@ -108,8 +109,10 @@ export class ToolTiming {
 
 export function currentToolTiming(): ToolTiming | undefined { return context.getStore() }
 
-/** Marker files identify checks across MCP processes without scanning the large system temp directory. */
-export function countOtherPreviewChecks(ownMarker: string, markerDir = PREVIEW_CHECK_MARKERS, now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file)): number | undefined {
+/** Marker files identify checks across MCP processes without scanning the large system temp directory. The count is
+ *  approximate: a crashed check's marker counts until it is 6 minutes old if its pid is reused. Only our own marker is
+ *  ever removed. */
+export function countOtherPreviewChecks(ownMarker: string, markerDir: string, now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file)): number | undefined {
   try {
     const ownName = path.basename(ownMarker)
     let count = 0
@@ -125,13 +128,9 @@ export function countOtherPreviewChecks(ownMarker: string, markerDir = PREVIEW_C
         try {
           const stat = readStat(file)
           if (!stat.isFile()) continue
-          const stale = stat.mtimeMs > now + 1_000 || now - stat.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS
-          let dead = false
-          if (!stale) {
-            try { process.kill(Number(match[1]), 0) }
-            catch (error) { dead = (error as NodeJS.ErrnoException).code === 'ESRCH' }
-          }
-          if (stale || dead) { try { fs.unlinkSync(file) } catch { /* Another process may have removed it. */ }; continue }
+          if (stat.mtimeMs > now + 1_000 || now - stat.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS) continue
+          try { process.kill(Number(match[1]), 0) }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') continue }
           count++
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue // Another check removed its marker after the directory read.
@@ -149,10 +148,11 @@ export async function previewCheck<T>(work: () => Promise<T> | T, { markerDir = 
   let marker: string | undefined
   if (timing?.name === 'room_preview_merge') {
     try {
+      if (!markerDir || !process.getuid) throw new Error('marker directory owner cannot be checked')
       fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 })
-      // Only our own real directory: a symlink or another user's directory could point cleanup elsewhere.
+      // Only our own real directory: a symlink or another user's directory is not used.
       const stat = fs.lstatSync(markerDir)
-      if (!stat.isDirectory() || (process.getuid && stat.uid !== process.getuid())) throw new Error('unsafe marker directory')
+      if (!stat.isDirectory() || stat.uid !== process.getuid()) throw new Error('unsafe marker directory')
       const file = path.join(markerDir, `${process.pid}-${randomBytes(8).toString('hex')}`)
       fs.writeFileSync(file, '', { flag: 'wx', mode: 0o600 })
       marker = file
@@ -160,7 +160,7 @@ export async function previewCheck<T>(work: () => Promise<T> | T, { markerDir = 
   }
   const observe = () => {
     if (timing?.name !== 'room_preview_merge' || !marker) return
-    try { timing.notePreviewCheckOverlap(sample(marker, markerDir)) }
+    try { timing.notePreviewCheckOverlap(sample(marker, markerDir!)) }
     catch { timing.notePreviewCheckOverlap(undefined) }
   }
   observe()
