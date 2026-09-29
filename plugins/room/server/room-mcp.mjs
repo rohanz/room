@@ -46420,6 +46420,10 @@ var ConflictSet = class {
         for (const path45 of myPaths) {
           const version2 = await this.read(mine, path45);
           const text = asText(version2);
+          if (text === void 0) {
+            this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
+            return;
+          }
           if (text && await consumesSymbol(path45, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path45);
         }
         uses.sort();
