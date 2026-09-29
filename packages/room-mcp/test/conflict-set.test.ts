@@ -60,7 +60,7 @@ describe('ConflictSlots', () => {
     await slots.settle(key, { ...evaluation, status: 'clean' })
     await slots.settle(key, { ...evaluation, status: 'conflict' })
     expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ epoch: 2, status: 'conflict' })
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), `${noticeId(key, 1)}:clean`, noticeId(key, 2)])
+    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), expect.stringMatching(/^cf:.*:clean$/), noticeId(key, 2)])
   })
 
   it('keeps hashless possible inputs stable when only edit time changes', async () => {
@@ -95,7 +95,7 @@ describe('ConflictSlots', () => {
     await slots.settle(key, { ...base, status: 'unknown', inputs: '3' })
     await slots.settle(key, { ...base, status: 'conflict', inputs: '4' })
     expect(slots.get(key)?.epoch).toBe(2)
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), `${noticeId(key, 1)}:clean`, noticeId(key, 2)])
+    expect(post.mock.calls.map(c => c[2].id)).toEqual([noticeId(key, 1), expect.stringMatching(/^cf:.*:clean$/), noticeId(key, 2)])
   })
 
   it('describes the held owner instead of blaming the other participant', async () => {
@@ -174,6 +174,47 @@ describe('ConflictSlots', () => {
     await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'conflict', inputs: 'bad', factId: 'f' })
     await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'clean', inputs: 'good', factId: '' })
     expect(formatMsg(post.mock.calls[3][1] as any)).toContain('CONFLICT cleared')
+  })
+
+  it('deduplicates cleared notices for the same peer and path and leaves the path to the formatter', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, '1')
+    for (const kind of ['merge', 'edit-in-claim'] as const) {
+      const key = slotKey('A', kind, 'B', 'x', kind === 'edit-in-claim' ? 'c' : '')
+      const base = { owner: 'A', other: 'B', kind, path: 'x', ...(kind === 'edit-in-claim' ? { subject: 'c' } : {}) }
+      await slots.settle(key, { ...base, status: 'possible', inputs: 'one', factId: 'f' })
+      await slots.settle(key, { ...base, status: 'clean', inputs: 'two', factId: '' })
+    }
+    const cleared = post.mock.calls.filter(c => c[1].clearedFrom)
+    expect(new Set(cleared.map(c => c[2].id)).size).toBe(1)
+    expect(cleared[0][1].text).toBe('the possible conflict with B cleared')
+  })
+
+  it('uses notify for the lead when the claim holder is its running worker', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
+    const slots = new ConflictSlots(room, post, '1')
+    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
+    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'd'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'd', status: 'conflict', inputs: 'i', factId: 'f' })
+    expect(post.mock.calls[0][1].priority).toBe('notify')
+    expect(new Set(post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)).size).toBe(1)
+  })
+
+  it('describes an earlier committed edit as preceding a new claim', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true }), holder = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, holder)
+    await slots.settle(slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), { owner: 'A', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f', earlierSha: 'abc1234' })
+    expect(post.mock.calls[0][1].text).toContain("your earlier change to x (abc1234) overlaps B's new claim")
+    expect(holder.mock.calls[0][1].text).toContain("A's earlier change to x (abc1234) overlaps your new claim")
+  })
+
+  it('never replays an edit-in-claim notice about an own finished worker', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'done', run: 1, startedAt: 1, fence: '1' })
+    const slots = new ConflictSlots(room, post, '1')
+    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
+    await slots.replay('A')
+    expect(post).not.toHaveBeenCalled()
   })
 })
 
@@ -345,6 +386,25 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it('releases a finished own worker claim after its final file lands by hand without a conflict notice', async () => {
+    const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-final-'))
+    try {
+      f.holder('L'); f.holder('L+w', 'L')
+      writeFileSync(join(workerDir, 'x'), 'worker\n')
+      writeFileSync(join(f.dir, 'x'), 'worker\n')
+      f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+      f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+        async name => name === 'L+w' ? { status: 'done', dir: workerDir } : undefined)
+      await set.reconcile('manual apply')
+      expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
+      expect(f.post.mock.calls.filter(c => c[1].type === 'conflict')).toEqual([])
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
+      await set.reconcile('again')
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
+    } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
   it('reads a fresh projected held worker edit from its workers room without a stored Git blob', async () => {
     const f = fixture()
     try {
@@ -365,7 +425,7 @@ describe('derived pair slots', () => {
       await reconcileProjectedConflicts({ team: f.session('L'), workers, owner: 'W' })
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x', f.room.openClaims()[0]!.id))?.status).toBe('conflict')
       expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
-      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining('W edited x inside your claim') }), expect.anything())
+      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining("W's earlier change to x overlaps your new claim") }), expect.anything())
     } finally { f.cleanup() }
   })
 

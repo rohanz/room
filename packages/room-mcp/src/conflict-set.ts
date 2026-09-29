@@ -30,14 +30,17 @@ export interface ConflictSlot {
   episode?: string
   lines?: number[]
   why?: string
+  /** Present when the owner's overlapping edit was already there when the claim was made. */
+  earlierSha?: string | null
   fence: string
   checkedAt: number
+  burstAt?: number
   retryAt?: number
   retrySource?: string
   /** Consumer paths are published only while their text grants remain valid. */
   consumers?: string[]
 }
-export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource' | 'consumers'>
+export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'retrySource' | 'consumers'>
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
@@ -95,6 +98,7 @@ export class ConflictSlots {
       ...(result.kind === 'contract' && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
+      ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
     this.room.doc.transact(() => this.map.set(key, slot))
     if (changedFact) await this.postNotice(key, slot)
@@ -112,15 +116,27 @@ export class ConflictSlots {
   async postNotice(key: string, slot: ConflictSlot): Promise<void> {
     const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
     if (!current()) return
-    const id = noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
+    const workerView = this.room.workerViewOf(slot.other)
+    if (slot.kind === 'edit-in-claim' && workerView?.lead === slot.owner && workerView.status !== 'running') return
+    const workerBurst = slot.kind === 'edit-in-claim' && slot.status === 'conflict' && workerView?.lead === slot.owner
+      ? Math.min(...this.owned(slot.owner).filter(([, other]) => other.kind === 'edit-in-claim' && other.other === slot.other && other.path === slot.path && other.status === 'conflict').map(([, other]) => other.burstAt ?? other.checkedAt))
+      : undefined
+    const id = slot.settled === 'clean' && slot.kind !== 'contract'
+      ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
+      : workerBurst !== undefined
+        ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join('\0'))}:worker`
+        : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
-    const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' ? 'interrupt' : 'notify'
+    const ownWorker = workerView?.lead === slot.owner
+    const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? 'interrupt' : 'notify'
     const text = status === 'possible'
       ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate`
         : slot.kind === 'claims' ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate`
           : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge`
-      : status === 'clean' ? `${slot.path}: the ${slot.clearedFrom === 'possible' ? 'possible conflict' : 'conflict'} with ${slot.other} cleared`
-      : slot.kind === 'edit-in-claim' ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ''}`
+      : status === 'clean' ? `the ${slot.clearedFrom === 'possible' ? 'possible conflict' : 'conflict'} with ${slot.other} cleared`
+      : slot.kind === 'edit-in-claim' ? slot.earlierSha !== undefined
+        ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps ${slot.other}'s new claim`
+        : `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ''}`
       : slot.kind === 'claims' ? `concurrent overlapping claims in ${slot.path} with ${slot.other}`
       : slot.kind === 'contract' ? `${slot.other} changed ${slot.subject ?? 'a symbol'} in ${slot.path}${slot.why ? ` (${slot.why})` : ''}`
       : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`
@@ -137,7 +153,10 @@ export class ConflictSlots {
     if (slot.kind === 'edit-in-claim' && status === 'conflict') {
       if (!current()) return
       try {
-        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}` } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
+        const holderText = slot.earlierSha !== undefined
+          ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps your new claim`
+          : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}`
+        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
         if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
       } catch (e) { this.log(`conflict holder notice ${id}: ${String(e)}`) }
     }
@@ -202,7 +221,8 @@ export class ConflictSet {
   private guard: (() => boolean) | undefined
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
-    private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined) {
+    private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined,
+    private readonly localWorker: (name: string) => Promise<{ status: string; dir: string } | undefined> = name => trustedWorker(team, name)) {
     const fence = () => team.lease?.fence() ?? ''
     this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
   }
@@ -353,6 +373,7 @@ export class ConflictSet {
     const room = this.team.room
     const leaseFence = this.team.lease?.fence()
     if (!leaseFence) return
+    await this.releaseLandedWorkerClaims(leaseFence)
     this.withdrawUnauthorizedContracts()
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
@@ -519,6 +540,42 @@ export class ConflictSet {
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
   }
 
+  /** Retain resumable workers, but end their stale claims once all claimed files reached the lead. */
+  private async releaseLandedWorkerClaims(leaseFence: string): Promise<void> {
+    if (this.owner !== this.team.me.name) return
+    const room = this.team.room
+    const groups = new Map<string, ReturnType<RoomDoc['openClaims']>>()
+    for (const claim of room.openClaims()) {
+      if (claim.byKind === 'human') continue
+      const list = groups.get(claim.by) ?? []
+      list.push(claim); groups.set(claim.by, list)
+    }
+    for (const [name, claims] of groups) {
+      const worker = await this.localWorker(name)
+      if (worker?.status !== 'done' || !claims.length) continue
+      let landed = true
+      for (const claim of claims) {
+        try {
+          const paths = claim.path.endsWith('/')
+            ? new Set((await Promise.all([this.team.dir, worker.dir].map(dir => git(dir, ['ls-files', '-co', '--exclude-standard', '--', claim.path]))))
+              .flatMap(output => output.split('\n').filter(Boolean)))
+            : new Set([claim.path])
+          if (paths.size > 2000) { landed = false; break }
+          for (const path of paths) {
+            const [leadText, finalText] = await Promise.all([workerText(this.team.dir, path), workerText(worker.dir, path)])
+            if (leadText !== finalText) { landed = false; break }
+          }
+          if (!landed) break
+        } catch { landed = false; break }
+      }
+      if (!landed) continue
+      if (this.team.lease?.fence() !== leaseFence || claims.some(claim => !room.claims.has(claim.id))) return
+      room.doc.transact(() => { for (const claim of claims) room.removeClaim(claim.id) }, this.team.me)
+      await this.team.post<NoteMsg>(ROOM, { type: 'note', to: this.owner, priority: 'fyi', text: `released ${name}'s claims: its changes are in your tree` },
+        { id: `cf:${hash([this.owner, name, claims.map(c => c.id).sort().join(',')].join('\0'))}:landed`, auto: true })
+    }
+  }
+
   private async contracts(other: string, myPaths: Set<string>, mine: ParticipantSnapshot, theirs: ParticipantSnapshot): Promise<void> {
     this.withdrawUnauthorizedContracts()
     const graph = this.team.room.graphs.get(other)
@@ -618,7 +675,12 @@ export class ConflictSet {
 
   private async claims(mine: ParticipantSnapshot, theirs: ParticipantSnapshot, other: string, mergeBase: string, changed: Set<string>): Promise<void> {
     const all = this.team.room.openClaims()
-    const ownClaims = all.filter(c => c.by === this.owner), theirClaims = all.filter(c => c.by === other)
+    const ownClaims = all.filter(c => c.by === this.owner)
+    const ownFinishedWorker = this.owner === this.team.me.name && (await this.localWorker(other))?.status === 'done'
+    const theirClaims = ownFinishedWorker ? [] : all.filter(c => c.by === other)
+    if (ownFinishedWorker) for (const [key, slot] of this.slots.owned(this.owner)) {
+      if (slot.other === other && (slot.kind === 'edit-in-claim' || slot.kind === 'claims')) this.drop(key)
+    }
     const seen = new Set<string>()
     const paths = new Set([
       ...theirClaims.flatMap(c => c.path.endsWith('/') ? [...changed].filter(path => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),
@@ -642,8 +704,18 @@ export class ConflictSet {
         const mapped = claim.path.endsWith('/') ? { from: 1, to: Math.max(1, ownText.split('\n').length), approximate: false } : claimInMyLines(claim, theirText, ownText)
         const ranges = changed.has(path) ? changedRanges(ancestor, ownText) : []
         const hit = ranges.find(r => claimsOverlap({ path, ...mapped }, { path, ...r }) && !ownClaims.some(c => claimsOverlap(c, { path, ...r })))
+        let earlierSha: string | null | undefined
+        if (hit) {
+          const entryAt = mine.entries.get(path)?.at
+          if (entryAt !== undefined && entryAt <= claim.at) earlierSha = null
+          else if (entryAt === undefined) {
+            const last = await git(this.team.dir, ['log', '-1', '--format=%H:%ct', mine.head.base, '--', path]).catch(() => '')
+            const match = /^([0-9a-f]{40,64}):(\d+)/.exec(last.trim())
+            if (match && Number(match[2]) * 1000 <= claim.at) earlierSha = match[1]!.slice(0, 7)
+          }
+        }
         await this.settle(key, { owner: this.owner, other, kind: 'edit-in-claim', path, subject: claim.id, status: hit ? mapped.approximate ? 'possible' : 'conflict' : 'clean', inputs,
-          factId: hit ? hash(JSON.stringify([claim.id, hit, mapped])) : '', ...(hit ? { lines: [hit.from], why: mapped.approximate ? 'approximate range' : claim.intent } : {}) })
+          factId: hit ? hash(JSON.stringify([claim.id, hit, mapped])) : '', ...(hit ? { lines: [hit.from], why: mapped.approximate ? 'approximate range' : claim.intent, ...(earlierSha !== undefined ? { earlierSha } : {}) } : {}) })
       }
     }
     for (const a of ownClaims) for (const b of theirClaims) {
