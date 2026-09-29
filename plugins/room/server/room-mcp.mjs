@@ -7312,6 +7312,16 @@ var init_near = __esm({
 });
 
 // packages/shared/src/messages.ts
+function claimReleaseText(path30, from2, to2, sha) {
+  return `released your claim on ${path30}:${from2}-${to2}: that code changed in ${sha}`;
+}
+function parseClaimRelease(text) {
+  const match = /^released your claim on ([^\n]+):(\d+)-(\d+): that code changed in ([0-9a-f]+)$/i.exec(text);
+  if (!match) return void 0;
+  const from2 = Number(match[2]), to2 = Number(match[3]);
+  if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2)) return void 0;
+  return { path: match[1], from: from2, to: to2, sha: match[4] };
+}
 function messageKind(m) {
   const kind = MessageKinds[m.type];
   if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
@@ -17868,8 +17878,15 @@ async function gitChanged(dir) {
   return out2.split("\0").filter(Boolean).map((entry) => entry.slice(3));
 }
 async function gitTracked(dir) {
-  const out2 = await gitWholeTree(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
-  return new Set(out2.split("\0").filter(Boolean));
+  const out2 = await gitWholeTree(dir, ["ls-files", "-z", "-t", "--cached", "--others", "--exclude-standard"]);
+  const paths = /* @__PURE__ */ new Set(), indexed = /* @__PURE__ */ new Set();
+  for (const entry of out2.split("\0")) {
+    if (!entry) continue;
+    const relpath = entry.slice(2);
+    paths.add(relpath);
+    if (entry[0] !== "?") indexed.add(relpath);
+  }
+  return { paths, indexed };
 }
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
@@ -18587,7 +18604,7 @@ function eligibility(facts) {
   if (!facts.withinBudget) return { share: false, reason: "budget" };
   return { share: true };
 }
-var errMsg, ReportedFailure, Publisher;
+var TRACKED_ONLY_LOCKFILES, errMsg, ReportedFailure, Publisher;
 var init_publisher = __esm({
   "packages/roomd/src/publisher.ts"() {
     "use strict";
@@ -18595,6 +18612,7 @@ var init_publisher = __esm({
     init_baseline();
     init_git();
     init_share_level();
+    TRACKED_ONLY_LOCKFILES = /* @__PURE__ */ new Set(["uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "Cargo.lock", "Gemfile.lock", "composer.lock", "go.sum"]);
     errMsg = (error2) => error2 instanceof Error ? error2.message : String(error2);
     ReportedFailure = class extends Error {
       constructor(original) {
@@ -18841,6 +18859,12 @@ var init_publisher = __esm({
           if (this.host.publishUnder) return;
           this.host.skips.size.delete(relpath);
           this.host.skips.budget.delete(relpath);
+          const trackedOnly = TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf("/") + 1));
+          if (trackedOnly && !this.host.isTracked(relpath)) {
+            this.withdrawIgnored(relpath, "untracked lockfile");
+            return;
+          }
+          if (trackedOnly) this.host.skips.ignore.delete(relpath);
           const safe = this.host.isSafeRoomPath(relpath);
           const pathEligibility = eligibility({ ...this.eligibilityFacts(relpath), safe });
           if (!pathEligibility.share && pathEligibility.reason === "unsafe") {
@@ -25275,7 +25299,7 @@ function machineIdentity(log2) {
   }
 }
 function defaultIgnoredPath(relpath) {
-  return relpath.split("/").some((segment) => DEFAULT_IGNORED_DIRS.has(segment) || segment === ".DS_Store" || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith("~") || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment));
+  return relpath.split("/").some((segment) => DEFAULT_IGNORED_DIRS.has(segment) || segment === "__pycache__" || segment === ".DS_Store" || segment === ".coverage" || /\.(?:pyc|pyo)$/i.test(segment) || segment.endsWith(".egg-info") || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith("~") || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment));
 }
 function tokenParams(token) {
   const t = token?.trim();
@@ -25416,6 +25440,7 @@ var init_src2 = __esm({
       beforeBaseRead;
       onScanned;
       tracked = /* @__PURE__ */ new Set();
+      indexed = /* @__PURE__ */ new Set();
       watcher = null;
       timers = /* @__PURE__ */ new Set();
       gitPolls = [];
@@ -25532,7 +25557,8 @@ var init_src2 = __esm({
         this.branch = branch;
         this.base = base;
         this.appliedHead = base;
-        this.tracked = tracked;
+        this.tracked = tracked.paths;
+        this.indexed = tracked.indexed;
         this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl));
         this.roomDoc.scopes.observe((ev) => {
           if (!ev.keysChanged.has(this.name) || this.share !== "declared" || this.explicitScopePaths) return;
@@ -25874,11 +25900,14 @@ var init_src2 = __esm({
           if (roomBase && roomBase !== head) await this.refreshBaseStatus();
           return;
         }
+        await this.waitForGitOperation(head);
         const prev = this.appliedHead;
         const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : [];
         this.base = head;
         this.branch = branch;
-        this.tracked = await gitTracked(this.dir);
+        const tracked = await gitTracked(this.dir);
+        this.tracked = tracked.paths;
+        this.indexed = tracked.indexed;
         await this.refreshShared();
         this.roomDoc.doc.transact(() => {
           this.roomDoc.setBaseOf(this.name, this.shared, this);
@@ -25986,6 +26015,31 @@ var init_src2 = __esm({
           await this.maybeAdvance(roomBase, this.base);
         } else this.setStatus(`${rel === "unknown" ? "behind base (fetch)" : "diverged from base"}${this.isWorkerWorktree() ? "" : `: ${BASE_CATCH_UP}`}`);
       }
+      /** Delay a HEAD transition until Git's index and worktree stop changing. */
+      async waitForGitOperation(head) {
+        const gitDir = worktreeGitDirFromDotGit(this.dir);
+        const markers = ["index.lock", "MERGE_HEAD", "MERGE_AUTOSTASH", "REBASE_HEAD", "rebase-apply", "rebase-merge"];
+        const busy = () => markers.some((marker) => fs8.existsSync(path5.join(gitDir, marker)));
+        const claimedPaths = [...new Set([...this.roomDoc.claims.values()].filter((c) => c.by === this.name && !c.mirrorOf && !c.path.endsWith("/") && this.isSafeRoomPath(c.path, false)).map((c) => c.path))].sort();
+        const fingerprint = () => claimedPaths.map((rel) => {
+          try {
+            const stat4 = fs8.lstatSync(path5.join(this.dir, rel));
+            return `${rel}:${stat4.size}:${stat4.mtimeMs}`;
+          } catch {
+            return `${rel}:missing`;
+          }
+        }).join("\n");
+        const deadline = Date.now() + 5e3;
+        while (Date.now() < deadline) {
+          if (!busy()) {
+            const before = fingerprint();
+            await new Promise((resolve5) => setTimeout(resolve5, 75));
+            if (!busy() && before === fingerprint() && await gitHead(this.dir) === head) return;
+          } else await new Promise((resolve5) => setTimeout(resolve5, 75));
+        }
+        if (busy()) throw new Error("Git operation or worktree is still changing; retry HEAD reconciliation");
+        if (await gitHead(this.dir) !== head) throw new Error("HEAD moved during Git operation");
+      }
       /** Capture the claimed code before a commit can clear its overlay. */
       async snapshotOwnClaims(prev) {
         const owned = [...this.roomDoc.claims.values()].filter((c) => c.by === this.name && !c.mirrorOf && !c.path.endsWith("/"));
@@ -26002,14 +26056,26 @@ var init_src2 = __esm({
           return { ...c, claimedHash: oldText === void 0 ? void 0 : claimDigest(oldText, c.from, c.to) };
         });
       }
-      /** Validate only this daemon's claims against the new HEAD or current overlay. */
+      /** Only paths changed by the incoming commits need their claims re-anchored. */
       async reanchorOwnClaims(head, snapshot) {
         if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return;
+        await this.waitForGitOperation(head);
         const paths = [...new Set(snapshot.map((c) => c.path))];
-        const headTexts = await gitShowMany(this.dir, head, paths);
+        const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head));
+        const changed = paths.filter((p) => changedPaths.has(p) && this.isSafeRoomPath(p, false));
+        if (!changed.length) return;
+        const changedClaims = new Set(changed);
+        const headTexts = await gitShowMany(this.dir, head, changed);
         if (this.stopped || await gitHead(this.dir) !== head) return;
-        const currentTexts = new Map(paths.map((p) => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]));
-        const { moves, releases } = reanchorClaims(this.name, snapshot, currentTexts);
+        const currentTexts = new Map(changed.map((p) => {
+          try {
+            return [p, fs8.readFileSync(this.abs(p), "utf8")];
+          } catch (error2) {
+            if (error2.code !== "ENOENT") throw error2;
+            return [p, headTexts.get(p)];
+          }
+        }));
+        const { moves, releases } = reanchorClaims(this.name, snapshot.filter((c) => changedClaims.has(c.path)), currentTexts);
         const hashById = new Map(snapshot.map((c) => [c.id, c.claimedHash]));
         this.roomDoc.doc.transact(() => {
           for (const move of moves) {
@@ -26020,7 +26086,7 @@ var init_src2 = __esm({
             const current = this.roomDoc.claims.get(release.id);
             if (current?.by !== this.name || current.mirrorOf) continue;
             this.roomDoc.removeClaim(release.id, this);
-            const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`;
+            const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10));
             this.roomDoc.post({ name: this.name, kind: this.kind }, { type: "release", claimId: release.id, path: release.path, summary: text }, this);
             this.roomDoc.post({ name: "room", kind: "bot" }, { type: "note", to: this.name, priority: "notify", text }, this);
             this.log(text);
@@ -26033,6 +26099,9 @@ var init_src2 = __esm({
       }
       abs(relpath) {
         return path5.join(this.dir, ...relpath.split("/"));
+      }
+      isTracked(relpath) {
+        return this.indexed.has(relpath);
       }
       isIgnoredPath(relpath) {
         if (!relpath || relpath === ROOM_FILE) return true;
@@ -26224,10 +26293,12 @@ var init_src2 = __esm({
       async refreshTracked() {
         if (this.stopped) return;
         const next = await gitTracked(this.dir);
-        const added = Array.from(next).filter((relpath) => !this.tracked.has(relpath));
-        const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter((relpath) => !next.has(relpath));
-        this.tracked = next;
-        for (const relpath of added) {
+        const added = Array.from(next.paths).filter((relpath) => !this.tracked.has(relpath));
+        const promoted = Array.from(next.indexed).filter((relpath) => !this.indexed.has(relpath) && this.skips.ignore.has(relpath));
+        const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter((relpath) => !next.paths.has(relpath));
+        this.tracked = next.paths;
+        this.indexed = next.indexed;
+        for (const relpath of /* @__PURE__ */ new Set([...added, ...promoted])) {
           if (!this.isIgnoredPath(relpath) && fs8.existsSync(this.abs(relpath))) {
             this.scheduleDisk(relpath, true);
             if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath));
@@ -26285,8 +26356,8 @@ function resolveServer(raw, teamServer = DEFAULT_SERVER) {
   if (!w || w === LOCAL) return LOCAL;
   return w === "team" ? teamServer : w;
 }
-function sharingDescription(level) {
-  return level === "full" ? "the full text of files you change" : level === "declared" ? "files in your declared area and changed files declared earlier" : "only your plans, no file text";
+function sharingDescription(level, retainedDeclared = false) {
+  return level === "full" ? "the full text of files you change" : level === "declared" ? `files in your declared area${retainedDeclared ? " and changed files declared earlier" : ""}` : "only your plans, no file text";
 }
 function sharingHumanChoices(level) {
   if (level === "full") return "to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.";
@@ -26536,6 +26607,21 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
     });
   });
 }
+function wakePhrase(wake) {
+  if (wake.meta.from === "room" && wake.meta.from_kind === "bot" && wake.meta.type === "note") {
+    const raw = wake.content.slice(wake.content.indexOf("\n") + 1);
+    try {
+      const message = JSON.parse(raw);
+      if (typeof message.text === "string") {
+        const release = parseClaimRelease(message.text);
+        if (release) return `Room released your claim on ${release.path}:${release.from}-${release.to}`;
+      }
+    } catch {
+    }
+  }
+  const from2 = (wake.meta.from ?? "someone").replace(/\s+/g, " ").trim().slice(0, 40) || "someone";
+  return `${from2} ${kindPhrase(wake.meta.type)}`;
+}
 function kindPhrase(type) {
   switch (type) {
     case "question":
@@ -26558,6 +26644,7 @@ var init_wake_path = __esm({
     "use strict";
     init_config();
     init_channel();
+    init_src();
     SOCKET_WAKE_WINDOW_MS = 5e3;
     SOCKET_POST_TIMEOUT_MS = 1500;
     SocketWakeRouter = class {
@@ -26626,7 +26713,7 @@ var init_wake_path = __esm({
         this.lastSentAt = Date.now();
         const count = items.length;
         const shown = count > 5 ? 4 : 5;
-        const phrases = items.slice(0, shown).map((w) => `${(w.meta.from ?? "someone").replace(/\s+/g, " ").trim().slice(0, 40) || "someone"} ${kindPhrase(w.meta.type)}`);
+        const phrases = items.slice(0, shown).map((w) => wakePhrase(w));
         if (count > shown) phrases.push(`${count - shown} more`);
         const collectHint = items.some((w) => w.meta.type === "done") ? " (room_collect brings in finished workers)" : "";
         const content = `[room] ${count} ${count === 1 ? "thing needs" : "things need"} you: ${phrases.join("; ")}. Use the room_state tool to read them${collectHint}. (#${++this.sequence})`;
@@ -42819,7 +42906,8 @@ var ToolTiming = class {
     if (total < threshold && [...this.phases.values()].every((value2) => value2 < threshold)) return void 0;
     const pieces = [];
     const spawnPhases = this.phases.has("prepare") || this.phases.has("launch") || this.phases.has("lease");
-    const names = spawnPhases ? ["settle", "queue", "lease", "prepare", "launch"] : ["settle", "body"];
+    const joinPhases = (this.name === "room_join" || this.name === "room_create") && ["resolve", "preflight", "connect", "sync", "daemon start"].some((name2) => this.phases.has(name2));
+    const names = spawnPhases ? ["settle", "queue", "lease", "prepare", "launch"] : joinPhases ? ["settle", "resolve", "preflight", "connect", "sync", "daemon start"] : ["settle", "body"];
     for (const name2 of names) {
       const elapsed = name2 === "body" ? Math.max(0, (this.phases.get("body") ?? 0) - (this.phases.get("settle") ?? 0)) : this.phases.get(name2);
       if (elapsed === void 0) continue;
@@ -42831,7 +42919,7 @@ var ToolTiming = class {
       }
       pieces.push(piece);
     }
-    if (spawnPhases) {
+    if (spawnPhases || joinPhases) {
       const accounted = names.reduce((sum, name2) => sum + (this.phases.get(name2) ?? 0), 0);
       const other = Math.max(0, total - accounted);
       if (Math.round(other) > 0) pieces.push(`other ${ms(other)}`);
@@ -44472,7 +44560,7 @@ function handlers2(state) {
         await rememberShare(s.dir, asked);
       } catch {
       }
-      if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${sharingDescription(level)}`, priority: "fyi" });
+      if (level !== before) s.room.post(s.me, { type: "note", text: `now sharing ${sharingDescription(level, !!s.daemon.retainedDeclared?.().length)}`, priority: "fyi" });
       const out2 = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`];
       const secondary = secondaryPublishingLine(s);
       if (secondary) out2.push(secondary);
@@ -44492,7 +44580,7 @@ function createShare() {
     const held = s.daemon.skipped?.().share ?? [];
     const secondary = secondaryPublishingLine(s);
     const retained = level === "declared" && !secondary ? s.daemon.retainedDeclared?.() ?? [] : [];
-    return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(", ")}` : ""}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ""}`;
+    return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level, retained.length > 0)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(", ")}` : ""}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ""}`;
   };
   return { shareLine };
 }
@@ -45202,6 +45290,9 @@ function removeCredential(server) {
 init_config();
 init_presence();
 var DEFAULT_WEB = "http://localhost:5173";
+function joinPhase(name2, work) {
+  return currentToolTiming()?.phase(name2, () => inPhase(name2, async () => work())) ?? inPhase(name2, async () => work());
+}
 var NoRoom = class extends RoomdError {
   constructor(roomName, detail, server) {
     super(detail, 3);
@@ -45458,12 +45549,12 @@ async function startAutoTaggedRoomd(options, explicitTag, shareCeiling) {
     const url = new URL(options.room);
     const room = url.pathname.split("/").pop();
     url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
-    const provider = options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), room, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), room, doc, {
+    const provider = await joinPhase("connect", () => options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), room, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), room, doc, {
       WebSocketPolyfill: wrapper_default,
       params: { ...options.token ? { token: options.token } : {}, ...options.session ? { session: options.session } : {}, ...options.localKey ? { key: options.localKey } : {} }
-    });
+    }));
     try {
-      if (!provider.synced) await inPhase("sync", () => new Promise((resolve5, reject) => {
+      if (!provider.synced) await joinPhase("sync", () => new Promise((resolve5, reject) => {
         const onSync = (synced) => {
           if (synced) {
             clearTimeout(timer);
@@ -45523,7 +45614,7 @@ async function startAutoTaggedRoomd(options, explicitTag, shareCeiling) {
   }
   let daemon;
   try {
-    daemon = await startRoomd({ ...options, name: name2, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) });
+    daemon = await joinPhase("daemon start", () => startRoomd({ ...options, name: name2, label, shareCeiling, host: resolveSessionHost(options.dir), ...resolveSessionRuntime(options.dir) }));
   } catch (e) {
     releaseName?.();
     throw e;
@@ -45575,7 +45666,7 @@ async function startAutoTaggedRoomd(options, explicitTag, shareCeiling) {
 }
 async function joinSession(opts) {
   const dir = resolve3(opts.dir);
-  const config2 = await resolveConfig({ dir, env: process.env, args: opts });
+  const config2 = await joinPhase("resolve", () => resolveConfig({ dir, env: process.env, args: opts }));
   for (const value2 of [config2.name, config2.owner, config2.tag]) if (value2) assertValidParticipantName(value2);
   configureCredentials(config2.credentialsPath);
   if (opts.log) setServerLog(opts.log);
@@ -45593,33 +45684,33 @@ async function joinSession(opts) {
   const web = (config2.web ?? defaultWeb(server)).replace(/\/+$/, "");
   let roomName = config2.room;
   if (!roomName) {
-    const d = await deriveRoomName(dir);
+    const d = await joinPhase("resolve", () => deriveRoomName(dir));
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop/main")`, 2);
     roomName = d.roomName;
   }
   const roomUrl = `${server}/${encodeRoom(roomName)}`;
-  const auth = await resolveAuth(server, roomName, token);
+  const auth = await joinPhase("resolve", () => resolveAuth(server, roomName, token));
   const label = config2.tag?.replace(/[^A-Za-z0-9_-]/g, "") || void 0;
   const kindEnv = config2.kind;
   const kind = kindEnv === "bot" || kindEnv === "ci" ? kindEnv : "agent";
-  const owner = auth.login ?? config2.owner ?? config2.name ?? await defaultName(dir);
+  const owner = auth.login ?? config2.owner ?? config2.name ?? await joinPhase("resolve", () => defaultName(dir));
   if (!owner) throw new RoomdError("could not determine your name: pass name or set git config user.name", 2);
   assertValidParticipantName(owner);
   const name2 = label ? `${owner}+${label}` : owner;
   if (auth.login && opts.name && opts.name !== auth.login) opts.log?.(`name is your GitHub login on this server: ${auth.login} (ignoring "${opts.name}")`);
   const { login: _login, ...creds } = auth;
-  let pre = await preflight(server, roomName, creds);
+  let pre = await joinPhase("preflight", () => preflight(server, roomName, creds));
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError(CREATE_NEEDS_CONFIRM, 2);
-    const err2 = await createRoom(server, roomName, { ...creds, by: name2 });
+    const err2 = await joinPhase("preflight", () => createRoom(server, roomName, { ...creds, by: name2 }));
     if (err2) throw new RoomdError(`${server} would not open ${roomName}: ${err2}`, 2);
-    pre = await preflight(server, roomName, creds);
+    pre = await joinPhase("preflight", () => preflight(server, roomName, creds));
   }
   if (pre?.missing) throw new NoRoom(roomName, pre.reason, server);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
   if (pre) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
   const shareRequested = requestedShare(config2.share);
-  const shareMax = await serverShareMax(server, shareRequested);
+  const shareMax = await joinPhase("preflight", () => serverShareMax(server, shareRequested));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
   const { daemon, me, autoTagNote, refreshRuntime } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, share, connectTimeoutMs: opts.connectTimeoutMs, log: opts.log }, config2.tag, () => shareMaxCache.get(server) ?? shareMax);
@@ -46784,7 +46875,8 @@ function renderPrNote(room, opts) {
       case "claim": {
         const c = m;
         const r = releases.get(c.claimId);
-        const status = r ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ""}` : `done${r.summary ? `: ${r.summary}` : ""}` : open3.has(c.claimId) ? "still open" : "released";
+        const automaticRelease = r?.summary && parseClaimRelease(r.summary);
+        const status = r ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ""}` : automaticRelease ? `released: code changed in ${automaticRelease.sha}` : `done${r.summary ? `: ${r.summary}` : ""}` : open3.has(c.claimId) ? "still open" : "released";
         lines.push(`- ${t(c.at)} ${who2(c)} claimed \`${c.path}:${c.from_line}-${c.to_line}\` \u2014 ${c.intent}${c.plans?.length ? `; plans: ${formatPlans(c.plans)}` : ""} \u2192 ${status}`);
         break;
       }
@@ -47495,7 +47587,8 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const s = S();
       await loadAreas(s);
       const m = s.room.meta;
-      const out2 = [s.local ? "local: nothing leaves this machine" : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter((p) => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map((p) => p.user.owner ?? p.user.name)).size} people`];
+      const otherCount = new Set(presences(s).filter((p) => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map((p) => p.user.name)).size;
+      const out2 = [s.local ? "local: nothing leaves this machine" : `team room: sharing ${sharingDescription(shareOf(s, s.me.name), !!s.daemon.retainedDeclared?.().length)} with ${otherCount} other participant${otherCount === 1 ? "" : "s"}`];
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, "company");
         if (wakeNote) out2.unshift(wakeNote);
@@ -48005,7 +48098,7 @@ function sharingSentence(s) {
   const level = s.daemon.share ?? s.shareRequested ?? "intent";
   const secondary = secondaryPublishingLine(s);
   if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`;
-  const description = sharingDescription(level);
+  const description = sharingDescription(level, !!s.daemon.retainedDeclared?.().length);
   const choices = sharingHumanChoices(level);
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : "."}`;
 }
@@ -48164,7 +48257,7 @@ function handlers5(state) {
       if (late) return late;
       const rollBack = async (reason) => {
         try {
-          const back = await doJoin({ ...rejoinOptions(cur, resolved.credentialsPath), tag: cur.me.label ?? "" });
+          const back = await doJoin({ ...rejoinOptions(cur, resolved.credentialsPath), tag: cur.me.label ?? "", log: log2 });
           if (!cur.pinnedRoom) delete back.pinnedRoom;
           markHistorySeenOnJoin(back, seen);
           rooms.add(back, "primary");
@@ -48198,7 +48291,8 @@ function handlers5(state) {
           server: choice.server,
           create: a.create === true,
           confirm: a.confirm === true,
-          share: resolved.share
+          share: resolved.share,
+          log: log2
         });
       } catch (e) {
         if (!cur) return refused(e, "");
@@ -48365,7 +48459,7 @@ function createJoin(deps) {
     const target = `${repo}/${branch}`;
     log2(`branch changed ${current} -> ${branch}; moving room`);
     try {
-      const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target });
+      const n = await doJoin({ ...rejoinOptions(s, ctx.config?.credentialsPath), room: target, log: log2 });
       delete n.pinnedRoom;
       const stale = s.room.messages().filter((m) => m.type === "note" && m.from === "room" && m.to === s.me.name && m.text.startsWith(`you switched to ${branch}; the room is for ${current};`)).map((m) => m.id);
       if (stale.length) {
@@ -48566,6 +48660,24 @@ function handlers7(state) {
     ...s.room.retiredWorkers().map((w) => w.name),
     ...s.room.messages().map((m) => m.from)
   ].filter((n) => !isPrName(n)));
+  const addressKey = (name2) => name2.replace(/\u2019/g, "'").toLocaleLowerCase();
+  const resolveDisplayedName = (requested) => {
+    if (rooms.all().some((room) => knownNames(room).has(requested))) return { name: requested };
+    const candidates = /* @__PURE__ */ new Set();
+    for (const room of rooms.all()) {
+      for (const presence of presences(room)) {
+        if (addressKey(displayName(presence.user)) === addressKey(requested)) candidates.add(presence.user.name);
+      }
+      for (const scope of room.room.allScopes()) {
+        if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === addressKey(requested)) candidates.add(scope.by);
+      }
+      for (const claim2 of room.room.openClaims()) {
+        if (addressKey(displayName({ name: claim2.by, kind: claim2.byKind })) === addressKey(requested)) candidates.add(claim2.by);
+      }
+    }
+    const names = [...candidates].sort();
+    return names.length > 1 ? { ambiguous: names } : { name: names[0] };
+  };
   const recipientNotice = (s, name2) => {
     const present = presences(s).some((p) => p.user.name === name2);
     const worker = s.room.workerOf(name2);
@@ -48606,7 +48718,10 @@ function handlers7(state) {
       let question = byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "question");
       const repliedNote = a.type === "note" || a.type === "answer" ? byQuestion?.room.messages().find((m) => m.id === a.inReplyTo && m.type === "note") : void 0;
       const sendType = repliedNote ? "note" : a.type;
-      const requestedTo = typeof a.to === "string" && a.to ? a.to : sendType === "answer" ? question?.from : repliedNote?.from;
+      const requestedToRaw = typeof a.to === "string" && a.to ? a.to : sendType === "answer" ? question?.from : repliedNote?.from;
+      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw) : void 0;
+      if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(", ")}`;
+      const requestedTo = resolvedDisplay?.name ?? requestedToRaw;
       const wsr = rooms.workers();
       const workerMatches = requestedTo ? rooms.all().flatMap((room) => myWorkers(room).filter((w) => w.tag === requestedTo).map((worker) => ({ room, worker }))) : [];
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap((room) => room.room.retiredWorkers().filter((w) => w.tag === requestedTo && w.lead === room.me.name).map((worker) => ({ room, worker }))) : [];
@@ -49174,7 +49289,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.37",
+  version: "0.16.38",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
