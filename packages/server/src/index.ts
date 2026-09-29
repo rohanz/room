@@ -180,6 +180,7 @@ async function freezeDocs(names: string[], reason: string): Promise<void> {
     await hubs.flush(doc)
     docs.delete(name)
   }
+  for (const name of names) await hubs.flushName(name)
 }
 async function migrateOpenRepo(repo: string): Promise<void> {
   await locks.run(repo, async () => {
@@ -521,13 +522,8 @@ wss.on('connection', (conn, req) => {
   const raw = docNameOf(req.url ?? '/')
   const repo = canonical(raw)
   const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
-  // Stock y-websocket sends its first sync packet synchronously. Load persisted state first,
-  // including the in-memory adapter's migration target, so that first packet describes it.
-  const doc = getYDoc(docName, true)
-  void hubs.flush(doc).then(() => {
-    setupWSConnection(conn, req, { gc: true, docName })
-    hubs.ensure(docName, doc)
-  }).catch(e => { console.log(`could not load room ${docName}: ${e instanceof Error ? e.message : e}`); conn.close(1011, 'room could not load') })
+  setupWSConnection(conn, req, { gc: true, docName })
+  hubs.ensure(docName, docs.get(docName)!)
 })
 /** Refused connections are audited at most once per 10 s per remote address: a client retrying in a
  *  loop (or a scanner) must not fill the audit log. The refusal itself is still logged and sent. */
@@ -564,47 +560,63 @@ server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
   const repo = canonical(roomName)
-  const docKey = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : roomName
-  if (url.searchParams.get('schema') !== '2' && rooms.get(repo)?.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
-  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => rooms.has(repo)
-    ? wss.handleUpgrade(req, socket, head, ws => {
-      const entry = rooms.get(repo)!
-      entry.lastSeen = Date.now(); void saveRooms()
-      // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
-      bindHub(ws, () => hubs.current(docKey), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false })
-      audit({ event: 'join', room: docKey, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
-      if (opts.readOnly) makeReadOnly(ws, droppedWrite(docKey))
-      if (opts.login) {
-        bindIdentity(ws, opts.login, (login, name) => {
-          const now = Date.now()
-          if ((identityLog.get(login) ?? 0) > now - 60_000) return
-          identityLog.set(login, now)
-          console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
-        }, awarenessOwnerMap(docKey))
-        bindDocumentIdentity(ws, opts.login, documentGuard(docKey), (login, reason) => {
-          const key = `document:${login}`
-          const now = Date.now()
-          if ((identityLog.get(key) ?? 0) > now - 60_000) return
-          identityLog.set(key, now)
-          if (IDENTITY_GUARD_MODE === 'enforce') {
-            console.log(`rejected identity-bearing update from ${login} (room ${repo}): ${reason}`)
-            audit({ event: 'refused', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
-          } else {
-            console.log(`observed identity-bearing update from ${login} (room ${repo}); update applied: ${reason}`)
-            audit({ event: 'identity_violation', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update observed; update applied: ${reason}` })
-          }
-        }, IDENTITY_GUARD_MODE)
+  const schema2 = url.searchParams.get('schema') === '2'
+  const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
+  if (!schema2 && rooms.get(repo)?.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
+  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => {
+    void locks.run(repo, async () => {
+      const current = rooms.get(repo)
+      if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
+      if (!schema2 && current.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
+      if (schema2 && !current.migratedAt) return refuse(socket, 503, 'room migration is not complete; retry', roomName)
+      if (opts.readOnly) {
+        const token = viewTokens.get(url.searchParams.get('view')!)
+        if (!token || token.exp <= Date.now() || token.room !== docKey)
+          return refuse(socket, current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? 410 : 403,
+            current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? oldLinkText : 'Forbidden: view token invalid for this room', roomName)
       }
-      // The cap is the outermost wrapper: a packet it refuses never advances the identity shadow.
-      const meter = docMeter(docKey)
-      capDocSize(ws, bytes => meter.size(bytes), DOC_MAX_BYTES, size => {
-        const now = Date.now()
-        if ((capLogged.get(repo) ?? 0) < now - 60_000) { capLogged.set(repo, now); console.log(`refusing writes: room ${repo} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
-        ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
+      // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
+      // Holding the repo lock also makes the socket visible to migration's freeze step.
+      await hubs.flush(getYDoc(docKey, true))
+      wss.handleUpgrade(req, socket, head, ws => {
+        const entry = rooms.get(repo)!
+        entry.lastSeen = Date.now(); void saveRooms()
+        // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
+        bindHub(ws, () => hubs.current(docKey), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false })
+        audit({ event: 'join', room: docKey, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
+        if (opts.readOnly) makeReadOnly(ws, droppedWrite(docKey))
+        if (opts.login) {
+          bindIdentity(ws, opts.login, (login, name) => {
+            const now = Date.now()
+            if ((identityLog.get(login) ?? 0) > now - 60_000) return
+            identityLog.set(login, now)
+            console.log(`dropped presence under ${JSON.stringify(name)} from ${login} (room ${roomName})`)
+          }, awarenessOwnerMap(docKey))
+          bindDocumentIdentity(ws, opts.login, documentGuard(docKey), (login, reason) => {
+            const key = `document:${login}`
+            const now = Date.now()
+            if ((identityLog.get(key) ?? 0) > now - 60_000) return
+            identityLog.set(key, now)
+            if (IDENTITY_GUARD_MODE === 'enforce') {
+              console.log(`rejected identity-bearing update from ${login} (room ${repo}): ${reason}`)
+              audit({ event: 'refused', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update rejected: ${reason}` })
+            } else {
+              console.log(`observed identity-bearing update from ${login} (room ${repo}); update applied: ${reason}`)
+              audit({ event: 'identity_violation', room: repo, login, id: opts.id, provider: opts.provider, reason: `identity-bearing update observed; update applied: ${reason}` })
+            }
+          }, IDENTITY_GUARD_MODE)
+        }
+        // The cap is the outermost wrapper: a packet it refuses never advances the identity shadow.
+        const meter = docMeter(docKey)
+        capDocSize(ws, bytes => meter.size(bytes), DOC_MAX_BYTES, size => {
+          const now = Date.now()
+          if ((capLogged.get(repo) ?? 0) < now - 60_000) { capLogged.set(repo, now); console.log(`refusing writes: room ${repo} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
+          ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
+        })
+        wss.emit('connection', ws, req)
       })
-      wss.emit('connection', ws, req)
-    })
-    : refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
+    }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) })
+  }
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)

@@ -83,16 +83,21 @@ const owns = (p: Principal, name: string) => !('login' in p) || !p.login || owns
 export class ServerHubs {
   private readonly entries = new Map<string, Entry>()
   private readonly loads = new WeakMap<Y.Doc, Loading>()
+  private readonly pendingWrites = new Map<string, Promise<unknown>>()
   constructor(private readonly opts: ServerHubsOptions) {}
 
   /** The stock bind code plus a `loaded` promise per doc; the hub starts after it (§6). */
-  persistence(provider: PersistenceProvider): { provider: PersistenceProvider; bindState(docName: string, doc: Y.Doc): Promise<void>; writeState(): Promise<void> } {
+  persistence(provider: PersistenceProvider): { provider: PersistenceProvider; bindState(docName: string, doc: Y.Doc): Promise<void>; writeState(docName: string): Promise<void> } {
     return {
       provider,
       bindState: (docName, doc) => {
         let last: Promise<unknown> = Promise.resolve()
-        const store = (update: Uint8Array) => { last = provider.storeUpdate(docName, update) }
+        const store = (update: Uint8Array) => {
+          last = last.then(() => provider.storeUpdate(docName, update))
+          this.pendingWrites.set(docName, last)
+        }
         const loaded = (async () => {
+          await this.flushName(docName)
           const persisted = await provider.getYDoc(docName)
           store(Y.encodeStateAsUpdate(doc))
           Y.applyUpdate(doc, Y.encodeStateAsUpdate(persisted))
@@ -101,7 +106,7 @@ export class ServerHubs {
         this.loads.set(doc, { loaded, stored: () => last })
         return loaded
       },
-      writeState: async () => {},
+      writeState: async docName => { await this.flushName(docName) },
     }
   }
 
@@ -136,6 +141,13 @@ export class ServerHubs {
     const loading = this.loads.get(doc)
     await loading?.loaded
     await loading?.stored()
+  }
+
+  /** A disconnected document is already out of stock y-websocket's docs map. */
+  async flushName(name: string): Promise<void> {
+    const pending = this.pendingWrites.get(name)
+    await pending
+    if (pending && this.pendingWrites.get(name) === pending) this.pendingWrites.delete(name)
   }
 
   /** Stop a room's hub (its doc is going away: the last connection left, or the repo was closed). */
