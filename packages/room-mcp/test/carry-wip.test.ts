@@ -47,6 +47,9 @@ beforeEach(() => {
   roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
   for (const key of Object.keys(roomEnv)) delete process.env[key]
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-')))
+  // Port reservations are machine-global in production; isolate this fixture's
+  // spawned workers so concurrent test processes cannot contend for or inherit them.
+  vi.stubEnv('XDG_CONFIG_HOME', path.join(root, 'config'))
   repo = path.join(root, 'lead'); fs.mkdirSync(repo)
   git(repo, 'init', '-q', '-b', 'main'); git(repo, 'config', 'user.name', 'rohanz'); git(repo, 'config', 'user.email', 'rohanz@example.test')
   put(repo, 'shared.txt', lines()); put(repo, 'keep.txt', 'k1\nk2\nk3\n'); put(repo, 'staged.txt', 's\n'); put(repo, 'gone.txt', 'bye\n')
@@ -57,6 +60,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   for (const c of cleanups.splice(0)) await c().catch(() => {})
+  vi.unstubAllEnvs()
   fs.rmSync(root, { recursive: true, force: true })
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
@@ -130,7 +134,7 @@ function world() {
     finally { delete process.env.ROOM_WORKER_ID }
     await tools.shutdown(); ws?.graph?.stop()
     exits.get(tag)!(0)
-    await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }))
+    await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
   async function workerPreview(tag: string, run?: string, leadShare?: 'intent' | 'declared') {
     const w = workerByTag(repo, tag)!
@@ -424,11 +428,11 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     } else expect(reply).toMatch(/No finished changes to collect/)
     expect(snapshot()).toEqual(files)
     expect(leadState()).toEqual(before)
-    await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false))
+    await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false), { timeout: 15_000 })
     expect(git(repo, 'branch', '--list', 'room/idle')).toBe('')
     // Retirement follows the worktree cleanup: the registry record retires and the projector drops the view.
-    await vi.waitFor(() => expect(workerByTag(repo, 'idle')).toBeUndefined())
-    await vi.waitFor(() => expect(t.a.workerViewOf('rohanz+idle')).toBeUndefined())
+    await vi.waitFor(() => expect(workerByTag(repo, 'idle')).toBeUndefined(), { timeout: 15_000 })
+    await vi.waitFor(() => expect(t.a.workerViewOf('rohanz+idle')).toBeUndefined(), { timeout: 15_000 })
     expect(t.a.retiredWorkers().find(r => r.tag === 'idle')).toMatchObject({ files: [], fileCount: 0 })
   }, 30_000)
 

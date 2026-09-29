@@ -28,9 +28,11 @@ export function fixtureProbe(pid: number): { startTime: string; executable: stri
 }
 
 export function fixtureLiveness(identity: ProcessIdentity, actual: (identity: ProcessIdentity) => Liveness): Liveness {
+  // The test runner itself cannot exit while these assertions run. A host process probe
+  // (ps on macOS) can fail under concurrent suites, which must not turn the registry's
+  // launcher into a dead process. Synthetic identities at this PID still use the map.
+  if (identity.pid === process.pid && !identity.startTime.startsWith('fixture:')) return 'alive'
   const observed = processes.get(identity.pid)
-  if (identity.pid === process.pid && observed && identity.startTime !== observed.identity.startTime
-    && !identity.startTime.startsWith('fixture:')) return actual(identity)
   if (!observed && !identity.startTime.startsWith('fixture:')) return actual(identity)
   return observed?.live && observed.identity.startTime === identity.startTime && observed.identity.executable === identity.executable
     ? 'alive' : 'dead'

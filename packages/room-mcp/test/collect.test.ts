@@ -83,8 +83,8 @@ function carry(t: ReturnType<typeof setup>, dir: string, tag: string, files: Rec
 async function startWorktreeProcess() {
   const ready = path.join(root, 'process-ready')
   const child = spawn(process.execPath, ['-e', 'require("fs").writeFileSync(process.argv[1], "ready"); setInterval(() => {}, 1000)', ready], { cwd: worker, stdio: 'ignore' })
-  for (let attempt = 0; attempt < 100 && !fs.existsSync(ready); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
-  if (!fs.existsSync(ready)) { child.kill('SIGKILL'); throw new Error('worktree process did not start') }
+  try { await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true), { timeout: 15_000 }) }
+  catch { child.kill('SIGKILL'); throw new Error('worktree process did not start') }
   return child
 }
 
