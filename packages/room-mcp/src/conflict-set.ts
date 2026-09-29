@@ -134,11 +134,15 @@ export class ConflictSlots {
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner: string): Promise<void> {
     for (const [key, slot] of this.owned(owner)) {
+      // A redaction wildcard retains only path-level episode history. It is
+      // not a contract fact and has no notice identity to replay.
+      if (slot.kind === 'contract' && slot.subject === '*') continue
       if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot)
     }
   }
 
   async postNotice(key: string, slot: ConflictSlot): Promise<void> {
+    if (slot.kind === 'contract' && slot.subject === '*') return
     const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
     if (!current()) return
     const id = noticeId(key, slot.epoch) + (slot.settled === 'clean' ? ':clean' : '')
@@ -224,37 +228,35 @@ export class ConflictSet {
     for (const other of others) {
       const head = room.manifestHead.get(other), graph = room.graphs.get(other)
       const snap = snapshot(room, other, participantsView(room, this.team.awareness, Date.now()))
-      const entries = head && room.manifest.get(manifestKey(other, head.fence))
       const stale = !head?.complete || head.coverage.kind !== 'all' || !snap?.fenceValid || head.base !== snap.record?.git?.base ||
         !graph || graph.status !== 'ready' ||
         graph.sourceFence !== head.fence || graph.sourceRev !== head.rev
-      const hidden = this.slots.owned(this.owner).some(([, slot]) => slot.kind === 'contract' && slot.other === other &&
-        (entries?.get(slot.path)?.state === 'held' || !!head && !!room.roomSalt && head.excluded.includes(digestPath(room.roomSalt, slot.path))))
-      if (stale || hidden) this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', snap)
+      this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', snap, stale)
     }
   }
-  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
-  private unknownOrRedactContracts(other: string, why: string, snap?: ParticipantSnapshot): void {
+  private contractPathReadable(snap: ParticipantSnapshot | undefined, path: string): boolean {
     const room = this.team.room
     const head = snap?.head
-    const entries = head && room.manifest.get(manifestKey(other, head.fence))
+    if (!snap?.fenceValid || !head?.complete || head.coverage.kind !== 'all' ||
+        head.base !== snap.record?.git?.base || !room.roomSalt) return false
+    const textAllowed = head.level === 'full' || head.level === 'declared' &&
+      (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
+    const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path)
+    return textAllowed && (!entry || entry.state === 'shared' && !!entry.hash && entry.fence === head.fence) &&
+      !head.excluded.includes(digestPath(room.roomSalt, path))
+  }
+  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
+  private unknownOrRedactContracts(other: string, why: string, snap?: ParticipantSnapshot, markReadableUnknown = true): void {
     const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
     const readable = new Set<string>(), withdrawn = new Set<string>()
-    const validCoverage = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === 'all' &&
-      head.base === snap.record?.git?.base && !!room.roomSalt
     for (const [, slot] of slots) {
       const path = slot.path
-      const entry = entries?.get(path)
       // No entry under complete coverage means the path is readable at the
       // accepted base. A held or invalid entry withdraws only its own path.
-      const textAllowed = head?.level === 'full' || head?.level === 'declared' &&
-        (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))
-      const currentEntry = !entry || entry.state === 'shared' && !!entry.hash && entry.fence === head?.fence
-      if (validCoverage && textAllowed && currentEntry && !head!.excluded.includes(digestPath(room.roomSalt!, path)))
-        readable.add(path)
+      if (this.contractPathReadable(snap, path)) readable.add(path)
       else withdrawn.add(path)
     }
-    if (readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable)
+    if (markReadableUnknown && readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable)
     if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn)
   }
   stop(): void {
@@ -481,6 +483,7 @@ export class ConflictSet {
   }
 
   private async contracts(other: string, myPaths: Set<string>, mine: ParticipantSnapshot, theirs: ParticipantSnapshot): Promise<void> {
+    this.unknownOrRedactContracts(other, 'provider graph or manifest coverage is updating', theirs, false)
     const graph = this.team.room.graphs.get(other)
     const carried = this.carriedFrom?.(this.owner)
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
@@ -525,6 +528,7 @@ export class ConflictSet {
     }
     for (const change of changes) {
       if (change.kind === 'add') continue
+      if (!this.contractPathReadable(theirs, change.path)) continue
       const provider = await this.read(theirs, change.path)
       if (asText(provider) === undefined || (!carriedProvider && provider.kind === 'base')) {
         this.unknownOrRedactContracts(other, 'provider version is not readable', theirs)
@@ -559,6 +563,10 @@ export class ConflictSet {
     }
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
+      if (!this.contractPathReadable(theirs, slot.path)) {
+        this.slots.redactContracts(this.owner, other, 'provider version is not readable', new Set([slot.path]))
+        continue
+      }
       if (slot.subject === '*' && [...live].some(liveKey => liveKey.startsWith(slotKey(this.owner, 'contract', other, slot.path, '')))) {
         this.slots.drop(key)
         continue
