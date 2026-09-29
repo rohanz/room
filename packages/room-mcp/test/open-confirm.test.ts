@@ -18,8 +18,9 @@ vi.mock('y-websocket', async () => {
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 function server(open: boolean) {
-  const posts: string[] = []
+  const posts: string[] = [], requests: string[] = []
   vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
+    requests.push(url)
     const path = new URL(url).pathname
     if (path === '/auth/config') return Response.json({ mode: 'token', providers: [] })
     if (path === '/view-token') return open ? Response.json({ room: 'o/r', hub: 1 }) : new Response('not opened', { status: 404 })
@@ -27,7 +28,7 @@ function server(open: boolean) {
     throw new Error(`unexpected ${path}`)
   }))
   vi.stubEnv('ROOM_TAG', 'test')
-  return { posts, tools: createTools({ cwd: repo, getSession: () => null, setSession: () => {} }) }
+  return { posts, requests, tools: createTools({ cwd: repo, getSession: () => null, setSession: () => {} }) }
 }
 const args = { where: 'team', room: 'o/r', name: 'test' }
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
@@ -51,6 +52,20 @@ describe('opening requires user consent', () => {
     const { tools, posts } = server(false)
     expect(await tools.call('room_create', { ...args, confirm: true })).toBe('error: reached daemon')
     expect(posts).toEqual(['/rooms'])
+  })
+  it('room_create without where follows ROOM_SERVER instead of the hosted default', async () => {
+    vi.stubEnv('ROOM_SERVER', 'ws://custom-room.test:4403')
+    vi.stubEnv('ROOM_URL', 'ws://lower-priority.test:4403/o/r')
+    const { tools, requests, posts } = server(false)
+    expect(await tools.call('room_create', { room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon')
+    expect(posts).toEqual(['/rooms'])
+    expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
+  })
+  it('room_create explicit where outranks ROOM_SERVER', async () => {
+    vi.stubEnv('ROOM_SERVER', 'ws://lower-priority.test:4403')
+    const { tools, requests } = server(false)
+    expect(await tools.call('room_create', { where: 'ws://chosen-room.test:4403', room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon')
+    expect(requests.every(url => new URL(url).host === 'chosen-room.test:4403')).toBe(true)
   })
   it('joins an already-open repo without confirmation or a create request', async () => {
     const { tools, posts } = server(true)
@@ -82,7 +97,7 @@ describe('closing without a joined session', () => {
     const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {} })
     expect(await tools.call('room_close', {})).toContain('confirm=true')
     expect(closes).toEqual([])
-    expect(await tools.call('room_close', { confirm: true })).toContain(`closed ${roomName} for everyone without joining`)
+    expect(await tools.call('room_close', { confirm: true })).toBe(`closed ${roomName} for everyone without joining (no joined session was available to export its history); room_create reopens it`)
     expect(closes).toEqual([{ room: roomName, schema: 2, token: 'close-secret' }])
     fs.rmSync(dir, { recursive: true, force: true })
   })

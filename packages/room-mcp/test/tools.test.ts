@@ -25,6 +25,7 @@ import { projectWorkers } from '../src/worker-projector.js'
 import { visiblePeer } from './fixtures/visible.js'
 import { catchUpLocal } from '../../relay/src/local-migrate.js'
 import { claimDigest } from '@room/roomd'
+import { AutoJoin } from '../src/auto-join.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -327,6 +328,13 @@ describe('session gating', () => {
     expect(await tools.call('room_wait', { timeoutMs: 100 })).toContain('offline: room_wait cannot observe new messages until reconnected')
   })
 
+  it('room_state says when the current room was closed, including a path view', async () => {
+    const t = setup()
+    t.session!.closed = { reason: 'closed by a teammate' }
+    expect(await t.tools.call('room_state', {})).toContain('CLOSED: closed by a teammate')
+    expect(await t.tools.call('room_state', { path: 'app.py' })).toContain('CLOSED: closed by a teammate')
+  })
+
   it('join uses cwd, reports who is here, and leave releases claims', async () => {
     const t = setup({ joined: false })
     const out = await t.tools.call('room_join', {})
@@ -437,6 +445,23 @@ describe('session gating', () => {
     await next.call('room_join', {})
     expect(t.room.scope('Rohan')).toBeUndefined()
     expect(t.room.openClaims()).toEqual([])
+  })
+
+  it('automatic join clearStale keeps migrated claims and scope', async () => {
+    const t = setup({ joined: false })
+    const claim = t.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'migrated' })
+    t.room.claims.set(claim.id, { ...claim, claimedHash: claimDigest(COMMITTED, 1, 1), origin: 'local/repo/main' })
+    t.room.scopes.set('Rohan', { by: 'Rohan', byKind: 'agent', area: 'legacy', summary: 'migrated', paths: ['app.py'], at: 1, origin: 'local/repo/main' })
+    const session = fakeSession(t.room)
+    let current: Session | null = null
+    const tools = createTools({ getSession: () => current, setSession: s => { current = s }, cwd: dir })
+    const auto = new AutoJoin({ attempt: async () => session, adopt: async s => { current = s; tools.clearStale(s) },
+      discard: async () => {}, joined: () => !!current, log: () => {}, report: () => {}, local: false })
+    tools.setAutoJoin(auto)
+    expect(await tools.call('room_state', {})).toContain('room: r')
+    expect(t.room.openClaims()).toMatchObject([{ id: claim.id, by: 'Rohan' }])
+    expect(t.room.scope('Rohan')?.area).toBe('legacy')
+    expect(t.room.claims.get(claim.id)?.origin).toBeUndefined()
   })
 
   it('room_done releases, clears scope, posts a done note, keeps the session', async () => {
