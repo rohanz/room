@@ -26,6 +26,17 @@ function sharedEntry(room: RoomDoc, person: string, path: string, base: string):
 }
 
 describe('participant-owned base texts', () => {
+  it('N6 ignores legacy base-text roots in schema-2 readers and cleanup', () => {
+    const room = new RoomDoc()
+    const oldOwned = new Y.Map<string>()
+    room.doc.getMap<Y.Map<string>>('basetextByPerson').set('A', oldOwned)
+    oldOwned.set('sha:file.py', 'old owner base')
+    room.doc.getMap<string>('basetext').set('sha:other.py', 'global base')
+    expect(room.baseText('A', 'sha', 'file.py')).toBeUndefined()
+    expect(room.baseText('B', 'sha', 'other.py')).toBeUndefined()
+    room.reconcileBaseTexts('A')
+    expect(oldOwned.get('sha:file.py')).toBe('old owner base')
+  })
   it('keeps B’s text when A withdraws while B publishes', () => {
     const [a, b] = peers()
     a.setOverlay('A', 'file.py', 'A edit')
@@ -92,7 +103,7 @@ describe('participant-owned base texts', () => {
     expect(restarted.baseText('B', 'sha', 'file.py')).toBe('base')
   })
 
-  it('reads each participant’s own base and falls back to legacy text', () => {
+  it('reads each participant’s own base and ignores old document roots', () => {
     const room = new RoomDoc()
     room.setBaseText('A', 'sha', 'file.py', 'A base')
     room.setBaseText('B', 'sha', 'file.py', 'B base')
@@ -101,18 +112,19 @@ describe('participant-owned base texts', () => {
     const oldOwned = new Y.Map<string>()
     room.doc.getMap<Y.Map<string>>('basetextByPerson').set('Pre-flat', oldOwned)
     oldOwned.set('sha:past.py', 'pre-flat base')
-    expect(room.baseText('Pre-flat', 'sha', 'past.py')).toBe('pre-flat base')
+    expect(room.baseText('Pre-flat', 'sha', 'past.py')).toBeUndefined()
     room.setOverlay('Legacy', 'old.py', 'edit')
-    room.baseTexts.set('sha:old.py', 'legacy base')
-    expect(room.baseText('Legacy', 'sha', 'old.py')).toBe('legacy base')
+    const legacy = room.doc.getMap<string>('basetext')
+    legacy.set('sha:old.py', 'legacy base')
+    expect(room.baseText('Legacy', 'sha', 'old.py')).toBeUndefined()
     room.clearOverlay('Legacy', 'old.py')
     room.reconcileBaseTexts('Legacy')
-    expect(room.baseTexts.get('sha:old.py')).toBe('legacy base')
+    expect(legacy.get('sha:old.py')).toBe('legacy base')
   })
 
   it('does not delete a legacy entry when concurrent new clients withdraw their overlays', () => {
     const [a, b] = peers()
-    a.baseTexts.set('sha:file.py', 'legacy base')
+    a.doc.getMap<string>('basetext').set('sha:file.py', 'legacy base')
     for (const person of ['A', 'B']) {
       a.setOverlay(person, 'file.py', `${person} edit`)
     }
@@ -120,9 +132,9 @@ describe('participant-owned base texts', () => {
     a.clearOverlay('A', 'file.py')
     b.clearOverlay('B', 'file.py')
     sync(a, b)
-    expect(a.baseTexts.get('sha:file.py')).toBe('legacy base')
-    expect(b.baseTexts.get('sha:file.py')).toBe('legacy base')
-    expect(a.baseText('Older client', 'sha', 'file.py')).toBe('legacy base')
+    expect(a.doc.getMap<string>('basetext').get('sha:file.py')).toBe('legacy base')
+    expect(b.doc.getMap<string>('basetext').get('sha:file.py')).toBe('legacy base')
+    expect(a.baseText('Older client', 'sha', 'file.py')).toBeUndefined()
   })
 
   it('merges first-use base texts from two sessions with the same tag', () => {

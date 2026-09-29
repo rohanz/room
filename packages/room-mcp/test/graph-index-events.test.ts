@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc, manifestKey } from '@room/shared'
+import { RoomDoc, digestPath, manifestKey } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
 import { gitShow } from '@room/roomd/git'
@@ -33,6 +33,58 @@ beforeEach(() => {
 })
 
 describe('GraphIndex overlay events', () => {
+  it('N1 republishes provenance after a body-only edit and a non-source revision, including recovery from incomplete coverage', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    writeFileSync(join(dir, 'utils.py'), 'def validate_token(t):\n    return t\n')
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev)
+      const original = room.graphs.get('Rohan')!
+      writeFileSync(join(dir, 'utils.py'), 'def validate_token(t):\n    return t + 1\n')
+      publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t + 1\n')
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev)
+      expect(room.graphs.get('Rohan')?.edges).toEqual(original.edges)
+      publishFixture(room, 'Rohan', 'README.md', 'documentation changed\n')
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev)
+      expect(room.graphs.get('Rohan')?.paths).toEqual(original.paths)
+      const head = room.manifestHead.get('Rohan')!
+      room.manifestHead.set('Rohan', { ...head, rev: head.rev + 1, complete: false })
+      await gi.whenIdle()
+      const restored = room.manifestHead.get('Rohan')!
+      room.manifestHead.set('Rohan', { ...restored, rev: restored.rev + 1, complete: true })
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' && room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev)
+      expect(room.graphs.get('Rohan')?.paths).toEqual(original.paths)
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('M2 withdraws a signature synchronously when its path becomes excluded', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    writeFileSync(join(dir, 'utils.py'), 'def validate_token(t, secret_customer):\n    return t\n')
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t, secret_customer):\n    return t\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => JSON.stringify(room.graphs.get('Rohan')).includes('secret_customer'))
+      const head = room.manifestHead.get('Rohan')!, key = manifestKey('Rohan', head.fence)
+      room.doc.transact(() => {
+        room.manifest.get(key)!.delete('utils.py')
+        room.clearOverlay(key, 'utils.py')
+        room.manifestHead.set('Rohan', { ...head, excluded: [digestPath(room.ensureRoomSalt(), 'utils.py')], rev: head.rev + 1, semRev: head.semRev + 1 })
+      })
+      expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
+      expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
+      await gi.whenIdle()
+      await new Promise(resolve => setTimeout(resolve, 150))
+      expect(room.graphs.get('Rohan')?.paths).not.toContain('utils.py')
+    } finally { gi.stop(); room.doc.destroy() }
+  })
   it('M1 rejects a published signature when its holder epoch changes during the base read', async () => {
     const room = new RoomDoc()
     room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)

@@ -340,7 +340,7 @@ describe('GraphIndex snapshot discipline', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
-  it('does not rewrite an identical snapshot and waits out the publish window', async () => {
+  it('stamps a new manifest revision for equal symbols, avoids duplicate writes, and waits out the publish window', async () => {
     const room = new RoomDoc()
     setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 400 })
@@ -348,14 +348,18 @@ describe('GraphIndex snapshot discipline', () => {
     await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
     expect(room.graphs.get('Rohan')!.edges.length).toBe(1)
     let writes = 0
-    room.graphs.observe(() => { writes++ })
+    room.graphs.observe(() => { if (room.graphs.get('Rohan')?.status === 'ready') writes++ })
     publishFixture(room, 'Rohan', 'session.py', 'from utils import validate_token\n\ndef login(t):\n    return validate_token(t)  # same edge\n')
     await gi.whenIdle()
-    expect(writes).toBe(0) // identical snapshot: nothing written
+    await eventually(() => writes === 1)
+    expect(room.graphs.get('Rohan')?.sourceRev).toBe(room.manifestHead.get('Rohan')?.rev)
+    await gi.refresh('session.py'); await gi.whenIdle()
+    await new Promise(resolve => setTimeout(resolve, 450))
+    expect(writes).toBe(1) // unchanged revision and content do not rewrite
     const firstAt = room.graphs.get('Rohan')!.at
     publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return t\n')
-    for (let i = 0; i < 60 && writes === 0; i++) await new Promise(r => setTimeout(r, 50)) // changed: written once the window has passed
-    expect(writes).toBe(1)
+    for (let i = 0; i < 60 && writes < 2; i++) await new Promise(r => setTimeout(r, 50)) // changed: written once the window has passed
+    expect(writes).toBe(2)
     expect(room.graphs.get('Rohan')!.at - firstAt).toBeGreaterThanOrEqual(400)
     expect(room.graphs.get('Rohan')!.edges).toEqual([])
     gi.stop()
