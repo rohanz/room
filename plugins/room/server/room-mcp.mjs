@@ -38802,10 +38802,19 @@ function normaliseWhere(where) {
   if (["team", "hosted", "web", "shared"].includes(w)) return "team";
   return w;
 }
-function resolveServer(raw) {
+function resolveServer(raw, env = process.env) {
   const w = normaliseWhere(raw);
   if (!w || w === LOCAL) return LOCAL;
-  return w === "team" ? DEFAULT_SERVER : w;
+  if (w !== "team") return w;
+  const configured = normaliseWhere(env.ROOM_SERVER);
+  if (configured) return configured === "team" ? DEFAULT_SERVER : configured;
+  const roomUrl = value(env.ROOM_URL);
+  if (roomUrl) {
+    const url = new URL(roomUrl);
+    if (!["ws:", "wss:"].includes(url.protocol)) throw new Error("ROOM_URL must use ws:// or wss://");
+    return `${url.protocol}//${url.host}${url.search}`;
+  }
+  return DEFAULT_SERVER;
 }
 function sharingDescription(level) {
   return level === "full" ? "the full text of files you change" : level === "declared" ? "paths of every changed file; text only in your declared area" : "only your plans, no file text";
@@ -38858,7 +38867,7 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     workerId: value(e.ROOM_WORKER_ID),
     roomUrl,
     dir: path6.resolve(dir),
-    server: resolveServer(where),
+    server: resolveServer(where, e),
     where,
     whereRule,
     whereEnv,
@@ -42776,7 +42785,8 @@ var WorkerProjector = class {
   onReferenceDelete = (event) => {
     if ([...event.changes.keys.values()].some((change) => change.action === "delete")) void this.project();
   };
-  running = Promise.resolve();
+  running;
+  dirty = false;
   stopped = false;
   start() {
     this.unsubscribe = this.registry.onChange(() => {
@@ -42796,18 +42806,26 @@ var WorkerProjector = class {
     this.s.room.mail.unobserve(this.onReferenceDelete);
     this.s.room.outcomes.unobserve(this.onReferenceDelete);
   }
-  /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */
+  /** A request waits for a pass started after that request; concurrent requests share the next pass. */
   project() {
-    const next = this.running.then(async () => {
-      if (this.stopped) return;
-      try {
-        await projectWorkers(this.s, this.registry, this.s.me.name, "joined", this);
-      } catch (e) {
-        this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`);
+    if (this.stopped) return Promise.resolve();
+    this.dirty = true;
+    if (!this.running) this.running = Promise.resolve().then(() => this.drain());
+    return this.running;
+  }
+  async drain() {
+    try {
+      while (this.dirty && !this.stopped) {
+        this.dirty = false;
+        try {
+          await projectWorkers(this.s, this.registry, this.s.me.name, "joined", this);
+        } catch (e) {
+          this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
-    });
-    this.running = next;
-    return next;
+    } finally {
+      this.running = void 0;
+    }
   }
 };
 
@@ -45743,6 +45761,26 @@ var ConflictSlots = class {
   drop(key2) {
     this.room.doc.transact(() => this.map.delete(key2));
   }
+  /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
+  markContractsUnknown(owner, other, why) {
+    const now = this.now();
+    const fence = typeof this.fence === "function" ? this.fence() : this.fence;
+    this.room.doc.transact(() => {
+      for (const [key2, slot] of this.owned(owner)) {
+        if (slot.kind !== "contract" || slot.other !== other) continue;
+        if (slot.status === "unknown" && slot.why === why && slot.fence === fence) continue;
+        this.map.set(key2, {
+          ...slot,
+          status: "unknown",
+          inputs: hash(`${key2}\0${why}`),
+          why,
+          fence,
+          checkedAt: now,
+          retryAt: now + retryMinutes[0] * 6e4
+        });
+      }
+    });
+  }
   /** Remove signature detail when the provider's current text is no longer readable. */
   redactContracts(owner, other, why) {
     const old = this.owned(owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
@@ -45899,8 +45937,21 @@ var ConflictSet = class {
       const entries = head && room.manifest.get(manifestKey(other, head.fence));
       const stale = !head?.complete || head.coverage.kind !== "all" || !snap?.fenceValid || head.base !== snap.record?.git?.base || !graph || graph.status !== "ready" || graph.sourceFence !== head.fence || graph.sourceRev !== head.rev;
       const hidden = this.slots.owned(this.owner).some(([, slot]) => slot.kind === "contract" && slot.other === other && (entries?.get(slot.path)?.state === "held" || !!head && !!room.roomSalt && head.excluded.includes(digestPath(room.roomSalt, slot.path))));
-      if (stale || hidden) this.slots.redactContracts(this.owner, other, "provider graph or manifest coverage is updating");
+      if (stale || hidden) this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", snap);
     }
+  }
+  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
+  unknownOrRedactContracts(other, why, snap) {
+    const room = this.team.room;
+    const head = snap?.head;
+    const entries = head && room.manifest.get(manifestKey(other, head.fence));
+    const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
+    const stillReadable = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === "all" && head.base === snap.record?.git?.base && !!room.roomSalt && slots.every(([, slot]) => {
+      const entry = entries?.get(slot.path);
+      return slot.subject !== "*" && entry?.state === "shared" && !!entry.hash && entry.fence === head.fence && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, slot.path))) && !head.excluded.includes(digestPath(room.roomSalt, slot.path));
+    });
+    if (stillReadable) this.slots.markContractsUnknown(this.owner, other, why);
+    else this.slots.redactContracts(this.owner, other, why);
   }
   stop() {
     for (const stop2 of this.stops) stop2();
@@ -46188,7 +46239,7 @@ var ConflictSet = class {
     const carried = this.carriedFrom?.(this.owner);
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline);
     if (!carriedProvider && (!graph || graph.status !== "ready" || graph.base !== theirs.head.base || graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
-      this.slots.redactContracts(this.owner, other, "provider graph or manifest coverage is updating");
+      this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", theirs);
       return;
     }
     const live = /* @__PURE__ */ new Set();
