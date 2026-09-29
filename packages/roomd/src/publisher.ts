@@ -18,7 +18,6 @@ interface Host {
   readonly stopped: boolean
   readonly phase: string
   readonly inputs: PublicationInputs
-  readonly shared: string
   readonly base: string
   readonly beforeBaseRead?: (p: string) => Promise<void>
   readonly beforePublishWrite?: (p: string) => Promise<void>
@@ -138,7 +137,7 @@ export class Publisher {
         if (facts.some(f => f.path === path && f.text !== undefined || f.path === path && f.change === 'D' && !f.excluded)) continue
         host.roomDoc.clearOverlay(incarnation, path, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host, host.shared)
+      host.roomDoc.reconcileBaseTexts(host.name, host, next.head)
       withdrawBaseTexts(host, new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => f.path)))
     }, host)
     this.markDirty()
@@ -162,7 +161,7 @@ export class Publisher {
   /** Prepare against a resolved base, including committed but unpushed changes. */
   async prepare(inputs = this.host.inputs): Promise<PreparedPublication> {
     const carried = this.host.carried()
-    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked)
+    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked)
     for (const item of disk) await this.host.beforeBaseRead?.(item.path)
     const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt())
     if (desired.unsettled.length) {
@@ -170,7 +169,7 @@ export class Publisher {
       this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`))
     }
     const textPaths = [...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)
-    const baseTexts = await gitShowMany(this.host.dir, this.host.shared || inputs.head, textPaths)
+    const baseTexts = await gitShowMany(this.host.dir, inputs.head, textPaths)
     for (const p of textPaths) {
       const sha = carried?.untracked.get(p)?.sha
       if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p))
@@ -220,9 +219,9 @@ export class Publisher {
           host.roomDoc.setOverlay(incarnation, p, entry.text, host)
         }
         const base = prepared.baseTexts.get(p)
-        if (base !== undefined) host.roomDoc.setBaseText(host.name, host.shared || inputs.head, p, base, host)
+        if (base !== undefined) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host, host.shared)
+      host.roomDoc.reconcileBaseTexts(host.name, host, inputs.head)
       withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)))
     }, host)
     this.excludedPaths.clear()

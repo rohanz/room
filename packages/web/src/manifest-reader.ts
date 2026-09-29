@@ -55,6 +55,7 @@ export function webCoverage(room: RoomDoc, name: string, view: readonly Particip
   const add = (why: string, path?: string) => gaps.push({ person: name, path, why })
   if (!snap) add('no manifest record')
   else {
+    if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) add('room salt missing or invalid; exclusion coverage cannot be certified')
     if (!snap.head.complete || !snap.fenceValid || (!(snap.head.coverage.kind === 'none' && snap.head.coverage.reason === 'not-publisher') &&
       (snap.head.base !== snap.record?.git?.base || snap.record.git.fence !== snap.head.fence))) add('manifest updating; re-run')
     if (snap.head.coverage.kind === 'none') add(snap.head.coverage.reason === 'not-publisher'

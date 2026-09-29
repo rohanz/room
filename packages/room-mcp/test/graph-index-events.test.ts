@@ -79,6 +79,28 @@ describe('GraphIndex overlay events', () => {
       expect(gi.graph.definersOf('validate_token')).toEqual(['utils.py'])
     } finally { gi.stop(); room.doc.destroy() }
   })
+  it('withdraws an out-of-area signature synchronously under the default publication throttle', async () => {
+    const room = new RoomDoc()
+    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    writeFileSync(join(dir, 'utils.py'), 'def validate_token(t, secret_customer):\n    return t\n')
+    publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t, secret_customer):\n    return t\n')
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })
+    try {
+      gi.start(); await gi.whenIdle()
+      await eventually(() => JSON.stringify(room.graphs.get('Rohan')).includes('secret_customer'))
+      const head = room.manifestHead.get('Rohan')!, key = manifestKey('Rohan', head.fence)
+      room.doc.transact(() => {
+        room.manifest.get(key)!.set('utils.py', { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: head.fence })
+        room.clearOverlay(key, 'utils.py')
+        room.manifestHead.set('Rohan', { ...head, level: 'declared', textPrefixes: [], rev: head.rev + 1, semRev: head.semRev + 1 })
+      })
+      expect(JSON.stringify(room.graphs.get('Rohan'))).not.toContain('secret_customer')
+      const lateReader = new RoomDoc()
+      Y.applyUpdate(lateReader.doc, Y.encodeStateAsUpdate(room.doc))
+      expect(JSON.stringify(lateReader.graphs.get('Rohan'))).not.toContain('secret_customer')
+      lateReader.doc.destroy()
+    } finally { gi.stop(); room.doc.destroy() }
+  })
   it('marks held remote changes as contract coverage gaps', async () => {
     const room = graphRoom()
     publishFixture(room, 'Kieran', 'hidden.py', 'def secret(x):\n    return x\n')

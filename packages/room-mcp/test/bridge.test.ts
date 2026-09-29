@@ -163,6 +163,20 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
     expect(t.team.b.openClaims()).toEqual([])
   })
 
+  it('omits a worker claim digest outside the lead text grant', async () => {
+    const t = await setup({ policy: testPolicyStore('declared') })
+    const c = t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: worker.name, byKind: 'agent', intent: 'edit', claimedHash: 'f'.repeat(64) })
+    expect(c.claimedHash).toBe('f'.repeat(64))
+    expect(t.team.b.openClaims()[0]?.claimedHash).toBeUndefined()
+  })
+
+  it('does not project complete coverage from a worker manifest on the wrong baseline', async () => {
+    const t = await setup()
+    publishSource(t.local.b, { 'app.py': { change: 'M', state: 'shared', hash: gitBlobHash('worker\n'), size: 7 } }, { base: B })
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.get(worker.name)).toMatchObject({ complete: false, coverage: { kind: 'none', reason: 'starting' } })
+  })
+
   it('a team message touching a worker path is re-posted to that worker locally: claims at notify, plans as interrupts', async () => {
     const t = await setup()
     t.local.b.setScope({ by: worker.name, byKind: 'agent', area: 'orders', summary: 'cents', paths: ['api/'] })

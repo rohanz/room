@@ -104,11 +104,11 @@ async function anchor(dir: string, head: string, refs: BaseRefs): Promise<{ base
   return { base: chosen.base, anchored: true, upstream: chosen.ref.name }
 }
 
-/** `options.carried`: a local-room worker's carried commit, which is its base while HEAD descends from it. */
+/** `options.carried`: a local-room worker's registry-pinned base for its worktree lifetime. */
 export async function resolveBase(dir: string, inputs: BaseInputs, options: { local?: boolean; carried?: string } = {}): Promise<ResolvedBase> {
   const { head, branch, refs } = inputs
   const found = options.local
-    ? { base: options.carried && await isAncestor(dir, options.carried, head) ? options.carried : head, anchored: true }
+    ? { base: options.carried ?? head, anchored: true }
     : await anchor(dir, head, refs)
   let ahead: number | undefined, behind: number | undefined
   if (refs.upstream) {

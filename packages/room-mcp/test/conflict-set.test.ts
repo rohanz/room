@@ -397,8 +397,12 @@ describe('derived pair slots', () => {
       f.holder('A'); f.holder('B')
       f.entry('A', 'call()\n')
       f.entry('B', undefined)
-      const graph = (detail: string) => ({ version: 1 as const, base: f.base, at: 1, status: 'ready' as const,
-        paths: ['x', 'api.py'], edges: [{ source: 'api.py', target: 'x', symbols: ['call'] }],
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash('from api import call\ncall()\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', 'from api import call\ncall()\n')
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash('def call(a, b):\n    pass\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', 'def call(a, b):\n    pass\n')
+      const graph = (detail: string) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready' as const,
+        paths: ['consumer.py', 'api.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
         observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail }], truncated: false })
       f.room.graphs.set('B', graph('call(a) → call(a, b)'))
       await new ConflictSet(f.session('A')).reconcile('graph')
@@ -407,6 +411,75 @@ describe('derived pair slots', () => {
       f.room.graphs.set('B', graph('call(a) → call(a, b, c)'))
       await new ConflictSet(f.session('A')).reconcile('graph')
       expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(2)
+    } finally { f.cleanup() }
+  })
+
+  it('does not certify a stale contract graph after the provider becomes hashless held', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B')
+      f.entry('A', 'call()\n'); f.entry('B', undefined)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'held', held: 'scope', at: 1, fence: '1' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2, textPrefixes: [] })
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+        paths: ['x', 'api.py'], edges: [{ source: 'api.py', target: 'x', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'now secret_customer' }], truncated: false })
+      await new ConflictSet(f.session('A')).reconcile('narrowed')
+      expect([...f.room.doc.getMap<any>('conflicts').values()].filter(slot => slot.kind === 'contract' && slot.status === 'conflict')).toEqual([])
+      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('does not trust an old graph edge after the consumer stops using the symbol', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B')
+      f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'print("done")\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const provider = 'def call(a, b):\n    pass\n'
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+        paths: ['consumer.py', 'api.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'call(a) → call(a, b)' }], truncated: false })
+      await new ConflictSet(f.session('A')).reconcile('consumer changed')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', 'call'))).toBeUndefined()
+      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('retains settled contract evidence without restricted signature detail when observations disappear', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B')
+      f.entry('A', 'call()\n'); f.entry('B', undefined)
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash('from api import call\ncall()\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', 'from api import call\ncall()\n')
+      const provider = f.room.manifest.get(manifestKey('B', '1'))!
+      provider.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash('def call(a, b):\n    pass\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', 'def call(a, b):\n    pass\n')
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+        paths: ['consumer.py', 'api.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'now secret_customer' }], truncated: false })
+      const live = new ConflictSet(f.session('A'))
+      await live.reconcile('visible')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', 'call'))?.status).toBe('conflict')
+      const beforeNotices = f.post.mock.calls.filter(call => call[1]?.type === 'contract').length
+      live.start()
+      provider.set('api.py', { change: 'M', state: 'held', held: 'scope', at: 2, fence: '1' })
+      f.room.clearOverlay(manifestKey('B', '1'), 'api.py')
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2, textPrefixes: [] })
+      expect(JSON.stringify([...f.room.doc.getMap('conflicts').entries()])).not.toContain('secret_customer')
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 2, at: 2, status: 'ready', paths: [], edges: [], observed: [], truncated: false })
+      await new ConflictSet(f.session('A')).reconcile('withdrawn')
+      const slots = [...f.room.doc.getMap<any>('conflicts').entries()].filter(([, slot]) => slot.kind === 'contract')
+      expect(slots).toHaveLength(1)
+      expect(slots[0]![1]).toMatchObject({ status: 'unknown', settled: 'conflict', subject: '*', why: expect.stringContaining('not readable') })
+      expect(JSON.stringify(slots)).not.toContain('secret_customer')
+      expect(f.post.mock.calls.slice(beforeNotices).filter(call => call[1]?.type === 'contract').every(call => !JSON.stringify(call[1]).includes('secret_customer'))).toBe(true)
+      live.stop()
     } finally { f.cleanup() }
   })
 

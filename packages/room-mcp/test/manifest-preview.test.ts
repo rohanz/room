@@ -26,6 +26,7 @@ function fixture() {
   git('commit', '-qm', 'base')
   const base = git('rev-parse', 'HEAD')
   const room = new RoomDoc()
+  room.ensureRoomSalt()
   room.setMeta({ base, branch: 'main', repo: 'demo' })
   room.participants.set('ben\0holder', { sessionId: 'ben-1', epoch: 1 })
   room.participants.set('ben\0git', { base, head: base, fence: '1', rev: 1 })
@@ -44,6 +45,28 @@ function fixture() {
   } as unknown as HandlerState
   return { room, head, entries, texts, session, state }
 }
+
+it('marks a changed disk symlink as a named partial gap even if a scratch test passes', async () => {
+  const { room, session, state } = fixture()
+  fs.unlinkSync(path.join(root!, 'app.py'))
+  fs.symlinkSync(path.join(os.tmpdir(), 'outside-room-preview'), path.join(root!, 'app.py'))
+  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test ! -L app.py && echo "1 passed"' })
+  expect(result).toContain('PARTIAL preview')
+  expect(result).toContain('app.py')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false })
+  expect(room.messages().some(message => message.type === 'note' && message.text.includes('partial preview') && message.text.includes('app.py'))).toBe(true)
+})
+
+it('marks a changed tracked file replaced by a directory as partial', async () => {
+  const { session, state } = fixture()
+  fs.unlinkSync(path.join(root!, 'app.py'))
+  fs.mkdirSync(path.join(root!, 'app.py'))
+  fs.writeFileSync(path.join(root!, 'app.py', 'nested.py'), 'replacement\n')
+  const result = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(result).toContain('PARTIAL preview')
+  expect(result).toContain('app.py')
+  expect(session.lastPreview?.complete).toBe(false)
+})
 
 it('keeps a hashless held file out of the combined tree and records a partial passing run', async () => {
   const { room, entries, texts, session, state } = fixture()
@@ -109,4 +132,32 @@ it('default preview includes a present neighbour whose only overlapping change i
   expect(result).toContain('ben')
   expect(result).not.toContain('no present participants to merge')
   expect(session.lastPreview).toBeDefined()
+})
+
+it('fetches a reachable participant anchor before explicit preview and honours ROOM_AUTO_FETCH=0', async () => {
+  const { room, head, state, session } = fixture()
+  const origin = path.join(root!, '.git', 'origin.git')
+  execFileSync('git', ['clone', '--bare', '-q', root!, origin])
+  execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: root! })
+  const other = path.join(root!, '.git', 'other')
+  execFileSync('git', ['clone', '-q', origin, other])
+  execFileSync('git', ['config', 'user.name', 'Ben'], { cwd: other })
+  execFileSync('git', ['config', 'user.email', 'ben@example.test'], { cwd: other })
+  fs.writeFileSync(path.join(other, 'app.py'), 'ben committed\n')
+  execFileSync('git', ['add', '.'], { cwd: other })
+  execFileSync('git', ['commit', '-qm', 'ben change'], { cwd: other })
+  execFileSync('git', ['push', '-q', 'origin', 'HEAD:master'], { cwd: other })
+  const b = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: other, encoding: 'utf8' }).trim()
+  room.participants.set('ben\0git', { base: b, head: b, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base: b, rev: 2, semRev: 2 })
+  state.baseFor = (_s: Session, person: string) => person === 'ben' ? b : head.base
+  const before = process.env.ROOM_AUTO_FETCH
+  try {
+    process.env.ROOM_AUTO_FETCH = '0'
+    await expect(handlers(state).room_preview_merge({ person: 'ben' })).rejects.toThrow('git fetch')
+    process.env.ROOM_AUTO_FETCH = '1'
+    const fetched = await handlers(state).room_preview_merge({ person: 'ben' })
+    expect(fetched).not.toContain('git fetch')
+    expect(session.lastPreview?.complete).toBe(true)
+  } finally { if (before === undefined) delete process.env.ROOM_AUTO_FETCH; else process.env.ROOM_AUTO_FETCH = before }
 })

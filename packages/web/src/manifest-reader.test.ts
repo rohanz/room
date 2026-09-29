@@ -6,6 +6,7 @@ import { epochPublication } from '../../shared/src/testing.js'
 
 function roomWith(name = 'Ben') {
   const room = new RoomDoc()
+  room.ensureRoomSalt()
   const fence = '1', base = 'base-1'
   epochPublication(room, name, base, 1, 'fixture-session')
   room.manifestHead.set(name, { base, fence, level: 'declared', coverage: { kind: 'all' }, excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true, textPrefixes: ['src/'] })
@@ -99,6 +100,15 @@ describe('git-less manifest reader', () => {
       room.manifestHead.set(name, { ...room.manifestHead.get(name)!, excluded: [digestPath(salt, 'secrets/key.txt')] })
       expect(await readWebVersion(room, name, 'secrets/key.txt', () => [])).toMatchObject({ kind: 'excluded' })
       expect(JSON.stringify(room.manifestHead.get(name))).not.toContain('secrets/key.txt')
+    } finally { room.doc.destroy() }
+  })
+  it.each([undefined, 'malformed'])('keeps browser coverage incomplete with invalid room salt %s', async salt => {
+    const { room, name } = roomWith()
+    try {
+      if (salt === undefined) room.metaMap.delete('roomSalt')
+      else room.metaMap.set('roomSalt', salt)
+      expect(await readWebVersion(room, name, 'secret.txt', () => [])).toMatchObject({ kind: 'unknown', why: 'updating' })
+      expect(webCoverage(room, name)).toMatchObject({ complete: false, gaps: [expect.objectContaining({ why: expect.stringContaining('room salt') })] })
     } finally { room.doc.destroy() }
   })
 })

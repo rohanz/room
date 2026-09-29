@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, afterAll, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -14,6 +14,8 @@ import { pollHead } from './poll-head.js'
 
 const roots: string[] = []
 const daemons: Roomd[] = []
+beforeAll(() => vi.stubEnv('CHOKIDAR_USEPOLLING', '1'))
+afterAll(() => vi.unstubAllEnvs())
 afterEach(async () => { vi.restoreAllMocks(); for (const d of daemons.splice(0)) await d.stop(); for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true }) })
 function checkout(files: Record<string, string>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-policy-regression-'))
@@ -68,6 +70,24 @@ it('keeps an existing shared file and incomplete coverage when reading it fails'
   expect(manifestText(daemon.roomDoc, 'x', 'Ben')).toBe('first')
   expect(daemon.roomDoc.manifestHead.get('Ben')?.complete).toBe(false)
   expect((daemon as any).publisher.dirtyTimer).toBeDefined()
+})
+
+it('stores base text under the manifest anchor after an unpushed commit', async () => {
+  const { dir, git, base } = checkout({ 'x.py': 'base\n' })
+  const origin = `${dir}-origin.git`
+  roots.push(origin)
+  execFileSync('git', ['init', '--bare', '-q', origin])
+  git('remote', 'add', 'origin', origin)
+  git('push', '-q', '-u', 'origin', 'main')
+  fs.writeFileSync(path.join(dir, 'x.py'), 'unpushed\n')
+  git('add', '-A'); git('commit', '-qm', 'unpushed')
+  const daemon = await startRoomd({ dir, room: 'ws://memory/team', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'),
+    providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60000, log: () => {} })
+  daemons.push(daemon)
+  const anchor = daemon.roomDoc.manifestHead.get('Ben')?.base
+  expect(anchor).toBe(base)
+  expect(daemon.roomDoc.baseText('Ben', base, 'x.py')).toBe('base\n')
+  expect(daemon.roomDoc.baseText('Ben', git('rev-parse', 'HEAD'), 'x.py')).toBeUndefined()
 })
 
 it('leaves a failed HEAD transition incomplete and retries without certifying equality', async () => {

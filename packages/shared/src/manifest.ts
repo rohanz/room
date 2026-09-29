@@ -126,8 +126,10 @@ export async function versionOf(snap: ParticipantSnapshot | undefined, path: str
     if (entry.state === 'held') return { kind: 'held', entry, why: entry.held ?? 'text not shared' }
     return { kind: 'unknown', why: 'updating', detail: 'shared text is missing or does not match its hash' }
   }
+  if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt))
+    return { kind: 'unknown', why: 'updating', detail: 'room salt is missing or invalid; exclusion coverage cannot be certified' }
   const digest = env.digest ?? (async (salt: string, value: string) => (await import('./manifest-node.js')).digestPath(salt, value))
-  if (snap.roomSalt && head.excluded.includes(await digest(snap.roomSalt, path))) return { kind: 'excluded' }
+  if (head.excluded.includes(await digest(snap.roomSalt, path))) return { kind: 'excluded' }
   if (!env.gitAt) return { kind: 'unknown', why: 'no-base-text', detail: 'base text not in the room' }
   try { return { kind: 'base', text: await env.gitAt(head.base, path) } }
   catch { return { kind: 'unknown', why: 'fetch', detail: 'base commit is unavailable' } }

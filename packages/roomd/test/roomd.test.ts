@@ -185,11 +185,11 @@ describe('roomd v2 push-only overlays', () => {
     const owner = await start({ dir, room: url, name: 'Owner', remoteRepairSchedule: run => { scheduled.push(run); return () => {} } })
     const peer = new RoomDoc(), connection = hub.connect(url, peer.doc)
     try {
-      peer.ownedBaseTexts.set(`Owner\u0000${owner.shared}:edit.py`, 'forged')
-      expect(owner.roomDoc.baseText('Owner', owner.shared, 'edit.py')).toBe('forged')
+      peer.ownedBaseTexts.set(`Owner\u0000${owner.inputs.head}:edit.py`, 'forged')
+      expect(owner.roomDoc.baseText('Owner', owner.inputs.head, 'edit.py')).toBe('forged')
       expect(scheduled).toHaveLength(1)
       await scheduled.shift()!()
-      expect(peer.baseText('Owner', owner.shared, 'edit.py')).toBe('real base\n')
+      expect(peer.baseText('Owner', owner.inputs.head, 'edit.py')).toBe('real base\n')
     } finally { connection.destroy(); peer.doc.destroy() }
   })
 
@@ -202,7 +202,7 @@ describe('roomd v2 push-only overlays', () => {
     const peer = new RoomDoc()
     const connection = hub.connect(url, peer.doc)
     try {
-      const base = owner.shared
+      const base = owner.inputs.head
       await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n' && manifestDeleted(peer, 'Owner', 'gone.py'))
       peer.clearOverlays('Owner')
       await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n'
@@ -222,10 +222,10 @@ describe('roomd v2 push-only overlays', () => {
     try {
       await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n')
       peer.clearOverlays('Owner')
-      owner.roomDoc.setBaseText('Owner', owner.shared, 'edit.py', 'late base', owner)
+      owner.roomDoc.setBaseText('Owner', owner.inputs.head, 'edit.py', 'late base', owner)
       peer.reconcileBaseTexts('Peer')
       await waitFor(() => incarnationText(peer, 'Owner', 'edit.py')?.toString() === 'changed\n'
-        && peer.baseText('Owner', owner.shared, 'edit.py') === 'base\n')
+        && peer.baseText('Owner', owner.inputs.head, 'edit.py') === 'base\n')
     } finally { connection.destroy(); peer.doc.destroy() }
   })
 
@@ -679,20 +679,44 @@ describe('roomd v2 push-only overlays', () => {
     expect(worker.roomDoc.baseText(worker.name, carried, 'notes.txt')).toBe('lead notes\n')
   })
 
-  it('in a team room a carried worker publishes against the lead\'s base, which teammates have, without the carried files', async () => {
-    const { source, leadHead, workerDir, record } = await carriedWorker()
+  it('pins a worker base across commit, branch rename and restart while retaining carried-untracked deletion', async () => {
+    const { workerDir, carried, record } = await carriedWorker()
+    const roomUrl = room()
+    let worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k', carried: record })
+    await fsp.writeFile(path.join(workerDir, 'app.py'), 'worker committed\n')
+    sh(workerDir, ['add', '-A']); sh(workerDir, ['commit', '-qm', 'worker change'])
+    sh(workerDir, ['branch', '-m', 'feature'])
+    await waitFor(() => worker.roomDoc.manifestHead.get('Alice+w')?.base === carried && manifestPaths(worker.roomDoc, 'Alice+w').includes('app.py'))
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(carried)
+    expect(manifestPaths(worker.roomDoc, 'Alice+w')).toContain('app.py')
+    sh(workerDir, ['checkout', '-qb', 'alternate'])
+    await waitFor(() => participantRecord(worker.roomDoc, 'Alice+w')?.git?.branch === 'alternate')
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(carried)
+    await worker.stop()
+    worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k', carried: record })
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(carried)
+    expect(manifestPaths(worker.roomDoc, 'Alice+w')).toContain('app.py')
+    await fsp.rm(path.join(workerDir, 'notes.txt'))
+    await (worker as any).publisher.reconcile('all')
+    await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').includes('notes.txt'))
+    expect(worker.roomDoc.manifest.get(manifestKey('Alice+w', worker.roomDoc.manifestHead.get('Alice+w')!.fence))?.get('notes.txt')?.change).toBe('D')
+  })
+
+  it('in a team room a carried worker publishes base text under its manifest anchor', async () => {
+    const { source, workerDir, record } = await carriedWorker()
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', carried: record })
     expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(sh(workerDir, ['rev-parse', 'HEAD']))
     expect(manifestPaths(worker.roomDoc, 'Alice+w')).toEqual([])
-    // A worker edit on top of a carried file: the full text, with the base text a teammate's clone has.
+    // A worker edit on top of a carried file uses the captured manifest anchor.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\nworker line\n')
     await fsp.writeFile(path.join(workerDir, 'other.py'), 'other\nworker line\n')
     await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').length === 2)
     expect(manifestText(worker.roomDoc, 'app.py', 'Alice+w')).toBe('lead WIP\nworker line\n')
-    expect(worker.roomDoc.baseText(worker.name, leadHead, 'app.py')).toBe('base\n')
-    expect(worker.roomDoc.baseText(worker.name, leadHead, 'other.py')).toBe('other\n')
+    const anchor = worker.roomDoc.manifestHead.get('Alice+w')!.base
+    expect(worker.roomDoc.baseText(worker.name, anchor, 'app.py')).toBe('lead WIP\n')
+    expect(worker.roomDoc.baseText(worker.name, anchor, 'other.py')).toBe('other\n')
     // Reverting to the carried text withdraws the overlay again.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
     await waitFor(() => !manifestPaths(worker.roomDoc, 'Alice+w').includes('app.py'))

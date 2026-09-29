@@ -16,6 +16,9 @@ export interface ObservedContractChange { path: string; symbol: string; kind: Ob
 export interface GraphSnapshot {
   version: 1
   base: string
+  /** Manifest incarnation that authorized this derived content. */
+  sourceFence?: string
+  sourceRev?: number
   at: number
   status: 'ready' | 'indexing' | 'error'
   paths: string[]

@@ -277,7 +277,7 @@ export class Bridge {
         && !['retiring', 'retired', 'abandoned'].includes(current.phase)
     }
     const coverage: Coverage = policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
-      : !sourceHead || !source?.fenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
+      : !sourceHead || sourceHead.base !== C || (source.record?.git?.base !== undefined && source.record.git.base !== C) || !source?.fenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
       : sourceHead.coverage.kind === 'none' ? { kind: 'none', reason: sourceHead.coverage.reason === 'not-publisher' ? 'not-publisher' : sourceHead.coverage.reason === 'intent' ? 'intent' : 'starting' }
       : sourceHead.excluded.length ? { kind: 'none', reason: 'unprojectable' }
       : { kind: 'all' }
@@ -435,8 +435,9 @@ export class Bridge {
     const tag = this.tagOf(c.by)
     if (!tag) return
     const me = this.team.me
-    const { id: _id, at: _at, anchor: _anchor, ...rest } = c as Claim & { anchor?: unknown }
-    const t = this.team.room.addClaim({ ...rest, by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}`, mirrorOf: tag }, this)
+    const { id: _id, at: _at, anchor: _anchor, claimedHash: _localHash, ...rest } = c as Claim & { anchor?: unknown }
+    const claimedHash = authorizesText(this.team.policyStore.policy, c.path) ? c.claimedHash : undefined
+    const t = this.team.room.addClaim({ ...rest, ...(claimedHash ? { claimedHash } : {}), by: me.name, byKind: me.kind, intent: `[${tag}] ${c.intent}`, mirrorOf: tag }, this)
     this.mirrored.set(localId, t.id)
     this.o.log?.(`bridge: mirrored ${c.by}'s claim ${c.path}:${c.from}-${c.to} into the team room as ${t.id}`)
   }
@@ -447,10 +448,11 @@ export class Bridge {
     const local = this.local.room.claims.get(localId)
     const mirrored = this.team.room.claims.get(teamId)
     if (!local || !mirrored) return
-    const { id: _id, at: _at, anchor: _anchor, ...rest } = local as Claim & { anchor?: unknown }
+    const { id: _id, at: _at, anchor: _anchor, claimedHash: _localHash, ...rest } = local as Claim & { anchor?: unknown }
     const { anchor: _mirrorAnchor, ...mirrorRest } = mirrored
+    const claimedHash = authorizesText(this.team.policyStore.policy, local.path) ? local.claimedHash : undefined
     this.team.room.doc.transact(() => this.team.room.claims.set(teamId, {
-      ...mirrorRest, ...rest, id: teamId, at: mirrored.at, by: this.team.me.name, byKind: this.team.me.kind,
+      ...mirrorRest, ...rest, claimedHash, id: teamId, at: mirrored.at, by: this.team.me.name, byKind: this.team.me.kind,
       intent: `[${mirrored.mirrorOf}] ${local.intent}`, mirrorOf: mirrored.mirrorOf,
     }), this)
   }

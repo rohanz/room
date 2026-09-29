@@ -43,6 +43,7 @@ function pair() {
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   const rooms = { a: new RoomDoc(a), b: new RoomDoc(b) }
+  rooms.a.ensureRoomSalt()
   for (const room of Object.values(rooms)) {
     const setScope = room.setScope.bind(room), addClaim = room.addClaim.bind(room)
     room.setScope = (...args) => { visiblePeer(room, args[0].by, args[0].byKind ?? 'agent'); return setScope(...args) }
@@ -72,7 +73,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
     policyStore,
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' },
+    daemon: { touch() {}, rememberClaimDigest() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' },
   }
 }
 
