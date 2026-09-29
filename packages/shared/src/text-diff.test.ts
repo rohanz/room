@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as diff from 'diff'
 import { RoomDoc } from './doc.js'
 import { boundedTextDiff } from './text-diff.js'
+
+vi.mock('diff', async importOriginal => {
+  const actual = await importOriginal<typeof import('diff')>()
+  return { ...actual, diffChars: vi.fn(actual.diffChars) }
+})
 
 /** Deterministic pseudo-random generator, so fixtures are the same on every run. */
 function rng(seed: number) {
@@ -88,15 +94,20 @@ describe('overlay text diff', () => {
 
   it('keeps outer claim anchors when an unrelated middle exhausts the character budget', () => {
     const room = new RoomDoc()
-    const before = `first\n${'a'.repeat(6_000)}\nlast\n`
-    const after = `first\n${'b'.repeat(6_000)}\ninserted\nlast\n`
+    const before = `first\n${'a'.repeat(3_000)}x${'a'.repeat(3_000)}\nlast\n`
+    const after = `first\n${'b'.repeat(3_000)}x${'b'.repeat(3_000)}\ninserted\nlast\n`
     room.setOverlay('p', 'large.txt', before)
     const first = room.addClaim({ path: 'large.txt', from: 1, to: 1, by: 'p', byKind: 'agent', intent: 'first' })
     const middle = room.addClaim({ path: 'large.txt', from: 2, to: 2, by: 'p', byKind: 'agent', intent: 'middle' })
     const last = room.addClaim({ path: 'large.txt', from: 3, to: 3, by: 'p', byKind: 'agent', intent: 'last' })
+    const charDiff = vi.mocked(diff.diffChars)
+    charDiff.mockClear()
     const ops = boundedTextDiff(before, after)
+    expect(charDiff).toHaveBeenCalled()
+    expect(charDiff.mock.calls.some(([, , options]) => (options as { maxEditLength?: number } | undefined)?.maxEditLength !== undefined)).toBe(true)
+    expect(charDiff.mock.results.some(result => result.value === undefined)).toBe(true)
     expect(apply(before, ops)).toBe(after)
-    expect(ops).toContainEqual([-1, 'a'.repeat(6_000)])
+    expect(ops).toContainEqual([-1, `${'a'.repeat(3_000)}x${'a'.repeat(3_000)}`])
     room.setOverlay('p', 'large.txt', after)
     expect(room.text('large.txt', 'p')).toBe(after)
     expect(room.claimRange(first)).toEqual({ from: 1, to: 1 })
@@ -109,6 +120,14 @@ describe('overlay text diff', () => {
     const start = performance.now()
     for (let i = 0; i < 100; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
     expect(performance.now() - start).toBeLessThan(1_000)
+  })
+
+  it('bounds the worst small-text character diff to about one event-loop slice', () => {
+    const before = `${'a'.repeat(706)}x`, after = `x${'b'.repeat(706)}`
+    for (let i = 0; i < 3; i++) boundedTextDiff(before, after) // warm the diff path
+    const start = performance.now()
+    for (let i = 0; i < 20; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
+    expect((performance.now() - start) / 20).toBeLessThan(25)
   })
 
   it('shares the character work allowance across many changed hunks', () => {

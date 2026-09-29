@@ -269,6 +269,7 @@ class Daemon implements Roomd {
   private readonly periodicReconcileSchedule: (run: () => void, intervalMs: number) => () => void
   private cancelPeriodicReconcile?: () => void
   private reconcileQueued = false
+  private reconcileDirty = false
   private readonly beforeWatcherReady?: () => void
   readonly sizeCap: number
   readonly totalBudget: number
@@ -648,12 +649,24 @@ class Daemon implements Roomd {
 
   /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
   reconcileGitChanges(): Promise<void> {
-    if (this.reconcileQueued || this.stopped) return this.workQueue
+    if (this.stopped) return this.workQueue
+    if (this.reconcileQueued) {
+      this.reconcileDirty = true
+      return this.workQueue
+    }
     this.reconcileQueued = true
     return this.enqueue(async () => {
       try {
-        await this.pollHead()
-        await this.publisher.reconcile(await gitChanged(this.dir))
+        do {
+          this.reconcileDirty = false
+          try {
+            await this.pollHead()
+            await this.publisher.reconcile(await gitChanged(this.dir))
+          } catch (error) {
+            // A request made during this pass still needs its own attempt before its promise resolves.
+            if (!this.reconcileDirty || this.stopped) throw error
+          }
+        } while (this.reconcileDirty && !this.stopped)
       } finally { this.reconcileQueued = false }
     })
   }

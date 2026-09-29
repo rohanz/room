@@ -17,6 +17,8 @@ export type TextOp = [-1 | 0 | 1, string]
 const WORK = 2_000_000
 /** Small changes avoid the line pass and use one character diff. */
 const SMALL_MIDDLE = 4_096
+/** The fast path's smaller edit budget keeps near-exhaustive small rewrites below one event-loop slice. */
+const SMALL_WORK = 500_000
 
 const isHigh = (code: number) => code >= 0xd800 && code <= 0xdbff
 const isLow = (code: number) => code >= 0xdc00 && code <= 0xdfff
@@ -80,7 +82,7 @@ export function boundedTextDiff(before: string, after: string): TextOp[] {
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail)
   const out: TextOp[] = head ? [[0, before.slice(0, head)]] : []
   if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
-    out.push(...hunk(a, b, WORK)[0])
+    out.push(...hunk(a, b, SMALL_WORK)[0])
     if (tail) out.push([0, before.slice(before.length - tail)])
     return out.filter(([, value]) => value.length)
   }

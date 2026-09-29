@@ -61,7 +61,7 @@ it('publishes an edit with no watcher event on the periodic reconcile and cancel
   expect(cancelled).toBe(true)
 })
 
-it('skips a periodic tick while its previous reconcile is in flight', async () => {
+it('coalesces a periodic tick while its previous reconcile is in flight', async () => {
   let tick: (() => void) | undefined
   const config = options({ periodicReconcileSchedule: run => { tick = run; return () => {} } })
   daemon = await startRoomd(config)
@@ -76,9 +76,10 @@ it('skips a periodic tick while its previous reconcile is in flight', async () =
   tick!()
   await publishing
   tick!()
+  tick!()
   release()
   await internal.enqueue(async () => {})
-  expect(writes).toBe(1)
+  expect(writes).toBe(2)
   expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('missed edit\n')
 })
 
@@ -95,7 +96,6 @@ it('services a timer and coalesced update during a many-file publish', async () 
     watcher: { removeAllListeners(name: string): void }
     enqueue(work: () => Promise<void>): Promise<void>
     reconcileGitChanges(): Promise<void>
-    publisher: { reconcile(paths: Iterable<string>): Promise<void> }
     beforePublishWrite: (relpath: string) => Promise<void>
   }
   internal.watcher.removeAllListeners('all')
@@ -121,9 +121,10 @@ it('services a timer and coalesced update during a many-file publish', async () 
       }, 0)
     }
   })
-  await internal.enqueue(() => internal.publisher.reconcile(files))
+  const first = internal.reconcileGitChanges()
   await timer
   await followUp
+  await first
   expect(timerMs).toBeLessThan(100)
   expect(writesAtTimer).toBeGreaterThan(0)
   expect(writesAtTimer).toBeLessThan(files.length)
