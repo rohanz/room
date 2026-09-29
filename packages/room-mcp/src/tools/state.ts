@@ -98,7 +98,13 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const withheld = (s: Session, person: string, p?: string): string | undefined => {
     const level = shareOf(s, person)
     if (level === 'intent') return `${person} shares intent only; ask them or wait for their push`
-    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+    // The publisher keeps a declared path visible after room_done only while its
+    // changed overlay or deletion is still in the room. Readers use that published
+    // state, not the publisher's private retained-path record.
+    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)
+      && s.room.text(p, person) === undefined && !s.room.deleted.get(person)?.has(p)) {
+      return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+    }
     return undefined
   }
   const setPresence = (s: Session, patch: Partial<Presence>) => {

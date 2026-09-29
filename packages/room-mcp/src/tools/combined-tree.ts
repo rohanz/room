@@ -166,7 +166,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   const resolvedText = new Map<string, string>()
   const conflictingPaths = new Map<string, string[]>()
   for (const [index, { person, session }] of participants.entries()) {
-    const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : ''
+    const declaredNote = shareOf(session, person) === 'declared' ? `note: ${person} shares declared paths only; this preview includes current-scope changes and retained changes still published from earlier scopes` : ''
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
     const leadBase = baseFor(session, person)

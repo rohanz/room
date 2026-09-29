@@ -91,7 +91,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       ].filter(Boolean)) : s.room.changedPaths(person)
       for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
       const level = shareOf(s, person)
-      if (level === 'declared') parts.push(`(${person} shares declared paths only: changes outside their scope are not shared)`)
+      if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared)`)
       return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
   }
   const handlers: Record<string, Handler> = {
