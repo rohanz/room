@@ -127,7 +127,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPending(server, { ...p, startedAt: Date.now() })
       return `${p.provider === 'oidc' ? 'Single sign-on' : 'GitHub'} login for ${server}. Tell the user exactly this: ${codeLine(p)}`
     },
-    async room_create(a) { return handlers.room_join({ ...a, where: a.where ?? a.server ?? 'team', create: true }) },
+    async room_create(a) { return handlers.room_join({ ...a, create: true }) },
     async room_join(a) {
       if (a.takeover !== undefined && typeof a.takeover !== 'boolean') return 'error: takeover must be true or false'
       const cur = ctx.getSession()
@@ -264,7 +264,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         await closeRoom(server, roomName, { session: auth.session, token: auth.token })
         const repo = roomName
-        return `closed ${repo} for everyone without joining (the room could not be joined, so its history was not exported); room_create reopens it`
+        return `closed ${repo} for everyone without joining (no joined session was available to export its history); room_create reopens it`
       }
       if (s.local) {
         if (a.confirm !== true) return 'error: this is a local room (no server): room_close forgets its saved history (timeline, finished-worker records) on this machine; call with confirm=true only on the user\'s explicit request'

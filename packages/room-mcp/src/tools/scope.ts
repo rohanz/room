@@ -114,6 +114,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
       }
+      if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}; room_leave, then room_create to reopen`)
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()
       if (s.rejected) out.push(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
