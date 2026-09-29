@@ -7,6 +7,7 @@ import { RECORDED_PATH, validRepoPath } from './repo-path.js'
 
 export class RetainedDeclaredPaths extends Set<string> {
   private readonly file: string
+  private changeQueued = false
 
   constructor(dir: string, private readonly room: string, private readonly participant: string, server: string, private readonly onChange?: () => void) {
     super()
@@ -30,19 +31,28 @@ export class RetainedDeclaredPaths extends Set<string> {
     else fs.rmSync(this.file, { force: true })
   }
 
+  private notifyChange(): void {
+    if (!this.onChange || this.changeQueued) return
+    this.changeQueued = true
+    queueMicrotask(() => {
+      this.changeQueued = false
+      this.onChange?.()
+    })
+  }
+
   override add(path: string): this {
-    if (!this.has(path)) { super.add(path); this.save(); this.onChange?.() }
+    if (!this.has(path)) { super.add(path); this.save(); this.notifyChange() }
     return this
   }
 
   override delete(path: string): boolean {
     const removed = super.delete(path)
-    if (removed) { this.save(); this.onChange?.() }
+    if (removed) { this.save(); this.notifyChange() }
     return removed
   }
 
   override clear(): void {
-    if (this.size) { super.clear(); this.save(); this.onChange?.() }
+    if (this.size) { super.clear(); this.save(); this.notifyChange() }
   }
 }
 

@@ -220,6 +220,19 @@ export async function gitTracked(dir: string): Promise<{ paths: Set<string>; ind
   return { paths, indexed }
 }
 
+/** True only when git confirms the commit is absent (rev-parse --verify --quiet exits 1 silently); false for a
+ *  present commit or any other outcome, so a probe that cannot run never reads as "missing". */
+export async function gitCommitMissing(dir: string, sha: string, configuredTimeoutMs?: number): Promise<boolean> {
+  const args = ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]
+  const done = observeGit(args)
+  return new Promise(resolve => {
+    execFile('git', args, { cwd: dir, encoding: 'utf8', timeout: timeoutMs(configuredTimeoutMs) }, (err, stdout, stderr) => {
+      done()
+      resolve(Number((err as NodeJS.ErrnoException | null)?.code) === 1 && !stdout && !stderr)
+    })
+  })
+}
+
 /** True when git would ignore this path (so it must not be synced). */
 export async function gitIgnored(dir: string, rel: string, configuredTimeoutMs?: number): Promise<boolean> {
   const timeout = timeoutMs(configuredTimeoutMs)

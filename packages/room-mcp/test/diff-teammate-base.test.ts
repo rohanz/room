@@ -10,6 +10,7 @@ import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 
 const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined }))
+const probeFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, stderr: '' }))
 vi.mock('@room/roomd/git', async importOriginal => {
   const original = await importOriginal<typeof import('@room/roomd/git')>()
   return { ...original, gitShow: async (...args: Parameters<typeof original.gitShow>) => {
@@ -17,10 +18,23 @@ vi.mock('@room/roomd/git', async importOriginal => {
     return original.gitShow(...args)
   } }
 })
+vi.mock('node:child_process', async importOriginal => {
+  const original = await importOriginal<typeof import('node:child_process')>()
+  return { ...original, execFile: (file: string, args: string[], options: { cwd: string }, done: (error: Error | null, stdout: string, stderr: string) => void) => {
+    const baseProbe = (args[0] === 'cat-file' && args[1] === '-e') || (args[0] === 'rev-parse' && args[1] === '--verify')
+    if (file === 'git' && baseProbe && probeFailure.error) {
+      done(probeFailure.error, '', probeFailure.stderr)
+      return undefined
+    }
+    return original.execFile(file, args, options, done)
+  } }
+})
 
 const dirs: string[] = []
 afterEach(() => {
   gitShowFailure.error = undefined
+  probeFailure.error = undefined
+  probeFailure.stderr = ''
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -107,6 +121,27 @@ it.each(['git show timed out after 30000ms', 'git show failed: permission denied
     }
   }
 )
+
+it.each([
+  ['spawn denied', Object.assign(new Error('spawn git EACCES'), { code: 'EACCES' }), ''],
+  ['git exit 128', Object.assign(new Error('git failed'), { code: 128 }), 'fatal: permission denied'],
+  ['probe timeout', Object.assign(new Error('git killed'), { killed: true, signal: 'SIGTERM' }), ''],
+])('keeps the original show error when the base probe has an operational failure (%s)', async (_case, error, stderr) => {
+  const t = flaskChanges()
+  try {
+    gitShowFailure.error = new Error('git show failed: EACCES')
+    probeFailure.error = error
+    probeFailure.stderr = stderr
+    const diff = await t.tools.call('room_read', { person: 'Ben', path: 'CHANGES.rst', diff: true })
+    expect(diff).toContain('git show failed: EACCES')
+    expect(diff).not.toContain('git fetch')
+    expect(diff).not.toContain("Ben's HEAD")
+  } finally {
+    await t.tools.shutdown()
+    t.awareness.destroy()
+    t.room.doc.destroy()
+  }
+})
 
 it('a connected carried worker diff contains only the worker edit and no misleading base note', async () => {
   const t = flaskChanges()

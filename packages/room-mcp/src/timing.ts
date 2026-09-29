@@ -10,6 +10,7 @@ const EVENT_LOOP_SAMPLE_MS = 500
 const EVENT_LOOP_LAG_MS = 2_000
 const PREVIEW_CHECK_MAX_AGE_MS = 6 * 60_000 // five-minute command timeout plus one minute for setup and teardown
 const PREVIEW_CHECK_STAT_LIMIT = 50
+const PREVIEW_CHECK_ENTRY_LIMIT = 2_000
 
 type Clock = () => number
 type Logger = (line: string) => void
@@ -26,11 +27,15 @@ export class ToolTiming {
   private readonly activePhases = new Set<string>()
   private queueStarted?: number
   private overlappingPreviewChecks?: number
+  private previewCheckOverlapUnknown = false
 
   constructor(readonly name: string, private readonly now: Clock = () => performance.now()) { this.started = now() }
 
   add(name: string, elapsed: number): void { this.phases.set(name, (this.phases.get(name) ?? 0) + elapsed) }
-  notePreviewCheckOverlap(others: number): void { this.overlappingPreviewChecks = Math.max(this.overlappingPreviewChecks ?? 0, others) }
+  notePreviewCheckOverlap(others: number | undefined): void {
+    if (others === undefined) { this.previewCheckOverlapUnknown = true; this.overlappingPreviewChecks = undefined }
+    else if (!this.previewCheckOverlapUnknown) this.overlappingPreviewChecks = Math.max(this.overlappingPreviewChecks ?? 0, others)
+  }
 
   begin(name: string): () => void {
     const start = this.now()
@@ -103,38 +108,42 @@ export class ToolTiming {
 export function currentToolTiming(): ToolTiming | undefined { return context.getStore() }
 
 /** Scratch directories are visible across MCP processes on this machine. Ignore old crash leftovers. */
-export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file)): number | undefined {
+export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file), openDir: (dir: string) => Pick<fs.Dir, 'readSync' | 'closeSync'> = dir => fs.opendirSync(dir)): number | undefined {
   try {
     const ownName = path.basename(ownDir)
     let count = 0
     let inspected = 0
-    for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name.startsWith('room-merge-file-') || entry.name === ownName) continue
-      if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return undefined // More matches exist; the overlap is unknown.
-      inspected++
-      try {
-        const stat = readStat(path.join(tmpDir, entry.name))
-        if (!stat.isDirectory()) continue
-        const created = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs
-        if (created <= now + 1_000 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++
-      } catch { /* A preview may remove its scratch directory between listing and stat. */ }
-    }
-    return count
+    const dir = openDir(tmpDir)
+    try {
+      for (let scanned = 0; scanned < PREVIEW_CHECK_ENTRY_LIMIT; scanned++) {
+        const entry = dir.readSync()
+        if (!entry) return count
+        if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name.startsWith('room-merge-file-') || entry.name === ownName) continue
+        if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return undefined // More matches exist; the overlap is unknown.
+        inspected++
+        try {
+          const stat = readStat(path.join(tmpDir, entry.name))
+          if (!stat.isDirectory()) continue
+          const created = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs
+          if (created <= now + 1_000 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++
+        } catch { /* A preview may remove its scratch directory between listing and stat. */ }
+      }
+      return undefined // Entry budget exhausted; there may be more previews.
+    } finally { try { dir.closeSync() } catch { /* Diagnostics must not fail the preview. */ } }
   } catch { return undefined }
 }
 
-function notePreviewCheckOverlap(ownDir: string): void {
-  const timing = currentToolTiming()
-  if (timing?.name !== 'room_preview_merge') return
-  const count = countOtherPreviewChecks(ownDir)
-  if (count !== undefined) timing.notePreviewCheckOverlap(count)
-}
-
 /** Samples overlap on either side of the command timer, never inside it. */
-export async function previewCheck<T>(dir: string, work: () => Promise<T> | T, sample: (dir: string) => void = notePreviewCheckOverlap): Promise<T> {
-  try { sample(dir) } catch { /* Diagnostic sampling must not fail the preview. */ }
+export async function previewCheck<T>(dir: string, work: () => Promise<T> | T, sample: (dir: string) => number | undefined = countOtherPreviewChecks): Promise<T> {
+  const timing = currentToolTiming()
+  const observe = () => {
+    if (timing?.name !== 'room_preview_merge') return
+    try { timing.notePreviewCheckOverlap(sample(dir)) }
+    catch { timing.notePreviewCheckOverlap(undefined) }
+  }
+  observe()
   try { return await previewPhase('check', work) }
-  finally { try { sample(dir) } catch { /* Diagnostic sampling must not fail the preview. */ } }
+  finally { observe() }
 }
 
 /** Name preview internals without changing timing or output for collection callers. */

@@ -6,7 +6,7 @@ import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
 import { isAgentic, scopeCovers, type Presence } from '@room/shared'
-import { git, gitShow, isGitTimeout } from '@room/roomd/git'
+import { gitCommitMissing, gitShow, isGitTimeout } from '@room/roomd/git'
 import { workerBaseline } from '@room/roomd/baseline'
 import type { ShareLevel, SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
@@ -142,13 +142,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     catch (e) {
       if (isGitTimeout(e)) throw e
       const sha = baseFor(s, person)
-      try { await git(diskWorker(s, person)?.dir ?? s.dir, ['cat-file', '-e', `${sha}^{commit}`]) }
-      catch (probeError) {
-        if (isGitTimeout(probeError)) throw probeError
-        const worker = s.room.workerOf(person), baseline = workerBaseline(worker)
-        throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
-      }
-      throw e
+      const missing = await gitCommitMissing(diskWorker(s, person)?.dir ?? s.dir, sha)
+      if (!missing) throw e
+      const worker = s.room.workerOf(person), baseline = workerBaseline(worker)
+      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker!.lead : undefined)
     }
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
