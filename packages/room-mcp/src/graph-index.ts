@@ -110,6 +110,7 @@ export class GraphIndex {
       const known = new Map([...root].map(([person, map]) => [person, new Set(map.keys())]))
       return (events: Y.YEvent<any>[]) => {
         if (this.stopped) return
+        this.withdrawRestricted()
         const paths = touchedPaths(events, root, known)
         if (this.base) for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
       }
@@ -126,6 +127,7 @@ export class GraphIndex {
     const onHead = (event: { keysChanged: Set<string> }) => {
       if (!event.keysChanged.has(this.me)) return
       const next = publicationKey()
+      this.withdrawRestricted()
       if (next === this.ownPublicationKey) return
       const firstHead = this.ownPublicationKey === undefined
       this.ownPublicationKey = next
@@ -142,6 +144,7 @@ export class GraphIndex {
       }
       if (event.keysChanged.has(`${this.me}\u0000holder`)) {
         const next = publicationKey()
+        this.withdrawRestricted()
         if (next === this.ownPublicationKey) return
         const firstHead = this.ownPublicationKey === undefined
         this.ownPublicationKey = next
@@ -271,6 +274,26 @@ export class GraphIndex {
   private ownTextAuthorized(path: string): boolean {
     const head = this.room.manifestHead.get(this.me)
     return !!head && (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path)))
+  }
+
+  /** A new reader must never receive derived text after its grant is withdrawn. */
+  private withdrawRestricted(): void {
+    const graph = this.room.graphs.get(this.me)
+    if (!graph) return
+    const head = this.room.manifestHead.get(this.me)
+    if (!head && graph.sourceFence === undefined) return // base-only index before the first manifest
+    const entries = head && this.room.manifest.get(manifestKey(this.me, head.fence))
+    const allowed = (p: string) => {
+      if (!head?.complete || head.coverage.kind !== 'all') return false
+      const entry = entries?.get(p)
+      return !entry || entry.state === 'shared' && this.ownTextAuthorized(p)
+    }
+    const paths = graph.paths.filter(allowed)
+    const edges = graph.edges.filter(e => allowed(e.source) && allowed(e.target))
+    const observed = graph.observed?.filter(o => allowed(o.path))
+    if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length) return
+    this.room.graphs.set(this.me, { ...graph, status: 'indexing', paths, edges, observed,
+      sourceFence: head?.fence, sourceRev: head?.rev, at: Date.now() })
   }
 
   refresh(path: string): Promise<void> {
@@ -423,6 +446,8 @@ export class GraphIndex {
     if (generation !== this.generation) return
     if (this.degradedPaths.size) status = 'error'
     const authorization = this.ownPublicationKey
+    const sourceHead = this.room.manifestHead.get(this.me)
+    const sourceFence = sourceHead?.fence, sourceRev = sourceHead?.rev
     const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base
     if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision &&
         this.lastPublishedRevision.base === base && this.lastPublished.status === status) return
@@ -458,7 +483,9 @@ export class GraphIndex {
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${body.length}|${hashOf(body)}`
     const now = Date.now()
-    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision || authorization !== this.ownPublicationKey) return
+    const currentHead = this.room.manifestHead.get(this.me)
+    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision ||
+        authorization !== this.ownPublicationKey || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return
     if (key === this.lastPublished.key) {
       this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base }
       return
@@ -471,7 +498,8 @@ export class GraphIndex {
     }
     this.lastPublished = { at: now, key, status }
     this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base }
-    this.room.graphs.set(this.me, { version: 1, base: this.base, at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
+    this.room.graphs.set(this.me, { version: 1, base: this.base, sourceFence, sourceRev,
+      at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
   }
 }
 

@@ -449,7 +449,7 @@ export class RoomDoc {
     const claim = this.claims.get(id)
     if (!claim) return undefined
     const text = this.overlayText(claim.by, claim.path)
-    const { anchor: _oldAnchor, ...rest } = claim
+    const { anchor: _oldAnchor, claimedHash: _oldHash, ...rest } = claim
     const next: Claim = { ...rest, from, to, ...(claimedHash !== undefined ? { claimedHash } : {}), ...(text && !claim.mirrorOf ? { anchor: makeAnchor(text, from, to) } : {}) }
     this.doc.transact(() => { this.claims.set(id, next) }, origin)
     return next

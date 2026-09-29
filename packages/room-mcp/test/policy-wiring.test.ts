@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, afterAll, beforeAll, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -12,6 +12,8 @@ import { testPolicyStore } from './policy-fixture.js'
 
 const roots: string[] = []
 const daemons: Roomd[] = []
+beforeAll(() => vi.stubEnv('CHOKIDAR_USEPOLLING', '1'))
+afterAll(() => vi.unstubAllEnvs())
 afterEach(async () => { for (const d of daemons.splice(0)) await d.stop(); for (const r of roots.splice(0)) fs.rmSync(r, { recursive: true, force: true }) })
 function checkout() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-policy-wiring-'))
@@ -68,4 +70,18 @@ it('retains unresolved files after a failed settling scan', async () => {
   await store.settle(store.policy, new Map([['src/x', { state: 'shared', change: 'M' }]]), [])
   await store.settle(store.policy, new Map(), ['src/x'])
   expect(store.retained).toEqual(['src/x'])
+})
+
+it('withdraws an existing claim digest synchronously when text sharing narrows', async () => {
+  const dir = checkout()
+  let daemon: Roomd | undefined
+  const store = await PolicyStore.open({ dir, room: 'local/r/main', participant: 'Ben', requested: 'full',
+    onChange: policy => { if (daemon) applySessionPolicy(daemon, policy) } })
+  daemon = await startRoomd({ dir, room: 'ws://memory/local/r/main', localKey: 'test', name: 'Ben', sessionId: 's1', policy: store.policy,
+    providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60000, log: () => {} })
+  daemons.push(daemon)
+  const claim = daemon.roomDoc.addClaim({ path: 'src/x', from: 1, to: 1, by: 'Ben', byKind: 'agent', intent: 'edit', claimedHash: 'a'.repeat(64) })
+  await store.setRequested('declared')
+  expect(daemon.roomDoc.claims.get(claim.id)?.claimedHash).toBeUndefined()
+  expect(JSON.stringify(daemon.roomDoc.claims.get(claim.id))).not.toContain('a'.repeat(64))
 })

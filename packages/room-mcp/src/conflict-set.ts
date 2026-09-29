@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, gitBlobHash, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
@@ -58,6 +58,24 @@ export class ConflictSlots {
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
   owned(owner: string): [string, ConflictSlot][] { return [...this.map.entries()].filter(([, slot]) => slot.owner === owner) }
   drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)) }
+
+  /** Remove signature detail when the provider's current text is no longer readable. */
+  redactContracts(owner: string, other: string, why: string): void {
+    const old = this.owned(owner).filter(([, slot]) => slot.kind === 'contract' && slot.other === other)
+    if (old.length === 1 && old[0]![0] === slotKey(owner, 'contract', other, old[0]![1].path, '*') &&
+        old[0]![1].status === 'unknown' && old[0]![1].why === why) return
+    const byPath = new Map<string, ConflictSlot[]>()
+    for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot])
+    this.room.doc.transact(() => {
+      for (const [key] of old) this.map.delete(key)
+      for (const [path, slots] of byPath) {
+        const prior = slots.find(slot => slot.settled === 'conflict') ?? slots.find(slot => slot.settled === 'possible') ?? slots[0]!
+        this.map.set(slotKey(owner, 'contract', other, path, '*'), { owner, other, kind: 'contract', path, subject: '*',
+          status: 'unknown', settled: prior.settled, epoch: prior.epoch, fence: prior.fence, checkedAt: this.now(),
+          inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why })
+      }
+    })
+  }
 
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
     const prev = this.map.get(key)
@@ -154,7 +172,7 @@ export class ConflictSet {
   }
 
   start(): void {
-    const schedule = () => this.schedule()
+    const schedule = () => { this.withdrawContractDetails(); this.schedule() }
     for (const map of [this.team.room.manifest, this.team.room.manifestHead, this.team.room.participants, this.team.room.claims, this.team.room.graphs]) {
       map.observe(schedule)
       this.stops.push(() => map.unobserve(schedule))
@@ -165,6 +183,23 @@ export class ConflictSet {
     this.tick = setInterval(() => this.schedule(0), 60_000)
     this.tick.unref?.()
     if (this.team.provider.synced) this.schedule(0)
+  }
+  /** Strip old derived signatures in the same event turn as a manifest or graph withdrawal. */
+  private withdrawContractDetails(): void {
+    if (!this.team.lease?.fence()) return
+    const room = this.team.room
+    const others = new Set(this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract').map(([, slot]) => slot.other))
+    for (const other of others) {
+      const head = room.manifestHead.get(other), graph = room.graphs.get(other)
+      const snap = snapshot(room, other, participantsView(room, this.team.awareness, Date.now()))
+      const entries = head && room.manifest.get(manifestKey(other, head.fence))
+      const stale = !head?.complete || head.coverage.kind !== 'all' || !snap?.fenceValid || head.base !== snap.record?.git?.base ||
+        !graph || graph.status !== 'ready' ||
+        graph.sourceFence !== head.fence || graph.sourceRev !== head.rev
+      const hidden = this.slots.owned(this.owner).some(([, slot]) => slot.kind === 'contract' && slot.other === other &&
+        (entries?.get(slot.path)?.state === 'held' || !!head && !!room.roomSalt && head.excluded.includes(digestPath(room.roomSalt, slot.path))))
+      if (stale || hidden) this.slots.redactContracts(this.owner, other, 'provider graph or manifest coverage is updating')
+    }
   }
   stop(): void {
     for (const stop of this.stops) stop()
@@ -294,20 +329,22 @@ export class ConflictSet {
       if (!theirs || theirGit === 'updating') {
         const why = `${other}'s manifest or base is updating`
         await this.settle(slotKey(this.owner, 'merge', other, '*'), { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(why), factId: '', why })
-        for (const [key, slot] of existing) if (slot.path !== '*') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
+        for (const [key, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
+        this.slots.redactContracts(this.owner, other, why)
         continue
       }
       const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]))
       if (existing.some(([, slot]) => slot.kind === 'merge' && slot.path === '*' && slot.status === 'unknown' && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue
-      await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), theirs)
       const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
-      if ('cannotCompare' in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== 'all' || theirs.head.coverage.kind !== 'all' || !mine.fenceValid || !theirs.fenceValid) {
+      if ('cannotCompare' in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== 'all' || theirs.head.coverage.kind !== 'all' || !mine.fenceValid || !theirs.fenceValid || !mine.roomSalt || !theirs.roomSalt) {
         const why = 'cannotCompare' in pair ? pair.cannotCompare : 'manifest is incomplete or fenced out'
         const key = slotKey(this.owner, 'merge', other, '*')
         await this.settle(key, { owner: this.owner, other, kind: 'merge', path: '*', status: 'unknown', inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: '', why })
-        for (const [existingKey, slot] of existing) if (slot.path !== '*') await this.settle(existingKey, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
+        for (const [existingKey, slot] of existing) if (slot.path !== '*' && slot.kind !== 'contract') await this.settle(existingKey, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${why}`), why })
+        this.slots.redactContracts(this.owner, other, why)
         continue
       }
+      await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), mine, theirs)
       this.drop(slotKey(this.owner, 'merge', other, '*'))
       const mergeBase = pair.mergeBase
       const changed = async (snap: ParticipantSnapshot, base: string) => {
@@ -387,12 +424,18 @@ export class ConflictSet {
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
   }
 
-  private async contracts(other: string, myPaths: Set<string>, theirs: ParticipantSnapshot): Promise<void> {
+  private async contracts(other: string, myPaths: Set<string>, mine: ParticipantSnapshot, theirs: ParticipantSnapshot): Promise<void> {
     const graph = this.team.room.graphs.get(other)
-    const live = new Set<string>()
     const carried = this.carriedFrom?.(this.owner)
+    const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
+    if (!carriedProvider && (!graph || graph.status !== 'ready' || graph.base !== theirs.head.base ||
+        graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
+      this.slots.redactContracts(this.owner, other, 'provider graph or manifest coverage is updating')
+      return
+    }
+    const live = new Set<string>()
     let changes = graph?.observed ?? []
-    if (carried?.lead === other && carriesWork(carried.baseline)) {
+    if (carriedProvider) {
       const paths = new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()])
       const observed: typeof changes = []
       for (const path of paths) {
@@ -410,7 +453,7 @@ export class ConflictSet {
         }
         const version = await versionOf(theirs, path, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: blob => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) })
         const after = asText(version)
-        if (after === undefined) continue
+        if (after === undefined) { this.slots.redactContracts(this.owner, other, 'provider version is not readable'); return }
         const oldText = before.kind === 'absent' ? '' : before.text
         const cacheKey = hash(JSON.stringify([carried.baseline.sha, path, oldText, after]))
         let parsed = this.contractCache.get(cacheKey)
@@ -426,18 +469,31 @@ export class ConflictSet {
     }
     for (const change of changes) {
       if (change.kind === 'add') continue
+      const provider = await this.read(theirs, change.path)
+      if (asText(provider) === undefined || provider.kind === 'base') {
+        this.slots.redactContracts(this.owner, other, 'provider version is not readable')
+        return
+      }
       let uses: string[]
-      if (carried?.lead === other && carriesWork(carried.baseline)) {
+      if (carriedProvider) {
         uses = []
         for (const path of myPaths) {
-          const version = await versionOf(snapshot(this.team.room, this.owner, participantsView(this.team.room, this.team.awareness, Date.now())), path,
-            { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: blob => git(this.team.dir, ['cat-file', '-p', blob]).catch(() => undefined) })
+          const version = await this.read(mine, path)
           const text = asText(version)
           if (text && await consumesSymbol(path, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path)
         }
         uses.sort()
-      } else uses = graph?.edges.filter(edge => edge.source === change.path && myPaths.has(edge.target) &&
-        edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol))).map(edge => edge.target).sort() ?? []
+      } else {
+        uses = []
+        for (const edge of graph!.edges.filter(edge => edge.source === change.path && myPaths.has(edge.target) &&
+          edge.symbols.some(symbol => bareSymbol(symbol) === bareSymbol(change.symbol)))) {
+          const version = await this.read(mine, edge.target)
+          const text = asText(version)
+          if (text === undefined) { this.slots.redactContracts(this.owner, other, 'consumer version is not readable'); return }
+          if (await consumesSymbol(edge.target, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(edge.target)
+        }
+        uses.sort()
+      }
       if (!uses.length) continue
       const key = slotKey(this.owner, 'contract', other, change.path, change.symbol)
       live.add(key)
@@ -447,6 +503,11 @@ export class ConflictSet {
     }
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
+      const provider = await this.read(theirs, slot.path)
+      if (asText(provider) === undefined) {
+        this.slots.redactContracts(this.owner, other, 'provider version is not readable')
+        return
+      }
       await this.settle(key, { owner: this.owner, other, kind: 'contract', path: slot.path, subject: slot.subject,
         status: 'clean', inputs: hash(`clean\0${key}`), factId: '' })
     }

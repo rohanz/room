@@ -1,7 +1,7 @@
 import { ConflictSet } from '../conflict-set.js'
 import { sameCheckoutSession } from '../company.js'
 import { git, gitShow } from '@room/roomd/git'
-import { claimDigest } from '@room/roomd'
+import { authorizesText, claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
 import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshot, versionOf, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
@@ -55,9 +55,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         range = { from: Number(a.from), to: Number(a.to) }
       }
       const r = directory ? range : clampRange(range.from, range.to, n)
-      const claimedHash = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
+      const localDigest = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
+      const claimedHash = authorizesText(s.policyStore.policy, p) ? localDigest : undefined
       const intentFull = symbol ? `${symbol}: ${intent}` : intent
       const claim = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...(plans.length ? { plans } : {}), ...(claimedHash ? { claimedHash } : {}) }, s.me)
+      if (localDigest) s.daemon.rememberClaimDigest(claim.id, localDigest)
       const posting = s.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
       s.room.setClaimMsg(claim.id, posting.id)
       const posted = await posting

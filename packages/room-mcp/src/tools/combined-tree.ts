@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { git, gitWholeTree, isGitTimeout } from '@room/roomd/git'
+import { ensureCommit, roomRemote } from '@room/roomd'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
@@ -55,6 +56,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (snap.head.coverage.kind === 'none') coverageLines.push(`  coverage: ${snap.head.coverage.reason}`)
     if (!snap.head.complete) coverageLines.push('  updating after a commit; re-run')
     if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: 'manifest updating or holder changed' })
+    if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) gaps.push({ person, why: 'room salt missing or invalid; exclusion coverage cannot be certified' })
     if (snap.head.coverage.kind === 'none') gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` })
     if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` })
   }
@@ -114,6 +116,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     }
   }
   const bases = [{ person: caller.me.name, base: baseFor(caller, caller.me.name) }, ...participants.map(({ person, session }) => ({ person, base: baseFor(session, person) }))]
+  const remote = await roomRemote(caller.dir, caller.roomName)
+  for (const item of bases) if (!await ensureCommit(caller.dir, remote, item.base))
+    throw new Error(`${item.person}'s anchor ${item.base.slice(0, 10)} is not in this clone; git fetch, then retry`)
   let ancestor = bases[0].base
   for (const item of bases.slice(1)) {
     if (item.base === ancestor) continue
@@ -132,6 +137,11 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   /** Paths a participant may have changed; the rest only the caller changed. */
   const theirPaths = new Set<string>()
   const ignoredNotes: string[] = []
+  const committedPaths = async (person: string, from: string, to: string) => {
+    const paths = (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', from, to])).split('\0').filter(Boolean)
+    if (paths.length > 2000) gaps.push({ person, why: `committed path enumeration truncated at 2000 of ${paths.length}` })
+    return paths.slice(0, 2000)
+  }
   // A lead's revert to HEAD clears its manifest entry, but still changes a file
   // the worker inherited at spawn. Compare those carried paths explicitly.
   for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
@@ -151,7 +161,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) add(p)
     }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
-      if (base !== ancestor) for (const p of (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)) add(p)
+      if (base !== ancestor) for (const p of await committedPaths(item.person, ancestor, base)) add(p)
     }
   }
   // ls-files represents nested repositories/submodules as directory entries.
@@ -173,6 +183,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       }
       if (reason) {
         ignoredNotes.push(`NOT previewed (${reason}, ${person}): ${p}`)
+        gaps.push({ person, path: p, why: reason })
         excluded = true
       }
     }
@@ -181,6 +192,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (dirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
       pathSet.delete(p)
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
+      gaps.push({ person: caller.me.name, path: p, why: 'directory or nested repository' })
     }
   }
   if (!options.diskOnly) for (const p of [...pathSet]) {
@@ -211,6 +223,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       if (!(error instanceof MissingBaseBlob)) throw error
       pathSet.delete(p)
       ignoredNotes.push(error.message)
+      gaps.push({ person: pair?.worker ?? caller.me.name, path: p, why: error.message })
     })
   }
   const paths = Array.from(pathSet).sort()

@@ -4,6 +4,7 @@ import { epochPublication } from '../../shared/src/testing.js'
 
 /** Schema-2 publication fixture for web tests; mirrors the daemon's current incarnation. */
 export function publish(room: RoomDoc, name: string, path: string, text: string, baseText = '', base = 'base'): void {
+  room.ensureRoomSalt()
   const fence = '1'
   if (!room.participants.has(`${name}\0holder`)) {
     epochPublication(room, name, base, 1, `lease-${name}`)

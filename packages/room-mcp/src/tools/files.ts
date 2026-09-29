@@ -1,4 +1,5 @@
 import { git, gitShow, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
+import { ensureCommit, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch } from 'diff'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -172,10 +173,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const theirs = manifestPaths(session.room, person)
         try {
           const mineBase = baseFor(caller, caller.me.name), theirBase = baseFor(session, person)
+          const remote = await roomRemote(caller.dir, caller.roomName)
+          if (!await ensureCommit(caller.dir, remote, mineBase) || !await ensureCommit(caller.dir, remote, theirBase)) throw new Error('anchor commit unavailable')
           const ancestor = (await git(caller.dir, ['merge-base', mineBase, theirBase])).trim()
           const changed = async (base: string) => base === ancestor ? [] : (await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean)
           const mine = [...myPaths, ...await changed(mineBase)]
           theirs.push(...await changed(theirBase))
+          if (mine.length > 2000 || theirs.length > 2000) throw new Error('more than 2000 committed paths; explicit preview required')
           return theirs.some(p => mine.some(path => coversPath(p, path)))
         } catch (error) {
           unavailable.push(`${person}: committed changes unavailable (${error instanceof Error ? error.message : String(error)})`)

@@ -23,6 +23,16 @@ describe('manifest step 1', () => {
     expect(digestPath(salt, 'src/secret.txt')).not.toContain('secret')
   })
 
+  it.each([undefined, 'bad-salt', '00'.repeat(31)])('does not certify absent paths with invalid room salt %s', async salt => {
+    const room = new RoomDoc()
+    room.participants.set('ben\0holder', { sessionId: 's1', epoch: 11 })
+    room.participants.set('ben\0git', { base: 'abc', fence: '11' })
+    room.manifestHead.set('ben', head())
+    if (salt !== undefined) room.metaMap.set('roomSalt', salt)
+    expect(await versionOf(snapshot(room, 'ben', [])!, 'secret', { gitAt: async () => 'base' }))
+      .toMatchObject({ kind: 'unknown', why: 'updating' })
+  })
+
   it('converges a simultaneous salt initialization after CRDT exchange', () => {
     const a = new RoomDoc(), b = new RoomDoc()
     a.ensureRoomSalt(); b.ensureRoomSalt()
