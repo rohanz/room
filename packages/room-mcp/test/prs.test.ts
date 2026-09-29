@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, holderFence, participantRecord } from '@room/shared'
 import type { Identity, ClaimMsg, QuestionMsg, AnswerMsg, ScopeMsg, NoteMsg, ReleaseMsg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
@@ -33,7 +33,7 @@ const PR9: PrInfo = { number: 9, title: 'Fix orders', author: 'sam', head: 'main
 function session(room: RoomDoc, me: Identity, roomName = ROOM, branch = 'main'): Session {
   const awareness = new Awareness(room.doc)
   const sessionId = visiblePeer(room, me.name, me.kind)
-  room.participants.set(`${me.name}\0git`, { branch, head: base, base, anchored: true, rev: 1, fence: sessionId })
+  room.participants.set(`${me.name}\0git`, { branch, head: base, base, anchored: true, rev: 1, fence: holderFence(participantRecord(room, me.name)?.holder)! })
   awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   return {
     room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
@@ -242,4 +242,40 @@ describe('PR selection by head (fix 13)', () => {
 it('the PR-mirror leader is never a worker', () => {
   expect(prLeader(['aaron', 'a+z', 'pr#7'], ['a+z'])).toBe('aaron')
   expect(prLeader(['a+z'], ['a+z'])).toBe('a+z') // only workers present: someone still has to do it
+})
+
+it('does not select or mirror a PR from a stale git fence', async () => {
+  const room = new RoomDoc(new Y.Doc())
+  const s = session(room, { name: 'alice', kind: 'agent', owner: 'alice' }, ROOM, 'obsolete')
+  room.participants.set('alice\0git', { branch: 'obsolete', head: base, base, anchored: true, rev: 1, fence: 'older-epoch' })
+  const asks: string[] = [], posted: number[] = []
+  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: {
+    intervalMs: 0,
+    fetch: async (_s, opts) => { asks.push(opts?.branch ?? 'default'); return [PR7] },
+    post: async (_s, number) => { posted.push(number); return { url: '', updated: false } },
+  } })
+  const result = await tools.call('room_pr_note', {})
+  expect(result).toMatch(/updating|unavailable/)
+  expect(asks).toEqual([])
+  expect(posted).toEqual([])
+  await tools.shutdown()
+})
+
+it('room_export loads an authenticated legacy archive instead of the current room', async () => {
+  const current = new RoomDoc(new Y.Doc()), archived = new RoomDoc(new Y.Doc())
+  archived.bus.push([{ id: 'legacy-note', type: 'changed', from: 'ben', fromKind: 'agent', paths: ['old.py'], summary: 'from the old branch', at: 1, priority: 'fyi' }])
+  const legacyRepo = 'git/x/o/r'
+  const s = session(current, { name: 'alice', kind: 'agent', owner: 'alice' }, legacyRepo)
+  s.token = 'token'
+  const update = Y.encodeStateAsUpdate(archived.doc)
+  const fetch = vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength) })
+  vi.stubGlobal('fetch', fetch)
+  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
+  const output = join(dir, 'legacy-export.md')
+  try {
+    expect(await tools.call('room_export', { room: `${legacyRepo}/main`, path: output })).toContain('exported archive')
+    expect(readFileSync(output, 'utf8')).toContain('from the old branch')
+    expect(fetch).toHaveBeenCalledWith('http://x/archive/export', expect.objectContaining({ method: 'POST' }))
+    expect(await tools.call('room_export', { room: `archive:${legacyRepo}:old-id`, path: output })).toContain('exported archive')
+  } finally { vi.unstubAllGlobals(); await tools.shutdown() }
 })

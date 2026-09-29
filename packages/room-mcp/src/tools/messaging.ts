@@ -42,10 +42,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, myWorkers, workerAlive, presences, now, upgrade, setPresence, forMe, ledger } = state
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
+  const alias = (s: Session, name: string): string => s.room.doc.getMap<string>('aliases').get(name) ?? name
   const knownNames = (s: Session): Set<string> => new Set([
     s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.manifestHead.keys(),
     ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workerViews.values(), w => w.name),
     ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
+    ...Array.from(s.room.mail.values(), m => m.from),
+    ...Array.from(s.room.doc.getMap<{ placeholder: string }>('unresolved').values(), value => value.placeholder),
+    ...s.room.doc.getMap<string>('aliases').values(),
   ].filter(n => !isPrName(n)))
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
@@ -110,7 +114,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(', ')}`
       }
       const resolvedWorker = matches[0]
-      let to = resolvedWorker?.worker.name ?? requestedTo
+      let to = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : undefined)
       let inferredQuestionId: string | undefined
       const unansweredQuestions = () => {
         const history = (room: Session) => [...room.room.messages(), ...room.room.mail.values()]
@@ -126,7 +130,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : `error: answer requires inReplyTo; no unanswered question${from ? ` from ${from}` : ''} addressed to you`
       if (sendType === 'answer') {
         const open = unansweredQuestions()
-        const candidates = to ? open.filter(({ question }) => question.from === to) : open
+        const candidates = to ? open.filter(({ room, question }) => alias(room, question.from) === to) : open
         if (a.inReplyTo) {
           // Validate explicit and inferred targets against the same open-question set, once,
           // before a worker can receive the prompt. A later answer does not undo delivery.
@@ -141,7 +145,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (candidates.length !== 1) return ambiguousAnswer(candidates, to)
           byQuestion = candidates[0].room
           question = candidates[0].question
-          to = question.from
+          to = alias(byQuestion!, question.from)
           inferredQuestionId = question.id
         }
       }
@@ -155,7 +159,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
-      if (repliedNote && a.to && to !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`
+      if (repliedNote && a.to && to !== alias(s, repliedNote.from)) return `error: note reply must go to ${repliedNote.from}`
       if (to && !s.room.workerViewOf(to) && !myWorkers(s).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
@@ -171,7 +175,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const symbols = sendType === 'changed' && Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
       const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
         : sendType === 'question' ? withPr({ type: 'question', text, to: to! }) as PostBody<QuestionMsg>
-        : sendType === 'answer' ? withPr({ type: 'answer', to: (question?.from ?? to)!, inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
+        : sendType === 'answer' ? withPr({ type: 'answer', to: alias(s, (question?.from ?? to)!), inReplyTo: inferredQuestionId ?? a.inReplyTo as string, text }) as PostBody<AnswerMsg>
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
       // A follow-up to a finished worker is posted only once the worker can resume, and it resumes only once posted.
       let posted: PostResult | undefined

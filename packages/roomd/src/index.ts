@@ -168,6 +168,9 @@ export interface Skipped { size: string[]; budget: string[]; ignore: string[] }
 
 export interface Roomd {
   stop(reason?: string): Promise<void>
+  /** Pause all fenced publication after a server size-cap rejection. */
+  setPublicationRejected(rejected: boolean): void
+  reconcileGitChanges(): Promise<void>
   /** Recheck branch-room claims reclaimed after this daemon's initial HEAD transition. */
   validateMigratedClaims(): Promise<void>
   /** Test barrier for already-observed watcher events: drains debounces and in-flight disk publishes. */
@@ -250,6 +253,8 @@ export async function startRoomd(options: RoomdOptions): Promise<Roomd> {
 }
 
 class Daemon implements Roomd {
+  private publicationRejected = false
+  setPublicationRejected(rejected: boolean): void { this.publicationRejected = rejected }
   readonly roomDoc = new RoomDoc()
   readonly provider: WebsocketProvider
   branch = ''
@@ -537,6 +542,7 @@ class Daemon implements Roomd {
    * paused, or the hub-written holder already names another incarnation (a successor, hub §4.3).
    */
   get fence(): string | undefined {
+    if (this.publicationRejected) return undefined
     const fence = this.lease ? this.lease() : this.ownFence
     const holder = participantRecord(this.roomDoc, this.name)?.holder
     return fence !== undefined && (!holder || holderFence(holder) === fence) ? fence : undefined
@@ -884,18 +890,21 @@ class Daemon implements Roomd {
 
   /** Validate claims recovered from a branch-room archive after the first repo-room join. */
   async validateMigratedClaims(): Promise<void> {
+    const fence = this.fence
+    if (!fence) return
     const migrated = [...this.roomDoc.claims.values()].filter(claim => claim.by === this.name && typeof (claim as Claim & { origin?: string }).origin === 'string')
     if (!migrated.length) return
     const changes = await this.reanchorOwnClaims(this.base, migrated)
+    if (this.fence !== fence) return
+    const snapshot = new Map(migrated.map(claim => [claim.id, JSON.stringify(claim)]))
+    const stillMine = (id: string) => this.fence === fence && JSON.stringify(this.roomDoc.claims.get(id)) === snapshot.get(id)
     const notices: { from: Identity; body: PostBody<Msg> }[] = []
     this.roomDoc.doc.transact(() => {
       for (const move of changes.moves) {
-        const current = this.roomDoc.claims.get(move.id)
-        if (current?.by === this.name) this.roomDoc.moveClaim(move.id, move.from, move.to, this, changes.hashById.get(move.id))
+        if (stillMine(move.id)) this.roomDoc.moveClaim(move.id, move.from, move.to, this, changes.hashById.get(move.id))
       }
       for (const release of changes.releases) {
-        const current = this.roomDoc.claims.get(release.id)
-        if (current?.by !== this.name) continue
+        if (!stillMine(release.id)) continue
         this.roomDoc.removeClaim(release.id, this)
         const summary = `released your migrated claim on ${release.path}:${release.from}-${release.to}: its claimed lines are no longer in this checkout`
         notices.push({ from: { name: this.name, kind: this.kind }, body: { type: 'release', claimId: release.id, path: release.path, summary } as PostBody<ReleaseMsg> })

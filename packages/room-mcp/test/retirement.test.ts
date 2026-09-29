@@ -285,7 +285,7 @@ it('keeps uncommitted work visible until the lead commits and merges it; merged 
   publishFixture(r.room, w.name, 'a', 'worker edit')
   await r.rooms.autoRetire()
   expect(r.has(w.tag)).toBe(true)
-  expect(r.room.changedPaths(w.name)).toEqual(['a'])
+  expect(manifestPaths(r.room, w.name)).toEqual(['a'])
   expect(await workerGitFacts(dir, w)).toMatchObject({ ahead: 0, clean: false, uncommitted: 2 })
   execFileSync('git', ['-C', w.dir, 'add', '.'])
   execFileSync('git', ['-C', w.dir, 'commit', '-qm', 'lead commits worker work'])

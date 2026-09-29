@@ -152,21 +152,18 @@ export class RoomDoc {
   }
 
   get overlays(): Y.Map<Y.Map<Y.Text>> { return this.doc.getMap<Y.Map<Y.Text>>('overlays') }
-  /** person -> ms of their last overlay write (set/clear/delete); lets a later joiner evict stale work. */
-  get overlayAt(): Y.Map<number> { return this.doc.getMap<number>('overlayAt') }
-  overlayAtOf(person: string): number | undefined { return this.overlayAt.get(person) }
   /** Evict a stopped participant's overlays and base texts together. The absent owner cannot reconcile them. */
   clearOverlays(person: string, origin?: unknown): number {
-    const n = this.changedPaths(person).length
+    const incarnations = [...this.overlays.keys()].filter(key => key === person || key.startsWith(`${person}\0`))
+    const paths = new Set(incarnations.flatMap(key => [...this.overlays.get(key)?.keys() ?? []]))
     this.doc.transact(() => {
-      this.overlays.delete(person)
-      this.deleted.delete(person)
-      this.overlayAt.delete(person)
+      for (const key of incarnations) this.overlays.delete(key)
       this.clearPersonBaseTexts(person)
     }, origin)
-    return n
+    return paths.size
   }
-  get deleted(): Y.Map<Y.Map<true>> { return this.doc.getMap<Y.Map<true>>('deleted') }
+  /** Decoding only: 0.16 branch-room snapshots can still contain deletion markers. */
+  get legacyDeleted(): Y.Map<Y.Map<true>> { return this.doc.getMap<Y.Map<true>>('deleted') }
   get scopes(): Y.Map<Scope> { return this.doc.getMap<Scope>('scopes') }
   get claims(): Y.Map<Claim> { return this.doc.getMap<Claim>('claims') }
   get bus(): Y.Array<Msg> { return this.doc.getArray<Msg>('bus') }
@@ -328,48 +325,13 @@ export class RoomDoc {
           index += value.length
         }
       }
-      this.overlayAt.set(person, Date.now())
     }, origin)
   }
 
   clearOverlay(person: string, relpath: string, origin?: unknown): void {
     const map = this.overlays.get(person)
     if (!map?.has(relpath)) return
-    this.doc.transact(() => { map.delete(relpath); this.overlayAt.set(person, Date.now()) }, origin)
-  }
-
-  deletedFor(person: string): Y.Map<true> {
-    let map = this.deleted.get(person)
-    if (!map) {
-      map = new Y.Map<true>()
-      this.deleted.set(person, map)
-    }
-    return map
-  }
-
-  markDeleted(person: string, relpath: string, origin?: unknown): void {
-    if (this.deleted.get(person)?.has(relpath)) return
-    this.doc.transact(() => { this.deletedFor(person).set(relpath, true); this.overlayAt.set(person, Date.now()) }, origin)
-  }
-
-  unmarkDeleted(person: string, relpath: string, origin?: unknown): void {
-    const map = this.deleted.get(person)
-    if (!map?.has(relpath)) return
     this.doc.transact(() => { map.delete(relpath) }, origin)
-  }
-
-  changedPaths(person: string): string[] {
-    return Array.from(new Set([
-      ...Array.from(this.overlays.get(person)?.keys() ?? []),
-      ...Array.from(this.deleted.get(person)?.keys() ?? []),
-    ])).sort()
-  }
-
-  whoChanged(relpath: string): string[] {
-    const people = new Set<string>()
-    for (const [person, map] of this.overlays) if (map.has(relpath)) people.add(person)
-    for (const [person, map] of this.deleted) if (map.has(relpath)) people.add(person)
-    return Array.from(people).sort()
   }
 
   scope(person: string): Scope | undefined { return this.scopes.get(person) }
@@ -396,19 +358,6 @@ export class RoomDoc {
 
   text(relpath: string, person?: string): string | undefined {
     return person ? this.overlayText(person, relpath)?.toString() : undefined
-  }
-
-  /** Compatibility helper for phase-1 consumers: aggregate changed paths. */
-  paths(person?: string): string[] {
-    if (person) return this.changedPaths(person)
-    const paths = new Set<string>()
-    for (const p of this.overlays.keys()) for (const relpath of this.changedPaths(p)) paths.add(relpath)
-    for (const p of this.deleted.keys()) for (const relpath of this.changedPaths(p)) paths.add(relpath)
-    return Array.from(paths).sort()
-  }
-
-  hasFile(relpath: string, person?: string): boolean {
-    return person ? this.overlayText(person, relpath) !== undefined : this.whoChanged(relpath).length > 0
   }
 
   lineCount(relpath: string, person?: string): number {

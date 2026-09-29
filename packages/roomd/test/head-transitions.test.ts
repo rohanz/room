@@ -78,6 +78,20 @@ it('reanchors a recovered branch-room claim against this checkout and releases a
   expect(daemon!.roomDoc.claims.has('legacy-stale')).toBe(false)
 })
 
+it('leaves migrated claims intact if the name fence lapses during validation', async () => {
+  await movedHead()
+  const stale = { id: 'legacy-stale', path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent' as const,
+    intent: 'edit', at: 1, claimedHash: 'missing', origin: 'local/repo/main' }
+  daemon!.roomDoc.claims.set(stale.id, stale)
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown> }
+  const original = internal.reanchorOwnClaims.bind(internal)
+  let fence = '22'
+  ;(daemon as Roomd & { lease: () => string | undefined }).lease = () => fence
+  internal.reanchorOwnClaims = async (head, claims) => { const result = await original(head, claims); fence = undefined as unknown as string; return result }
+  await daemon!.validateMigratedClaims()
+  expect(daemon!.roomDoc.claims.get(stale.id)).toEqual(stale)
+})
+
 it('keeps the new baseline after publishing a dirty overlay', async () => {
   const { newHead } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty after commit\n')

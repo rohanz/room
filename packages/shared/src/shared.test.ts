@@ -68,11 +68,9 @@ describe('RoomDoc overlays', () => {
 
     a.setOverlay('Rohan', 'api/handlers.py', 'def f():\n    pass\n')
     b.setOverlay('Kieran', 'tests/test_handlers.py', 'def test_f():\n    pass\n')
-    a.markDeleted('Rohan', 'old.py')
     expect(b.text('api/handlers.py', 'Rohan')).toBe('def f():\n    pass\n')
     expect(a.text('tests/test_handlers.py', 'Kieran')).toBe('def test_f():\n    pass\n')
-    expect(b.changedPaths('Rohan')).toEqual(['api/handlers.py', 'old.py'])
-    expect(a.whoChanged('api/handlers.py')).toEqual(['Rohan'])
+    expect(b.overlayText('Rohan', 'api/handlers.py')?.toString()).toBe('def f():\n    pass\n')
 
     a.setScope('Rohan', { byKind: 'agent', area: 'api', summary: 'refactor handlers', paths: ['api/handlers.py'] })
     expect(b.scope('Rohan')).toMatchObject({ by: 'Rohan', byKind: 'agent', summary: 'refactor handlers' })
@@ -104,20 +102,15 @@ describe('RoomDoc overlays', () => {
     expect(room.openClaims()[0]).toMatchObject({ from: 3, to: 4 })
   })
 
-  it('clears only the selected person overlay and tracks deletion markers separately', () => {
+  it('clears only the selected person overlay', () => {
     const room = new RoomDoc()
     room.setOverlay('Rohan', 'app.py', 'mine\n')
     room.setOverlay('Kieran', 'app.py', 'theirs\n')
-    room.markDeleted('Rohan', 'gone.py')
 
     room.clearOverlay('Rohan', 'app.py')
     expect(room.text('app.py', 'Rohan')).toBeUndefined()
     expect(room.text('app.py', 'Kieran')).toBe('theirs\n')
-    expect(room.whoChanged('app.py')).toEqual(['Kieran'])
-    expect(room.changedPaths('Rohan')).toEqual(['gone.py'])
-
-    room.unmarkDeleted('Rohan', 'gone.py')
-    expect(room.changedPaths('Rohan')).toEqual([])
+    expect(room.overlayText('Kieran', 'app.py')?.toString()).toBe('theirs\n')
   })
 
   it('merges chat messages created concurrently before the docs sync', () => {

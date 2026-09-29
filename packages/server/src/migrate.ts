@@ -60,7 +60,7 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       for (const person of room.scopes.keys()) mark(person, name)
       for (const claim of room.claims.values()) mark(claim.by, name)
       for (const person of room.overlays.keys()) mark(person, name)
-      for (const person of room.deleted.keys()) mark(person, name)
+      for (const person of room.legacyDeleted.keys()) mark(person, name)
       for (const msg of [...room.bus.toArray(), ...room.mail.values()]) { mark(msg.from, name); mark(msg.to, name) }
     }
     const translated = (name: string, source: string) => (occurrences.get(name)?.size ?? 0) > 1
@@ -89,20 +89,6 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
             const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
             if (!old.claims.some(c => c.id === claim.id)) unresolved.set(key, { ...old, claims: [...old.claims, copy] })
           } else if (!target.claims.has(claim.id)) target.claims.set(claim.id, copy)
-        }
-        for (const [person, overlay] of room.overlays) {
-          const by = translated(person, name)
-          if (by !== person || target.overlays.has(by)) continue
-          const copy = new Y.Map<Y.Text>()
-          for (const [file, content] of overlay) { const text = new Y.Text(); text.insert(0, content.toString()); copy.set(file, text) }
-          target.overlays.set(by, copy)
-        }
-        for (const [person, deleted] of room.deleted) {
-          const by = translated(person, name)
-          if (by !== person || target.deleted.has(by)) continue
-          const copy = new Y.Map<true>()
-          for (const file of deleted.keys()) copy.set(file, true)
-          target.deleted.set(by, copy)
         }
         for (const msg of [...room.bus.toArray(), ...room.mail.values()]) {
           if (!msg.to || room.seen(msg.to).has(msg.id) || target.mail.has(msg.id)) continue

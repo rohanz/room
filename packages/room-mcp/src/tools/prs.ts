@@ -1,5 +1,5 @@
-import { neighbours, participantRecord, participantsView, type NoteMsg } from '@room/shared'
-import { fetchPrs, postPrNote, prLeader, renderPrNote, syncPrs } from '../prs.js'
+import { neighbours, participantsView, type NoteMsg } from '@room/shared'
+import { acceptedPrBranch, fetchPrs, postPrNote, prLeader, renderPrNote, syncPrs } from '../prs.js'
 import { openPrs, type PrInfo } from '../prs.js'
 import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -15,6 +15,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_pr_note(a) {
       const s = S()
       if (!s.roomName.startsWith('github.com/')) return 'error: this room is not a GitHub repo; there are no pull requests to annotate'
+      if (a.number === undefined && acceptedPrBranch(s) === 'updating') return 'error: your branch is updating; retry when its git record is current, or pass number=<n>'
       await refreshPrs(s)
       let pr: PrInfo | undefined
       if (a.number !== undefined) {
@@ -24,12 +25,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       } else {
         pr = await myPr(s)
         if (!pr) {
-          const branch = participantRecord(s.room, s.me.name)?.git?.branch
-          if (!branch || branch === 'HEAD') return "check out the PR's branch, or pass number"
+          const branch = acceptedPrBranch(s)
+          if (branch === 'updating') return 'error: your branch is updating; retry when its git record is current, or pass number=<n>'
+          if (!branch) return "check out the PR's branch, or pass number"
           const open = openPrs(s.room)
           return `no open PR has ${branch} as its head${open.length ? `; open PRs targeting branches here: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}` : ''}. Pass number=<n>`
         }
       }
+      if (a.number === undefined && acceptedPrBranch(s) !== pr.head) return 'error: your branch changed while selecting its PR; retry room_pr_note or pass number=<n>'
       return postLedger(s, pr)
     }
   }
@@ -52,13 +55,17 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       const view = participantsView(s.room, s.awareness, now())
       const names = [s.me.name, ...neighbours(view, s.me.name).names()]
       const active = new Map(presences(s).map(p => [p.user.name, p.lastActive ?? 0]))
-      const branches = [...new Set(names.sort((a, b) => (active.get(b) ?? 0) - (active.get(a) ?? 0))
-        .map(name => participantRecord(s.room, name)?.git?.branch).filter((branch): branch is string => !!branch && branch !== 'HEAD' && !branch.startsWith('room/')))].slice(0, 10)
+      const chooseBranches = () => [...new Set(names.sort((a, b) => (active.get(b) ?? 0) - (active.get(a) ?? 0))
+        .map(name => acceptedPrBranch(s, name, now())).filter((branch): branch is string => !!branch && branch !== 'updating' && !branch.startsWith('room/')))].slice(0, 10)
+      const branches = chooseBranches()
+      if (!branches.length) return ''
       let prs: PrInfo[]
       try {
         const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch }), fetchPrList(s, { branch, head: true })]))
         prs = [...new Map(fetched.flat().map(pr => [pr.number, pr])).values()].slice(0, 20)
       } catch (e) { log(`pull requests: ${e instanceof Error ? e.message : String(e)}`); return '' }
+      if (prLeader(presences(s).map(p => p.user.name), s.room.acceptedWorkerViews().map(w => w.name)) !== s.me.name
+        || JSON.stringify(chooseBranches()) !== JSON.stringify(branches)) return ''
       const r = syncPrs(s.room, prs, s.me)
       const parts = [r.added.length ? `mirrored ${r.added.map(n => `#${n}`).join(', ')}` : '', r.removed.length ? `removed ${r.removed.map(n => `#${n}`).join(', ')}` : ''].filter(Boolean)
       if (parts.length) log(`pull requests: ${parts.join('; ')}`)
@@ -82,13 +89,16 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       return out
     }
   const myPr = async (s: Session): Promise<PrInfo | undefined> => {
-      const head = participantRecord(s.room, s.me.name)?.git?.branch
-      if (!head || head === 'HEAD') return undefined
-      try { const byHead = (await fetchPrList(s, { branch: head, head: true })).find(p => p.head === head); if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
+      const head = acceptedPrBranch(s)
+      if (!head || head === 'updating') return undefined
+      try { const byHead = (await fetchPrList(s, { branch: head, head: true })).find(p => p.head === head); if (acceptedPrBranch(s) !== head) return undefined; if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
+      if (acceptedPrBranch(s) !== head) return undefined
       return openPrs(s.room).find(p => p.head === head)
     }
   const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
-      const body = renderPrNote(s.room, { roomName: s.roomName, branch: participantRecord(s.room, s.me.name)?.git?.branch, now: now() })
+      const branch = acceptedPrBranch(s)
+      if (branch === 'updating') return 'error: your branch is updating; retry when its git record is current'
+      const body = renderPrNote(s.room, { roomName: s.roomName, branch, now: now() })
       const r = await postNote(s, pr.number, body)
       await s.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
       return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`

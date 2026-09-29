@@ -51,10 +51,13 @@ export function connect(search = location.search): Conn {
   const token = q.get('token') ?? '', view = q.getAll('view').find(value => value !== 'board' && value !== 'code') ?? '', key = q.get('key') ?? ''
   const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: { schema: '2', ...(key ? { key } : view ? { view } : token ? { token } : {}) } })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
-  // Shared view links and local keys already carry access; avoid an unauthenticated preflight.
+  // A legacy view link receives a terminal 410 from the server's browser route.
+  // Local keys already carry access and have no server-side browser route.
   // A local relay has no /view-token endpoint.
   const host = new URL(roomLocation.serverUrl).hostname
-  if (!q.has('view') && !q.has('key') && host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') void explainAccess(roomLocation, { view, token }, provider)
+  const hosted = host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]'
+  if (hosted && view) void explainLegacyView(roomLocation, view, provider)
+  else if (hosted && !q.has('view') && !q.has('key')) void explainAccess(roomLocation, { view, token }, provider)
   // A successful sync supersedes any earlier HTTP preflight error.
   provider.on('sync', (synced: boolean) => {
     if (synced) {
@@ -89,6 +92,21 @@ export function connect(search = location.search): Conn {
     for (const listener of listeners) listener(conn.connected)
   })
   return conn
+}
+
+async function explainLegacyView(loc: RoomLocation, view: string, provider: WebsocketProvider): Promise<void> {
+  const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+  const roomUrl = `${loc.serverUrl}/${loc.encodedRoomName}`
+  try {
+    const res = await fetch(`${http}/?room=${encodeURIComponent(roomUrl)}&view=${encodeURIComponent(view)}`, { method: 'GET' })
+    if (res.status !== 410 || provider.synced) return
+    const why = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      || 'this link was for a branch room that no longer exists; ask for a new link'
+    const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))
+    el.className = 'access-error'
+    el.textContent = why
+    provider.disconnect()
+  } catch { /* websocket status handles transient network failure */ }
 }
 
 /** Read awareness states defensively: other clients may publish arbitrary data. */

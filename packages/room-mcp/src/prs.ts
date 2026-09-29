@@ -6,10 +6,11 @@
  * participant). The reverse direction renders the branch's room story as markdown for a
  * comment on the PR (room_pr_note / room_done pr_note).
  */
-import type { RoomDoc, Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { archiveSummary, displayName, formatPlans, participantRecord } from '@room/shared'
+import type { Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
+import { RoomDoc, acceptedGit, archiveSummary, displayName, formatPlans, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
+import * as Y from 'yjs'
 import { authFor, type Session } from './session.js'
 
 export interface PrInfo {
@@ -84,10 +85,15 @@ export function prLeader(present: string[], workerNames: Iterable<string> = []):
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 const query = (o: Record<string, string | undefined>) => Object.entries(o).filter((e): e is [string, string] => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
 
+export function acceptedPrBranch(s: Session, name = s.me.name, now = Date.now()): string | 'updating' | undefined {
+  const git = acceptedGit(participantRecord(s.room, name), participantsView(s.room, s.awareness, now))
+  return git === 'updating' ? 'updating' : git.branch === 'HEAD' ? undefined : git.branch
+}
+
 /** GET /github/prs on the session's server for an explicit participant branch. */
 export async function fetchPrs(s: Session, opts: { head?: boolean; branch?: string } = {}): Promise<PrInfo[]> {
-  const branch = opts.branch ?? participantRecord(s.room, s.me.name)?.git?.branch
-  if (!branch || branch === 'HEAD') return []
+  const branch = opts.branch ?? acceptedPrBranch(s)
+  if (!branch || branch === 'updating') return []
   const a = await authFor(s)
   const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, branch, head: opts.head ? '1' : undefined })}`, { signal: AbortSignal.timeout(20000) })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
@@ -107,13 +113,34 @@ export async function postPrNote(s: Session, number: number, body: string): Prom
 export function exportRoomLedger(s: Session, opts: { path?: string; now?: number } = {}): { path: string; lines: number } {
   const now = opts.now ?? Date.now()
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
-  const branch = participantRecord(s.room, s.me.name)?.git?.branch || 'detached'
+  const accepted = acceptedPrBranch(s)
+  const branch = accepted && accepted !== 'updating' ? accepted : 'detached'
   const defaultPath = path.join(s.dir, '.room', 'ledger', `${s.roomName.replaceAll('/', '_')}_${branch.replaceAll('/', '_')}-${timestamp}.md`)
   const outputPath = opts.path ? path.resolve(s.dir, opts.path) : defaultPath
   const markdown = renderPrNote(s.room, { roomName: s.roomName, branch, now, history: true })
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
   fs.writeFileSync(outputPath, markdown)
   return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
+}
+
+/** Authenticate as a repo member and render the frozen branch-room archive in a scratch document. */
+export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: { path?: string; now?: number } = {}): Promise<{ path: string; lines: number }> {
+  if (s.local) throw new Error('local legacy snapshots are kept on this machine; archive export requires a team server')
+  const a = await authFor(s)
+  const res = await fetch(`${httpOf(a.server)}/archive/export`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ room: legacyRoom, schema: 2, session: a.session, token: a.token }), signal: AbortSignal.timeout(20000) })
+  if (!res.ok) throw new Error(`archive ${legacyRoom} unavailable: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, new Uint8Array(await res.arrayBuffer()))
+    const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
+    const outputPath = opts.path ? path.resolve(s.dir, opts.path)
+      : path.join(s.dir, '.room', 'ledger', `${legacyRoom.replaceAll('/', '_')}-${timestamp}.md`)
+    const markdown = renderPrNote(new RoomDoc(doc), { roomName: legacyRoom, now, history: true })
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true })
+    fs.writeFileSync(outputPath, markdown)
+    return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
+  } finally { doc.destroy() }
 }
 
 /**

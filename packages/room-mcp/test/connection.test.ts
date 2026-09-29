@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { offlineSince, trackConnection } from '../src/connection.js'
+import { watchClosed } from '../src/session.js'
 import type { Session } from '../src/session.js'
 
 function fake(connected = false) {
@@ -39,4 +40,30 @@ describe('connection grace', () => {
     expect(offlineSince(workers.session, () => clock)).toBe(0)
     expect(offlineSince(primary.session, () => clock)).toBeUndefined()
   })
+})
+
+it('shows a 4413 rejection, pauses publication, and retries once a minute until publication holds', async () => {
+  vi.useFakeTimers()
+  try {
+    const provider = Object.assign(new EventEmitter(), { wsconnected: true, synced: true, disconnect: vi.fn(), connect: vi.fn() })
+    const setPublicationRejected = vi.fn(), reconcileGitChanges = vi.fn().mockResolvedValue(undefined)
+    const s = { provider, daemon: { setPublicationRejected, reconcileGitChanges, fence: '22' }, roomName: 'github.com/o/r' } as unknown as Session
+    watchClosed(s)
+    provider.emit('connection-close', { code: 4413, reason: 'room is over its size cap (5 MB)' })
+    expect(s.rejected?.reason).toBe('room is over its size cap (5 MB)')
+    expect(provider.disconnect).toHaveBeenCalledOnce()
+    expect(setPublicationRejected).toHaveBeenCalledWith(true)
+    vi.advanceTimersByTime(59_999)
+    expect(provider.connect).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(provider.connect).toHaveBeenCalledOnce()
+    expect(s.rejected).toBeDefined()
+    provider.emit('sync', true)
+    expect(s.rejected).toBeDefined()
+    await Promise.resolve()
+    vi.advanceTimersByTime(2_000)
+    expect(s.rejected).toBeUndefined()
+    expect(setPublicationRejected).toHaveBeenCalledWith(false)
+    expect(reconcileGitChanges).toHaveBeenCalledOnce()
+  } finally { vi.useRealTimers() }
 })
