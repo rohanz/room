@@ -3,14 +3,15 @@ import { performance } from 'node:perf_hooks'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { setGitObserver } from '@room/roomd/git'
 
 const SLOW_TOOL_MS = 2_000
 const EVENT_LOOP_SAMPLE_MS = 500
 const EVENT_LOOP_LAG_MS = 2_000
 const PREVIEW_CHECK_MAX_AGE_MS = 6 * 60_000 // five-minute command timeout plus one minute for setup and teardown
-const PREVIEW_CHECK_STAT_LIMIT = 50
-const PREVIEW_CHECK_ENTRY_LIMIT = 2_000
+const PREVIEW_CHECK_ENTRY_LIMIT = 500
+const PREVIEW_CHECK_MARKERS = path.join(os.tmpdir(), `room-preview-checks-${process.getuid?.() ?? 'user'}`)
 
 type Clock = () => number
 type Logger = (line: string) => void
@@ -107,43 +108,67 @@ export class ToolTiming {
 
 export function currentToolTiming(): ToolTiming | undefined { return context.getStore() }
 
-/** Scratch directories are visible across MCP processes on this machine. Ignore old crash leftovers. */
-export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file), openDir: (dir: string) => Pick<fs.Dir, 'readSync' | 'closeSync'> = dir => fs.opendirSync(dir)): number | undefined {
+/** Marker files identify checks across MCP processes without scanning the large system temp directory. */
+export function countOtherPreviewChecks(ownMarker: string, markerDir = PREVIEW_CHECK_MARKERS, now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file)): number | undefined {
   try {
-    const ownName = path.basename(ownDir)
+    const ownName = path.basename(ownMarker)
     let count = 0
-    let inspected = 0
-    const dir = openDir(tmpDir)
+    const dir = fs.opendirSync(markerDir)
     try {
       for (let scanned = 0; scanned < PREVIEW_CHECK_ENTRY_LIMIT; scanned++) {
         const entry = dir.readSync()
         if (!entry) return count
-        if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name.startsWith('room-merge-file-') || entry.name === ownName) continue
-        if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return undefined // More matches exist; the overlap is unknown.
-        inspected++
+        if (!entry.isFile() || entry.name === ownName) continue
+        const match = /^(\d+)-[0-9a-f]+$/.exec(entry.name)
+        if (!match) continue
+        const file = path.join(markerDir, entry.name)
         try {
-          const stat = readStat(path.join(tmpDir, entry.name))
-          if (!stat.isDirectory()) continue
-          const created = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs
-          if (created <= now + 1_000 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++
-        } catch { /* A preview may remove its scratch directory between listing and stat. */ }
+          const stat = readStat(file)
+          if (!stat.isFile()) continue
+          const stale = stat.mtimeMs > now + 1_000 || now - stat.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS
+          let dead = false
+          if (!stale) {
+            try { process.kill(Number(match[1]), 0) }
+            catch (error) { dead = (error as NodeJS.ErrnoException).code === 'ESRCH' }
+          }
+          if (stale || dead) { try { fs.unlinkSync(file) } catch { /* Another process may have removed it. */ }; continue }
+          count++
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue // Another check removed its marker after the directory read.
+          return undefined
+        }
       }
-      return undefined // Entry budget exhausted; there may be more previews.
+      return undefined // Entry budget exhausted; overlap is unknown.
     } finally { try { dir.closeSync() } catch { /* Diagnostics must not fail the preview. */ } }
   } catch { return undefined }
 }
 
 /** Samples overlap on either side of the command timer, never inside it. */
-export async function previewCheck<T>(dir: string, work: () => Promise<T> | T, sample: (dir: string) => number | undefined = countOtherPreviewChecks): Promise<T> {
+export async function previewCheck<T>(work: () => Promise<T> | T, { markerDir = PREVIEW_CHECK_MARKERS, sample = countOtherPreviewChecks }: { markerDir?: string; sample?: (ownMarker: string, markerDir: string) => number | undefined } = {}): Promise<T> {
   const timing = currentToolTiming()
+  let marker: string | undefined
+  if (timing?.name === 'room_preview_merge') {
+    try {
+      fs.mkdirSync(markerDir, { recursive: true, mode: 0o700 })
+      // Only our own real directory: a symlink or another user's directory could point cleanup elsewhere.
+      const stat = fs.lstatSync(markerDir)
+      if (!stat.isDirectory() || (process.getuid && stat.uid !== process.getuid())) throw new Error('unsafe marker directory')
+      const file = path.join(markerDir, `${process.pid}-${randomBytes(8).toString('hex')}`)
+      fs.writeFileSync(file, '', { flag: 'wx', mode: 0o600 })
+      marker = file
+    } catch { timing.notePreviewCheckOverlap(undefined) }
+  }
   const observe = () => {
-    if (timing?.name !== 'room_preview_merge') return
-    try { timing.notePreviewCheckOverlap(sample(dir)) }
+    if (timing?.name !== 'room_preview_merge' || !marker) return
+    try { timing.notePreviewCheckOverlap(sample(marker, markerDir)) }
     catch { timing.notePreviewCheckOverlap(undefined) }
   }
   observe()
   try { return await previewPhase('check', work) }
-  finally { observe() }
+  finally {
+    observe()
+    if (marker) try { fs.unlinkSync(marker) } catch { /* Diagnostics must not fail the preview. */ }
+  }
 }
 
 /** Name preview internals without changing timing or output for collection callers. */

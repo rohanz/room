@@ -138,67 +138,133 @@ describe('tool timing', () => {
     expect(lines[1]).toBe('slow tool room_preview_merge 2100ms: merge 2100ms')
   })
 
-  it('counts fresh scratch previews across processes but ignores stale directories, file merges and its own', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-count-'))
-    const own = path.join(root, 'room-merge-own')
-    const fresh = path.join(root, 'room-merge-fresh')
-    const stale = path.join(root, 'room-merge-stale')
-    const unrelated = path.join(root, 'unrelated')
-    const mergeFile = path.join(root, 'room-merge-file-abc') // merge.ts's per-file three-way merge, not a preview check
-    for (const dir of [own, fresh, stale, unrelated, mergeFile]) fs.mkdirSync(dir)
-    const now = Date.now()
+  it('counts other fresh markers and cleans up stale-age and dead-pid markers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-marker-test-'))
+    const markerDir = path.join(root, 'room-preview-checks')
+    fs.mkdirSync(markerDir)
+    const own = path.join(markerDir, `${process.pid}-a1`)
+    const fresh = path.join(markerDir, `${process.pid}-b2`)
+    const stale = path.join(markerDir, `${process.pid}-c3`)
+    const dead = path.join(markerDir, '99999999-d4')
+    for (const file of [own, fresh, stale, dead]) fs.writeFileSync(file, '')
+    const old = new Date(Date.now() - 7 * 60_000)
+    fs.utimesSync(stale, old, old)
     try {
-      const count = countOtherPreviewChecks(own, root, now, file => {
-        const stat = fs.lstatSync(file)
-        return file === stale ? new Proxy(stat, { get(target, key) { return key === 'birthtimeMs' ? now - 7 * 60_000 : Reflect.get(target, key) } }) : stat
-      })
-      expect(count).toBe(1)
-      expect(countOtherPreviewChecks(own, root, now, () => { throw Error('vanished') })).toBe(0)
-      expect(countOtherPreviewChecks(own, path.join(root, 'missing'), now)).toBeUndefined()
+      expect(countOtherPreviewChecks(own, markerDir)).toBe(1)
+      expect(fs.existsSync(own)).toBe(true)
+      expect(fs.existsSync(fresh)).toBe(true)
+      expect(fs.existsSync(stale)).toBe(false)
+      expect(fs.existsSync(dead)).toBe(false)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('ignores a marker removed between directory read and stat', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-marker-race-'))
+    const own = path.join(root, `${process.pid}-a1`)
+    const removed = path.join(root, `${process.pid}-b2`)
+    const fresh = path.join(root, `${process.pid}-c3`)
+    for (const file of [own, removed, fresh]) fs.writeFileSync(file, '')
+    try {
+      expect(countOtherPreviewChecks(own, root, Date.now(), file => {
+        if (file === removed) fs.unlinkSync(file)
+        return fs.lstatSync(file)
+      })).toBe(1)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
   it('keeps both slow overlap samples outside the check phase', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-clock-'))
     let now = 0
     const lines: string[] = []
     const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
     const sample = vi.fn(() => { now += 400; return 0 })
+    try {
+      await tracker.run('room_preview_merge', async () => {
+        expect(await previewCheck(() => { now += 2310; return 'ok' }, { markerDir: root, sample })).toBe('ok')
+      })
+      expect(sample).toHaveBeenCalledTimes(2)
+      expect(lines).toEqual(['slow tool room_preview_merge 3110ms: check 2310ms, overlapped 0 other preview check(s), other 800ms'])
+      expect(fs.readdirSync(root)).toEqual([])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('attributes cleanup after an awaited collect phase to other time', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
     await tracker.run('room_preview_merge', async () => {
-      expect(await previewCheck('/tmp/room-merge-own', () => { now += 2310; return 'ok' }, sample)).toBe('ok')
+      try { return await previewPhase('collect', () => { now += 100; return 'result' }) }
+      finally { now += 2100 }
     })
-    expect(sample).toHaveBeenCalledTimes(2)
-    expect(lines).toEqual(['slow tool room_preview_merge 3110ms: check 2310ms, overlapped 0 other preview check(s), other 800ms'])
+    expect(lines).toEqual(['slow tool room_preview_merge 2200ms: collect 100ms, other 2100ms'])
   })
 
   it.each([[undefined, 0], [0, undefined]])('omits overlap when either sample is unknown (%s, %s)', async (first, second) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-unknown-'))
     let now = 0
     const lines: string[] = []
     const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
     const sample = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
-    await tracker.run('room_preview_merge', () => previewCheck('/tmp/room-merge-own', () => { now += 2100 }, sample))
-    expect(sample).toHaveBeenCalledTimes(2)
-    expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
-  })
-
-  it('stops after 50 matching scratch directories and leaves the overlap unknown', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-limit-'))
     try {
-      for (let i = 0; i < 51; i++) fs.mkdirSync(path.join(root, `room-merge-${i}`))
-      const readStat = vi.fn((file: string) => fs.lstatSync(file))
-      expect(countOtherPreviewChecks(path.join(root, 'room-merge-own'), root, Date.now(), readStat)).toBeUndefined()
-      expect(readStat).toHaveBeenCalledTimes(50)
+      await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100 }, { markerDir: root, sample }))
+      expect(sample).toHaveBeenCalledTimes(2)
+      expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('stops scanning after 2000 directory entries and closes the iterator', () => {
-    const readSync = vi.fn(() => ({ name: 'unrelated', isDirectory: () => true }) as fs.Dirent)
-    const closeSync = vi.fn()
-    const openDir = vi.fn(() => ({ readSync, closeSync }))
-    const readStat = vi.fn((file: string) => fs.lstatSync(file))
-    expect(countOtherPreviewChecks('/tmp/room-merge-own', '/tmp', Date.now(), readStat, openDir)).toBeUndefined()
-    expect(readSync).toHaveBeenCalledTimes(2000)
-    expect(readStat).not.toHaveBeenCalled()
-    expect(closeSync).toHaveBeenCalledOnce()
+  it('removes its marker after a failed check', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-failed-'))
+    const markerDir = path.join(root, 'room-preview-checks')
+    try {
+      const tracker = new ToolTimingTracker({ log: () => {} })
+      await expect(tracker.run('room_preview_merge', () => previewCheck(() => {
+        const markers = fs.readdirSync(markerDir)
+        expect(markers).toHaveLength(1)
+        expect(markers[0]).toMatch(new RegExp(`^${process.pid}-[0-9a-f]+$`))
+        expect(fs.statSync(markerDir).mode & 0o777).toBe(0o700)
+        expect(fs.statSync(path.join(markerDir, markers[0])).mode & 0o777).toBe(0o600)
+        throw Error('check failed')
+      }, { markerDir }))).rejects.toThrow('check failed')
+      expect(fs.readdirSync(markerDir)).toEqual([])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('keeps running when the marker directory cannot be created', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-no-marker-'))
+    const blockingFile = path.join(root, 'file')
+    fs.writeFileSync(blockingFile, '')
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    try {
+      expect(await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100; return 'ok' }, { markerDir: path.join(blockingFile, 'markers') }))).toBe('ok')
+      expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('leaves overlap unknown when the marker entry cap is reached', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-cap-'))
+    try {
+      for (let i = 0; i < 500; i++) fs.writeFileSync(path.join(root, `${process.pid}-${i.toString(16).padStart(4, '0')}`), '')
+      expect(countOtherPreviewChecks(path.join(root, `${process.pid}-ffff`), root)).toBeUndefined()
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('leaves the overlap unknown when the marker directory is a symlink, and writes nothing through it', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-symlink-'))
+    try {
+      const target = path.join(root, 'elsewhere')
+      fs.mkdirSync(target)
+      fs.writeFileSync(path.join(target, '99999999-d4'), '')
+      const markerDir = path.join(root, 'markers')
+      fs.symlinkSync(target, markerDir)
+      expect(await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100; return 'ok' }, { markerDir }))).toBe('ok')
+      expect(fs.readdirSync(target)).toEqual(['99999999-d4'])
+      expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
   it('records connect, delayed sync, and daemon start through startAutoTaggedRoomd', async () => {
