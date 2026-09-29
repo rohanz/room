@@ -145,26 +145,34 @@ describe('GraphIndex overlay events', () => {
     const room = new RoomDoc()
     room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
     publishFixture(room, 'Rohan', 'utils.py', 'def validate_token(t):\n    return t\n')
-    const head = room.manifestHead.get('Rohan')!
-    room.manifestHead.set('Rohan', { ...head, level: reason === 'outside declared area' ? 'declared' : 'full',
-      textPrefixes: reason === 'outside declared area' ? [] : undefined, rev: head.rev + 1 })
-    deleteFixture(room, 'Rohan', 'utils.py')
-    const narrowed = room.manifestHead.get('Rohan')!
-    if (reason === 'invalid entry fence') {
-      const entries = room.manifest.get(manifestKey('Rohan', narrowed.fence))!
-      entries.set('utils.py', { ...entries.get('utils.py')!, fence: 'wrong' })
-    } else {
-      const entries = room.manifest.get(manifestKey('Rohan', narrowed.fence))!
-      entries.set('utils.py', { ...entries.get('utils.py')!, state: 'held', held: 'scope' })
-      room.manifestHead.set('Rohan', { ...narrowed, level: 'declared', textPrefixes: [], rev: narrowed.rev + 1 })
-    }
+    publishFixture(room, 'A', 'consumer.py', 'from utils import validate_token\nvalidate_token(1)\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     try {
       gi.start(); await gi.whenIdle()
-      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' &&
+        room.graphs.get('Rohan')!.edges.some(edge => edge.source === 'utils.py' && edge.target === 'consumer.py'))
+      room.doc.transact(() => {
+        deleteFixture(room, 'Rohan', 'utils.py')
+        const head = room.manifestHead.get('Rohan')!
+        if (reason === 'invalid entry fence') {
+          const entries = room.manifest.get(manifestKey('Rohan', head.fence))!
+          entries.set('utils.py', { ...entries.get('utils.py')!, fence: 'wrong' })
+        } else {
+          room.manifestHead.set('Rohan', { ...head, level: 'declared', textPrefixes: [], rev: head.rev + 1, semRev: head.semRev + 1 })
+        }
+      })
+      const deletion = room.manifest.get(manifestKey('Rohan', room.manifestHead.get('Rohan')!.fence))!.get('utils.py')!
+      if (reason === 'outside declared area') {
+        expect(deletion).toMatchObject({ change: 'D', state: 'shared' })
+        expect(deletion).not.toHaveProperty('hash')
+      }
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready' &&
+        room.graphs.get('Rohan')?.sourceRev === room.manifestHead.get('Rohan')?.rev)
       const fresh = new RoomDoc()
       try {
         Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+        expect(fresh.graphs.get('Rohan')?.edges.some(edge => edge.source === 'utils.py' && edge.target === 'consumer.py')).toBe(false)
         expect(JSON.stringify(fresh.graphs.get('Rohan'))).not.toContain('validate_token')
       } finally { fresh.doc.destroy() }
     } finally { gi.stop(); room.doc.destroy() }

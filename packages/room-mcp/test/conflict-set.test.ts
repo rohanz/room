@@ -13,6 +13,14 @@ import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
 
+async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
+  const deadline = Date.now() + 3000
+  while (room.graphs.get(name)?.status !== 'ready' || room.graphs.get(name)?.sourceRev !== rev) {
+    if (Date.now() >= deadline) throw new Error('graph did not publish expected revision')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
 describe('ConflictSlots', () => {
   it('reconciles a pre-existing conflict once and replays the same id after a hub outage', async () => {
     const room = new RoomDoc()
@@ -622,6 +630,114 @@ describe('derived pair slots', () => {
       expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
       expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }), expect.objectContaining({ id: noticeId(key, 1) }))
     } finally { graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['delete', 'signature'] as const)('keeps the same %s contract episode while the consumer is unreadable', async kind => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 1)
+      expect(f.room.graphs.get('B')?.edges).toContainEqual(expect.objectContaining({ source: 'api.py', target: 'consumer.py' }))
+      if (kind === 'delete') rmSync(join(f.dir, 'api.py'))
+      else writeFileSync(join(f.dir, 'api.py'), 'def call(a, b):\n    pass\n')
+      f.room.doc.transact(() => {
+        const entries = f.room.manifest.get(manifestKey('B', '1'))!
+        if (kind === 'delete') entries.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        else {
+          const provider = 'def call(a, b):\n    pass\n'
+          entries.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 2, fence: '1' })
+          f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+        }
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 2)
+      expect(f.room.graphs.get('B')).toMatchObject({ status: 'ready', sourceRev: 2 })
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      set = new ConflictSet({ ...f.session('A'), room: reader } as Session)
+      set.start()
+      await set.reconcile('initial readable consumer')
+      const initial = reader.doc.getMap<any>('conflicts').get(key)
+      expect(initial).toMatchObject({ status: 'conflict', settled: 'conflict', epoch: 1 })
+      expect(accepted).toContain(noticeId(key, 1))
+
+      // Only this consumer's document receives A's narrower publication. B's
+      // running graph still has the old A version and valid source provenance.
+      reader.doc.transact(() => {
+        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+        reader!.clearOverlay(manifestKey('A', '1'), 'consumer.py')
+        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+      })
+      expect(f.room.manifest.get(manifestKey('A', '1'))!.get('consumer.py')?.state).toBe('shared')
+      expect(reader.graphs.get('B')).toMatchObject({ status: 'ready', sourceRev: 2 })
+      await set.reconcile('consumer held')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1, factId: initial.factId })
+      expect(accepted).not.toContain(`${noticeId(key, 1)}:clean`)
+
+      reader.doc.transact(() => {
+        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 3, fence: '1' })
+        reader!.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, level: 'full', textPrefixes: undefined, rev: 3, semRev: 3 })
+      })
+      await set.reconcile('identical consumer restored')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', settled: 'conflict', epoch: 1, factId: initial.factId })
+      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([noticeId(key, 1)])
+    } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
+  it('clears a deletion contract after the consumer actually removes its last reference', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 1)
+      rmSync(join(f.dir, 'api.py'))
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      set = new ConflictSet({ ...f.session('A'), room: reader } as Session)
+      set.start()
+      await set.reconcile('deleted provider')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      const noReference = 'print("done")\n'
+      reader.doc.transact(() => {
+        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(noReference), at: 2, fence: '1' })
+        reader!.setOverlay(manifestKey('A', '1'), 'consumer.py', noReference)
+        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, rev: 2, semRev: 2 })
+      })
+      await set.reconcile('last reference removed')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'clean', settled: 'clean', epoch: 1 })
+      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }),
+        expect.objectContaining({ id: `${noticeId(key, 1)}:clean` }))
+    } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
   })
 
   it('keeps an active contract episode when a clean sibling has no manifest entry, including after restart', async () => {
