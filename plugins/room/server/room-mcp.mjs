@@ -7993,7 +7993,7 @@ var init_text_diff = __esm({
     init_libesm();
     WORK = 2e6;
     SMALL_MIDDLE = 4096;
-    SMALL_WORK = 5e5;
+    SMALL_WORK = 35e4;
     isHigh = (code) => code >= 55296 && code <= 56319;
     isLow = (code) => code >= 56320 && code <= 57343;
     editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
@@ -25252,6 +25252,9 @@ var init_src2 = __esm({
       cancelPeriodicReconcile;
       reconcileQueued = false;
       reconcileDirty = false;
+      reconcilePass = 0;
+      reconcileCompletion = Promise.resolve();
+      nextReconcile;
       beforeWatcherReady;
       sizeCap;
       totalBudget;
@@ -25621,12 +25624,23 @@ var init_src2 = __esm({
         if (this.stopped) return this.workQueue;
         if (this.reconcileQueued) {
           this.reconcileDirty = true;
-          return this.workQueue;
+          if (this.reconcilePass === 2) {
+            if (!this.nextReconcile) {
+              let resolve5;
+              const promise = new Promise((done) => {
+                resolve5 = done;
+              });
+              this.nextReconcile = { promise, resolve: resolve5 };
+            }
+            return this.nextReconcile.promise;
+          }
+          return this.reconcileCompletion;
         }
         this.reconcileQueued = true;
-        return this.enqueue(async () => {
+        this.reconcileCompletion = this.enqueue(async () => {
           try {
-            do {
+            for (let pass = 1; pass <= 2; pass++) {
+              this.reconcilePass = pass;
               this.reconcileDirty = false;
               try {
                 await this.pollHead();
@@ -25634,11 +25648,19 @@ var init_src2 = __esm({
               } catch (error2) {
                 if (!this.reconcileDirty || this.stopped) throw error2;
               }
-            } while (this.reconcileDirty && !this.stopped);
+              if (!this.reconcileDirty || this.stopped) break;
+            }
           } finally {
+            this.reconcilePass = 0;
             this.reconcileQueued = false;
+            const next = this.nextReconcile;
+            this.nextReconcile = void 0;
+            if (this.reconcileDirty && !this.stopped) {
+              void this.reconcileGitChanges().then(() => next?.resolve());
+            } else next?.resolve();
           }
         });
+        return this.reconcileCompletion;
       }
       currentStatus() {
         return this.provider.awareness.getLocalState()?.status ?? "synced";
