@@ -194,6 +194,57 @@ describe('GraphIndex overlay events', () => {
       lateReader.doc.destroy()
     } finally { gi.stop(); room.doc.destroy() }
   })
+  it.each([
+    { name: 'narrowed grant and wrong fence, zero throttle', narrowed: true, wrongFence: true, minPublishMs: 0 },
+    { name: 'narrowed grant and wrong fence, default throttle', narrowed: true, wrongFence: true, minPublishMs: undefined },
+    { name: 'narrowed grant only', narrowed: true, wrongFence: false, minPublishMs: 0 },
+    { name: 'wrong fence only', narrowed: false, wrongFence: true, minPublishMs: 0 },
+  ])('does not publish disk-only definitions after $name', async ({ narrowed, wrongFence, minPublishMs }) => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-private-graph-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString()
+    const room = new RoomDoc()
+    try {
+      git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+      writeFileSync(join(repo, 'api.py'), 'def call():\n    pass\n')
+      writeFileSync(join(repo, 'aux.py'), 'def other():\n    pass\n')
+      git('add', '.'); git('commit', '-qm', 'base')
+      const commit = git('rev-parse', 'HEAD').trim()
+      room.setMeta({ base: commit }); setFixtureLocalRoot(room, 'B', repo)
+      publishFixture(room, 'B', 'api.py', 'def call(value):\n    return value\n', { base: commit })
+      publishFixture(room, 'B', 'aux.py', 'def other(value):\n    return value\n', { base: commit })
+      publishFixture(room, 'A', 'consumer.py', 'from aux import other, private_only\nother(1)\nprivate_only()\n', { base: commit })
+      const gi = new GraphIndex(room, 'B', repo, undefined, { random: () => 0, ...(minPublishMs === undefined ? {} : { minPublishMs }) })
+      try {
+        gi.start(); await gi.whenIdle()
+        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.edges.some(edge => edge.source === 'aux.py' && edge.target === 'consumer.py'))
+        expect(room.graphs.get('B')?.edges.some(edge => edge.symbols.includes('private_only'))).toBe(false)
+        writeFileSync(join(repo, 'aux.py'), 'def other(value):\n    return value\n\ndef private_only():\n    pass\n')
+        const head = room.manifestHead.get('B')!, key = manifestKey('B', head.fence)
+        room.doc.transact(() => {
+          const old = room.manifest.get(key)!.get('aux.py')!
+          room.manifest.get(key)!.set('aux.py', wrongFence ? { ...old, fence: 'wrong' } : { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: head.fence })
+          if (!wrongFence) room.clearOverlay(key, 'aux.py')
+          room.manifestHead.set('B', { ...head, level: narrowed ? 'declared' : 'full', textPrefixes: narrowed ? ['api.py'] : undefined, rev: head.rev + 1, semRev: head.semRev + 1 })
+        })
+        expect(room.graphs.get('B')?.paths).not.toContain('aux.py')
+        const revision = room.manifestHead.get('B')!.rev
+        await gi.whenIdle()
+        const deadline = Date.now() + (minPublishMs === undefined ? 23_000 : 3_000)
+        while (!(room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')?.sourceRev === revision)) {
+          if (Date.now() >= deadline) throw new Error('graph did not publish the new revision')
+          await new Promise(resolve => setTimeout(resolve, 20))
+        }
+        const fresh = new RoomDoc()
+        try {
+          Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(room.doc))
+          const graph = fresh.graphs.get('B')!
+          expect(graph.paths).not.toContain('aux.py')
+          expect(graph.edges.some(edge => edge.source === 'aux.py' || edge.target === 'aux.py' || edge.symbols.includes('private_only'))).toBe(false)
+          expect(graph.observed?.some(change => change.path === 'aux.py' || change.symbol === 'private_only')).toBe(false)
+        } finally { fresh.doc.destroy() }
+      } finally { gi.stop() }
+    } finally { room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
+  }, 26_000)
   it('marks held remote changes as contract coverage gaps', async () => {
     const room = graphRoom()
     publishFixture(room, 'Kieran', 'hidden.py', 'def secret(x):\n    return x\n')

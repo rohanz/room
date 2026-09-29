@@ -25,6 +25,7 @@ const MIN_PUBLISH_MS = 20_000
 const YIELD_EVERY = 100
 const YIELD_AFTER_MS = 50
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
+type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string }
 
 /** Read references from live worker text, including calls in the definition's own file. */
 async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
@@ -59,6 +60,7 @@ export class GraphIndex {
   private readonly publishedGraph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
   private publishedCache = new Map<string, FileSymbols | undefined>()
+  private publishedSource = new Map<string, PublicationSource>()
   private pending = new Map<string, { generation: number; promise: Promise<void>; resolve: () => void; idle: Promise<void>; resolveIdle: () => void }>()
   /** Owns the concurrency limit and per-path deduplication for initial and overlay refreshes. */
   private refreshQueue: string[] = []
@@ -128,6 +130,7 @@ export class GraphIndex {
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
     this.ownPublicationKey = this.publicationKey()
     const onHead = (event: { keysChanged: Set<string> }) => {
+      if ([...event.keysChanged].some(person => person !== this.me)) this.withdrawRestricted()
       if (!event.keysChanged.has(this.me)) return
       const next = this.publicationKey()
       this.withdrawRestricted()
@@ -216,6 +219,7 @@ export class GraphIndex {
     this.cache.clear()
     for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p)
     this.publishedCache.clear()
+    this.publishedSource.clear()
     if (!this.base) return
     await this.publish('indexing')
     if (generation !== this.generation || this.stopped) return
@@ -280,19 +284,42 @@ export class GraphIndex {
     return (this.opts.read ?? gitShow)(this.dir, this.base, path)
   }
 
-  /** Publication reads only a fenced shared version, never the caller's unshared disk text. */
-  private async publicationTextFor(path: string, fallback: string | undefined): Promise<string | undefined> {
+  /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
+  private async publicationTextFor(path: string): Promise<{ text: string; source: PublicationSource } | undefined> {
     const mine = snapshot(this.room, this.me, [])
     if (mine) {
       if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== 'all') return undefined
       if (!mine.roomSalt || !/^[a-f0-9]{64}$/i.test(mine.roomSalt) || mine.head.excluded.includes(digestPath(mine.roomSalt, path))) return undefined
+      // snapshot filters stale entry fences. Their raw presence is still a changed-path
+      // warning, never proof that the path is unchanged at the certified base.
+      const raw = this.room.manifest.get(manifestKey(this.me, mine.head.fence))?.get(path)
+      if (raw && raw.fence !== mine.head.fence) return undefined
     }
     if (mine?.entries.has(path)) {
       if (!this.ownTextAuthorized(path)) return undefined
       const version = await versionOf(mine, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
-      return version.kind === 'text' || version.kind === 'base' ? version.text : undefined
+      return version.kind === 'text' && version.entry.hash
+        ? { text: version.text, source: { kind: 'entry', person: this.me, fence: mine.head.fence, hash: version.entry.hash } } : undefined
     }
-    return fallback
+    for (const person of this.room.manifestHead.keys()) {
+      if (person === this.me) continue
+      const peer = snapshot(this.room, person, [])
+      if (!peer) continue
+      const raw = this.room.manifest.get(manifestKey(person, peer.head.fence))?.get(path)
+      if (raw && raw.fence !== peer.head.fence) return undefined
+      if (!peer.entries.has(path)) continue
+      if (!this.entryAuthorized(person, path, raw)) return undefined
+      const version = await versionOf(peer, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+      return version.kind === 'text' && version.entry.hash
+        ? { text: version.text, source: { kind: 'entry', person, fence: peer.head.fence, hash: version.entry.hash } } : undefined
+    }
+    if (!mine) {
+      const text = await (this.opts.read ?? gitShow)(this.dir, this.base, path)
+      return text === undefined ? undefined : { text, source: { kind: 'base', base: this.base } }
+    }
+    const version = await versionOf(mine, path, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) })
+    return version.kind === 'base' && version.text !== undefined
+      ? { text: version.text, source: { kind: 'base', base: mine.head.base } } : undefined
   }
 
   private ownTextAuthorized(path: string): boolean {
@@ -300,21 +327,44 @@ export class GraphIndex {
     return !!head && (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path)))
   }
 
+  private entryAuthorized(person: string, path: string, entry: { state: string; fence: string; hash?: string } | undefined): boolean {
+    const head = this.room.manifestHead.get(person)
+    const record = participantRecord(this.room, person)
+    return !!head && !!entry && head.complete && head.coverage.kind === 'all' &&
+      holderFence(record?.holder) === head.fence && record?.git?.base === head.base && record.git.fence === head.fence &&
+      entry.fence === head.fence && entry.state === 'shared' && !!entry.hash &&
+      (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))) &&
+      !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path))
+  }
+
+  private publicationAllowed(path: string, source = this.publishedSource.get(path)): boolean {
+    if (!source) return false
+    const head = this.room.manifestHead.get(this.me)
+    if (!head) return source.kind === 'base' && source.base === this.base
+    const record = participantRecord(this.room, this.me)
+    if (!head.complete || head.coverage.kind !== 'all' || holderFence(record?.holder) !== head.fence ||
+        record?.git?.base !== head.base || record.git.fence !== head.fence ||
+        !this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) ||
+        head.excluded.includes(digestPath(this.room.roomSalt, path))) return false
+    const ownEntry = this.room.manifest.get(manifestKey(this.me, head.fence))?.get(path)
+    if (ownEntry) return source.kind === 'entry' && source.person === this.me && source.fence === head.fence &&
+      source.hash === ownEntry.hash && this.entryAuthorized(this.me, path, ownEntry)
+    if (source.kind === 'base') return source.base === head.base && source.base === this.base
+    if (source.person === this.me) return false
+    const peerEntry = this.room.manifest.get(manifestKey(source.person, source.fence))?.get(path)
+    return source.fence === this.room.manifestHead.get(source.person)?.fence && source.hash === peerEntry?.hash &&
+      this.entryAuthorized(source.person, path, peerEntry)
+  }
+
   /** A new reader must never receive derived text after its grant is withdrawn. */
   private withdrawRestricted(): void {
     const graph = this.room.graphs.get(this.me)
     const head = this.room.manifestHead.get(this.me)
     if (!head && graph?.sourceFence === undefined) return // base-only index before the first manifest
-    const entries = head && this.room.manifest.get(manifestKey(this.me, head.fence))
-    const allowed = (p: string) => {
-      if (!head?.complete || head.coverage.kind !== 'all' || graph?.sourceFence !== undefined && graph.sourceFence !== head.fence ||
-          holderFence(participantRecord(this.room, this.me)?.holder) !== head.fence) return false
-      if (!this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, p))) return false
-      const entry = entries?.get(p)
-      return !entry || entry.fence === head.fence && entry.state === 'shared' && this.ownTextAuthorized(p)
-    }
+    const allowed = (p: string) => (graph?.sourceFence === undefined || graph.sourceFence === head?.fence) && this.publicationAllowed(p)
     for (const path of this.publishedCache.keys()) if (!allowed(path)) {
       this.publishedCache.delete(path)
+      this.publishedSource.delete(path)
       this.publishedGraph.remove(path)
       this.observedByPath.delete(path)
       this.graphRevision++
@@ -389,7 +439,8 @@ export class GraphIndex {
       await ensureLanguages([path])
       const text = await this.textFor(path)
       const publicationSource = snapshot(this.room, this.me, [])
-      const publicText = await this.publicationTextFor(path, text)
+      const publication = await this.publicationTextFor(path)
+      const publicText = publication?.text
       const heldBy = text === undefined ? [...this.room.manifestHead.keys()].filter(person => {
         if (person === this.me) return false
         const fence = this.room.manifestHead.get(person)?.fence
@@ -423,12 +474,13 @@ export class GraphIndex {
       if (generation !== this.generation) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }
       else { this.cache.set(path, symbols); this.setGraph(path, text) }
-      if (publicText === undefined || publicText.length > MAX_BYTES) { this.publishedCache.delete(path); this.publishedGraph.remove(path) }
+      if (publicText === undefined || publicText.length > MAX_BYTES) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
       else {
         const publicParsed = parseFile(path, publicText)
-        if (!publicParsed) { this.publishedCache.delete(path); this.publishedGraph.remove(path) }
+        if (!publicParsed) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
         else {
           this.publishedCache.set(path, { defs: publicParsed.defs.map(d => d.name), refs: publicParsed.refs, imports: publicParsed.imports })
+          this.publishedSource.set(path, publication!.source)
           this.publishedGraph.set(path, publicText)
         }
       }
@@ -485,13 +537,15 @@ export class GraphIndex {
     const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base
     if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision &&
         this.lastPublishedRevision.base === base && this.lastPublishedRevision.provenance === provenance && this.lastPublished.status === status) return
-    const paths = Array.from(this.publishedCache.keys()).sort()
+    const paths = Array.from(this.publishedCache.keys()).filter(path => this.publicationAllowed(path)).sort()
+    const allowedPaths = new Set(paths)
     const edges = new Map<string, { source: string; target: string; symbols: string[] }>()
     let truncated = this.truncated
     let lastYield = Date.now()
     for (let i = 0; i < paths.length; i++) {
       const target = paths[i]
       for (const dep of this.publishedGraph.dependenciesOf(target)) for (const source of dep.definedIn) {
+        if (!allowedPaths.has(source)) continue
         const key = JSON.stringify([source, target])
         if (!edges.has(key)) {
           if (edges.size >= MAX_EDGES) { truncated = true; continue }
@@ -506,7 +560,7 @@ export class GraphIndex {
       }
     }
     let edgeList = [...edges.values()]
-    const allObserved = [...this.observedByPath.values()].flat().sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    const allObserved = [...this.observedByPath.values()].flat().filter(change => allowedPaths.has(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
     let observedTruncated = allObserved.length > MAX_OBSERVED
     const observed = allObserved.slice(0, MAX_OBSERVED)
     let body = JSON.stringify({ paths, edges: edgeList, observed })
@@ -530,6 +584,7 @@ export class GraphIndex {
       this.publishing = setTimeout(() => { void this.publish(this.phase) }, minMs - (now - this.lastPublished.at))
       return
     }
+    if (paths.some(path => !this.publicationAllowed(path))) return
     this.lastPublished = { at: now, key, status }
     this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance }
     this.room.graphs.set(this.me, { version: 1, base: this.base, sourceFence, sourceRev,
