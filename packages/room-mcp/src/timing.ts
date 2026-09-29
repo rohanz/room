@@ -2,9 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 import { setGitObserver } from '@room/roomd/git'
 
-export const SLOW_TOOL_MS = 2_000
-export const EVENT_LOOP_SAMPLE_MS = 500
-export const EVENT_LOOP_LAG_MS = 2_000
+const SLOW_TOOL_MS = 2_000
+const EVENT_LOOP_SAMPLE_MS = 500
+const EVENT_LOOP_LAG_MS = 2_000
 
 type Clock = () => number
 type Logger = (line: string) => void
