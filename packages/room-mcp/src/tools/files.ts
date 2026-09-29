@@ -192,7 +192,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const skippedNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
-      if (!people.length) return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
+      const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean) => {
+        await caller.post<NoteMsg>(caller.me, {
+          type: 'note', priority: 'fyi',
+          text: `partial preview with ${names.join(', ') || 'no participants'}: ${gaps.join('; ')}${command ? `; command "${command}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
+        })
+      }
+      if (!people.length) {
+        if (unavailable.length || skippedNote) {
+          caller.lastPreview = { clean: false, complete: false, testsPassed: false }
+          await recordPartial([], [...unavailable, ...(skippedNote ? [skippedNote] : [])])
+        }
+        return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
+      }
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
@@ -211,6 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const gapLines = [...gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`), ...unavailable]
         if (!paths.length && !result.callerOnly && !run) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
+          if (!complete) await recordPartial(people, gapLines)
           return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, skippedNote].filter(Boolean).join('\n')
         }
         out.unshift(...missingNotes)
@@ -245,10 +258,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
         }
         caller.lastPreview = { clean: hardCount === 0, complete, ...(run ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
-        if (!complete) await caller.post<NoteMsg>(caller.me, {
-          type: 'note', priority: 'fyi',
-          text: `partial preview with ${people.join(', ')}: ${gapLines.join('; ')}${run ? `; command "${run}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
-        })
+        if (!complete) await recordPartial(people, gapLines, run, ranOk)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
         if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return out.join('\n')

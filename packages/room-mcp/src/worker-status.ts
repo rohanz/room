@@ -46,7 +46,7 @@ export interface WorkerRecord {
   archive?: RetiredWorker
   legacy?: { id: string; source: string; said?: string; unowned?: boolean }; createdAt: number; seq: number
 }
-export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string }
+export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string; followUp?: string }
 export type LivenessProbe = (identity: ProcessIdentity) => Liveness
 export const IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1000
 /** Only the session's own monotonic clock is comparable with its activity marker. */
@@ -90,7 +90,11 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   if (report?.done) return result('done', current, exit?.code && exit.code !== 0 ? `exited ${exit.code} after reporting` : note,
     { summary: report.done.summary, finishedAt: report.done.at, ...(exit?.code != null ? { exitCode: exit.code } : {}) })
   if (record.stop?.run === current.n) return result('stopped', current, record.stop.reason, { finishedAt: record.stop.at })
-  const earlierDone = ordered.some(r => r.n < current.n && reports.some(p => p.run === r.n && p.nonce === r.nonce && p.done))
+  const earlierDone = [...ordered].reverse().filter(r => r.n < current.n)
+    .map(r => reports.find(p => p.run === r.n && p.nonce === r.nonce && p.done)).find(Boolean)
+  if (exit?.witnessed && exit.code === 0 && current.mode === 'resume' && earlierDone)
+    return result('done', current, note, { finishedAt: exit.at, exitCode: 0,
+      summary: earlierDone.done!.summary })
   if (exit?.witnessed && exit.code === 0) return result('failed', current, 'exited without room_done', { finishedAt: exit.at, exitCode: 0 })
   if (exit?.witnessed) return result('failed', current, exit.signal ?? `exit ${exit.code ?? 'unknown'}`, { finishedAt: exit.at, ...(exit.code != null ? { exitCode: exit.code } : {}) })
   if (exit && current.mode === 'resume' && earlierDone) return result('done', current, 'follow-up outcome unknown: ended while no session of yours was running', { finishedAt: exit.at })
@@ -142,6 +146,7 @@ export function workerView(record: WorkerRecord, status: WorkerStatusResult, fen
     task: record.task.slice(0, 200), branch: record.branch, status: status.status,
     ...(status.summary ?? record.legacy?.said ? { summary: status.summary ?? record.legacy?.said } : {}),
     ...(status.note ? { note: status.note } : {}), run: status.run?.n ?? record.runs.at(-1)?.n ?? 0, startedAt: record.createdAt,
+    ...(status.followUp ? { followUp: status.followUp } : {}),
     ...(status.finishedAt !== undefined ? { finishedAt: status.finishedAt } : {}),
     ...(status.exitCode !== undefined ? { exitCode: status.exitCode } : {}),
     ...(record.stop ? { stopReason: record.stop.reason } : {}), fence,

@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -80,6 +80,54 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
     expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toMatchObject([{ type: 'done', summary: 'finished safely' }])
     expect(registry.reports(w.id)[0].posted).toBe(`wk:${w.id}:1`)
   })
+  it('N1 replays a successful resumed turn from an earlier done report with a deterministic ID', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'follow-up', { host: 'codex' })
+    await registry.writeReport(w.id, { run: 1, nonce: w.runs[0].nonce, chain: [], joinedAt: 2,
+      done: { at: 3, summary: 'original task done', changed: ['app.py'] } })
+    await registry.writeExit(w.id, { run: 1, code: 0, at: 4, witnessed: true })
+    await registry.update(w.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', nonce: 'next',
+      launch: { outcome: 'launched', pid: 0 }, logStart: 0 }], seq: old.seq + 1 }))
+    await registry.writeExit(w.id, { run: 2, code: 0, at: 5, witnessed: true })
+    const logFile = join(dir, '.room', 'workers', 'follow-up.log')
+    mkdirSync(join(dir, '.room', 'workers'), { recursive: true })
+    writeFileSync(logFile, JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'follow-up answered' } }) + '\n')
+    const s = session(LOCAL, 'lead-s1')
+    const post = s.post
+    let refused = false
+    s.post = ((...args: Parameters<typeof post>) => {
+      if (!refused && args[2]?.id === `wk:${w.id}:2`) { refused = true; throw new Error('hub unreachable') }
+      return post(...args)
+    }) as typeof post
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:2`)).toHaveLength(0)
+    expect(registry.status(w.id)?.followUp).toBe('follow-up answered')
+    expect(s.room.workerViews.get(w.id)?.followUp).toBe('follow-up answered')
+    await registry.beginRetirement(w.id, registry.archiveOf(registry.read(w.id)!, { summary: 'original task done' }))
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:2`)).toMatchObject([{ type: 'done', summary: 'follow-up answered' }])
+    expect(registry.read(w.id)?.runs[1].posted).toBe(`wk:${w.id}:2`)
+  })
+  it('keeps a failed resume notice within that run\'s log instead of quoting the previous done', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'failed-follow-up', { host: 'codex' })
+    await registry.writeReport(w.id, { run: 1, nonce: w.runs[0].nonce, chain: [], joinedAt: 2,
+      done: { at: 3, summary: 'original task done', changed: [] } })
+    await registry.writeExit(w.id, { run: 1, code: 0, at: 4, witnessed: true })
+    const previous = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Done. marked done' } }) + '\n'
+    const current = JSON.stringify({ type: 'turn.failed', error: { message: 'Current run failed' } }) + '\n'
+    mkdirSync(join(dir, '.room', 'workers'), { recursive: true })
+    writeFileSync(join(dir, '.room', 'workers', 'failed-follow-up.log'), previous + current)
+    await registry.update(w.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', nonce: 'next',
+      launch: { outcome: 'launched', pid: 0 }, logStart: Buffer.byteLength(previous) }], seq: old.seq + 1 }))
+    await registry.writeExit(w.id, { run: 2, code: 1, at: 5, witnessed: true })
+    const s = session(LOCAL, 'lead-s1')
+    await projectWorkers(s, registry, lead.name, 'joined')
+    const note = s.room.messages().find(m => m.id === `wk:${w.id}:2`)
+    expect(note).toMatchObject({ type: 'note' })
+    expect((note as { text: string }).text).toContain('Current run failed')
+    expect((note as { text: string }).text).not.toContain('Done. marked done')
+  })
 
   it('M10 posts a witnessed failure before retiring its last room record', async () => {
     const registry = await registryForDir(dir)
@@ -90,6 +138,22 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
     await projectWorkers(s, registry, lead.name, 'joined')
     expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(1)
     expect(s.room.workerViews.has(w.id)).toBe(false)
+  })
+  it('M10 keeps retirement cleanup pending until a failed completion post can replay', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'retire-retry')
+    const s = session(LOCAL, 'lead-s1')
+    await registry.writeExit(w.id, { run: 1, code: 1, at: 5, witnessed: true })
+    await registry.beginRetirement(w.id, registry.archiveOf(w, { summary: 'failed', disposition: 'discarded' }))
+    const original = registry.postObservedFailure.bind(registry)
+    const spy = vi.spyOn(registry, 'postObservedFailure').mockRejectedValueOnce(new Error('hub unreachable'))
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(0)
+    expect(registry.read(w.id)?.cleanup?.[LOCAL]).toBe('pending')
+    spy.mockImplementation(original)
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(1)
+    expect(registry.read(w.id)?.cleanup?.[LOCAL]).toBe('done')
   })
   it('writes one fenced view per non-retiring worker, updates it on change, and drops views of workers in neither list', async () => {
     const registry = await registryForDir(dir)

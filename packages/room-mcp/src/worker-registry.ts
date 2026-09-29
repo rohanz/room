@@ -490,7 +490,13 @@ export class WorkerRegistry {
   status(id: string): WorkerStatusResult | undefined {
     const record = this.read(id)
     if (!record) return undefined
-    return statusOf(record, record.runs, this.reports(id), this.exits(id), this.alive, this.now())
+    const reports = this.reports(id), exits = this.exits(id)
+    const status = statusOf(record, record.runs, reports, exits, this.alive, this.now())
+    const run = status.run
+    if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
+      || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
+    const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+    return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart) }
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
@@ -709,7 +715,7 @@ export class WorkerRegistry {
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
-    const tail = workerLogTail(logFile)
+    const tail = workerLogTail(logFile, run.logStart)
     const answer = run.mode === 'resume' ? followUpAnswer(logFile, record.host, run.logStart) : ''
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`

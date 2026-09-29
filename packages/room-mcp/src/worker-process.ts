@@ -107,11 +107,11 @@ export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart:
 }
 
 /** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
-export function workerLogTail(logFile: string): string {
+export function workerLogTail(logFile: string, logStart = 0): string {
   let fd: number | undefined
   try {
     fd = fs.openSync(logFile, 'r')
-    const size = fs.fstatSync(fd).size, start = Math.max(0, size - 64 * 1024)
+    const size = fs.fstatSync(fd).size, start = Math.max(Math.min(size, logStart), size - 64 * 1024, 0)
     const buffer = Buffer.alloc(size - start)
     fs.readSync(fd, buffer, 0, buffer.length, start)
     const text = stripVTControlCharacters(buffer.toString('utf8'))

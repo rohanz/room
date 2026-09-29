@@ -11,6 +11,7 @@ import { parseFile, ensureLanguages } from './parse/engine.js'
 import { specForPath } from './parse/index.js'
 import { readBaseline, workerBaseline, type BaselineRead } from '@room/roomd/baseline'
 import { carriedFrom } from './worker-registry.js'
+import { snapshotStillCurrent } from '@room/shared'
 
 const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
@@ -316,6 +317,7 @@ export class GraphIndex {
       const revision = this.revisions.get(path), generation = this.generation
       await ensureLanguages([path])
       const text = await this.textFor(path)
+      const publicationSource = snapshot(this.room, this.me, [])
       const publicText = await this.publicationTextFor(path, text)
       const heldBy = text === undefined ? [...this.room.manifestHead.keys()].filter(person => {
         if (person === this.me) return false
@@ -340,6 +342,9 @@ export class GraphIndex {
           text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined
+      // The base read can yield after a valid shared version was selected. A holder-only
+      // epoch change leaves the manifest head unchanged, but revokes that version.
+      if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) return false
       if (this.stopped) return true
       if (generation !== this.generation) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }

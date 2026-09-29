@@ -42,7 +42,7 @@ export interface BridgeOptions {
 }
 
 /** One projected path, before the lead's policy decides whether its hash may be published. */
-interface ProjectedFact { change: 'M' | 'A' | 'D'; hash?: string; size?: number; baseHash?: string; at: number }
+interface ProjectedFact { change: 'M' | 'A' | 'D'; hash?: string; size?: number; mode?: number; baseHash?: string; at: number }
 
 const headIdentity = (h: ManifestHead) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, textPrefixes: h.textPrefixes, complete: h.complete, projectedBy: h.projectedBy, projectedFrom: h.projectedFrom })
 const entryIdentity = (e: ManifestEntry | undefined) => e && JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence })
@@ -185,7 +185,7 @@ export class Bridge {
    * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
    */
   syncCoordination(): void {
-    if (this.stopped || !this.registry) return
+    if (this.stopped || !this.registry || !this.team.daemon.fence) return
     const lead = this.team.me.name
     const paths = this.workerPaths()
     const workers = this.workers().map(w => w.name).sort()
@@ -217,7 +217,11 @@ export class Bridge {
    * whose worker is no longer in the set are deleted.
    */
   private async projectOnce(registry: WorkerRegistry): Promise<void> {
+    const authority = this.team.daemon.fence
+    if (!authority) return
     const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this)
+    const currentAuthority = () => this.team.daemon.fence === authority
+    if (!written || !currentAuthority()) return
     const keep = new Set(written.map(r => r.id))
     const lead = this.team.me.name
     const stale: string[] = []
@@ -226,9 +230,9 @@ export class Bridge {
       const proj = this.team.room.participants.get(key) as { projectedFrom: string; projectedBy: string } | undefined
       if (proj?.projectedBy === lead && !keep.has(proj.projectedFrom)) stale.push(key.slice(0, -'\u0000proj'.length))
     }
-    if (stale.length) this.team.room.doc.transact(() => { for (const name of stale) this.dropProjection(name) }, this)
+    if (stale.length && currentAuthority()) this.team.room.doc.transact(() => { for (const name of stale) this.dropProjection(name) }, this)
     for (const record of written) {
-      if (this.stopped) return
+      if (this.stopped || !currentAuthority()) return
       await this.projectWorker(record)
       await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record.name })
     }
@@ -259,6 +263,19 @@ export class Bridge {
     const view = participantsView(this.local.room, this.local.awareness, Date.now())
     const source = snapshot(this.local.room, record.name, view)
     const sourceHead = source?.head
+    const sourceHolder = participantRecord(this.local.room, record.name)?.holder
+    const valid = () => {
+      const current = this.registry?.read(record.id)
+      const latestSource = snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))
+      const latestLead = participantRecord(team, lead)?.git
+      return !this.stopped && this.team.policyStore.policy === policy && this.team.daemon.inputs.rules.id === rules.id
+        && this.team.daemon.fence === fence
+        && latestLead?.base === B && latestLead?.fence === leadGit.fence
+        && JSON.stringify(participantRecord(this.local.room, record.name)?.holder) === JSON.stringify(sourceHolder)
+        && latestSource?.head.semRev === sourceHead?.semRev && latestSource?.head.fence === sourceHead?.fence
+        && (!sourceHead || !!latestSource?.fenceValid) && current?.id === record.id && current.phase === record.phase
+        && !['retiring', 'retired', 'abandoned'].includes(current.phase)
+    }
     const coverage: Coverage = policy.level === 'intent' ? { kind: 'none', reason: 'unprojectable' }
       : !sourceHead || !source?.fenceValid || !sourceHead.complete ? { kind: 'none', reason: 'starting' }
       : sourceHead.coverage.kind === 'none' ? { kind: 'none', reason: sourceHead.coverage.reason === 'not-publisher' ? 'not-publisher' : sourceHead.coverage.reason === 'intent' ? 'intent' : 'starting' }
@@ -272,36 +289,26 @@ export class Bridge {
         this.o.log?.(`bridge: cannot compose ${record.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`)
         return undefined
       })
+      if (!valid()) {
+        const current = this.registry?.read(record.id)
+        if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
+        return
+      }
       if (!facts) complete = false
       else {
-        const current = this.registry?.read(record.id)
-        const latestSource = snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))
-        const latestLead = participantRecord(team, lead)?.git
-        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id
-          || this.team.daemon.fence !== fence || latestLead?.base !== B || latestLead?.fence !== leadGit.fence
-          || latestSource?.head.semRev !== sourceHead?.semRev || latestSource?.head.fence !== sourceHead?.fence
-          || !latestSource?.fenceValid || current?.id !== record.id || current?.phase !== record.phase
-          || ['retiring', 'retired', 'abandoned'].includes(current.phase)) {
-          this.o.log?.(`bridge: stale projection ${record.tag}: ${JSON.stringify({ policy: this.team.policyStore.policy !== policy, rules: this.team.daemon.inputs.rules.id !== rules.id, fence: this.team.daemon.fence !== fence, base: latestLead?.base !== B, gitFence: latestLead?.fence !== leadGit.fence, semRev: latestSource?.head.semRev !== sourceHead?.semRev, sourceFence: latestSource?.head.fence !== sourceHead?.fence, sourceValid: latestSource?.fenceValid, id: current?.id !== record.id, phase: current?.phase !== record.phase })}`)
-          if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
-          team.doc.transact(() => this.dropProjection(record.name), this)
-          return
-        }
         const salt = team.ensureRoomSalt()
         const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()])
         // The Git ignore read yields too. A newer policy, source or worker phase must win.
-        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id
-          || this.team.daemon.fence !== fence || participantRecord(team, lead)?.git?.base !== B
-          || snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))?.head.semRev !== sourceHead?.semRev
-          || this.registry?.read(record.id)?.phase !== record.phase) {
-          if (retry < 1) return this.projectWorker(this.registry?.read(record.id) ?? record, retry + 1)
-          team.doc.transact(() => this.dropProjection(record.name), this)
+        if (!valid()) {
+          const current = this.registry?.read(record.id)
+          if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
           return
         }
         let used = 0
         for (const [path, fact] of facts.all) {
           if (ignored.has(path) || rules.roomIgnore.ignores(path) || defaultIgnoredPath(path)
             || defaultExcludedPath(path) || !validRepoPath(path, DISK_READ_PATH)
+            || (fact.change !== 'D' && fact.mode !== undefined && fact.mode !== 0o100644 && fact.mode !== 0o100755)
             || (fact.change !== 'D' && fact.size !== undefined && (fact.size > rules.sizeCap
               || (authorizesText(policy, path) && used + fact.size > rules.budget)))) {
             excluded.push(digestPath(salt, path))
@@ -324,6 +331,7 @@ export class Bridge {
         }
       }
     } else if (coverage.kind === 'all') complete = false
+    if (!valid()) return
     excluded.sort()
     const key = manifestKey(record.name, fence)
     const prevHead = team.manifestHead.get(record.name)
@@ -392,11 +400,11 @@ export class Bridge {
     const atB = await blobsAt(dir, B, candidates)
     const all = new Map<string, ProjectedFact>(), carried = new Map<string, ProjectedFact>()
     const now = Date.now()
-    const put = (path: string, hash: string | undefined, at: number, size?: number): ProjectedFact | undefined => {
+    const put = (path: string, hash: string | undefined, at: number, size?: number, mode?: number): ProjectedFact | undefined => {
       const base = atB.get(path)
       if (hash === undefined) return base ? { change: 'D', baseHash: base.blob, at } : undefined
       if (base?.blob === hash) return undefined
-      return { change: base ? 'M' : 'A', hash, ...(size !== undefined ? { size } : {}), ...(base ? { baseHash: base.blob } : {}), at }
+      return { change: base ? 'M' : 'A', hash, ...(size !== undefined ? { size } : {}), ...(mode !== undefined ? { mode } : {}), ...(base ? { baseHash: base.blob } : {}), at }
     }
     for (const [path, e] of own) {
       // A hashless source entry (outside the worker's own text area) is still a change against B.
@@ -408,13 +416,13 @@ export class Bridge {
     const sizes = await blobsAt(dir, C, [...between.keys()].filter(p => !own.has(p) && between.get(p)!.newBlob))
     for (const [path, d] of between) {
       if (own.has(path) || untracked.has(path)) continue
-      const fact = put(path, d.newBlob, now, sizes.get(path)?.size)
+      const fact = put(path, d.newBlob, now, sizes.get(path)?.size, sizes.get(path)?.mode)
       if (fact) { all.set(path, fact); carried.set(path, fact) }
     }
     for (const [path, sha] of untracked) {
       if (own.has(path)) continue
       const size = Number((await git(dir, ['cat-file', '-s', sha])).trim())
-      const fact = put(path, sha, now, size)
+      const fact = put(path, sha, now, size, record.carriedUntracked?.find(entry => entry.path === path)?.mode)
       if (fact) { all.set(path, fact); carried.set(path, fact) }
     }
     return { all, carried }
@@ -499,14 +507,14 @@ export class Bridge {
 }
 
 /** Blob id and size of each path at a commit; absent when the commit has no such file. */
-async function blobsAt(dir: string, commit: string, paths: Iterable<string>): Promise<Map<string, { blob: string; size: number }>> {
+async function blobsAt(dir: string, commit: string, paths: Iterable<string>): Promise<Map<string, { blob: string; size: number; mode: number }>> {
   const list = [...paths]
-  const out = new Map<string, { blob: string; size: number }>()
+  const out = new Map<string, { blob: string; size: number; mode: number }>()
   if (!list.length) return out
   const raw = await git(dir, ['ls-tree', '-r', '-z', '--long', '--full-tree', commit, '--', ...list])
   for (const line of raw.split('\0')) {
-    const m = line.match(/^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s)
-    if (m) out.set(m[3], { blob: m[1], size: Number(m[2]) })
+    const m = line.match(/^(\d+) blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s)
+    if (m) out.set(m[4], { mode: Number.parseInt(m[1], 8), blob: m[2], size: Number(m[3]) })
   }
   return out
 }

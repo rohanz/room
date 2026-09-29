@@ -307,6 +307,10 @@ export interface PersonLineInput {
   excludedCount?: number
   messages: readonly NoteMsg[]
   share: ShareLevel
+  /** Accepted team projection; runtime status comes from the worker view, not team awareness. */
+  projectedWorker?: Pick<WorkerView, 'lead' | 'status'>
+  /** A projection exists, but its lead fence no longer validates. */
+  projectedStale?: string
 }
 
 /** The status/detail portion of a room_state participant line. */
@@ -315,7 +319,9 @@ export function personLine(input: PersonLineInput): string {
     ?? input.presences.find(x => x.user.name === input.name)
   const lastDone = [...input.messages].reverse().find(m => m.from === input.name && m.text.startsWith('done'))
   let what: string
-  if (input.scope) what = `working on ${scopeLine(input.scope)}`
+  if (input.projectedStale) what = `projection stale/updating via ${input.projectedStale}`
+  else if (input.projectedWorker) what = `${input.scope ? `working on ${scopeLine(input.scope)}; ` : ''}via ${input.projectedWorker.lead} (${input.projectedWorker.status})`
+  else if (input.scope) what = `working on ${scopeLine(input.scope)}`
   else if (p?.status?.startsWith('done')) what = p.status
   else if (lastDone && (!p || p.status === 'idle' || p.status === 'synced')) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`
   else what = p ? `${p.status && !['idle', 'synced'].includes(p.status) ? p.status + ', ' : ''}no task declared` : 'offline'
@@ -370,7 +376,7 @@ export function workerLine({ worker: w, dir, processGone = false, lastActive, ch
     : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status)
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
-    `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
+    `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${w.followUp ? ` · follow-up: ${w.followUp.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
   ]
 }
 

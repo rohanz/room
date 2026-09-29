@@ -8,10 +8,10 @@ import type { Session } from './session.js'
 import path from 'node:path'
 import { completionMessage, type WorkerView } from '@room/shared'
 import { registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
-import { workerView, type WorkerRecord } from './worker-status.js'
+import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
-import { missingClaudeSession, resumeAccepted } from './worker-process.js'
+import { followUpAnswer, missingClaudeSession, resumeAccepted } from './worker-process.js'
 
 /** Which of the lead's workers a writer in `roomKey` owns: those that joined it, or those projected into it. */
 export type ProjectorRole = 'joined' | 'projected'
@@ -24,9 +24,9 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
  * cleanup done, and deletes this lead's views whose worker is in neither list. Retiring records are never
  * written, so projection cannot undo retirement (N2). Returns the written records for the caller's own facts.
  */
-export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown): Promise<WorkerRecord[]> {
+export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown): Promise<WorkerRecord[] | undefined> {
   const roomKey = s.roomName, fence = s.daemon.fence
-  if (!fence) return []
+  if (!fence) return undefined
   const { write: all, retire: retiring } = registry.projectable(lead, roomKey)
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
@@ -62,24 +62,42 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
   }, origin)
   // A completed worker cannot retry its own post. The joined-room projector replays the
   // deterministic ID from durable report/exit evidence after outages and lead restarts.
+  const undelivered = new Set<string>()
   if (role === 'joined') for (const { record, status } of [
     ...write, ...retire.flatMap(record => { const status = registry.status(record.id); return status ? [{ record, status }] : [] }),
   ]) {
     const run = status.run ?? record.runs.at(-1)
     if (!run) continue
+    const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
     const report = registry.reports(record.id).find(value => value.run === run.n)
+    const exit = registry.exits(record.id).find(value => value.run === run.n)
+    const terminal = record.phase === 'retiring'
+      ? statusOf({ ...record, phase: 'active' }, record.runs, registry.reports(record.id), registry.exits(record.id), () => 'dead')
+      : status
     try {
-      if (report?.done && registry.exits(record.id).some(exit => exit.run === run.n)) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
+      if (report?.done && exit) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
         const message = completionMessage(current, run, status, done)
         if (message) await postWorkerMessage(s.post, current, message)
       })
-      else if (status.status === 'failed' || record.phase === 'retiring' && !record.stop) await registry.postObservedFailure(record.id, run.n,
-        message => postWorkerMessage(s.post, record, message))
-    } catch { /* The next registry change, reconnect or projector pass retries this ID. */ }
+      else if (terminal.status === 'done' && run.mode === 'resume' && exit?.witnessed && exit.code === 0
+        && registry.reports(record.id).some(value => value.run < run.n && value.done) && !run.posted) {
+        const answer = followUpAnswer(logFile, record.host, run.logStart)
+        const message = completionMessage(record, run, { ...terminal, summary: answer || terminal.summary })
+        if (message) {
+          await postWorkerMessage(s.post, record, message)
+          await registry.update(record.id, old => ({ ...old, runs: old.runs.map(value => value.n === run.n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
+        }
+      }
+      else if (terminal.status === 'failed' || record.phase === 'retiring' && !record.stop && !report?.done) {
+        const posted = await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
+        if (record.phase === 'retiring' && !record.stop && exit?.witnessed && !posted && !run.posted) undelivered.add(record.id)
+      } else if (record.phase === 'retiring' && report?.done && !exit) undelivered.add(record.id)
+    } catch { undelivered.add(record.id) }
   }
   for (const record of retire) {
+    if (s.daemon.fence !== fence) return undefined
     s.room.retireWorker(record.id, { ...(record.archive ?? registry.archiveOf(record, { summary: '' })), id: record.id }, post)
-    await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
+    if (!undelivered.has(record.id)) await registry.finishCleanup(record.id, roomKey).catch(() => undefined)
   }
   return write.map(({ record }) => record)
 }

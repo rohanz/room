@@ -115,7 +115,7 @@ describe('resumed worker boundaries', () => {
     append({ type: 'assistant', session_id: 'another-session', message: { content: [{ type: 'text', text: 'wrong' }] } })
     t.exits[0](0)
     const registry = await registryForDir(t.dir)
-    await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('failed'))
+    await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('done'))
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
     expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
     append({ type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } })

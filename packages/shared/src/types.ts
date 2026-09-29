@@ -153,6 +153,8 @@ export interface WorkerView {
   branch: string
   status: WorkerStatus
   summary?: string
+  /** Answer from a clean resumed turn whose earlier done report still stands. */
+  followUp?: string
   /** The status row's detail ("has not joined…", "follow-up not delivered"). */
   note?: string
   run: number

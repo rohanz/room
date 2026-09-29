@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
+import { RoomDoc, digestPath, gitBlobHash, manifestKey, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
 import type { Identity, ClaimMsg, ManifestEntry, ManifestHead, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { Bridge } from '../src/bridge.js'
+import { createAreas } from '../src/tools/scope.js'
 import { Ledger } from '../src/ledger.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir, registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
@@ -222,6 +223,64 @@ describe('Bridge: a lead in a team room with a local workers room', () => {
 })
 
 describe('Bridge: the team projection of a local worker (manifest §5.5, registry §13)', () => {
+  it('N6 renders accepted, stale and ended projected worker status in participant lines', async () => {
+    const t = await setup({ start: false })
+    await t.bridge.sync()
+    expect([...t.team.a.workerViews.values()]).toHaveLength(1)
+    expect([...t.team.a.workerViews.values()][0]).toMatchObject({ name: worker.name, mode: 'local' })
+    expect(t.teamLead.room.workerViewOf(worker.name)).toBeDefined()
+    expect(t.teamLead.room.acceptedWorkerViewOf(worker.name)).toBeDefined()
+    const { personLine } = createAreas({ ctx: {}, log: () => {}, base: () => B, presences: () => [],
+      others: () => [], shareOf: () => 'full', now: () => Date.now(), isMe: () => false } as never)
+    expect(personLine(t.teamLead, worker.name)).toContain('via rohanz (running)')
+    const holder = t.team.a.participants.get(`${lead.name}\u0000holder`)!
+    t.team.a.participants.set(`${lead.name}\u0000holder`, { ...holder, epoch: 2 })
+    expect(personLine(t.teamLead, worker.name)).toContain('projection stale/updating via rohanz')
+    t.team.a.participants.set(`${lead.name}\u0000holder`, holder)
+    const view = t.team.a.workerViews.get(t.record.id)!
+    t.team.a.workerViews.set(t.record.id, { ...view, status: 'done' })
+    expect(personLine(t.teamLead, worker.name)).toContain('via rohanz (done)')
+  })
+  it('N2 leaves a projection untouched during a paused lease, then retires it with authority', async () => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, {})
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.has(worker.name)).toBe(true)
+    ;(t.teamLead.daemon as { fence?: string }).fence = undefined
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.has(worker.name)).toBe(true)
+    expect(t.team.b.participants.has(`${worker.name}\u0000proj`)).toBe(true)
+    ;(t.teamLead.daemon as { fence?: string }).fence = LEAD_FENCE
+    await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
+  })
+
+  it('M2 does not resurrect a retired worker after composition fails', async () => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, {})
+    const target = t.bridge as unknown as { composeFacts: (...args: unknown[]) => Promise<unknown> }
+    vi.spyOn(target, 'composeFacts').mockImplementation(async () => {
+      await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'done' }))
+      throw new Error('git unavailable')
+    })
+    await t.bridge.sync()
+    expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
+    expect(t.team.b.participants.has(`${worker.name}\u0000proj`)).toBe(false)
+  })
+
+  it('M3 excludes a carried symlink without publishing its target hash or name', async () => {
+    const t = await setup({ start: false })
+    symlinkSync('private-target', join(dir, 'link.py'))
+    git('add', 'link.py'); git('commit', '-qm', 'carried symlink')
+    C = git('rev-parse', 'HEAD').trim()
+    await t.registry.update(t.record.id, old => ({ ...old, base: C, seq: old.seq + 1 }))
+    publishSource(t.local.b, {})
+    await t.bridge.sync()
+    const head = t.team.b.manifestHead.get(worker.name)!
+    expect(t.team.b.manifest.get(manifestKey(worker.name, LEAD_FENCE))?.has('link.py')).toBe(false)
+    expect(head.excluded).toContain(digestPath(t.team.b.ensureRoomSalt(), 'link.py'))
+  })
   it('M2 abandons a projection when the lead narrows sharing during composition', async () => {
     const policy = testPolicyStore()
     const t = await setup({ policy, start: false })
@@ -389,11 +448,12 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     t.bridge.start()
     await t.bridge.sync()
     // A new lead session (fence) replaces the old incarnation's keys.
-    ;(t.teamLead.daemon as unknown as { fence: string }).fence = 'lead-session-2'
-    t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: B, base: B, anchored: true, rev: 2, fence: 'lead-session-2' })
+    ;(t.teamLead.daemon as unknown as { fence: string }).fence = '2'
+    t.team.a.participants.set(`${lead.name}\u0000holder`, { sessionId: 'lead-session-2', epoch: 2, machine: 'm', pid: 1, startTime: 't', executable: 'e' })
+    t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: B, base: B, anchored: true, rev: 2, fence: '2' })
     await t.bridge.sync()
     expect(t.team.b.manifest.has(manifestKey(worker.name, LEAD_FENCE))).toBe(false)
-    expect(t.team.b.manifestHead.get(worker.name)?.fence).toBe('lead-session-2')
+    expect(t.team.b.manifestHead.get(worker.name)?.fence).toBe('2')
     await t.registry.beginRetirement(t.record.id, t.registry.archiveOf(t.record, { summary: 'collected', disposition: 'collected' }))
     await t.bridge.sync()
     expect(t.team.b.manifestHead.has(worker.name)).toBe(false)
