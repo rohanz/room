@@ -7,7 +7,7 @@
 import { readRoomFile, roomFilePath } from './room-file.js'
 export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
-import { commonGitDirFromDotGit } from './git-dirs.js'
+import { commonGitDirFromDotGit, worktreeGitDirFromDotGit } from './git-dirs.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir } from './git-dirs.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,23 +15,24 @@ import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
+import { CoalescedPoll } from './poll.js'
 import { Publisher, type PreparedPublication } from './publisher.js'
 import { markManifestIncomplete } from './manifest-publish.js'
-import { authorizesText, rulesFromText, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
+import { authorizesText, rulesFromText, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
 import type { ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
-export { policyFromLevel, authorizesText, rulesFromText, plan, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
+export { policyFromLevel, authorizesText, rulesFromText, plan, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
 import { WebSocket } from 'ws'
 import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from './reanchor.js'
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, assertValidParticipantName, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, claimReleaseText, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
-import { git, gitBranch, gitHead, gitIgnored, gitShowMany, gitTracked } from './git.js'
+import { git, gitBranch, gitChanged, gitHead, gitIgnored, gitPathsBetween, gitShowMany, gitTracked } from './git.js'
 import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
 export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
 
@@ -201,10 +202,6 @@ export class RoomdError extends Error {
   }
 }
 
-export const DEFAULT_IGNORED_DIRS = new Set(['node_modules', '.venv', 'dist', 'build', '.git', '.room', 'target', '.next', 'coverage'])
-export function defaultIgnoredPath(relpath: string): boolean {
-  return relpath.split('/').some(segment => DEFAULT_IGNORED_DIRS.has(segment) || segment === '.DS_Store' || /\.(npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith('~') || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment))
-}
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
 
@@ -295,6 +292,12 @@ class Daemon implements Roomd {
   private readonly periodicReconcileSchedule: (run: () => void, intervalMs: number) => () => void
   private cancelPeriodicReconcile?: () => void
   private reconcileQueued = false
+  private reconcilePass = 0
+  private reconcileDirty = false
+  private reconcileCompletion: Promise<void> = Promise.resolve()
+  private nextReconcile?: { promise: Promise<void>; resolve: () => void }
+  private trackedPoll?: CoalescedPoll
+  private headPoll?: CoalescedPoll
   private readonly beforeWatcherReady?: () => void
   readonly onFullScan?: RoomdOptions['onFullScan']
   private readonly poster?: RoomdOptions['post']
@@ -317,8 +320,8 @@ class Daemon implements Roomd {
   private onScanned?: (relpath: string) => void
 
   private tracked = new Set<string>()
+  private indexed = new Set<string>()
   private watcher: FSWatcher | null = null
-  private timers = new Set<NodeJS.Timeout>()
   readonly batch: DiskBatch
   private readonly publisher: Publisher
   private workQueue: Promise<void> = Promise.resolve()
@@ -414,14 +417,15 @@ class Daemon implements Roomd {
     const [branch, base, tracked, remote] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
-      gitTracked(this.dir).then(t => t.paths),
+      gitTracked(this.dir),
       this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
     ]))
     this.branch = branchName(branch)
     this.base = base
     this.inputs = { ...this.inputs, head: base }
     this.remote = remote
-    this.tracked = tracked
+    this.tracked = tracked.paths
+    this.indexed = tracked.indexed
 
     await this.step('sync', () => this.waitForSync())
     this.observeOwnedData()
@@ -444,8 +448,8 @@ class Daemon implements Roomd {
     // Events can be missed between the seed scan and watch readiness.
     await this.reconcileGitChanges()
     if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
-    this.every(this.trackedRefreshMs, () => this.refreshTracked())
-    if (this.basePollMs > 0) this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
+    this.trackedPoll = new CoalescedPoll('tracked refresh', this.trackedRefreshMs, () => this.refreshTracked(), this.log)
+    if (this.basePollMs > 0) this.headPoll = new CoalescedPoll('HEAD poll', this.basePollMs, () => this.queuedHeadPoll(), this.log)
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
     this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
@@ -501,10 +505,11 @@ class Daemon implements Roomd {
     this.unobserveOwnedData?.()
     this.remoteRepairTimer?.()
     this.publisher.stop()
+    this.trackedPoll?.stop()
+    this.headPoll?.stop()
     this.cancelPeriodicReconcile?.()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
-    for (const timer of this.timers) clearInterval(timer)
     this.batch.stop()
     await this.watcher?.close().catch(() => {})
     try { this.provider.awareness.setLocalState(null) } catch { /* already disconnected */ }
@@ -517,14 +522,6 @@ class Daemon implements Roomd {
     }
     this.provider.destroy()
     this.roomDoc.doc.destroy()
-  }
-
-  private every(ms: number, fn: () => unknown): void {
-    const timer = setInterval(() => {
-      observeCallback(fn, error => this.log(`warn: ${errMsg(error)}`))
-    }, ms)
-    timer.unref?.()
-    this.timers.add(timer)
   }
 
   private setStatus(status: string, runtime: Pick<Presence, 'host' | 'model' | 'effort'> = {}): void {
@@ -558,16 +555,44 @@ class Daemon implements Roomd {
     return this.workQueue
   }
 
+  /** HEAD failures use the publisher retry, so this timer never backs off. */
+  private queuedHeadPoll(): Promise<void> { return this.enqueue(() => this.pollHead()) }
+
   /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
   reconcileGitChanges(): Promise<void> {
-    if (this.reconcileQueued || this.stopped) return this.workQueue
+    if (this.stopped) return this.workQueue
+    if (this.reconcileQueued) {
+      this.reconcileDirty = true
+      if (this.reconcilePass === 2) {
+        if (!this.nextReconcile) {
+          let resolve!: () => void
+          const promise = new Promise<void>(done => { resolve = done })
+          this.nextReconcile = { promise, resolve }
+        }
+        return this.nextReconcile.promise
+      }
+      return this.reconcileCompletion
+    }
     this.reconcileQueued = true
-    return this.enqueue(async () => {
+    this.reconcileCompletion = this.enqueue(async () => {
       try {
-        await this.pollHead()
-        await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending)
-      } finally { this.reconcileQueued = false }
+        for (let pass = 1; pass <= 2; pass++) {
+          this.reconcilePass = pass
+          this.reconcileDirty = false
+          await this.pollHead()
+          await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending)
+          if (!this.reconcileDirty || this.stopped) break
+        }
+      } finally {
+        this.reconcilePass = 0
+        this.reconcileQueued = false
+        const next = this.nextReconcile
+        this.nextReconcile = undefined
+        if (this.reconcileDirty && !this.stopped) void this.reconcileGitChanges().then(() => next?.resolve())
+        else next?.resolve()
+      }
     })
+    return this.reconcileCompletion
   }
 
 
@@ -680,6 +705,33 @@ class Daemon implements Roomd {
   /** The holder of the worktree's publisher lease alone writes base facts and posts `pushed` (invariant 11, registry §16). */
   private publishesBaseFacts(): boolean { return this.inputs.policy.publisher }
 
+  /** Wait until Git's temporary pull state is gone and claimed paths have stopped changing. */
+  private async waitForGitOperation(head: string): Promise<void> {
+    const gitDir = worktreeGitDirFromDotGit(this.dir)
+    const markers = ['index.lock', 'MERGE_AUTOSTASH', 'MERGE_HEAD', 'REBASE_HEAD', 'rebase-apply', 'rebase-merge']
+    const busy = () => markers.some(marker => fs.existsSync(path.join(gitDir, marker)))
+    const claimedPaths = [...new Set([...this.roomDoc.claims.values()]
+      .filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/') && this.isSafeRoomPath(c.path, false))
+      .map(c => c.path))].sort()
+    const fingerprint = () => claimedPaths.map(rel => {
+      try {
+        const stat = fs.lstatSync(this.abs(rel))
+        return `${rel}:${stat.size}:${stat.mtimeMs}`
+      } catch { return `${rel}:missing` }
+    }).join('\n')
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      if (!busy()) {
+        const before = fingerprint()
+        await new Promise(resolve => setTimeout(resolve, 75))
+        if (!busy() && before === fingerprint() && await gitHead(this.dir) === head) return
+      } else await new Promise(resolve => setTimeout(resolve, 75))
+    }
+    if (busy()) throw new Error('Git operation or worktree is still changing; retry HEAD reconciliation')
+    if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during Git operation')
+    // A busy editor alone must not hold the transition indefinitely.
+  }
+
   /**
    * One HEAD transition (§B2): a commit, pull, reset, branch switch, or a fetch or force-push that moved
    * the room remote's refs. The applied state advances only when the whole transition has committed.
@@ -695,7 +747,8 @@ class Daemon implements Roomd {
     const headMoved = head !== this.appliedHead || branch !== this.branch
     const publishing = this.publishesBaseFacts()
     if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return
-    // Invalidate every disk scan captured before this transition, before the first await.
+    if (headMoved) await this.waitForGitOperation(head)
+    // Invalidate disk scans captured before the settled transition is prepared.
     this.inputs = { ...this.inputs }
     // §B2 step 1, before any awaited work: readers stop trusting my manifest until the transition completes.
     if (publishing) {
@@ -714,7 +767,7 @@ class Daemon implements Roomd {
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
-    const claims = await this.reanchorOwnClaims(head, claimSnapshot)
+    const claims = await this.reanchorOwnClaims(head, claimSnapshot, true)
     const facts = await this.transitionFacts(inputs, resolved, promoted, fence)
     // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
     for (let attempt = 1; ; attempt++) {
@@ -824,7 +877,7 @@ class Daemon implements Roomd {
         const current = this.roomDoc.claims.get(release.id)
         if (current?.by !== this.name || current.mirrorOf) continue
         this.roomDoc.removeClaim(release.id, this)
-        const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
+        const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10))
         notices.push({ from: { name: this.name, kind: this.kind }, body: { type: 'release', claimId: release.id, path: release.path, summary: text } as PostBody<ReleaseMsg> })
         notices.push({ from: { name: 'room', kind: 'bot' }, body: { type: 'note', to: this.name, priority: 'notify', text } as PostBody<NoteMsg> })
         this.log(text)
@@ -872,14 +925,34 @@ class Daemon implements Roomd {
   }
 
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
-  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<ClaimChanges> {
+  private async reanchorOwnClaims(head: string, snapshot: readonly Claim[], onlyChanged = false): Promise<ClaimChanges> {
     if (!snapshot.length) return NO_CLAIM_CHANGES
     const fence = this.fence
     if (!fence) return NO_CLAIM_CHANGES
-    const paths = [...new Set(snapshot.map(c => c.path))]
-    const headTexts = await gitShowMany(this.dir, head, paths)
-    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, manifestKey(this.name, fence)) ?? headTexts.get(p)]))
-    return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map(c => [c.id, c.claimedHash])) }
+    const changedPaths = onlyChanged && this.appliedHead
+      ? new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true))
+      : undefined
+    const relevant = changedPaths ? snapshot.filter(c => changedPaths.has(c.path)) : snapshot
+    if (!relevant.length) return NO_CLAIM_CHANGES
+    const paths = [...new Set(relevant.map(c => c.path))]
+    const currentTexts = new Map<string, string | undefined>()
+    const readable = new Set<string>()
+    for (const rel of paths) {
+      if (!this.isSafeRoomPath(rel, false)) { currentTexts.set(rel, undefined); continue }
+      try {
+        if (!fs.lstatSync(this.abs(rel)).isFile()) { currentTexts.set(rel, undefined); continue }
+        currentTexts.set(rel, fs.readFileSync(this.abs(rel), 'utf8'))
+        readable.add(rel)
+      } catch { currentTexts.set(rel, undefined) }
+    }
+    const changes = reanchorClaims(this.name, relevant, currentTexts)
+    const dirty = changes.releases.length ? new Set(await gitChanged(this.dir)) : new Set<string>()
+    const releases = changes.releases.filter(release => {
+      if (!readable.has(release.path) || !dirty.has(release.path)) return true
+      this.log(`kept claim on ${release.path}:${release.from}-${release.to} after ${head.slice(0, 10)}: the file has your uncommitted edits`)
+      return false
+    })
+    return { moves: changes.moves, releases, hashById: new Map(relevant.map(c => [c.id, c.claimedHash])) }
   }
 
   /** Validate claims recovered from a branch-room archive after the first repo-room join. */
@@ -1012,7 +1085,10 @@ class Daemon implements Roomd {
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
       if (!this.isSafeRoomPath(relpath)) { this.onScanned?.(relpath); return }
       if (event === 'addDir' || event === 'unlinkDir') return
-      if (path.basename(relpath) === '.gitignore') this.refreshTracked().catch(() => {})
+      if (path.basename(relpath) === '.gitignore') {
+        if (this.trackedPoll) this.trackedPoll.trigger()
+        else observeCallback(() => this.refreshTracked(), error => this.log(`warn: ${errMsg(error)}`))
+      }
       if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
     })
@@ -1071,28 +1147,27 @@ class Daemon implements Roomd {
 
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
-    try {
-      const next = (await gitTracked(this.dir)).paths
-      const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
-      const removed = Array.from(new Set([...this.tracked, ...manifestPaths(this.roomDoc, this.name)])).filter(relpath => !next.has(relpath))
-      this.tracked = next
-      for (const relpath of added) {
-        if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
-          this.scheduleDisk(relpath, true)
-          if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
-        }
+    const next = await gitTracked(this.dir)
+    const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
+    const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath))
+    const demoted = Array.from(this.indexed).filter(relpath => !next.indexed.has(relpath) && next.paths.has(relpath))
+    const removed = Array.from(new Set([...this.tracked, ...manifestPaths(this.roomDoc, this.name)])).filter(relpath => !next.paths.has(relpath))
+    this.tracked = next.paths
+    this.indexed = next.indexed
+    for (const relpath of new Set([...added, ...promoted, ...demoted])) {
+      if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
+        this.scheduleDisk(relpath, true)
+        if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
       }
-      // Untracked files disappear from ls-files when deleted, so polling must
-      // publish their deletion even if the platform watcher misses the unlink.
-      for (const relpath of removed) {
-        if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
-          this.scheduleDisk(relpath, false)
-        } else if (this.fence && this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs.existsSync(this.abs(relpath))) {
-          this.scheduleDisk(relpath, false)
-        }
+    }
+    // Untracked files disappear from ls-files when deleted, so polling must
+    // publish their deletion even if the platform watcher misses the unlink.
+    for (const relpath of removed) {
+      if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
+        this.scheduleDisk(relpath, false)
+      } else if (this.fence && this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs.existsSync(this.abs(relpath))) {
+        this.scheduleDisk(relpath, false)
       }
-    } catch (error) {
-      this.log(`warn: git ls-files: ${errMsg(error)}`)
     }
   }
 }

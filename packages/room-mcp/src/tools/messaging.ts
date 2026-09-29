@@ -1,4 +1,4 @@
-import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
+import { displayName, formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
@@ -51,6 +51,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     ...Array.from(s.room.doc.getMap<{ placeholder: string }>('unresolved').values(), value => value.placeholder),
     ...s.room.doc.getMap<string>('aliases').values(),
   ].filter(n => !isPrName(n)))
+  const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()
+  const resolveDisplayedName = (requested: string): { name?: string; ambiguous?: string[] } => {
+    if (rooms.all().some(room => knownNames(room).has(requested))) return { name: requested }
+    const candidates = new Set<string>()
+    for (const room of rooms.all()) {
+      for (const presence of presences(room)) {
+        if (addressKey(displayName(presence.user)) === addressKey(requested)) candidates.add(presence.user.name)
+      }
+      for (const scope of room.room.allScopes()) {
+        if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === addressKey(requested)) candidates.add(scope.by)
+      }
+      for (const claim of room.room.openClaims()) {
+        if (addressKey(displayName({ name: claim.by, kind: claim.byKind })) === addressKey(requested)) candidates.add(claim.by)
+      }
+    }
+    const names = [...candidates].sort()
+    return names.length > 1 ? { ambiguous: names } : { name: names[0] }
+  }
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
     // My own worker from my registry; anyone else's from its lead's view (registry §14).
@@ -101,7 +119,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const repliedNote = (a.type === 'note' || a.type === 'answer') && replied?.type === 'note' ? replied : undefined
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
-      const requestedTo = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
+      const requestedToRaw = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
+      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw) : undefined
+      if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(', ')}`
+      const requestedTo = resolvedDisplay?.name ?? requestedToRaw
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
@@ -248,7 +269,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const workersRoom = x !== s
         if (!messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
         if (m.type === 'answer') return `answered: ${formatMsg(m)}`
-        if (m.type === 'done') return `worker done: ${formatMsg(m)}`
+        if (m.type === 'done') {
+          const worker = myWorkers(x).find(w => w.tag === m.tag)
+          const ready = !worker || !workerAlive(x, worker)
+          return `${ready ? 'worker done, ready to collect' : 'worker reported done; its process is still exiting (room_collect waits up to 15 s for it)'}: ${formatMsg(m)}`
+        }
         if (m.type === 'merge-conflict') return formatMsg(m)
         if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
         return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`

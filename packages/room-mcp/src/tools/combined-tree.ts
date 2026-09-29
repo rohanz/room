@@ -261,6 +261,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const clean: string[] = [], conflicts: string[] = [], onlyOne: string[] = [], sameChange: string[] = [], resolvable: string[] = []
     const pair = pairs.get(person)
     for (const p of paths) {
+      // A preview of many rewritten files must let other room calls run between files.
+      await new Promise<void>(resolve => setImmediate(resolve))
       const mine = merged.get(p)
       const b = await baseAt(pair, p)
       const theirsRaw = await previewText(session, p, person)

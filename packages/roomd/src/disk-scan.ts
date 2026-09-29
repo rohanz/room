@@ -2,8 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
+import { setImmediate } from 'node:timers/promises'
 import { git, gitBlobInfoMany, wholeTreeTimeoutMs } from './git.js'
-import { defaultExcludedPath, type DiskFact, type PublicationInputs } from './policy.js'
+import { defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
+
+/** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
+export class StalePublication extends Error {}
 
 /** --no-index applies Git ignore rules to tracked paths too. NUL framing preserves unusual names. */
 export async function ignoredTrackedPaths(dir: string, paths: readonly string[]): Promise<Set<string>> {
@@ -35,27 +39,43 @@ async function objectFormat(dir: string): Promise<'sha1' | 'sha256'> {
 }
 
 /** Enumerate the full worktree/index difference from the participant's resolved base. */
-export async function changedSince(dir: string, base: string, previous: Iterable<string> = []): Promise<{ paths: string[]; changed: ReadonlySet<string> }> {
-  const [diff, untracked] = await Promise.all([
+export async function changedSince(dir: string, base: string, previous: Iterable<string> = []): Promise<{ paths: string[]; changed: ReadonlySet<string>; indexed: ReadonlySet<string> }> {
+  const [diff, inventory] = await Promise.all([
     git(dir, ['diff', '--no-renames', '--name-only', '-z', base, '--']),
-    git(dir, ['ls-files', '--others', '--exclude-standard', '-z']),
+    git(dir, ['ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard']),
   ])
-  const changed = new Set([...diff.split('\0'), ...untracked.split('\0')].filter(Boolean))
-  return { paths: [...new Set([...changed, ...previous].filter(Boolean))].sort(), changed }
+  const indexed = new Set<string>(), untracked: string[] = []
+  for (const entry of inventory.split('\0')) {
+    if (!entry) continue
+    if (entry[0] === '?') untracked.push(entry.slice(2))
+    else indexed.add(entry.slice(2))
+  }
+  const changed = new Set([...diff.split('\0'), ...untracked].filter(Boolean))
+  return { paths: [...new Set([...changed, ...previous].filter(Boolean))].sort(), changed, indexed }
 }
 
 /** Read facts without deciding what may be disclosed. plan() owns that decision. */
 export async function readDisk(dir: string, inputs: PublicationInputs, previous: Iterable<string>, safe: (p: string) => boolean,
   oversizedCache: Map<string, { size: number; mtimeMs: number; base: string; hash: string }> = new Map(),
-  carried: ReadonlyMap<string, { sha: string }> = new Map()): Promise<DiskFact[]> {
+  carried: ReadonlyMap<string, { sha: string }> = new Map(),
+  valid: () => boolean = () => true): Promise<DiskFact[]> {
   if (inputs.policy.level === 'intent' || !inputs.policy.publisher) return []
-  const { paths, changed } = await changedSince(dir, inputs.head, previous)
+  const { paths, changed, indexed } = await changedSince(dir, inputs.head, previous)
   const [blobs, format, gitIgnored] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)])
   const facts: DiskFact[] = []
+  let lastYield = performance.now()
+  let sinceYield = 0
   for (const p of paths) {
+    if (!valid()) throw new StalePublication('publication inputs changed during disk scan')
+    if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
+      await setImmediate()
+      lastYield = performance.now()
+      sinceYield = 0
+      if (!valid()) throw new StalePublication('publication inputs changed during disk scan')
+    }
     const baseHash = blobs.get(p)?.hash ?? carried.get(p)?.sha
     // Path rules are independent of whether the file still exists or is readable.
-    if (gitIgnored.has(p) || defaultExcludedPath(p) || inputs.rules.roomIgnore.ignores(p) || !safe(p)) {
+    if (gitIgnored.has(p) || defaultExcludedPath(p) || defaultIgnoredPath(p) || inputs.rules.roomIgnore.ignores(p) || !safe(p)) {
       facts.push({ path: p, kind: 'unsafe', excluded: true, baseHash, changed: changed.has(p) })
       continue
     }
@@ -65,6 +85,10 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
     }
     if (!stat) { facts.push({ path: p, kind: 'absent', baseHash }); continue }
+    if (isTrackedOnlyLockfile(p) && !indexed.has(p)) {
+      facts.push({ path: p, kind: 'unsafe', excluded: true, exclusionReason: 'untracked lockfile', baseHash, changed: changed.has(p) })
+      continue
+    }
     if (!stat.isFile()) { facts.push({ path: p, kind: 'unsafe', baseHash, changed: changed.has(p) }); continue }
     if (stat.size > inputs.rules.sizeCap) {
       const base = blobs.get(p)
@@ -82,6 +106,13 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
     let bytes: Buffer
     try { bytes = fs.readFileSync(path.join(dir, p)) }
     catch { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
+    try {
+      const after = fs.lstatSync(path.join(dir, p))
+      if (!after.isFile() || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) {
+        facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) })
+        continue
+      }
+    } catch { facts.push({ path: p, kind: 'error', baseHash, changed: changed.has(p) }); continue }
     const hash = createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
     let text: string | undefined
     let binary = false

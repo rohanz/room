@@ -42,6 +42,15 @@ export function defaultExcludedPath(relpath: string): boolean {
   return relpath.split('/').some(part => part === '.env' || part.startsWith('.env.') && part !== '.env.example')
 }
 
+export const DEFAULT_IGNORED_DIRS = new Set(['node_modules', '.venv', 'dist', 'build', '.git', '.room', 'target', '.next', 'coverage', '__pycache__'])
+export function defaultIgnoredPath(relpath: string): boolean {
+  return relpath.split('/').some(segment => DEFAULT_IGNORED_DIRS.has(segment) || segment === '.DS_Store' || segment === '.coverage' || segment.endsWith('.egg-info') || /\.(?:pyc|pyo|npy|npz|parquet|pkl|pt|bin|sqlite|zip|gz|tmp)$/i.test(segment) || segment.endsWith('~') || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(segment))
+}
+
+/** Generated dependency lockfiles are shared only after Git has indexed them. */
+export const TRACKED_ONLY_LOCKFILES = new Set(['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'go.sum'])
+export const isTrackedOnlyLockfile = (relpath: string): boolean => TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf('/') + 1))
+
 export function rulesFromText(text: string, sizeCap: number, budget: number): ExclusionRules {
   return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash('sha256').update(JSON.stringify([text, sizeCap, budget])).digest('hex') })
 }
@@ -57,6 +66,7 @@ export interface DiskFact {
   binary?: boolean
   excluded?: boolean
   ignored?: boolean
+  exclusionReason?: 'untracked lockfile'
   at?: number
   /** Local comparison for an excluded large file, without retaining its hash. */
   changed?: boolean
@@ -69,7 +79,7 @@ export interface PublicationPlan {
   readonly excludedPaths: readonly string[]
   readonly unsettled: readonly string[]
   readonly textPaths: readonly string[]
-  readonly excludedReasons: ReadonlyMap<string, 'ignore' | 'size' | 'budget' | 'unsafe'>
+  readonly excludedReasons: ReadonlyMap<string, 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile'>
 }
 
 /** Pure, ordered policy decision. A digest is created only after the publication gate. */
@@ -79,15 +89,15 @@ export function plan(inputs: PublicationInputs, disk: readonly DiskFact[], salt:
   const excludedPaths: string[] = []
   const unsettled: string[] = []
   const textPaths: string[] = []
-  const excludedReasons = new Map<string, 'ignore' | 'size' | 'budget' | 'unsafe'>()
+  const excludedReasons = new Map<string, 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile'>()
   const policy = inputs.policy
   if (policy.level === 'intent' || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons }
   let used = 0
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
     const p = normalizeCoordinationPath(fact.path)
     const changed = fact.changed ?? (fact.kind === 'absent' ? !!fact.baseHash : fact.kind === 'unsafe' || fact.hash !== fact.baseHash)
-    const hide = (reason: 'ignore' | 'size' | 'budget' | 'unsafe') => { excludedPaths.push(p); excludedReasons.set(p, reason); excluded.push(createHash('sha256').update(Buffer.from(salt, 'hex')).update(p, 'utf8').digest('hex')) }
-    if (fact.excluded || fact.ignored || defaultExcludedPath(p) || inputs.rules.roomIgnore.ignores(p)) { if (changed) hide('ignore'); continue }
+    const hide = (reason: 'ignore' | 'size' | 'budget' | 'unsafe' | 'untracked lockfile') => { excludedPaths.push(p); excludedReasons.set(p, reason); excluded.push(createHash('sha256').update(Buffer.from(salt, 'hex')).update(p, 'utf8').digest('hex')) }
+    if (fact.excluded || fact.ignored || defaultExcludedPath(p) || defaultIgnoredPath(p) || inputs.rules.roomIgnore.ignores(p)) { if (changed) hide(fact.exclusionReason ?? 'ignore'); continue }
     if (fact.kind === 'error') { unsettled.push(p); continue }
     if (!changed) continue
     if (fact.kind === 'absent') {

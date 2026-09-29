@@ -8,7 +8,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { isAgentic, manifestPaths, shouldWakeOnMsg, type Msg } from '@room/shared'
+import { isAgentic, manifestPaths, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
@@ -152,7 +152,9 @@ export class WakeReconciler {
   private pointer(due: { m: Msg }[]): string {
     const count = due.length
     const shown = count > MAX_NAMED ? MAX_NAMED - 1 : MAX_NAMED
-    const phrases = due.slice(0, shown).map(({ m }) => `${m.from.replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(m.type)}`)
+    const phrases = due.slice(0, shown).map(({ m }) => m.type === 'note' && m.from === 'room' && m.fromKind === 'bot' && parseClaimRelease(m.text)
+      ? 'Room released a claim of yours'
+      : `${m.from.replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(m.type)}`)
     if (count > shown) phrases.push(`${count - shown} more`)
     // The sequence keeps consecutive pointers distinct: the Claude inbox drops identical repeats.
     return `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Call room_state; it shows them. (#${++this.sequence})`

@@ -1,11 +1,12 @@
 import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
+import { RoomDoc } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 
@@ -63,7 +64,7 @@ it('publishes an edit with no watcher event on the periodic reconcile and cancel
   expect(cancelled).toBe(true)
 })
 
-it('skips a periodic tick while its previous reconcile is in flight', async () => {
+it('coalesces a periodic tick into one follow-up while reconciliation is in flight', async () => {
   let tick: (() => void) | undefined
   const config = options({ periodicReconcileSchedule: run => { tick = run; return () => {} } })
   daemon = await startRoomd(config)
@@ -80,6 +81,114 @@ it('skips a periodic tick while its previous reconcile is in flight', async () =
   tick!()
   release()
   await internal.enqueue(async () => {})
-  expect(writes).toBe(1)
+  expect(writes).toBe(2)
   expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('missed edit\n')
+})
+
+it('lets queued work run between reconcile batches while requests keep arriving', async () => {
+  daemon = await startRoomd(options())
+  const internal = daemon as Roomd & { enqueue(work: () => Promise<void>): Promise<void>; publisher: { reconcile(): Promise<unknown> } }
+  const events: string[] = [], requests: Promise<void>[] = []
+  let finish!: () => void
+  const finalPass = new Promise<void>(resolve => { finish = resolve })
+  let passes = 0
+  internal.publisher.reconcile = async () => {
+    const at = ++passes
+    events.push(`pass ${at}`)
+    if (at >= 25) { finish(); return }
+    requests.push(internal.reconcileGitChanges().then(() => { expect(passes).toBeGreaterThan(at) }))
+    void internal.enqueue(async () => { events.push(`other ${at}`) })
+  }
+  const first = internal.reconcileGitChanges()
+  await finalPass
+  await first
+  await Promise.all(requests)
+  expect(passes).toBe(25)
+  let consecutive = 0
+  for (const event of events) {
+    consecutive = event.startsWith('pass') ? consecutive + 1 : 0
+    expect(consecutive).toBeLessThanOrEqual(2)
+  }
+  expect(events.indexOf('other 2')).toBeLessThan(events.indexOf('pass 3'))
+}, 30_000)
+
+it('yields to an event-loop turn while preparing a many-file atomic publication', async () => {
+  const config = options()
+  const paths = Array.from({ length: 72 }, (_, i) => `file-${i}.txt`)
+  for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'base\n')
+  git(config.dir, 'add', '-A'); git(config.dir, 'commit', '-qm', 'many files')
+  daemon = await startRoomd(config)
+  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void } }
+  internal.watcher.removeAllListeners('all')
+  for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'changed\n')
+  const events: string[] = []
+  const original = RoomDoc.prototype.prepareOverlayDiff
+  let prepared = 0
+  let followUp: Promise<void> | undefined
+  const spy = vi.spyOn(RoomDoc.prototype, 'prepareOverlayDiff').mockImplementation(function (person, relpath, text, stats) {
+    if (++prepared === 1) setImmediate(() => {
+      events.push('timer')
+      fs.writeFileSync(path.join(config.dir, paths[0]), 'latest\n')
+      followUp = daemon!.reconcileGitChanges()
+    })
+    return original.call(this, person, relpath, text, stats)
+  })
+  try {
+    await daemon.reconcileGitChanges()
+    await followUp
+    events.push('published')
+    expect(events).toEqual(['timer', 'published'])
+    expect(prepared).toBeGreaterThanOrEqual(paths.length)
+    for (const p of paths) expect(incarnationText(daemon.roomDoc, 'Alice', p)?.toString()).toBe(p === paths[0] ? 'latest\n' : 'changed\n')
+  } finally { spy.mockRestore() }
+})
+
+it('publishes exact large rewrites with a bounded diff work budget', async () => {
+  const config = options()
+  daemon = await startRoomd(config)
+  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void } }
+  internal.watcher.removeAllListeners('all')
+  const oldJson = JSON.stringify({ rows: 'a'.repeat(60_000) })
+  const newJson = JSON.stringify({ rows: 'b'.repeat(60_000) })
+  const oldLines = Array.from({ length: 800 }, (_, i) => `line ${i}: ${'x'.repeat(45)}`).join('\n') + '\n'
+  const newLines = Array.from({ length: 800 }, (_, i) => `line ${i}: ${'y'.repeat(45)}`).join('\n') + '\n'
+  fs.writeFileSync(path.join(config.dir, 'blob.json'), oldJson)
+  fs.writeFileSync(path.join(config.dir, 'lines.txt'), oldLines)
+  await daemon.reconcileGitChanges()
+  const measured = new Map<string, number>()
+  const original = RoomDoc.prototype.prepareOverlayDiff
+  const spy = vi.spyOn(RoomDoc.prototype, 'prepareOverlayDiff').mockImplementation(function (person, relpath, text) {
+    const stats = { work: 0, charCalls: 0, lineCalls: 0 }
+    const result = original.call(this, person, relpath, text, stats)
+    measured.set(relpath, stats.work)
+    return result
+  })
+  try {
+    fs.writeFileSync(path.join(config.dir, 'blob.json'), newJson)
+    fs.writeFileSync(path.join(config.dir, 'lines.txt'), newLines)
+    await daemon.reconcileGitChanges()
+    expect(incarnationText(daemon.roomDoc, 'Alice', 'blob.json')?.toString()).toBe(newJson)
+    expect(incarnationText(daemon.roomDoc, 'Alice', 'lines.txt')?.toString()).toBe(newLines)
+    expect([...measured.keys()]).toEqual(expect.arrayContaining(['blob.json', 'lines.txt']))
+    for (const work of measured.values()) expect(work).toBeLessThanOrEqual(2_000_000)
+  } finally { spy.mockRestore() }
+})
+
+it('applies the prepared text operations when the overlay has not changed', async () => {
+  const config = options()
+  daemon = await startRoomd(config)
+  fs.writeFileSync(path.join(config.dir, 'app.txt'), 'new text\n')
+  const publisher = (daemon as unknown as { publisher: { prepare(): Promise<any>; apply(prepared: any, complete: boolean): boolean } }).publisher
+  const prepared = await publisher.prepare()
+  const item = prepared.textOps.get('app.txt')!
+  let iterations = 0
+  prepared.textOps.set('app.txt', { ...item, ops: new Proxy(item.ops, {
+    get(target, key, receiver) {
+      if (key === Symbol.iterator) { iterations++; return target[Symbol.iterator].bind(target) }
+      return Reflect.get(target, key, receiver)
+    },
+  }) })
+  expect(publisher.apply(prepared, true)).toBe(true)
+  expect(iterations).toBe(1)
+  expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('new text\n')
 })

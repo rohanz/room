@@ -80,6 +80,11 @@ describe('changedRanges', () => {
     expect(changedRanges('a\nb\nc\n', 'a\nb\nc\nd\ne\n')).toEqual([{ from: 4, to: 5 }])
     expect(changedRanges('a\nb\n', 'a\nb\n')).toEqual([])
   })
+  it('conservatively covers an unrelated 800-line rewrite', () => {
+    const before = Array.from({ length: 800 }, (_, i) => `old-${i}\n`).join('')
+    const after = Array.from({ length: 800 }, (_, i) => `new-${i}\n`).join('')
+    expect(changedRanges(before, after)).toEqual([{ from: 1, to: 800 }])
+  })
 })
 
 describe('room lifecycle', () => {

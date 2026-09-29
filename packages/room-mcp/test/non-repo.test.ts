@@ -68,7 +68,7 @@ describe('a folder that is not a git repository', () => {
 
     // After the first commit, a later call joins in the same session, without room_join.
     git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'init')
-    expect(await mcp.call('room_state')).toContain(`room: local/${path.basename(dir)}/main`)
+    expect(await mcp.call('room_state')).toContain(`room: local/${path.basename(dir)}`)
     expect(mcp.lines.filter(l => /retrying/.test(l))).toEqual([])
   }, 60_000)
 
@@ -86,7 +86,7 @@ describe('a folder that is not a git repository', () => {
     const sub = path.join(repo, 'pkg', 'inner')
     fs.mkdirSync(sub, { recursive: true })
     const mcp = await startMcp(sub)
-    expect(await mcp.call('room_state')).toContain(`room: local/${path.basename(repo)}/main`)
+    expect(await mcp.call('room_state')).toContain(`room: local/${path.basename(repo)}`)
   }, 60_000)
 })
 
@@ -127,8 +127,8 @@ describe('repositoryProblem', () => {
       args[0] === 'symbolic-ref' ? head : args[0] === 'show-ref' ? ref
         : { status: 0, stdout: args.includes('--show-toplevel') ? `${repo}\n` : 'false\ntrue\n', stderr: '' }
     expect(await repositoryRoot(repo, answers({ status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ root: repo })
-    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads/main\n', stderr: '' }, { status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ root: repo })
-    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads/main\n', stderr: '' }, { status: 128, stdout: '', stderr: 'fatal: Input/output error' }))).toEqual({ root: repo })
+    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 'EAGAIN', stdout: '', stderr: '' }))).toEqual({ root: repo })
+    expect(await repositoryRoot(repo, answers({ status: 0, stdout: 'refs/heads\n', stderr: '' }, { status: 128, stdout: '', stderr: 'fatal: Input/output error' }))).toEqual({ root: repo })
     expect(await repositoryRoot(repo, answers({ status: 1, stdout: '', stderr: '' }))).toEqual({ root: repo }) // detached HEAD
     const denied: GitRun = async () => ({ status: 128, stdout: '', stderr: "fatal: cannot change to '/x': Permission denied" })
     expect(await repositoryRoot(repo, denied)).toEqual({ root: repo })
@@ -177,14 +177,14 @@ describe('remembered state is only used for the same repository', () => {
 
   it("never reads another repository's room metadata from a nested repository", () => {
     const outer = initRepo(tempDir('room-outer-'))
-    fs.writeFileSync(path.join(outer, '.room.json'), JSON.stringify({ room: 'ws://team/outer/main', name: 'Ada', dir: outer }))
+    fs.writeFileSync(path.join(outer, '.room.json'), JSON.stringify({ room: 'ws://team/outer', name: 'Ada', dir: outer }))
     fs.mkdirSync(path.join(outer, 'vendor'))
     const inner = initRepo(path.join(outer, 'vendor'))
     fs.mkdirSync(path.join(inner, 'src'))
     expect(findRoomFile(path.join(inner, 'src'))).toBeUndefined()
     // The same repository's metadata is still found from a nested folder.
     fs.mkdirSync(path.join(outer, 'docs'))
-    expect(findRoomFile(path.join(outer, 'docs'))).toMatchObject({ room: 'ws://team/outer/main', dir: outer })
+    expect(findRoomFile(path.join(outer, 'docs'))).toMatchObject({ room: 'ws://team/outer', dir: outer })
   })
 
   it("joins a copied checkout from its own folder, not the folder its copied room metadata names", async () => {
@@ -192,6 +192,7 @@ describe('remembered state is only used for the same repository', () => {
     fs.writeFileSync(path.join(original, '.git', 'room.json'), JSON.stringify({ room: 'ws://team/example%2Fshop%2Fmain', name: 'Ada', dir: original }))
     const copy = path.join(tempDir('room-copy-'), 'shop')
     fs.cpSync(original, copy, { recursive: true })
+    // The server canonicalizes a legacy branch room; the client never strips a stored name itself (reporooms §B1).
     expect(await startupJoinOptions(copy, 'ws://team')).toEqual({ dir: copy, name: 'Ada', room: 'example/shop/main', server: 'ws://team' })
   })
 

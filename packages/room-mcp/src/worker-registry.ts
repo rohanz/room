@@ -500,6 +500,10 @@ export class WorkerRegistry {
     const reports = this.reports(id), exits = this.exits(id)
     const status = statusOf(record, record.runs, reports, exits, this.alive, this.now())
     const run = status.run
+    if (status.noReport && run) {
+      const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+      return { ...status, summary: `ended without a report; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
+    }
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
       || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
@@ -706,7 +710,9 @@ export class WorkerRegistry {
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
     const report = this.reports(id).find(value => value.run === n)
     if (!record || !run || !report?.done) throw new Error('worker completion not reported')
-    if (report.posted || run.posted) return false
+    // A clean exit may have produced a no-report notice. The late real report has its
+    // own deterministic ID and supersedes that fallback in the registry projection.
+    if (report.posted || run.posted && !run.posted.endsWith(':no-report')) return false
     const messageId = `wk:${id}:${n}`
     await post(messageId, record, report)
     await this.writeReport(id, { ...report, posted: messageId })
@@ -717,9 +723,15 @@ export class WorkerRegistry {
     const record = this.read(id), run = record?.runs.find(value => value.n === n)
     const exit = this.exits(id).find(value => value.run === n)
     const report = this.reports(id).find(value => value.run === n)
-    const status = this.status(id)
+    const current = this.status(id)
+    const terminal = record?.phase === 'retiring' && !record.stop
+      ? statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now())
+      : current
+    const status = terminal?.noReport && run
+      ? { ...terminal, summary: `ended without a report; last lines of its log: ${workerLogTail(path.join(path.dirname(record!.dir), `${record!.tag}.log`), run.logStart)}` }
+      : terminal
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
-      || (status.status !== 'failed' && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
+      || (status.status !== 'failed' && !status.noReport && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
@@ -728,10 +740,11 @@ export class WorkerRegistry {
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`
       : (answer || tail !== '(log unavailable)') ? `${status.note ?? 'exited before reporting done'}; ${answer || tail}` : status.note
-    const message = completionMessage(record, run, { ...status, status: record.phase === 'retiring' && !record.stop && !report?.done ? 'failed' : status.status, note: detail }, report)
+    const message = completionMessage(record, run, { ...status, note: detail }, report)
     if (!message) return false
-    await post(message)
-    await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
+    const posted = status.noReport ? { ...message, id: `${message.id}:no-report` } : message
+    await post(posted)
+    await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: posted.id } : value), seq: old.seq + 1 }))
     return true
   }
 

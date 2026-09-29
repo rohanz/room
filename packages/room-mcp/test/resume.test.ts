@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -81,6 +81,12 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
+  it('sends the lead clone identity on a resumed run', async () => {
+    const t = setup()
+    await t.seed('clone')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'clone', text: 'follow up' })).toContain('resumed clone')
+    expect(t.specs[0].env.ROOM_LEAD_CLONE).toBe(realpathSync(join(t.dir, '.git')))
+  })
   it.each(['mcp', 'projector'] as const)('M1: resume %s receipts only messages present in its prompt', async acceptance => {
     const t = setup()
     await t.seed('backlog')
@@ -316,13 +322,13 @@ describe('resumed worker boundaries', () => {
     expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
   })
 
-  it('still fails a fresh worker that exits zero without room_done', async () => {
+  it('marks a fresh worker that exits zero without room_done as done with a no-report notice', async () => {
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')
     expect((await t.record('fresh'))?.runs.map(run => run.mode)).toEqual(['fresh'])
     t.exits[0](0)
-    await vi.waitFor(() => expect(workerByTag(t.dir, 'fresh')?.status).toBe('failed'))
-    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(workerByTag(t.dir, 'fresh')?.status).toBe('done'))
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done' && m.summary.includes('ended without a report'))).toHaveLength(1))
   })
 
   it('fails a resumed nonzero exit with the death note', async () => {

@@ -7,7 +7,7 @@
  * comment on the PR (room_pr_note / room_done pr_note).
  */
 import type { Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { RoomDoc, acceptedGit, archiveSummary, displayName, formatPlans, participantRecord, participantsView } from '@room/shared'
+import { RoomDoc, acceptedGit, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
@@ -176,8 +176,9 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
       case 'claim': {
         const c = m as ClaimMsg
         const r = releases.get(c.claimId)
+        const automaticRelease = r?.summary ? parseClaimRelease(r.summary) : undefined
         const status = r
-          ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ''}` : `done${r.summary ? `: ${r.summary}` : ''}`
+          ? r.unfulfilled?.length ? `cancelled: ${formatPlans(r.unfulfilled)}${r.summary ? ` (${r.summary})` : ''}` : automaticRelease ? `released: code changed in ${automaticRelease.sha}` : `done${r.summary ? `: ${r.summary}` : ''}`
           : open.has(c.claimId) ? 'still open' : 'released'
         lines.push(`- ${t(c.at)} ${who(c)} claimed \`${c.path}:${c.from_line}-${c.to_line}\` — ${c.intent}${c.plans?.length ? `; plans: ${formatPlans(c.plans)}` : ''} → ${status}`)
         break

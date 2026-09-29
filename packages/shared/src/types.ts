@@ -157,6 +157,8 @@ export interface WorkerView {
   branch: string
   status: WorkerStatus
   summary?: string
+  /** A fresh worker exited cleanly before sending room_done. */
+  noReport?: boolean
   /** Answer from a clean resumed turn whose earlier done report still stands. */
   followUp?: string
   /** The status row's detail ("has not joined…", "follow-up not delivered"). */

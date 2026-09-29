@@ -64,17 +64,16 @@ describe('local mode (no server)', () => {
   })
 
   it('a dispatched worker joins its lead\'s relay from a worktree of the clone, and never starts a relay in another repository', async () => {
-    const room = `local/${basename(dir)}/main`
+    const room = `local/${basename(dir)}`
     const lead = await joinSession({ dir, server: 'local', room, name: 'Ada', log: () => {} }); sessions.push(lead)
     const other = repo('room-localjoin-other-')
     const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, ...a], { stdio: 'pipe' }).toString()
-    // The environment an older room_spawn gives a worker (no ROOM_LEAD_CLONE), joined as the worker's startup does.
-    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada' })
-    await expect(joinSession({ dir: other, room, server: 'local', log: () => {} })).rejects.toThrow(`your lead's room ${room} has no relay running for ${other}`)
-    expect(existsSync(join(other, '.git', 'room-local.json'))).toBe(false)
+    // The older launcher had no ROOM_LEAD_CLONE, so it can join only an existing relay.
+    await expect(joinSession({ dir: other, room, server: 'local', name: 'Ada', tag: 'w', joinOnly: true, log: () => {} })).rejects.toThrow(`your lead's room ${room} has no relay running for ${other}`)
+    expect(existsSync(join(other, '.git', 'room', 'relay.json'))).toBe(false)
     const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
     git(dir, 'worktree', 'add', '-q', '-b', 'room/w', wt)
-    const worker = await joinSession({ dir: wt, room, server: 'local', log: () => {} }); sessions.push(worker)
+    const worker = await joinSession({ dir: wt, room, server: 'local', name: 'Ada', tag: 'w', joinOnly: true, log: () => {} }); sessions.push(worker)
     expect(worker.local?.owned).toBe(false)
     expect(worker.roomUrl).toBe(lead.roomUrl)
     expect(worker.browserUrl.startsWith(`${lead.local!.httpUrl}/?room=${encodeURIComponent(lead.roomUrl)}&`)).toBe(true)
@@ -82,24 +81,21 @@ describe('local mode (no server)', () => {
 
   it('a worker in its lead\'s clone starts the relay when the lead\'s relay is gone', async () => {
     const clone = repo('room-localjoin-dead-')
-    const room = `local/${basename(clone)}/main`
-    // The lead crashed after dispatch: its discovery file names a relay nobody serves.
-    writeFileSync(join(clone, '.git', 'room-local.json'), JSON.stringify({ port: 1, pid: 999_999_999, room, startedAt: 1, key: 'dead' }))
+    const room = `local/${basename(clone)}`
+    // The lead crashed before this worker joined; the canonical common dir proves authority.
     const wt = join(mkdtempSync(join(tmpdir(), 'room-localjoin-wt-')), 'w')
     execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'room/w', wt], { stdio: 'pipe' })
-    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada', ROOM_LEAD_CLONE: realpathSync(join(clone, '.git')) })
-    const worker = await joinSession({ dir: wt, room, server: 'local', log: () => {} }); sessions.push(worker)
+    const worker = await joinSession({ dir: wt, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(clone, '.git')), log: () => {} }); sessions.push(worker)
     expect(worker.local?.owned).toBe(true)
     expect(worker.roomName).toBe(room)
   })
 
   it('a worker in another repository than its lead\'s is refused for good, and never touches that repository\'s relay', async () => {
     const other = repo('room-localjoin-elsewhere-')
-    const room = `local/${basename(dir)}/main`
+    const room = `local/${basename(dir)}`
     const theirs = await joinSession({ dir: other, server: 'local', name: 'Bo', log: () => {} }); sessions.push(theirs)
-    Object.assign(process.env, { ROOM_SERVER: 'local', ROOM_ROOM: room, ROOM_WORKER_ID: 'Ada/w#1', ROOM_GEN: '1', ROOM_OWNER: 'Ada', ROOM_TAG: 'w', ROOM_LEAD: 'Ada', ROOM_LEAD_CLONE: realpathSync(join(dir, '.git')) })
     const lines: string[] = []
-    const joined = joinSession({ dir: other, room, server: 'local', log: line => lines.push(line) })
+    const joined = joinSession({ dir: other, room, server: 'local', name: 'Ada', tag: 'w', leadClone: realpathSync(join(dir, '.git')), log: line => lines.push(line) })
     joined.then(s => sessions.push(s), () => {})
     await expect(joined).rejects.toMatchObject({ code: 2, message: `this worker is in ${other}, another repository than its lead's (${realpathSync(join(dir, '.git'))}); it cannot join the lead's local room. Start a lead in ${other} instead.` })
     expect(lines.filter(l => /relay/.test(l))).toEqual([])

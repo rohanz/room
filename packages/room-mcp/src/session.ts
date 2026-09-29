@@ -13,9 +13,9 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalRelay, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
-import { gitCommonDir } from '@room/roomd'
+import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, assertValidParticipantName, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
@@ -33,7 +33,11 @@ import { HubClient, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
 import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenName } from './names.js'
+import { joinableRoot } from './repository.js'
 import type { HolderIn } from '@room/hub-core'
+import { currentToolTiming } from './timing.js'
+
+const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work)
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
@@ -274,6 +278,10 @@ export interface JoinOptions {
   /** Explicit recovery of a local holder whose process identity is unknown (registry §15). */
   takeover?: boolean
   log?: (line: string) => void
+  /** A local worker's lead clone, bound by the worker launcher. */
+  leadClone?: string
+  /** A worker without a lead clone can only join an existing relay. */
+  joinOnly?: boolean
 }
 
 /** The repo has not been opened on the server; room_create does that. */
@@ -367,13 +375,26 @@ export type { RoomFile } from '@room/roomd'
 
 export function findRoomFile(start: string): (RoomFile & { room: string; _from: string }) | undefined {
   let d = resolve(start)
+  const own = (dir: string) => { try { return worktreeGitDirSync(dir) } catch { return undefined } }
+  const gitDir = own(d)
+  if (!gitDir) return undefined
   for (;;) {
     const room = readRoomFile(d)
     if (room?.room) return { ...room, room: room.room, _from: d }
     const up = dirname(d)
-    if (up === d) return undefined
+    if (up === d || own(up) !== gitDir) return undefined
     d = up
   }
+}
+
+/** The validated current root always supplies the folder, even when copied room metadata names another clone. */
+export async function startupJoinOptions(root: string, server: string, room?: string): Promise<JoinOptions | undefined> {
+  if (server === LOCAL) return { dir: root, room, server: LOCAL }
+  if (room) return { dir: root, room, server }
+  if ((await deriveRoomName(root).catch(() => ({ roomName: undefined }))).roomName) return { dir: root, server }
+  const prior = findRoomFile(root)
+  if (prior) return { dir: root, name: prior.name, room: decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, '')), server }
+  return undefined
 }
 
 /** Room name from the clone's origin; the branch is a participant fact, not part of the room key. */
@@ -491,12 +512,12 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const url = new URL(options.room)
   const encodedRoom = url.pathname.split('/').pop()!
   url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf('/'))
-  const probe = options.providerFactory
+  const probe = await timed('connect', () => options.providerFactory
     ? options.providerFactory(url.toString().replace(/\/$/, ''), encodedRoom, doc)
     : new WebsocketProvider(url.toString().replace(/\/$/, ''), encodedRoom, doc, {
         WebSocketPolyfill: WebSocket as any,
         params: { schema: '2', ...(options.token ? { token: options.token } : {}), ...(options.session ? { session: options.session } : {}), ...(options.localKey ? { key: options.localKey } : {}) },
-      })
+      }))
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
   const binding = createSessionBinding(options.dir)
   const sessionId = options.sessionId ?? binding.id()
@@ -510,23 +531,23 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const hub = new HubClient({ transport: hubTransport(probe), client: 'room-mcp', sessionId, local: !!options.localKey })
   let chosen: ChosenName
   try {
-    if (!probe.synced) await inPhase('sync', () => new Promise<void>((resolve, reject) => {
+    if (!probe.synced) await timed('sync', () => inPhase('sync', () => new Promise<void>((resolve, reject) => {
       const onSync = (synced: boolean) => { if (synced) { clearTimeout(timer); probe.off('sync', onSync); resolve() } }
       const timer = setTimeout(() => {
         probe.off('sync', onSync)
         reject(new RoomdError(`could not sync with ${options.room} within ${options.connectTimeoutMs ?? 15000}ms`, 1))
       }, options.connectTimeoutMs ?? 15000)
       probe.on('sync', onSync)
-    }))
+    })))
     // An unreachable or older hub leaves the session paused under its local lease (hub §7, §10).
     const reachable = await hub.hello().then(() => true, () => false)
     const epoch = Number(process.env.ROOM_NAME_EPOCH)
     const commonDir = await gitCommonDir(options.dir)
-    chosen = await inPhase('name', () => chooseName({
+    chosen = await timed('name', () => inPhase('name', () => chooseName({
       dir: options.dir, commonDir, roomKey: key, owner, explicitTag, host: resolveSessionHost(),
       doc: new RoomDoc(doc), hub: reachable ? hub : undefined, token, holder, workerId, takeover: options.takeover,
       ...(workerId && Number.isSafeInteger(epoch) ? { supersedes: epoch } : {}), log: options.log ?? console.error,
-    }))
+    })))
   } catch (e) {
     hub.close(); closeProbe()
     throw e instanceof NameRefused ? new RoomdError(e.message, 2) : e
@@ -570,14 +591,14 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     })
     if (lease.fence()) publishing = await attachPublication()
     else policyStore.setPublisher(false)
-    started = daemon = await startRoomd({ ...daemonOptions, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
+    started = daemon = await timed('daemon start', () => startRoomd({ ...daemonOptions, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
       post: (from, body, opts) => {
         if (post) return post(from, body, opts)
         options.log?.(`not posted before the hub connection: ${body.type}`)
         return { ok: false }
       },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
-      host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) })
+      host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) }))
     if (lease.fence()) claimLegacyIdentity(started.roomDoc, options.dir, name)
   } catch (e) { await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }
   // The daemon's connection carries the hub from here (one client per session): the lease's clock and epoch move with it.
@@ -688,15 +709,19 @@ function namesAsPublisher(room: RoomDoc, awareness: Awareness, name: string): bo
 }
 
 export async function joinSession(opts: JoinOptions): Promise<Session> {
-  const dir = resolve(opts.dir)
+  const dir = await joinableRoot(resolve(opts.dir))
   const config = await resolveConfig({ dir, env: process.env, args: opts })
+  const localWorkerLead = config.workerId && config.server === LOCAL ? process.env.ROOM_LEAD_CLONE : undefined
+  if (localWorkerLead && await realGitCommonDir(dir) !== localWorkerLead) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${localWorkerLead}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
   await admitWorkerEnvironment(dir)
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)
   const chosen = config.server
   if (chosen === LOCAL) {
-    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web })
+    const dispatched = !!config.workerId
+    const leadClone = dispatched ? process.env.ROOM_LEAD_CLONE || undefined : opts.leadClone
+    const session = await joinLocal(dir, { ...opts, name: config.owner ?? config.name, tag: config.tag, kind: config.kind, share: config.share, shareExplicit: config.shareExplicit, web: config.web, leadClone, joinOnly: opts.joinOnly || (dispatched && !leadClone) })
     session.shareWarning = config.shareWarning
     return session
   }
@@ -803,9 +828,12 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const kind: Kind = kindEnv === 'bot' || kindEnv === 'ci' ? kindEnv : 'agent'
   const name = label ? `${owner}+${label}` : owner
   const common = await gitCommonDir(dir)
+  if (opts.leadClone && await realGitCommonDir(dir) !== opts.leadClone) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${opts.leadClone}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
   // A takeover starts the successor relay from this session's replica (hub.md §5); roomd supplies it once started.
   let replica: Y.Doc | undefined
-  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }))
+  const local = await inPhase('relay', () => ensureLocalRelay(common, roomName, { log: opts.log, joinOnly: opts.joinOnly, seed: () => Y.encodeStateAsUpdate(replica ?? new Y.Doc()) }).catch(e => {
+    throw e instanceof NoLocalRelay ? new RoomdError(`your lead's room ${roomName} has no relay running for ${dir}, and this worker cannot start one. It joins once the lead's session is back.`, 1) : e
+  }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void
@@ -897,6 +925,22 @@ export function watchClosed(s: Session, log?: (line: string) => void): void {
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 /** A session the server no longer knows is useless locally too. */
 function removeStaleCredential(server: string, reason: string): void { if (/expired or unknown/.test(reason)) removeCredential(server) }
+
+/** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
+export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean } = {}): Promise<void> {
+  if (opts.credentialsPath) configureCredentials(opts.credentialsPath)
+  const parsed = parseServer(rawServer)
+  const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token)
+  const pre = await preflight(parsed.server, roomName, creds)
+  if (!pre || pre.canonical) return
+  if (pre.missing) {
+    if (!opts.create) throw new NoRoom(roomName, pre.reason, parsed.server)
+    if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
+    return
+  }
+  if (pre.loginNeeded) throw new NotLoggedIn(parsed.server)
+  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}`, 2)
+}
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */

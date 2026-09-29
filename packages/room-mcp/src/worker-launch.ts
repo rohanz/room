@@ -6,6 +6,7 @@ import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
+import { realGitCommonDir } from '@room/roomd'
 
 export class WorkerLaunchError extends Error {
   constructor(readonly phase: 'port' | 'budget' | 'start' | 'cancelled' | 'stale', message: string, readonly delivered = false, readonly pid?: number, readonly stopped = false) { super(message) }
@@ -69,7 +70,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
-      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch })
+      id, token: policy.token, logDir: s.dir, isWorker: policy.isWorker, nameEpoch,
+      leadClone: await realGitCommonDir(s.dir) })
     const niceEnv = command.mode === 'resume'
       ? { ...process.env, ROOM_WORKER_NICE: String(policy.budget.nice) }
       : process.env

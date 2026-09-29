@@ -154,7 +154,8 @@ function lineMap(side: string, after: string): (number | undefined)[] {
   return out
 }
 
-const MAX_DIFF_LINES = 20000
+const DIFF_WORK = 2_000_000
+const editBudget = (...sizes: number[]) => Math.max(1, Math.min(128, Math.floor(DIFF_WORK / Math.max(1, sizes.reduce((a, b) => a + b, 0)))))
 
 /** Trivial cases never enter Myers; large edits have a fixed edit-distance budget. */
 function boundedDiff(before: string, after: string): { value: string; added?: boolean; removed?: boolean }[] {
@@ -162,8 +163,7 @@ function boundedDiff(before: string, after: string): { value: string; added?: bo
   if (!before) return [{ value: after, added: true }]
   if (!after) return [{ value: before, removed: true }]
   const a = lines(before), b = lines(after)
-  if (Math.max(a.length, b.length) <= MAX_DIFF_LINES) return diffLines(before, after)
-  const exact = diffLines(before, after, { maxEditLength: 128 })
+  const exact = diffLines(before, after, { maxEditLength: editBudget(a.length, b.length) })
   if (exact) return exact
   // Preserve common edges; report the unresolved middle as a replacement.
   let from = 0, tail = 0
@@ -182,7 +182,9 @@ function boundedMerge(a: string[], o: string[], b: string[]): ReturnType<typeof 
   const equal = (x: string[], y: string[]) => x.length === y.length && x.every((line, i) => line === y[i])
   if (equal(a, b) || equal(o, b)) return [{ ok: a }]
   if (equal(a, o)) return [{ ok: b }]
-  if (Math.max(a.length, o.length, b.length) <= MAX_DIFF_LINES) return diff3Merge(a, o, b)
+  const maxEditLength = editBudget(a.length, o.length, b.length)
+  if (diffLines(asText(a), asText(o), { maxEditLength }) &&
+      diffLines(asText(b), asText(o), { maxEditLength })) return diff3Merge(a, o, b)
   let from = 0, tail = 0
   const shortest = Math.min(a.length, o.length, b.length)
   while (from < shortest && a[from] === o[from] && b[from] === o[from]) from++

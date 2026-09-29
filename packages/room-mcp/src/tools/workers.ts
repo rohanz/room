@@ -12,7 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { completionMessage, highestSeq, manifestPaths, participantRecord, type DoneMsg, type NoteMsg } from '@room/shared'
 import { reconcileProjectedConflicts } from '../conflict-set.js'
-import { parseShare } from '@room/roomd'
+import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
@@ -25,6 +25,8 @@ import { releaseWorkerProcessPort } from '../port-reservations.js'
 import { localWorkers, registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
 import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-status.js'
 import { postWorkerMessage } from '../post.js'
+import { watcherExclusionWarning } from '../watcher-exclusions.js'
+import { currentToolTiming } from '../timing.js'
 
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
@@ -41,7 +43,7 @@ export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
   { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.',
-    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, dir: str('use an existing directory in this repo instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
+    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('self-contained task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'host (default: caller host)' }, model: str('model override for that host (optional)'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('read-only input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false starts from HEAD without lead changes' }, threads: { type: 'integer', minimum: 1, description: 'math-library thread budget for this worker (optional)' }, share: SHARE, allowOutside: { type: 'boolean', description: 'permit dir outside this repo in a team room (no worktree bookkeeping)' }, dir: str('use an existing directory instead of creating a worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default), or local workers bridged to this room' } }, required: ['tag', 'task'] } },
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -115,6 +117,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_spawn(a) {
       const lead = S()
+      const timing = currentToolTiming()
+      const timed = <T>(phase: 'lease' | 'prepare' | 'launch', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
       if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
       const requestedEffort = a.effort as string | undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
@@ -158,15 +162,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (suppliedDir && !fs.existsSync(dir)) return `error: ${dir} does not exist`
       const relative = path.relative(s.dir, dir)
       const outside = relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
-      if (outside) return `error: ${dir} is outside this repo; a worker's directory must be in this repo`
+      // A local relay is keyed by the lead's clone. A worker in another repository cannot join it.
+      if (suppliedDir && s.local) {
+        let sameClone = false
+        try { sameClone = await realGitCommonDir(s.dir) === await realGitCommonDir(dir) } catch { /* plain folder */ }
+        if (!sameClone) return `error: ${dir} is another repository; a worker there cannot join this local room. Start a lead in ${dir} instead: its room is that repository's own local room, and give your human that room's link.`
+      }
+      if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`
       if (suppliedDir) {
         const canonical = path.relative(fs.realpathSync(s.dir), fs.realpathSync(dir))
-        if (canonical === '..' || canonical.startsWith(`..${path.sep}`) || path.isAbsolute(canonical)) {
+        if ((canonical === '..' || canonical.startsWith(`..${path.sep}`) || path.isAbsolute(canonical)) && a.allowOutside !== true) {
           return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`
         }
       }
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
-      if (suppliedDir && !await isOwnedWorkerWorktree(s.dir,
+      if (suppliedDir && !outside && !await isOwnedWorkerWorktree(s.dir,
         { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
@@ -182,7 +192,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,
       }
-      try { await registry.writeIntent(record, max) }
+      try { await timed('lease', () => registry.writeIntent(record, max)) }
       catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
       let childOwned = false
       try {
@@ -193,7 +203,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!suppliedDir) {
           await registry.update(id, old => ({ ...old, phase: 'preparing', seq: old.seq + 1 }))
           try {
-            prepared = await (ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths,
+            prepared = await timed('prepare', () => ctx.worktree ? ctx.worktree(s.dir, tag) : prepareWorktree(s.dir, tag, s.me.name, linkPaths,
               async (step, facts) => { await registry.update(id, old => ({ ...old,
                 prep: { ...old.prep, ...facts, step }, seq: old.seq + 1 })) }, 0, a.carry !== false))
             base = prepared.base; created = prepared.created
@@ -211,7 +221,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
-          launched = await launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
+          launched = await timed('launch', () => launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, run: 1, nonce, registry: registry.root, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
@@ -228,7 +238,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
             rooms.dropHandle(s, id)
             await registry.postObservedFailure(id, 1, message => postWorkerMessage(s.post, record, message))
-          })
+          }))
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
@@ -277,6 +287,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (pending) {
             out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
           } else if (carryFailed) out.push(`note: could not carry your uncommitted changes${carryError ? ` (${carryError})` : ''}; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
+        }
+        if (!suppliedDir) {
+          const warning = watcherExclusionWarning(lead.dir)
+          if (warning) out.push(warning)
         }
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)

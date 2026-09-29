@@ -278,7 +278,8 @@ describe('participant git record (reporooms §B2, §B3)', () => {
     state.inputs = { ...daemon.inputs }
     state.transitionPending = true // what a transition starting now does before its first await
     markManifestIncomplete(daemon.roomDoc, 'Alice', state.fence)
-    expect(internal.publisher.apply(await inFlight, true)).toBe(false)
+    // prepare now stops at its next yield once its inputs are replaced; either way nothing is certified.
+    expect(await inFlight.then(prepared => internal.publisher.apply(prepared, true), () => false)).toBe(false)
     expect(daemon.roomDoc.manifestHead.get('Alice')).toMatchObject({ complete: false })
   })
 

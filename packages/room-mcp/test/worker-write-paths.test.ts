@@ -153,7 +153,7 @@ describe('registry write paths', () => {
     expect(observer.read(record.id)?.discard?.steps).toEqual({ children: true, stop: true, patch: true, cleanup: true, prune: true })
     expect(fs.existsSync(record.dir)).toBe(false)
     expect(fs.readFileSync(path.join(root, 'room/registry/patches/w_write.patch'), 'utf8')).toContain('recover me')
-  })
+  }, 30_000)
 
   it('restores an interrupted collect to active with a partial apply warning', async () => {
     const { root, record } = fixture()

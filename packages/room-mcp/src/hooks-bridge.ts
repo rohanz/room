@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshot, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
@@ -144,6 +144,24 @@ export class HooksBridge {
 
 type HookHealth = { since: number; calls: number; noted: boolean; observed: boolean; joinNoted: boolean; scopeNoted: boolean }
 const hookHealth = new WeakMap<Session, HookHealth>()
+const PROCESS_STARTED_AT = Date.now()
+
+/** Hook evidence is local to this host session; ledger message receipts are separate. */
+export function hookReceiptPath(sessionDir: string, sessionId: string): string {
+  return path.join(sessionDir, '..', '..', 'hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
+}
+
+function readBoundedJson(file: string): Record<string, unknown> | undefined {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(file, 'r')
+    if (fs.fstatSync(fd).size > 4096) return undefined
+    const bytes = Buffer.alloc(4097)
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0)
+    return count <= 4096 ? JSON.parse(bytes.toString('utf8', 0, count)) : undefined
+  } catch { return undefined }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
 
 function newHookHealth(now: number): HookHealth {
   return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false }
@@ -157,24 +175,23 @@ function missingPreEditGuidance(s: Session): string {
 }
 
 /**
- * Diagnose Claude only after this host session has actually changed its own tree. Evidence is the bound
- * session's `hook-activity.json`, written by before-edit.mjs, and its `session.json` start time.
+ * Diagnose Claude only after this process has seen the bound host session change its own tree.
+ * The per-session hook receipt is evidence of PreToolUse, not a ledger delivery receipt.
  */
 export function hookHealthNote(s: Session, sessionDir: string | undefined, expected: boolean, now = Date.now(), tool?: string, team = !s.local): string {
   let health = hookHealth.get(s)
   if (!health) { health = newHookHealth(now); hookHealth.set(s, health) }
-  let sessionStartedAt = health.since
-  if (sessionDir) {
-    try {
-      const session = JSON.parse(fs.readFileSync(path.join(sessionDir, 'session.json'), 'utf8'))
-      if (typeof session.at === 'number' && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at
-    } catch { /* use the first room-tool call as the session boundary */ }
-    try {
-      const activity = JSON.parse(fs.readFileSync(path.join(sessionDir, 'hook-activity.json'), 'utf8'))
-      if (activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at <= now &&
-          (resolveSessionHost() !== 'claude' || activity.at >= sessionStartedAt)) health.observed = true
-    } catch { /* no receipt yet */ }
-  }
+  const session = sessionDir ? readBoundedJson(path.join(sessionDir, 'session.json')) : undefined
+  const id = typeof session?.session_id === 'string' && session.session_id.length > 0 && session.session_id.length <= 256 &&
+    !/[\u0000-\u001f\u007f]/.test(session.session_id) ? session.session_id : undefined
+  // A directory without a bound host identity cannot prove which session owns any receipt.
+  if (!sessionDir || !id) return ''
+  const sessionAt = session?.at
+  const sessionStartedAt = Math.max(PROCESS_STARTED_AT, typeof sessionAt === 'number' && Number.isFinite(sessionAt) ? sessionAt : 0)
+  const receipt = readBoundedJson(hookReceiptPath(sessionDir, id))
+  const activity = readBoundedJson(path.join(sessionDir, 'hook-activity.json'))
+  if ((receipt?.sessionId === id && typeof receipt.at === 'number' && receipt.at >= sessionStartedAt && receipt.at <= now) ||
+      (activity?.session_id === id && activity.event === 'PreToolUse' && typeof activity.at === 'number' && activity.at >= sessionStartedAt && activity.at <= now)) health.observed = true
   if (!expected || health.observed || health.noted) return ''
   // Only Codex can skip an unapproved hook silently, so only Codex is told up front. Elsewhere the hook is silent
   // while the agent is alone, which an agent cannot tell from a missing hook: wait for the evidence below instead.

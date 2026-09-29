@@ -5,13 +5,15 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
+import { incarnationText } from './manifest-assert.js'
+import { policyFromLevel } from '../src/policy.js'
 
 const failure = vi.hoisted(() => ({ once: false }))
-vi.mock('../src/git.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/git.js')>()
-  return { ...actual, gitChanged: async (dir: string) => {
-    if (failure.once) { failure.once = false; throw new Error('git status failed once') }
-    return actual.gitChanged(dir)
+vi.mock('../src/disk-scan.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/disk-scan.js')>()
+  return { ...actual, readDisk: async (...args: Parameters<typeof actual.readDisk>) => {
+    if (failure.once) { failure.once = false; throw new Error('git scan failed once') }
+    return actual.readDisk(...args)
   } }
 })
 import { startRoomd, type Roomd } from '../src/index.js'
@@ -28,7 +30,7 @@ afterEach(async () => {
   vi.unstubAllEnvs()
 })
 
-it('retries publication after a secondary takes over and its first Git scan fails', async () => {
+it('retries publication after a fence resumes and its first Git scan fails', async () => {
   vi.stubEnv('ROOM_MACHINE_ID', 'test-machine')
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-takeover-poll-'))
   git(dir, 'init', '-q', '-b', 'main')
@@ -49,30 +51,26 @@ it('retries publication after a secondary takes over and its first Git scan fail
     },
     on() {}, off() {}, destroy() {},
   }) as unknown as WebsocketProvider
-  const retries: Array<() => void> = []
+  let fence: string | undefined = '1'
+  const logs: string[] = []
   daemon = await startRoomd({ dir, room: 'ws://memory/takeover-poll', name: 'Amy', providerFactory: (_s, _n, doc) => provider(doc),
-    basePollMs: 60_000, trackedRefreshMs: 60_000, reconcileIntervalMs: 0, log: () => {},
-    retrySchedule: run => { retries.push(run); return () => {} } })
+    policy: policyFromLevel('full'), lease: () => fence,
+    basePollMs: 60_000, trackedRefreshMs: 60_000, reconcileIntervalMs: 0, log: line => logs.push(line) })
   const internal = daemon as Roomd & {
     watcher: { removeAllListeners(event: string): void }
-    choosePublisher(): void
     queuedHeadPoll(): Promise<void>
   }
   internal.watcher.removeAllListeners('all')
-  states.set(-1, { ...local, user: { name: 'Ada' }, publishUnder: undefined })
-  internal.choosePublisher()
-  expect(daemon.provider.awareness.getLocalState()?.publishUnder).toBe('Ada')
+  fence = undefined
   fs.writeFileSync(path.join(dir, 'app.txt'), 'changed\n')
-  states.delete(-1)
+  fence = '2'
 
   failure.once = true
   // The failure goes to the publisher's retry, as before 0.16.37, and the HEAD poll itself resolves (no backoff).
   await expect(internal.queuedHeadPoll()).resolves.toBeUndefined()
-  expect(daemon.provider.awareness.getLocalState()?.publishUnder).toBeUndefined()
-  expect(daemon.roomDoc.overlayText('Amy', 'app.txt')).toBeUndefined()
-  expect(retries).toHaveLength(1)
+  expect(incarnationText(daemon.roomDoc, 'Amy', 'app.txt')).toBeUndefined()
+  expect(logs.some(line => line.includes('git scan failed once'))).toBe(true)
 
-  retries.shift()!()
   await daemon.reconcileGitChanges()
-  expect(daemon.roomDoc.overlayText('Amy', 'app.txt')?.toString()).toBe('changed\n')
+  expect(incarnationText(daemon.roomDoc, 'Amy', 'app.txt')?.toString()).toBe('changed\n')
 })

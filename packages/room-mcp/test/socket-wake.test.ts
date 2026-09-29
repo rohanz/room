@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, type Identity } from '@room/shared'
+import { RoomDoc, claimReleaseText, type Identity } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { claudeWakeAvailable, createWakeSender, type SendWake } from '../src/wake-path.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
@@ -149,6 +149,18 @@ describe('the reconciler: one pointer per host session', () => {
       t.ask('Ada', 'note')
       await vi.advanceTimersByTimeAsync(20)
       expect(texts).toEqual(['[room] 1 thing needs you: Ada sent a note. Call room_state; it shows them. (#1)'])
+    } finally { t.close() }
+  })
+
+  it('names an automatic claim release without putting its path or lines in the wake', async () => {
+    vi.useFakeTimers()
+    const texts: string[] = []
+    const t = setup(async (_target, text) => { texts.push(text); return 'socket' })
+    try {
+      hubAppend(t.room, { name: 'room', kind: 'bot' }, { type: 'note', to: 'Rohan', priority: 'notify', text: claimReleaseText('private/code.ts', 4, 9, 'abc123') })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(texts).toEqual(['[room] 1 thing needs you: Room released a claim of yours. Call room_state; it shows them. (#1)'])
+      expect(texts[0]).not.toContain('private/code.ts')
     } finally { t.close() }
   })
 

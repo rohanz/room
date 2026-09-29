@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
@@ -428,7 +428,7 @@ export function receiptSessionId(id) {
 }
 /** One before-edit receipt per session, named by a hash of its id, so no session ever rewrites another's. */
 export function hookReceiptFile(stateDir, sessionId) {
-  return path.join(stateDir, 'room-hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
+  return path.join(stateDir, 'hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
 }
 const RECEIPT_MAX_AGE_MS = 7 * 86400_000
 const RECEIPT_PRUNE_EVERY_MS = 10 * 60_000

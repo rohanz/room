@@ -107,10 +107,10 @@ it('splits active workers, offline teammates and retired history with shared lea
     scopes: [], overlayPeople: ['offline', retired.name], changesByPerson: new Map(), claims: [], retiredWorkers: [retired],
   }
   const groups = splitParticipants(input)
-  expect(groups.active.map(p => p.name)).toEqual(['lead', 'lead+failed', 'lead+run'])
+  expect(groups.active.map(p => p.name)).toEqual(['lead', 'lead+done', 'lead+failed', 'lead+run'])
   expect(groups.offlineTeammates.map(p => p.name)).toEqual(['offline'])
   expect(groups.retiredWorkers).toEqual([retired])
-  expect(groups.workerGroups).toMatchObject([{ lead: 'lead', running: 1, active: [{ name: 'lead+failed' }, { name: 'lead+run' }], retiredWorkers: [retired] }])
+  expect(groups.workerGroups).toMatchObject([{ lead: 'lead', running: 1, active: [{ name: 'lead+done' }, { name: 'lead+failed' }, { name: 'lead+run' }], retiredWorkers: [retired] }])
   const reused = splitParticipants({ ...input, workers: [...input.workers, { ...worker, name: retired.name, tag: retired.tag, startedAt: 4 }] })
   expect(reused.active.map(p => p.name)).toContain(retired.name)
   expect(reused.retiredWorkers).toEqual([retired])

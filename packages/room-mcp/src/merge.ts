@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { diff3Merge } from 'node-diff3'
+import { diffLines } from 'diff'
 
 interface MergeConflict {
   /** One-based range occupied by the conflicting source region in the merged text. */
@@ -70,7 +71,12 @@ function fallback(base: string, ours: string, theirs: string, labels: { ours: st
     warnedFallback = true
     console.error('room: git could not render this preview; falling back to node-diff3')
   }
-  const raw = diff3Merge(ours.split('\n'), base.split('\n'), theirs.split('\n'))
+  const a = ours.split('\n'), o = base.split('\n'), b = theirs.split('\n')
+  const edits = Math.max(1, Math.min(128, Math.floor(2_000_000 / Math.max(1, a.length + o.length + b.length))))
+  const bounded = diffLines(ours, base, { maxEditLength: edits }) && diffLines(theirs, base, { maxEditLength: edits })
+  // A distant rewrite is an uncertain whole-file conflict. Its alternatives stay exact.
+  const raw: ReturnType<typeof diff3Merge<string>> = bounded ? diff3Merge(a, o, b)
+    : [{ conflict: { a, o, b, aIndex: 0, oIndex: 0, bIndex: 0 } }]
   const chunks: MergeChunk[] = []
   const rendered: string[] = []
   const conflicts: MergeConflict[] = []

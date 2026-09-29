@@ -1,4 +1,4 @@
-import { manifestText, manifestPaths } from './manifest-assert.js'
+import { manifestDeleted, manifestText, manifestPaths } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { it, expect, vi, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs'
@@ -70,11 +70,12 @@ it.each(['full', 'declared'] as const)('shares a tracked lockfile but skips an u
   fs.writeFileSync(path.join(dir, 'uv.lock'), 'tracked change\n')
   fs.mkdirSync(path.join(dir, 'nested'))
   fs.writeFileSync(path.join(dir, 'nested', 'uv.lock'), 'generated\n')
-  const daemon = await start(dir, line => logs.push(line), { share, scopePaths: share === 'declared' ? ['uv.lock', 'nested/uv.lock'] : undefined, skipLogMs: 20 })
+  const daemon = await start(dir, line => logs.push(line), { policy: policyFromLevel(share, ['uv.lock', 'nested/uv.lock']), skipLogMs: 20 })
   try {
-    expect(daemon.roomDoc.overlayText('Test', 'uv.lock')?.toString()).toBe('tracked change\n')
-    expect(daemon.roomDoc.overlayText('Test', 'nested/uv.lock')).toBeUndefined()
+    expect(manifestText(daemon.roomDoc, 'uv.lock', 'Test')).toBe('tracked change\n')
+    expect(manifestText(daemon.roomDoc, 'nested/uv.lock', 'Test')).toBeUndefined()
     expect(daemon.skipped().ignore).toContain('nested/uv.lock')
+    expect(daemon.roomDoc.manifestHead.get('Test')?.excluded).toHaveLength(1)
     fs.writeFileSync(path.join(dir, 'poetry.lock'), 'generated after join\n')
     await until(() => daemon.skipped().ignore.includes('poetry.lock'))
     await until(() => logs.some(line => line.includes('untracked lockfile')))
@@ -85,12 +86,12 @@ it.each(['full', 'declared'] as const)('shares an untracked lockfile after git a
   const dir = repo({ 'app.py': 'x = 1\n' })
   const lockfile = path.join(dir, 'uv.lock')
   fs.writeFileSync(lockfile, 'generated\n')
-  const daemon = await start(dir, () => {}, { share, scopePaths: share === 'declared' ? ['uv.lock'] : undefined, trackedRefreshMs: 50, basePollMs: 0, reconcileIntervalMs: 0 })
+  const daemon = await start(dir, () => {}, { policy: policyFromLevel(share, ['uv.lock']), trackedRefreshMs: 50, basePollMs: 0, reconcileIntervalMs: 0 })
   try {
-    expect(daemon.roomDoc.overlayText('Test', 'uv.lock')).toBeUndefined()
+    expect(manifestText(daemon.roomDoc, 'uv.lock', 'Test')).toBeUndefined()
     expect(daemon.skipped().ignore).toContain('uv.lock')
     execFileSync('git', ['add', '--', 'uv.lock'], { cwd: dir })
-    await until(() => daemon.roomDoc.overlayText('Test', 'uv.lock')?.toString() === 'generated\n')
+    await until(() => manifestText(daemon.roomDoc, 'uv.lock', 'Test') === 'generated\n')
     expect(daemon.skipped().ignore).not.toContain('uv.lock')
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
@@ -101,10 +102,10 @@ it('keeps a tracked lockfile deletion published before and after the tracked ref
   try {
     execFileSync('git', ['rm', '-q', '--', 'uv.lock'], { cwd: dir })
     await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
-    expect(daemon.roomDoc.deletedFor('Test').has('uv.lock')).toBe(true)
+    expect(manifestDeleted(daemon.roomDoc, 'Test', 'uv.lock')).toBe(true)
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
     await (daemon as unknown as { onDiskChange(path: string, isNew: boolean): Promise<void> }).onDiskChange('uv.lock', false)
-    expect(daemon.roomDoc.deletedFor('Test').has('uv.lock')).toBe(true)
+    expect(manifestDeleted(daemon.roomDoc, 'Test', 'uv.lock')).toBe(true)
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
@@ -115,10 +116,10 @@ it.each(['rm --cached', 'restore --staged'] as const)('withdraws a newly added l
   try {
     execFileSync('git', ['add', '--', 'uv.lock'], { cwd: dir })
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
-    await until(() => daemon.roomDoc.overlayText('Test', 'uv.lock')?.toString() === 'generated\n')
+    await until(() => manifestText(daemon.roomDoc, 'uv.lock', 'Test') === 'generated\n')
     execFileSync('git', [...command.split(' '), '--', 'uv.lock'], { cwd: dir })
     await (daemon as unknown as { refreshTracked(): Promise<void> }).refreshTracked()
-    await until(() => daemon.roomDoc.overlayText('Test', 'uv.lock') === undefined)
+    await until(() => manifestText(daemon.roomDoc, 'uv.lock', 'Test') === undefined)
     expect(daemon.skipped().ignore).toContain('uv.lock')
   } finally { await daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

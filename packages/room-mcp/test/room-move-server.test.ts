@@ -26,7 +26,7 @@ beforeAll(async () => {
   const device = (await (await post('/auth/device', {})).json() as { device: string }).device
   const { session } = await (await post('/auth/poll', { device, fakeLogin: 'rohanz' })).json() as { session: string }
   setCredential(`ws://127.0.0.1:${port}`, { session, login: 'rohanz', at: Date.now() })
-  expect((await post('/rooms', { room: 'github.com/rohanz/x/main', session })).ok).toBe(true)
+  expect((await post('/rooms', { room: 'github.com/rohanz/x', session, schema: 2 })).ok).toBe(true)
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-move-server-')))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' })
   git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Rohan'); git('config', 'user.email', 'r@r')
@@ -42,11 +42,11 @@ it('local, then team, then local again: the Git name locally, the GitHub login o
   try {
     expect(session!.me.name).toBe('Rohan')
     const toTeam = await tools.call('room_join', { where: server })
-    expect(toTeam).toContain('joined github.com/rohanz/x/main as rohanz')
+    expect(toTeam).toContain('joined github.com/rohanz/x as rohanz')
     expect(session!.me.name).toBe('rohanz')
     expect((await readChoice(dir))?.where).toBe(server)
     const toLocal = await tools.call('room_join', { where: 'local' })
-    expect(toLocal).toContain(`joined local/${path.basename(dir)}/main as Rohan`)
+    expect(toLocal).toContain(`joined local/${path.basename(dir)} as Rohan`)
     expect(session!.me.name).toBe('Rohan')
     expect(await tools.call('room_join', { where: server })).toContain('as rohanz')
   } finally {
@@ -55,7 +55,7 @@ it('local, then team, then local again: the Git name locally, the GitHub login o
   }
 }, 90_000)
 
-it('following a branch into a room where another checkout already holds the same untagged name picks a distinct name', async () => {
+it('two branches share one repository room with distinct names, and a branch switch keeps its session', async () => {
   const server = `ws://127.0.0.1:${port}`
   const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-move-server-b-')))
   execFileSync('git', ['clone', '-q', dir, other], { stdio: 'pipe' })
@@ -67,16 +67,18 @@ it('following a branch into a room where another checkout already holds the same
   try {
     a = await joinSession({ dir, server }); sessions.push(a)
     b = await joinSession({ dir: other, server }); sessions.push(b)
-    expect(a.roomName).toBe('github.com/rohanz/x/main')
-    expect(b.roomName).toBe('github.com/rohanz/x/feat')
+    expect(a.roomName).toBe('github.com/rohanz/x')
+    expect(b.roomName).toBe('github.com/rohanz/x')
     expect(a.me.name).toBe('rohanz')
-    expect(b.me.name).toBe('rohanz') // alone in its branch room
+    expect(b.me.name).not.toBe('rohanz') // another checkout already holds the bare login
+    const name = b.me.name
     const tools = createTools({ cwd: other, getSession: () => b, setSession: s => { b = s; if (s) sessions.push(s) } })
     git('checkout', '-q', 'main')
     const reply = await tools.call('room_state')
-    expect(reply).toContain('left feat, joined github.com/rohanz/x/main')
-    expect(b!.roomName).toBe('github.com/rohanz/x/main')
-    expect(b!.me.name).not.toBe('rohanz') // never publishes as the other checkout's participant
+    expect(reply).toContain('github.com/rohanz/x')
+    expect(b!.roomName).toBe('github.com/rohanz/x')
+    expect(b!.me.name).toBe(name)
+    expect(b).toBe(sessions[1]) // no branch-follow rejoin
     await tools.shutdown()
   } finally {
     for (const s of new Set(sessions)) await leaveSession(s).catch(() => {})

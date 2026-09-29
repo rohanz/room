@@ -147,15 +147,16 @@ it('retries when HEAD moves during publication', async () => {
 
 it('does not apply an earlier line shift twice when HEAD moves after re-anchoring', async () => {
   const { claim } = await movedHead()
-  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<void> }
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown> }
   const reanchor = internal.reanchorOwnClaims.bind(internal)
   let advanced = false
   internal.reanchorOwnClaims = async (head, claims) => {
-    await reanchor(head, claims)
-    if (advanced) return
+    const changes = await reanchor(head, claims)
+    if (advanced) return changes
     advanced = true
     fs.writeFileSync(path.join(dir!, 'app.txt'), 'more\nadded\nfirst\nclaimed\nlast\n')
     git(dir!, 'add', '-A'); git(dir!, 'commit', '-qm', 'move block again')
+    return changes
   }
   await daemon!.reconcileGitChanges()
   await daemon!.reconcileGitChanges()

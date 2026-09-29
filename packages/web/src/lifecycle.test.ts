@@ -81,7 +81,8 @@ it('nests active and failed workers, collapses archives, and counts active in bo
 
 it('shows a done worker without a report in both worker cards', () => {
   const { room, conn } = setup()
-  room.workers.set('quiet', { ...worker('quiet', 'done'), noReport: true, summary: 'ended without a report; last lines of its log: (empty log)' })
+  room.participants.set('Lead\0holder', { sessionId: 'fixture:Lead', epoch: 1 })
+  show(room, { ...worker('quiet', 'done'), noReport: true, summary: 'ended without a report; last lines of its log: (empty log)' })
   const people = participantsPanel(conn, createFocusState()), board = boardPanel(conn, vi.fn())
   document.body.append(people, board)
   expect(people.textContent).toContain('ended without a report')

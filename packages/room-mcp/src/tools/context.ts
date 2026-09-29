@@ -34,6 +34,8 @@ export interface ToolCtx {
   cwd: string
   /** Injectable for tests. */
   join?: (o: JoinOptions) => Promise<Session>
+  /** Injectable team admission preflight for simulated joins. */
+  admit?: typeof import('../session.js').checkTeamAdmission
   leave?: (s: Session) => Promise<void>
   /** Injectable for tests (default: DELETE /rooms on the session's server). Returns the rooms closed. */
   close?: (s: Session) => Promise<string[]>
@@ -62,6 +64,8 @@ export interface ToolCtx {
   binding?: SessionBinding
   /** How long a hook's selection stays reserved without a confirm; injectable for tests. */
   hookLeaseMs?: number
+  /** Injectable version probe for room_state replies. */
+  staleVersionWarning?: () => string | undefined
 }
 
 export type Handler = (args: Record<string, unknown>) => Promise<string>

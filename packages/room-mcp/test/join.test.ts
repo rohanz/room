@@ -15,6 +15,7 @@ import { memorySession } from './fixtures/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
+import { writeChoice } from '../src/choice.js'
 
 let dir: string
 const dispose: (() => void | Promise<void>)[] = []
@@ -82,12 +83,15 @@ it('keeps one repository room, scope and workers when the clone switches branche
 })
 
 it('room_create never returns local state through the same-room fast path', async () => {
+  const server = 'ws://open.example'
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+    ? Response.json({}) : new Response('missing', { status: 404 })))
   const current = session(`local/${dir.split('/').pop()}`, { local: true })
   const t = branchTools(current)
-  const out = await t.tools.call('room_create', { confirm: true })
+  const out = await t.tools.call('room_create', { confirm: true, where: server, room: 'git/example/repo' })
   expect(out).toContain('opened and joined')
   expect(t.active()).not.toBe(current)
-  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ server: DEFAULT_SERVER, create: true, confirm: true }))
+  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ server, create: true, confirm: true }))
 })
 
 it('carries a requested custom destination through login and back to join', async () => {
@@ -98,6 +102,7 @@ it('carries a requested custom destination through login and back to join', asyn
     if (path === '/auth/config') return Response.json({ github: 'device' })
     if (path === '/auth/start') return Response.json({ user_code: 'CODE', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 0, device: 'dev' })
     if (path === '/auth/poll') return Response.json({ session: 's'.repeat(64), login: 'Ada', expiresIn: 900 })
+    if (path === '/view-token') return Response.json({ view: 'v', hub: 1 })
     throw new Error(`unexpected ${path}`)
   }))
   let active: Session | null = session(`local/${dir.split('/').pop()}`, { local: true })
@@ -113,7 +118,16 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(await tools.call('room_login', { server })).toContain('CODE')
   expect(await tools.call('room_login', { server, wait: 5 })).toContain('logged in')
   expect(await tools.call('room_join', { where: server, room: 'git/example/repo' })).toContain('joined git/example/repo')
-  expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server, server])
+  expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server]) // preflight refuses before calling join
+})
+
+it('room_login server=team uses the remembered concrete server', async () => {
+  const server = 'ws://remembered-login.example'
+  await writeChoice(dir, server)
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({})))
+  const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {} })
+  dispose.push(() => tools.shutdown())
+  expect(await tools.call('room_login', { server: 'team' })).toContain(`${server} has no login provider`)
 })
 
 it('S2 exposes takeover=true through room_join and passes it to the join helper', async () => {

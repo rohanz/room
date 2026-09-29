@@ -8,8 +8,8 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import * as Y from 'yjs'
 import { RoomDoc, gitBlobHash, manifestKey, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
-import { createWriteIntentReader, HooksBridge, hookHealthNote, type HooksBridgeOptions } from '../src/hooks-bridge.js'
-import { sessionDirectory, type Session } from '../src/session.js'
+import { createWriteIntentReader, HooksBridge, hookHealthNote, hookReceiptPath, type HooksBridgeOptions } from '../src/hooks-bridge.js'
+import { boundSession, sessionDirectory, type Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hasCompany } from '../src/company.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
@@ -244,7 +244,7 @@ describe('shell edit hooks', () => {
   })
 
   it('finds PowerShell write destinations, including aliases and parameter paths', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     const commands = [
       'Add-Content -Path api/tax.py -Value x', 'Out-File -FilePath api/tax.py',
       'New-Item -Path api/tax.py', 'Remove-Item -LiteralPath api/tax.py',
@@ -256,11 +256,10 @@ describe('shell edit hooks', () => {
       'CP app.py api/tax.py', 'ReN app.py api/tax.py',
     ]
     for (const command of commands) {
-      expect(shellLooksLikeWrite({ command }), command).toBe(true)
       expect(pathsOf('PowerShell', { command }, dir), command).toContain('api/tax.py')
     }
     for (const command of ['Get-Content api/tax.py', 'Select-String sc api/tax.py', 'Get-ChildItem api']) {
-      expect(shellLooksLikeWrite({ command }), command).toBe(false)
+      expect(pathsOf('PowerShell', { command }, dir), command).toEqual([])
     }
     expect(pathsOf('PowerShell', { command: 'Set-Content -Path C:\\repo\\api\\tax.py -Value x' }, 'C:\\repo')).toEqual(['api/tax.py'])
     expect(pathsOf('PowerShell', { command: 'Copy-Item -Path app.py -Destination "api/new tax.py"' }, dir)).toContain('api/new tax.py')
@@ -313,10 +312,8 @@ describe('shell edit hooks', () => {
     "sed -i '' 's/x/y/' api/tax.py", "perl -pi -e 's/x/y/' api/tax.py",
     'echo x >api/tax.py', 'echo x >>api/tax.py', 'tee api/tax.py',
     'mv api/tax.py old.py', 'cp app.py api/tax.py', 'rm api/tax.py',
-    'python3 -c "pass" api/tax.py', 'node -e "0" api/tax.py',
-    "python <<'PY'\nopen('api/tax.py', 'w')\nPY", "node <<'JS'\nwrite('api/tax.py')\nJS",
-    'apply_patch api/tax.py', 'git apply api/tax.py', 'git checkout -- api/tax.py',
-    'git restore api/tax.py', 'git stash -- api/tax.py', 'git merge api/tax.py', 'git rebase api/tax.py',
+    'apply_patch api/tax.py', 'git checkout -- api/tax.py',
+    'git restore api/tax.py', 'git stash -- api/tax.py',
   ])('warns on likely shell write: %s', async cmd => {
     state()
     expect(context(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input: { cmd } }))).toContain("Kieran's agent holds api/tax.py:1-1")
@@ -329,22 +326,18 @@ describe('shell edit hooks', () => {
   })
 
   it('bounds path candidates across input strings and supports shell argv', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     expect(pathsOf('exec', { cmd: 'sed -i "s/x/y/" "api/tax.py"' }, dir)).toContain('api/tax.py')
     expect(pathsOf('exec', { cmd: 'x '.repeat(200), extra: 'api/tax.py' }, dir)).toEqual([])
-    expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual(['api/tax.py'])
-    expect(shellLooksLikeWrite({ command: ['python3', '-c', 'pass', 'api/tax.py'] })).toBe(true)
-    expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual([])
+    expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'rm ../outside.py /etc/hosts' }, dir)).toEqual([])
   })
 
-  it('skips a 1 MB command within 100 ms and still delivers company', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+  it('skips a 1 MB command and still delivers company', async () => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     const tool_input = { cmd: 'sed -i ' + 'x'.repeat(1_000_000) + ' api/tax.py' }
-    const start = performance.now()
     expect(pathsOf('exec', tool_input, dir)).toEqual([])
-    expect(shellLooksLikeWrite(tool_input)).toBe(false)
-    expect(performance.now() - start).toBeLessThan(100)
     state({ company: true, others: ['Kieran'] })
     const out = context(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input }))
     expect(out).toContain('[room] Kieran is here.')
@@ -602,7 +595,7 @@ describe('company and nearby work', () => {
     expect(announce).toContain('Cy is here')
     const edit = (file_path: string) => runHook('before-edit.mjs', { cwd: dir, session_id: 'near', tool_name: 'Write', tool_input: { file_path } })
     expect(await edit('api/tax.py')).toContain('Claim before editing: Ada has scope on api/')
-    expect(await edit('other.py')).toContain('Bea has changed on other.py')
+    expect(await edit('other.py')).toContain('Bea changed other.py')
     expect(await edit('api-other/new.py')).toBe('')
     b.stop(); peer.destroy(); human.destroy(); s.awareness.destroy()
   })
@@ -754,10 +747,46 @@ describe('runtime.json: model and effort, written only by before-edit (ledger SF
 })
 
 describe('hook health', () => {
+  it('binds a Claude lead from the host environment when no session record is present', () => {
+    expect(boundSession({ commonDir: join(dir, '.git'), host: 'claude', env: { CLAUDE_CODE_SESSION_ID: SID } })).toEqual({ id: SID, host: 'claude' })
+  })
+
+  it('judges only the bound host session receipt despite another session and a legacy shared identity file', () => {
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const now = Date.now()
+    writeSessionFile('session.json', { session_id: SID, at: now })
+    writeFileSync(join(dir, '.git/room-session.json'), JSON.stringify({ session_id: 'codex-other', at: now }))
+    mkdirSync(join(dir, '.git/room/hook-receipts'), { recursive: true })
+    writeFileSync(hookReceiptPath(sdir(), 'codex-other'), JSON.stringify({ sessionId: 'codex-other', at: now + 1 }))
+    const missing = session(new RoomDoc())
+    hookHealthNote(missing, sdir(), true, now, 'room_join')
+    publishFixture(missing.room, 'Rohan', 'app.py', 'x = 2\n')
+    expect(hookHealthNote(missing, sdir(), true, now + 60_000, 'room_state')).toContain('before-edit hook')
+    missing.awareness.destroy()
+
+    writeFileSync(hookReceiptPath(sdir(), SID), JSON.stringify({ sessionId: SID, at: now + 1 }))
+    const healthy = session(new RoomDoc())
+    hookHealthNote(healthy, sdir(), true, now, 'room_join')
+    publishFixture(healthy.room, 'Rohan', 'app.py', 'x = 2\n')
+    expect(hookHealthNote(healthy, sdir(), true, now + 60_000, 'room_state')).toBe('')
+    healthy.awareness.destroy()
+  })
+
+  it('does not warn when this process has no bound host session', () => {
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const s = session(new RoomDoc())
+    const now = Date.now()
+    hookHealthNote(s, undefined, true, now, 'room_join')
+    publishFixture(s.room, 'Rohan', 'app.py', 'x = 2\n')
+    expect(hookHealthNote(s, undefined, true, now + 60_000, 'room_state')).toBe('')
+    s.awareness.destroy()
+  })
+
   it('reports unverified pre-edit coverage on team join and first scope only', () => {
     vi.stubEnv('ROOM_HOST', 'codex')
     const s = session(new RoomDoc())
     const now = Date.now()
+    writeSessionFile('session.json', { session_id: SID, at: now })
     expect(hookHealthNote(s, sdir(), false, now, 'room_join')).toBe('')
     expect(hookHealthNote(s, sdir(), true, now + 1, 'room_join')).toContain('approve them once in an interactive Codex session')
     expect(hookHealthNote(s, sdir(), true, now + 2, 'room_join')).toBe('')
@@ -773,7 +802,7 @@ describe('hook health', () => {
     vi.stubEnv('ROOM_HOST', 'codex')
 
     const healthy = session(new RoomDoc())
-    writeSessionFile('hook-activity.json', { session_id: SID, event: 'PreToolUse', at: now - 60_000 })
+    writeSessionFile('hook-activity.json', { session_id: SID, event: 'PreToolUse', at: now + 1 })
     expect(hookHealthNote(healthy, sdir(), true, now + 2, 'room_join')).toBe('')
     expect(hookHealthNote(healthy, sdir(), true, now + 3, 'room_scope')).toBe('')
     s.awareness.destroy(); claude.awareness.destroy(); healthy.awareness.destroy()

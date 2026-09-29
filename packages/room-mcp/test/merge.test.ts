@@ -81,3 +81,17 @@ it('recovers from git merge-file exiting 128 without markers', async () => {
     expect(result.conflicts[0]).toMatchObject({ a: ['ours'], b: ['theirs'] })
   } finally { vi.unstubAllEnvs(); fs.rmSync(bin, { recursive: true, force: true }) }
 })
+
+it('keeps distant 800-line alternatives exact when the fallback budget is exhausted', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-bad-git-'))
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nexit 128\n', { mode: 0o755 })
+  vi.stubEnv('PATH', bin)
+  try {
+    const source = (word: string) => Array.from({ length: 800 }, (_, i) => `${word}-${i}\n`).join('')
+    const base = source('base'), ours = source('ours'), theirs = source('theirs')
+    const result = await gitMergeFile(base, ours, theirs, { ours: 'ours', base: 'base', theirs: 'theirs' })
+    expect(result.algorithm).toBe('fallback')
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ a: ours.split('\n'), o: base.split('\n'), b: theirs.split('\n') })
+  } finally { vi.unstubAllEnvs(); fs.rmSync(bin, { recursive: true, force: true }) }
+})

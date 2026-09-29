@@ -61,7 +61,8 @@ describe('statusOf', () => {
 
   it('classifies witnessed success without room_done, failures, stop and unwitnessed loss', () => {
     const launched = record('active', run({ outcome: 'launched', pid: 42 }))
-    expect(statusOf(launched, undefined, [], [{ run: 1, code: 0, at: 5, witnessed: true }], dead).status).toBe('failed')
+    expect(statusOf(launched, undefined, [], [{ run: 1, code: 0, at: 5, witnessed: true }], dead))
+      .toMatchObject({ status: 'done', noReport: true, summary: 'ended without a report', exitCode: 0 })
     expect(statusOf(launched, undefined, [], [{ run: 1, code: 137, at: 5, witnessed: true }], dead).note).toContain('137')
     expect(statusOf(launched, undefined, [], [{ run: 1, code: null, at: 5, witnessed: false }], dead).status).toBe('failed')
     launched.stop = { reason: 'lead-session-ended', at: 4, run: 1 }

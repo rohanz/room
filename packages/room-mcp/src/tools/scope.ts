@@ -17,8 +17,8 @@ import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState,
 
 
 export const defs: ToolDef[] = [
-  { name: 'room_scope', annotations: RW, description: 'Declare your task and paths once when working with others.',
-    inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
+  { name: 'room_scope', annotations: RW, description: 'Declare task and edit paths once; read-only reviewers need no scope.',
+    inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('non-empty edit files or directories') }, required: ['area', 'summary', 'paths'] } },
   { name: 'room_state', annotations: RO, description: 'Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
 ]
@@ -84,7 +84,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const area = String(a.area ?? '').trim().toLowerCase().split(/\s+/)[0]
       const summary = String(a.summary ?? '').trim()
       const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string' && !!x) : []
-      if (!area || !summary || !paths.length) return 'error: area, summary and paths are required'
+      if (!area || !summary) return 'error: area and summary are required'
+      if (!paths.length) return 'error: paths must list files or directories you expect to edit; read-only reviewers with no edit paths need no scope. Use room_state and room_read to review.'
       await loadAreas(s)
       const areas = areasOf(s).areasOf([...paths, ...manifestPaths(s.room, s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
@@ -105,10 +106,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const m = s.room.meta
       const publisher = publisherLine(s)
-      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size
+      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.name)).size
+      const participants = `${people} other participant${people === 1 ? '' : 's'}`
       const out: string[] = [s.local ? 'local: nothing leaves this machine' : publisher
-        ? `team room: ${publisher} (${people} other people in the room)`
-        : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${people} people`]
+        ? `team room: ${publisher} (${participants} in the room)`
+        : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))}${shareOf(s, s.me.name) === 'declared' && s.policyStore.retained.length ? '; changed files declared earlier remain shared' : ''} with ${participants}`]
       if (s.local && publisher) out.push(publisher)
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, 'company')

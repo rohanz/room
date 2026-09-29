@@ -77,7 +77,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   }
 }
 
-function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake } = {}) {
+function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake; staleVersionWarning?: () => string | undefined } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo' })
   setParticipantBase(a, 'Rohan', base)
@@ -88,7 +88,7 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
   const joined: string[] = []
   const created: boolean[] = []
   const tools = createTools({
-    config: opts.config, getSession: () => session, setSession: s => { session = s }, cwd: dir,
+    config: opts.config, staleVersionWarning: opts.staleVersionWarning, getSession: () => session, setSession: s => { session = s }, cwd: dir, admit: async () => {},
     ...(opts.wake ? { wake: opts.wake, binding: { bound: () => ({ id: 'claude-1', host: 'claude' as const }), id: () => 'claude-1', dir: () => undefined, commonDir: () => undefined } } : {}),
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
@@ -223,6 +223,22 @@ it('room_send warns only when the recipient presence says wake is unavailable', 
   }
 })
 
+it('resolves displayed agent names case insensitively, with exact names winning and ambiguity reported', async () => {
+  const t = setup()
+  const s = t.session!
+  const first = addPresence(s.awareness, 'Kieran')
+  try {
+    expect(await t.tools.call('room_send', { type: 'note', to: 'kIeRaN’s AgEnT', text: 'hello' })).not.toContain('error:')
+    expect(t.room.messages().at(-1)).toMatchObject({ type: 'note', to: 'Kieran', text: 'hello' })
+    const second = addPresence(s.awareness, 'kieran')
+    try {
+      expect(await t.tools.call('room_send', { type: 'note', to: "KIERAN'S AGENT", text: 'ambiguous' })).toContain('ambiguous; use a full name: Kieran, kieran')
+      expect(await t.tools.call('room_send', { type: 'note', to: 'Kieran', text: 'exact' })).not.toContain('error:')
+      expect(t.room.messages().at(-1)).toMatchObject({ type: 'note', to: 'Kieran', text: 'exact' })
+    } finally { second.destroy(); second.doc.destroy() }
+  } finally { first.destroy(); first.doc.destroy(); await t.tools.shutdown() }
+})
+
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'room-mcp-'))
   const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
@@ -230,6 +246,7 @@ beforeAll(() => {
   writeFileSync(join(dir, 'app.py'), COMMITTED)
   writeFileSync(join(dir, 'session.py'), 'from app import validate\n')
   git('add', '.'); git('commit', '-qm', 'init')
+  git('remote', 'add', 'origin', 'https://github.com/o/r.git')
   base = git('rev-parse', 'HEAD').trim()
 })
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -304,6 +321,36 @@ describe('session gating', () => {
     expect(await t.tools.call('room_state', {})).toBe('error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.')
     const u = setup({ synced: false })
     expect(await u.tools.call('room_state', {})).toBe('error: room not synced yet, retry')
+  })
+
+  it('puts the installed-version warning first in every room_state reply, including before join', async () => {
+    const staleVersionWarning = () => 'this session runs Room 0.16.36; 0.16.40 is installed. Restart the session or reconnect Room (/mcp) to use it.'
+    const joined = setup({ staleVersionWarning })
+    const notJoined = setup({ joined: false, staleVersionWarning })
+    expect(await joined.tools.call('room_state', {})).toMatch(/^this session runs Room 0\.16\.36; 0\.16\.40 is installed\./)
+    expect(await notJoined.tools.call('room_state', {})).toMatch(/^this session runs Room 0\.16\.36; 0\.16\.40 is installed\.[\s\S]*error: not in a room/)
+  })
+
+  it('does not record an empty scope and explains the read-only reviewer path', async () => {
+    const t = setup()
+    const response = await t.tools.call('room_scope', { area: 'review', summary: 'inspect', paths: [] })
+    expect(response).toContain('read-only reviewers with no edit paths need no scope')
+    expect(t.room.scope('Rohan')).toBeUndefined()
+  })
+
+  it('explains how to claim a whole file when no line range is given', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'api', summary: 'nearby', paths: ['app.py'] })
+    const response = await t.tools.call('room_claim', { path: 'app.py', intent: 'edit the file' })
+    expect(response).toContain('file claims need symbol or both from and to; to claim all of app.py, pass from=1 and to=<last line>')
+  })
+
+  it('counts another agent as one other participant in sharing state', async () => {
+    const t = setup()
+    const peer = addPresence(t.session!.awareness, 'Kieran')
+    try {
+      expect(await t.tools.call('room_state', {})).toContain('with 1 other participant')
+    } finally { peer.destroy(); peer.doc.destroy(); await t.tools.shutdown() }
   })
 
   it('lets collect handle a previously connected room while sync is lost', async () => {
@@ -493,7 +540,7 @@ describe('session gating', () => {
   })
 
   it('offers to open the repository room, whatever the branch', async () => {
-    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
+    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, admit: async () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
     expect(await tools.call('room_join', { where: 'team' })).toContain('No room for o/r on wss://room-rohanz.fly.dev yet.')
   })
 
@@ -625,7 +672,7 @@ describe('reading', () => {
     const d = await t.tools.call('room_read', { diff: true, path: 'app.py' })
     expect(d).toContain('-    return 2\n')
     expect(d).toContain('+    return 22')
-    expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toBe('Kieran has no uncommitted changes')
+    expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toContain('Kieran has no uncommitted changes')
   })
 
   it('room_read shows my disk edit when another session publishes this checkout', async () => {

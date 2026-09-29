@@ -10,6 +10,7 @@ import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
 import { claimDigest } from '../src/reanchor.js'
 import { pollHead } from './poll-head.js'
 import { hubAppend } from '@room/shared/testing'
+import { participantRecord } from '@room/shared'
 
 const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 let root: string | undefined
@@ -154,7 +155,7 @@ async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: 
   git(peer, 'config', 'user.email', 'peer@example.com')
   git(peer, 'config', 'user.name', 'Peer')
   const logs: string[] = []
-  daemon = await startRoomd({ dir: local, room: 'ws://memory/autostash', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), post: hubPost, dir: local, room: 'ws://memory/autostash', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: line => logs.push(line),
   })
   const edited = shifted ? 'mine\n'.repeat(5) + original.replace('line 11\n', 'my line 11\n') : original.replace(`line ${localEditLine}\n`, `my line ${localEditLine}\n`)
@@ -242,7 +243,7 @@ it('waits for an in-progress autostash before publishing the new HEAD', async ()
   const restore = new Promise<void>((resolve, reject) => setTimeout(() => {
     try { git(local, 'stash', 'pop', '-q'); fs.rmSync(marker); resolve() } catch (error) { reject(error) }
   }, 200))
-  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await pollHead(daemon!)
   await restore
   expect(daemon!.roomDoc.claims.get(claim.id)).toBeDefined()
   expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe(edited)
@@ -259,7 +260,7 @@ it('releases a claim when an incoming commit changes its claimed line', async ()
   git(local, 'add', '-A'); git(local, 'commit', '-qm', 'base'); git(local, 'push', '-q', 'origin', 'HEAD:main')
   git(root, 'clone', '-q', path.join(root, 'remote.git'), peer)
   git(peer, 'config', 'user.email', 'peer@example.com'); git(peer, 'config', 'user.name', 'Peer')
-  daemon = await startRoomd({ dir: local, room: 'ws://memory/incoming-claim', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), post: hubPost, dir: local, room: 'ws://memory/incoming-claim', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
@@ -282,7 +283,7 @@ it.each(['directory', 'rename'] as const)('releases the old-path claim when a co
   const original = 'first\nclaimed\nlast\n'
   fs.writeFileSync(path.join(root, 'app.txt'), original)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
-  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-path', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), post: hubPost, dir: root, room: 'ws://memory/claim-path', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
@@ -296,7 +297,7 @@ it.each(['directory', 'rename'] as const)('releases the old-path claim when a co
   git(root, 'commit', '-qm', 'replace claimed path')
   const head = git(root, 'rev-parse', 'HEAD')
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
-  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })
 
@@ -310,7 +311,7 @@ it('releases a committed claim with autocrlf even when disk bytes differ from HE
   const original = 'first\r\nclaimed\r\nlast\r\n'
   fs.writeFileSync(file, original)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
-  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-crlf', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), post: hubPost, dir: root, room: 'ws://memory/claim-crlf', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
@@ -322,7 +323,7 @@ it('releases a committed claim with autocrlf even when disk bytes differ from HE
 
   const head = git(root, 'rev-parse', 'HEAD')
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
-  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })
 
@@ -335,7 +336,7 @@ it('releases a claim when a commit replaces its file with a symlink', async () =
   fs.writeFileSync(path.join(root, 'app.txt'), original)
   fs.writeFileSync(path.join(root, 'target.txt'), original)
   git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
-  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-symlink', name: 'Alice', kind: 'agent',
+  daemon = await startRoomd({ policy: policyFromLevel('full'), post: hubPost, dir: root, room: 'ws://memory/claim-symlink', name: 'Alice', kind: 'agent',
     providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
   })
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
@@ -345,6 +346,6 @@ it('releases a claim when a commit replaces its file with a symlink', async () =
   const head = git(root, 'rev-parse', 'HEAD')
 
   await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
-  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.head).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })

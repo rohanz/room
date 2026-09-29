@@ -1,6 +1,6 @@
-import { git, gitShow, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
+import { git, gitCommitMissing, gitShow, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
 import { ensureCommit, roomRemote } from '@room/roomd'
-import { createTwoFilesPatch } from 'diff'
+import { createTwoFilesPatch, diffLines } from 'diff'
 import { execFile, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -16,6 +16,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
+import { previewCheck, previewPhase } from '../timing.js'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -64,6 +65,23 @@ function ownDiskText(dir: string, rel: string): string | null {
   }
 }
 
+/** A capped line probe keeps jsdiff's patch builder away from distant rewrites. */
+export function boundedTwoFilesPatch(p: string, before: string, after: string, person: string): string {
+  const a = before ? before.split('\n').length : 0
+  const b = after ? after.split('\n').length : 0
+  const edits = Math.max(1, Math.min(128, Math.floor(2_000_000 / Math.max(1, a + b))))
+  if (diffLines(before, after, { maxEditLength: edits }))
+    return createTwoFilesPatch(`a/${p}`, `b/${p}`, before, after, 'base', person, { context: 3 })
+  const patchLines = (value: string, prefix: '-' | '+') => {
+    if (!value) return ''
+    const complete = value.endsWith('\n')
+    const body = (complete ? value.slice(0, -1) : value).split('\n').map(line => `${prefix}${line}\n`).join('')
+    return complete ? body : body + '\\ No newline at end of file\n'
+  }
+  const count = (value: string) => value ? value.split('\n').length - Number(value.endsWith('\n')) : 0
+  return `===================================================================\n--- a/${p}\tbase\n+++ b/${p}\t${person}\n@@ -${before ? 1 : 0},${count(before)} +${after ? 1 : 0},${count(after)} @@\n${patchLines(before, '-')}${patchLines(after, '+')}`
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, others, presences, myWorkers, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state
   const gapLine = (person: string, p: string, version: Version): string => {
@@ -80,23 +98,47 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = rooms.holding(person, S())
       const worker = await trustedWorker(s, person)
       const ownDisk = person === s.me.name
-      const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
+      const myBase = baseFor(S(), S().me.name)
+      const theirBase = worker?.base ?? baseFor(s, person)
+      const note = !worker && !ownDisk && theirBase !== myBase
+        ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes\n`
+        : ''
+      const label = (text: string) => `${worker ? WORKTREE_NOTE + '\n' : ''}${note}${text}`
+      const reportGitFailure = async (error: unknown): Promise<never> => {
+        if (!ownDisk && !worker && await gitCommitMissing(s.dir, theirBase))
+          throw new Error(`error: ${person}'s HEAD ${theirBase.slice(0, 10)} is not in this clone; run git fetch, then retry`)
+        throw error
+      }
       const one = async (p: string) => {
-        const version = ownDisk || worker ? undefined : await readVersion(s, p, person)
+        let version: Version | undefined
+        try { version = ownDisk || worker ? undefined : await readVersion(s, p, person) }
+        catch (error) { return reportGitFailure(error) }
+        if (version?.kind === 'unknown' && version.why === 'fetch') {
+          // versionOf cannot retain the Git error in a snapshot; probe this base directly
+          // so a timeout or permission failure is not reported as a fetch instruction.
+          try { await gitShow(s.dir, theirBase, p) }
+          catch (error) { return reportGitFailure(error) }
+        }
         if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
         const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p)
           : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
-        const b = (await gitShow(worker?.dir ?? s.dir, baseFor(s, person), p)) ?? ''
+        let b: string
+        try { b = (await gitShow(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
+        catch (error) { return reportGitFailure(error) }
         const live = l === null ? '' : l ?? b
-        return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
+        return live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
       }
       if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
       const parts: string[] = []
       const paths = worker || ownDisk ? new Set([
-        ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
+        ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', theirBase, '--'])).split('\0'),
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
       ].filter(Boolean)) : manifestPaths(s.room, person)
-      for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
+      for (const p of paths) {
+        const d = await one(p)
+        if (d) parts.push(d)
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
       const head = s.room.manifestHead.get(person)
       if (head) parts.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === 'none' ? ` (${head.coverage.reason})` : ''}; ${head.excluded.length} changed path(s) excluded (names not shared)`)
       return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
@@ -232,7 +274,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
-        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
+        const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
         const anchors = anchorsFor(result)
         const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
@@ -280,7 +322,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
         if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
-        return out.join('\n')
+        return previewPhase('collect', () => out.join('\n'))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
@@ -428,21 +470,25 @@ export function testVerdict(output: string, code: number | null): TestResult {
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map()): Promise<TestResult> {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-')))
   try {
-    await materializeGitTree(s.dir, ancestor, dir)
-    for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
-    linkSharedDirs(s.dir, dir)
+    await previewPhase('setup', async () => {
+      await materializeGitTree(s.dir, ancestor, dir)
+      for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
+      linkSharedDirs(s.dir, dir)
+    })
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
     env.ROOM_MERGED_TREE = dir
-    const result = await new Promise<{ code: number | null; out: string }>(resolve => {
+    const result = await previewCheck(() => new Promise<{ code: number | null; out: string }>(resolve => {
       execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
         const raw = err ? (err as { code?: unknown }).code : 0
         resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
       })
+    }))
+    return previewPhase('collect', () => {
+      const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
+      const verdict = testVerdict(result.out, result.code)
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
     })
-    const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
-    const verdict = testVerdict(result.out, result.code)
-    return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
   } catch (e) {
     if (isGitTimeout(e)) throw e
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -19,6 +19,10 @@ vi.mock('y-websocket', async () => {
   const { Awareness } = await import('y-protocols/awareness')
   return { WebsocketProvider: class extends EventEmitter { synced = true; awareness: InstanceType<typeof Awareness>; constructor(_u: string, _r: string, doc: import('yjs').Doc) { super(); this.awareness = new Awareness(doc) } destroy() {} } }
 })
+beforeEach(() => {
+  // This suite tests a lead, even when vitest itself runs inside a Room worker.
+  for (const key of ['ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH']) vi.stubEnv(key, undefined)
+})
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 function server(open: boolean, dir = repo, config?: Awaited<ReturnType<typeof resolveConfig>>) {
   const posts: string[] = [], requests: string[] = []
@@ -38,6 +42,7 @@ const repo = fileURLToPath(new URL('../../..', import.meta.url))
 function clone() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-destination-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
+  execFileSync('git', ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
   return dir
 }
 describe('opening requires user consent', () => {
@@ -53,19 +58,19 @@ describe('opening requires user consent', () => {
   })
   it.each([undefined, false])('refuses creating without true confirmation (%s)', async confirm => {
     const { tools, posts } = server(false)
-    expect(await tools.call('room_create', { ...args, confirm })).toBe('error: room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed')
+    expect(await tools.call('room_create', { ...args, confirm })).toBe('error: room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed.')
     expect(posts).toEqual([])
   })
   it('opens with confirmation and proceeds to join', async () => {
     const { tools, posts } = server(false)
-    expect(await tools.call('room_create', { ...args, confirm: true })).toBe('error: reached daemon')
+    expect(await tools.call('room_create', { ...args, confirm: true })).toBe('error: reached daemon.')
     expect(posts).toEqual(['/rooms'])
   })
   it('room_create without where follows ROOM_SERVER instead of the hosted default', async () => {
     vi.stubEnv('ROOM_SERVER', 'ws://custom-room.test:4403')
     vi.stubEnv('ROOM_URL', 'ws://lower-priority.test:4403/o/r')
     const { tools, requests, posts } = server(false)
-    expect(await tools.call('room_create', { room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon')
+    expect(await tools.call('room_create', { room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon.')
     expect(posts).toEqual(['/rooms'])
     expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
   })
@@ -76,7 +81,7 @@ describe('opening requires user consent', () => {
     try {
       await writeChoice(dir, 'ws://remembered-room.test:4403')
       const { tools, requests } = server(false, dir)
-      expect(await tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon')
+      expect(await tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon.')
       expect(requests.length).toBeGreaterThan(0)
       expect(requests.every(url => new URL(url).host === 'remembered-room.test:4403')).toBe(true)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
@@ -87,15 +92,15 @@ describe('opening requires user consent', () => {
     const dir = clone()
     try {
       const hosted = server(false, dir)
-      expect(await hosted.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon')
+      expect(await hosted.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon.')
       expect(hosted.requests.every(url => new URL(url).host === 'room-rohanz.fly.dev')).toBe(true)
       await writeChoice(dir, 'local', 'test', 'local/picked')
       const local = server(false, dir)
-      expect(await local.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon')
+      expect(await local.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon.')
       expect(local.requests.every(url => new URL(url).host === 'room-rohanz.fly.dev')).toBe(true)
       await writeChoice(dir, 'ws://remembered-room.test:4403')
       const explicit = server(false, dir)
-      expect(await explicit.tools.call('room_create', { where: 'ws://explicit-room.test:4403', room: 'o/r', confirm: true })).toBe('error: reached daemon')
+      expect(await explicit.tools.call('room_create', { where: 'ws://explicit-room.test:4403', room: 'o/r', confirm: true })).toBe('error: reached daemon.')
       expect(explicit.requests.every(url => new URL(url).host === 'explicit-room.test:4403')).toBe(true)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
@@ -104,7 +109,7 @@ describe('opening requires user consent', () => {
     const { tools, requests } = server(false)
     const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
     if (tool === 'room_join') expect(result).toContain('custom-room.test:4403')
-    else expect(result).toBe('error: reached daemon')
+    else expect(result).toBe('error: reached daemon.')
     expect(requests.length).toBeGreaterThan(0)
     expect(requests.every(url => new URL(url).host === 'custom-room.test:4403')).toBe(true)
   })
@@ -113,7 +118,7 @@ describe('opening requires user consent', () => {
     const { tools, requests } = server(false)
     const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
     if (tool === 'room_join') expect(result).toContain('runner-room.test:4403')
-    else expect(result).toBe('error: reached daemon')
+    else expect(result).toBe('error: reached daemon.')
     expect(requests.length).toBeGreaterThan(0)
     expect(requests.every(url => new URL(url).host === 'runner-room.test:4403')).toBe(true)
   })
@@ -150,12 +155,12 @@ describe('opening requires user consent', () => {
   it('room_create explicit where outranks ROOM_SERVER', async () => {
     vi.stubEnv('ROOM_SERVER', 'ws://lower-priority.test:4403')
     const { tools, requests } = server(false)
-    expect(await tools.call('room_create', { where: 'ws://chosen-room.test:4403', room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon')
+    expect(await tools.call('room_create', { where: 'ws://chosen-room.test:4403', room: 'o/r', name: 'test', confirm: true })).toBe('error: reached daemon.')
     expect(requests.every(url => new URL(url).host === 'chosen-room.test:4403')).toBe(true)
   })
   it('joins an already-open repo without confirmation or a create request', async () => {
     const { tools, posts } = server(true)
-    expect(await tools.call('room_create', args)).toBe('error: reached daemon')
+    expect(await tools.call('room_create', args)).toBe('error: reached daemon.')
     expect(posts).toEqual([])
   })
 })

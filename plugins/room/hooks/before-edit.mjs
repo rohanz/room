@@ -6,19 +6,21 @@
 // Everything local lives in room/sessions/<sid>/ of the clone's common git directory.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionDir, readJson, writeJsonAtomic, openMcp, writeStdout, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail, CONTEXT_CAP, fitLines, joinedLength } from './common.mjs'
+import { readStdinJson, gitRoot, gitCommonDir, sessionDir, readJson, readReceipt, receiptSessionId, writeHookReceipt, writeJsonAtomic, openMcp, writeStdout, recordWriteIntents, pathsOf, isShellTool, companyLine, coversPath, containsPath, newestModelInTranscriptTail, CONTEXT_CAP, fitLines, joinedLength } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
-if (!root || typeof ev.session_id !== 'string' || !ev.session_id) process.exit(0)
+if (!root || !receiptSessionId(ev.session_id)) process.exit(0)
 const dir = sessionDir(root, ev.session_id)
 const now = Date.now()
 
 const activityFile = path.join(dir, 'hook-activity.json')
-const previous = readJson(activityFile, null)
-if (previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
+let previous
+try { previous = readReceipt(activityFile) } catch { /* absent or invalid activity */ }
+if (previous?.session_id !== ev.session_id || previous?.event !== 'PreToolUse' || typeof previous?.at !== 'number' || now - previous.at >= 5000 || previous.at > now) {
   writeJsonAtomic(activityFile, { at: now, session_id: ev.session_id, event: 'PreToolUse' })
 }
+writeHookReceipt(path.join(gitCommonDir(root), 'room'), ev.session_id, now)
 
 // runtime.json: this hook is its single writer (ledger SF3). The session's SessionStart values in
 // session.json are the initial ones; a Claude transcript can reveal a later /model switch.
@@ -92,12 +94,12 @@ const told = hook.companyTold === true
 let changed = false
 if (company) {
   if (!told && !subagent) addCoordination(companyLine(state), () => { hook.companyTold = true; changed = true })
-  const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
+  const paths = (isShellTool(ev.tool_name) || /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
     ? pathsOf(ev.tool_name, ev.tool_input, root) : []
   recordWriteIntents(dir, root, paths, now)
   const claims = (state.claims ?? []).filter(c => paths.some(p => /[\\/]$/.test(c.path) ? containsPath(c.path, p) : containsPath(c.path, p) && containsPath(p, c.path)))
   const nearby = (state.near ?? []).filter(n => paths.some(p => coversPath(p, n.path)))
-  const nearEvidence = [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].sort()
+  const nearEvidence = [...new Set(nearby.map(n => n.reason === 'changed' ? `${n.by} changed ${n.path}` : `${n.by} has ${n.reason} on ${n.path}`))].sort()
   const adequateClaim = paths.length > 0 && paths.every(p => (state.ownClaims ?? []).some(c => containsPath(c.path, p)))
   const nearKey = JSON.stringify(nearEvidence)
   const previousNear = hook.near ?? {}

@@ -1,6 +1,6 @@
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
-import { boundedTextDiff } from './text-diff.js'
+import { boundedTextDiff, type DiffStats, type TextOp } from './text-diff.js'
 import * as Y from 'yjs'
 import { randomBytes } from 'node:crypto'
 import { manifestKey, type CoordinationRecord, type ManifestEntry, type ManifestHead } from './manifest.js'
@@ -293,10 +293,17 @@ export class RoomDoc {
     return this.overlays.get(person)?.get(relpath)
   }
 
+  /** Compute bounded edits ahead of a larger atomic publication transaction. */
+  prepareOverlayDiff(person: string, relpath: string, content: string, stats?: DiffStats): { before: string; ops: readonly TextOp[] } {
+    const before = this.overlayText(person, relpath)?.toString() ?? ''
+    return { before, ops: boundedTextDiff(before, content, stats) }
+  }
+
   /** Apply bounded character-level diff operations, preserving Yjs relative positions. */
-  setOverlay(person: string, relpath: string, content: string, origin?: unknown): void {
+  setOverlay(person: string, relpath: string, content: string, origin?: unknown, prepared?: { before: string; ops: readonly TextOp[] }): void {
     const existing = this.overlayText(person, relpath)
-    if (existing?.toString() === content) return
+    const previous = existing?.toString() ?? ''
+    if (existing && previous === content) return
     this.doc.transact(() => {
       let text = this.overlayText(person, relpath)
       if (!text) {
@@ -304,7 +311,8 @@ export class RoomDoc {
         this.overlay(person).set(relpath, text)
       }
       let index = 0
-      for (const [kind, value] of boundedTextDiff(text.toString(), content)) {
+      const before = text === existing ? previous : text.toString()
+      for (const [kind, value] of prepared?.before === before ? prepared.ops : boundedTextDiff(before, content)) {
         if (kind === 0) index += value.length
         else if (kind === -1) text.delete(index, value.length)
         else {

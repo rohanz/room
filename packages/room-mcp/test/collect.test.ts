@@ -19,6 +19,9 @@ import { projectWorkers } from '../src/worker-projector.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
+// Collection runs real Git and filesystem cleanup; wait for outcomes, not a 5 s wall-clock cap.
+vi.setConfig({ testTimeout: 30_000 })
+
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
 let root: string, lead: string, worker: string, base: string
@@ -262,13 +265,13 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(false)
     expect(t.s.room.retiredWorkers()[0].keptWorktree).toBeUndefined()
     expectRetired(t)
-  })
+  }, 30_000)
   it('refuses, then force-discards, a worker whose carried path lies under an ignored directory', async () => {
     // Live (databricks, 2026-09-28): force=true failed in `git add -A` because a carried path sat under data/raw/.
     const t = setup('failed')
     put(worker, 'data/raw/static/stops.csv', 'id\n1\n')
     const sha = git(worker, 'hash-object', 'data/raw/static/stops.csv')
-    t.s.room.workers.set('test', { ...t.w, status: 'failed', carriedUntracked: [{ path: 'data/raw/static/stops.csv', sha, mode: 0o644 }] } as never)
+    t.set('test', { ...t.w, status: 'failed', carriedUntracked: [{ path: 'data/raw/static/stops.csv', sha, mode: 0o644 }] })
     put(worker, '.gitignore', 'artifact.bin\nnode_modules/\n.room/\ndata/raw/\n.venv/\ndata/tmp/\n')
     put(worker, '.venv/bin/python', 'x'); put(worker, 'data/tmp/scratch.parquet', 'y'); put(worker, 'file.txt', 'worker edit\n')
     const refused = await t.call({ tag: 'test', discard: true })
@@ -317,7 +320,7 @@ describe('room_collect', () => {
   function second(t: ReturnType<typeof setup>, status: FixtureWorker['status'] = 'done') {
     const dir = path.join(lead, '.room', 'workers', 'second')
     git(lead, 'worktree', 'add', '-qb', 'room/second', dir)
-    t.set('second', { ...t.w, tag: 'second', name: 'lead+second', dir, branch: 'room/second', status, exitCode: 0, finishedAt: 1 })
+    t.set('second', { ...t.w, tag: 'second', name: 'lead+second', dir, branch: 'room/second', status, exitCode: status === 'failed' ? 1 : 0, finishedAt: 1 })
     t.set('test', { ...t.w, exitCode: 0, finishedAt: 2 })
     return dir
   }
@@ -334,7 +337,7 @@ describe('room_collect', () => {
     for (const tag of ['test', 'second']) expect(git(lead, 'branch', '--list', 'room/' + tag)).toBe('')
     expect(release).toHaveBeenCalledTimes(2)
     expect(localWorkers(lead)).toEqual([]); expect(t.s.room.workerViews.size).toBe(0)
-  })
+  }, 30_000)
   it('skips a vanished worktree with its reason and still collects the other worker', async () => {
     const t = setup(), other = second(t)
     put(other, 'survived.txt', 'kept')
@@ -472,7 +475,7 @@ describe('room_collect', () => {
     finally { vi.unstubAllEnvs() }
     expect(result).toContain('skipped test: git ls-files -z failed: injected ls-files error')
     expect(result).toContain('Changes from second: survived.txt')
-  })
+  }, 30_000)
   it('reports Directory not empty during cleanup and retains the worktree for recovery', async () => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })

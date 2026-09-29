@@ -38,6 +38,9 @@ describe('resolveConfig', () => {
       .toMatchObject({ server: DEFAULT_SERVER, where: 'team', whereRule: 'argument' })
     expect(await resolveConfig({ dir, args: { where: 'wss://explicit.test' }, env: { ROOM_SERVER: 'ws://self-hosted.test:4403' } }))
       .toMatchObject({ server: 'wss://explicit.test', whereRule: 'argument' })
+    await writeChoice(dir, 'ws://remembered.test:4403')
+    expect(await resolveConfig({ dir, args, env: {} }))
+      .toMatchObject({ server: 'ws://remembered.test:4403', teamServer: 'ws://remembered.test:4403' })
   })
 
   it('keeps the remembered destination separate from explicit sharing inputs', async () => {

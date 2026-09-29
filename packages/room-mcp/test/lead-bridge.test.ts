@@ -19,7 +19,7 @@ import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { prepareWorktree } from '../src/worker-git.js'
-import { closeRegistryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { workerByTag } from './registry-fixture.js'
 import { rulesFromText } from '@room/roomd/policy'
 
@@ -85,6 +85,14 @@ function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
   return { team, local, leadTools, workerTools, exits, lead: () => ls! }
 }
 
+async function asWorker<T>(id: string | undefined, work: () => Promise<T>): Promise<T> {
+  const previous = process.env.ROOM_WORKER_ID
+  if (id) process.env.ROOM_WORKER_ID = id
+  else delete process.env.ROOM_WORKER_ID
+  try { return await work() }
+  finally { if (previous === undefined) delete process.env.ROOM_WORKER_ID; else process.env.ROOM_WORKER_ID = previous }
+}
+
 describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
   it('M13 reads and previews the owned local worktree after its team projection appears', async () => {
     const t = setupBridged()
@@ -108,14 +116,18 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     publishFixture(t.local.b, workerId.name, 'app.py', 'x = 2\n')
     t.local.b.addClaim({ path: 'app.py', from: 1, to: 1, by: workerId.name, byKind: 'agent', intent: 'bump' })
     expect(t.team.b.openClaims().map(c => c.intent).sort()).toEqual(['[money] bump', 'mine'])
-    const out = await t.leadTools.call('room_done', { summary: 'auth landed' })
+    const out = await asWorker(undefined, () => t.leadTools.call('room_done', { summary: 'auth landed' }))
     expect(out).toContain('released 1 claim(s) (kept 1 mirroring running workers)')
     const left = t.team.b.openClaims()
     expect(left).toHaveLength(1)
     expect(left[0]).toMatchObject({ mirrorOf: 'money', intent: '[money] bump' })
     expect(left.some(c => c.id === own.id)).toBe(false)
     // once the worker is done its mirror is fair game for the lead's next room_done
-    await t.workerTools.call('room_done', { summary: 'cents done' })
+    const worker = workerByTag(dir, 'money')!
+    const registry = await registryForDir(dir), record = registry.read(worker.id)!, run = record.runs.at(-1)!
+    await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
+    const workerDone = await asWorker(worker.id, () => t.workerTools.call('room_done', { summary: 'cents done' }))
+    expect(workerDone).toContain('marked done')
     expect(t.team.b.openClaims()).toEqual([]) // the worker's room_done released its claim, so the mirror went with it
     await t.leadTools.call('room_leave', { force: true })
   })
@@ -133,7 +145,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
     await vi.waitFor(() => expect(woken).toHaveLength(1))
     expect(woken[0]).toContain('rohanz+money')
     expect(woken[0]).not.toContain('exited without room_done')
-    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'failed', exitCode: 0 })
+    expect(workerByTag(dir, 'money')).toMatchObject({ status: 'done', exitCode: 0 })
     await t.leadTools.call('room_leave', { force: true })
   })
 })

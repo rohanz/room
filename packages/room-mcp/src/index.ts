@@ -6,7 +6,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, deriveRoomName, findRoomFile, joinSession, leaveSession, type Session } from './session.js'
+import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
+import { joinableRoot } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { resolveConfig } from './config.js'
@@ -20,6 +21,7 @@ import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from '
 import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { ownWorkerNames } from './worker-registry.js'
+import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
 export const RELEASE_VERSION = pluginManifest.version
@@ -73,6 +75,9 @@ export function createBundleUpdateNotice(file: string): () => string {
 
 async function main() {
   let closing = false
+  const timing = new ToolTimingTracker({ log })
+  registerPrepareGitTiming()
+  const watchdog = startEventLoopWatchdog(timing, { log })
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new Server(
     { name: 'room', version: RELEASE_VERSION },
@@ -94,7 +99,7 @@ async function main() {
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
       // Content-free wakes of this host session: the Codex queue, or Claude Code's inbox socket, then the channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, binding: sessionBinding })
+      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, binding: sessionBinding, log })
       let presence: PresenceEnd | undefined
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
@@ -154,7 +159,7 @@ async function main() {
         else if (rebinding) await rebinding
         const away = presence!.hasLeft
         const idle = presence!.activity()
-        await autoJoin.settle() // a join in progress decides which session the reply is about
+        await (currentToolTiming()?.phase('settle', () => autoJoin.settle()) ?? autoJoin.settle()) // a join in progress decides which session the reply is about
         const body = await tools.call(req.params.name, req.params.arguments ?? {}, signal, handoff)
         const updateNotice = bundleUpdateNotice()
         const rejoined = away && session ? `[room] rejoined ${decodeRoom(session.roomName)} as ${displayName(session.me)} after ${Math.floor(idle / 60_000)} min idle` : ''
@@ -165,13 +170,13 @@ async function main() {
 
       // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
-      const prior = findRoomFile(dir)
       const chosen = startup.server
       log(`room: ${startup.where.replace(/\?.*$/, '')} (${startup.whereRule === 'env' ? (startup as typeof startup & { whereEnv?: string }).whereEnv ?? 'ROOM_SERVER' : startup.whereRule === 'remembered' ? 'remembered in this clone' : 'default: nothing configured'})`)
       const autoJoin = new AutoJoin({
         local: chosen === LOCAL,
         log,
         async attempt(target) {
+          const root = await joinableRoot(dir)
           // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
           if (session?.local?.lost) await tools.drop(session, session.local.lost)
           // After room_join/room_create, keep the repository room the human chose.
@@ -181,14 +186,8 @@ async function main() {
           }
           // The clone's origin decides the repository room. ROOM_URL (runner) or a
           // prior .room.json only fill in when the clone has no origin.
-          if (chosen === LOCAL) return joinSession({ dir, room: startup.room, server: LOCAL, log }) // workers get the lead's room via ROOM_ROOM
-          if (startup.room) return joinSession({ dir, room: startup.room, server: chosen, log })
-          const derived = await deriveRoomName(dir).catch(() => ({ roomName: undefined }))
-          if (derived.roomName) return joinSession({ dir, server: chosen, log })
-          if (prior) {
-            const u = new URL(prior.room)
-            return joinSession({ dir: prior.dir ?? dir, name: prior.name, room: decodeRoom(u.pathname.replace(/^\/+/, '')), server: chosen, log })
-          }
+          const options = await startupJoinOptions(root, chosen, startup.room)
+          if (options) return joinSession({ ...options, log })
           log(`ready; ${dir} has no git origin — call room_join with a room name`)
           return undefined
         },
@@ -212,13 +211,14 @@ async function main() {
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
-    const result = await binding.run(req.params, runtime => runtime.call(req, extra.signal, settle => transport.expect(extra.requestId, settle)))
+    const result = await timing.run(req.params.name, () => binding.run(req.params, runtime => runtime.call(req, extra.signal, settle => transport.expect(extra.requestId, settle))))
     return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })
 
   const bye = async (reason: string) => {
     if (closing) return
     closing = true
+    watchdog.stop()
     log(`stopping: ${reason}`)
     try { await (await binding.close())?.shutdown() } catch { /* ignore */ }
     process.exit(0)

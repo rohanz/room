@@ -7,12 +7,13 @@ import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import nodePath from 'node:path'
 import { CARRIED_PATH, containedRepoPath, validRepoPath } from './repo-path.js'
-import { missingGitCwd, timeoutMs, wholeTreeTimeoutMs, UNKNOWN_WHOLE_TREE_PATHS } from './git.js'
+import { missingGitCwd, observeGit, timeoutMs, wholeTreeTimeoutMs, UNKNOWN_WHOLE_TREE_PATHS } from './git.js'
 
 /** Bounded binary Git reads used by the few synchronous carry/recovery operations. */
 export function boundedGitSync(dir: string, args: string[], options: { input?: Buffer; env?: NodeJS.ProcessEnv; maxBuffer?: number; wholeTreePaths?: number } = {}): Buffer {
   const { wholeTreePaths, ...execOptions } = options
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
+  const done = observeGit(args)
   try {
     return execFileSync('git', args, { cwd: dir, encoding: 'buffer', stdio: ['pipe', 'pipe', 'pipe'], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions })
   } catch (error) {
@@ -21,6 +22,8 @@ export function boundedGitSync(dir: string, args: string[], options: { input?: B
     if (missing) throw missing
     if (stopped.signal === 'SIGTERM' || stopped.killed) throw new Error(`git ${args.join(' ')} timed out after ${timeout}ms`, { cause: error })
     throw error
+  } finally {
+    done()
   }
 }
 
@@ -87,8 +90,10 @@ export async function pairBaseline(me: Baseline | undefined, other: Baseline | u
 
 export function boundedGit(dir: string, args: string[], wholeTreePaths?: number, env?: NodeJS.ProcessEnv): Promise<Buffer> {
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
+  const done = observeGit(args)
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd: dir, env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout }, (error, stdout, stderr) => {
+      done()
       if (error) {
         const stopped = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
         const missing = missingGitCwd(dir, stopped)

@@ -41,7 +41,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await state.rooms?.project?.()
       const level = policy.level
       s.shareRequested = asked
-      if (level !== before) await s.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
+      if (level !== before) await s.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}${level === 'declared' && s.policyStore.retained.length ? '; changed files declared earlier remain shared' : ''}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       const secondary = publisherLine(s)
       if (secondary) out.push(secondary)
@@ -64,7 +64,7 @@ export function createShare(): Pick<HandlerState, 'shareLine'> {
       const clamped = s.shareRequested && s.shareRequested !== level ? ` (asked for ${s.shareRequested}; the server caps sharing at ${s.shareMax}, ROOM_SHARE_MAX)` : ''
       const secondary = publisherLine(s)
       const retained = level === 'declared' && !secondary ? [...s.policyStore.retained] : []
-      return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${clamped}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ''}`
+      return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${level === 'declared' && retained.length ? '; changed files declared earlier remain shared' : ''}${clamped}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ''}`
     }
   return { shareLine }
 }

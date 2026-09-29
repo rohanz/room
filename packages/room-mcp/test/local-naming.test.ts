@@ -7,6 +7,8 @@ import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import { ensureLocalRelay } from '@room/relay'
+import { NoLocalRelay } from '@room/relay'
+import { realGitCommonDir } from '@room/roomd'
 import { joinSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { resolveConfig } from '../src/config.js'
@@ -14,8 +16,9 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
+import { chooseName, processToken } from '../src/names.js'
 
-vi.mock('@room/relay', () => ({ ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
+vi.mock('@room/relay', async importOriginal => ({ ...(await importOriginal() as object), ensureLocalRelay: vi.fn(async () => { throw new Error('relay boundary') }) }))
 let dir: string
 const dispose: (() => void)[] = []
 beforeEach(() => {
@@ -23,8 +26,9 @@ beforeEach(() => {
   vi.mocked(ensureLocalRelay).mockClear()
   dir = mkdtempSync(join(tmpdir(), 'local-naming-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
+  execFileSync('git', ['-C', dir, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
 })
-afterEach(async () => { dispose.splice(0).forEach(fn => fn()); await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs() })
+afterEach(async () => { dispose.splice(0).forEach(fn => fn()); await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); vi.unstubAllGlobals() })
 
 it.each(['anything', 'my room!?', undefined])('normalizes the local relay room for %s without an origin', async room => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room })).rejects.toThrow('relay boundary')
@@ -41,7 +45,38 @@ it('preserves the local room inherited through worker environment config', async
   await expect(joinSession({ dir, server: config.server, room: config.room, name: 'Ada' })).rejects.toThrow('relay boundary')
   expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
 })
+
+it('refuses a local worker from another repository before starting any relay', async () => {
+  const other = mkdtempSync(join(tmpdir(), 'local-worker-other-'))
+  dispose.push(() => rmSync(other, { recursive: true, force: true }))
+  execFileSync('git', ['init', '-q', '-b', 'main', other])
+  execFileSync('git', ['-C', other, '-c', 'user.name=Ada', '-c', 'user.email=a@a', 'commit', '-q', '--allow-empty', '-m', 'init'])
+  await expect(joinSession({ dir, server: 'local', name: 'Ada', leadClone: await realGitCommonDir(other) })).rejects.toThrow('another repository than its lead')
+  expect(ensureLocalRelay).not.toHaveBeenCalled()
+})
+
+it('a local worker without a named lead clone only joins an existing relay', async () => {
+  vi.mocked(ensureLocalRelay).mockRejectedValueOnce(new NoLocalRelay('local/lead'))
+  await expect(joinSession({ dir, server: 'local', name: 'Ada', joinOnly: true })).rejects.toThrow('cannot start one')
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), `local/${basename(dir)}`, expect.objectContaining({ joinOnly: true }))
+})
+
+it('keeps distinct Codex labels for several sessions in one checkout', async () => {
+  const doc = new Y.Doc(), room = new RoomDoc(doc)
+  dispose.push(() => doc.destroy())
+  const commonDir = await realGitCommonDir(dir)
+  const take = (sessionId: string) => {
+    const token = processToken(sessionId)
+    return chooseName({ dir, commonDir, roomKey: 'local/name-test', owner: 'Ada', host: 'codex', doc: room, token,
+      holder: { sessionId, pid: token.pid, startTime: token.startTime, executable: token.executable } })
+  }
+  expect((await take('codex-one')).name).toBe('Ada')
+  expect((await take('codex-two')).name).toBe('Ada+codex')
+  expect((await take('codex-three')).name).toBe('Ada+codex-2')
+})
 it.each(['local', 'team'])('reports the actual %s name and preserves team arguments', async where => {
+  if (where === 'team') vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+    ? Response.json({}) : Response.json({ view: 'v', hub: 1 })))
   const doc = new Y.Doc(), room = new RoomDoc(doc), awareness = new Awareness(doc)
   dispose.push(() => { awareness.destroy(); doc.destroy() })
   const name = where === 'local' ? 'local/anything' : 'anything'
@@ -103,7 +138,7 @@ it('refuses to strand running workers and preserves the session and link', async
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const cur = t.current()
   await registerWorkers(cur, [{ tag: 'w', name: 'Ada+w', host: 'codex', task: 'x', dir, branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', lead: 'Ada' }])
-  expect(await t.tools.call('room_join', { where: 'local' })).toBe('error: 1 worker(s) are running in local/custom; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.')
+  expect(await t.tools.call('room_join', { where: 'local' })).toBe("You have 1 worker(s) (w). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms. You're still in this machine's local room (local/custom), which works for agents on this computer.")
   expect(t.current()).toBe(cur)
   expect(t.joiner).toHaveBeenCalledTimes(1)
   expect(t.leave).not.toHaveBeenCalled()

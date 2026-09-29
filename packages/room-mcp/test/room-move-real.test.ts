@@ -13,7 +13,7 @@ import { createTools } from '../src/tools.js'
 const cleanups: (() => Promise<void> | void)[] = []
 afterEach(async () => { for (const c of cleanups.splice(0).reverse()) await c() })
 
-/** Two clones of one project in folders of the same name, so both host local/shop/main. */
+/** Two clones of one project in folders of the same name, so both host local/shop. */
 function clone(name: string): string {
   const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `room-move-real-${name}-`)))
   cleanups.push(() => fs.rmSync(parent, { recursive: true, force: true }))
@@ -41,7 +41,7 @@ async function wedgedRelay(commonDir: string): Promise<{ upgrades: () => number;
   let upgrades = 0
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, local: true, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
+    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
   })
   server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   const upgraded = new Set<net.Socket>()
@@ -49,27 +49,28 @@ async function wedgedRelay(commonDir: string): Promise<{ upgrades: () => number;
   server.on('upgrade', (_req, socket) => { upgrades++; upgraded.add(socket as net.Socket); socket.on('end', () => upgraded.delete(socket as net.Socket)); socket.resume() })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const port = (server.address() as net.AddressInfo).port
-  fs.writeFileSync(path.join(commonDir, 'room-local.json'), JSON.stringify({ port, pid: process.pid, room: 'x', startedAt: Date.now(), key }) + '\n', { mode: 0o600 })
+  fs.mkdirSync(path.join(commonDir, 'room'), { recursive: true })
+  fs.writeFileSync(path.join(commonDir, 'room', 'relay.json'), JSON.stringify({ schema: 2, port, pid: process.pid, room: 'x', startedAt: Date.now(), key }) + '\n', { mode: 0o600 })
   cleanups.push(() => { for (const s of sockets) s.destroy(); server.close() })
   return { upgrades: () => upgrades, open: () => upgraded.size }
 }
 
-it('moves between two clones that both host local/shop/main, and goes back when the target clone cannot join', async () => {
+it('moves between two clones that both host local/shop, and goes back when the target clone cannot join', async () => {
   const a = clone('a'), b = clone('b')
   const t = await inRoom(a)
   const before = t.session()!
   execFileSync('git', ['-C', b, 'config', 'user.name', 'Ada\tB']) // an invalid participant name: the target join fails after the preflight
-  expect(await t.tools.call('room_join', { where: 'local', dir: b })).toBe("couldn't join local/shop/main (participant name must be nonempty and contain no control characters); back in local/shop/main.")
+  expect(await t.tools.call('room_join', { where: 'local', dir: b })).toBe("couldn't join local/shop (participant name must be nonempty and contain no control characters); back in local/shop.")
   expect(t.session()).not.toBe(before)
   expect(t.session()!.dir).toBe(a)
   expect(t.session()!.me.name).toBe('Ada')
   expect(before.provider.wsconnected).toBe(false) // the old session was left, then the room rejoined
   await vi.waitFor(() => expect(t.session()!.provider.wsconnected).toBe(true))
-  expect(await t.tools.call('room_state')).toContain('room: local/shop/main')
+  expect(await t.tools.call('room_state')).toContain('room: local/shop')
 
   execFileSync('git', ['-C', b, 'config', 'user.name', 'Ada'])
   const moved = await t.tools.call('room_join', { where: 'local', dir: b })
-  expect(moved).toContain('moved from local/shop/main to local/shop/main')
+  expect(moved).toContain('moved from local/shop to local/shop')
   expect(moved).toContain(`clone ${b}`)
   expect(t.session()!.dir).toBe(b)
 }, 60_000)
@@ -79,7 +80,7 @@ it('a target that connects but never syncs is cleaned up, and the session goes b
   const t = await inRoom(a)
   const wedged = await wedgedRelay(path.join(b, '.git'))
   const reply = await t.tools.call('room_join', { where: 'local', dir: b })
-  expect(reply).toMatch(/^couldn't join local\/shop\/main \(.*could not sync with ws:\/\/127\.0\.0\.1:\d+\/local%2Fshop%2Fmain within 15000ms\); back in local\/shop\/main\.$/)
+  expect(reply).toMatch(/^couldn't join local\/shop\ \(.*could not sync with ws:\/\/127\.0\.0\.1:\d+\/local%2Fshop within 15000ms\); back in local\/shop\.$/)
   expect(wedged.upgrades()).toBeGreaterThan(0)
   await new Promise(r => setTimeout(r, 300))
   expect(wedged.open()).toBe(0) // the half-joined target closed its websockets

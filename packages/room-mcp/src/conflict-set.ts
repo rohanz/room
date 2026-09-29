@@ -5,7 +5,7 @@ import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
 import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
-import { structuredPatch } from 'diff'
+import { diffLines } from 'diff'
 import { carriedPaths, carriesWork, readBaseline, type Baseline } from '@room/roomd/baseline'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
@@ -143,9 +143,32 @@ export class ConflictSlots {
   }
 }
 
-export const changedRanges = (base: string, live: string): { from: number; to: number }[] =>
-  structuredPatch('a', 'b', base, live, '', '', { context: 0 }).hunks.map(h =>
-    ({ from: h.newStart, to: h.newStart + Math.max(0, h.newLines - 1) }))
+export const changedRanges = (base: string, live: string): { from: number; to: number }[] => {
+  if (base === live) return []
+  const tokens = base.split('\n').length + live.split('\n').length
+  const changes = diffLines(base, live, { maxEditLength: Math.max(1, Math.min(128, Math.floor(2_000_000 / tokens))) })
+  if (!changes) return [{ from: 1, to: Math.max(1, live.split('\n').length - Number(live.endsWith('\n'))) }]
+  const ranges: { from: number; to: number }[] = []
+  let line = 1
+  let start: number | undefined
+  let added = 0
+  const count = (value: string) => value ? value.split('\n').length - Number(value.endsWith('\n')) : 0
+  const flush = () => {
+    if (start === undefined) return
+    ranges.push({ from: start, to: start + Math.max(0, added - 1) })
+    start = undefined
+    added = 0
+  }
+  for (const change of changes) {
+    if (!change.added && !change.removed) { flush(); line += count(change.value) }
+    else {
+      start ??= line
+      if (change.added) { added += count(change.value); line += count(change.value) }
+    }
+  }
+  flush()
+  return ranges
+}
 const asText = (v: Version): string | undefined => v.kind === 'text' ? v.text : v.kind === 'base' ? v.text ?? '' : v.kind === 'deleted' ? '' : undefined
 const sideInput = (snap: ParticipantSnapshot, path: string): unknown => {
   const entry = snap.entries.get(path)

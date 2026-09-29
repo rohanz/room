@@ -6,209 +6,101 @@ import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, manifestKey } from '@room/shared'
 import { startRoomd, type Roomd } from '@room/roomd'
 import { createTools } from '../src/tools.js'
+import { PolicyStore } from '../src/policy-store.js'
+import { applySessionPolicy } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
+import { testPolicyStore } from './policy-fixture.js'
 import type { Session } from '../src/session.js'
 
-const active: Array<{ daemon: Roomd; ownerTools: ReturnType<typeof createTools>; readerTools: ReturnType<typeof createTools>; root: string; readerAwareness: Awareness }> = []
+const active: Array<{ daemon: Roomd; tools: ReturnType<typeof createTools>[]; root: string; awareness: Awareness }> = []
+const git = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 
-function git(dir: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
-}
+afterEach(async () => {
+  for (const { daemon, tools, root, awareness } of active.splice(0)) {
+    for (const t of tools) await t.shutdown()
+    await daemon.stop()
+    awareness.destroy()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
-async function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'room-declared-retained-read-'))
-  const ownerDir = join(root, 'owner')
-  const readerDir = join(root, 'reader')
+it('room_done retains declared text in the manifest while out-of-area edits remain named gaps', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'room-declared-read-'))
+  const ownerDir = join(root, 'owner'), readerDir = join(root, 'reader')
   mkdirSync(ownerDir)
   git(ownerDir, 'init', '-q', '-b', 'main')
   git(ownerDir, 'config', 'user.email', 'test@example.com')
   git(ownerDir, 'config', 'user.name', 'Test')
-  writeFileSync(join(ownerDir, 'a.py'), 'base a\n')
-  writeFileSync(join(ownerDir, 'b.py'), 'base b\n')
-  writeFileSync(join(ownerDir, 'private.py'), 'private base\n')
-  git(ownerDir, 'add', '-A')
-  git(ownerDir, 'commit', '-q', '-m', 'base')
+  for (const p of ['a.py', 'b.py', 'private.py']) writeFileSync(join(ownerDir, p), `base ${p}\n`)
+  git(ownerDir, 'add', '-A'); git(ownerDir, 'commit', '-q', '-m', 'base')
   git(root, 'clone', '-q', ownerDir, readerDir)
-
-  const daemon = await startRoomd({ dir: ownerDir, name: 'Owner', room: 'ws://memory/declared-retained-read', share: 'declared',
-    debounceMs: 20, hotThrottleMs: 100, trackedRefreshMs: 60_000, basePollMs: 60_000, log: () => {},
+  let daemon: Roomd | undefined
+  const store = await PolicyStore.open({ dir: ownerDir, room: 'local/test/main', participant: 'Owner', requested: 'declared',
+    onChange: policy => { if (daemon) applySessionPolicy(daemon, policy) } })
+  await store.declare(['a.py'])
+  writeFileSync(join(ownerDir, 'a.py'), 'edited a\n')
+  rmSync(join(ownerDir, 'b.py'))
+  writeFileSync(join(ownerDir, 'private.py'), 'private edit\n')
+  daemon = await startRoomd({ dir: ownerDir, name: 'Owner', room: 'ws://memory/local/test/main', localKey: 'test', sessionId: '1',
+    policy: store.policy, onFullScan: (policy, entries, unsettled) => store.settle(policy, entries, unsettled).then(() => {}),
+    basePollMs: 0, trackedRefreshMs: 60_000, log: () => {},
     providerFactory: (_server, _name, doc) => {
       const awareness = new Awareness(doc)
       const provider = { synced: true, awareness, on() { return provider }, off() { return provider }, destroy() { awareness.destroy() } }
       return provider as unknown as WebsocketProvider
     },
   })
-  const owner: Session = {
-    room: daemon.roomDoc, daemon, awareness: daemon.provider.awareness, provider: daemon.provider,
-    me: { name: 'Owner', kind: 'agent' }, dir: ownerDir, roomUrl: 'ws://memory/declared-retained-read',
-    roomName: 'declared-retained-read', browserUrl: 'http://memory', shareMax: 'full', shareRequested: 'declared',
-  }
+  daemon.roomDoc.participants.set('Owner\0holder', { sessionId: 'owner-1', epoch: 1 })
+  const owner: Session = { room: daemon.roomDoc, daemon, awareness: daemon.provider.awareness, provider: daemon.provider,
+    policyStore: store, me: { name: 'Owner', kind: 'agent' }, dir: ownerDir, roomUrl: 'ws://memory/local/test/main',
+    roomName: 'local/test/main', browserUrl: 'http://memory', shareMax: 'full', shareRequested: 'declared', ...hubSeam(daemon.roomDoc) }
   const ownerTools = createTools({ cwd: ownerDir, getSession: () => owner, setSession: () => {} })
-
   const readerDoc = new Y.Doc()
   Y.applyUpdate(readerDoc, Y.encodeStateAsUpdate(daemon.roomDoc.doc))
   daemon.roomDoc.doc.on('update', update => Y.applyUpdate(readerDoc, update))
-  const readerRoom = new RoomDoc(readerDoc)
-  const readerAwareness = new Awareness(readerDoc)
-  readerAwareness.setLocalState({ user: { name: 'Reader', kind: 'agent' }, status: 'idle', share: 'full' })
-  applyAwarenessUpdate(readerAwareness, encodeAwarenessUpdate(daemon.provider.awareness, [daemon.roomDoc.doc.clientID]), 'test')
-  const reader: Session = {
-    room: readerRoom, daemon: { share: 'full', touch() {}, async stop() {} } as Roomd, awareness: readerAwareness,
-    provider: { synced: true, awareness: readerAwareness } as WebsocketProvider,
-    me: { name: 'Reader', kind: 'agent' }, dir: readerDir, roomUrl: 'ws://memory/declared-retained-read',
-    roomName: 'declared-retained-read', browserUrl: 'http://memory', shareMax: 'full', shareRequested: 'full',
-  }
+  const readerRoom = new RoomDoc(readerDoc), awareness = new Awareness(readerDoc)
+  awareness.setLocalState({ user: { name: 'Reader', kind: 'agent' }, status: 'idle', share: 'full' })
+  const syncOwner = () => applyAwarenessUpdate(awareness, encodeAwarenessUpdate(daemon!.provider.awareness, [daemon!.roomDoc.doc.clientID]), 'test')
+  syncOwner()
+  const reader: Session = { room: readerRoom, daemon: { share: 'full', touch() {}, async stop() {} } as Roomd,
+    awareness, provider: { synced: true, awareness } as WebsocketProvider, me: { name: 'Reader', kind: 'agent' },
+    policyStore: testPolicyStore('full'),
+    dir: readerDir, roomUrl: 'ws://memory/local/test/main', roomName: 'local/test/main', browserUrl: 'http://memory',
+    shareMax: 'full', shareRequested: 'full', ...hubSeam(readerRoom) }
   const readerTools = createTools({ cwd: readerDir, getSession: () => reader, setSession: () => {} })
-  active.push({ daemon, ownerTools, readerTools, root, readerAwareness })
-  const pending = (path: string) => (daemon as unknown as { batch: { add(path: string, fresh: boolean): void } }).batch.add(path, false)
-  const ownerPresenceId = daemon.roomDoc.doc.clientID
-  const syncOwnerPresence = () => applyAwarenessUpdate(readerAwareness, encodeAwarenessUpdate(daemon.provider.awareness, [ownerPresenceId]), 'test')
-  const readerOwnerPresence = () => readerAwareness.getStates().get(ownerPresenceId) as { share?: string; retained?: string[] }
-  return { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending, syncOwnerPresence, readerOwnerPresence }
-}
+  active.push({ daemon, tools: [ownerTools, readerTools], root, awareness })
 
-afterEach(async () => {
-  for (const { daemon, ownerTools, readerTools, root, readerAwareness } of active.splice(0)) {
-    await readerTools.shutdown()
-    await ownerTools.shutdown()
-    await daemon.stop()
-    readerAwareness.destroy()
-    rmSync(root, { recursive: true, force: true })
-  }
-})
-
-it('reads and previews edited and deleted declared files retained after room_done, then refuses a reverted path', async () => {
-  const { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending, syncOwnerPresence, readerOwnerPresence } = await setup()
-  daemon.roomDoc.setScope({ by: 'Owner', byKind: 'agent', area: 'change', summary: 'edit two files', paths: ['a.py', 'b.py'] })
-  writeFileSync(join(ownerDir, 'a.py'), 'edited a\n')
-  rmSync(join(ownerDir, 'b.py'))
-  pending('a.py')
-  pending('b.py')
-  await vi.waitFor(() => {
-    expect(readerRoom.text('a.py', 'Owner')).toBe('edited a\n')
-    expect(readerRoom.deleted.get('Owner')?.has('b.py')).toBe(true)
-  })
-
+  vi.stubEnv('ROOM_WORKER_ID', '')
   const done = await ownerTools.call('room_done', { summary: 'edited a and deleted b' })
-  expect(done).toContain('2 changed file(s) you declared earlier stay shared while they differ from your base: a.py, b.py')
+  vi.unstubAllEnvs()
+  expect(done).toContain('marked done')
+  await (daemon as unknown as { publisher: { reconcile(paths: 'all'): Promise<void> } }).publisher.reconcile('all')
+  await vi.waitFor(() => expect(store.retained).toEqual(['a.py']))
+  syncOwner()
   expect(readerRoom.scope('Owner')).toBeUndefined()
-  expect(daemon.retainedDeclared()).toEqual(['a.py', 'b.py'])
-  expect(daemon.provider.awareness.getLocalState()?.publishUnder).toBeUndefined()
-  expect(daemon.provider.awareness.getLocalState()).toMatchObject({ share: 'declared', retained: ['a.py', 'b.py'] })
-  syncOwnerPresence()
-  expect(readerOwnerPresence().retained).toEqual(['a.py', 'b.py'])
-
+  expect(readerRoom.manifestHead.get('Owner')?.textPrefixes).toEqual(['a.py'])
+  expect(readerRoom.manifest.get(manifestKey('Owner', readerRoom.manifestHead.get('Owner')!.fence))?.get('private.py'))
+    .toMatchObject({ state: 'held', held: 'scope' })
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('edited a')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('deleted by Owner')
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py', diff: true })).toContain('+edited a')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py', diff: true })).toContain('-base b')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('deleted by Owner')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('outside their declared area')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py', diff: true })).toContain('outside their declared area')
   const all = await readerTools.call('room_read', { person: 'Owner', diff: true })
   expect(all).toContain('+edited a')
-  expect(all).toContain('-base b')
-  expect(all).toContain('declared paths only')
-  expect(all).toContain('published')
-  const preview = await readerTools.call('room_preview_merge', { person: 'Owner' })
-  expect(preview).toContain('a.py (Owner only)')
-  expect(preview).toContain('b.py (Owner only)')
-  expect(preview).toContain('retained changes still published from earlier scopes')
-  expect(preview).not.toContain('not shared')
+  expect(all).toContain('-base b.py')
+  expect(all).toContain('private.py changed by Owner')
+  expect(all).not.toContain('private edit')
 
-  const privateRefusal = 'private.py: not shared (Owner shares declared paths only; private.py is outside their scope)'
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain(privateRefusal)
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py', diff: true })).toContain(privateRefusal)
-
-  writeFileSync(join(ownerDir, 'a.py'), 'base a\n')
-  pending('a.py')
-  await vi.waitFor(() => {
-    expect(daemon.retainedDeclared()).toEqual(['b.py'])
-    expect(readerRoom.text('a.py', 'Owner')).toBeUndefined()
-  })
-  syncOwnerPresence()
-  expect(readerOwnerPresence().retained).toEqual(['b.py'])
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('not shared')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py', diff: true })).toContain('not shared')
-
-  writeFileSync(join(ownerDir, 'b.py'), 'base b\n')
-  pending('b.py')
-  await vi.waitFor(() => {
-    expect(daemon.retainedDeclared()).toEqual([])
-    expect(readerRoom.deleted.get('Owner')?.has('b.py')).toBe(false)
-  })
-  syncOwnerPresence()
-  expect(readerOwnerPresence().retained).toEqual([])
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('not shared')
-})
-
-it('refuses a stale full-sharing overlay on a declared restart without a retained record', async () => {
-  const { readerRoom, readerTools, readerOwnerPresence } = await setup()
-  // A resumed room can deliver its old overlay before the new daemon reconciles it.
-  readerRoom.setOverlay('Owner', 'private.py', 'old full-sharing text\n')
-  expect(readerOwnerPresence().share).toBe('declared')
-  expect(readerOwnerPresence().retained).toEqual([])
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py', diff: true })).toContain('not shared')
-  const all = await readerTools.call('room_read', { person: 'Owner', diff: true })
-  expect(all).not.toContain('old full-sharing text')
-  expect(all).toContain('1 other changed file(s) are not shared')
-  delete readerOwnerPresence().retained // an older client has no retained field
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
-})
-
-it('refuses an out-of-scope overlay as soon as full sharing narrows to declared', async () => {
-  const { readerRoom, readerTools, readerOwnerPresence } = await setup()
-  readerRoom.setOverlay('Owner', 'private.py', 'full-sharing text\n')
-  const presence = readerOwnerPresence()
-  presence.share = 'full'
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('full-sharing text')
-  // Awareness can arrive ahead of the overlay withdrawal on another machine.
-  presence.share = 'declared'
-  presence.retained = []
-  expect(readerRoom.text('private.py', 'Owner')).toBe('full-sharing text\n')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
-  const all = await readerTools.call('room_read', { person: 'Owner', diff: true })
-  expect(all).not.toContain('full-sharing text')
-  expect(all).toContain('1 other changed file(s) are not shared')
-})
-
-it('bounds retained paths in presence and keeps paths beyond the cap private', async () => {
-  const { daemon, readerRoom, readerTools, syncOwnerPresence, readerOwnerPresence } = await setup()
-  const paths = Array.from({ length: 257 }, (_, i) => `file-${i}.py`)
-  ;(daemon as unknown as { publisher: { setRetained(paths: Set<string>): void } }).publisher.setRetained(new Set(paths))
-  daemon.touch()
-  syncOwnerPresence()
-  const published = readerOwnerPresence().retained ?? []
-  expect(published).toHaveLength(256)
-  const omitted = paths.find(path => !published.includes(path))!
-  readerRoom.setOverlay('Owner', omitted, 'stale text\n')
-  expect(await readerTools.call('room_read', { person: 'Owner', path: omitted })).toContain('not shared')
-})
-
-it('coalesces presence updates for a large scope end and promptly publishes a withdrawal', async () => {
-  const { daemon, syncOwnerPresence, readerOwnerPresence } = await setup()
-  const paths = Array.from({ length: 500 }, (_, i) => `bulk/file-${String(i).padStart(3, '0')}.py`)
-  daemon.roomDoc.setScope({ by: 'Owner', byKind: 'agent', area: 'bulk', summary: 'edit many', paths: ['bulk/'] })
-  for (const path of paths) daemon.roomDoc.setOverlay('Owner', path, 'changed\n')
-  const presenceWrites = vi.spyOn(daemon.provider.awareness, 'setLocalState')
-
-  daemon.roomDoc.clearScope('Owner')
-  await Promise.resolve() // the coalesced notification must settle by the next microtask
-  expect(daemon.retainedDeclared()).toHaveLength(500)
-  expect(presenceWrites.mock.calls.length).toBeLessThanOrEqual(3)
-  syncOwnerPresence()
-  expect(readerOwnerPresence().retained).toEqual(paths.slice(0, 256))
-
-  presenceWrites.mockClear()
-  const retained = (daemon as unknown as { publisher: { retainedDeclaredPaths: Set<string> } }).publisher.retainedDeclaredPaths
-  retained.delete(paths[0])
-  await Promise.resolve()
-  syncOwnerPresence()
-  expect(readerOwnerPresence().retained).toEqual(paths.slice(1, 257))
-  expect(presenceWrites).toHaveBeenCalledTimes(1)
-
-  presenceWrites.mockClear()
-  retained.delete(paths[499]) // outside the published prefix
-  await Promise.resolve()
-  expect(presenceWrites).not.toHaveBeenCalled()
+  // A stale overlay from an earlier full-sharing incarnation is never a read authority.
+  readerRoom.setOverlay('Owner', 'private.py', 'stale full-sharing text\n')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).not.toContain('stale full-sharing text')
+  writeFileSync(join(ownerDir, 'a.py'), 'base a.py\n')
+  await (daemon as unknown as { publisher: { reconcile(paths: 'all'): Promise<void> } }).publisher.reconcile('all')
+  await vi.waitFor(() => expect(store.retained).toEqual([]))
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('base a.py')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py', diff: true })).toContain('no difference')
 })

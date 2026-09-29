@@ -36,7 +36,7 @@ data?.csv
 
   it('ignores dependency, VCS, build, framework, and coverage directories by default', () => {
     expect(Array.from(DEFAULT_IGNORED_DIRS).sort()).toEqual([
-      '.git', '.next', '.room', '.venv', 'build', 'coverage', 'dist', 'node_modules', 'target',
+      '.git', '.next', '.room', '.venv', '__pycache__', 'build', 'coverage', 'dist', 'node_modules', 'target',
     ])
     for (const dir of DEFAULT_IGNORED_DIRS) expect(defaultIgnoredPath(`pkg/${dir}/file.js`)).toBe(true)
     expect(defaultIgnoredPath('src/building/file.ts')).toBe(false)

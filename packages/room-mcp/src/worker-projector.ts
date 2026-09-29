@@ -53,7 +53,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       const view = workerView(record, shown, fence)
       if (JSON.stringify(s.room.workerViews.get(record.id)) !== JSON.stringify(view)) s.room.workerViews.set(record.id, view)
       // A host that ended without room_done can no longer act: its claims and scope stop blocking others.
-      const stopped = status.status === 'failed' || status.status === 'stopped'
+      const stopped = status.status === 'failed' || status.status === 'stopped' || status.noReport === true
       if (stopped && s.room.workerOwnsName(record.id, record.name)
         && (s.room.scopes.has(record.name) || s.room.openClaims().some(c => c.by === record.name))) {
         s.room.clearWorkerCoordination(record.name, 'worker stopped', post)
@@ -94,7 +94,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
           await registry.update(record.id, old => ({ ...old, runs: old.runs.map(value => value.n === run.n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))
         }
       }
-      else if (terminal.status === 'failed' || record.phase === 'retiring' && !record.stop && !report?.done) {
+      else if (terminal.status === 'failed' || terminal.noReport || record.phase === 'retiring' && !record.stop && !report?.done) {
         const posted = await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
         if (record.phase === 'retiring' && !record.stop && exit?.witnessed && !posted && !run.posted) undelivered.add(record.id)
       } else if (record.phase === 'retiring' && report?.done && !exit) undelivered.add(record.id)

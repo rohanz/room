@@ -2,9 +2,10 @@ import { releaseClaimsOnDone } from './claims.js'
 import { claudeWakeNote } from '../prompt.js'
 import { manifestPaths, participantRecord, scopeLine, type Claim, type NoteMsg } from '@room/shared'
 import { resolve } from 'node:path'
+import { realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
-import { DEFAULT_SERVER, NoRoom, NotLoggedIn, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
@@ -17,6 +18,12 @@ import { resolveConfig, sharingDescription, sharingHumanChoices } from '../confi
 import { handlers as shareHandlers, publisherLine } from './share.js'
 import { exportArchiveLedger, exportRoomLedger } from '../prs.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
+import { joinableRoot, sameFolder } from '../repository.js'
+import { toolCallAborted } from '../registry.js'
+import { localWorkers } from '../worker-registry.js'
+import { currentToolTiming } from '../timing.js'
+
+const timed = <T>(phase: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(phase, work) ?? Promise.resolve().then(work)
 
 export const defs: ToolDef[] = [
   { name: 'room_login', annotations: RW, description: 'Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.',
@@ -41,7 +48,7 @@ function sharingSentence(s: Session): string {
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
   const secondary = publisherLine(s)
   if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`
-  const description = sharingDescription(level)
+  const description = sharingDescription(level, !!(s.daemon as typeof s.daemon & { retainedDeclared?: () => string[] }).retainedDeclared?.().length)
   const choices = sharingHumanChoices(level)
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`
 }
@@ -95,9 +102,9 @@ export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger, rooms, cleanupMine, log, loadAreas, shareLine, hasCompany, others, presences, myAreas, setPresence, areaLines, personLine, claimLine, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state
   async function configureLogin(a: Record<string, unknown>) {
-    const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
+    const config = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
-    ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath }
+    ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath, teamServer: config.teamServer }
     return config
   }
   const handlers: Record<string, Handler> = {
@@ -142,37 +149,84 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur && !terminalNameLoss && a.create !== true && a.where === undefined && a.server === undefined && a.room === undefined && a.dir === undefined && a.takeover !== true) {
         return currentReply()
       }
-      const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
+      const dir = await timed('resolve', () => joinableRoot(typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()))
       const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
-      const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
+      const resolved = await timed('resolve', () => resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } }))
       // Opening always needs a team server. A remembered URL survives a later process;
       // only a local/default destination falls back to the hosted server.
       const createFromLocal = a.create === true && resolved.server === LOCAL
-      const choice = { server: createFromLocal ? DEFAULT_SERVER : resolved.server, where: createFromLocal ? 'team' : resolved.where, rule: resolved.whereRule }
+      const choice = { server: createFromLocal ? resolved.teamServer : resolved.server, where: createFromLocal ? 'team' : resolved.where, rule: resolved.whereRule }
       const requestedRoom = createFromLocal && resolved.whereRule === 'remembered' ? (typeof a.room === 'string' ? a.room : process.env.ROOM_ROOM) : resolved.room
       const targetRoom = choice.server === LOCAL
         ? requestedRoom !== undefined ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir)
         : requestedRoom ?? (await deriveRoomName(dir)).roomName
-      if (cur) {
-        const sameServer = choice.server === LOCAL ? !!cur.local
-          : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
-        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir && !terminalNameLoss && a.takeover !== true && a.create !== true) {
-          return currentReply()
-        }
-        const running = runningWorkers(cur)
-        if (running.length) return `error: ${running.length} worker(s) are running in ${cur.roomName}; they would be left behind. Wait for them, room_collect(discard=true) them, or stay in this room.`
+      const stay = cur ? cur.local ? ` You're still in this machine's local room (${cur.roomName}), which works for agents on this computer.` : ` You're still in ${cur.roomName}.` : ''
+      if (!targetRoom) return `Team rooms need a shared server and a git origin remote to name the room, and ${dir} has no origin.${stay || ' The local room needs neither: room_join(where="local").'} To use a team room, add an origin (git remote add origin <url>) and say 'join the room' again, or name a room: room_join(where="team", room="<name>").`
+      const inTarget = async (x: Session): Promise<boolean> => {
+        if (x.roomName !== targetRoom) return false
+        if (choice.server !== LOCAL) return !x.local && parseServer(choice.server).server === parseServer(x.roomUrl.slice(0, x.roomUrl.lastIndexOf('/'))).server
+        if (!x.local) return false
+        const [a, b] = await Promise.allSettled([realGitCommonDir(dir), realGitCommonDir(x.dir)])
+        return a.status === 'fulfilled' && b.status === 'fulfilled' && a.value === b.value
       }
+      if (cur && await inTarget(cur) && sameFolder(dir, cur.dir) && !terminalNameLoss && a.takeover !== true && a.create !== true) return currentReply()
+      const message = (e: unknown) => e instanceof Error ? e.message : String(e)
+      const refused = (e: unknown): string => {
+        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${stay}`
+        if (e instanceof NoRoom) {
+          const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName
+          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`
+        }
+        const why = message(e)
+        return `error: ${why}${/[.!?]$/.test(why) ? '' : '.'}${stay}`
+      }
+      const withWorkers = (): string | undefined => {
+        if (!cur) return undefined
+        const mine = localWorkers(cur.dir, record => record.lead.participant === cur.me.name)
+        if (!mine.length) return undefined
+        return `You have ${mine.length} worker(s) (${mine.map(w => w.tag).join(', ')}). Collect or discard them first (room_collect, or room_collect discard=true), then move rooms.${stay}`
+      }
+      const blocked = withWorkers()
+      if (blocked) return blocked
       if (typeof a.name === 'string' && a.name.trim() && choice.server !== LOCAL) {
         const server = parseServer(choice.server).server
         const cfg = await serverAuthConfig(server)
         const login = cfg.mode === 'device' ? getCredential(server)?.login : undefined
         if (login) return `error: name is your GitHub login on this server (${login}); use ROOM_TAG for a second agent`
       }
+      if (choice.server !== LOCAL) {
+        const admit = (ctx as typeof ctx & { admit?: typeof checkTeamAdmission }).admit ?? checkTeamAdmission
+        try { await timed('preflight', () => admit(choice.server, targetRoom, { token: resolved.token, credentialsPath: resolved.credentialsPath, create: a.create === true, confirm: a.confirm === true })) }
+        catch (e) { return refused(e) }
+      }
+      if (toolCallAborted()) return 'error: tool call cancelled'
+      const late = withWorkers()
+      if (late) return late
+      const rollBack = async (reason: string): Promise<string> => {
+        try {
+          const back = await doJoin({ ...rejoinOptions(cur!, resolved.credentialsPath), tag: cur!.me.label ?? '', log })
+          rooms.add(back, 'primary')
+          return `couldn't join ${targetRoom} (${reason}); back in ${back.roomName}.`
+        } catch (e) {
+          return `couldn't join ${targetRoom} (${reason}), and rejoining ${cur!.roomName} failed too (${message(e)}); this session is in no room. Say 'join the room' to try again.`
+        }
+      }
       if (cur) {
-        await closeWorkersRoom()
+        try { await closeWorkersRoom() } catch (e) { return `error: closing the workers room failed (${message(e)}); Room did not move.${stay}` }
+        // Publish released claims while the old relay/provider is still alive. If stopping it
+        // fails, restore the old room's work before returning to that session.
+        const held = terminalNameLoss ? [] : cur.room.openClaims().filter(c => c.by === cur.me.name && c.byKind !== 'human')
+        const scope = terminalNameLoss ? undefined : cur.room.scope(cur.me.name)
         if (!terminalNameLoss) cleanupMine(cur, 'moved to another room')
+        try { await doLeave(cur) } catch (e) {
+          cur.room.doc.transact(() => {
+            for (const claim of held) cur.room.claims.set(claim.id, claim)
+            if (scope) cur.room.scopes.set(cur.me.name, scope)
+          }, cur.me)
+          rooms.add(cur, 'primary')
+          return `error: leaving ${cur.roomName} failed (${message(e)}); Room did not move.${stay}`
+        }
         rooms.remove(cur)
-        await doLeave(cur)
       }
       let s: Session
       try { s = await doJoin({
@@ -186,15 +240,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         share: resolved.share,
         shareExplicit: resolved.shareExplicit,
         takeover: a.takeover === true,
+        log,
       }) } catch (e) {
-        if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
-        if (!(e instanceof NoRoom)) throw e
-        // A stale server may report the old branch key. GitHub repository names
-        // have exactly owner/repo after the host; never offer to open a branch.
-        const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName
-        return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.`
+        return cur ? rollBack(message(e)) : refused(e)
       }
-      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
+      if (toolCallAborted() && cur) {
+        try { await doLeave(s) } catch (e) { rooms.add(s, 'primary'); return `cancelled, but couldn't leave ${s.roomName} (${message(e)}); you're in ${s.roomName}.` }
+        return rollBack('the request was cancelled')
+      }
+      const remembered = choice.server === LOCAL ? choice.where : parseServer(choice.server).server
+      if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, remembered, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
       s.shareWarning = resolved.shareWarning ?? s.shareWarning
       rooms.add(s, 'primary')
       const stale = cleanupMine(s, 'stale from an earlier session')
@@ -333,7 +388,7 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
   }
   const serverOf = (a: Record<string, unknown>, resolvedServer: string) => {
     const current = ctx.getSession()
-    const requested = typeof a.server === 'string' && a.server ? resolveServer(a.server) : undefined
+    const requested = typeof a.server === 'string' && a.server ? resolveServer(a.server, ctx.config?.teamServer) : undefined
     const r = requested ?? (current ? current.local ? LOCAL : current.roomUrl.slice(0, current.roomUrl.lastIndexOf('/')) : resolvedServer)
     return r === LOCAL ? LOCAL : parseServer(r).server
   }

@@ -48,7 +48,7 @@ export interface WorkerRecord {
   archive?: RetiredWorker
   legacy?: { id: string; source: string; said?: string; unowned?: boolean }; createdAt: number; seq: number
 }
-export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string; followUp?: string }
+export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string; followUp?: string; noReport?: boolean }
 export type LivenessProbe = (identity: ProcessIdentity) => Liveness
 const IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1000
 /** Only the session's own monotonic clock is comparable with its activity marker. */
@@ -97,6 +97,8 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
   if (exit?.witnessed && exit.code === 0 && current.mode === 'resume' && earlierDone)
     return result('done', current, note, { finishedAt: exit.at, exitCode: 0,
       summary: earlierDone.done!.summary })
+  if (exit?.witnessed && exit.code === 0 && current.mode === 'fresh')
+    return result('done', current, undefined, { finishedAt: exit.at, exitCode: 0, noReport: true, summary: 'ended without a report' })
   if (exit?.witnessed && exit.code === 0) return result('failed', current, 'exited without room_done', { finishedAt: exit.at, exitCode: 0 })
   if (exit?.witnessed) return result('failed', current, exit.signal ?? `exit ${exit.code ?? 'unknown'}`, { finishedAt: exit.at, ...(exit.code != null ? { exitCode: exit.code } : {}) })
   if (exit && current.mode === 'resume' && earlierDone) return result('done', current, 'follow-up outcome unknown: ended while no session of yours was running', { finishedAt: exit.at })
@@ -147,6 +149,7 @@ export function workerView(record: WorkerRecord, status: WorkerStatusResult, fen
     ...(record.model ? { model: record.model } : {}), ...(record.effort ? { effort: record.effort } : {}),
     task: record.task.slice(0, 200), branch: record.branch, status: status.status,
     ...(status.summary ?? record.legacy?.said ? { summary: status.summary ?? record.legacy?.said } : {}),
+    ...(status.noReport ? { noReport: true } : {}),
     ...(status.note ? { note: status.note } : {}), run: status.run?.n ?? record.runs.at(-1)?.n ?? 0, startedAt: record.createdAt,
     ...(status.followUp ? { followUp: status.followUp } : {}),
     ...(status.finishedAt !== undefined ? { finishedAt: status.finishedAt } : {}),

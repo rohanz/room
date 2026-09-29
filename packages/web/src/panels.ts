@@ -330,8 +330,8 @@ export function participantsPanel(conn: Conn, focus: FocusState): HTMLElement {
     const groups = participantGroups(conn)
     const cards = groupedPeople(groups, participant => {
       const worker = conn.room.acceptedWorkerViewOf(participant.name)
-      const state = worker?.status === 'failed' ? 'failed' : deriveStatePill(participant)
-      const short = shortPill(state)
+      const state = worker?.noReport ? 'ended without a report' : worker?.status === 'failed' ? 'failed' : deriveStatePill(participant)
+      const short = worker?.noReport ? state : shortPill(state)
       const card = h('div', {
         class: `participant${participant.online ? '' : ' offline'}${focus.person === participant.name ? ' focused' : ''}`,
         title: focus.person === participant.name ? `Clear ${participantLabel(conn, participant.name)} focus` : `Focus on ${participantLabel(conn, participant.name)}`,

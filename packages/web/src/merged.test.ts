@@ -16,6 +16,16 @@ describe('merged line classification', () => {
     const lines = classifyMergedLines('alpha\nomega\n', 'alpha\nnew\nomega\n')
     expect(lines.find(line => line.text === 'new')).toMatchObject({ side: 'b', conflict: false })
   })
+  it('keeps exact alternatives for distant rewrites of JSON and 800-line source', () => {
+    const jsonA = '[' + 'a'.repeat(60_000) + ']'
+    const jsonB = '[' + 'b'.repeat(60_000) + ']'
+    expect(classifyMergedLines(jsonA, jsonB).map(line => [line.text, line.side])).toEqual([[jsonA, 'a'], [jsonB, 'b']])
+    const before = Array.from({ length: 800 }, (_, i) => `old-${i}\n`).join('')
+    const after = Array.from({ length: 800 }, (_, i) => `new-${i}\n`).join('')
+    const lines = classifyMergedLines(before, after)
+    expect(lines.filter(line => line.side === 'a').map(line => line.text).join('\n') + '\n').toBe(before)
+    expect(lines.filter(line => line.side === 'b').map(line => line.text).join('\n') + '\n').toBe(after)
+  })
 })
 
 describe('classifyThreeWay', () => {

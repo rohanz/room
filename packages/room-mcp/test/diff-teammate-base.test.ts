@@ -1,13 +1,18 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, type Worker } from '@room/shared'
+import { Awareness } from 'y-protocols/awareness'
+import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
+import { clearFixture, publishFixture } from './fixtures/manifest.js'
+import { visiblePeer } from './fixtures/visible.js'
+import { registerWorkers } from './registry-fixture.js'
+import { testPolicyStore } from './policy-fixture.js'
+import { hubSeam } from './fixtures/hub.js'
 
 const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined }))
 const probeFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, stderr: '' }))
@@ -57,20 +62,22 @@ function flaskChanges() {
   const readerBase = git('rev-parse', 'HEAD')
 
   const room = new RoomDoc(new Y.Doc())
-  room.setMeta({ repo: 'flask', branch: 'main', base: readerBase })
-  room.setBaseOf('Ana', readerBase)
-  room.setBaseOf('Ben', oldBase)
-  room.setOverlay('Ben', 'CHANGES.rst', original + benEntry)
+  room.setMeta({ repo: 'flask', branch: 'main' })
+  visiblePeer(room, 'Ana')
+  room.participants.set('Ana\0git', { base: readerBase, head: readerBase, fence: '1', rev: 1 })
+  publishFixture(room, 'Ben', 'CHANGES.rst', original + benEntry, { base: oldBase })
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Ana', kind: 'agent', color: '#000' }, status: 'idle' })
   const session = {
     room, awareness, me: { name: 'Ana', kind: 'agent' }, dir,
     roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     provider: { synced: true, awareness },
-    daemon: { touch() {}, async stop() {}, dir, name: 'Ana', roomDoc: room, base: readerBase },
+    daemon: { touch() {}, async stop() {}, dir, name: 'Ana', roomDoc: room, base: readerBase, fence: '1' },
+    policyStore: testPolicyStore('full'),
+    ...hubSeam(room),
   } as unknown as Session
   const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
-  return { tools, dir, git, oldBase, readerBase, anaEntry, benEntry, awareness, room }
+  return { tools, dir, git, oldBase, readerBase, anaEntry, benEntry, awareness, room, session }
 }
 
 it.each([
@@ -94,7 +101,7 @@ it.each([
 it('a teammate overlay still asks for fetch when its base is absent locally', async () => {
   const t = flaskChanges()
   try {
-    t.room.setBaseOf('Ben', 'c0ffee0000000000000000000000000000000000')
+    publishFixture(t.room, 'Ben', 'CHANGES.rst', 'Ben: other change\n', { base: 'c0ffee0000000000000000000000000000000000' })
     const diff = await t.tools.call('room_read', { person: 'Ben', path: 'CHANGES.rst', diff: true })
     expect(diff).toMatch(/error: Ben's HEAD c0ffee0000 is not in this clone/)
     expect(diff).toContain('run git fetch, then retry')
@@ -121,6 +128,21 @@ it.each(['git show timed out after 30000ms', 'git show failed: permission denied
     }
   }
 )
+
+it('keeps the Git error for an unchanged teammate file whose base read fails', async () => {
+  const t = flaskChanges()
+  try {
+    clearFixture(t.room, 'Ben', 'CHANGES.rst')
+    gitShowFailure.error = new Error('git show failed: permission denied')
+    const diff = await t.tools.call('room_read', { person: 'Ben', path: 'CHANGES.rst', diff: true })
+    expect(diff).toContain('git show failed: permission denied')
+    expect(diff).not.toContain('git fetch')
+  } finally {
+    await t.tools.shutdown()
+    t.awareness.destroy()
+    t.room.doc.destroy()
+  }
+})
 
 it.each([
   ['spawn denied', Object.assign(new Error('spawn git EACCES'), { code: 'EACCES' }), ''],
@@ -149,19 +171,16 @@ it('a connected carried worker diff contains only the worker edit and no mislead
   const carriedEntry = 'Ana: carried uncommitted wording.\n'
   const workerEntry = 'Worker: revised validation note.\n'
   const carriedText = `Changelog\n=========\n\nExisting release notes.\n${t.anaEntry}${carriedEntry}`
-  const peer = new Awareness(new Y.Doc())
+  const workerDir = join(t.dir, '.room', 'workers', 'w')
   try {
-    t.git('checkout', '-qb', 'room/w')
-    writeFileSync(join(t.dir, 'CHANGES.rst'), carriedText)
-    t.git('commit', '-qam', 'carried lead work')
-    const carriedBase = t.git('rev-parse', 'HEAD')
-    t.git('checkout', '-q', 'main')
-    t.room.setWorker({ id: 'Ana/w#1', tag: 'w', name, host: 'codex', task: 'edit changelog', dir: t.dir,
-      branch: 'room/w', pid: 1, startedAt: 0, status: 'running', lead: 'Ana', base: carriedBase, carriedBase } as Worker)
-    t.room.setBaseOf(name, t.readerBase)
-    t.room.setOverlay(name, 'CHANGES.rst', carriedText + workerEntry)
-    peer.setLocalState({ user: { name, kind: 'agent', color: '#000' }, status: 'idle' })
-    applyAwarenessUpdate(t.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+    mkdirSync(join(t.dir, '.room', 'workers'), { recursive: true })
+    t.git('worktree', 'add', '-qb', 'room/w', workerDir, t.readerBase)
+    writeFileSync(join(workerDir, 'CHANGES.rst'), carriedText)
+    execFileSync('git', ['-C', workerDir, 'commit', '-qam', 'carried lead work'])
+    const carriedBase = execFileSync('git', ['-C', workerDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(workerDir, 'CHANGES.rst'), carriedText + workerEntry)
+    await registerWorkers(t.session, [{ tag: 'w', name, lead: 'Ana', host: 'codex', task: 'edit changelog', dir: workerDir,
+      branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', base: carriedBase, carriedBase }])
 
     for (const args of [{ path: 'CHANGES.rst' }, {}]) {
       const diff = await t.tools.call('room_read', { person: name, diff: true, ...args })
@@ -172,7 +191,6 @@ it('a connected carried worker diff contains only the worker edit and no mislead
       expect(diff).not.toContain('note: Ana+w is on base')
     }
   } finally {
-    peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown()
     t.awareness.destroy()
     t.room.doc.destroy()

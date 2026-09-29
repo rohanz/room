@@ -62,9 +62,13 @@ it('turns a changed ignored path into a digest even when the rule changes during
   ;(daemon as any).reloadRoomIgnore()
   release(); await work
   ;(daemon as any).beforeBaseRead = undefined
-  await (daemon as any).publisher.reconcile('all')
+  // The watcher also sees .roomignore and replaces the inputs again; a reconcile racing that replacement stops
+  // without publishing, so wait for the outcome rather than for one particular pass.
+  await vi.waitFor(async () => {
+    await (daemon as any).publisher.reconcile('all')
+    expect(daemon.roomDoc.manifestHead.get('Ben')?.excluded).toContain(digestPath(daemon.roomDoc.roomSalt!, 'x'))
+  }, { timeout: 20000, interval: 50 })
   expect(entries().has('x')).toBe(false)
-  expect(daemon.roomDoc.manifestHead.get('Ben')?.excluded).toContain(digestPath(daemon.roomDoc.roomSalt!, 'x'))
 })
 
 it('commits a moved HEAD and its completed manifest in one Y transaction', async () => {

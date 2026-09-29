@@ -1,8 +1,9 @@
 import fs from 'node:fs'
+import { setImmediate } from 'node:timers/promises'
 import { manifestKey, type RoomDoc } from '@room/shared'
 import { gitHead, gitShowMany } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
-import { readDisk } from './disk-scan.js'
+import { readDisk, StalePublication } from './disk-scan.js'
 import { markManifestIncomplete, publishManifest, type ManifestFact } from './manifest-publish.js'
 import { authorizesText, defaultExcludedPath, plan, type PublicationInputs, type PublicationPlan, type PlannedEntry, type SharingPolicy } from './policy.js'
 import type { DiskBatch } from './disk-batch.js'
@@ -37,6 +38,7 @@ export interface PreparedPublication {
   readonly desired: PublicationPlan
   readonly baseTexts: ReadonlyMap<string, string | undefined>
   readonly facts: readonly ManifestFact[]
+  readonly textOps: ReadonlyMap<string, ReturnType<RoomDoc['prepareOverlayDiff']>>
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
@@ -156,7 +158,9 @@ export class Publisher {
   /** Prepare against a resolved base, including committed but unpushed changes. */
   async prepare(inputs = this.host.inputs): Promise<PreparedPublication> {
     const carried = this.host.carried()
-    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked)
+    const capturedFence = this.host.fence
+    const valid = () => !this.host.stopped && this.host.inputs === inputs && this.host.fence === capturedFence
+    const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid)
     for (const item of disk) await this.host.beforeBaseRead?.(item.path)
     const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt())
     if (desired.unsettled.length) {
@@ -170,9 +174,25 @@ export class Publisher {
       if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p))
     }
     const facts: ManifestFact[] = []
-    for (const [path, entry] of desired.entries) facts.push({ path, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === 'binary', at: entry.at })
+    const textOps = new Map<string, ReturnType<RoomDoc['prepareOverlayDiff']>>()
+    let lastYield = performance.now()
+    let sinceYield = 0
+    const incarnation = capturedFence === undefined ? undefined : manifestKey(this.host.name, capturedFence)
+    for (const [path, entry] of desired.entries) {
+      if (!valid()) throw new StalePublication('publication inputs changed during prepare')
+      facts.push({ path, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === 'binary', at: entry.at })
+      if (entry.text !== undefined && incarnation) {
+        textOps.set(path, this.host.roomDoc.prepareOverlayDiff(incarnation, path, entry.text))
+      }
+      if (++sinceYield >= 32 || performance.now() - lastYield >= 15) {
+        await setImmediate()
+        lastYield = performance.now()
+        sinceYield = 0
+        if (!valid()) throw new StalePublication('publication inputs changed during prepare')
+      }
+    }
     for (const path of desired.excludedPaths) facts.push({ path, change: 'M', excluded: true })
-    return { inputs, desired, baseTexts, facts }
+    return { inputs, desired, baseTexts, facts, textOps }
   }
 
   /** Final synchronous gate; called immediately before the Y transaction. */
@@ -184,8 +204,9 @@ export class Publisher {
       const entry = prepared.desired.entries.get(p)!
       try {
         const stat = fs.lstatSync(host.abs(p))
-        if (!stat.isFile() || !host.isSafeRoomPath(p) || stat.size !== entry.size) return false
-        if (fs.readFileSync(host.abs(p), 'utf8') !== entry.text) return false
+        // readDisk checked the read against a second stat. Rechecking file identity here
+        // keeps the final synchronous transaction gate cheap even for many files.
+        if (!stat.isFile() || !host.isSafeRoomPath(p) || stat.size !== entry.size || stat.mtimeMs !== entry.at) return false
       } catch { return false }
     }
     return true
@@ -211,7 +232,7 @@ export class Publisher {
         if (entry.change === 'D') {
           host.roomDoc.clearOverlay(incarnation, p, host)
         } else if (entry.text !== undefined) {
-          host.roomDoc.setOverlay(incarnation, p, entry.text, host)
+          host.roomDoc.setOverlay(incarnation, p, entry.text, host, prepared.textOps.get(p))
         }
         const base = prepared.baseTexts.get(p)
         if (base !== undefined) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host)
@@ -226,7 +247,7 @@ export class Publisher {
     for (const [p, reason] of desired.excludedReasons) if (reason === 'size') host.skips.size.add(p)
     else if (reason === 'budget') host.skips.budget.add(p)
     else host.skips.ignore.add(p)
-    for (const [p, reason] of desired.excludedReasons) if (!previousSkips.has(p)) host.noteSkip(p, reason === 'size' ? 'over size cap' : reason === 'budget' ? 'over total budget' : 'ignore')
+    for (const [p, reason] of desired.excludedReasons) if (!previousSkips.has(p)) host.noteSkip(p, reason === 'size' ? 'over size cap' : reason === 'budget' ? 'over total budget' : reason === 'untracked lockfile' ? reason : 'ignore')
     this.errors.clear()
     for (const p of desired.textPaths) host.batch.published(p)
     if (desired.entries.size || desired.excluded.length) host.bumpLastActive()
@@ -245,6 +266,10 @@ export class Publisher {
       if (complete) await this.host.onFullScan?.(prepared.inputs.policy, prepared.desired.entries, prepared.desired.unsettled)
       if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
       return prepared
-    } catch (error) { this.reconcileFailed(error); return undefined }
+    } catch (error) {
+      // Replaced inputs are not a failure: whoever replaced them publishes again, as when apply refuses a stale snapshot.
+      if (!(error instanceof StalePublication)) this.reconcileFailed(error)
+      return undefined
+    }
   }
 }

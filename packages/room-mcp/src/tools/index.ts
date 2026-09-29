@@ -7,6 +7,9 @@ import { greeted } from '../post.js'
 import { hasCompany } from '../company.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
+import { repositoryProblem } from '../repository.js'
+import { createStaleVersionWarning } from '../stale-version.js'
+import { currentToolTiming } from '../timing.js'
 import { LOCAL, NotLoggedIn, type Session } from '../session.js'
 import { NeedFetch, NotJoined, REPLY_BATCH, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { defs as joinDefs, handlers as joinHandlers, offerTeamSharingDisclosure } from './join.js'
@@ -67,6 +70,8 @@ export interface Tools {
 export interface AutoJoinHandle { ensure(): Promise<void>; settle(): Promise<void>; cancel(): void; retarget(s: Session): void; readonly failure?: string }
 /** Tools that choose the room themselves: the automatic join pauses while one runs, and stays stopped unless it joined a room. */
 const CHOOSES_ROOM = new Set(['room_join', 'room_create', 'room_leave', 'room_close'])
+/** A move must not interleave with spawn, a send that resumes a worker, or collect. */
+const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect'])
 /** Writes fenced by the name lease: refused while coordination is paused (hub §7). Posts are refused by the hub client. */
 const FENCED = new Set(['room_scope', 'room_claim', 'room_release', 'room_done'])
 
@@ -75,10 +80,23 @@ const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {
+  const staleVersionWarning = ctx.staleVersionWarning ?? createStaleVersionWarning()
   const state: HandlerState = createHandlerState(ctx)
   const initial = ctx.getSession()
   if (initial) { trackConnection(initial, state.now); state.ledger.bind(initial) }
   let autoJoin: AutoJoinHandle | undefined
+  let moves: Promise<void> = Promise.resolve()
+  let pendingMoves = 0
+  const workerOps = new Set<Promise<void>>()
+  const untilAborted = (signal?: AbortSignal) => {
+    let onAbort: (() => void) | undefined
+    const aborted = new Promise<true>(resolve => {
+      onAbort = () => resolve(true)
+      if (signal?.aborted) resolve(true)
+      else signal?.addEventListener('abort', onAbort, { once: true })
+    })
+    return { aborted, done: () => { if (onAbort) signal?.removeEventListener('abort', onAbort) } }
+  }
   const notJoined = () => autoJoin?.failure ? `error: not in a room. ${autoJoin.failure}`
     : ctx.config?.server === LOCAL ? 'error: not in the local room; room_join to join it.'
     : 'error: not in a room. room_join if a teammate has opened this repo, room_create otherwise.'
@@ -93,8 +111,19 @@ export function createTools(ctx: ToolCtx): Tools {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
-      if (autoJoin && CHOOSES_ROOM.has(name)) { await autoJoin.settle(); autoJoin.cancel() }
-      else if (autoJoin) await autoJoin.ensure()
+      const joinDir = CHOOSES_ROOM.has(name) && typeof args?.dir === 'string' && args.dir ? args.dir : undefined
+      if (name !== 'room_login') {
+        const problem = await repositoryProblem(joinDir ?? ctx.getSession()?.dir ?? ctx.cwd)
+        if (problem) return problem
+      }
+      if (autoJoin && CHOOSES_ROOM.has(name)) {
+        const joining = autoJoin
+        await (currentToolTiming()?.phase('settle', () => joining.settle()) ?? joining.settle())
+        joining.cancel()
+      } else if (autoJoin) {
+        const joining = autoJoin
+        await (currentToolTiming()?.phase('settle', () => joining.ensure()) ?? joining.ensure())
+      }
       if (toolCallAborted()) return 'error: tool call cancelled'
       const current = ctx.getSession()
       current?.daemon.touch()
@@ -169,17 +198,42 @@ export function createTools(ctx: ToolCtx): Tools {
       return { batch, items, notices, more }
     },
     async call(name, args, signal, handoff) {
+      let release: (() => void) | undefined
+      if (CHOOSES_ROOM.has(name)) {
+        pendingMoves++
+        const previous = moves
+        const mine = new Promise<void>(resolve => { release = () => { pendingMoves--; resolve() } })
+        moves = previous.then(() => mine)
+        const wait = untilAborted(signal)
+        const cancelled = await Promise.race([previous.then(async () => { while (workerOps.size) await Promise.all([...workerOps]) }).then(() => false), wait.aborted])
+        wait.done()
+        if (cancelled) { release!(); return 'error: tool call cancelled' }
+      } else if (WORKER_OPS.has(name)) {
+        const wait = untilAborted(signal)
+        while (pendingMoves) {
+          if (await Promise.race([moves.then(() => false), wait.aborted])) { wait.done(); return 'error: tool call cancelled' }
+        }
+        wait.done()
+        const done = new Promise<void>(resolve => { release = resolve })
+        workerOps.add(done)
+        void done.then(() => workerOps.delete(done))
+      }
+      try {
+      if (name === 'room_spawn') currentToolTiming()?.endQueue()
       const batch = ledger.open('reply')
       try {
         const body = await run(name, args, signal, batch)
         const rejected = ctx.getSession()?.rejected
-        const text = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
+        const result = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
+        const warning = name === 'room_state' ? staleVersionWarning() : undefined
+        const text = warning ? `${warning}\n${result}` : result
         // A cancelled call's reply is never written: its selections stay owed.
         if (signal?.aborted) ledger.release(batch)
         else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })
         else ledger.commit(batch)
         return text
       } catch (e) { ledger.release(batch); throw e }
+      } finally { release?.() }
     },
   }
 }

@@ -24,7 +24,7 @@ export interface ConfigArgs {
   claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
-  dir: string; server: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
+  dir: string; server: string; teamServer: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
@@ -39,25 +39,18 @@ export function normaliseWhere(where?: string): string | undefined {
   if (['team', 'hosted', 'web', 'shared'].includes(w)) return 'team'
   return w
 }
-/** "team" follows this session's server setting, then ROOM_URL's server, then the hosted default. */
-export function resolveServer(raw?: string, env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): string {
+/** "team" follows the configured team server, which resolveConfig also reads from this clone. */
+export function resolveServer(raw?: string, teamServer = DEFAULT_SERVER): string {
   const w = normaliseWhere(raw)
   if (!w || w === LOCAL) return LOCAL
-  if (w !== 'team') return w
-  const configured = normaliseWhere(env.ROOM_SERVER)
-  if (configured) return configured === 'team' ? DEFAULT_SERVER : configured
-  const roomUrl = value(env.ROOM_URL)
-  if (roomUrl) {
-    const url = new URL(roomUrl)
-    if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
-    return `${url.protocol}//${url.host}${url.search}`
-  }
-  return DEFAULT_SERVER
+  return w === 'team' ? teamServer : w
 }
 
 /** Plain wording shared by join, state and sharing controls. */
-export function sharingDescription(level: ShareLevel): string {
-  return level === 'full' ? 'the full text of files you change' : level === 'declared' ? 'paths of every changed file; text only in your declared area' : 'only your plans, no file text'
+export function sharingDescription(level: ShareLevel, retainedChangedFiles = false): string {
+  return level === 'full' ? 'the full text of files you change' : level === 'declared'
+    ? `paths of every changed file; text only in your declared area${retainedChangedFiles ? '; changed files declared earlier remain shared' : ''}`
+    : 'only your plans, no file text'
 }
 
 /** Spoken choices in disclosures; keep tool syntax out of notes relayed to a person. */
@@ -98,6 +91,15 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const urlServer = url ? `${url.protocol}//${url.host}${url.search}` : undefined
   const envWhere = envServer ?? (!argUrl ? urlServer : undefined)
   const rememberedChoice = await readRememberedChoice(dir)
+  const concrete = (w?: string) => w && w !== LOCAL && w !== 'team' ? w : undefined
+  let teamUrl: string | undefined
+  const teamRoomUrl = value(e.ROOM_URL)
+  if (teamRoomUrl) {
+    const u = new URL(teamRoomUrl)
+    if (!['ws:', 'wss:'].includes(u.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
+    teamUrl = `${u.protocol}//${u.host}${u.search}`
+  }
+  const teamServer = concrete(envServer) ?? teamUrl ?? concrete(normaliseWhere(rememberedChoice.where)) ?? DEFAULT_SERVER
   const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : undefined
   const where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
   const whereRule: ConfigRule = argWhere || argUrl ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
@@ -111,7 +113,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID),
-    roomUrl, dir: path.resolve(dir), server: resolveServer(where, e), where, whereRule, whereEnv,
+    roomUrl, dir: path.resolve(dir), server: resolveServer(where, teamServer), teamServer, where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
     tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit: args.shareExplicit ?? rawShare !== undefined, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),

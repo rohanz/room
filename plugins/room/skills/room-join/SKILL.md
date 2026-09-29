@@ -10,14 +10,16 @@ on the first Room request; the shared app-server daemon was observed in 0.157.1.
 
 Where to be is the user's call, by instruction:
 - "team" means your team server (`ROOM_SERVER`, otherwise the server in `ROOM_URL`,
-  otherwise the hosted default). A server URL selects that exact server.
-- "join the room" / "join the team room": `room_leave` if you are
-  in a local room, then `room_join(where="team")`. Relay the returned `note for your human`
+  otherwise the server remembered for this clone, otherwise the hosted default).
+  A server URL selects that exact server.
+- "join the room" / "join the team room": `room_join(where="team")`, including
+  when you are already in a local room. Relay the returned `note for your human`
   sharing sentence once, exactly as written. The choice is remembered for
   this clone; later sessions go there on their own.
   A bare "join the room" (including "join the room for this repo") means the team room, because the session is already in a local room by default; do not ask which room.
-- "work locally" / "leave the team room" / "local room": `room_leave(forget=true)`, then
-  `room_join(where="local")`.
+- "work locally" / "leave the team room" / "local room": `room_join(where="local")`.
+  If the user also wants to forget the team destination for later sessions,
+  call `room_leave(forget=true)` first.
 - a server URL: `room_join(where="wss://…")`.
 Never join the team room on your own initiative.
 On a team join, relay the one-time disclosure that teammates on any branch see shared work.
@@ -28,8 +30,9 @@ worktree directory), takes your name from your login or `git config user.name`, 
 push-only sync daemon, and returns who is here, their scopes, open claims, and the browser
 view URL. A local room needs no name and no origin remote. Pass `room` for a local join
 only when the user asks for a separate, named room; it becomes `local/<name>`.
-Re-joining the same room prints its current state and browser link. Moving rooms is refused
-while your workers are running; wait for them or use room_collect(discard=true) first. The join reply includes the new browser link.
+Re-joining the same room prints its current state. Moving rooms is refused
+while any worker remains uncollected; collect or discard them first. Room checks
+the target before leaving and rejoins the previous room if the move fails.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
 When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up. Run git pull --ff-only --autostash to catch up on a shared branch. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
 

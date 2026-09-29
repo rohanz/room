@@ -369,7 +369,11 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
  * port is held by something that is not a room relay, the lock holder uses any free port.
  * `seed` returns this process's replica of the room: a takeover starts the relay from it.
  */
-export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array } = {}): Promise<LocalRelay> {
+export class NoLocalRelay extends Error {
+  constructor(room: string) { super(`no running local relay for ${room}`); this.name = 'NoLocalRelay' }
+}
+
+export async function ensureLocalRelay(commonDir: string, room: string, opts: { log?: (line: string) => void; watchMs?: number; staticDir?: string; seed?: () => Uint8Array; joinOnly?: boolean } = {}): Promise<LocalRelay> {
   const log = opts.log ?? ((line: string) => process.stderr.write(`${line}\n`))
   let owned: StartedRelay | null = null
   let port = 0
@@ -413,6 +417,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   const existing = await recorded()
   if (existing) adopt(existing, 'joined')
   else {
+    if (opts.joinOnly) throw new NoLocalRelay(room)
     key = readRelayInfo(commonDir)?.key ?? crypto.randomBytes(16).toString('hex')
     const want = deterministicPort(commonDir)
     const lock = AuthorityLock.take(commonDir)
@@ -445,6 +450,11 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     if (who === 'foreign') {
       lost = `127.0.0.1:${port} is now another clone's relay`
       log(`local room ${room}: ${lost}; the session will join afresh`)
+      return
+    }
+    if (opts.joinOnly) {
+      lost = `the lead's local relay for ${room} is no longer running`
+      log(`local room ${room}: ${lost}`)
       return
     }
     // Relay gone: take the authority from its dead owner, then its port. A live lock holder (a stalled

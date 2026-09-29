@@ -8,6 +8,7 @@
 import type { Session } from './session.js'
 import { NoRoom, NotLoggedIn } from './session.js'
 import { RoomdError } from '@room/roomd'
+import { NotARepository } from './repository.js'
 
 export interface AutoJoinOptions {
   /** One join attempt, of the room a human joined (target) or else the startup choice: the session, or undefined when there is nothing to join (no retry). */
@@ -43,6 +44,10 @@ function phaseOf(e: unknown): string | undefined {
 }
 const causeOf = (e: unknown) => `${phaseOf(e) ? `(${phaseOf(e)}): ` : ''}${e instanceof Error ? e.message : String(e)}`
 
+const baseRecovery = (e: unknown): string => e instanceof RoomdError && (/^room base .* is not in this clone/.test(e.message) || /^local HEAD .* has diverged from room base/.test(e.message))
+  ? ' If the branch was reset on purpose, ask your human whether to close and reopen the room (room_close confirm=true, then room_create).'
+  : ''
+
 /** Failures a human must act on (open the repo, log in, fix the clone) are not retried. */
 function retryable(e: unknown): boolean {
   if (e instanceof NoRoom || e instanceof NotLoggedIn) return false
@@ -54,7 +59,9 @@ function joinFailureLine(e: unknown, local: boolean, attempts: number): string {
   if (e instanceof NotLoggedIn) return 'Room is not connected: not logged in; use room_login.'
   const phase = phaseOf(e)
   const head = `Room could not join${local ? ' the local room' : ''}${attempts > 1 ? ` after ${attempts} attempts` : ''}${phase ? ` (${phase})` : ''}: ${e instanceof Error ? e.message : String(e)}`
-  return local ? `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.` : `${head}; use room_join.`
+  if (local && retryable(e)) return `${head}. Room tries again on the next Room tool call (at most every ${JOIN_RETRY_AFTER_MS / 1000} s); room_join to retry now.`
+  if (local) return `${head}; room_join to retry now.${baseRecovery(e)}`
+  return `${head}; use room_join.${baseRecovery(e)}`
 }
 
 export class AutoJoin {
@@ -65,6 +72,7 @@ export class AutoJoin {
   /** Why the last run failed, while no session is present; undefined after a join. */
   failure: string | undefined
   private permanent = false
+  private recheck = false
   private target: Session | undefined
   private readonly delays: number[]
   private readonly deadlineMs: number
@@ -82,7 +90,7 @@ export class AutoJoin {
   ensure(): Promise<void> {
     if (this.inflight) return this.inflight
     if (this.cancelled || this.permanent || this.o.joined()) return Promise.resolve()
-    if (this.failure && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
+    if (this.failure && !this.recheck && this.now() - this.endedAt < this.retryAfterMs) return Promise.resolve()
     this.inflight = this.run().finally(() => { this.inflight = null; this.endedAt = this.now() })
     return this.inflight
   }
@@ -96,6 +104,7 @@ export class AutoJoin {
     this.cancelled = false
     this.permanent = false
     this.failure = undefined
+    this.recheck = false
   }
 
   /** Stop joining for good: a late session is left, a pending wait ends now. */
@@ -105,6 +114,8 @@ export class AutoJoin {
   }
 
   private async run(): Promise<void> {
+    const hadNoRepository = this.recheck
+    this.recheck = false
     const deadline = this.now() + this.deadlineMs
     let last: unknown
     let attempts = 0
@@ -120,6 +131,12 @@ export class AutoJoin {
       } catch (e) {
         last = e
         if (this.cancelled) return
+        if (e instanceof NotARepository) {
+          if (this.failure !== e.message) this.o.log(`not joining: ${e.message}`)
+          this.failure = e.message
+          this.recheck = true
+          return
+        }
         if (!retryable(e)) { this.permanent = true; break }
         const wait = this.delays[Math.min(attempts - 1, this.delays.length - 1)]
         if (this.now() + wait >= deadline) break
@@ -129,7 +146,7 @@ export class AutoJoin {
       }
     }
     this.o.log(`join attempt ${attempts} failed ${causeOf(last)}; giving up for now`)
-    const first = this.failure === undefined
+    const first = this.failure === undefined || hadNoRepository
     this.failure = joinFailureLine(last, this.target ? !!this.target.local : this.o.local, attempts)
     if (first) this.o.report(this.failure)
   }

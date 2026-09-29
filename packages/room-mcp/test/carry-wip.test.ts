@@ -21,6 +21,9 @@ import { prepareWorktree, cleanupWorker, saveDiscardPatch } from '../src/worker-
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
+// Real Git worktree and patch operations can exceed Vitest's 5 s default under concurrent suites.
+vi.setConfig({ testTimeout: 30_000 })
+
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const CARRIED_SUBJECT = 'room: carried-in uncommitted work from rohanz'
 const SHARED = Array.from({ length: 10 }, (_, i) => `line${i + 1}`)
@@ -257,7 +260,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(prepared.dir, '.venv/lib/site.py', 'x\n'); put(prepared.dir, 'keep.txt', 'worker edit\n')
     fs.symlinkSync(path.join(repo, 'data/processed'), path.join(prepared.dir, 'data/processed'))
     const w = { tag: 'ignored-parent', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked, link: ['data/processed'] } as Parameters<typeof saveDiscardPatch>[1]
-    const patch = fs.readFileSync((await saveDiscardPatch(repo, w))!, 'utf8')
+    const patch = fs.readFileSync((await saveDiscardPatch(repo, w, patchPublisher(repo, w.tag)))!, 'utf8')
     expect(patch).toContain('diff --git a/keep.txt b/keep.txt')
     expect(patch).toContain('diff --git a/.gitignore b/.gitignore')
     expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/keep.txt b/keep.txt'])
@@ -281,7 +284,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const dirs = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean)
     expect(dirs.length).toBeGreaterThan(0)
     expect(dirs.filter(d => /\/\.room\/workers\/(one|two)(\/|$)/.test(d))).toEqual([])
-  })
+  }, 30_000)
   it('keeps the event loop responsive during slow discard git steps', async () => {
     const prepared = await prepareWorktree(repo, 'slow-patch', 'rohanz')
     put(prepared.dir, 'keep.txt', 'worker edit\n')
@@ -400,7 +403,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const after = leadState()
     expect(after.head).toBe(before.head); expect(after.index).toBe(before.index)
     expect(reply).toContain('cleaned up one'); expect(reply).toContain('cleaned up two')
-  })
+  }, 30_000)
 
   it('(4) a worker that changed nothing after the carry has nothing to apply and retires cleanly', async () => {
     leadWip()
@@ -427,7 +430,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     await vi.waitFor(() => expect(workerByTag(repo, 'idle')).toBeUndefined())
     await vi.waitFor(() => expect(t.a.workerViewOf('rohanz+idle')).toBeUndefined())
     expect(t.a.retiredWorkers().find(r => r.tag === 'idle')).toMatchObject({ files: [], fileCount: 0 })
-  })
+  }, 30_000)
 
   it('(5) discard keeps a recovery patch of the worker\'s changes only', async () => {
     leadWip()
@@ -454,7 +457,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     git(fresh, 'apply', patch!)
     expect(read(fresh, 'keep.txt')).toBe('k1\nk2\nK3\n'); expect(read(fresh, 'mine.txt')).toBe('worker\n')
     expect(read(fresh, 'shared.txt')).toBe(lines([2, 'W']))
-  })
+  }, 30_000)
 
   it('(6) room_preview_merge agrees with collect for scenario 2', async () => {
     leadWip()

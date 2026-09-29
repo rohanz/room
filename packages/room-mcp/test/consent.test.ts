@@ -20,6 +20,7 @@ beforeEach(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) vi.stubEnv(key, undefined)
   dir = mkdtempSync(join(tmpdir(), 'room-consent-'))
   execFileSync('git', ['init', '-q', '-b', 'main', dir])
+  execFileSync('git', ['-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'initial'])
 })
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) })
 
@@ -42,7 +43,7 @@ function setup(company = false) {
     }
     return s
   })
-  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave: async () => {} })
+  const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, admit: async () => {}, leave: async () => {} })
   cleanup.push(() => tools.shutdown())
   return { tools, joiner, session: () => session! }
 }

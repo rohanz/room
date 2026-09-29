@@ -275,7 +275,7 @@ describe('tool timing', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('records connect, delayed sync, and daemon start through startAutoTaggedRoomd', async () => {
+  it('records delayed sync and daemon start through the redesign join path', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-join-timing-'))
     execFileSync('git', ['init', '-q', dir])
     joinClock.now = 0
@@ -296,7 +296,7 @@ describe('tool timing', () => {
         await daemon.stop()
       })
       expect(lines).toHaveLength(1)
-      expect(lines[0]).toMatch(/connect 50ms, sync 2100ms, daemon start 900ms/)
+      expect(lines[0]).toMatch(/sync 2100ms.*daemon start 900ms/)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
