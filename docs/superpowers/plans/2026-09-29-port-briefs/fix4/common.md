@@ -1,0 +1,5 @@
+FIX ROUND 4 of the 0.16.35-40 port into `redesign`. Read docs/superpowers/specs/reviews/2026-09-29-port-review-r4.md (Astra round 4; findings numbered; /tmp/astra4-*.mts probes may exist: use them as regression references), the binding rulings in ../fix2/common.md and ../fix3/common.md, and ../fix1/common.md for the rules (owned files; no hooks.json/claude.json; no version/CHANGELOG/bundle edits; no commit; failing-first tests asserting events/ordering/operation counts, never wall time; explicit stuck-run bounds only). Report per finding in room_done.
+
+NEW LEAD RULINGS (binding):
+- Claim identity (0.16.38 rule): a claimed block moves only if its digest is found EXACTLY ONCE in the settled file. The line diff may only propose a candidate that must digest-verify and pass the same uniqueness decision; a removed/changed hunk falls back to the bounded resumable search. Zero or multiple matches → gone-block rule (keep with local edits, release on a clean file).
+- Repository configuration files (.roomignore, CODEOWNERS, .roomlinks) are OUT OF SCOPE for the stall audit (small config reads, as in main). Do not change them.
