@@ -41,5 +41,5 @@ and requires your human's explicit request. `room_leave` ends participation when
 
 For substantial parallel edits, load [room-workers](../room-workers/SKILL.md).
 Collection always leaves output uncommitted and unstaged. If asked to commit, use plain git
-for one task commit with a normal message. Finished headless workers cannot
-answer new questions; use their output and summary. Keep bus messages brief and concrete.
+for one task commit with a normal message. A message to a finished worker resumes its retained session
+until that worker is collected or discarded. Keep bus messages brief and concrete.

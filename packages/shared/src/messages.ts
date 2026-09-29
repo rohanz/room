@@ -39,6 +39,19 @@ const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalize
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
 
+/** Room's automatic claim release notice, shared by its producer and readers. */
+export function claimReleaseText(path: string, from: number, to: number, sha: string): string {
+  return `released your claim on ${path}:${from}-${to}: that code changed in ${sha}`
+}
+
+export function parseClaimRelease(text: string): { path: string; from: number; to: number; sha: string } | undefined {
+  const match = /^released your claim on ([^\n]+):(\d+)-(\d+): that code changed in ([0-9a-f]+)$/i.exec(text)
+  if (!match) return undefined
+  const from = Number(match[2]), to = Number(match[3])
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to)) return undefined
+  return { path: match[1], from, to, sha: match[4] }
+}
+
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: (m, context) => context?.claims && !context.claims.some(c => c.id === m.claimId)
     ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) — ${m.intent}`

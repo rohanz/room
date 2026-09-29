@@ -248,6 +248,40 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(fs.readFileSync(patch!, 'utf8')).toContain('diff --git a/keep.txt b/keep.txt')
     expect(fs.readFileSync(patch!, 'utf8')).not.toContain('notes.txt')
   })
+  it('saves a discard patch when carried and linked paths lie under ignored directories', async () => {
+    // The databricks layout: the lead carried data/raw/static/*, and data/raw/ is ignored in the worker.
+    put(repo, 'data/raw/static/stops.csv', 'id\n1\n'); put(repo, 'data/processed/out.csv', 'p\n')
+    const prepared = await prepareWorktree(repo, 'ignored-parent', 'rohanz', ['data/processed'])
+    expect(prepared.carriedUntracked?.map(x => x.path)).toContain('data/raw/static/stops.csv')
+    put(prepared.dir, '.gitignore', 'secret.env\nbuild/\ndata/raw/\n.venv/\ndata/processed/\n')
+    put(prepared.dir, '.venv/lib/site.py', 'x\n'); put(prepared.dir, 'keep.txt', 'worker edit\n')
+    fs.symlinkSync(path.join(repo, 'data/processed'), path.join(prepared.dir, 'data/processed'))
+    const w = { tag: 'ignored-parent', branch: prepared.branch, dir: prepared.dir, base: prepared.base, carriedUntracked: prepared.carriedUntracked, link: ['data/processed'] } as Parameters<typeof saveDiscardPatch>[1]
+    const patch = fs.readFileSync((await saveDiscardPatch(repo, w))!, 'utf8')
+    expect(patch).toContain('diff --git a/keep.txt b/keep.txt')
+    expect(patch).toContain('diff --git a/.gitignore b/.gitignore')
+    expect(patch.match(/^diff --git .*$/gm)).toEqual(['diff --git a/.gitignore b/.gitignore', 'diff --git a/keep.txt b/keep.txt'])
+  })
+  it('runs no git in finished worktrees when spawning, however much ignored output they hold', async () => {
+    // Guard for the databricks report (a spawn stalled with five finished worktrees, each with a .venv).
+    fs.appendFileSync(path.join(repo, '.gitignore'), '.venv/\n'); git(repo, 'commit', '-qam', 'ignore venv')
+    const t = world()
+    for (const tag of ['one', 'two']) {
+      const { dir } = await t.spawn(tag)
+      for (let d = 0; d < 20; d++) for (let f = 0; f < 50; f++) put(dir, `.venv/lib/pkg${d}/m${f}.py`, 'x\n')
+      await t.finish(tag)
+    }
+    const bin = path.join(root, 'bin'), calls = path.join(root, 'git-calls')
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+    put(root, 'bin/git', `#!/bin/sh\npwd >> '${calls}'\nexec '${realGit}' "$@"\n`, 0o755)
+    const originalPath = process.env.PATH
+    process.env.PATH = `${bin}:${originalPath}`
+    try { await t.spawn('three') }
+    finally { process.env.PATH = originalPath }
+    const dirs = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean)
+    expect(dirs.length).toBeGreaterThan(0)
+    expect(dirs.filter(d => /\/\.room\/workers\/(one|two)(\/|$)/.test(d))).toEqual([])
+  })
   it('keeps the event loop responsive during slow discard git steps', async () => {
     const prepared = await prepareWorktree(repo, 'slow-patch', 'rohanz')
     put(prepared.dir, 'keep.txt', 'worker edit\n')

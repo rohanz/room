@@ -162,6 +162,16 @@ describe('automatic join (real room-mcp processes)', () => {
     expect(await mcp.call('room_leave')).toMatch(/^left local\/picked/)
     expect(await mcp.call('room_state')).toBe('error: not in the local room; room_join to join it.')
   }, 90_000)
+
+  it('a room joined with room_join writes its daemon events to room-mcp.log', async () => {
+    const dir = repo()
+    const mcp = await startMcp(dir)
+    await mcp.waitFor(/^room-mcp: ready$/, 30_000)
+    expect(await mcp.call('room_join', { room: 'picked' })).toContain('joined local/picked as Ada')
+    execFileSync('git', ['-C', dir, 'commit', '-q', '--allow-empty', '-m', 'next'], { stdio: 'pipe' })
+    await mcp.waitFor(/^room-mcp: HEAD moved /, 20_000)
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(dir, '.git', 'room-mcp.log'), 'utf8')).toMatch(/HEAD moved /), { timeout: 5000 })
+  }, 60_000)
 })
 
 describe('AutoJoin (the ensure step)', () => {
@@ -212,6 +222,15 @@ describe('AutoJoin (the ensure step)', () => {
     await t.a.ensure()
     expect(calls).toBe(1)
     expect(t.reports[0]).toBe('Room could not join: no room for github.com/o/r/main yet; use room_join.')
+  })
+
+  it('does not promise automatic retry for a permanent local join failure', async () => {
+    let calls = 0
+    const t = setup(async () => { calls++; throw new RoomdError('clone mismatch', 2) }, { local: true })
+    await t.a.ensure()
+    await t.a.ensure()
+    expect(calls).toBe(1)
+    expect(t.reports[0]).toBe('Room could not join the local room: clone mismatch; room_join to retry now.')
   })
 
   it('a cancel ends a pending run at once, and a session that arrives afterwards is left', async () => {
@@ -270,7 +289,7 @@ describe('tools and the ensure step', () => {
     return { calls, failure, ensure: async () => { calls.push('ensure') }, settle: async () => { calls.push('settle') }, cancel: () => { calls.push('cancel') }, retarget: () => { calls.push('retarget') } }
   }
   it('every room tool ensures the join first; leaving ends the automatic join', async () => {
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     tools.setAutoJoin(h)
     expect(await tools.call('room_state', {})).toBe('error: not in the local room; room_join to join it.')
@@ -279,18 +298,19 @@ describe('tools and the ensure step', () => {
     expect(h.calls).toEqual(['ensure', 'settle', 'cancel'])
   })
   it('names why the automatic join failed instead of generic advice', async () => {
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     tools.setAutoJoin(handle('Room could not join the local room (relay): EACCES.'))
     expect(await tools.call('room_spawn', { tag: 'w', task: 't' })).toBe('error: not in a room. Room could not join the local room (relay): EACCES.')
   })
   it('drops a tool call cancelled while its automatic join is queued', async () => {
     let finish!: () => void
-    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: os.tmpdir(), config: { server: LOCAL } as ResolvedConfig })
+    const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: repo(), config: { server: LOCAL } as ResolvedConfig })
     const h = handle()
     h.ensure = () => new Promise<void>(resolve => { finish = resolve })
     tools.setAutoJoin(h)
     const controller = new AbortController()
     const call = tools.call('room_state', {}, controller.signal)
+    await vi.waitFor(() => expect(finish).toBeDefined()) // the repository check runs first
     controller.abort()
     finish()
     expect(await call).toBe('error: tool call cancelled')

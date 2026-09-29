@@ -52,10 +52,14 @@ it('refuses multiple distinct valid worktrees', () => {
 })
 
 it('preserves the directory fallback order when Codex sends no metadata', () => {
-  expect(fallbackWorkspace({ ROOM_DIR: '/worker', PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/worker')
-  expect(fallbackWorkspace({ PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/pwd')
-  expect(fallbackWorkspace({ INIT_CWD: '/init' }, '/process')).toBe('/init')
-  expect(fallbackWorkspace({}, '/process')).toBe('/process')
+  const codex = { ROOM_HOST: 'codex' }
+  expect(fallbackWorkspace({ ...codex, ROOM_DIR: '/worker', PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/worker')
+  expect(fallbackWorkspace({ ...codex, PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/pwd')
+  expect(fallbackWorkspace({ ...codex, INIT_CWD: '/init' }, '/process')).toBe('/init')
+  expect(fallbackWorkspace(codex, '/process')).toBe('/process')
+  // Other hosts start Room in the session's folder: an inherited PWD elsewhere is ignored.
+  expect(fallbackWorkspace({ ROOM_DIR: '/worker', PWD: '/pwd' }, '/process')).toBe('/worker')
+  expect(fallbackWorkspace({ ROOM_HOST: 'claude', PWD: '/pwd', INIT_CWD: '/init' }, '/process')).toBe('/process')
 })
 
 it('starts no join under shared hosting and first binds and joins the metadata repository, ignoring PWD', async () => {

@@ -177,6 +177,20 @@ describe('ledger to PR', () => {
     expect(renderPrNote(a, { roomName: ROOM })).toContain('- (nothing recorded on the bus yet)')
   })
 
+  it('exports automatic claim releases in third person without calling them done', () => {
+    const { a } = pair()
+    const alice: Identity = { name: 'alice', kind: 'agent' }
+    const claim = a.addClaim({ path: 'src/app.py', from: 2, to: 4, by: 'alice', byKind: 'agent', intent: 'edit route' })
+    a.post<ClaimMsg>(alice, { type: 'claim', claimId: claim.id, path: claim.path, from_line: 2, to_line: 4, intent: claim.intent })
+    a.removeClaim(claim.id)
+    a.post<ReleaseMsg>(alice, { type: 'release', claimId: claim.id, path: claim.path,
+      summary: 'released your claim on src/app.py:2-4: that code changed in abc123def0' })
+    const md = renderPrNote(a, { roomName: ROOM, history: true })
+    expect(md).toContain('→ released: code changed in abc123def0')
+    expect(md).not.toContain('released your claim')
+    expect(md).not.toContain('→ done: released')
+  })
+
   it('exports a history headed as a file while PR notes retain their comment heading', () => {
     const s = session(story(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
     const file = join(dir, 'room-history.md')

@@ -6,7 +6,7 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 import { WebsocketProvider } from 'y-websocket'
-import { deterministicPort, ensureLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
+import { deterministicPort, ensureLocalRelay, LOCAL_FILE, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
 import { portAnswers, relayAnswers } from './probes.js'
 import http from 'node:http'
 
@@ -16,6 +16,18 @@ const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 const until = async (f: () => boolean | Promise<boolean>, ms = 5000) => { const t = Date.now(); while (!(await f())) { if (Date.now() - t > ms) throw new Error('timeout'); await wait(50) } }
 
 describe('local relay', () => {
+  it('joinOnly joins a running relay but never starts one', async () => {
+    const other = await makeCommonDir()
+    await expect(ensureLocalRelay(other, 'local/a/main', { joinOnly: true })).rejects.toBeInstanceOf(NoLocalRelay)
+    expect(fs.existsSync(path.join(other, LOCAL_FILE))).toBe(false)
+    const common = await makeCommonDir()
+    const owner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000 })
+    const joiner = await ensureLocalRelay(common, 'local/a/main', { watchMs: 30_000, joinOnly: true })
+    expect(joiner.owned).toBe(false)
+    expect(joiner.port).toBe(owner.port)
+    await joiner.stop(); await owner.stop()
+  })
+
   it('first joiner starts the relay, later joiners reuse it, and a survivor takes over the same port when the owner leaves', async () => {
     const common = await makeCommonDir()
     const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })

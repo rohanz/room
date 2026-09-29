@@ -188,25 +188,154 @@ function* inputStrings(value) {
   else if (value && typeof value === 'object') { for (const item of Object.values(value)) yield* inputStrings(item) }
 }
 
-/** Advisory write heuristic, not a shell parser. Never scan oversized command strings. */
-export function shellLooksLikeWrite(input) {
+// Advisory shell parser: recognize explicit write forms and their destinations.
+// Unknown commands stay silent. Quotes protect separators and spaces in path names.
+function shellCommands(input) {
   const command = input?.command ?? input?.cmd ?? input
-  const strings = Array.isArray(command) && command.every(v => typeof v === 'string')
-    ? [command.reduce((s, v) => s.length > 20_000 ? s : s + ' ' + v, '')] : inputStrings(command)
-  for (const text of strings) {
-    if (text.length > 20_000) continue
-    if (/>|(?:^|[\s;|&()])(?:\S*\/)?(?:sed\s+[^\n;|&]*?-[^\s]*i|perl\s+[^\n;|&]*?-[^\s]*i|(?:tee|mv|cp|rm|apply_patch)(?=\s|$)|git\s+(?:apply|checkout|restore|stash|merge|rebase)(?=\s|$)|(?:python[\d.]*|node)\s+[^\n;|&]*?(?:-[ce](?=\s|['"]|$)|<<))/.test(text)
-      || /(?:^|[;|&(){}\n])\s*(?:set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|sc|ac|ni|ri|del|mv|cp|ren)(?=\s|$)/i.test(text)) return true
+  const values = Array.isArray(command) && command.every(v => typeof v === 'string') ? [command.join(' ')] : inputStrings(command)
+  const commands = []
+  for (const value of values) {
+    if (value.length > 20_000) continue
+    let segment = '', quote = ''
+    for (let i = 0; i < value.length; i++) {
+      const c = value[i]
+      if (quote) {
+        segment += c
+        if (c === quote && value[i - 1] !== '\\') quote = ''
+      } else if (c === '"' || c === "'" || c === '`') { quote = c; segment += c }
+      else if (c === '\n' || c === ';' || c === '|' || (c === '&' && value[i + 1] !== '>' && value[i - 1] !== '>')) {
+        if (segment.trim()) commands.push(segment.trim())
+        segment = ''
+      } else segment += c
+    }
+    if (segment.trim()) commands.push(segment.trim())
   }
-  return false
+  return commands
 }
 
-/** Repo-relative paths touched by an edit or shell tool. Shell scanning skips strings
- * over 20,000 chars and checks at most 200 tokens across the entire tool input. */
+function shellWords(command) {
+  return Array.from(command.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|`[^`]*`|(?:\d+|&)?>>?|<|[^\s<>"'`]+/g), m => {
+    const word = m[0]
+    const quoted = /^['"`]/.test(word)
+    return { text: quoted ? word.slice(1, -1) : word, quoted }
+  }).slice(0, 200)
+}
+
+function writeTargets(input, powerShell = false, root = '') {
+  const targets = []
+  let cwd = ''
+  const add = value => targets.push(cwd && !/^(?:[a-z]:[\\/]|[\\/])/.test(value) ? `${cwd}/${value}` : value)
+  for (const raw of inputStrings(input?.command ?? input?.cmd ?? input)) {
+    if (raw.length > 20_000 || !/(?:^|[;&|\n])\s*(?:[^\s/]+\/)?apply_patch(?:\s|$)/m.test(raw)) continue
+    for (const match of raw.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm)) add((match[1] ?? match[2]).trim())
+  }
+  for (const command of shellCommands(input)) {
+    const tokens = shellWords(command)
+    const words = []
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]
+      if (!token.quoted && /^(?:\d+|&)?>>?$|^<$/.test(token.text)) {
+        const target = tokens[++i]?.text
+        if (token.text.includes('>') && target && target !== '/dev/null' && !/^&\d+$/.test(target)) add(target)
+      } else words.push(token.text)
+    }
+    while (words.length && (/^[A-Za-z_][\w]*=/.test(words[0]) || words[0] === 'env' || words[0] === 'sudo')) words.shift()
+    const name = (words.shift() || '').split('/').at(-1).toLowerCase()
+    if (!name) continue
+    const args = words
+    const positional = args.filter(w => !w.startsWith('-'))
+    const last = positional.at(-1)
+    if (name === 'cd') { if (args[0]) cwd = path.posix.join(cwd, args[0]); continue }
+    if (powerShell) {
+      const take = (...flags) => {
+        for (let i = 0; i < args.length - 1; i++) if (flags.includes(args[i].toLowerCase())) add(args[i + 1])
+        if (!args.some(a => flags.includes(a.toLowerCase())) && positional[0]) add(positional[0])
+      }
+      if (/^(?:set-content|add-content|out-file|new-item|remove-item|sc|ac|ni|ri|del|rm)$/.test(name)) {
+        take('-path', '-literalpath', '-filepath')
+        continue
+      }
+      else if (name === 'rename-item' || name === 'ren') {
+        const source = args.findIndex(a => /^-(?:path|literalpath)$/i.test(a))
+        if (source >= 0 && args[source + 1]) add(args[source + 1])
+        else if (positional[0]) add(positional[0])
+        const i = args.findIndex(a => /^-newname$/i.test(a))
+        if (i >= 0 && args[i + 1]) add(args[i + 1])
+        else if (last) add(last)
+        continue
+      }
+      else if (/^(?:move-item|copy-item|mv|cp)$/.test(name)) {
+        if (name === 'move-item' || name === 'mv') {
+          const source = args.findIndex(a => /^-(?:path|literalpath)$/i.test(a))
+          if (source >= 0 && args[source + 1]) add(args[source + 1])
+          else if (positional[0]) add(positional[0])
+        }
+        const i = args.findIndex(a => /^-destination$/i.test(a))
+        if (i >= 0 && args[i + 1]) add(args[i + 1])
+        else if (last) add(last)
+        continue
+      }
+    }
+    if (name === 'sed' || name === 'perl') {
+      const inPlace = args.some(a => name === 'sed' ? /^-(?:[^-\s]*i[^\s]*|i)$/.test(a) || /^--in-place(?:=.*)?$/.test(a) : /^-[^-\s]*i/.test(a))
+      if (inPlace) {
+        let scriptSupplied = false, scriptSkipped = false
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i]
+          if (arg === '--') continue
+          if ((name === 'sed' && ['-e', '-f', '--expression', '--file'].includes(arg)) || (name === 'perl' && arg === '-e')) { scriptSupplied = true; i++; continue }
+          if (name === 'sed' && /^(?:--expression=|--file=|-e.+|-f.+)/.test(arg)) { scriptSupplied = true; continue }
+          if (name === 'perl' && /^-e.+/.test(arg)) { scriptSupplied = true; continue }
+          if (name === 'sed' && arg === '-i' && args[i + 1] === '') { i++; continue }
+          if (arg.startsWith('-')) continue
+          if (name === 'sed' && !scriptSupplied && !scriptSkipped) { scriptSkipped = true; continue }
+          add(arg)
+        }
+      }
+    } else if (name === 'patch') {
+      const options = args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+      if (!options.some(arg => ['--dry-run', '--check', '-C'].includes(arg)) && positional[0]) add(positional[0])
+    } else if (['tee', 'rm', 'touch', 'truncate', 'apply_patch'].includes(name)) {
+      if (name === 'rm' || name === 'touch' || name === 'tee') for (const arg of positional) add(arg)
+      else if (last) add(last)
+    } else if (name === 'mv') {
+      for (const arg of positional) add(arg)
+    } else if (name === 'cp') {
+      if (last) add(last)
+    } else if (name === 'find' && args.some(a => /^-(?:delete|exec|execdir|ok)$/.test(a))) {
+      if (positional[0]) add(positional[0])
+    } else if (name === 'dd') {
+      for (const arg of args) if (arg.startsWith('of=')) add(arg.slice(3))
+    } else if (name === 'git') {
+      const action = args[0]
+      if (action === 'mv' || action === 'rm') {
+        const options = args.slice(1, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+        if (action !== 'rm' || !options.some(arg => ['--dry-run', '-n', '--cached'].includes(arg))) {
+          for (const arg of args.slice(1).filter(a => !a.startsWith('-'))) add(arg)
+        }
+      } else if (action === 'restore') {
+        const files = args.slice(1)
+        for (let i = 0; i < files.length; i++) {
+          if (files[i] === '-s' || files[i] === '--source') { i++; continue }
+          if (files[i] !== '--' && !files[i].startsWith('-')) add(files[i])
+        }
+      } else if ((action === 'checkout' || action === 'stash') && args.includes('--')) {
+        for (const arg of args.slice(args.indexOf('--') + 1)) add(arg)
+      } else if (action === 'checkout' && !args.some(a => /^(?:-b|-B|--orphan)$/.test(a))) {
+        for (const arg of args.slice(1)) {
+          if (arg.startsWith('-')) continue
+          try { if (fs.statSync(path.resolve(root, cwd, arg)).isFile()) add(arg) } catch { /* branch or absent path */ }
+        }
+      }
+    }
+  }
+  return targets.filter(t => t && !t.startsWith('-') && t !== '/dev/null')
+}
+
+/** Repo-relative paths touched by an edit or shell tool. Shell commands are bounded above. */
 export function pathsOf(toolName, input, root) {
   const out = new Set()
   const shell = isShellTool(toolName)
-  let candidates = 0
   const rel = p => {
     const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(root)
     const lib = windows ? path.win32 : path
@@ -215,26 +344,25 @@ export function pathsOf(toolName, input, root) {
     const r = lib.relative(root, abs)
     return r && r !== '..' && !r.startsWith('..' + lib.sep) ? r.split(lib.sep).join('/') : undefined
   }
-  if (!shell && input && typeof input === 'object') {
+  if (shell) {
+    for (const token of writeTargets(input, toolName === 'PowerShell', root)) {
+      const r = rel(token)
+      if (r && (fs.existsSync(path.join(root, r)) || /[/\\.]\w/.test(token))) out.add(r)
+    }
+    return Array.from(out)
+  }
+  if (input && typeof input === 'object') {
     for (const key of ['file_path', 'path', 'filePath']) if (typeof input[key] === 'string') {
       const r = rel(input[key]); if (r) out.add(r)
     }
   }
   for (const text of inputStrings(input)) {
-    if (shell && text.length > 20_000) continue
-    if (!shell) {
-      for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
-    }
-    // Keep whole values for edit tools (including paths containing spaces). Shell
-    // punctuation separates tokens so redirects and quoted arguments work too.
-    const tokens = toolName === 'PowerShell'
-      ? Array.from(text.matchAll(/"(?:\x60.|[^"\x60])*"|'(?:''|[^'])*'|[^\s'"\x60;|&<>()]+/g), m => [m[0].replace(/^(?:"|')|(?:"|')$/g, '')])
-      : shell ? text.matchAll(/[^\s'"\x60;|&<>()]+/g) : [[text.trim()]]
-    for (const [token] of tokens) {
-      if (shell && candidates++ >= 200) return Array.from(out)
+    for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
+    // Edit tool path fields may contain spaces; keep each value intact.
+    for (const token of [text.trim()]) {
       if (!token || token.length >= 400 || token.includes('\n')) continue
       const r = rel(token)
-      if (r && (fs.existsSync(path.join(root, r)) || (shell && !token.startsWith('-') && /[/\\.]\w/.test(token)))) out.add(r)
+      if (r && fs.existsSync(path.join(root, r))) out.add(r)
     }
   }
   return Array.from(out)
@@ -292,4 +420,93 @@ export function containsPath(parent, child) {
 
 export function coversPath(a, b) {
   return containsPath(a, b) || containsPath(b, a)
+}
+
+/** A session id Room will name a receipt after: bounded, printable. Anything else gets no receipt. */
+export function receiptSessionId(id) {
+  return typeof id === 'string' && id.length > 0 && id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(id) ? id : undefined
+}
+/** One before-edit receipt per session, named by a hash of its id, so no session ever rewrites another's. */
+export function hookReceiptFile(stateDir, sessionId) {
+  return path.join(stateDir, 'room-hook-receipts', createHash('sha256').update(sessionId).digest('hex').slice(0, 32) + '.json')
+}
+const RECEIPT_MAX_AGE_MS = 7 * 86400_000
+const RECEIPT_PRUNE_EVERY_MS = 10 * 60_000
+const RECEIPT_PRUNE_SCAN = 500
+const RECEIPT_MAX_BYTES = 4096
+/** Read only bounded receipt bytes, including files supplied by another local process. */
+export function readReceipt(file) {
+  const fd = fs.openSync(file, 'r')
+  try {
+    if (fs.fstatSync(fd).size > RECEIPT_MAX_BYTES) return undefined
+    const bytes = Buffer.alloc(RECEIPT_MAX_BYTES + 1)
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0)
+    return count <= RECEIPT_MAX_BYTES ? JSON.parse(bytes.toString('utf8', 0, count)) : undefined
+  } finally { fs.closeSync(fd) }
+}
+/**
+ * Record this session's before-edit receipt (throttled to one write per 5 s) with a temp file and a rename in
+ * the receipts directory: no read-modify-write of shared state, no lock, no wait. At most every ten minutes,
+ * remove receipts older than a week, checking at most 500 files per pass and advancing a cursor. Never throws.
+ */
+export function writeHookReceipt(stateDir, rawId, now = Date.now()) {
+  const sessionId = receiptSessionId(rawId)
+  if (!sessionId) return false
+  const file = hookReceiptFile(stateDir, sessionId)
+  const dir = path.dirname(file)
+  try {
+    const last = readReceipt(file)?.at
+    if (typeof last === 'number' && last <= now && now - last < 5000) return false
+  } catch { /* first receipt, or unreadable: write one */ }
+  const temp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(temp, JSON.stringify({ sessionId, at: now }))
+    fs.renameSync(temp, file)
+  } catch {
+    try { fs.rmSync(temp, { force: true }) } catch { /* best effort */ }
+    return false
+  }
+  pruneHookReceipts(dir, now)
+  return true
+}
+export function pruneHookReceipts(dir, now = Date.now()) {
+  const marker = path.join(dir, '.pruned')
+  const cursorFile = path.join(dir, '.prune-cursor')
+  try { if (now - fs.statSync(marker).mtimeMs < RECEIPT_PRUNE_EVERY_MS) return } catch { /* never pruned */ }
+  try {
+    fs.writeFileSync(marker, '')
+    // Names are cheap to enumerate; only 500 files are statted in one hook call.
+    const names = fs.readdirSync(dir).filter(name => /\.(json|tmp)$/.test(name)).sort()
+    let cursor = ''
+    try { cursor = fs.readFileSync(cursorFile, 'utf8').slice(0, 255) } catch { /* first pass */ }
+    const start = names.findIndex(name => name > cursor)
+    const offset = start < 0 ? 0 : start
+    const batch = names.slice(offset, offset + RECEIPT_PRUNE_SCAN)
+    fs.writeFileSync(cursorFile, batch.at(-1) ?? '')
+    for (const name of batch) {
+      const file = path.join(dir, name)
+      const maxAge = name.endsWith('.tmp') ? 3600_000 : RECEIPT_MAX_AGE_MS
+      try {
+        const before = fs.statSync(file)
+        if (!before.isFile() || now - before.mtimeMs <= maxAge) continue
+        // Move the pathname away before the final age check. If another hook refreshed
+        // the receipt, preserve it, even if the refresh raced with the first stat.
+        const tomb = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.pruning.json`
+        fs.renameSync(file, tomb)
+        const moved = fs.statSync(tomb)
+        if (now - moved.mtimeMs > maxAge) fs.rmSync(tomb, { force: true })
+        else {
+          try { fs.linkSync(tomb, file); fs.rmSync(tomb, { force: true }) }
+          catch (error) {
+            if (error?.code === 'EEXIST') fs.rmSync(tomb, { force: true })
+            else {
+              try { fs.copyFileSync(tomb, file, fs.constants.COPYFILE_EXCL); fs.rmSync(tomb, { force: true }) }
+              catch (copyError) { if (copyError?.code === 'EEXIST') fs.rmSync(tomb, { force: true }) }
+            }
+          }
+        }
+      } catch { /* raced; pruning is best effort */ }
+    }
+  } catch { /* best effort */ }
 }

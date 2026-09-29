@@ -160,6 +160,7 @@ down and drop the mirrored claims.
 (and `ROOM_TOKEN` when the lead joined a shared-token server). Other parent environment variables
 are inherited except for the explicit lead-only Room variables.
 Output goes to `.room/workers/<tag>.log`, the worker's MCP log to `.room/workers/<tag>.mcp.log`.
+If a root watcher config excludes `.room`, the spawn reply warns that a dev server inside the worktree may miss changes and suggests using a config that watches `.room`.
 A stale worktree registration for the tag is pruned first. The worker's prompt is a fixed preamble (follow the etiquette,
 ask the lead with `room_send`, `room_preview_merge`, then `room_done`) followed by the
 task. The doc's `workers` map records tag, name, host, model, task, dir, branch, pid,
@@ -217,7 +218,9 @@ Wake-ups: interrupts and questions addressed to you reach an idle Codex thread t
 - `room_collect(tag=..., discard=true)` stops and discards one worker. Process identity is
   checked before signalling a worker recovered after a lead restart.
 - `room_spawn dir=` outside the repo needs `allowOutside=true`; no worktree or branch
-  bookkeeping is done for it.
+  bookkeeping is done for it. In a local room a `dir` in another repository is refused (its
+  worker could only host a second room of the same name): start a lead in that repository
+  instead; team rooms keep allowing it.
 - Joining the team room on the choice remembered for a clone prints the same one-line
   visibility notice as an explicit join, once per worktree.
 - The bridge relays team plans, conflicts and base moves to workers as interrupts; scopes,

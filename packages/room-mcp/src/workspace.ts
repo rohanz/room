@@ -4,10 +4,21 @@ import { execFileSync } from 'node:child_process'
 import { gitCommonDir } from '@room/roomd'
 
 export type ParentCommandReader = () => string
-/** Existing explicit-worker and inherited-directory precedence. */
+const samePlace = (a: string, b: string): boolean => { try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false } }
+
+/**
+ * The session's folder without call metadata. ROOM_DIR (workers) is explicit. Codex starts Room in
+ * the plugin folder, so its PWD names the session's folder. Claude Code starts Room in the session's
+ * folder, and an inherited PWD may name wherever the host was launched (another repository), so it
+ * only supplies the spelling (a symlinked path) of that same folder.
+ */
 export function fallbackWorkspace(env: NodeJS.ProcessEnv, processDir: string): string {
   const value = (key: string) => env[key]?.trim() || undefined
-  return value('ROOM_DIR') ?? value('PWD') ?? value('INIT_CWD') ?? processDir
+  const explicit = value('ROOM_DIR')
+  if (explicit) return explicit
+  if (env.ROOM_HOST === 'codex') return value('PWD') ?? value('INIT_CWD') ?? processDir
+  const pwd = value('PWD')
+  return pwd && samePlace(pwd, processDir) ? pwd : processDir
 }
 
 export const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
@@ -38,14 +49,18 @@ export function codexWorkspace(params: { _meta?: unknown }, rootOf: (dir: string
   const workspaces = (turn as Record<string, unknown>).workspaces
   if (!workspaces || typeof workspaces !== 'object' || Array.isArray(workspaces)) return undefined
   const roots = new Set<string>()
+  const plain = new Set<string>()
   for (const key of Object.keys(workspaces)) {
     try {
       const real = fs.realpathSync(key)
       const root = rootOf(real)
       if (root) roots.add(fs.realpathSync(root))
+      else if (fs.statSync(real).isDirectory()) plain.add(real)
     } catch { /* missing or inaccessible workspace */ }
   }
-  return roots.size === 1 ? roots.values().next().value : undefined
+  // A lone folder that is not a repository is still this session's folder: Room tells the human, never joins elsewhere.
+  const only = roots.size ? roots : plain
+  return only.size === 1 ? only.values().next().value : undefined
 }
 
 /** Same worktree root and Git repository; a subfolder of the bound worktree matches, sibling worktrees do not. */

@@ -208,7 +208,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Declare your task and paths once when working with others.",
+      "description": "Declare task and edit paths once; read-only reviewers need no scope.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -225,7 +225,7 @@
             "items": {
               "type": "string"
             },
-            "description": "files or directories you expect to touch"
+            "description": "non-empty edit files or directories"
           }
         },
         "required": [
@@ -300,17 +300,17 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.",
+      "description": "Claim only where another participant is near. File: symbol, or from and to (whole file: from=1, to=last line). Directory: path ending /. Declare public API plans.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "path": {
             "type": "string",
-            "description": "repo-relative path"
+            "description": "repo-relative path; directory ends /"
           },
           "symbol": {
             "type": "string",
-            "description": "definition name"
+            "description": "definition name, or from/to"
           },
           "from": {
             "type": "integer",

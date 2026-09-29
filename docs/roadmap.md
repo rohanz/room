@@ -58,6 +58,15 @@ From the [2026-09-26 triage](triage-2026-09-26-roadmap.md):
 
 Proved fixed earlier by the triage and marked inline below: preview em dash (0.15.1), preview environment leak, exit-status verdict, note recipient display, bare worker tag, Codex hook message to a Claude lead (0.10.2), double wakes, stale eval mocks (0.15.1), directory claims (0.10.2), questions to busy workers (before-edit hook), recovery patches for landed work and the spawn-time hook warning (0.14.1), the sharing banner (0.10.1), real-repo measurement (`measure-room-perf.mts`). "A collected worker cannot take a fix-up" is by design since 0.15.0.
 
+## Found 2026-09-29, left to the redesign
+
+From the [Werkzeug](rehearsal-2026-09-29-werkzeug.md), [httpx](rehearsal-2026-09-29-httpx.md) and [Flask](rehearsal-2026-09-29-flask.md) rehearsals on 0.16.37. The redesign (branch `redesign`, specs in `docs/superpowers/specs/2026-09-28-*.md`) replaces these mechanisms, so 0.16.38 does not patch them:
+
+- **Codex replays its queued inbox after finishing** (Werkzeug 3, httpx 3, Flask 2): answered questions and pulled base notices come back as new turns, and a base notice says "You have uncommitted work" on a clean tree. Covered by ledger.md "Wake (MF8)" (a content-free pointer, owed and not yet consumed messages only) and "The one selection function"; reporooms.md "B4. `pushed` notices" drops notices whose commit is already in HEAD.
+- **A quit Codex session stays in the room** (Werkzeug 4, httpx 1, Flask 4): its MCP server lives on under the shared `codex app-server` daemon. Covered by registry.md "18. Presence end and the idle lease" and "17. Host session binding". The spec keeps a quit session that still holds scope or claims present for up to 8 hours.
+- **Previews don't say whose work is missing or unfinished** (Werkzeug 5, httpx 5, Flask 8). Covered by manifest.md "6.1 Preview coverage, freshness and completeness".
+- **A preview fails with "HEAD … is not in this clone" after a teammate pushes** (Werkzeug 9). Covered by reporooms.md "B7. Previews and collect" (`ensureCommit` fetches, "B3. Each participant's base"). Claude Code's framing of a Room wake as a peer request (httpx 8) is host text; ledger.md "Wake (MF8)" shortens the wake to a pointer but does not address the framing.
+
 ## The design the gaps point at: cost scales with overlap
 
 The gap list below says what breaks. This is the one idea that fixes most of it. Multiplayer

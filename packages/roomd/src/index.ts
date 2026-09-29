@@ -414,7 +414,7 @@ class Daemon implements Roomd {
     const [branch, base, tracked, remote] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
-      gitTracked(this.dir),
+      gitTracked(this.dir).then(t => t.paths),
       this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
     ]))
     this.branch = branchName(branch)
@@ -710,7 +710,7 @@ class Daemon implements Roomd {
     if (headMoved) {
       this.base = head
       this.branch = branch
-      this.tracked = await gitTracked(this.dir)
+      this.tracked = (await gitTracked(this.dir)).paths
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
@@ -1072,7 +1072,7 @@ class Daemon implements Roomd {
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
     try {
-      const next = await gitTracked(this.dir)
+      const next = (await gitTracked(this.dir)).paths
       const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
       const removed = Array.from(new Set([...this.tracked, ...manifestPaths(this.roomDoc, this.name)])).filter(relpath => !next.has(relpath))
       this.tracked = next

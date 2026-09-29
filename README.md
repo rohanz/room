@@ -438,6 +438,13 @@ supplies shared state and presence; Git remains the integration mechanism.
   time out, offline claims become stale, and graph snapshots expose age and status.
 - **Sharing follows the selected destination and level.** In a team room, eligible file text
   and coordination history reach the server and participants. Local room data stays on your machine.
+- **Investigating a stuck tool.** Slow calls (with phase durations) and event-loop stalls are
+  logged to `<git common dir>/room-mcp.log` with the process ID. An event-loop lag line can
+  also reflect system sleep or a debugger pause. The plugin starts the MCP
+  server with plain `node`, so on macOS/Linux `kill -USR1 <pid>` opens Node's inspector;
+  attach through `chrome://inspect` and record a CPU profile in DevTools Performance.
+  For a profile from process start, launch Node with `--cpu-prof` and
+  `--cpu-prof-dir=<writable directory>`; Node writes the `.cpuprofile` on exit.
 
 ## Areas for improvement
 

@@ -9,7 +9,7 @@
     "./testing": "./src/testing.ts"
   },
   "dependencies": {
-    "fast-diff": "^1.3.0",
+    "diff": "^8.0.2",
     "yjs": "^13.6.32"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
