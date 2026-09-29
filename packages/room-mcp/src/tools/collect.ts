@@ -90,6 +90,11 @@ const ownershipRecords = (s: Session) => [...s.room.retiredWorkers(), ...localWo
 
 async function stopOwnedWorktreeProcesses(leadDir: string, w: LocalWorker, leadName: string, workers: Iterable<LocalWorker | RetiredWorker>, errors?: string[], probe?: ProcessProbe, list?: CwdProcessLister): Promise<string[]> {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return []
+  if (w.id) {
+    const registry = await registryForDir(leadDir)
+    const record = registry.read(w.id)
+    if (!record || record.sharedWith || registry.worktreeOwner(record) || registry.checkoutUsers(record).length) return []
+  }
   try { return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe, list }) }
   catch (e) {
     errors?.push(`cwd process cleanup failed: ${e instanceof Error ? e.message : String(e)}`)
@@ -131,6 +136,35 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
+  const cleanRetiredSharedOwner = async (s: Session, borrower: LocalWorker): Promise<void> => {
+    const registry = await registryForDir(s.dir)
+    const current = registry.read(borrower.id)
+    const owner = current && registry.worktreeOwner(current)
+    if (!owner || owner.phase !== 'retired' || !owner.keptWorktree
+      || !owner.archive?.keptReason?.startsWith('shared checkout: ')) return
+    try { await registry.beginOperation(owner.id, 'collect') } catch { return }
+    try {
+      const fresh = registry.read(owner.id)
+      if (!fresh || fresh.phase !== 'retired' || !fresh.keptWorktree || registry.checkoutUsers(fresh).length) return
+      const status = registry.status(fresh.id)
+      if (!status) return
+      const w = { ...realStateInput(fresh, status), status: 'done' as const, exitCode: 0 }
+      if (!await cleanupWorker(s.dir, w, true, false, [], { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) return
+      await registry.update(fresh.id, old => {
+        const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {}
+        return { ...old, keptWorktree: undefined, archive: archive as RetiredWorker, seq: old.seq + 1 }
+      })
+      for (const room of state.rooms.all()) {
+        const list = room.room.doc.getArray<RetiredWorker>('retiredWorkers')
+        const index = list.toArray().findIndex(entry => entry.id === fresh.id)
+        if (index >= 0) room.room.doc.transact(() => {
+          const { keptWorktree: _kept, keptReason: _reason, ...entry } = list.get(index)
+          list.delete(index)
+          list.insert(index, [entry])
+        })
+      }
+    } finally { await registry.finishOperation(owner.id) }
+  }
   const missingCapability = (s: Session, w: LocalWorker): string => {
     const registry = registrySnapshotForDir(s.dir)
     const record = registry.reserved(w.tag)
@@ -201,12 +235,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!active || !activeStatus) return 'error: kept worker has no local registry record'
         const borrowedOwner = registry.worktreeOwner(active)
         const borrowed = !!active.sharedWith || !!borrowedOwner
-        const shared = !borrowed && fs.existsSync(r.keptWorktree!) && localWorkers(s.dir).find(other => other.id !== active.id && path.resolve(other.dir) === path.resolve(r.keptWorktree!))
-        if (shared) return `error: discard refused; ${shared.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`
         const w: LocalWorker = { ...realStateInput(active, activeStatus), dir: r.keptWorktree!, branch: 'room/' + r.tag, status: 'done', exitCode: 0, pid: 0 }
         try { await registry.beginOperation(active.id, 'discard') }
         catch { return 'error: this worker is already being handled or retired' }
         try {
+          const shared = !borrowed && fs.existsSync(r.keptWorktree!) && registry.checkoutUsers(active)[0]
+          if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`
           const missing = !borrowed && decideDiscard(await workerRealState(s.dir, w)) === 'prune'
           const ignored = missing || borrowed ? [] : await ignoredWorkerArtifacts(w)
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(', ')}\nretained worktree: ${w.dir}\nrepeat with force=true to delete them`
@@ -232,6 +266,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           await registry.markDiscardStep(active.id, 'prune')
           await retireWorker(rooms, s, active.id, { ...r, summary: 'discarded', disposition: 'discarded', keptWorktree: undefined }, { keptWorktree: undefined })
+          if (borrowed) await cleanRetiredSharedOwner(s, w)
           return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { await registry.finishOperation(active.id) }
@@ -245,21 +280,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const workerRecord = registry.read(w.id)
       const borrowedOwner = workerRecord && registry.worktreeOwner(workerRecord)
       const borrowed = !!w.sharedWith || !!borrowedOwner
+      const lock = await takeWorkerOperation(s, w, 'discard')
+      if (lock === 'untrusted') return `error: ${missingCapability(s, w)}`
+      if (lock === 'busy') return 'error: this worker is already being handled or retired'
+      try {
       const sharedResults: string[] = []
       if (!borrowed) {
-        const users = localWorkers(s.dir).filter(other => other.id !== w.id && path.resolve(other.dir) === path.resolve(w.dir))
-        const running = users.find(other => other.status === 'running' || state.workerAlive(s, other))
-        if (running && fs.existsSync(w.dir)) return `error: discard refused; ${running.tag} is still running in ${w.tag}'s worktree: ${w.dir}`
-        for (const user of users) {
+        const users = registry.checkoutUsers(registry.read(w.id)!)
+        const running = users.find(({ status }) => !['done', 'failed', 'stopped'].includes(status.status))
+        if (running && fs.existsSync(w.dir)) return `error: discard refused; ${running.record.tag} is still running in ${w.tag}'s worktree: ${w.dir}`
+        for (const { record: user } of users) {
           const result = await roomCollect({ tag: user.tag, discard: true }, discarding, s)
           if (!result.startsWith('detached ')) return `error: could not detach ${user.tag} before discarding ${w.tag}: ${result}`
           sharedResults.push(result)
         }
       }
-      const lock = await takeWorkerOperation(s, w, 'discard')
-      if (lock === 'untrusted') return `error: ${missingCapability(s, w)}`
-      if (lock === 'busy') return 'error: this worker is already being handled or retired'
-      try {
         const unsafe = await unverifiedLive(s, w)
         if (unsafe) return unsafe
         const children = descendants(s, w)
@@ -351,6 +386,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: borrowed ? 'detached' : 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'discarded',
         })
+        if (borrowed) await cleanRetiredSharedOwner(s, w)
         return [...sharedResults, ...childResults, (borrowed
           ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}`
           : decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
@@ -409,7 +445,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (workerRoot === leadRoot) throw new Error('worker must have a separate worktree')
         await assertNoOperation(w.dir)
         if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error('worker is not a worktree of this repository')
-        if (w.branch !== 'room/' + w.tag || (await git(w.dir, ['branch', '--show-current'])).trim() !== w.branch) throw new Error('worker must be on branch room/' + w.tag)
+        const worktreeRecord = registry.read(w.id)
+        const ownerRecord = worktreeRecord && registry.worktreeOwner(worktreeRecord)
+        const expectedBranch = ownerRecord?.branch ?? w.branch
+        if ((!ownerRecord && w.branch !== 'room/' + w.tag) || (await git(w.dir, ['branch', '--show-current'])).trim() !== expectedBranch) throw new Error('worker must be on its recorded Room branch')
         await gitWholeTree(w.dir, ['ls-files', '-z'])
         const cleanupErrors: string[] = []
         const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
@@ -579,7 +618,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { s, w } of selected) {
         let archived: { entry: RetiredWorker; keptWorktree?: string } | undefined
         const finishOne = async (success = true) => {
-          if (success && archived) await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {})
+          if (success && archived) {
+            await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {})
+            await cleanRetiredSharedOwner(s, w)
+          }
           else await registry.abortCollect(w.id)
           collectStarted.delete(w.id)
         }
@@ -596,8 +638,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (state.workerAlive(s, w)) { out.push('kept ' + w.tag + ': clean exit not confirmed'); await finishOne(false); continue }
         if (w.exitCode !== 0) { out.push('kept ' + w.tag + ': clean exit not confirmed'); retire(w.summary ?? '', w.dir, 'clean exit not confirmed'); await finishOne(); continue }
         try {
+          const record = registry.read(w.id)
+          const owner = record && registry.worktreeOwner(record)
+          if (record && (record.sharedWith || owner)) {
+            retire(w.summary ?? '')
+            out.push(`detached ${w.tag}; the worktree belongs to ${owner?.tag ?? record.sharedWith}`)
+            await finishOne()
+            continue
+          }
           const children = descendants(s, w)
           if (children.length) { const reason = 'nested workers remain: ' + children.map(c => c.tag).join(', '); out.push('kept ' + w.tag + ': ' + reason); retire(w.summary ?? '', w.dir, reason); await finishOne(); continue }
+          if (record) {
+            const users = registry.checkoutUsers(record)
+            const running = users.find(({ status }) => !['done', 'failed', 'stopped'].includes(status.status))
+            if (running) {
+              out.push(`kept ${w.tag}'s worktree: ${running.record.tag} is still running in it`)
+              retire(w.summary ?? '', w.dir, `shared checkout: ${running.record.tag}`)
+              await finishOne()
+              continue
+            }
+            for (const { record: user } of users) {
+              const result = await roomCollect({ tag: user.tag, discard: true }, discarding, s)
+              if (!result.startsWith('detached ')) throw new Error(`could not retire ${user.tag} before cleaning ${w.tag}: ${result}`)
+              out.push(`retired ${user.tag} with ${w.tag}`)
+            }
+          }
           const ignored = await ignoredWorkerArtifacts(w)
           if (ignored.length) {
             out.push('kept ' + w.tag + ': uncopied ignored artifacts')

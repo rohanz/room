@@ -16,6 +16,7 @@ import { PolicyStore, sharingFile } from '../src/policy-store.js'
 import { finishWorker, registerWorkers, workerByTag, type FixtureWorker } from './registry-fixture.js'
 import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
+import { autoRetire } from '../src/retire.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -727,6 +728,97 @@ describe('room_collect', () => {
     expect(result).toContain('port-bools is still running')
     expect(fs.existsSync(worker)).toBe(true)
     expect(workerByTag(lead, 'port-fix')).toBeDefined()
+  })
+  it('collects the owner changes but keeps its running borrower and checkout', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    const list = vi.fn(() => [])
+    t.state.ctx = { listCwdProcesses: list, probe: () => undefined } as never
+    const result = await t.call({ tag: 'port-fix' })
+    expect(result).toContain('Changes from port-fix: new.txt')
+    expect(result).toContain("kept port-fix's worktree: port-bools is still running in it")
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(workerByTag(lead, 'port-bools')?.status).toBe('running')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('shared output')
+    expect(list).not.toHaveBeenCalled()
+  })
+  it('collects an owner after retiring its finished borrower', async () => {
+    const t = httpxWorkers()
+    put(worker, 'new.txt', 'shared output')
+    const result = await t.call({ tag: 'port-fix' })
+    expect(result).toContain('retired port-bools with port-fix')
+    expect(result).toContain('cleaned up port-fix')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(workerByTag(lead, 'port-bools')).toBeUndefined()
+  })
+  it('removes the kept owner checkout when its last borrower is discarded', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBeUndefined()
+  })
+  it('collects the last borrower without removing the owner checkout during its own collection', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    const result = await t.call({ tag: 'port-bools' })
+    expect(result).toContain('detached port-bools; the worktree belongs to port-fix')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+  it('deferred retirement keeps an owner checkout while its borrower runs', async () => {
+    const t = httpxWorkers('running')
+    await t.sync()
+    const list = vi.fn(() => [])
+    const rooms = { ...t.state.rooms, probe: () => undefined, hasHandle: () => false,
+      tracking: () => true, listCwdProcesses: list } as never
+    await autoRetire(t.s, rooms)
+    const registry = await registryForDir(lead)
+    expect(registry.read('w_port-fix')?.phase).toBe('retired')
+    expect(registry.read('w_port-fix')?.keptWorktree).toBe(worker)
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(workerByTag(lead, 'port-bools')?.status).toBe('running')
+    expect(list).not.toHaveBeenCalled()
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+  it('serializes a borrower resume with the owner cleanup decision', async () => {
+    const t = httpxWorkers()
+    t.set('port-bools', { ...t.get('port-bools'), hostSessionId: 'borrower-session' })
+    await t.sync()
+    const registry = await registryForDir(lead)
+    expect(registry.status('w_port-bools')?.status).toBe('done')
+    await registry.beginOperation('w_port-fix', 'collect')
+    try {
+      await expect(registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 }))
+        .rejects.toThrow('worker operation lease held')
+    } finally { await registry.finishOperation('w_port-fix') }
+    await registry.resume('w_port-bools', 10, { nonce: 'next', busFrontier: 0, logStart: 0 })
+    await registry.finishOperation('w_port-bools')
+    put(worker, 'new.txt', 'shared output')
+    const result = await t.call({ tag: 'port-fix' })
+    expect(result).toContain("kept port-fix's worktree: port-bools is still running in it")
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+  it('does not admit a new borrower while owner cleanup holds its operation', async () => {
+    const t = httpxWorkers()
+    await t.sync()
+    const registry = await registryForDir(lead)
+    const prior = registry.read('w_port-bools')!
+    const late = { ...prior, id: 'w_late', tag: 'late', name: 'lead+late', phase: 'intent' as const,
+      prep: { step: 'plan' as const }, runs: [{ ...prior.runs[0], launch: undefined }], seq: 1 }
+    await registry.beginOperation('w_port-fix', 'collect')
+    try {
+      await expect(registry.writeIntent(late)).rejects.toThrow('worker operation lease held')
+      expect(registry.read('w_late')).toBeUndefined()
+    } finally { await registry.finishOperation('w_port-fix') }
+    await registry.writeIntent(late)
+    expect(registry.read('w_late')?.sharedWith).toBe('w_port-fix')
+    await registry.finishOperation('w_late')
   })
   it('replays an owner discard by retiring its finished borrower first', async () => {
     const t = httpxWorkers()

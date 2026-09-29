@@ -17069,13 +17069,13 @@ var init_worker_messages = __esm({
 });
 
 // packages/shared/src/wake.ts
-function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorkerNames) {
+function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorkerNames2) {
   if (m.type === "plan" && m.priority === "fyi") return { wake: false, mustAnswer: false, reason: "ended plan" };
   if (m.from === me.name && m.fromKind !== "human") return { wake: false, mustAnswer: false, reason: "own message" };
   const addressed = m.to === me.name;
   const kind = messageKind(m);
   if (kind.wakes === "never") return { wake: false, mustAnswer: false, reason: "feed-only event" };
-  if (m.type === "note" && m.priority !== "interrupt" && addressed && m.fromKind === "agent" && ownWorkerNames?.has(m.from)) {
+  if (m.type === "note" && m.priority !== "interrupt" && addressed && m.fromKind === "agent" && ownWorkerNames2?.has(m.from)) {
     return { wake: false, mustAnswer: false, reason: "own worker progress note" };
   }
   if ((m.type === "done" || m.type === "question") && addressed) return { wake: true, mustAnswer: true, reason: `${m.type} addressed to me` };
@@ -39015,7 +39015,7 @@ __export(files_exports, {
   testVerdict: () => testVerdict
 });
 import { execFile as execFile8, spawn as spawn4 } from "node:child_process";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
 import fs34 from "node:fs";
 import os6 from "node:os";
 import path30 from "node:path";
@@ -39211,6 +39211,7 @@ function handlers(state) {
     },
     async room_preview_merge(a) {
       const caller = S();
+      caller.lastPreview = { clean: false, complete: false, testsPassed: false };
       const alias = typeof a.person === "string" && a.person.trim() ? a.person.trim() : "";
       if (a.people !== void 0 && !Array.isArray(a.people)) return "error: people must be an array of names";
       if (Array.isArray(a.people) && a.people.some((p) => typeof p !== "string" || !p.trim())) return "error: people must contain non-empty names";
@@ -39384,22 +39385,42 @@ async function linkSharedDirs(cloneDir, scratchDir) {
   await yieldTurn();
   ensureMergedDirectory(scratchDir, "");
   const venv = path30.join(cloneDir, ".venv");
-  if (fs34.existsSync(venv) && !fs34.existsSync(path30.join(scratchDir, ".venv"))) fs34.symlinkSync(venv, path30.join(scratchDir, ".venv"));
-  const candidates = ["node_modules"];
+  const scratchVenv = path30.join(scratchDir, ".venv");
+  try {
+    if ((await fs34.promises.lstat(scratchVenv)).isSymbolicLink()) await fs34.promises.unlink(scratchVenv);
+  } catch (error2) {
+    if (error2.code !== "ENOENT") throw error2;
+  }
+  if (fs34.existsSync(venv) && !fs34.existsSync(scratchVenv)) fs34.symlinkSync(venv, scratchVenv);
+  const candidates = /* @__PURE__ */ new Set(["node_modules"]);
   for (const top of ["packages", "apps", "libs"]) {
     await yieldTurn();
-    const d = path30.join(cloneDir, top);
-    if (!fs34.existsSync(d)) continue;
-    let count = 0;
-    for (const e of fs34.readdirSync(d, { withFileTypes: true })) {
-      if (count++ % 32 === 0) await yieldTurn();
-      if (e.isDirectory()) candidates.push(path30.join(top, e.name, "node_modules"));
+    for (const root of [cloneDir, scratchDir]) {
+      const d = path30.join(root, top);
+      try {
+        if (!(await fs34.promises.lstat(d)).isDirectory()) continue;
+      } catch (error2) {
+        if (error2.code === "ENOENT") continue;
+        throw error2;
+      }
+      let count = 0;
+      for (const e of fs34.readdirSync(d, { withFileTypes: true })) {
+        if (count++ % 32 === 0) await yieldTurn();
+        if (e.isDirectory()) candidates.add(path30.join(top, e.name, "node_modules"));
+      }
     }
   }
-  for (const [index, rel] of candidates.entries()) {
+  for (const [index, rel] of [...candidates].entries()) {
     if (index % 32 === 0) await yieldTurn();
     const src = path30.join(cloneDir, rel), dst = path30.join(scratchDir, rel);
-    if (!fs34.existsSync(src) || fs34.existsSync(dst)) continue;
+    if (rel !== "node_modules") ensureMergedDirectory(scratchDir, path30.dirname(rel));
+    try {
+      await fs34.promises.lstat(dst);
+      await fs34.promises.rm(dst, { recursive: true, force: true });
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    if (!fs34.existsSync(src)) continue;
     await mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
@@ -39530,69 +39551,98 @@ async function previewCachePath(cloneDir, repoDir = cloneDir) {
 }
 async function removePreviewCache(cloneDir, repoDir = cloneDir) {
   const cache = await previewCachePath(cloneDir, repoDir);
-  const lock = `${cache}.lock`;
-  let pid = 0;
+  await fs34.promises.mkdir(path30.dirname(cache), { recursive: true, mode: 448 });
+  const release = await acquirePreviewLock(`${cache}.lock`);
+  if (!release) throw new Error(`preview cache is in use or its lock is uncertain: ${cache}`);
   try {
-    pid = Number(await fs34.promises.readFile(lock, "utf8"));
-  } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
-  }
-  if (fs34.existsSync(lock)) {
-    if (!pid || !Number.isSafeInteger(pid)) throw new Error(`preview cache is locked: ${cache}`);
+    let present = false;
     try {
-      process.kill(pid, 0);
-      throw new Error(`preview cache is in use: ${cache}`);
+      await fs34.promises.lstat(cache);
+      present = true;
     } catch (error2) {
-      if (error2.code !== "ESRCH") throw error2;
+      if (error2.code !== "ENOENT") throw error2;
     }
-    await fs34.promises.rm(lock, { force: true });
+    if (present) {
+      try {
+        await gitSetup(repoDir, ["worktree", "remove", "--force", cache]);
+      } catch {
+        await fs34.promises.rm(cache, { recursive: true, force: true });
+      }
+    }
+    await gitSetup(repoDir, ["worktree", "prune"]);
+  } finally {
+    await release();
   }
-  let present = false;
+}
+function deadPreviewOwner(value2) {
+  const pid = Number(value2.includes(":") ? value2.split(":", 1)[0] : value2);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
-    await fs34.promises.lstat(cache);
-    present = true;
+    process.kill(pid, 0);
+    return false;
   } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
+    return error2.code === "ESRCH";
   }
-  if (present) {
-    try {
-      await gitSetup(repoDir, ["worktree", "remove", "--force", cache]);
-    } catch {
-      await fs34.promises.rm(cache, { recursive: true, force: true });
-    }
-  }
-  await gitSetup(repoDir, ["worktree", "prune"]);
 }
 async function acquirePreviewLock(file) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const token = `${process.pid}:${previewProcessStarted}:${randomUUID5()}`;
+  const recoveryGate = `${file}.recover`;
+  const create6 = async () => {
     try {
       const handle2 = await fs34.promises.open(file, "wx", 384);
       try {
-        await handle2.writeFile(String(process.pid));
+        await handle2.writeFile(token);
       } finally {
         await handle2.close();
       }
       return async () => {
-        await fs34.promises.rm(file, { force: true });
+        let current;
+        try {
+          current = await fs34.promises.readFile(file, "utf8");
+        } catch (error2) {
+          if (error2.code === "ENOENT") return;
+          throw error2;
+        }
+        if (current === token) await fs34.promises.rm(file, { force: true });
       };
     } catch (error2) {
-      if (error2.code !== "EEXIST") throw error2;
-      let pid = 0;
-      try {
-        pid = Number(await fs34.promises.readFile(file, "utf8"));
-      } catch {
-      }
-      if (!pid || !Number.isSafeInteger(pid)) return void 0;
-      try {
-        process.kill(pid, 0);
-        return void 0;
-      } catch (cause) {
-        if (cause.code !== "ESRCH") return void 0;
-      }
-      await fs34.promises.rm(file, { force: true });
+      if (error2.code === "EEXIST") return void 0;
+      throw error2;
     }
+  };
+  try {
+    if (Date.now() - (await fs34.promises.stat(recoveryGate)).mtimeMs > 6e4) await fs34.promises.rmdir(recoveryGate);
+  } catch {
   }
-  return void 0;
+  if (fs34.existsSync(recoveryGate)) return void 0;
+  const direct = await create6();
+  if (direct) return direct;
+  let stale;
+  try {
+    stale = await fs34.promises.readFile(file, "utf8");
+  } catch {
+    return void 0;
+  }
+  if (!deadPreviewOwner(stale)) return void 0;
+  try {
+    await fs34.promises.mkdir(recoveryGate, { mode: 448 });
+  } catch (error2) {
+    if (error2.code === "EEXIST") return void 0;
+    throw error2;
+  }
+  try {
+    let current;
+    try {
+      current = await fs34.promises.readFile(file, "utf8");
+    } catch {
+      return void 0;
+    }
+    if (current !== stale || !deadPreviewOwner(current)) return void 0;
+    await fs34.promises.rm(file);
+    return await create6();
+  } finally {
+    await fs34.promises.rmdir(recoveryGate);
+  }
 }
 async function resetPreviewTree(dir, ancestor) {
   await gitSetup(dir, ["reset", "--hard", "--quiet", ancestor]);
@@ -39757,7 +39807,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     archive.stdout.pipe(extract.stdin);
   });
 }
-var defs, SETUP_TIMEOUT_MS, gitSetup, CLOSED_ARCHIVE_PIPE_ERRORS;
+var defs, SETUP_TIMEOUT_MS, gitSetup, previewProcessStarted, CLOSED_ARCHIVE_PIPE_ERRORS;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -39799,6 +39849,7 @@ var init_files = __esm({
     ];
     SETUP_TIMEOUT_MS = 10 * 6e4;
     gitSetup = (dir, args3) => git(dir, args3, SETUP_TIMEOUT_MS);
+    previewProcessStarted = Math.floor(Date.now() - process.uptime() * 1e3);
     CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
   }
 });
@@ -40108,6 +40159,15 @@ async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, 
   }
 }
 async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = []) {
+  const available = async () => {
+    if (!w.id) return true;
+    const { registryForDir: registryForDir2 } = await Promise.resolve().then(() => (init_worker_registry(), worker_registry_exports));
+    const registry2 = await registryForDir2(leadDir);
+    const record2 = registry2.read(w.id);
+    if (!record2) return w.branch === `room/${w.tag}` && registry2.list().every((peer) => path31.resolve(peer.dir) !== path31.resolve(w.dir) || peer.tag === w.tag);
+    return !record2.sharedWith && !registry2.worktreeOwner(record2) && registry2.checkoutUsers(record2).length === 0;
+  };
+  if (!await available()) return false;
   if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
   if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== "cleanup") return false;
   const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && isInsideRoot(fs35.realpathSync(w.dir), dir));
@@ -40120,10 +40180,12 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false, t
     } catch {
     }
   }
+  if (!await available()) return false;
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions));
   try {
     const { removePreviewCache: removePreviewCache2 } = await Promise.resolve().then(() => (init_files(), files_exports));
     await removePreviewCache2(w.dir, leadDir);
+    if (!await available()) return false;
     await internalGit(leadDir, ["worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
     await internalGit(leadDir, ["branch", "-D", w.branch]);
     for (const ref of refs.keys()) await internalGit(leadDir, ["update-ref", "-d", ref]);
@@ -40221,6 +40283,20 @@ var init_worker_git = __esm({
 });
 
 // packages/room-mcp/src/worker-registry.ts
+var worker_registry_exports = {};
+__export(worker_registry_exports, {
+  WorkerRegistry: () => WorkerRegistry,
+  admitWorkerEnvironment: () => admitWorkerEnvironment,
+  carriedFrom: () => carriedFrom,
+  closeRegistryForDir: () => closeRegistryForDir,
+  discoverLegacyWorktrees: () => discoverLegacyWorktrees,
+  localWorkerBaseline: () => localWorkerBaseline,
+  localWorkers: () => localWorkers,
+  ownWorkerNames: () => ownWorkerNames,
+  registryForDir: () => registryForDir,
+  registrySnapshotForDir: () => registrySnapshotForDir,
+  workerCarried: () => workerCarried
+});
 import fs36 from "node:fs";
 import path32 from "node:path";
 import { createHash as createHash12, randomBytes as randomBytes4 } from "node:crypto";
@@ -40236,6 +40312,12 @@ function base32(value2, length2) {
 }
 function registrySnapshotForDir(dir) {
   return WorkerRegistry.snapshot(commonGitDirFromDotGit(dir));
+}
+async function closeRegistryForDir(dir) {
+  const common = commonGitDirFromDotGit(dir);
+  const pending = registries.get(common);
+  registries.delete(common);
+  (await pending?.catch(() => void 0))?.close();
 }
 async function registryForDir(dir, sessionId) {
   const common = await gitCommonDir(dir);
@@ -40315,6 +40397,13 @@ function localWorkerBaseline(dir, participant) {
     link: record2.link,
     lead: record2.lead.participant
   };
+}
+function ownWorkerNames(dir, lead) {
+  try {
+    return new Set(registrySnapshotForDir(dir).list().filter((r) => r.lead.participant === lead && !["retiring", "retired", "abandoned"].includes(r.phase)).map((r) => r.name));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
 }
 function localWorkers(dir, keep = () => true) {
   const registry2 = registrySnapshotForDir(dir);
@@ -40819,6 +40908,14 @@ var init_worker_registry = __esm({
         if (path32.basename(record2.dir) === record2.tag && record2.branch === `room/${record2.tag}`) return void 0;
         return this.list().find((peer) => peer.id !== record2.id && !peer.sharedWith && path32.resolve(peer.dir) === path32.resolve(record2.dir) && path32.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`);
       }
+      /** Other unretired workers using an owner's checkout, including legacy dir= records. */
+      checkoutUsers(owner) {
+        return this.list().flatMap((record2) => {
+          if (record2.id === owner.id || ["retiring", "retired", "abandoned"].includes(record2.phase) || path32.resolve(record2.dir) !== path32.resolve(owner.dir)) return [];
+          const status = this.status(record2.id);
+          return status ? [{ record: record2, status }] : [];
+        });
+      }
       status(id3) {
         const record2 = this.read(id3);
         if (!record2) return void 0;
@@ -40869,6 +40966,15 @@ var init_worker_registry = __esm({
         if (!worktreeRecord || worktreeRecord.lead.participant !== lead.participant || path32.resolve(worktreeRecord.dir) !== path32.resolve(candidate.dir) || worktreeRecord.sharedWith) return void 0;
         if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return void 0;
         return { record: candidate, status };
+      }
+      /** Any operation lease, including an unreadable one, blocks automatic claim release. */
+      operationInProgress(id3) {
+        try {
+          fs36.lstatSync(this.opFile(id3));
+          return true;
+        } catch (error2) {
+          return error2.code !== "ENOENT";
+        }
       }
       async adoptLegacy(record2, lead) {
         if (!lead.participant || !lead.room || record2.phase !== "active") return void 0;
@@ -40936,32 +41042,41 @@ var init_worker_registry = __esm({
       /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
       async writeIntent(record2, capacity = Number.POSITIVE_INFINITY) {
         if (!safeId(record2.id) || !recordShape(record2, record2.id) || record2.runs[0].launch) throw new Error("invalid worker intent");
-        const deadline = performance5.now() + GUARD_WAIT_MS3;
-        for (; ; ) {
-          try {
-            await guarded3(path32.join(this.root, "capacity"), () => {
-              if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
-              const tagFile = this.tagFile(record2.tag);
-              if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) {
-                const reservation = readJson2(tagFile);
-                if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
-                  const bound = this.read(reservation.id);
-                  const reusable = bound && (bound.phase === "abandoned" || bound.phase === "retired" && !bound.keptWorktree && !!bound.cleanup && Object.values(bound.cleanup).every((state) => state === "done"));
-                  if (reusable) compareAndRelease(tagFile, reservation.holder);
-                  else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, (current) => current.id === reservation.id);
-                }
-                if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record2.tag}`);
-              }
-              if (!createExclusive(this.opFile(record2.id), { op: "spawn", holder: record2.runs[0].launcher, at: this.now() })) throw new Error("worker operation lease busy");
-              if (!createExclusive(this.workerFile(record2.id), record2)) throw new Error(`worker already exists: ${record2.id}`);
-            }, deadline);
-            break;
-          } catch (error2) {
-            await pauseForGuard(deadline, error2);
+        if (record2.sharedWith) await this.beginOperation(record2.sharedWith, "resume");
+        try {
+          if (record2.sharedWith) {
+            const owner = this.read(record2.sharedWith);
+            if (!owner || owner.sharedWith || path32.resolve(owner.dir) !== path32.resolve(record2.dir) || ["retiring", "retired", "abandoned"].includes(owner.phase)) throw new Error("shared worktree owner is no longer available");
           }
+          const deadline = performance5.now() + GUARD_WAIT_MS3;
+          for (; ; ) {
+            try {
+              await guarded3(path32.join(this.root, "capacity"), () => {
+                if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
+                const tagFile = this.tagFile(record2.tag);
+                if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) {
+                  const reservation = readJson2(tagFile);
+                  if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
+                    const bound = this.read(reservation.id);
+                    const reusable = bound && (bound.phase === "abandoned" || bound.phase === "retired" && !bound.keptWorktree && !!bound.cleanup && Object.values(bound.cleanup).every((state) => state === "done"));
+                    if (reusable) compareAndRelease(tagFile, reservation.holder);
+                    else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, (current) => current.id === reservation.id);
+                  }
+                  if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record2.tag}`);
+                }
+                if (!createExclusive(this.opFile(record2.id), { op: "spawn", holder: record2.runs[0].launcher, at: this.now() })) throw new Error("worker operation lease busy");
+                if (!createExclusive(this.workerFile(record2.id), record2)) throw new Error(`worker already exists: ${record2.id}`);
+              }, deadline);
+              break;
+            } catch (error2) {
+              await pauseForGuard(deadline, error2);
+            }
+          }
+          this.heldOperations.set(record2.id, "spawn");
+          this.changed(record2.id);
+        } finally {
+          if (record2.sharedWith) await this.finishOperation(record2.sharedWith);
         }
-        this.heldOperations.set(record2.id, "spawn");
-        this.changed(record2.id);
       }
       /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
       async update(id3, edit) {
@@ -41024,34 +41139,41 @@ var init_worker_registry = __esm({
       }
       /** Append the next run while the same capacity guard used by fresh spawn is held. */
       async resume(id3, capacity, input) {
-        await this.beginOperation(id3, "resume");
+        const candidate = this.read(id3);
+        const owner = candidate && this.worktreeOwner(candidate);
+        if (owner) await this.beginOperation(owner.id, "resume");
         try {
-          const next = await guarded3(path32.join(this.root, "capacity"), () => {
-            const old = this.read(id3);
-            if (!old || !old.capabilities.resume || !old.hostSessionId) throw new Error("worker has no resumable host session");
-            const status = this.status(id3)?.status;
-            if (!status || !["done", "failed", "ambiguous", "imported", "stopped"].includes(status)) throw new Error(`worker is ${status ?? "missing"}; cannot resume`);
-            if (status === "stopped" && !["lead-session-ended", "message-delivered-cancelled", "message-delivered-failed"].includes(old.stop?.reason ?? "")) throw new Error("discarded worker cannot resume");
-            if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
-            const run3 = {
-              n: old.runs.at(-1).n + 1,
-              mode: "resume",
-              intentAt: this.now(),
-              nonce: input.nonce,
-              busFrontier: input.busFrontier,
-              promptMsgIds: input.promptMsgIds ?? [],
-              launcher: this.identity,
-              logStart: input.logStart
-            };
-            const record2 = { ...old, phase: "prepared", stop: void 0, runs: [...old.runs, run3], seq: old.seq + 1 };
-            writeAtomic(this.workerFile(id3), record2);
-            return record2;
-          });
-          this.changed(id3);
-          return next;
-        } catch (error2) {
-          await this.finishOperation(id3);
-          throw error2;
+          await this.beginOperation(id3, "resume");
+          try {
+            const next = await guarded3(path32.join(this.root, "capacity"), () => {
+              const old = this.read(id3);
+              if (!old || !old.capabilities.resume || !old.hostSessionId) throw new Error("worker has no resumable host session");
+              const status = this.status(id3)?.status;
+              if (!status || !["done", "failed", "ambiguous", "imported", "stopped"].includes(status)) throw new Error(`worker is ${status ?? "missing"}; cannot resume`);
+              if (status === "stopped" && !["lead-session-ended", "message-delivered-cancelled", "message-delivered-failed"].includes(old.stop?.reason ?? "")) throw new Error("discarded worker cannot resume");
+              if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
+              const run3 = {
+                n: old.runs.at(-1).n + 1,
+                mode: "resume",
+                intentAt: this.now(),
+                nonce: input.nonce,
+                busFrontier: input.busFrontier,
+                promptMsgIds: input.promptMsgIds ?? [],
+                launcher: this.identity,
+                logStart: input.logStart
+              };
+              const record2 = { ...old, phase: "prepared", stop: void 0, runs: [...old.runs, run3], seq: old.seq + 1 };
+              writeAtomic(this.workerFile(id3), record2);
+              return record2;
+            });
+            this.changed(id3);
+            return next;
+          } catch (error2) {
+            await this.finishOperation(id3);
+            throw error2;
+          }
+        } finally {
+          if (owner) await this.finishOperation(owner.id);
         }
       }
       /** The child proves the launch nonce and its checkout before it receives report authority. */
@@ -41266,103 +41388,118 @@ var init_worker_registry = __esm({
       async replayDiscard(id3) {
         let record2 = this.read(id3);
         if (record2?.phase !== "discarding" || !record2.discard) return;
-        for (const scratch of files(path32.join(this.root, "patches"), ".tmp")) {
-          const suffix = path32.basename(scratch).slice(id3.length + 1);
-          if (!path32.basename(scratch).startsWith(`${id3}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue;
-          if (fs36.lstatSync(scratch).isFile()) fs36.rmSync(scratch);
-        }
-        const leadDir = path32.dirname(path32.dirname(path32.dirname(record2.dir)));
-        const status = this.status(id3);
-        if (!status) return;
-        const own2 = realStateInput(record2, status);
-        const workers = this.list().flatMap((value2) => {
-          const current = this.status(value2.id);
-          return current ? [realStateInput(value2, current)] : [];
-        });
-        const borrowed = !!record2.sharedWith || !!this.worktreeOwner(record2);
-        const shared = !borrowed && fs36.existsSync(record2.dir) ? this.list().filter((value2) => value2.id !== id3 && !["retiring", "retired", "abandoned"].includes(value2.phase) && path32.resolve(value2.dir) === path32.resolve(record2.dir)) : [];
-        for (const user of shared) {
-          const userStatus = this.status(user.id);
-          if (!userStatus || user.phase !== "discarding" && !["done", "failed", "stopped"].includes(userStatus.status)) return;
-          if (user.phase !== "discarding") await this.beginDiscard(user.id, true, []);
-          await this.replayDiscard(user.id);
-          if (!["retiring", "retired"].includes(this.read(user.id)?.phase ?? "")) return;
-        }
-        const owned = !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
-        if (!borrowed && !owned && fs36.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
-        if (!record2.discard.steps.children) {
-          for (const childId of record2.discard.children) {
-            const child = this.read(childId);
-            if (!child || ["retiring", "retired"].includes(child.phase)) continue;
-            if (child.phase !== "discarding") await this.beginDiscard(childId, true, []);
-            await this.replayDiscard(childId);
-            if (!["retiring", "retired"].includes(this.read(childId)?.phase ?? "")) return;
+        let acquired = false;
+        if (!this.heldOperations.has(id3)) {
+          try {
+            await this.beginOperation(id3, "discard");
+            acquired = true;
+          } catch {
+            return;
           }
-          await this.markDiscardStep(id3, "children");
-          record2 = this.read(id3);
         }
-        const run3 = record2.runs.at(-1);
-        const launch = run3.launch;
-        const report = this.reports(id3).find((value2) => value2.run === run3.n && value2.nonce === run3.nonce);
-        const chain = report?.chain ?? [];
-        const reportedHost = launch?.outcome === "launched" ? chain.find((value2) => value2.pid === launch.pid) : void 0;
-        if (launch?.outcome === "launched" && launch.process && reportedHost && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return;
-        const host = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
-        const identities = [host, ...chain.filter((value2) => value2.pid !== host?.pid)].filter((value2) => !!value2);
-        if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
-        if (launch?.outcome === "launched" && !host && !this.exits(id3).some((value2) => value2.run === run3.n) && pidAlive(launch.pid)) return;
-        for (const identity2 of identities) {
-          const alive = this.alive(identity2);
-          if (alive === "unknown") return;
-          if (alive !== "alive") continue;
-          if (!record2.capabilities.signal || record2.discard.steps.stop) return;
-          const signalOwn = { ...own2, pid: identity2.pid, processStartTime: identity2.startTime };
-          const stopped = await stopWorkerWithEscalation({
-            terminate: () => signalWorker(identity2.pid, "SIGTERM", record2.dir, void 0, signalOwn, probeProcess),
-            exited: () => this.alive(identity2) === "dead",
-            force: () => signalWorker(identity2.pid, "SIGKILL", record2.dir, void 0, signalOwn, probeProcess)
+        try {
+          record2 = this.read(id3);
+          if (record2?.phase !== "discarding" || !record2.discard) return;
+          for (const scratch of files(path32.join(this.root, "patches"), ".tmp")) {
+            const suffix = path32.basename(scratch).slice(id3.length + 1);
+            if (!path32.basename(scratch).startsWith(`${id3}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue;
+            if (fs36.lstatSync(scratch).isFile()) fs36.rmSync(scratch);
+          }
+          const leadDir = path32.dirname(path32.dirname(path32.dirname(record2.dir)));
+          const status = this.status(id3);
+          if (!status) return;
+          const own2 = realStateInput(record2, status);
+          const workers = this.list().flatMap((value2) => {
+            const current = this.status(value2.id);
+            return current ? [realStateInput(value2, current)] : [];
           });
-          if (!stopped) return;
-        }
-        if (identities.some((value2) => this.alive(value2) !== "dead")) return;
-        if (owned && !await quiesceWorktreeProcesses(record2.dir)) return;
-        if (!record2.discard.steps.stop) {
-          await this.markDiscardStep(id3, "stop");
-          record2 = this.read(id3);
-        }
-        if (!record2.discard.steps.patch) {
-          if (owned) {
-            const ignored = await ignoredWorkerArtifacts(own2);
-            if (ignored.length && !record2.discard.force) {
-              await this.interruptDiscard(id3, `ignored artifacts appeared: ${ignored.join(", ")}`);
-              return;
+          const borrowed = !!record2.sharedWith || !!this.worktreeOwner(record2);
+          const shared = !borrowed && fs36.existsSync(record2.dir) ? this.list().filter((value2) => value2.id !== id3 && !["retiring", "retired", "abandoned"].includes(value2.phase) && path32.resolve(value2.dir) === path32.resolve(record2.dir)) : [];
+          for (const user of shared) {
+            const userStatus = this.status(user.id);
+            if (!userStatus || user.phase !== "discarding" && !["done", "failed", "stopped"].includes(userStatus.status)) return;
+            if (user.phase !== "discarding") await this.beginDiscard(user.id, true, []);
+            await this.replayDiscard(user.id);
+            if (!["retiring", "retired"].includes(this.read(user.id)?.phase ?? "")) return;
+          }
+          const owned = !borrowed && await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
+          if (!borrowed && !owned && fs36.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
+          if (!record2.discard.steps.children) {
+            for (const childId of record2.discard.children) {
+              const child = this.read(childId);
+              if (!child || ["retiring", "retired"].includes(child.phase)) continue;
+              if (child.phase !== "discarding") await this.beginDiscard(childId, true, []);
+              await this.replayDiscard(childId);
+              if (!["retiring", "retired"].includes(this.read(childId)?.phase ?? "")) return;
             }
-            await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+            await this.markDiscardStep(id3, "children");
+            record2 = this.read(id3);
           }
-          await this.markDiscardStep(id3, "patch");
-          record2 = this.read(id3);
-        }
-        const published = record2.discard.patch;
-        if (published) {
-          const expected = path32.join(this.root, "patches", `${id3}.patch`);
-          if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-          const valid = fs36.existsSync(expected) && fs36.lstatSync(expected).isFile() && createHash12("sha256").update(fs36.readFileSync(expected)).digest("hex") === published.sha256;
-          if (!valid) {
-            if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
-            await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+          const run3 = record2.runs.at(-1);
+          const launch = run3.launch;
+          const report = this.reports(id3).find((value2) => value2.run === run3.n && value2.nonce === run3.nonce);
+          const chain = report?.chain ?? [];
+          const reportedHost = launch?.outcome === "launched" ? chain.find((value2) => value2.pid === launch.pid) : void 0;
+          if (launch?.outcome === "launched" && launch.process && reportedHost && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return;
+          const host = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
+          const identities = [host, ...chain.filter((value2) => value2.pid !== host?.pid)].filter((value2) => !!value2);
+          if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
+          if (launch?.outcome === "launched" && !host && !this.exits(id3).some((value2) => value2.run === run3.n) && pidAlive(launch.pid)) return;
+          for (const identity2 of identities) {
+            const alive = this.alive(identity2);
+            if (alive === "unknown") return;
+            if (alive !== "alive") continue;
+            if (!record2.capabilities.signal || record2.discard.steps.stop) return;
+            const signalOwn = { ...own2, pid: identity2.pid, processStartTime: identity2.startTime };
+            const stopped = await stopWorkerWithEscalation({
+              terminate: () => signalWorker(identity2.pid, "SIGTERM", record2.dir, void 0, signalOwn, probeProcess),
+              exited: () => this.alive(identity2) === "dead",
+              force: () => signalWorker(identity2.pid, "SIGKILL", record2.dir, void 0, signalOwn, probeProcess)
+            });
+            if (!stopped) return;
           }
+          if (identities.some((value2) => this.alive(value2) !== "dead")) return;
+          if (owned && !await quiesceWorktreeProcesses(record2.dir)) return;
+          if (!record2.discard.steps.stop) {
+            await this.markDiscardStep(id3, "stop");
+            record2 = this.read(id3);
+          }
+          if (!record2.discard.steps.patch) {
+            if (owned) {
+              const ignored = await ignoredWorkerArtifacts(own2);
+              if (ignored.length && !record2.discard.force) {
+                await this.interruptDiscard(id3, `ignored artifacts appeared: ${ignored.join(", ")}`);
+                return;
+              }
+              await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+            }
+            await this.markDiscardStep(id3, "patch");
+            record2 = this.read(id3);
+          }
+          const published = record2.discard.patch;
+          if (published) {
+            const expected = path32.join(this.root, "patches", `${id3}.patch`);
+            if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
+            const valid = fs36.existsSync(expected) && fs36.lstatSync(expected).isFile() && createHash12("sha256").update(fs36.readFileSync(expected)).digest("hex") === published.sha256;
+            if (!valid) {
+              if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
+              await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+            }
+          }
+          if (!record2.discard.steps.cleanup) {
+            if (owned) {
+              if (!await cleanupWorker(leadDir, own2, true, true, [], {}, record2.lead.participant, workers)) return;
+            } else if (!borrowed) {
+              await pruneMissingWorkerWorktree(leadDir, own2);
+              cleanupWorkerLogs(leadDir, own2);
+            } else cleanupWorkerLogs(leadDir, own2);
+            await this.markDiscardStep(id3, "cleanup");
+          }
+          await this.markDiscardStep(id3, "prune");
+          await this.beginRetirement(id3, this.archiveOf(this.read(id3), { summary: borrowed ? "detached" : "discarded", disposition: "discarded" }));
+        } finally {
+          if (acquired) await this.finishOperation(id3);
         }
-        if (!record2.discard.steps.cleanup) {
-          if (owned) {
-            if (!await cleanupWorker(leadDir, own2, true, true, [], {}, record2.lead.participant, workers)) return;
-          } else if (!borrowed) {
-            await pruneMissingWorkerWorktree(leadDir, own2);
-            cleanupWorkerLogs(leadDir, own2);
-          } else cleanupWorkerLogs(leadDir, own2);
-          await this.markDiscardStep(id3, "cleanup");
-        }
-        await this.markDiscardStep(id3, "prune");
-        await this.beginRetirement(id3, this.archiveOf(this.read(id3), { summary: borrowed ? "detached" : "discarded", disposition: "discarded" }));
       }
       /** Admission is evidence of launch only when a run writer proves the matching nonce. */
       async writeReport(id3, report) {
@@ -52079,7 +52216,8 @@ init_engine();
 init_graph_index();
 init_context();
 init_disk_text();
-import { createHash as createHash13, randomUUID as randomUUID5 } from "node:crypto";
+init_worker_registry();
+import { createHash as createHash13, randomUUID as randomUUID6 } from "node:crypto";
 var hash = (value2) => createHash13("sha256").update(value2).digest("hex");
 var slotKey = (owner, kind, other, path48, subject = "") => [owner, kind, other, path48, subject].join("\0");
 var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
@@ -52153,7 +52291,7 @@ var ConflictSlots = class {
       epoch,
       fence,
       checkedAt: now,
-      ...result2.kind === "contract" && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID5() } : {},
+      ...result2.kind === "contract" && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID6() } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {},
       ...result2.kind === "edit-in-claim" && result2.status === "conflict" ? { burstAt: prev?.status === "conflict" ? prev.burstAt ?? now : now } : {}
@@ -52248,7 +52386,20 @@ var sideInput = (snap, path48) => {
 };
 var ConflictSet = class _ConflictSet {
   constructor(team, owner = team.me.name, notices = team, log2 = (line) => process.stderr.write(`room-mcp: ${line}
-`), debounceMs = 2e3, carriedFrom2, localWorker = (name2) => trustedWorker(team, name2)) {
+`), debounceMs = 2e3, carriedFrom2, localWorker = (name2) => trustedWorker(team, name2), workerState = (name2) => {
+    const registry2 = registrySnapshotForDir(team.dir);
+    const record2 = registry2.reservedByTagOrName(name2);
+    const status = record2 && registry2.status(record2.id);
+    if (!record2 || !status) return void 0;
+    const run3 = status.run ?? record2.runs.at(-1);
+    return {
+      id: record2.id,
+      status: status.status,
+      run: run3 ? `${run3.n}:${run3.nonce}` : "",
+      seq: record2.seq,
+      busy: registry2.operationInProgress(record2.id)
+    };
+  }, claimText = workerText) {
     this.team = team;
     this.owner = owner;
     this.notices = notices;
@@ -52256,6 +52407,8 @@ var ConflictSet = class _ConflictSet {
     this.debounceMs = debounceMs;
     this.carriedFrom = carriedFrom2;
     this.localWorker = localWorker;
+    this.workerState = workerState;
+    this.claimText = claimText;
     const fence = () => team.lease?.fence() ?? "";
     this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post, () => this.guard?.() ?? false);
   }
@@ -52266,6 +52419,8 @@ var ConflictSet = class _ConflictSet {
   debounceMs;
   carriedFrom;
   localWorker;
+  workerState;
+  claimText;
   static MAX_PAIR_FILES = 2e3;
   fileWork = 0;
   slots;
@@ -52656,7 +52811,13 @@ var ConflictSet = class _ConflictSet {
     }
     for (const [name2, claims] of groups) {
       const worker = await this.localWorker(name2);
-      if (worker?.status !== "done" || !claims.length) continue;
+      const initial = this.workerState(name2);
+      if (worker?.status !== "done" || !claims.length || !initial || initial.id !== worker.id || initial.status !== "done" || initial.busy) continue;
+      const holder = JSON.stringify(participantRecord(room, name2)?.holder);
+      if (!holder) continue;
+      const currentClaims = () => room.openClaims().filter((claim2) => claim2.by === name2).sort((a, b) => a.id.localeCompare(b.id));
+      const claimSnapshot = JSON.stringify(currentClaims());
+      if (claimSnapshot !== JSON.stringify([...claims].sort((a, b) => a.id.localeCompare(b.id)))) continue;
       let landed = true;
       for (const claim2 of claims) {
         try {
@@ -52666,7 +52827,7 @@ var ConflictSet = class _ConflictSet {
             break;
           }
           for (const path48 of paths) {
-            const [leadText, finalText] = await Promise.all([workerText(this.team.dir, path48), workerText(worker.dir, path48)]);
+            const [leadText, finalText] = await Promise.all([this.claimText(this.team.dir, path48), this.claimText(worker.dir, path48)]);
             if (leadText !== finalText) {
               landed = false;
               break;
@@ -52679,7 +52840,8 @@ var ConflictSet = class _ConflictSet {
         }
       }
       if (!landed) continue;
-      if (this.team.lease?.fence() !== leaseFence || claims.some((claim2) => !room.claims.has(claim2.id))) return;
+      const latest = this.workerState(name2);
+      if (this.team.lease?.fence() !== leaseFence || !latest || latest.busy || JSON.stringify(latest) !== JSON.stringify(initial) || JSON.stringify(participantRecord(room, name2)?.holder) !== holder || JSON.stringify(currentClaims()) !== claimSnapshot) return;
       room.doc.transact(() => {
         for (const claim2 of claims) room.removeClaim(claim2.id);
       }, this.team.me);
@@ -53231,7 +53393,7 @@ function createShare() {
 // packages/room-mcp/src/tools/workers.ts
 init_src();
 import fs41 from "node:fs";
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 import os9 from "node:os";
 import path39 from "node:path";
 init_src2();
@@ -53244,7 +53406,7 @@ init_worker_process();
 init_worker_state();
 init_config();
 import fs39 from "node:fs";
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 import path37 from "node:path";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 
@@ -53543,10 +53705,36 @@ async function autoRetire(s, rooms) {
     const files2 = [.../* @__PURE__ */ new Set([...manifestPaths(s.room, w.name), ...reported])].sort();
     if (facts.clean && w.exitCode === 0) {
       try {
-        if (!await cleanupWorker(s.dir, w, true, false, [], { probe, list: rooms.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...workers])) continue;
+        await registry2.beginOperation(record2.id, "collect");
       } catch {
         continue;
       }
+      try {
+        if (!current()) continue;
+        const fresh = registry2.read(record2.id);
+        if (!fresh) continue;
+        const borrower = !!fresh.sharedWith || !!registry2.worktreeOwner(fresh);
+        const users = borrower ? [] : registry2.checkoutUsers(fresh);
+        if (!borrower && !users.length) {
+          if (!await cleanupWorker(s.dir, w, true, false, [], { probe, list: rooms.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...workers])) continue;
+        }
+        const reason = users.length ? `shared checkout: ${users.map((user) => user.record.tag).join(", ")}` : void 0;
+        await retireWorker(rooms, s, record2.id, registry2.archiveOf(record2, {
+          summary: w.summary ?? "",
+          files: files2,
+          fileCount: files2.length,
+          finishedAt: w.finishedAt ?? retiredAt,
+          retiredAt,
+          outcome,
+          disposition: state.dismissed ? "discarded" : "collected",
+          ...reason ? { keptWorktree: w.dir, keptReason: reason } : {},
+          ...outcome === "dismissed" && facts.uncommitted !== void 0 ? { uncommitted: facts.uncommitted } : {}
+        }), reason ? { keptWorktree: w.dir } : {});
+      } catch {
+      } finally {
+        await registry2.finishOperation(record2.id);
+      }
+      continue;
     }
     await retireWorker(rooms, s, record2.id, registry2.archiveOf(record2, {
       summary: w.summary ?? "",
@@ -53818,7 +54006,7 @@ var Rooms = class _Rooms {
     let run3;
     try {
       const next = await registry2.resume(record2.id, config2.maxWorkers, {
-        nonce: randomUUID6(),
+        nonce: randomUUID7(),
         logStart,
         busFrontier: highestSeq(s.room)
       });
@@ -54239,7 +54427,7 @@ function handlers4(state) {
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
       const registry2 = await registryForDir(s.dir);
-      const id3 = registry2.newId(), nonce = randomUUID7();
+      const id3 = registry2.newId(), nonce = randomUUID8();
       const owner = s.me.owner ?? s.me.name, name2 = `${owner}+${tag}`;
       const { server, isWorker } = workerOrigin(s);
       const count = registry2.occupancy();
@@ -54286,7 +54474,7 @@ function handlers4(state) {
       )) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`;
       }
-      const hostSessionId = host === "claude" ? randomUUID7() : void 0;
+      const hostSessionId = host === "claude" ? randomUUID8() : void 0;
       const usedPorts = registry2.list().flatMap((record3) => typeof record3.port === "number" ? [record3.port] : []);
       const prep = { step: "plan", worktreeExisted: fs41.existsSync(dir), created: !suppliedDir && !fs41.existsSync(dir) };
       const record2 = {
@@ -56023,7 +56211,7 @@ init_disk_text();
 init_git();
 import fs43 from "node:fs";
 import path40 from "node:path";
-import { createHash as createHash14, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash14, randomUUID as randomUUID9 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -56032,7 +56220,7 @@ var HooksBridge = class {
   }
   s;
   o;
-  writer = randomUUID8();
+  writer = randomUUID9();
   timer = null;
   unobserve = [];
   stopped = false;
@@ -56233,6 +56421,7 @@ import os10 from "node:os";
 import path41 from "node:path";
 var TAIL_BYTES = 64 * 1024;
 var MAX_READ_BYTES = 1024 * 1024;
+var MAX_SCAN_BYTES = 8 * 1024 * 1024;
 var CONTACT_MS = 1e4;
 var TURN_EVENTS = /* @__PURE__ */ new Set(["task_started", "task_complete", "turn_aborted"]);
 var CodexTurnProbe = class {
@@ -56246,9 +56435,11 @@ var CodexTurnProbe = class {
     if (file) {
       try {
         const event = await this.lastTurnEvent(threadId, file);
+        if (event === null) return true;
         if (event) return event === "task_started";
       } catch {
         this.cursors.delete(threadId);
+        return true;
       }
     }
     const age = this.options.contactAgeMs?.();
@@ -56296,26 +56487,83 @@ var CodexTurnProbe = class {
       }
       cursor.device = dev;
       cursor.inode = ino;
-      const skipped = size2 - cursor.offset > MAX_READ_BYTES;
-      const start2 = skipped ? Math.max(cursor.offset, size2 - TAIL_BYTES - 1) : cursor.offset;
-      if (start2 === size2) return cursor.lastEvent;
-      const buffer = Buffer.alloc(size2 - start2);
-      const { bytesRead } = await handle2.read(buffer, 0, buffer.length, start2);
-      if (!bytesRead) return cursor.lastEvent;
-      const lastNewline = buffer.lastIndexOf(10, bytesRead - 1);
-      if (lastNewline < 0) return cursor.lastEvent;
-      const first = start2 > cursor.offset ? buffer.indexOf(10) + 1 : 0;
-      const body2 = buffer.toString("utf8", first, lastNewline + 1);
-      for (const line of body2.split("\n")) {
-        if (!line.includes("task_started") && !line.includes("task_complete") && !line.includes("turn_aborted")) continue;
-        const record2 = JSON.parse(line);
-        if (record2.type === "event_msg" && typeof record2.payload?.type === "string" && TURN_EVENTS.has(record2.payload.type)) cursor.lastEvent = record2.payload.type;
+      if (cursor.scan && cursor.scan.size !== size2) cursor.scan = void 0;
+      if (cursor.scan || size2 - cursor.offset > MAX_READ_BYTES) {
+        const scan = cursor.scan ?? { size: size2, position: size2, carry: Buffer.alloc(0), skipPartial: true };
+        cursor.scan = scan;
+        cursor.lastEvent = void 0;
+        let scanned = 0;
+        while (scan.position > 0 && scanned < MAX_SCAN_BYTES) {
+          const length2 = Math.min(TAIL_BYTES, scan.position, MAX_SCAN_BYTES - scanned);
+          const start2 = scan.position - length2;
+          const chunk = Buffer.alloc(length2);
+          const { bytesRead: bytesRead2 } = await handle2.read(chunk, 0, length2, start2);
+          if (bytesRead2 !== length2) {
+            cursor.scan = void 0;
+            return null;
+          }
+          scan.position = start2;
+          scanned += length2;
+          let data = Buffer.concat([chunk, scan.carry]);
+          if (scan.skipPartial) {
+            const lastNewline2 = data.lastIndexOf(10);
+            if (lastNewline2 < 0) {
+              await new Promise((resolve5) => setImmediate(resolve5));
+              continue;
+            }
+            scan.completeEnd = start2 + lastNewline2 + 1;
+            data = data.subarray(0, lastNewline2 + 1);
+            scan.skipPartial = false;
+          }
+          let end = data.length;
+          while (end > 0) {
+            const previousNewline = end > 1 ? data.lastIndexOf(10, end - 2) : -1;
+            if (previousNewline < 0) break;
+            const event2 = this.parseEvent(data.subarray(previousNewline + 1, end - 1));
+            if (event2) {
+              cursor.offset = scan.completeEnd;
+              cursor.lastEvent = event2;
+              cursor.scan = void 0;
+              return event2;
+            }
+            end = previousNewline + 1;
+          }
+          scan.carry = Buffer.from(data.subarray(0, end));
+          await new Promise((resolve5) => setImmediate(resolve5));
+        }
+        if (scan.position > 0) return null;
+        const event = this.parseEvent(scan.carry.subarray(0, Math.max(0, scan.carry.length - 1)));
+        cursor.offset = scan.completeEnd ?? 0;
+        cursor.lastEvent = event;
+        cursor.scan = void 0;
+        return event;
       }
-      cursor.offset = start2 + lastNewline + 1;
+      if (cursor.offset === size2) return cursor.lastEvent;
+      const buffer = Buffer.alloc(size2 - cursor.offset);
+      const { bytesRead } = await handle2.read(buffer, 0, buffer.length, cursor.offset);
+      if (bytesRead !== buffer.length) return null;
+      const lastNewline = buffer.lastIndexOf(10);
+      if (lastNewline < 0) return cursor.lastEvent;
+      const body2 = buffer.toString("utf8", 0, lastNewline + 1);
+      for (const line of body2.split("\n")) {
+        const event = this.parseEvent(line);
+        if (event) cursor.lastEvent = event;
+      }
+      cursor.offset += lastNewline + 1;
       return cursor.lastEvent;
     } finally {
       await handle2.close();
     }
+  }
+  parseEvent(line) {
+    const text = typeof line === "string" ? line : line.toString("utf8");
+    if (!text.includes("task_started") && !text.includes("task_complete") && !text.includes("turn_aborted")) return void 0;
+    try {
+      const record2 = JSON.parse(text);
+      if (record2.type === "event_msg" && typeof record2.payload?.type === "string" && TURN_EVENTS.has(record2.payload.type)) return record2.payload.type;
+    } catch {
+    }
+    return void 0;
   }
 };
 
@@ -56585,7 +56833,7 @@ init_leases2();
 init_worker_registry();
 import fs46 from "node:fs";
 import path43 from "node:path";
-import { createHash as createHash15, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID10 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text) {
@@ -56630,7 +56878,7 @@ var Ledger = class {
     return !holder || holder.sessionId === this.o.sessionId();
   }
   open(kind, leaseMs = kind === "hook" ? this.o.hookLeaseMs ?? HOOK_LEASE_MS : REPLY_LEASE_MS) {
-    return new Batch(randomUUID9(), kind, leaseMs);
+    return new Batch(randomUUID10(), kind, leaseMs);
   }
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s) {
@@ -57321,6 +57569,11 @@ async function sameFileBytes(a, b, size2) {
 var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...localWorkers(s.dir)];
 async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe, list) {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return [];
+  if (w.id) {
+    const registry2 = await registryForDir(leadDir);
+    const record2 = registry2.read(w.id);
+    if (!record2 || record2.sharedWith || registry2.worktreeOwner(record2) || registry2.checkoutUsers(record2).length) return [];
+  }
   try {
     return await terminateWorktreeProcesses(w.dir, { protectedPids: w.pid ? [w.pid] : [], probe, list });
   } catch (e) {
@@ -57355,6 +57608,40 @@ async function assertNoOperation(dir) {
   }
 }
 function handlers9(state) {
+  const cleanRetiredSharedOwner = async (s, borrower) => {
+    const registry2 = await registryForDir(s.dir);
+    const current = registry2.read(borrower.id);
+    const owner = current && registry2.worktreeOwner(current);
+    if (!owner || owner.phase !== "retired" || !owner.keptWorktree || !owner.archive?.keptReason?.startsWith("shared checkout: ")) return;
+    try {
+      await registry2.beginOperation(owner.id, "collect");
+    } catch {
+      return;
+    }
+    try {
+      const fresh = registry2.read(owner.id);
+      if (!fresh || fresh.phase !== "retired" || !fresh.keptWorktree || registry2.checkoutUsers(fresh).length) return;
+      const status = registry2.status(fresh.id);
+      if (!status) return;
+      const w = { ...realStateInput(fresh, status), status: "done", exitCode: 0 };
+      if (!await cleanupWorker(s.dir, w, true, false, [], { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) return;
+      await registry2.update(fresh.id, (old) => {
+        const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {};
+        return { ...old, keptWorktree: void 0, archive, seq: old.seq + 1 };
+      });
+      for (const room of state.rooms.all()) {
+        const list = room.room.doc.getArray("retiredWorkers");
+        const index = list.toArray().findIndex((entry) => entry.id === fresh.id);
+        if (index >= 0) room.room.doc.transact(() => {
+          const { keptWorktree: _kept, keptReason: _reason, ...entry } = list.get(index);
+          list.delete(index);
+          list.insert(index, [entry]);
+        });
+      }
+    } finally {
+      await registry2.finishOperation(owner.id);
+    }
+  };
   const missingCapability = (s, w) => {
     const registry2 = registrySnapshotForDir(s.dir);
     const record2 = registry2.reserved(w.tag);
@@ -57430,8 +57717,6 @@ function handlers9(state) {
         if (!active || !activeStatus) return "error: kept worker has no local registry record";
         const borrowedOwner2 = registry2.worktreeOwner(active);
         const borrowed2 = !!active.sharedWith || !!borrowedOwner2;
-        const shared = !borrowed2 && fs47.existsSync(r.keptWorktree) && localWorkers(s2.dir).find((other) => other.id !== active.id && path44.resolve(other.dir) === path44.resolve(r.keptWorktree));
-        if (shared) return `error: discard refused; ${shared.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`;
         const w2 = { ...realStateInput(active, activeStatus), dir: r.keptWorktree, branch: "room/" + r.tag, status: "done", exitCode: 0, pid: 0 };
         try {
           await registry2.beginOperation(active.id, "discard");
@@ -57439,6 +57724,8 @@ function handlers9(state) {
           return "error: this worker is already being handled or retired";
         }
         try {
+          const shared = !borrowed2 && fs47.existsSync(r.keptWorktree) && registry2.checkoutUsers(active)[0];
+          if (shared) return `error: discard refused; ${shared.record.tag} still uses ${r.tag}'s worktree: ${r.keptWorktree}`;
           const missing2 = !borrowed2 && decideDiscard(await workerRealState(s2.dir, w2)) === "prune";
           const ignored = missing2 || borrowed2 ? [] : await ignoredWorkerArtifacts(w2);
           if (ignored.length && a.force !== true) return `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}
@@ -57465,6 +57752,7 @@ repeat with force=true to delete them`;
           });
           await registry2.markDiscardStep(active.id, "prune");
           await retireWorker(rooms, s2, active.id, { ...r, summary: "discarded", disposition: "discarded", keptWorktree: void 0 }, { keptWorktree: void 0 });
+          if (borrowed2) await cleanRetiredSharedOwner(s2, w2);
           return (borrowed2 ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner2?.tag ?? active.sharedWith}` : "discarded " + r.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
         } catch (e) {
           await registry2.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {
@@ -57483,21 +57771,21 @@ repeat with force=true to delete them`;
       const workerRecord = registry2.read(w.id);
       const borrowedOwner = workerRecord && registry2.worktreeOwner(workerRecord);
       const borrowed = !!w.sharedWith || !!borrowedOwner;
-      const sharedResults = [];
-      if (!borrowed) {
-        const users = localWorkers(s.dir).filter((other) => other.id !== w.id && path44.resolve(other.dir) === path44.resolve(w.dir));
-        const running = users.find((other) => other.status === "running" || state.workerAlive(s, other));
-        if (running && fs47.existsSync(w.dir)) return `error: discard refused; ${running.tag} is still running in ${w.tag}'s worktree: ${w.dir}`;
-        for (const user of users) {
-          const result2 = await roomCollect({ tag: user.tag, discard: true }, discarding, s);
-          if (!result2.startsWith("detached ")) return `error: could not detach ${user.tag} before discarding ${w.tag}: ${result2}`;
-          sharedResults.push(result2);
-        }
-      }
       const lock = await takeWorkerOperation(s, w, "discard");
       if (lock === "untrusted") return `error: ${missingCapability(s, w)}`;
       if (lock === "busy") return "error: this worker is already being handled or retired";
       try {
+        const sharedResults = [];
+        if (!borrowed) {
+          const users = registry2.checkoutUsers(registry2.read(w.id));
+          const running = users.find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
+          if (running && fs47.existsSync(w.dir)) return `error: discard refused; ${running.record.tag} is still running in ${w.tag}'s worktree: ${w.dir}`;
+          for (const { record: user } of users) {
+            const result2 = await roomCollect({ tag: user.tag, discard: true }, discarding, s);
+            if (!result2.startsWith("detached ")) return `error: could not detach ${user.tag} before discarding ${w.tag}: ${result2}`;
+            sharedResults.push(result2);
+          }
+        }
         const unsafe = await unverifiedLive(s, w);
         if (unsafe) return unsafe;
         const children = descendants(s, w);
@@ -57596,6 +57884,7 @@ repeat with force=true to delete them`;
           outcome: "dismissed",
           disposition: "discarded"
         });
+        if (borrowed) await cleanRetiredSharedOwner(s, w);
         return [...sharedResults, ...childResults, (borrowed ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}` : decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
         await registry2.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {
@@ -57668,7 +57957,10 @@ repeat with force=true to delete them`;
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
-          if (w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== w.branch) throw new Error("worker must be on branch room/" + w.tag);
+          const worktreeRecord = registry2.read(w.id);
+          const ownerRecord = worktreeRecord && registry2.worktreeOwner(worktreeRecord);
+          const expectedBranch = ownerRecord?.branch ?? w.branch;
+          if (!ownerRecord && w.branch !== "room/" + w.tag || (await git(w.dir, ["branch", "--show-current"])).trim() !== expectedBranch) throw new Error("worker must be on its recorded Room branch");
           await gitWholeTree(w.dir, ["ls-files", "-z"]);
           const cleanupErrors = [];
           const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
@@ -57846,8 +58138,10 @@ repeat with force=true to delete them`;
       for (const { s, w } of selected) {
         let archived;
         const finishOne = async (success = true) => {
-          if (success && archived) await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {});
-          else await registry2.abortCollect(w.id);
+          if (success && archived) {
+            await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {});
+            await cleanRetiredSharedOwner(s, w);
+          } else await registry2.abortCollect(w.id);
           collectStarted.delete(w.id);
         };
         releaseClaimsOnDone(s, () => false, w.name, false);
@@ -57884,6 +58178,14 @@ repeat with force=true to delete them`;
           continue;
         }
         try {
+          const record2 = registry2.read(w.id);
+          const owner = record2 && registry2.worktreeOwner(record2);
+          if (record2 && (record2.sharedWith || owner)) {
+            retire(w.summary ?? "");
+            out2.push(`detached ${w.tag}; the worktree belongs to ${owner?.tag ?? record2.sharedWith}`);
+            await finishOne();
+            continue;
+          }
           const children = descendants(s, w);
           if (children.length) {
             const reason = "nested workers remain: " + children.map((c) => c.tag).join(", ");
@@ -57891,6 +58193,21 @@ repeat with force=true to delete them`;
             retire(w.summary ?? "", w.dir, reason);
             await finishOne();
             continue;
+          }
+          if (record2) {
+            const users = registry2.checkoutUsers(record2);
+            const running = users.find(({ status }) => !["done", "failed", "stopped"].includes(status.status));
+            if (running) {
+              out2.push(`kept ${w.tag}'s worktree: ${running.record.tag} is still running in it`);
+              retire(w.summary ?? "", w.dir, `shared checkout: ${running.record.tag}`);
+              await finishOne();
+              continue;
+            }
+            for (const { record: user } of users) {
+              const result3 = await roomCollect({ tag: user.tag, discard: true }, discarding, s);
+              if (!result3.startsWith("detached ")) throw new Error(`could not retire ${user.tag} before cleaning ${w.tag}: ${result3}`);
+              out2.push(`retired ${user.tag} with ${w.tag}`);
+            }
           }
           const ignored = await ignoredWorkerArtifacts(w);
           if (ignored.length) {

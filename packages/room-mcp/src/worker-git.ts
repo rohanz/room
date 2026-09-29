@@ -299,6 +299,19 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
 export async function cleanupWorker(leadDir: string, w: LocalWorker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+  // All lifecycle paths converge here. The owner operation lease must be held by
+  // callers while checking this snapshot and removing the checkout.
+  const available = async () => {
+    if (!w.id) return true // Legacy direct callers have no registry capability.
+    const { registryForDir } = await import('./worker-registry.js')
+    const registry = await registryForDir(leadDir)
+    const record = registry.read(w.id)
+    if (!record) return w.branch === `room/${w.tag}` && registry.list().every(peer =>
+      path.resolve(peer.dir) !== path.resolve(w.dir) || peer.tag === w.tag)
+    return !record.sharedWith && !registry.worktreeOwner(record)
+      && registry.checkoutUsers(record).length === 0
+  }
+  if (!await available()) return false
   if (!discarded && (w.status === 'failed' || w.exitCode !== 0)) return false
   if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== 'cleanup') return false
   const nested = (await git(leadDir, ['worktree', 'list', '--porcelain'])).split('\n')
@@ -310,11 +323,13 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
   for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
     try { refs.set(ref, (await git(leadDir, ['rev-parse', '--verify', ref])).trim()) } catch { /* absent on older workers */ }
   }
+  if (!await available()) return false
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
   try {
     // Remove the worker's reusable preview checkout while its own worktree still exists.
     const { removePreviewCache } = await import('./tools/files.js')
     await removePreviewCache(w.dir, leadDir)
+    if (!await available()) return false
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     await internalGit(leadDir, ['branch', '-D', w.branch])
     for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])

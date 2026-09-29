@@ -502,6 +502,15 @@ export class WorkerRegistry {
       && path.resolve(peer.dir) === path.resolve(record.dir)
       && path.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`)
   }
+  /** Other unretired workers using an owner's checkout, including legacy dir= records. */
+  checkoutUsers(owner: Pick<WorkerRecord, 'id' | 'dir'>): { record: WorkerRecord; status: WorkerStatusResult }[] {
+    return this.list().flatMap(record => {
+      if (record.id === owner.id || ['retiring', 'retired', 'abandoned'].includes(record.phase)
+        || path.resolve(record.dir) !== path.resolve(owner.dir)) return []
+      const status = this.status(record.id)
+      return status ? [{ record, status }] : []
+    })
+  }
   status(id: string): WorkerStatusResult | undefined {
     const record = this.read(id)
     if (!record) return undefined
@@ -595,6 +604,15 @@ export class WorkerRegistry {
   /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
   async writeIntent(record: WorkerRecord, capacity = Number.POSITIVE_INFINITY): Promise<void> {
     if (!safeId(record.id) || !recordShape(record, record.id) || record.runs[0].launch) throw new Error('invalid worker intent')
+    // A borrower joins the owner's operation lane before it becomes visible.
+    // Collection holds this lane through its final cleanup decision.
+    if (record.sharedWith) await this.beginOperation(record.sharedWith, 'resume')
+    try {
+    if (record.sharedWith) {
+      const owner = this.read(record.sharedWith)
+      if (!owner || owner.sharedWith || path.resolve(owner.dir) !== path.resolve(record.dir)
+        || ['retiring', 'retired', 'abandoned'].includes(owner.phase)) throw new Error('shared worktree owner is no longer available')
+    }
     const deadline = performance.now() + GUARD_WAIT_MS
     for (;;) {
       try {
@@ -620,6 +638,7 @@ export class WorkerRegistry {
     }
     this.heldOperations.set(record.id, 'spawn')
     this.changed(record.id)
+    } finally { if (record.sharedWith) await this.finishOperation(record.sharedWith) }
   }
 
   /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
@@ -678,6 +697,10 @@ export class WorkerRegistry {
 
   /** Append the next run while the same capacity guard used by fresh spawn is held. */
   async resume(id: string, capacity: number, input: { nonce: string; busFrontier: number; promptMsgIds?: string[]; logStart: number }): Promise<WorkerRecord> {
+    const candidate = this.read(id)
+    const owner = candidate && this.worktreeOwner(candidate)
+    if (owner) await this.beginOperation(owner.id, 'resume')
+    try {
     await this.beginOperation(id, 'resume')
     try {
       const next = await guarded(path.join(this.root, 'capacity'), () => {
@@ -697,6 +720,7 @@ export class WorkerRegistry {
       this.changed(id)
       return next
     } catch (error) { await this.finishOperation(id); throw error }
+    } finally { if (owner) await this.finishOperation(owner.id) }
   }
 
   /** The child proves the launch nonce and its checkout before it receives report authority. */
@@ -876,6 +900,14 @@ export class WorkerRegistry {
   async replayDiscard(id: string): Promise<void> {
     let record = this.read(id)
     if (record?.phase !== 'discarding' || !record.discard) return
+    let acquired = false
+    if (!this.heldOperations.has(id)) {
+      try { await this.beginOperation(id, 'discard'); acquired = true }
+      catch { return }
+    }
+    try {
+    record = this.read(id)
+    if (record?.phase !== 'discarding' || !record.discard) return
     // A writer killed between creating and linking a patch leaves its private
     // scratch file behind. It has no committed identity and replay rebuilds it.
     for (const scratch of files(path.join(this.root, 'patches'), '.tmp')) {
@@ -984,6 +1016,7 @@ export class WorkerRegistry {
     }
     await this.markDiscardStep(id, 'prune')
     await this.beginRetirement(id, this.archiveOf(this.read(id)!, { summary: borrowed ? 'detached' : 'discarded', disposition: 'discarded' }))
+    } finally { if (acquired) await this.finishOperation(id) }
   }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */

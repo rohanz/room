@@ -65,8 +65,28 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     const reported = registry.reports(record.id).flatMap(report => report.done?.changed ?? [])
     const files = [...new Set([...manifestPaths(s.room, w.name), ...reported])].sort()
     if (facts.clean && w.exitCode === 0) {
-      try { if (!await cleanupWorker(s.dir, w, true, false, [], { probe, list: rooms.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...workers])) continue }
-      catch { continue }
+      // Spawn and resume borrow the owner's operation lane. Hold it through the
+      // final checkout-user check, cwd cleanup, and retirement record.
+      try { await registry.beginOperation(record.id, 'collect') } catch { continue }
+      try {
+        if (!current()) continue
+        const fresh = registry.read(record.id)
+        if (!fresh) continue
+        const borrower = !!fresh.sharedWith || !!registry.worktreeOwner(fresh)
+        const users = borrower ? [] : registry.checkoutUsers(fresh)
+        if (!borrower && !users.length) {
+          if (!await cleanupWorker(s.dir, w, true, false, [], { probe, list: rooms.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...workers])) continue
+        }
+        const reason = users.length ? `shared checkout: ${users.map(user => user.record.tag).join(', ')}` : undefined
+        await retireWorker(rooms, s, record.id, registry.archiveOf(record, {
+          summary: w.summary ?? '', files, fileCount: files.length, finishedAt: w.finishedAt ?? retiredAt, retiredAt,
+          outcome, disposition: state.dismissed ? 'discarded' : 'collected',
+          ...(reason ? { keptWorktree: w.dir, keptReason: reason } : {}),
+          ...(outcome === 'dismissed' && facts.uncommitted !== undefined ? { uncommitted: facts.uncommitted } : {}),
+        }), reason ? { keptWorktree: w.dir } : {})
+      } catch { /* A later pass can retry without losing this checkout. */ }
+      finally { await registry.finishOperation(record.id) }
+      continue
     }
     await retireWorker(rooms, s, record.id, registry.archiveOf(record, {
       summary: w.summary ?? '', files, fileCount: files.length, finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome, disposition: state.dismissed ? 'discarded' : 'collected',
