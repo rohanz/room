@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { validParticipantName as sharedValidParticipantName } from '@room/shared'
-import { docNameOf, roomNameOf, repoOf, githubRepoOf, validParticipantName, assertValidParticipantName } from '../src/names.js'
+import { docNameOf, roomNameOf, repoRoomOf, githubRepoOf, validParticipantName, assertValidParticipantName } from '../src/names.js'
 
 describe('participant names', () => {
   it.each([
@@ -31,9 +31,14 @@ describe('room names', () => {
     // the same key admission and the size cap use
     expect(docNameOf('/github.com%2Fa%2Fb%2Fmain?view=x')).toBe(roomNameOf('/github.com%2Fa%2Fb%2Fmain'))
   })
-  it('repoOf and githubRepoOf agree on the repo segment', () => {
-    expect(repoOf('github.com/a/b/feature/x')).toBe('github.com/a/b')
-    expect(repoOf('local/dir/main')).toBe('local/dir')
+  it('uses an open prefix to distinguish a legacy branch from a repository name', () => {
+    const open = new Set(['git/h/grp/repo', 'github.com/o/r'])
+    const repo = (name: string) => repoRoomOf(name, key => open.has(key))
+    expect(repo('git/h/grp/repo/main')).toBe('git/h/grp/repo')
+    expect(repo('git/h/repo/main')).toBe('git/h/repo/main')
+    expect(repo('git/h/grp/app')).toBe('git/h/grp/app')
+    expect(repo('github.com/O/R/feature/x')).toBe('github.com/o/r')
+    expect(repo('local/x/special')).toBe('local/x/special')
     expect(githubRepoOf('/github.com%2Fa%2Fb%2Fmain')).toBe('a/b')
     expect(githubRepoOf('github.com/a/b')).toBe('a/b') // no branch: still that GitHub repo
     expect(githubRepoOf('github.community/a/b/main')).toBeUndefined()

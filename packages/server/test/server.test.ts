@@ -5,7 +5,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
@@ -15,6 +17,7 @@ import * as syncProtocol from 'y-protocols/sync'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 let proc: ChildProcess, port = 0, base = ''
+const persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-server-test-'))
 const logs: string[] = []
 
 async function freePort(): Promise<number> {
@@ -73,11 +76,66 @@ async function login(fakeLogin: string): Promise<string> {
 
 beforeAll(async () => {
   port = await freePort(); base = `http://127.0.0.1:${port}`
-  proc = await startServer({ GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_ADMINS: 'bob', ROOM_IDENTITY_GUARD: '', NODE_ENV: 'test' })
+  proc = await startServer({ GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_ADMINS: 'bob', ROOM_IDENTITY_GUARD: '', NODE_ENV: 'test', YPERSISTENCE: persistenceDir })
 }, 30_000)
-afterAll(() => { proc?.kill() })
+afterAll(() => { proc?.kill(); fs.rmSync(persistenceDir, { recursive: true, force: true }) })
 
 describe('room server with the fake GitHub issuer', () => {
+  it('cuts a repository over on a schema-2 preflight and refuses old requests', async () => {
+    const session = await login('cutover')
+    const room = 'github.com/cutover/project'
+    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
+    expect((await post('/view-token', { room, schema: 2 })).status).toBe(401)
+    expect(await join(`${room}/main`, { session })).toBe(101)
+    const migrated = await post('/view-token', { room: `${room}/feature`, session, schema: 2 })
+    expect(migrated.status).toBe(200)
+    expect(await migrated.json()).toMatchObject({ room, hub: 1 })
+    const oldText = `update Room to 0.17 or later: this repository now has one room for all branches (${room})`
+    for (const [route, body] of [
+      ['/view-token', { room: `${room}/main`, session }],
+      ['/rooms', { room: `${room}/main`, session }],
+    ] as const) {
+      const refused = await post(route, body)
+      expect(refused.status).toBe(403)
+      expect(await refused.text()).toBe(oldText)
+    }
+    const unauthenticated = await post('/view-token', { room: `${room}/main` })
+    expect(unauthenticated.status).toBe(403)
+    expect(await unauthenticated.text()).toBe(oldText)
+    expect(await join(`${room}/main`, { session })).toBe(403)
+    expect(await join(room, { session, schema: '2' })).toBe(101)
+    const alias = await post('/rooms', { room: `${room}/main`, session, schema: 2 })
+    expect(alias.status).toBe(409)
+    expect(await alias.json()).toEqual({ room })
+  })
+
+  it('closes an already joined 0.16 socket with the upgrade text', async () => {
+    const session = await login('old-socket')
+    const room = 'github.com/socket/project'
+    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(`${room}/main`)}?session=${session}`)
+    await new Promise<void>(resolve => ws.once('open', resolve))
+    const closed = new Promise<{ code: number; reason: string }>(resolve => ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() })))
+    const preflight = await post('/view-token', { room, session, schema: 2 })
+    expect(preflight.status).toBe(200)
+    expect(await closed).toEqual({ code: 4001, reason: `update Room to 0.17 or later: this repository now has one room for all branches (${room})` })
+  })
+
+  it('exports an archive only to an admitted member and closes the repo while unjoined', async () => {
+    const session = await login('archiver')
+    const room = 'github.com/archive/project'
+    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
+    await sendMemberUpdate(`${room}/main`, session, d => d.getMap('scopes').set('archiver', { by: 'archiver', byKind: 'agent', area: 'api', summary: 'old', paths: ['x.ts'], at: 1 }))
+    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
+    const archive = await post('/archive/export', { room: `${room}/main`, session, schema: 2 })
+    expect(archive.status).toBe(200)
+    const doc = new Y.Doc(); Y.applyUpdate(doc, new Uint8Array(await archive.arrayBuffer()))
+    expect(doc.getMap('scopes').get('archiver')).toMatchObject({ summary: 'old' })
+    expect((await post('/archive/export', { room: `${room}/main`, view: 'token', schema: 2 })).status).toBe(403)
+    const closed = await fetch(`${base}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, session, schema: 2 }) })
+    expect(closed.status).toBe(200)
+    expect(await join(room, { session, schema: '2' })).toBe(404)
+  })
   it('advertises device mode with the fake flag', async () => {
     expect(await (await fetch(`${base}/auth/config`)).json()).toMatchObject({ github: 'device', providers: ['github'], fake: true })
   })
