@@ -7930,7 +7930,7 @@ function disjoint(a, b) {
   for (let i2 = 0; i2 < b.length; i2++) if (seen.has(b.charCodeAt(i2))) return false;
   return true;
 }
-function hunk(before, after, budget) {
+function hunk(before, after, budget, stats) {
   if (!before || !after) return [replace(before, after), 0];
   const [head, tail] = commonEdges(before, after);
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
@@ -7943,32 +7943,44 @@ function hunk(before, after, budget) {
   if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0];
   const tokens = a.length + b.length;
   const maxEditLength = editBudget(tokens, budget);
+  if (maxEditLength > 0 && stats) stats.charCalls++;
   const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : void 0;
-  if (!changes) return [edges(replace(a, b)), tokens * maxEditLength];
+  if (!changes) {
+    const spent2 = tokens * maxEditLength;
+    if (stats) stats.work += spent2;
+    return [edges(replace(a, b)), spent2];
+  }
   const ops = fromChanges(changes);
-  return [edges(ops), tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0)];
+  const spent = tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0);
+  if (stats) stats.work += spent;
+  return [edges(ops), spent];
 }
-function boundedTextDiff(before, after) {
+function boundedTextDiff(before, after, stats) {
   if (before === after) return before ? [[0, before]] : [];
   const [head, tail] = commonEdges(before, after);
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
   const out2 = head ? [[0, before.slice(0, head)]] : [];
   if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
-    out2.push(...hunk(a, b, SMALL_WORK)[0]);
+    out2.push(...hunk(a, b, SMALL_WORK, stats)[0]);
     if (tail) out2.push([0, before.slice(before.length - tail)]);
     return out2.filter(([, value2]) => value2.length);
   }
   let budget = WORK;
   const lineCount = (s) => s.split("\n").length;
-  const lineEdits = editBudget(lineCount(a) + lineCount(b), budget / 2);
+  const lineTokens = lineCount(a) + lineCount(b);
+  const lineEdits = editBudget(lineTokens, budget / 2);
+  if (a && b && lineEdits > 0 && stats) {
+    stats.lineCalls++;
+    stats.work += lineTokens * lineEdits;
+  }
   const lines = a && b && lineEdits > 0 ? diffLines(a, b, { maxEditLength: lineEdits }) : void 0;
   budget /= 2;
-  if (!lines) out2.push(...hunk(a, b, budget)[0]);
+  if (!lines) out2.push(...hunk(a, b, budget, stats)[0]);
   else {
     let removed = "", added = "";
     const flush = () => {
       if (!removed && !added) return;
-      const [ops, spent] = hunk(removed, added, budget);
+      const [ops, spent] = hunk(removed, added, budget, stats);
       out2.push(...ops);
       budget = Math.max(0, budget - spent);
       removed = added = "";
