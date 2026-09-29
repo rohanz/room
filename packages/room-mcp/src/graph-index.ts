@@ -27,7 +27,7 @@ const YIELD_AFTER_MS = 50
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
 
 /** Read references from live worker text, including calls in the definition's own file. */
-export async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
+async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
   if (!isSourcePath(path) || text.length > MAX_BYTES) return false
   await ensureLanguages([path])
   const parsed = parseFile(path, text)

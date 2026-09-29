@@ -12,7 +12,7 @@ import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
-export type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
+type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
 export interface ConflictSlot {
   kind: ConflictKind
   owner: string
@@ -36,7 +36,7 @@ export interface ConflictSlot {
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'retrySource'>
 
-export const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
+const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
   [owner, kind, other, path, subject].join('\0')
 export const noticeId = (key: string, epoch: number): string => `cf:${hash(key)}:${epoch}`
