@@ -43342,7 +43342,7 @@ async function blobsAt(dir, commit, paths) {
 }
 
 // packages/room-mcp/src/conflict-set.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash8, randomUUID as randomUUID2 } from "node:crypto";
 
 // packages/room-mcp/src/merge.ts
 import { execFile as execFile5 } from "node:child_process";
@@ -45163,6 +45163,12 @@ var GraphIndex = class {
       this.room.roomSalt
     ]);
   }
+  /** Grant changes can make a previously ignored peer path relevant again. */
+  grantPaths() {
+    const paths = /* @__PURE__ */ new Set([...this.cache.keys(), ...this.degradedPaths]);
+    for (const person of this.room.manifestHead.keys()) for (const path45 of manifestPaths(this.room, person)) paths.add(path45);
+    return paths;
+  }
   start() {
     this.currentBuild = this.initialBuild();
     const touchedInTransaction = /* @__PURE__ */ new WeakMap();
@@ -45191,6 +45197,7 @@ var GraphIndex = class {
       const paths = peerRefreshInTransaction.get(transaction) ?? /* @__PURE__ */ new Set();
       for (const [path45, source] of this.publishedSource) if (source.kind === "entry" && source.person === person) paths.add(path45);
       for (const path45 of manifestPaths(this.room, person)) paths.add(path45);
+      for (const path45 of this.degradedPaths) paths.add(path45);
       peerRefreshInTransaction.set(transaction, paths);
       this.withdrawRestricted();
     };
@@ -45237,7 +45244,7 @@ var GraphIndex = class {
       const firstHead = this.ownPublicationKey === void 0;
       this.ownPublicationKey = next;
       if (firstHead) return;
-      const paths = /* @__PURE__ */ new Set([...this.room.manifestHead.get(this.me) ? manifestPaths(this.room, this.me) : [], ...this.cache.keys()]);
+      const paths = this.grantPaths();
       for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
       if (![...paths].some(isSourcePath)) void this.publish(this.phase);
     };
@@ -45261,7 +45268,7 @@ var GraphIndex = class {
         const firstHead = this.ownPublicationKey === void 0;
         this.ownPublicationKey = next;
         if (firstHead) return;
-        const paths = /* @__PURE__ */ new Set([...manifestPaths(this.room, this.me), ...this.cache.keys()]);
+        const paths = this.grantPaths();
         for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
       }
     };
@@ -45274,7 +45281,7 @@ var GraphIndex = class {
       this.withdrawRestricted();
       if (next === this.ownPublicationKey) return;
       this.ownPublicationKey = next;
-      for (const path45 of /* @__PURE__ */ new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path45)) void this.refresh(path45);
+      for (const path45 of this.grantPaths()) if (isSourcePath(path45)) void this.refresh(path45);
     };
     this.room.metaMap.observe(onMeta);
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta));
@@ -45432,6 +45439,10 @@ var GraphIndex = class {
     const head = this.room.manifestHead.get(this.me);
     return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45)));
   }
+  peerTextAuthorized(person, path45) {
+    const head = this.room.manifestHead.get(person);
+    return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45))) && !!this.room.roomSalt && !head.excluded.includes(digestPath(this.room.roomSalt, path45));
+  }
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
   deletionBaseline(path45) {
     const baseline = carriedFrom(this.dir, this.me)?.baseline;
@@ -45568,7 +45579,9 @@ var GraphIndex = class {
       const heldBy = text === void 0 && this.ownTextAuthorized(path45) ? [...this.room.manifestHead.keys()].filter((person) => {
         if (person === this.me) return false;
         const fence = this.room.manifestHead.get(person)?.fence;
-        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path45)?.state === "held";
+        if (!fence) return false;
+        const entry = this.room.manifest.get(manifestKey(person, fence))?.get(path45);
+        return entry?.state === "held" && entry.fence === fence && this.peerTextAuthorized(person, path45);
       }) : [];
       const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path45, text);
       const symbols = parsed ? {
@@ -45834,7 +45847,7 @@ function workerText(dir, rel) {
 // packages/room-mcp/src/conflict-set.ts
 var hash = (value2) => createHash8("sha256").update(value2).digest("hex");
 var slotKey = (owner, kind, other, path45, subject = "") => [owner, kind, other, path45, subject].join("\0");
-var noticeId = (key2, epoch) => `cf:${hash(key2)}:${epoch}`;
+var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
 var ROOM = { name: "room", kind: "agent" };
 var retryMinutes = [1, 2, 4, 8];
 var StaleConflictInputs = class extends Error {
@@ -45905,6 +45918,7 @@ var ConflictSlots = class {
       epoch,
       fence,
       checkedAt: now,
+      ...result2.kind === "contract" && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID2() } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
     };
@@ -45922,7 +45936,7 @@ var ConflictSlots = class {
   async postNotice(key2, slot) {
     const current = () => this.valid() && this.map.get(key2) === slot && (typeof this.fence === "function" ? this.fence() : this.fence) === slot.fence;
     if (!current()) return;
-    const id3 = noticeId(key2, slot.epoch) + (slot.settled === "clean" ? ":clean" : "");
+    const id3 = noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
     const status = slot.settled;
     const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" ? "interrupt" : "notify";
     const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `${slot.path}: the ${slot.clearedFrom === "possible" ? "possible conflict" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
@@ -46852,13 +46866,13 @@ function createShare() {
 
 // packages/room-mcp/src/tools/workers.ts
 import fs34 from "node:fs";
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 import os6 from "node:os";
 import path34 from "node:path";
 
 // packages/room-mcp/src/registry.ts
 import fs33 from "node:fs";
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 import path33 from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -47327,7 +47341,7 @@ function forgetLegacyLocal(common, room) {
 // packages/relay/src/hub.ts
 import fs22 from "node:fs";
 import path20 from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 var hubDir = (commonDir) => path20.join(commonDir, "room", "hub");
 function readJson2(file) {
   try {
@@ -47348,7 +47362,7 @@ var AuthorityLock = class _AuthorityLock {
   static take(commonDir) {
     const file = path20.join(hubDir(commonDir), "authority.lock");
     const own2 = probeProcess(process.pid);
-    const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
+    const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID3() };
     if (createExclusive(file, token)) return new _AuthorityLock(file, token);
     try {
       if (recover(file, () => true) && createExclusive(file, token)) return new _AuthorityLock(file, token);
@@ -48065,7 +48079,7 @@ import path26 from "node:path";
 
 // packages/room-mcp/src/owned-file.ts
 import fs26 from "node:fs";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 function ownerPid(file) {
   try {
     const raw = fs26.readFileSync(file, "utf8");
@@ -48078,7 +48092,7 @@ function ownerPid(file) {
   }
 }
 function acquireOwnedFile(file, record2) {
-  const token = JSON.stringify({ ...record2, nonce: randomUUID3() });
+  const token = JSON.stringify({ ...record2, nonce: randomUUID4() });
   const create6 = () => {
     let fd;
     try {
@@ -48589,7 +48603,7 @@ async function attachPublisher(o) {
 // packages/room-mcp/src/names.ts
 import fs30 from "node:fs";
 import path29 from "node:path";
-import { createHash as createHash11, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
 function nameLeaseFile(commonDir, roomKey2, name2) {
   return path29.join(commonDir, "room", "names", `${createHash11("sha256").update(`${roomKey2}\0${name2}`).digest("hex")}.json`);
 }
@@ -48651,7 +48665,7 @@ async function releaseLocalName(file, token) {
 }
 function processToken(sessionId, probe = probeProcess) {
   const own2 = probe(process.pid);
-  return { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId, nonce: randomUUID4() };
+  return { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId, nonce: randomUUID5() };
 }
 var NameRefused = class extends Error {
 };
@@ -50297,7 +50311,7 @@ var Rooms = class _Rooms {
     let run2;
     try {
       const next = await registry2.resume(record2.id, config2.maxWorkers, {
-        nonce: randomUUID5(),
+        nonce: randomUUID6(),
         logStart,
         busFrontier: highestSeq(s.room)
       });
@@ -50554,7 +50568,7 @@ function handlers3(state) {
       const share = typeof a.share === "string" && a.share ? parseShare(a.share) : void 0;
       if (typeof a.share === "string" && a.share && !share) return "error: share must be intent, declared or full";
       const registry2 = await registryForDir(s.dir);
-      const id3 = registry2.newId(), nonce = randomUUID6();
+      const id3 = registry2.newId(), nonce = randomUUID7();
       const owner = s.me.owner ?? s.me.name, name2 = `${owner}+${tag}`;
       const { server, isWorker } = workerOrigin(s);
       const count = registry2.occupancy();
@@ -50592,7 +50606,7 @@ function handlers3(state) {
       )) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`;
       }
-      const hostSessionId = host === "claude" ? randomUUID6() : void 0;
+      const hostSessionId = host === "claude" ? randomUUID7() : void 0;
       const usedPorts = registry2.list().flatMap((record3) => typeof record3.port === "number" ? [record3.port] : []);
       const prep = { step: "plan", worktreeExisted: fs34.existsSync(dir), created: !suppliedDir && !fs34.existsSync(dir) };
       const record2 = {
@@ -52395,7 +52409,7 @@ ${fresh.map(line).join("\n")}${more ? `
 import fs36 from "node:fs";
 import path36 from "node:path";
 import { execFileSync as execFileSync9 } from "node:child_process";
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID8 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -52404,7 +52418,7 @@ var HooksBridge = class {
   }
   s;
   o;
-  writer = randomUUID7();
+  writer = randomUUID8();
   timer = null;
   unobserve = [];
   stopped = false;
@@ -52759,7 +52773,7 @@ function kindPhrase(type) {
 // packages/room-mcp/src/ledger.ts
 import fs38 from "node:fs";
 import path38 from "node:path";
-import { createHash as createHash13, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash13, randomUUID as randomUUID9 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text) {
@@ -52804,7 +52818,7 @@ var Ledger = class {
     return !holder || holder.sessionId === this.o.sessionId();
   }
   open(kind, leaseMs = kind === "hook" ? this.o.hookLeaseMs ?? HOOK_LEASE_MS : REPLY_LEASE_MS) {
-    return new Batch(randomUUID8(), kind, leaseMs);
+    return new Batch(randomUUID9(), kind, leaseMs);
   }
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s) {
