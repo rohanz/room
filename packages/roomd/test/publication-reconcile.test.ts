@@ -139,16 +139,13 @@ it('services a timer and coalesced update during a many-file publish', async () 
     fs.writeFileSync(path.join(config.dir, file), newText)
   }
   let writes = 0
-  let timerMs = Infinity
   let writesAtTimer = 0
   let followUp: Promise<void> | undefined
-  let started = 0
+  let firstCompleted = false
   const timer = new Promise<void>(resolve => {
     internal.beforePublishWrite = async () => {
       if (++writes !== 1) return
-      started = performance.now()
       setTimeout(() => {
-        timerMs = performance.now() - started
         writesAtTimer = writes
         fs.writeFileSync(path.join(config.dir, files[0]), latestText)
         followUp = internal.reconcileGitChanges()
@@ -157,10 +154,11 @@ it('services a timer and coalesced update during a many-file publish', async () 
     }
   })
   const first = internal.reconcileGitChanges()
+  void first.then(() => { firstCompleted = true })
   await timer
+  expect(firstCompleted).toBe(false)
   await followUp
   await first
-  expect(timerMs).toBeLessThan(100)
   expect(writesAtTimer).toBeGreaterThan(0)
   expect(writesAtTimer).toBeLessThan(files.length)
   for (const file of files) {

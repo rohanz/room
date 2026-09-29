@@ -13,6 +13,9 @@ import { diffChars, diffLines, type ChangeObject } from 'diff'
 /** fast-diff's tuple shape: -1 delete, 0 equal, 1 insert. */
 export type TextOp = [-1 | 0 | 1, string]
 
+/** Optional instrumentation for callers checking the algorithmic work bound. */
+export type DiffStats = { work: number; charCalls: number; lineCalls: number }
+
 /** Estimated Myers work allowance per file; this is not a wall-clock limit. */
 const WORK = 2_000_000
 /** Small changes avoid the line pass and use one character diff. */
@@ -56,7 +59,7 @@ function disjoint(a: string, b: string): boolean {
 }
 
 /** Character diff of one changed hunk, or a whole replacement past the budget; returns the work spent. */
-function hunk(before: string, after: string, budget: number): [TextOp[], number] {
+function hunk(before: string, after: string, budget: number, stats?: DiffStats): [TextOp[], number] {
   if (!before || !after) return [replace(before, after), 0]
   const [head, tail] = commonEdges(before, after)
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail)
@@ -69,34 +72,46 @@ function hunk(before: string, after: string, budget: number): [TextOp[], number]
   if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0]
   const tokens = a.length + b.length
   const maxEditLength = editBudget(tokens, budget)
+  if (maxEditLength > 0 && stats) stats.charCalls++
   const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : undefined
-  if (!changes) return [edges(replace(a, b)), tokens * maxEditLength]
+  if (!changes) {
+    const spent = tokens * maxEditLength
+    if (stats) stats.work += spent
+    return [edges(replace(a, b)), spent]
+  }
   const ops = fromChanges(changes)
-  return [edges(ops), tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0)]
+  const spent = tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0)
+  if (stats) stats.work += spent
+  return [edges(ops), spent]
 }
 
 /** Edit operations turning `before` into `after`, computed in bounded time. */
-export function boundedTextDiff(before: string, after: string): TextOp[] {
+export function boundedTextDiff(before: string, after: string, stats?: DiffStats): TextOp[] {
   if (before === after) return before ? [[0, before]] : []
   const [head, tail] = commonEdges(before, after)
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail)
   const out: TextOp[] = head ? [[0, before.slice(0, head)]] : []
   if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
-    out.push(...hunk(a, b, SMALL_WORK)[0])
+    out.push(...hunk(a, b, SMALL_WORK, stats)[0])
     if (tail) out.push([0, before.slice(before.length - tail)])
     return out.filter(([, value]) => value.length)
   }
   let budget = WORK
   const lineCount = (s: string) => s.split('\n').length
-  const lineEdits = editBudget(lineCount(a) + lineCount(b), budget / 2)
+  const lineTokens = lineCount(a) + lineCount(b)
+  const lineEdits = editBudget(lineTokens, budget / 2)
+  if (a && b && lineEdits > 0 && stats) {
+    stats.lineCalls++
+    stats.work += lineTokens * lineEdits
+  }
   const lines = a && b && lineEdits > 0 ? diffLines(a, b, { maxEditLength: lineEdits }) : undefined
   budget /= 2
-  if (!lines) out.push(...hunk(a, b, budget)[0])
+  if (!lines) out.push(...hunk(a, b, budget, stats)[0])
   else {
     let removed = '', added = ''
     const flush = () => {
       if (!removed && !added) return
-      const [ops, spent] = hunk(removed, added, budget)
+      const [ops, spent] = hunk(removed, added, budget, stats)
       out.push(...ops)
       budget = Math.max(0, budget - spent)
       removed = added = ''

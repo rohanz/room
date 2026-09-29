@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as diff from 'diff'
 import { RoomDoc } from './doc.js'
-import { boundedTextDiff } from './text-diff.js'
+import { boundedTextDiff, type DiffStats } from './text-diff.js'
 
 vi.mock('diff', async importOriginal => {
   const actual = await importOriginal<typeof import('diff')>()
-  return { ...actual, diffChars: vi.fn(actual.diffChars) }
+  return { ...actual, diffChars: vi.fn(actual.diffChars), diffLines: vi.fn(actual.diffLines) }
 })
+
+const stats = (): DiffStats => ({ work: 0, charCalls: 0, lineCalls: 0 })
 
 /** Deterministic pseudo-random generator, so fixtures are the same on every run. */
 function rng(seed: number) {
@@ -57,11 +59,15 @@ describe('overlay text diff', () => {
       ['app/static/planner/planner.js', sourceFixture(3, 800), sourceFixture(4, 900)],
     ]
     for (const [file, before] of pairs) room.setOverlay('lead', file, before)
-    const started = performance.now()
     for (const [file, , after] of pairs) room.setOverlay('lead', file, after)
-    const elapsed = performance.now() - started
-    for (const [file, , after] of pairs) expect(room.text(file, 'lead')).toBe(after)
-    expect(elapsed).toBeLessThan(1000)
+    for (const [file, before, after] of pairs) {
+      expect(room.text(file, 'lead')).toBe(after)
+      const measured = stats()
+      expect(apply(before, boundedTextDiff(before, after, measured))).toBe(after)
+      expect(measured.work, file).toBeLessThanOrEqual(2_000_000)
+    }
+    expect(vi.mocked(diff.diffChars).mock.calls.every(([, , options]) => (options as { maxEditLength?: number } | undefined)?.maxEditLength !== undefined)).toBe(true)
+    expect(vi.mocked(diff.diffLines).mock.calls.every(([, , options]) => (options as { maxEditLength?: number } | undefined)?.maxEditLength !== undefined)).toBe(true)
   }, 120_000)
 
   it('keeps a character-level diff for small edits in a large file', () => {
@@ -115,21 +121,24 @@ describe('overlay text diff', () => {
     expect(room.claimRange(last)).toEqual({ from: 4, to: 4 })
   })
 
-  it('diffs 100 small rewrites within a comparable time to the previous character diff', () => {
+  it('short-circuits 100 disjoint small rewrites without character diff work', () => {
     const before = 'a'.repeat(500), after = 'b'.repeat(500)
-    const start = performance.now()
-    for (let i = 0; i < 100; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
-    expect(performance.now() - start).toBeLessThan(1_000)
+    for (let i = 0; i < 100; i++) {
+      const measured = stats()
+      expect(apply(before, boundedTextDiff(before, after, measured))).toBe(after)
+      expect(measured).toEqual({ work: 0, charCalls: 0, lineCalls: 0 })
+    }
   })
 
   it('bounds small-text character diffs across the slow 350–500 character region', () => {
     for (const size of [350, 400, 450, 500, 707]) {
       const before = `${'a'.repeat(size - 1)}x`, after = `x${'b'.repeat(size - 1)}`
-      for (let i = 0; i < 3; i++) boundedTextDiff(before, after) // warm the diff path
-      const start = performance.now()
-      for (let i = 0; i < 10; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
-      const averageMs = (performance.now() - start) / 10
-      expect(averageMs, `${size} characters per side: ${averageMs.toFixed(1)} ms/file`).toBeLessThan(20)
+      const measured = stats()
+      expect(apply(before, boundedTextDiff(before, after, measured))).toBe(after)
+      expect(measured.charCalls, `${size} characters per side`).toBe(1)
+      expect(measured.lineCalls).toBe(0)
+      expect(measured.work, `${size} characters per side`).toBeGreaterThan(0)
+      expect(measured.work, `${size} characters per side`).toBeLessThanOrEqual(350_000)
     }
   })
 
