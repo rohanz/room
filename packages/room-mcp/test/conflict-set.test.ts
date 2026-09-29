@@ -580,6 +580,168 @@ describe('derived pair slots', () => {
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
+  it('keeps an active contract episode when a clean sibling has no manifest entry, including after restart', async () => {
+    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
+    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
+    let restarted: RoomDoc | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
+      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), path, value)
+      }
+      const graph = (rev: number, auxChanged: boolean) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: ['api.py', 'aux.py', 'consumer.py'],
+        edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] },
+          ...(auxChanged ? [{ source: 'aux.py', target: 'consumer.py', symbols: ['other'] }] : [])],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' },
+          ...(auxChanged ? [{ path: 'aux.py', symbol: 'other', kind: 'signature' as const, detail: 'other(a) → other(a, b)' }] : [])], truncated: false })
+      f.room.graphs.set('B', graph(1, true))
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      set = new ConflictSet(f.session('A'))
+      await set.reconcile('both changed')
+      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      const activeFact = f.room.doc.getMap<any>('conflicts').get(activeKey).factId
+      f.room.doc.transact(() => {
+        entries.delete('aux.py')
+        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+        f.room.graphs.set('B', graph(2, false))
+      })
+      await set.reconcile('aux reverted')
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'clean', epoch: 1 })
+      set.start()
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', factId: activeFact, epoch: 1 })
+      set.stop()
+      restarted = new RoomDoc()
+      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
+      await resumed.reconcile('stale after restart')
+      restarted.graphs.set('B', graph(3, false))
+      await resumed.reconcile('current after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([noticeId(activeKey, 1)])
+    } finally { set?.stop(); restarted?.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps an active contract episode after a sibling reverts in the running graph pipeline', async () => {
+    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
+    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
+      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), path, value)
+        writeFileSync(join(f.dir, path), value)
+      }
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start()
+      const ready = async () => {
+        await graph!.whenIdle()
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
+          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready()
+      set = new ConflictSet(f.session('A'))
+      await set.reconcile('both changed')
+      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      writeFileSync(join(f.dir, 'aux.py'), baseAux)
+      f.room.doc.transact(() => {
+        entries.delete('aux.py')
+        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await ready()
+      await set.reconcile('aux reverted')
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'clean', epoch: 1 })
+      set.start()
+      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
+      f.room.doc.transact(() => {
+        entries.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 3, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+      })
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', epoch: 1 })
+      await ready()
+      await set.reconcile('README catch-up')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([noticeId(activeKey, 1)])
+    } finally { set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it('redacts only a newly held sibling while an active contract remains readable', async () => {
+    const f = fixture()
+    let set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      for (const [path, symbol] of [['api.py', 'call'], ['aux.py', 'other']] as const) {
+        const value = `def ${symbol}(a, b):\n    pass\n`
+        entries.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), path, value)
+      }
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+        paths: ['api.py', 'aux.py', 'consumer.py'], edges: [
+          { source: 'api.py', target: 'consumer.py', symbols: ['call'] },
+          { source: 'aux.py', target: 'consumer.py', symbols: ['other'] }],
+        observed: [
+          { path: 'api.py', symbol: 'call', kind: 'signature', detail: 'call(a) → call(a, b)' },
+          { path: 'aux.py', symbol: 'other', kind: 'signature', detail: 'other(a) → other(a, b)' }], truncated: false })
+      set = new ConflictSet(f.session('A'))
+      await set.reconcile('both visible')
+      set.start()
+      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const heldKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
+      f.room.doc.transact(() => {
+        entries.set('aux.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'declared', textPrefixes: ['api.py'], rev: 2, semRev: 2 })
+      })
+      const fresh = new RoomDoc()
+      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(f.room.doc))
+      expect(fresh.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', epoch: 1 })
+      expect(fresh.doc.getMap<any>('conflicts').get(heldKey)).toBeUndefined()
+      expect(fresh.doc.getMap<any>('conflicts').get(slotKey('A', 'contract', 'B', 'aux.py', '*'))).toMatchObject({ status: 'unknown', factId: '' })
+      fresh.doc.destroy()
+    } finally { set?.stop(); f.cleanup() }
+  })
+
   it('N2 advances an identical signature after redaction and a readable clean revert', async () => {
     const f = fixture()
     try {
