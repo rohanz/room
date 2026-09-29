@@ -192,9 +192,11 @@ Outside the repository, login sessions are saved in `~/.config/room/credentials.
 To work with teammates on other machines, point the plugin at a server:
 
 ```sh
-ROOM_SERVER=hosted codex          # team server, wss://room-rohanz.fly.dev
-ROOM_SERVER=wss://room.example.com codex   # your own (see deploy/self-hosting.md)
+ROOM_SERVER=hosted codex --no-daemon          # team server, wss://room-rohanz.fly.dev
+ROOM_SERVER=wss://room.example.com codex --no-daemon   # your own (see deploy/self-hosting.md)
 ```
+
+Codex's shared app-server daemon does not pass your shell's `ROOM_*` variables to Room.
 
 `where="team"` in a Room tool uses your team server: `ROOM_SERVER`, otherwise the
 server in `ROOM_URL`, otherwise the hosted default. An explicit server URL takes priority.
@@ -489,7 +491,9 @@ npm run web
 ```
 
 To connect Codex to this server, launch it from the target clone with
-`ROOM_SERVER=ws://localhost:1234 ROOM_WEB=http://localhost:5173 codex`.
+`ROOM_SERVER=ws://localhost:1234 ROOM_WEB=http://localhost:5173 codex --no-daemon`.
+Codex's shared app-server daemon does not pass your shell's `ROOM_*` variables to Room.
+
 GitHub-named rooms are entered only through GitHub device login (`GITHUB_CLIENT_ID` on the
 server, `room_login` on the client); a `gh` token is never forwarded and would be refused. For
 local development set `GITHUB_CLIENT_ID=fake`: the server mints a session for any `fakeLogin`
