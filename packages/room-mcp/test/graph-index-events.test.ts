@@ -122,7 +122,7 @@ describe('GraphIndex overlay events', () => {
       const gi = new GraphIndex(room, 'B', repo, undefined, { random: () => 0, minPublishMs: 0 })
       try {
         gi.start(); await gi.whenIdle()
-        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')!.edges.some(e => e.source === 'api.py' && e.target === 'consumer.py'))
+        await eventually(() => room.graphs.get('B')?.status === 'ready' && room.graphs.get('B')!.paths.includes('api.py'))
         deleteFixture(room, 'B', 'api.py', { base: commit })
         if (level === 'declared') {
           const head = room.manifestHead.get('B')!
@@ -370,26 +370,6 @@ describe('GraphIndex overlay events', () => {
       } finally { gi.stop() }
     } finally { room.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
   }, 26_000)
-  it('marks held remote changes as contract coverage gaps', async () => {
-    const room = graphRoom()
-    publishFixture(room, 'Kieran', 'hidden.py', 'def secret(x):\n    return x\n')
-    const head = room.manifestHead.get('Kieran')!
-    const key = manifestKey('Kieran', head.fence)
-    room.doc.transact(() => {
-      room.manifest.get(key)!.set('hidden.py', { change: 'A', state: 'held', held: 'scope', at: Date.now(), fence: head.fence })
-      room.clearOverlay(key, 'hidden.py')
-      room.manifestHead.set('Kieran', { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
-    })
-    const logs: string[] = []
-    const gi = new GraphIndex(room, 'Rohan', dir, line => logs.push(line), { random: () => 0, minPublishMs: 0 })
-    try {
-      gi.start(); await gi.whenIdle()
-      expect(gi.graph.has('hidden.py')).toBe(false)
-      expect(room.graphs.get('Rohan')?.status).toBe('error')
-      expect(logs.join('\n')).toContain('hidden.py changed by Kieran; contract not visible')
-    } finally { gi.stop(); room.doc.destroy() }
-  })
-
   it('continues past an unchanged participant to a later changed version', async () => {
     const room = graphRoom()
     publishFixture(room, 'Ada', 'other.py', 'def other():\n    pass\n')

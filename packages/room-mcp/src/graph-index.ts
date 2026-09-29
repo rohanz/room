@@ -328,6 +328,7 @@ export class GraphIndex {
   private async publicationTextFor(path: string): Promise<{ text: string; source: PublicationSource } | undefined> {
     const mine = snapshot(this.room, this.me, [])
     if (mine) {
+      if (!this.ownTextAuthorized(path)) return undefined
       if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== 'all') return undefined
       if (!mine.roomSalt || !/^[a-f0-9]{64}$/i.test(mine.roomSalt) || mine.head.excluded.includes(digestPath(mine.roomSalt, path))) return undefined
       // snapshot filters stale entry fences. Their raw presence is still a changed-path
@@ -387,6 +388,7 @@ export class GraphIndex {
     if (!source) return false
     const head = this.room.manifestHead.get(this.me)
     if (!head) return source.kind === 'base' && source.base === this.base
+    if (!this.ownTextAuthorized(path)) return false
     const record = participantRecord(this.room, this.me)
     if (!head.complete || head.coverage.kind !== 'all' || holderFence(record?.holder) !== head.fence ||
         record?.git?.base !== head.base || record.git.fence !== head.fence ||
@@ -491,7 +493,7 @@ export class GraphIndex {
       const publicationSource = snapshot(this.room, this.me, [])
       const publication = await this.publicationTextFor(path)
       const publicText = publication?.text
-      const heldBy = text === undefined ? [...this.room.manifestHead.keys()].filter(person => {
+      const heldBy = text === undefined && this.ownTextAuthorized(path) ? [...this.room.manifestHead.keys()].filter(person => {
         if (person === this.me) return false
         const fence = this.room.manifestHead.get(person)?.fence
         return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path)?.state === 'held'
