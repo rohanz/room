@@ -72,7 +72,7 @@ describe('relay hub wiring', () => {
       expect(await other.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: false, reason: 'not-authority' })
       await other.close()
     } finally { await a.stop(); await b.stop(); await stray.close(); squatter.close() }
-  })
+  }, 30_000) // the hub settles for SETTLE_MS (5 s, real clock) before its first lease
 
   it('a relay that loses its lock answers not-authority and tells its holders', async () => {
     const common = await makeCommonDir()
