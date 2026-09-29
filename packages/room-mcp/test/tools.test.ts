@@ -23,7 +23,7 @@ import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } fr
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { visiblePeer } from './fixtures/visible.js'
-import { catchUpLocal } from '../../relay/src/local-migrate.js'
+import { catchUpLocal } from '@room/relay/local-migrate'
 import { claimDigest } from '@room/roomd'
 import { AutoJoin } from '../src/auto-join.js'
 

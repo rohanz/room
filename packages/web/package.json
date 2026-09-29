@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./panels": "./src/panels.ts",
+    "./conn": "./src/conn.ts"
+  },
   "scripts": {
     "dev": "vite --port 5173 --host",
     "build": "vite build",

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc, digestPath, gitBlobHash, manifestKey, participantsView, type ManifestEntry } from '@room/shared'
 import { browserBlobHash, readWebVersion, webChangerLabels, webCoverage } from './manifest-reader.ts'
-import { epochPublication } from '../../shared/src/testing.js'
+import { epochPublication } from '@room/shared/testing'
 
 function roomWith(name = 'Ben') {
   const room = new RoomDoc()

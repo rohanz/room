@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./wake": "./src/wake.ts",
     "./prompt": "./src/prompt.ts",
-    "./tools": "./src/tools.ts"
+    "./tools": "./src/tools.ts",
+    "./worker-state": "./src/worker-state.ts"
   },
   "bin": {
     "room-mcp": "./src/index.ts"
@@ -32,6 +33,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@room/web": "*",
     "@types/ws": "^8.5.0",
     "esbuild": "0.28.2"
   },

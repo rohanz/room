@@ -7,7 +7,7 @@ import { roomFilePath } from '../src/room-file.js'
 import { gitRoot, gitStatePath } from '../../../plugins/room/hooks/common.mjs'
 import * as gitDirs from '../src/git-dirs.js'
 import { commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, worktreeGitDirFromDotGit, worktreeGitDirSync } from '../src/git-dirs.js'
-import * as workerState from '../../room-mcp/src/worker-state.js'
+import * as workerState from '@room/room-mcp/worker-state'
 
 const roots: string[] = []
 const run = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
