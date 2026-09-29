@@ -541,6 +541,7 @@ export class ConflictSet {
         for (const path of myPaths) {
           const version = await this.read(mine, path)
           const text = asText(version)
+          if (text === undefined) { this.unknownOrRedactContracts(other, 'consumer version is not readable', theirs); return }
           if (text && await consumesSymbol(path, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path)
         }
         uses.sort()
