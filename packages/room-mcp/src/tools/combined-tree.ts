@@ -12,7 +12,7 @@ import { participantsView, snapshot, snapshotStillCurrent, versionOf, type Parti
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
 
-export interface PreviewGap { person: string; path?: string; why: string }
+interface PreviewGap { person: string; path?: string; why: string }
 
 export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {

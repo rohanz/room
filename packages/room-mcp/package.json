@@ -6,7 +6,6 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./wake": "./src/wake.ts",
     "./prompt": "./src/prompt.ts",
     "./tools": "./src/tools.ts",
     "./worker-state": "./src/worker-state.ts"
@@ -35,7 +34,8 @@
   "devDependencies": {
     "@room/web": "*",
     "@types/ws": "^8.5.0",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "lib0": "0.2.117"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

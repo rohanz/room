@@ -194,7 +194,7 @@ export async function stopWorkerWithEscalation(options: {
   return wait()
 }
 
-export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe, type ProcessReaders } from '@room/relay/process'
+export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 import { pidAlive, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {

@@ -15,7 +15,7 @@ import type { SessionBinding } from './binding.js'
 import { HOOK_LEASE_MS, type Batch, type Ledger } from './ledger.js'
 import type { HookItem } from './tools/index.js'
 
-export type SelectReply =
+type SelectReply =
   | { ok: true; batch: string; items: HookItem[]; notices: string[]; more: number; leaseMs: number }
   | { ok: false; reason: 'key' | 'foreign' | 'unbound' | 'invalid' }
 

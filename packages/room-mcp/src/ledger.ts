@@ -14,7 +14,7 @@ import type { Session } from './session.js'
 import { workerCarried } from './worker-registry.js'
 
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
-export const REPLY_LEASE_MS = 60_000
+const REPLY_LEASE_MS = 60_000
 export const HOOK_LEASE_MS = 10_000
 
 export type BatchKind = 'reply' | 'hook'
@@ -22,7 +22,7 @@ export type BatchKind = 'reply' | 'hook'
 export interface Notice { id: string; text: string }
 export interface Selected { s: Session; m: Msg; via: Via }
 
-export function noticeId(kind: string, text: string): string {
+function noticeId(kind: string, text: string): string {
   return `n:${kind}:${createHash('sha256').update(text).digest('hex').slice(0, 16)}`
 }
 

@@ -86,7 +86,7 @@ export function ownsLocalName(file: string, token: InstanceToken): boolean {
   try { return readLease(file)?.holder?.nonce === token.nonce } catch { return false }
 }
 
-export async function releaseLocalName(file: string, token: InstanceToken): Promise<void> {
+async function releaseLocalName(file: string, token: InstanceToken): Promise<void> {
   try { await guarded(() => compareAndRelease(file, token)) } catch { /* a dead holder's lease is recovered by the next taker */ }
 }
 
@@ -229,7 +229,7 @@ export async function chooseName(o: ChooseNameOptions): Promise<ChosenName> {
 }
 
 const PAUSE_TAIL = 'Your files are unaffected; messages and claims resume when it is back.'
-export const NAME_TICK_MS = 5_000
+const NAME_TICK_MS = 5_000
 
 export type LeaseState = 'held' | 'lapsed' | 'taken' | 'superseded' | 'ended'
 
