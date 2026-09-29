@@ -937,18 +937,17 @@ class Daemon implements Roomd {
     const paths = [...new Set(snapshot.map(c => c.path))]
     // Claims need both sides of a rename; base announcements retain Git's normal rename display.
     const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true))
-    const changed = paths.filter(p => changedPaths.has(p) && this.isSafeRoomPath(p, false))
+    const changed = paths.filter(p => changedPaths.has(p))
     if (!changed.length) return
     const changedClaims = new Set(changed)
     const headTexts = await gitShowMany(this.dir, head, changed)
     if (this.stopped || await gitHead(this.dir) !== head) return
-    const dirtyPaths = new Set<string>()
+    const dirtyPaths = new Set((await gitChanged(this.dir)).filter(p => changedClaims.has(p)))
     const currentTexts = new Map(changed.map(p => {
+      if (!this.isSafeRoomPath(p, false)) return [p, undefined] as const
       try {
         if (!fs.lstatSync(this.abs(p)).isFile()) return [p, headTexts.get(p)] as const
-        const disk = fs.readFileSync(this.abs(p), 'utf8')
-        if (disk !== headTexts.get(p)) dirtyPaths.add(p)
-        return [p, disk] as const
+        return [p, fs.readFileSync(this.abs(p), 'utf8')] as const
       } catch {
         return [p, headTexts.get(p)] as const
       }

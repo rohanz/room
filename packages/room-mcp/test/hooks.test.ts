@@ -190,6 +190,28 @@ describe('shell edit hooks', () => {
     if (warn) expect(out).toContain('Kieran changed api/tax.py')
   })
 
+  it.each([
+    'cp app.py api/tax.py >/dev/null', 'cp app.py api/tax.py >run.log',
+    'mv app.py api/tax.py 2>/dev/null', 'rm api/tax.py &>run.log',
+    'touch api/tax.py >>run.log', 'tee api/tax.py <app.py',
+    'sed -i "s/x/y/" api/tax.py >run.log', 'perl -pi -e "s/x/y/" api/tax.py 2>&1',
+    'truncate -s 0 api/tax.py >run.log', 'git mv app.py api/tax.py >run.log',
+    'git rm api/tax.py 2>/dev/null', 'git restore api/tax.py >run.log',
+    'git checkout HEAD api/tax.py', 'git checkout main api/tax.py', 'git checkout api/tax.py',
+    'cd api && git checkout tax.py',
+  ])('warns when only the file operand is claimed: %s', async command => {
+    state()
+    writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))
+    const out = await runHook('before-edit.mjs', { tool_name: 'Bash', cwd: dir, tool_input: { command } })
+    expect(out, command).toContain("Kieran's agent holds api/tax.py:1-1")
+  })
+
+  it.each(['git checkout main', 'git checkout feature/x', 'git checkout -b x', 'git switch api/tax.py'])('does not warn for branch checkout: %s', async command => {
+    state()
+    writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))
+    expect(await runHook('before-edit.mjs', { tool_name: 'Bash', cwd: dir, tool_input: { command } })).toBe('')
+  })
+
   it('records session-specific write intents with company, including new edit files', async () => {
     state()
     await runHook('session-start.mjs', { session_id: 'intent-lead', cwd: dir })
@@ -473,6 +495,17 @@ describe('shell edit hooks', () => {
     expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual([])
     expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'rm ../outside.py /etc/hosts' }, dir)).toEqual([])
+  })
+
+  it('separates redirect outputs from command operands', async () => {
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >/dev/null' }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py other.py 2>api/tax.py' }, dir)).toEqual(['api/tax.py', 'other.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py &>run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py >>run.log' }, dir)).toEqual(['run.log', 'api/tax.py'])
+    expect(pathsOf('Bash', { command: 'cp app.py api/tax.py 2>&1' }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('Bash', { command: 'tee api/tax.py <app.py' }, dir)).toEqual(['api/tax.py'])
   })
 
   it('skips a 1 MB command within 100 ms and still delivers company', async () => {

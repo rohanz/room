@@ -159,7 +159,7 @@ function shellCommands(input) {
         segment += c
         if (c === quote && value[i - 1] !== '\\') quote = ''
       } else if (c === '"' || c === "'" || c === '`') { quote = c; segment += c }
-      else if (c === '\n' || c === ';' || c === '|' || c === '&') {
+      else if (c === '\n' || c === ';' || c === '|' || (c === '&' && value[i + 1] !== '>' && value[i - 1] !== '>')) {
         if (segment.trim()) commands.push(segment.trim())
         segment = ''
       } else segment += c
@@ -170,14 +170,14 @@ function shellCommands(input) {
 }
 
 function shellWords(command) {
-  return Array.from(command.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|`[^`]*`|>>?|[^\s<>"'`]+/g), m => {
+  return Array.from(command.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|`[^`]*`|(?:\d+|&)?>>?|<|[^\s<>"'`]+/g), m => {
     const word = m[0]
     const quoted = /^['"`]/.test(word)
     return { text: quoted ? word.slice(1, -1) : word, quoted }
   }).slice(0, 200)
 }
 
-function writeTargets(input, powerShell = false) {
+function writeTargets(input, powerShell = false, root = '') {
   const targets = []
   let cwd = ''
   const add = value => targets.push(cwd && !/^(?:[a-z]:[\\/]|[\\/])/.test(value) ? `${cwd}/${value}` : value)
@@ -187,14 +187,18 @@ function writeTargets(input, powerShell = false) {
   }
   for (const command of shellCommands(input)) {
     const tokens = shellWords(command)
-    const words = tokens.map(token => token.text)
-    for (let i = 0; i < words.length - 1; i++) {
-      if (!tokens[i].quoted && (words[i] === '>' || words[i] === '>>') && words[i + 1] !== '&1' && words[i + 1] !== '/dev/null') add(words[i + 1])
+    const words = []
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]
+      if (!token.quoted && /^(?:\d+|&)?>>?$|^<$/.test(token.text)) {
+        const target = tokens[++i]?.text
+        if (token.text.includes('>') && target && target !== '/dev/null' && !/^&\d+$/.test(target)) add(target)
+      } else words.push(token.text)
     }
     while (words.length && (/^[A-Za-z_][\w]*=/.test(words[0]) || words[0] === 'env' || words[0] === 'sudo')) words.shift()
     const name = (words.shift() || '').split('/').at(-1).toLowerCase()
     if (!name) continue
-    const args = words.filter(w => w !== '>' && w !== '>>')
+    const args = words
     const positional = args.filter(w => !w.startsWith('-'))
     const last = positional.at(-1)
     if (name === 'cd') { if (args[0]) cwd = path.posix.join(cwd, args[0]); continue }
@@ -265,6 +269,11 @@ function writeTargets(input, powerShell = false) {
         }
       } else if ((action === 'checkout' || action === 'stash') && args.includes('--')) {
         for (const arg of args.slice(args.indexOf('--') + 1)) add(arg)
+      } else if (action === 'checkout' && !args.some(a => /^(?:-b|-B|--orphan)$/.test(a))) {
+        for (const arg of args.slice(1)) {
+          if (arg.startsWith('-')) continue
+          try { if (fs.statSync(path.resolve(root, cwd, arg)).isFile()) add(arg) } catch { /* branch or absent path */ }
+        }
       }
     }
   }
@@ -284,7 +293,7 @@ export function pathsOf(toolName, input, root) {
     return r && r !== '..' && !r.startsWith('..' + lib.sep) ? r.split(lib.sep).join('/') : undefined
   }
   if (shell) {
-    for (const token of writeTargets(input, toolName === 'PowerShell')) {
+    for (const token of writeTargets(input, toolName === 'PowerShell', root)) {
       const r = rel(token)
       if (r && (fs.existsSync(path.join(root, r)) || /[/\\.]\w/.test(token))) out.add(r)
     }
