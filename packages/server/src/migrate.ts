@@ -77,7 +77,8 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
           const copy = { ...scope, by }
           if (by !== person) {
             const key = `${name}\0${person}`
-            if (!unresolved.has(key)) unresolved.set(key, { placeholder: by, claims: [], scope: copy })
+            const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
+            if (!old.scope) unresolved.set(key, { ...old, scope: copy })
           } else if (!target.scopes.has(by)) target.scopes.set(by, copy)
         }
         for (const claim of room.claims.values()) {

@@ -121,6 +121,35 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await closed).toEqual({ code: 4001, reason: `update Room to 0.17 or later: this repository now has one room for all branches (${room})` })
   })
 
+  it('keeps old members in an unmigrated canonical-key room, but refuses its token to a schema-2 viewer', async () => {
+    const session = await login('canonical-view')
+    const room = 'github.com/canonical/view'
+    expect((await post('/rooms', { room, session })).status).toBe(201)
+    const old = await (await post('/view-token', { room, session })).json() as { view: string }
+    expect(await join(room, { session })).toBe(101)
+    expect(await join(room, { schema: '2', view: old.view })).toBe(410)
+    // A rejected bearer must not trigger migration; 0.16 can still use the branch-mode room.
+    expect(await join(room, { session })).toBe(101)
+    expect((await post('/view-token', { room, session })).status).toBe(200)
+    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
+    expect(await join(room, { session })).toBe(403)
+    expect(await join(room, { schema: '2', view: old.view })).toBe(410)
+  })
+
+  it('returns an actionable 410 page and websocket refusal for an archived branch link', async () => {
+    const session = await login('old-link')
+    const room = 'github.com/old-link/project'
+    const branch = `${room}/main`
+    expect((await post('/rooms', { room: branch, session })).status).toBe(201)
+    const { view } = await (await post('/view-token', { room: branch, session })).json() as { view: string }
+    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
+    const link = `${base}/?room=${encodeURIComponent(`ws://127.0.0.1:${port}/${encodeURIComponent(branch)}`)}&view=${view}`
+    const page = await fetch(link)
+    expect(page.status).toBe(410)
+    expect(await page.text()).toContain('this link was for a branch room that no longer exists; ask a teammate for a new link')
+    expect(await join(branch, { schema: '2', view })).toBe(410)
+  })
+
   it('exports an archive only to an admitted member and closes the repo while unjoined', async () => {
     const session = await login('archiver')
     const room = 'github.com/archive/project'

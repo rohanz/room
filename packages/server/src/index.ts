@@ -34,7 +34,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
-import { setupWSConnection, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
+import { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, repoRoomOf } from './names.js'
 import * as Y from 'yjs'
@@ -125,29 +125,37 @@ const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => {
 function saveRooms(): Promise<void> { return store.saveRooms(Object.fromEntries(rooms)) }
 const NOT_OPEN = (room: string) => `no room for ${canonical(room)} yet: open one with room_create (or POST /rooms)`
 const upgradeText = (repo: string) => `update Room to 0.17 or later: this repository now has one room for all branches (${repo})`
+const oldLinkText = 'this link was for a branch room that no longer exists; ask a teammate for a new link'
 
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting;
  *  the verdict carries the verified login when the caller is logged in. See admit.ts. */
 const admitted = makeAdmitted({ auth, token: TOKEN })
 const memoryDocs = new Map<string, Uint8Array>()
+const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]> } = {
+  getAllDocNames: async () => [...memoryDocs.keys()],
+  getYDoc: async name => {
+    const doc = new Y.Doc()
+    const update = memoryDocs.get(name)
+    if (update) Y.applyUpdate(doc, update)
+    return doc
+  },
+  storeUpdate: async (name, update) => {
+    const before = memoryDocs.get(name)
+    memoryDocs.set(name, before ? Y.mergeUpdates([before, update]) : update)
+  },
+  clearDocument: async name => { memoryDocs.delete(name) },
+}
 const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
-const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...memoryDocs.keys(), ...docs.keys()])]
+const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...docs.keys()])]
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)
   if (live) return live
-  if (provider()) return provider()!.getYDoc(name)
-  const doc = new Y.Doc()
-  const update = memoryDocs.get(name)
-  if (update) Y.applyUpdate(doc, update)
-  return doc
+  return provider()!.getYDoc(name)
 }
 const writeDoc = async (name: string, update: Uint8Array): Promise<void> => {
-  if (provider()) { await provider()!.storeUpdate(name, update); return }
-  const before = memoryDocs.get(name)
-  memoryDocs.set(name, before ? Y.mergeUpdates([before, update]) : update)
+  await provider()!.storeUpdate(name, update)
 }
 const clearDoc = async (name: string): Promise<void> => {
-  memoryDocs.delete(name)
   await provider()?.clearDocument?.(name)
 }
 function stopDoc(name: string, reason = 'room closed') {
@@ -161,7 +169,6 @@ function stopDoc(name: string, reason = 'room closed') {
 }
 async function freezeDocs(names: string[], reason: string): Promise<void> {
   const live = new Map(names.flatMap(name => docs.get(name) ? [[name, docs.get(name)!] as const] : []))
-  if (!provider()) for (const [name, doc] of live) await writeDoc(name, Y.encodeStateAsUpdate(doc))
   const closed = [...live.values()].flatMap(doc => [...doc.conns.keys()]).map(conn => new Promise<void>(resolve => {
     const socket = conn as { once(event: 'close', fn: () => void): void; terminate(): void }
     const timer = setTimeout(() => { socket.terminate(); resolve() }, 1000)
@@ -171,7 +178,6 @@ async function freezeDocs(names: string[], reason: string): Promise<void> {
   await Promise.all(closed)
   for (const [name, doc] of live) {
     await hubs.flush(doc)
-    if (!provider()) await writeDoc(name, Y.encodeStateAsUpdate(doc))
     docs.delete(name)
   }
 }
@@ -184,7 +190,7 @@ async function migrateOpenRepo(repo: string): Promise<void> {
       freeze: names => freezeDocs(names, upgradeText(repo)),
       revoke: async names => {
         const set = new Set(names)
-        for (const [token, value] of viewTokens) if (set.has(value.room)) viewTokens.delete(token)
+        for (const [token, value] of viewTokens) if (set.has(value.room) || canonical(value.room) === repo) viewTokens.delete(token)
         saveViewTokens()
       },
     })
@@ -250,6 +256,20 @@ const server = http.createServer((req, res) => {
     try { await fn(parsed) }
     catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(500, 'room server operation failed; retry') }
   }); return }
+
+  // A retired browser URL must explain the terminal state before the static app reconnects.
+  if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('view') && url.searchParams.has('room')) {
+    try {
+      const linked = new URL(url.searchParams.get('room')!)
+      const name = roomNameOf(linked.pathname)
+      const repo = canonical(name)
+      const entry = rooms.get(repo)
+      const token = url.searchParams.get('view')!
+      if (entry?.mode === 'repo' && (name !== repo ||
+        (entry.plan?.moved && name === repo && viewTokens.get(token)?.room !== repo)))
+        return html(410, `<h1>Room link expired</h1><p>${oldLinkText}</p>`)
+    } catch { /* let the browser handle an invalid room URL */ }
+  }
 
   // ---- auth ----
   if (url.pathname === '/auth/config' && req.method === 'GET') return json(200, { github: auth.mode, clientIdSet: auth.mode === 'device', providers: auth.providers, shareMax: SHARE_MAX, ...(auth.fake ? { fake: true } : {}) })
@@ -492,7 +512,7 @@ const droppedWrite = (room: string) => () => {
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
-if (stockPersistence) setPersistence(hubs.persistence(stockPersistence.provider))
+setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
 setInterval(() => hubs.tick(), 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
@@ -501,8 +521,13 @@ wss.on('connection', (conn, req) => {
   const raw = docNameOf(req.url ?? '/')
   const repo = canonical(raw)
   const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
-  setupWSConnection(conn, req, { gc: true, docName })
-  hubs.ensure(docName, docs.get(docName)!)
+  // Stock y-websocket sends its first sync packet synchronously. Load persisted state first,
+  // including the in-memory adapter's migration target, so that first packet describes it.
+  const doc = getYDoc(docName, true)
+  void hubs.flush(doc).then(() => {
+    setupWSConnection(conn, req, { gc: true, docName })
+    hubs.ensure(docName, doc)
+  }).catch(e => { console.log(`could not load room ${docName}: ${e instanceof Error ? e.message : e}`); conn.close(1011, 'room could not load') })
 })
 /** Refused connections are audited at most once per 10 s per remote address: a client retrying in a
  *  loop (or a scanner) must not fill the audit log. The refusal itself is still logged and sent. */
@@ -583,7 +608,11 @@ server.on('upgrade', (req, socket, head) => {
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
+    const entry = rooms.get(repo)
+    if (url.searchParams.get('schema') === '2' && !entry?.migratedAt) return refuse(socket, 410, oldLinkText, roomName)
     if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true })
+    if (entry?.mode === 'repo' && (roomName !== repo || entry.plan?.moved))
+      return refuse(socket, 410, oldLinkText, roomName)
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
   const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
