@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanupOrphanTemps, compareAndRelease, createExclusive, liveness, recover, replace, withGuard, type InstanceToken } from '../src/leases.js'
 
@@ -147,6 +148,18 @@ describe('local leases', () => {
     expect(fs.existsSync(temp)).toBe(true)
     createExclusive(`${file}.third`, {})
     expect(fs.existsSync(temp)).toBe(false)
+  })
+
+  it('keeps a live pid temp when an identity probe is missing or disagrees', () => {
+    const file = leaseFile()
+    const marker = createHash('sha256').update('original-birth').digest('hex').slice(0, 24)
+    const temp = `${file}.roomtmp-p${process.pid}-s${marker}-n12345678-1234-1234-1234-123456789abc.tmp`
+    fs.writeFileSync(temp, 'in progress')
+    const dir = path.dirname(file)
+    expect(cleanupOrphanTemps(dir, () => undefined)).toBe(0)
+    expect(fs.existsSync(temp)).toBe(true)
+    expect(cleanupOrphanTemps(dir, () => ({ startTime: 'transiently-wrong-birth' }))).toBe(0)
+    expect(fs.existsSync(temp)).toBe(true)
   })
 
   it('recovers a dead holder after a pid is reused with a different start time', () => {

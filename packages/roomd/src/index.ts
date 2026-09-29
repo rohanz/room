@@ -1207,6 +1207,10 @@ class Daemon implements Roomd {
 
   private async startWatcher(): Promise<void> {
     this.beforeWatcherReady?.()
+    // Chokidar can emit neither `ready` nor `error` when the watched root becomes
+    // unreadable before its initial scan. Check the root ourselves before waiting.
+    try { fs.readdirSync(this.dir) }
+    catch (error) { throw new RoomdError(`cannot watch ${this.dir}: ${errMsg(error)}`, 1) }
     const watchedFiles = new Set<string>()
     let warnedLarge = false
     const countFile = (absolute: string, add: boolean) => {

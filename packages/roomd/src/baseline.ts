@@ -117,8 +117,12 @@ export async function checkoutText(dir: string, object: string, path: string, en
     if (!Number.isSafeInteger(rawSize) || rawSize < 0) throw new Error(`invalid blob size for ${object}`)
     if (rawSize > maxBytes) return undefined
   }
-  try { return (await boundedGit(dir, ['cat-file', '--filters', `--path=${path}`, object], undefined, undefined,
-    maxBytes === undefined ? 64 * 1024 * 1024 : maxBytes + 1)).toString(encoding) }
+  try {
+    const output = await boundedGit(dir, ['cat-file', '--filters', `--path=${path}`, object], undefined, undefined,
+      maxBytes === undefined ? 64 * 1024 * 1024 : maxBytes + 1)
+    // The buffer allows one sentinel byte past the cap: output that reaches it is over the cap.
+    return maxBytes !== undefined && output.length > maxBytes ? undefined : output.toString(encoding)
+  }
   catch (error) {
     // Checkout filters may expand a small blob past the raw-size bound.
     if (maxBytes !== undefined && ((error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ||

@@ -358,3 +358,18 @@ it('treats checkout-filter expansion past the byte cap as a base gap', async () 
   git(checkout, 'config', 'filter.inflate.smudge', 'node -e "process.stdout.write(\'a\'.repeat(2097152))"')
   expect(await checkoutText(checkout, blob, 'inflated.txt', 'utf8', 512 * 1024)).toBeUndefined()
 })
+
+it('accepts checkout-filter output at the byte cap and treats one byte past it as a gap', async () => {
+  const checkout = repo()
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: checkout, input: 'tiny', encoding: 'utf8' }).trim()
+  const cap = 512 * 1024
+  const outputs = new Map<number, string | undefined>()
+  for (const size of [cap, cap + 1, cap + 2]) {
+    fs.writeFileSync(path.join(checkout, '.gitattributes'), 'x.txt filter=inflate\n')
+    git(checkout, 'config', 'filter.inflate.smudge', `node -e "process.stdout.write('a'.repeat(${size}))"`)
+    outputs.set(size, await checkoutText(checkout, blob, 'x.txt', 'utf8', cap))
+  }
+  expect(outputs.get(cap)?.length).toBe(cap)
+  expect(outputs.get(cap + 1)).toBeUndefined()
+  expect(outputs.get(cap + 2)).toBeUndefined()
+})

@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { probeProcess, type ProcessProbe } from './process.js'
+import { pidAlive, probeProcess, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
 export interface InstanceToken extends ProcessIdentity { sessionId: string; nonce: string }
@@ -39,14 +39,19 @@ function ensureDurableDirectory(dir: string): void {
 const startMarker = (startTime: string): string => createHash('sha256').update(startTime).digest('hex').slice(0, 24)
 const tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/
 
-/** Opportunistic maintenance: only a missing pid or a changed birth marker proves a temp's writer dead. */
+/** Opportunistic maintenance: a pid must be gone before its temp is removed.
+ * A failed or disagreeing identity probe alone cannot prove the writer exited. */
 export function cleanupOrphanTemps(dir: string, probe: ProcessProbe = probeProcess): number {
   let removed = 0
   for (const name of fs.readdirSync(dir)) {
     const match = tempPattern.exec(name)
     if (!match) continue
-    const observed = probe(Number(match[1]))
+    const pid = Number(match[1])
+    const observed = probe(pid)
     if (observed && (match[2] === 'u' || !observed.startTime || startMarker(observed.startTime) === match[2])) continue
+    // A mismatched or absent probe is not proof of death: the writer might still
+    // be alive when ps or sysctl cannot give us the same marker it recorded.
+    if (pidAlive(pid)) continue
     try { fs.unlinkSync(path.join(dir, name)); removed++ }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
   }

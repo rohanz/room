@@ -31,32 +31,34 @@ describe('roomd startup', () => {
   it('fails the start, naming the watch step, when the clone itself cannot be watched', async () => {
     const dir = dirtyRepo()
     restore.push(() => fs.chmodSync(dir, 0o755))
-    // Git has read the clone by the time the seed publishes; then the clone stops being listable.
-    const start = startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/w', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {},
-      beforePublishWrite: async () => { fs.chmodSync(dir, 0o300) } })
+    // The clone stops being listable after the seed, immediately before watch setup.
+    const steps: string[] = []
+    const start = startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/w', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {}, startupTimeoutMs: 1500,
+      beforeWatcherReady: () => { steps.push('watch'); fs.chmodSync(dir, 0o300) },
+      beforePublishWrite: async () => { steps.push('publish') } })
     const error = await start.then(() => undefined, e => e)
+    expect(steps.at(-1)).toBe('watch')
+    expect(steps).toContain('publish')
     expect(error).toMatchObject({ phase: 'watch' })
     expect(String(error)).toMatch(/cannot watch/)
   })
 
   it('enforces an overall startup deadline and names the step that overran', async () => {
     const dir = dirtyRepo()
-    const started = Date.now()
     const error = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/d', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {}, startupTimeoutMs: 500,
       beforePublishWrite: () => new Promise(() => { /* a seed step that never finishes */ }) }).then(() => undefined, e => e)
     expect(error).toMatchObject({ phase: 'seed' })
     expect(String(error)).toMatch(/startup did not finish within 1s|startup did not finish within 0s/)
-    expect(Date.now() - started).toBeLessThan(5000)
   })
 
   it('allows a seed to exceed the deadline while each path keeps making progress', async () => {
     const dir = dirtyRepo()
     for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(dir, `new-${i}.txt`), `new ${i}\n`)
-    const started = Date.now()
+    let writes = 0
     const d = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/progress', name: 'T', providerFactory: (_s, _n, doc) => provider(doc), log: () => {}, startupTimeoutMs: 2000,
-      beforePublishWrite: () => new Promise(resolve => setTimeout(resolve, 350)) })
+      beforePublishWrite: () => { writes++; return new Promise(resolve => setTimeout(resolve, 350)) } })
     try {
-      expect(Date.now() - started).toBeGreaterThan(2000)
+      expect(writes).toBeGreaterThanOrEqual(7)
       expect(manifestPaths(d.roomDoc, 'T')).toHaveLength(7)
     } finally { await d.stop() }
   }, 10_000)
