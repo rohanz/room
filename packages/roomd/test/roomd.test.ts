@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
-import { RoomDoc, manifestChangers, manifestKey } from '@room/shared'
+import { RoomDoc, manifestChangers, manifestKey, participantRecord } from '@room/shared'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd, defaultIgnoredPath, clampShare, parseShare, policyFromLevel, type ShareLevel, type Roomd, type RoomdOptions } from '../src/index.js'
 import { normalizeGitOrigin, gitIgnored } from '../src/git.js'
@@ -468,18 +468,16 @@ describe('roomd v2 push-only overlays', () => {
     expect(daemon.skipped().budget).toEqual([])
   })
 
-  it('sets base/branch/normalised repo but keeps a clean overlay empty', async () => {
+  it('keeps branch and base on its participant record while a clean overlay stays empty', async () => {
     const dir = await makeRepo({ 'README.md': '# hello\n', 'src/app.py': 'line1\nline2\n' })
     sh(dir, ['remote', 'add', 'origin', 'git@github.com:openai/room.git'])
     const daemon = await start({ room: room(), dir, name: 'Alice' })
 
     expect(manifestPaths(daemon.roomDoc, 'Alice')).toEqual([])
-    expect(daemon.roomDoc.meta).toMatchObject({
-      base: sh(dir, ['rev-parse', 'HEAD']),
-      branch: 'main',
-      repo: 'github.com/openai/room',
-      seededBy: 'Alice',
+    expect(participantRecord(daemon.roomDoc, 'Alice')?.git).toMatchObject({
+      head: sh(dir, ['rev-parse', 'HEAD']), branch: 'main',
     })
+    expect(daemon.roomDoc.meta.base).toBeUndefined()
     // No ref of the room's remote has been fetched: nothing a teammate could resolve.
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({
       status: 'no anchor on origin: teammates cannot compare with you',
@@ -638,8 +636,7 @@ describe('roomd v2 push-only overlays', () => {
   it('does not tell a worker on a carried commit to push its branch', async () => {
     const source = await makeRepo({ 'app.py': 'base\n' })
     const roomUrl = room()
-    const lead = await start({ room: roomUrl, dir: source, name: 'Alice' })
-    const sharedBase = lead.roomDoc.meta.base
+    await start({ room: roomUrl, dir: source, name: 'Alice' })
     const workerDir = path.join(source, '.room', 'workers', 'w')
     sh(source, ['worktree', 'add', '-qb', 'room/w', workerDir])
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\n')
@@ -647,12 +644,12 @@ describe('roomd v2 push-only overlays', () => {
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w' })
     await waitFor(() => (worker.provider.awareness.getLocalState() as { status: string }).status !== 'syncing')
     expect((worker.provider.awareness.getLocalState() as { status: string }).status).not.toMatch(/push/)
-    expect(worker.roomDoc.meta.base).toBe(sharedBase)
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(sh(workerDir, ['rev-parse', 'HEAD']))
     await fsp.writeFile(path.join(workerDir, 'worker.txt'), 'worker change\n')
     sh(workerDir, ['add', 'worker.txt']); sh(workerDir, ['commit', '-qm', 'worker change'])
     await waitFor(() => worker.base === sh(workerDir, ['rev-parse', 'HEAD']))
     expect((worker.provider.awareness.getLocalState() as { status: string }).status).not.toMatch(/push/)
-    expect(worker.roomDoc.meta.base).toBe(sharedBase)
+    await waitFor(() => worker.roomDoc.manifestHead.get('Alice+w')?.base === sh(workerDir, ['rev-parse', 'HEAD']))
   })
 
   /** A lead with uncommitted work and a worker spawned from it: carried commit C on top of the lead's HEAD P, plus a copied untracked file. */
@@ -676,7 +673,7 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice', localKey: 'k' })
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', localKey: 'k', carried: record })
-    expect(worker.roomDoc.baseOf('Alice+w')).toBe(carried)
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(carried)
     expect(manifestPaths(worker.roomDoc, 'Alice+w')).toEqual([])
     await fsp.writeFile(path.join(workerDir, 'notes.txt'), 'lead notes\nworker line\n')
     await waitFor(() => manifestPaths(worker.roomDoc, 'Alice+w').includes('notes.txt'))
@@ -688,7 +685,7 @@ describe('roomd v2 push-only overlays', () => {
     const roomUrl = room()
     await start({ room: roomUrl, dir: source, name: 'Alice' })
     const worker = await start({ room: roomUrl, dir: workerDir, name: 'Alice+w', owner: 'Alice', label: 'w', carried: record })
-    expect(worker.roomDoc.baseOf('Alice+w')).toBe(leadHead)
+    expect(worker.roomDoc.manifestHead.get('Alice+w')?.base).toBe(sh(workerDir, ['rev-parse', 'HEAD']))
     expect(manifestPaths(worker.roomDoc, 'Alice+w')).toEqual([])
     // A worker edit on top of a carried file: the full text, with the base text a teammate's clone has.
     await fsp.writeFile(path.join(workerDir, 'app.py'), 'lead WIP\nworker line\n')
@@ -748,7 +745,7 @@ describe('roomd v2 push-only overlays', () => {
     const bob = await start({ room: roomUrl, dir: ahead, name: 'Bob' })
     expect(bob.anchor.base).toBe(newHead)
     expect(alice.anchor.base).toBe(start0)
-    expect(alice.roomDoc.meta.base).toBe(start0)
+    expect(participantRecord(alice.roomDoc, 'Alice')?.git?.base).toBe(start0)
     sh(source, ['fetch', '-q'])
     await waitFor(() => /^behind origin\/main by 1/.test((alice.provider.awareness.getLocalState() as { status: string }).status))
   })
@@ -780,7 +777,7 @@ describe('sharing levels', () => {
     const daemon = await start({ room: room(), dir, name: 'Ceiling', share: 'full', shareCeiling: () => ceiling })
     await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
     await waitFor(() => manifestText(daemon.roomDoc, 'a.py', 'Ceiling') === 'private a\n')
-    const base = daemon.roomDoc.baseOf('Ceiling')!
+    const base = participantRecord(daemon.roomDoc, 'Ceiling')?.git?.base!
     expect(daemon.roomDoc.baseText('Ceiling', base, 'a.py')).toBe('base a\n')
     ceiling = 'intent'
     daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('full', [], ceiling) })
@@ -797,7 +794,7 @@ describe('sharing levels', () => {
     await fsp.writeFile(path.join(dir, 'a.py'), 'private a\n')
     await fsp.writeFile(path.join(dir, 'b.py'), 'private b\n')
     await waitFor(() => manifestPaths(daemon.roomDoc, 'Decline').length === 2)
-    const base = daemon.roomDoc.baseOf('Decline')!
+    const base = participantRecord(daemon.roomDoc, 'Decline')?.git?.base!
     await setPolicy(daemon, 'declared', ['b.py'])
     expect(manifestPaths(daemon.roomDoc, 'Decline')).toEqual(['a.py', 'b.py'])
     expect(daemon.roomDoc.manifest.get(manifestKey('Decline', daemon.roomDoc.manifestHead.get('Decline')!.fence))?.get('a.py'))
@@ -813,7 +810,7 @@ describe('sharing levels', () => {
   it('withdraws a deletion mark and collects base text when an overlay is reverted', async () => {
     const dir = await makeRepo({ 'deleted.py': 'old\n', 'reverted.py': 'old\n' })
     const daemon = await start({ room: room(), dir, name: 'Withdraw' })
-    const base = daemon.roomDoc.baseOf('Withdraw')!
+    const base = participantRecord(daemon.roomDoc, 'Withdraw')?.git?.base!
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'changed\n')
     await waitFor(() => manifestText(daemon.roomDoc, 'reverted.py', 'Withdraw') === 'changed\n')
     await fsp.writeFile(path.join(dir, 'reverted.py'), 'old\n')
@@ -903,7 +900,6 @@ describe('sharing levels', () => {
     const url = room()
     const keeper = await start({ room: url, dir: await cloneRepo(origin), name: 'Keeper', share: 'intent' })
     const base = keeper.base
-    keeper.roomDoc.setBaseOf('Legacy', base)
     keeper.roomDoc.setOverlay('Legacy', 'a.py', 'legacy edit\n')
     keeper.roomDoc.baseTexts.set(`${base}:a.py`, 'base\n')
     await start({ room: url, dir: origin, name: 'Collector', share: 'intent' })

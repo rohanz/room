@@ -65,13 +65,14 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
   const sockets = new Set<net.Socket>()
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, local: true, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
+    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
   })
   server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   server.on('upgrade', () => { /* hang: never answer the handshake */ })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const port = (server.address() as net.AddressInfo).port
-  fs.writeFileSync(path.join(commonDir, 'room-local.json'), JSON.stringify({ port, pid: process.pid, room: 'x', startedAt: Date.now(), key }) + '\n', { mode: 0o600 })
+  fs.mkdirSync(path.join(commonDir, 'room'), { recursive: true })
+  fs.writeFileSync(path.join(commonDir, 'room', 'relay.json'), JSON.stringify({ schema: 2, port, pid: process.pid, room: 'x', startedAt: Date.now(), key }) + '\n', { mode: 0o600 })
   let closed = false
   const close = () => { if (closed) return; closed = true; for (const s of sockets) s.destroy(); server.close() }
   cleanups.push(close)

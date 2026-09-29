@@ -16,11 +16,11 @@ describe('read-only access preflight', () => {
   })
   it('keeps the read-only key as the websocket credential when Code is selected', () => {
     connect('?room=wss%3A%2F%2Froom.example%2Frepo&view=secret&view=code')
-    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { view: 'secret' } })
+    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { schema: '2', view: 'secret' } })
   })
   it('does not send presentation values as credentials', () => {
     connect('?room=wss%3A%2F%2Froom.example%2Frepo&view=board&token=token')
-    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { token: 'token' } })
+    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { schema: '2', token: 'token' } })
   })
   it('still checks hosted links without read-only or local credentials', async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true })

@@ -22,7 +22,7 @@ import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { hubAppend } from '@room/shared/testing'
+import { hubAppend, setParticipantBase } from '@room/shared/testing'
 import { visiblePeer } from './fixtures/visible.js'
 
 /** No release notices to send here. */
@@ -131,7 +131,7 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   return {
-    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
+    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base, fence: 'test-fence' } as never,
     shareMax: 'full', shareRequested: 'full',
@@ -323,7 +323,7 @@ describe('worker plumbing', () => {
     rmSync(first.dir, { recursive: true, force: true })
 
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base: git('rev-parse', 'HEAD') })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, git('rev-parse', 'HEAD'))
     let session: Session | null = fakeSession(a, lead)
     session.dir = repo
     const tools = createTools({
@@ -422,7 +422,7 @@ describe('worker plumbing', () => {
 describe('room_spawn / room_done / room_collect discard', () => {
   function setup(worktree?: typeof prepareWorktree, maxWorkers = 2) {
     const { a, b } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     const specs: SpawnSpec[] = []
     const exits: ((code: number | null) => void)[] = []
@@ -492,7 +492,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const configHome = process.env.XDG_CONFIG_HOME!
     const parent = reserveWorkerPort('lead/parent', [], configHome)
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let session: Session | null = fakeSession(a, workerId)
     await registerWorkers(session, [{ id: 'lead/parent', tag: 'money', name: workerId.name, lead: lead.name, host: 'codex', task: 'parent task', dir: join(dir, '.room', 'workers', 'money'), branch: 'room/money', pid: process.pid, port: parent.port, startedAt: Date.now(), status: 'running' }])
     const specs: SpawnSpec[] = []
@@ -545,7 +545,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
 
     const stopped = setup()
     await stopped.leadTools.call('room_spawn', { tag: 'stopped', task: 'x' })
-    expect(await stopped.leadTools.call('room_leave', { force: true })).toContain('left local/x/main')
+    expect(await stopped.leadTools.call('room_leave', { force: true })).toContain('left local/x')
     expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(true)
     stopped.exits[0](null)
     expect(existsSync(file(stopped.specs[0].env.PORT))).toBe(false)
@@ -574,7 +574,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
 
   it('releases a reserved port when spawning fails', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({
       getSession: () => session, setSession: s => { session = s }, cwd: dir,
@@ -656,7 +656,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(t.specs[0].cmd).toBe(priority.cmd)
     if (priority.nice) expect(t.specs[0].args.slice(0, 3)).toEqual(['-n', '10', 'codex'])
     expect(out).toContain(` · priority ${priority.nice ? 'nice 10' : 'normal'}`)
-    expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
+    expect(t.specs[0].env).toMatchObject({ ROOM_WORKER_HOST: 'codex', ROOM_WORKER_MODEL: 'gpt-5.6', ROOM_WORKER_EFFORT: 'medium', ROOM_TAG: 'money', ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_LEAD: 'rohanz' })
     expect(t.specs[0].cwd).toBe(join(dir, '.room', 'workers', 'money'))
     const w = workerByTag(dir, 'money')
     expect(w).toMatchObject({ name: 'rohanz+money', status: 'running', lead: 'rohanz', branch: 'room/money', base, host: 'codex', model: 'gpt-5.6', effort: 'medium' })
@@ -671,9 +671,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
 
   it('room_spawn where=local from a team room opens a local workers room, bridges it, and tears it down on leave', async () => {
     const team = pair(), local = pair()
-    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    team.a.setMeta({ repo: 'x' }); setParticipantBase(team.a, lead.name, base); local.a.setMeta({ repo: 'x' }); setParticipantBase(local.a, lead.name, base)
     let ls: Session | null = fakeSession(team.a, lead, false)
-    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
     const specs: SpawnSpec[] = []
     const joins: { server?: string; name?: string }[] = []
     const left: string[] = []
@@ -687,8 +687,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     })
     const out = await leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents', where: 'local' })
     expect(joins).toEqual([{ server: 'local', name: 'rohanz' }])
-    expect(out).toContain('local workers room local/x/main')
-    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_LEAD: 'rohanz' })
+    expect(out).toContain('local workers room local/x')
+    expect(specs[0].env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_LEAD: 'rohanz' })
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', lead: 'rohanz' })
     expect(local.a.workerViewOf('rohanz+money')).toMatchObject({ status: 'running', lead: 'rohanz' })
     // The lead's bridge projects its local worker's view into the team room (registry §13).
@@ -701,7 +701,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(team.b.openClaims().map(c => c.intent)).toEqual(['[money] bump'])
     expect(team.b.scopes.has(workerId.name)).toBe(false)
     const st = await leadTools.call('room_state', { all: true })
-    expect(st).toContain('workers room: local (local/x/main')
+    expect(st).toContain('workers room: local (local/x')
     expect(st).toContain('money (claude, running')
     // a worker's done message reaches the lead through the workers room inbox
     let ws: Session | null = fakeSession(local.b, workerId)
@@ -714,8 +714,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(current).toContain('finished: cents done')
     // A reported worker with a live launch handle still blocks an unforced leave.
     expect(await leadTools.call('room_leave', {})).toContain('worker(s) still running: money')
-    expect(await leadTools.call('room_leave', { force: true })).toContain('left github.com/rohanz/x/main')
-    expect(left).toEqual(['local/x/main', 'github.com/rohanz/x/main'])
+    expect(await leadTools.call('room_leave', { force: true })).toContain('left github.com/rohanz/x')
+    expect(left).toEqual(['local/x', 'github.com/rohanz/x'])
     expect(team.b.openClaims()).toEqual([])
   })
 
@@ -867,33 +867,9 @@ describe('room_spawn / room_done / room_collect discard', () => {
   })
 })
 
-describe('pinned rooms', () => {
-  it('a local or explicitly named room does not follow the clone branch; a derived one does', async () => {
-    const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
-    const pinned = { ...fakeSession(a, lead), roomName: 'local/x/other', pinnedRoom: true } as Session
-    let s1: Session | null = pinned
-    const t1 = createTools({ getSession: () => s1, setSession: x => { s1 = x }, cwd: dir })
-    expect(await t1.call('room_state', { all: true })).not.toContain('switched to branch')
-    const derived = { ...fakeSession(a, lead, false), roomName: 'github.com/o/x/other' } as Session
-    const oldWarning = hubAppend(a, { name: 'room', kind: 'bot' }, { type: 'note', to: lead.name, priority: 'notify', text: 'you switched to main; the room is for other; commits here are not the room base' })
-    const destination = pair().a
-    destination.setMeta({ repo: 'x', branch: 'main', base })
-    let s2: Session | null = derived
-    const t2 = createTools({ getSession: () => s2, setSession: x => { s2 = x }, cwd: dir, join: async o => ({ ...fakeSession(destination, lead, false), roomName: o.room ?? '?' }), leave: async () => {} })
-    const switched = await t2.call('room_state', { all: true })
-    expect(switched.match(/your clone switched to branch main/g)).toHaveLength(1)
-    // Read-time relevance hides the old branch note once the clone leaves that branch; no receipt is written.
-    expect(a.seen(lead.name).has(oldWarning.id)).toBe(false)
-    expect(destination.messages().filter(m => m.type === 'note' && m.to === lead.name && m.text?.includes('switched to branch main'))).toHaveLength(0)
-    await t2.call('room_state', { all: true })
-    expect(destination.messages().filter(m => m.type === 'note' && m.to === lead.name && m.text?.includes('switched to branch main'))).toHaveLength(0)
-  })
-})
-
 function setupLead() {
   const { a, b } = pair()
-  a.setMeta({ repo: 'x', branch: 'main', base })
+  a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
   let ls: Session | null = fakeSession(a, lead)
   const specs: SpawnSpec[] = []
   const exits: ((code: number | null) => void)[] = []
@@ -974,7 +950,7 @@ describe('worker safety', () => {
 
   it('dismissing a worker whose process is unknown and old leaves the pid alone and keeps its status', async () => {
     const { a, b } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     // a worker record left by a lead that has since restarted: pid 1 is alive but not ours
     await registerWorkers(fakeSession(a, lead), [{ tag: 'ghost', name: 'rohanz+ghost', host: 'claude', task: 'x', dir, branch: 'room/ghost', pid: 1, startedAt: Date.now(), status: 'running', lead: 'rohanz' }])
     let ls: Session | null = fakeSession(b, lead)
@@ -986,7 +962,7 @@ describe('worker safety', () => {
 
   it('shutdown reports an unreadable live pid and preserves the running record', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     await ownedLegacyWorker(a, 'unknown', 'running', process.pid)
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
@@ -998,7 +974,7 @@ describe('worker safety', () => {
 
   it.each(['done', 'failed', 'dismissed'] as const)('shutdown leaves a terminal %s worker without verified live identity alone', async status => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     await ownedLegacyWorker(a, 'finished', status, process.pid)
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
@@ -1009,11 +985,11 @@ describe('worker safety', () => {
 
   it('leave does not signal a finished worker without verified live identity', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     await ownedLegacyWorker(a, 'finished', 'done', process.pid)
     let session: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir, probe: () => ({}), leave: async () => {} })
-    expect(await tools.call('room_leave', {})).toContain('left local/x/main')
+    expect(await tools.call('room_leave', {})).toContain('left local/x')
     expect(workerByTag(dir, 'finished')?.status).toBe('done')
   })
 
@@ -1037,7 +1013,7 @@ describe('worker safety', () => {
     expect(workerByTag(dir, 'a')?.status).toBe('running')
     expect(t.killed).toHaveLength(0)
     const left = await t.leadTools.call('room_leave', { force: true })
-    expect(left).toContain('left local/x/main')
+    expect(left).toContain('left local/x')
     expect(t.killed).toHaveLength(1)
     // §9 / §6 row 8: stopping until the exit is witnessed.
     expect(workerByTag(dir, 'a')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
@@ -1066,7 +1042,7 @@ describe('worker safety', () => {
 
   it('an asynchronous start failure leaves no worker record or launch message', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     let failStart!: (error: Error) => void
     let launchAttempted = false
@@ -1104,7 +1080,7 @@ describe('worker safety', () => {
   })
   it('refuses a supplied lead checkout before writing intent or starting a worker (S3)', async () => {
     const { a } = pair()
-    a.setMeta({ repo: 'x', branch: 'main', base })
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir,
       spawner: () => { throw new Error('should not spawn') } })
@@ -1151,10 +1127,10 @@ describe('worker safety', () => {
 describe('review fixes: workers', () => {
   it('a worker is named after the lead\'s owner and told so through ROOM_OWNER (fix 5)', async () => {
     const team = pair(), local = pair()
-    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    team.a.setMeta({ repo: 'x' }); setParticipantBase(team.a, lead.name, base); local.a.setMeta({ repo: 'x' }); setParticipantBase(local.a, lead.name, base)
     const teamLead: Identity = { name: 'rohanz+lead', kind: 'agent', owner: 'rohanz', label: 'lead' }
     let ls: Session | null = fakeSession(team.a, teamLead, false)
-    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
     const specs: SpawnSpec[] = []
     const leadTools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, probe: () => undefined,
@@ -1170,11 +1146,11 @@ describe('review fixes: workers', () => {
   })
 
   it('a shared-token server reaches the worker as a bare URL plus ROOM_TOKEN, whatever way the lead got the token (fix 10, W1)', async () => {
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     // A short hex token (e.g. abc) can occur in the Git SHA printed by room_state.
     const token = 'worker-test-secret-token'
     // The lead joined with a token in the URL: only the session knows it, not the environment.
-    let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx%2Fmain', token } as Session
+    let ls: Session | null = { ...fakeSession(a, lead, false), roomUrl: 'ws://team.example/local%2Fx', token } as Session
     const specs: SpawnSpec[] = []
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe: () => undefined, spawner: spec => { specs.push(spec); return { pid: 5, started: Promise.resolve(), onExit: () => {}, kill: () => true } }, worktree: async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true }) })
     await tools.call('room_spawn', { tag: 'w', task: 't' })
@@ -1233,9 +1209,9 @@ describe('review fixes: workers', () => {
 describe('review fixes: the workers room', () => {
   function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
     const team = pair(), local = pair()
-    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    team.a.setMeta({ repo: 'x' }); setParticipantBase(team.a, lead.name, base); local.a.setMeta({ repo: 'x' }); setParticipantBase(local.a, lead.name, base)
     let ls: Session | null = fakeSession(team.a, lead, false)
-    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
     const leadTools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined,
       ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
@@ -1286,7 +1262,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 't' })
     const env = t.specs[0].env
     expect(Object.keys(env).filter(k => k.startsWith('ROOM_')).sort()).toEqual(['ROOM_DIR', 'ROOM_LAUNCH_NONCE', 'ROOM_LEAD', 'ROOM_LOG_FILE', 'ROOM_OWNER', 'ROOM_REGISTRY', 'ROOM_ROOM', 'ROOM_SERVER', 'ROOM_SHARE', 'ROOM_TAG', 'ROOM_WORKER_HOST', 'ROOM_WORKER_ID', 'ROOM_WORKER_MEM_GB', 'ROOM_WORKER_RUN', 'ROOM_WORKER_THREADS'])
-    expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x/main', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_WORKER_RUN: '1', ROOM_SHARE: 'full' })
+    expect(env).toMatchObject({ ROOM_SERVER: 'local', ROOM_ROOM: 'local/x', ROOM_TAG: 'money', ROOM_LEAD: 'rohanz', ROOM_OWNER: 'rohanz', ROOM_WORKER_RUN: '1', ROOM_SHARE: 'full' })
     expect(env.ROOM_DIR).toBe(join(dir, '.room', 'workers', 'money'))
     expect(env.ROOM_LOG_FILE).toBe(join(dir, '.room', 'workers', 'money.mcp.log'))
     // the real spawner strips the lead's own room variables from the inherited environment before applying the spec's
@@ -1304,9 +1280,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
 
   it('W2/W3: distinct tags route workers to their rooms; local reads and diffs use the workers room', async () => {
     const team = pair(), local = pair()
-    team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
+    team.a.setMeta({ repo: 'x' }); setParticipantBase(team.a, lead.name, base); local.a.setMeta({ repo: 'x' }); setParticipantBase(local.a, lead.name, base)
     let ls: Session | null = fakeSession(team.a, lead, false)
-    ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+    ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
     const killed: string[] = []
     const leadTools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, conflictDebounceMs: 0, probe: () => undefined,
@@ -1348,17 +1324,17 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     expect(failed).toMatch(/Tests: 1 failed, 1 total\ntests: FAILED \(exit 3\)$/)
     // dismissing the team-room worker signals only the team-room process; the local one is untouched
     await leadTools.call('room_collect', { discard: true, tag: 'team-money' })
-    expect(killed).toEqual(['github.com/rohanz/x/main'])
+    expect(killed).toEqual(['github.com/rohanz/x'])
     expect(workerByTag(dir, 'money')?.status).toBe('running')
     expect(await leadTools.call('room_leave', {})).toContain('worker(s) still running: money')
-    expect(killed).toEqual(['github.com/rohanz/x/main'])
+    expect(killed).toEqual(['github.com/rohanz/x'])
     expect(workerByTag(dir, 'money')?.status).toBe('running')
     await leadTools.call('room_leave', { force: true })
-    expect(killed).toEqual(['github.com/rohanz/x/main', 'local/x/main'])
+    expect(killed).toEqual(['github.com/rohanz/x', 'local/x'])
   })
 
   it('W4: two concurrent spawns of one tag cannot both pass the tag check', async () => {
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
@@ -1383,7 +1359,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
   })
 
   it('drops a cancelled spawn after delayed worktree preparation and removes the prepared tree', async () => {
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
@@ -1417,7 +1393,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     const { repo, head } = realRepo()
     const previousDir = dir, previousBase = base
     dir = repo; base = head
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     const controller = new AbortController()
     let onExit: ((code: number | null) => void) | undefined
@@ -1443,7 +1419,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
   })
 
   it('W5: after a lead restart, an unreadable process identity is never signalled', async () => {
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     // a stand-in for the worker process that outlived the lead: its own process group, so the signal cannot reach the test runner
     const child = spawn('sleep', ['100'], { detached: true, stdio: 'ignore' }); child.unref()
     const exited = new Promise<void>(r => child.once('exit', () => r()))
@@ -1455,7 +1431,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     let ls: Session | null = fakeSession(a, lead)
     const probe = () => pidAlive(child.pid!) ? { startTime: processStartTime, executable: 'claude' } : undefined
     const tools = createTools({ getSession: () => ls, setSession: s => { ls = s }, cwd: dir, probe })
-    expect(await tools.call('room_leave', {})).toContain('left local/x/main')
+    expect(await tools.call('room_leave', {})).toContain('left local/x')
     expect(pidAlive(child.pid!)).toBe(true)
     expect((await registryForDir(dir)).list().find(r => r.tag === 'money')).toBeDefined()
     process.kill(-child.pid!, 'SIGTERM')
@@ -1463,7 +1439,7 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
   })
 
   it('W8: dismiss marks a worker dismissed only when the signal was delivered', async () => {
-    const { a } = pair(); a.setMeta({ repo: 'x', branch: 'main', base })
+    const { a } = pair(); a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
     let ls: Session | null = fakeSession(a, lead)
     let deliverable = false
     let exit: (code: number | null) => void = () => {}

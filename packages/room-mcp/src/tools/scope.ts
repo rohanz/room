@@ -2,7 +2,7 @@ import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
-import { coordinationPaths, neighbours, participantsView, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
+import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
 import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
@@ -117,7 +117,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       out.push(`room: ${s.roomName} — ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
       const ps = presences(s)
-      out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (base ${(m.base ?? '?').slice(0, 10)})`)
+      const ownGit = participantRecord(s.room, s.me.name)?.git
+      out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''})`)
+      if (s.room.metaMap.get('localMigrating')) out.push('migrating from a running Room 0.16 session')
+      for (const [source, value] of s.room.doc.getMap<{ placeholder: string; claims: Claim[] }>('unresolved')) {
+        const [oldRoom, oldName] = source.split('\0')
+        const owed = [...s.room.mail.values()].filter(m => m.to === value.placeholder).length
+        out.push(`unresolved from ${oldRoom}: ${oldName} (${value.claims.length} claims, ${owed} questions); its owner must join to reclaim it`)
+      }
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
       const all = a.all === true || !mineA.length
@@ -226,23 +233,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
 }
 
 
-export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'presences' | 'others' | 'shareOf' | 'now' | 'isMe'>): Pick<HandlerState, 'loadAreas' | 'areasOf' | 'areasFor' | 'myAreas' | 'inMyAreas' | 'areaLines' | 'ownerHints' | 'msgInMyAreas' | 'claimLine' | 'ledgerLines' | 'scopeLine' | 'personLine'> {
-  const { ctx, log, base, presences, others, shareOf, now, isMe } = deps
+export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences' | 'others' | 'shareOf' | 'now' | 'isMe'>): Pick<HandlerState, 'loadAreas' | 'areasOf' | 'areasFor' | 'myAreas' | 'inMyAreas' | 'areaLines' | 'ownerHints' | 'msgInMyAreas' | 'claimLine' | 'ledgerLines' | 'scopeLine' | 'personLine'> {
+  const { ctx, log, presences, others, shareOf, now, isMe } = deps
   const STALE_MS = (ctx.config?.staleDays ?? 7) * 24 * 60 * 60 * 1000
-  const areaIndex = new WeakMap<Session, Areas>()
+  const areaIndex = new WeakMap<Session, { head: string; areas: Areas }>()
   const loadAreas = async (s: Session): Promise<Areas> => {
+      const head = participantRecord(s.room, s.me.name)?.git?.head ?? 'HEAD'
       const hit = areaIndex.get(s)
-      if (hit) return hit
+      if (hit?.head === head) return hit.areas
       let areas = Areas.topLevel()
       for (const p of CODEOWNERS_PATHS) {
         let text: string | undefined
-        try { text = await gitShow(s.dir, base(s), p) } catch { text = undefined }
+        try { text = await gitShow(s.dir, head, p) } catch { text = undefined }
         if (text !== undefined) { areas = Areas.fromCodeowners(text); log(`areas from ${p}: ${areas.areas.join(', ') || '(none)'}`); break }
       }
-      areaIndex.set(s, areas)
+      areaIndex.set(s, { head, areas })
       return areas
     }
-  const areasOf = (s: Session): Areas => areaIndex.get(s) ?? Areas.topLevel()
+  const areasOf = (s: Session): Areas => areaIndex.get(s)?.areas ?? Areas.topLevel()
   const areasFor = (s: Session, person: string): string[] => {
       if (person !== s.me.name && !neighbours(participantsView(s.room, s.awareness, now()), s.me.name).has(person)) return []
       const sc = s.room.scope(person)

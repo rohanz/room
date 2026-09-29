@@ -22,14 +22,14 @@ function server(open: boolean) {
   vi.stubGlobal('fetch', vi.fn(async (url: string, opts?: RequestInit) => {
     const path = new URL(url).pathname
     if (path === '/auth/config') return Response.json({ mode: 'token', providers: [] })
-    if (path === '/view-token') return open ? Response.json({}) : new Response('not opened', { status: 404 })
+    if (path === '/view-token') return open ? Response.json({ room: 'o/r', hub: 1 }) : new Response('not opened', { status: 404 })
     if (path === '/rooms' && opts?.method === 'POST') { posts.push(path); open = true; return Response.json({}) }
     throw new Error(`unexpected ${path}`)
   }))
   vi.stubEnv('ROOM_TAG', 'test')
   return { posts, tools: createTools({ cwd: repo, getSession: () => null, setSession: () => {} }) }
 }
-const args = { where: 'team', room: 'o/r/main', name: 'test' }
+const args = { where: 'team', room: 'o/r', name: 'test' }
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
 describe('opening requires user consent', () => {
   it('asks the Claude host to confirm create and close on every call', () => {
@@ -39,7 +39,7 @@ describe('opening requires user consent', () => {
   })
   it('offers an unopened team repo without opening it', async () => {
     const { tools, posts } = server(false)
-    expect(await tools.call('room_join', args)).toBe('No room for o/r on wss://room-rohanz.fly.dev yet. Ask the user whether to open one (anyone with push access can; after that every branch of the repo has a room and sessions join automatically). Call room_create with confirm=true only after they say yes.')
+    expect(await tools.call('room_join', args)).toBe('No room for o/r on wss://room-rohanz.fly.dev yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.')
     expect(posts).toEqual([])
   })
   it.each([undefined, false])('refuses creating without true confirmation (%s)', async confirm => {
@@ -82,8 +82,8 @@ describe('closing without a joined session', () => {
     const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {} })
     expect(await tools.call('room_close', {})).toContain('confirm=true')
     expect(closes).toEqual([])
-    expect(await tools.call('room_close', { confirm: true })).toContain(`closed ${roomName.slice(0, roomName.lastIndexOf('/'))} for everyone without joining`)
-    expect(closes).toEqual([{ room: roomName, token: 'close-secret' }])
+    expect(await tools.call('room_close', { confirm: true })).toContain(`closed ${roomName} for everyone without joining`)
+    expect(closes).toEqual([{ room: roomName, schema: 2, token: 'close-secret' }])
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

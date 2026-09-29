@@ -32,8 +32,8 @@ participant tag such as `rohanz+claude` or `rohanz+codex`; `ROOM_TAG` chooses yo
 
 ## Work with teammates
 
-Use a GitHub repo you can push to. **Team rooms are currently per branch, so everyone in a
-trial must work on one shared branch.** Removing that boundary is planned next.
+Use a GitHub repo you can push to. **One team room includes every branch of that repository.**
+Your own branch and base are shown beside your participant name.
 
 1. Start your agent and say **“join the room”**.
 2. On first login, open the GitHub device page, enter the code your agent gives you, and approve

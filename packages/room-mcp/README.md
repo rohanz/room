@@ -22,10 +22,10 @@ Run: `npx tsx packages/room-mcp/src/index.ts` (or `npm run mcp` at the repo root
 | tool | what |
 |---|---|
 | `room_login` | Log in to the room server; `action=logout` revokes and forgets the account. |
-| `room_create` | Open a room for this repo on the server, then join the room for the current branch. |
+| `room_create` | Open this repository room on the server, then join it. |
 | `room_join` | Join a room for this clone. where=local: a room on this machine only (no server, no login; the default). where=team: the team server (the user must ask for this: their uncommitted work in this clone becomes visible to the repo's room members); remembered for this clone so later sessions go there on their own. |
 | `room_leave` | Leave the room: releases your claims, clears your scope, stops the daemon (and the local workers room, if you opened one). |
-| `room_close` | On explicit request, export history, then forget local room memory or close every branch room for the repo on a team server. |
+| `room_close` | On explicit request, export history, then forget local room memory or close the repository room on a team server. |
 | `room_export` | Export the current room story, including compacted bus history, to a local markdown ledger without changing the room. |
 | `room_scope` | Declare what you are working on: a one-word area (e.g. "auth"), a one-line summary, and the paths you expect to touch. |
 | `room_state` | Sharing boundary, participants and overlapping work; `path` shows ownership and `link=true` adds the browser URL. |
@@ -48,9 +48,9 @@ Twenty tools. A reply starts with your inbox only when it holds unread messages.
 
 ## Pull requests
 
-Open pull requests targeting the room's branch count as declared intent. On join and every two minutes the client whose participant name sorts lowest among those present (a cheap leader election over awareness, so four agents do not fight) asks the server for them (`GET /github/prs`, which calls GitHub with the token behind the caller's device-login session and caches the answer for 60s per repo) and mirrors each one into the doc as a synthetic participant: identity `{ name: "pr#<n>", kind: "bot", owner: <author>, label: "PR #<n>" }` with a scope whose area is the PR's most common top-level directory, whose summary is its title and whose paths are its files. PRs never get overlays and are never routed messages; `room_state` lists them under "open pull requests", and `room_state(path)`, `room_impact` and the area ledgers see their paths like anyone else's scope. A closed PR disappears at the next refresh.
+Open pull requests targeting a participant's branch count as declared intent. On join and every two minutes the client whose participant name sorts lowest among those present checks the active branches (excluding `HEAD` and `room/*`) through `GET /github/prs?branch=…`. The server calls GitHub with the caller's device-login token and caches the answer for 60s per repo and branch. The client deduplicates the results and mirrors each PR as a synthetic participant: identity `{ name: "pr#<n>", kind: "bot", owner: <author>, label: "PR #<n>" }` with a scope whose area is the PR's most common top-level directory, whose summary is its title and whose paths are its files. PRs never get overlays and are never routed messages; `room_state` lists them under "open pull requests", and `room_state(path)`, `room_impact` and the area ledgers see their paths like anyone else's scope. A closed PR disappears at the next refresh.
 
-The other direction is `room_pr_note` (or `room_done pr_note:true`): the branch's room story is rendered as markdown, in bus order, and posted through `POST /github/pr-note`, which finds the caller's earlier comment by its `<!-- room-ledger -->` marker and edits it, so a PR carries exactly one such comment per person. Neither path posts unless the user requests it. Sessions without a GitHub token (a shared-token or OIDC login) get a 403 and a plain "log in with GitHub" reply; nothing is retried.
+The other direction is `room_pr_note` (or `room_done pr_note:true`): the current branch's coordination story is rendered as markdown from the repository room, in bus order, and posted through `POST /github/pr-note`, which finds the caller's earlier comment by its `<!-- room-ledger -->` marker and edits it, so a PR carries exactly one such comment per person. Neither path posts unless the user requests it. Sessions without a GitHub token (a shared-token or OIDC login) get a 403 and a plain "log in with GitHub" reply; nothing is retried.
 
 ## Hosts
 
@@ -80,7 +80,7 @@ By default joining a room publishes the full text of every file you have changed
 | level | what the room sees from you |
 |---|---|
 | `intent` | presence, scope, claims, plans and bus messages only; no file text at all, not even deletions |
-| `declared` | file text only for paths under your `room_scope` paths; everything else is withheld (`room_share` lists it) |
+| `declared` | paths of every changed file; text only in your declared area |
 | `full` | every changed file (the default for now) |
 
 **Teams should set `ROOM_SHARE=declared`**: teammates still see what you are on and what you plan to change, and get your text only where you said you would work. Set it with the `ROOM_SHARE` env, the `share` argument of `room_join` / `room_create`, or `room_share(level)` at any time: lowering the level withdraws overlays immediately, raising it republishes what your disk holds, and under `declared` the published set follows your scope as you re-declare it. Your presence carries the level, so `room_state` shows it next to each person.
@@ -91,7 +91,7 @@ Reading someone who shares less than `full` degrades rather than errors: `room_r
 
 ## Areas (folder-scoped rooms)
 
-A room is still one document per branch, but what you see is scoped to the folders you work in.
+A repository has one room document; what you see is scoped to the folders you work in.
 
 - **Where areas come from.** If the repo has a `CODEOWNERS` (`.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` at the room's base commit), every pattern is an area named by its path prefix (`packages/server/`, `docs/`, `/` for `*`-style patterns) with the owners listed there; gitignore-style patterns are supported (`*`, `**`, `?`, trailing `/`, leading `/` anchors, bare names match at any depth) and the longest matching pattern wins. Without CODEOWNERS every top-level directory is an area and `/` holds root files. Parsing lives in `packages/shared/src/areas.ts` (`Areas`, `areaOf`, `areasOf`, `ownersOf`).
 - **Membership.** You are in the areas covering your declared scope paths plus your changed paths. `room_scope` stores them on your scope record (`areas`) and in presence; `room_join` and `room_scope` say which areas you are in and who else is in them.
@@ -102,17 +102,16 @@ A room is still one document per branch, but what you see is scoped to the folde
 
 When no tool argument, `ROOM_SERVER`, `ROOM_URL`, or remembered choice selects a team server,
 a session joins a **local room**. The first session in a clone starts a relay on `127.0.0.1`
-on a port derived from the clone's git dir, and records `{port, pid, key}` in
-`<git common dir>/room-local.json` (mode 0600). Because the port is fixed per clone, two
+on a port derived from the clone's git dir, and records `{schema: 2, port, pid, key}` in
+`<git common dir>/room/relay.json` (mode 0600). Because the port is fixed per clone and relay generation, two
 sessions that start at the same instant cannot end up in two rooms: one binds it, the
 other gets EADDRINUSE and joins. Later sessions in the same clone or any worktree of it
 check that a relay (not some other service) answers `/health` on that port and connect,
 presenting the key. When the relay's owner exits, a remaining session takes the port over
 within about two seconds and the others reconnect. `RoomMemory` saves coordination history
 in the Git common directory; live file text, bases, graphs, and claims are rebuilt by connected
-clients. The room
-is named `local/<repo basename>/<branch of the main worktree>`, so worktrees on other
-branches still share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
+clients. The room is named `local/<main worktree basename>`, so worktrees on other
+branches share it. Identity is `git config user.name` (plus `ROOM_TAG`), there is no
 login; bare `room_create` targets the hosted team server (and `room_login` explains that it
 needs a server), while `room_close`
 forgets local history after explicit confirmation.

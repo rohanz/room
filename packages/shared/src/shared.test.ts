@@ -85,8 +85,8 @@ describe('RoomDoc overlays', () => {
     expect(a.lastMessages(1)[0]).toMatchObject({ type: 'question', priority: 'notify', from: 'Kieran' })
     expect(formatMsg(a.lastMessages(1)[0])).toBe("[notify] Kieran's agent → Rohan's agent asks: changing payload?")
 
-    a.setMeta({ base: 'abc123', branch: 'main' })
-    expect(b.meta.base).toBe('abc123')
+    a.setMeta({ repo: 'github.com/example/repo' })
+    expect(b.meta.repo).toBe('github.com/example/repo')
   })
 
   it('applies a minimal text diff so anchored claim ranges follow inserted lines', () => {

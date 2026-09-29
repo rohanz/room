@@ -1,3 +1,4 @@
+import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
 import fs from 'node:fs'
@@ -141,7 +142,7 @@ it('rollback recovery skips invalid recorded paths before writing them', async (
 
 describe('disk read paths', () => {
   it('room_read and preview keep their lexical and contained-link policies', async () => {
-    const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base)
+    const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); setParticipantBase(room, 'lead', base)
     room.manifestHead.set('lead', { base, fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'publisher', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
     const localState = { watchedDirectory: 'same', user: { name: 'lead', kind: 'agent' } }
     const peerState = { watchedDirectory: 'same', user: { name: 'publisher', kind: 'agent' } }
@@ -178,7 +179,7 @@ it('combined-tree preview reads contained link leaves and excludes escaping ones
   fs.writeFileSync(path.join(root, 'outside'), 'outside')
   fs.symlinkSync('file.txt', path.join(lead, 'inside-link'))
   fs.symlinkSync(path.join(root, 'outside'), path.join(lead, 'outside-link'))
-  const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base)
+  const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); setParticipantBase(room, 'lead', base)
   const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
   const result = await buildCombinedTree(state, session, [], { diskOnly: true })
@@ -195,7 +196,7 @@ it('refuses a worker root replaced by a symlink between files in one preview', a
   fs.mkdirSync(outside)
   fs.writeFileSync(path.join(outside, 'b.txt'), 'outside b\n')
   const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base })
-  room.setBaseOf('lead', base); room.setBaseOf('lead+w', base)
+  setParticipantBase(room, 'lead', base); setParticipantBase(room, 'lead+w', base)
   const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, roomName: 'local/x/main', room, local: true, awareness: { getStates: () => new Map() }, daemon: {} } as unknown as Session
   await registerWorkers(session, [{ id: 'lead/w#1', tag: 'w', name: 'lead+w', lead: 'lead', dir: worker, branch: 'room/w', status: 'done', exitCode: 0, task: 'x', host: 'codex', pid: 0, startedAt: 1, base }])
   const state = { rooms: { holding: () => session }, liveText: async () => undefined, baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState
@@ -228,7 +229,7 @@ it('combined-tree disk sites retain their lexical path cases', async () => {
   fs.writeFileSync(path.join(lead, 'a\\b'), 'backslash\n')
   fs.writeFileSync(path.join(lead, 'a', '.git', 'config'), 'nested git\n')
   const preview = async (paths: string[]) => {
-    const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); room.setBaseOf('lead', base); room.setBaseOf('peer', base)
+    const room = new RoomDoc(); room.setMeta({ repo: 'x', branch: 'main', base }); setParticipantBase(room, 'lead', base); setParticipantBase(room, 'peer', base)
     for (const rel of paths) publishFixture(room, 'peer', rel, 'peer\n')
     const session = { ...hubSeam(room), policyStore: testPolicyStore(), dir: lead, me: { name: 'lead', kind: 'agent' }, room, awareness: { getStates: () => new Map() } } as unknown as Session
     const state = { rooms: { holding: () => session }, liveText: async () => 'peer\n', baseFor: () => base, shareOf: () => 'full' } as unknown as HandlerState

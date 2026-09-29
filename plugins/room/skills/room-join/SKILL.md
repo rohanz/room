@@ -18,16 +18,18 @@ Where to be is the user's call, by instruction:
   `room_join(where="local")`.
 - a server URL: `room_join(where="wss://…")`.
 Never join the team room on your own initiative.
+On a team join, relay the one-time disclosure that teammates on any branch see shared work.
+At `declared`, the exact sharing description is "paths of every changed file; text only in your declared area".
 
-`room_join` derives the room from the git origin and branch (local rooms: from the clone
-and its main branch), takes your name from your login or `git config user.name`, starts the
+`room_join` derives one room from the git origin (local rooms: from the clone's main
+worktree directory), takes your name from your login or `git config user.name`, starts the
 push-only sync daemon, and returns who is here, their scopes, open claims, and the browser
 view URL. A local room needs no name and no origin remote. Pass `room` for a local join
 only when the user asks for a separate, named room; it becomes `local/<name>`.
 Re-joining the same room prints its current state and browser link. Moving rooms is refused
 while your workers are running; wait for them or use room_collect(discard=true) first. The join reply includes the new browser link.
 Live sharing does not apply other participants' edits; collection and explicit exports can write files.
-In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
+When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up. Run git pull --ff-only --autostash to catch up on a shared branch. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
 
 If it fails:
 - "Room was updated on disk; restart this session to pick up fixes": restart this session to load the
@@ -39,8 +41,8 @@ If it fails:
   the room is your GitHub login.
 - "no room for <repo> yet": nobody has opened this repo on the team server. Ask the user
   whether to open one; joining is not permission to open it. Only after they say yes, call
-  `room_create(where="team", confirm=true)`. Once per repo; every branch then has a room and
-  teammates join automatically.
+  `room_create(where="team", confirm=true)`. Once per repo; teammates on every branch join
+  that same room automatically.
 - "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
 - "could not sync with wss://...": the server is not reachable. Continue independent work, and ask your human only if choosing another destination blocks the task.
 

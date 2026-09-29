@@ -5,7 +5,6 @@
  */
 import path from 'node:path'
 import { ensureLocalRelay as relayEnsure, type LocalRelay } from '@room/relay'
-import { git } from './git.js'
 import { gitCommonDir } from './git-dirs.js'
 
 export type { LocalRelay, LocalRelayInfo } from '@room/relay'
@@ -16,15 +15,10 @@ export async function mainWorktree(dir: string): Promise<string> {
   return path.basename(common) === '.git' ? path.dirname(common) : path.resolve(dir)
 }
 
-/** Local room name: local/<repo basename>/<branch of the main worktree>, so every worktree of a clone shares one room. */
-export async function localRoomName(dir: string, localBranch?: string): Promise<string> {
+/** Every worktree of a clone shares its branchless local repository room. */
+export async function localRoomName(dir: string): Promise<string> {
   const main = await mainWorktree(dir)
-  let branch = localBranch
-  if (!branch) {
-    try { branch = (await git(main, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim() } catch { branch = 'main' }
-    if (!branch || branch === 'HEAD') branch = 'detached'
-  }
-  return `local/${path.basename(main)}/${branch}`
+  return `local/${path.basename(main)}`
 }
 
 /** Find the clone's local relay or become it (see @room/relay). */

@@ -31,7 +31,7 @@ import { RoomDoc, assertValidParticipantName, colorFor, holderFence, isRegenerab
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
-import { git, gitBranch, gitHead, gitIgnored, gitOrigin, gitShowMany, gitTracked } from './git.js'
+import { git, gitBranch, gitHead, gitIgnored, gitShowMany, gitTracked } from './git.js'
 import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
 export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
 
@@ -116,7 +116,7 @@ export interface RoomdOptions {
   lease?: () => string | undefined
   /** A worker daemon's carried baseline from its lead's registry record. */
   carried?: BaselineSource
-  /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
+  /** Local relay key (room/relay.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
   localKey?: string
   log?: (line: string) => void
   /** Test hook: awaited inside the publish path after the base text is read, before the room is written. */
@@ -168,6 +168,8 @@ export interface Skipped { size: string[]; budget: string[]; ignore: string[] }
 
 export interface Roomd {
   stop(reason?: string): Promise<void>
+  /** Recheck branch-room claims reclaimed after this daemon's initial HEAD transition. */
+  validateMigratedClaims(): Promise<void>
   /** Test barrier for already-observed watcher events: drains debounces and in-flight disk publishes. */
   settle(): Promise<void>
   touch(): void
@@ -395,7 +397,7 @@ class Daemon implements Roomd {
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: WebSocket as any,
-          params: { ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : {}) },
+          params: { schema: '2', ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : {}) },
         })
     this.publisher = new Publisher(this)
     this.setStatus('syncing', { host: options.host, model: options.model, effort: options.effort })
@@ -406,10 +408,9 @@ class Daemon implements Roomd {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
 
-    const [branch, base, repo, tracked, remote] = await this.step('git', () => Promise.all([
+    const [branch, base, tracked, remote] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
-      gitOrigin(this.dir),
       gitTracked(this.dir),
       this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
     ]))
@@ -425,25 +426,13 @@ class Daemon implements Roomd {
     this.roomDoc.assignColor(this.name, this)
     this.setStatus(this.currentStatus())
     await this.refreshShared()
-    this.roomDoc.setBaseOf(this.name, this.shared, this)
-    this.roomDoc.reconcileBaseTexts(this.name, this)
+    this.roomDoc.reconcileBaseTexts(this.name, this, this.shared)
     // The start transition resumes from the recorded head, so claims re-anchor over what changed while down (§B2).
     this.appliedHead = participantRecord(this.roomDoc, this.name)?.git?.head || base
     // Publication during the seed already needs the anchor; the start transition records it.
     const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
     this.anchor = { base: anchorBase, anchored }
     this.inputs = { ...this.inputs, head: anchorBase }
-    // Legacy readers of meta.base (graph index, join line, web) keep the room's first base until the cutover.
-    if (!this.roomDoc.meta.base) {
-      this.roomDoc.setMeta({
-        ...(repo ? { repo } : {}),
-        branch: this.branch,
-        base: this.base,
-        createdAt: Date.now(),
-        seededBy: this.name,
-      }, this)
-    }
-
     this.loadRoomIgnore()
     this.inputs = { ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) }
     await this.step('seed', () => this.seedLocalOverlay())
@@ -602,11 +591,14 @@ class Daemon implements Roomd {
 
   private writeRoomFile(): void {
     try {
-      readRoomFile(this.dir) // Migrate legacy metadata before replacing it.
-      fs.writeFileSync(
-        roomFilePath(this.dir),
-        JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir }, null, 2) + '\n',
-      )
+      const previous = readRoomFile(this.dir) // Keep the old identity for ambiguous-claim recovery.
+      const legacy = previous?.legacy ?? (previous?.room && previous.room !== this.roomUrl && previous.name
+        ? { room: previous.room, name: previous.name } : undefined)
+      const file = roomFilePath(this.dir), temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+      try {
+        fs.writeFileSync(temp, JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir, ...(legacy ? { legacy } : {}) }, null, 2) + '\n', { mode: 0o600 })
+        fs.renameSync(temp, file)
+      } finally { fs.rmSync(temp, { force: true }) }
     } catch (error) {
       this.log(`warn: could not write ${ROOM_FILE}: ${errMsg(error)}`)
     }
@@ -669,7 +661,7 @@ class Daemon implements Roomd {
     if (this.remoteRepairTimer) return
     this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = undefined
-      this.roomDoc.reconcileBaseTexts(this.name, this)
+      this.roomDoc.reconcileBaseTexts(this.name, this, this.shared)
       await this.enqueue(async () => { await this.publisher.reconcile('all', this.anchor.anchored && !this.transitionPending) })
     })
   }
@@ -712,8 +704,7 @@ class Daemon implements Roomd {
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
       // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
       this.roomDoc.doc.transact(() => {
-        this.roomDoc.setBaseOf(this.name, this.shared, this)
-        this.roomDoc.reconcileBaseTexts(this.name, this)
+        this.roomDoc.reconcileBaseTexts(this.name, this, this.shared)
       }, this)
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
@@ -889,6 +880,30 @@ class Daemon implements Roomd {
     const headTexts = await gitShowMany(this.dir, head, paths)
     const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, manifestKey(this.name, fence)) ?? headTexts.get(p)]))
     return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map(c => [c.id, c.claimedHash])) }
+  }
+
+  /** Validate claims recovered from a branch-room archive after the first repo-room join. */
+  async validateMigratedClaims(): Promise<void> {
+    const migrated = [...this.roomDoc.claims.values()].filter(claim => claim.by === this.name && typeof (claim as Claim & { origin?: string }).origin === 'string')
+    if (!migrated.length) return
+    const changes = await this.reanchorOwnClaims(this.base, migrated)
+    const notices: { from: Identity; body: PostBody<Msg> }[] = []
+    this.roomDoc.doc.transact(() => {
+      for (const move of changes.moves) {
+        const current = this.roomDoc.claims.get(move.id)
+        if (current?.by === this.name) this.roomDoc.moveClaim(move.id, move.from, move.to, this, changes.hashById.get(move.id))
+      }
+      for (const release of changes.releases) {
+        const current = this.roomDoc.claims.get(release.id)
+        if (current?.by !== this.name) continue
+        this.roomDoc.removeClaim(release.id, this)
+        const summary = `released your migrated claim on ${release.path}:${release.from}-${release.to}: its claimed lines are no longer in this checkout`
+        notices.push({ from: { name: this.name, kind: this.kind }, body: { type: 'release', claimId: release.id, path: release.path, summary } as PostBody<ReleaseMsg> })
+        notices.push({ from: { name: 'room', kind: 'bot' }, body: { type: 'note', to: this.name, priority: 'notify', text: summary } as PostBody<NoteMsg> })
+        this.log(summary)
+      }
+    }, this)
+    for (const notice of notices) this.post(notice.from, notice.body)
   }
 
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */

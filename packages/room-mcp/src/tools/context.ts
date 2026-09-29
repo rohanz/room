@@ -94,7 +94,6 @@ export interface HandlerState {
   shareOf: (s: Session, person: string) => ShareLevel
   shareLine: (s: Session) => string
   setPresence: (s: Session, patch: Partial<Presence>) => void
-  base: (s: Session) => string
   baseFor: (s: Session, person: string) => string
   baseText: (s: Session, path: string, person?: string) => Promise<string | undefined>
   readText: (s: Session, path: string, person: string) => Promise<string | undefined | null>
@@ -114,7 +113,6 @@ export interface HandlerState {
   waitingOn: (s: Session) => Promise<string[]>
   describeUsers: (s: Session, files: string[]) => string
   planChanged: (s: Session, claim: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan) => string[]
-  followBranch: () => Promise<string>
   cleanupMine: (s: Session, why: string, keep?: (claim: Claim) => boolean) => number
   upgrade: (s: Session, msg: Msg, paths: string[], symbols: string[]) => Promise<string[]>
   claimLine: (s: Session, claim: Claim) => string

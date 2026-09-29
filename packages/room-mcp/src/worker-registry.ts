@@ -99,6 +99,11 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
 export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const id = env.ROOM_WORKER_ID
   if (!id) return
+  const room = env.ROOM_ROOM ?? ''
+  const legacyRoom = room.startsWith('local/') ? room.split('/').length > 2
+    : room.startsWith('github.com/') ? room.split('/').length > 3
+    : room.startsWith('git/') ? room.split('/').length > 4 : false
+  if (!id.startsWith('w_') || legacyRoom) throw new Error('this worker runs Room 0.17 but its lead runs an older Room: update the Room plugin for the lead\'s host')
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)

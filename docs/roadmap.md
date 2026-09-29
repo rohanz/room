@@ -1,11 +1,15 @@
 # Future work: Room on large production repos
 
-Written 2026-09-21. Room today fits a small team on a shared branch. These are the known gaps
+Written 2026-09-21. Room 0.17 has one room per repository across branches. These are the known gaps
 between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
 
 **Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
+
+## Fixed in 0.17.0
+
+- **Repository rooms:** Every participant carries a branch and base inside one room per repository; branch switches keep scope and claims. The PR mirror considers participants’ branches, and local relay state migrates to a separate schema-2 generation.
 
 ## Fixed in 0.16.3
 
@@ -86,11 +90,11 @@ watching and indexing.
 
 ## Decided 2026-09-21: what a room is
 
-**A room forms around the work.** Not around a branch (today's bug: teams with a branch per
+**A room forms around the work.** Not around a branch (the pre-0.17 bug: teams with a branch per
 person all sit alone), not around a folder (rejected: see below), and at scale not around the
 whole repository either.
 
-*Now, before the trial:* one room per repository. Each participant carries their own branch and
+*Now, in 0.17:* one room per repository. Each participant carries their own branch and
 base commit; checks between two people use their common ancestor. Spawned workers already work
 this way (they sit on `room/<tag>` branches inside the lead's room), so most of the machinery
 exists. This is the overlap design below in the case where everyone is near everyone.
@@ -161,7 +165,7 @@ context), Warp (already runs Claude Code, Codex and OpenCode), Zed's own agent (
 
 ## Structural gaps
 
-1. **Rooms are per branch; real teams work one branch per person.** A session joins
+1. **Fixed in 0.17: rooms were per branch; real teams work one branch per person.** A session joined
    `<host>/<owner>/<repo>/<branch>`. When everyone is on their own feature branch, everyone is
    alone and Room does nothing. The PR mirror only helps people sitting in the target branch's
    room. Fix: one room per repository (or per area), each participant carrying their own base

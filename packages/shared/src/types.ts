@@ -194,8 +194,6 @@ export interface RetiredWorker {
 
 export interface Meta {
   repo?: string
-  branch?: string
-  base?: string
   createdAt?: number
   seededBy?: string
   schemaVersion?: number

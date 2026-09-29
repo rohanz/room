@@ -11,8 +11,7 @@ Both commands fetch the plugin from GitHub with your own git access, so a privat
 the same way for anyone who can read it.
 
 Start your agent as usual; by default nothing leaves your machine. Say **“join the room”**
-to work with teammates. **Team rooms are currently per branch: everyone in a trial must work
-on one shared branch.**
+to work with teammates. **One repository room includes teammates on every branch.**
 
 Claude Code 2.1.224 or later wakes with plain `claude` after installation (2.1.234 on
 native Windows). See [Claude Code wake-ups](#claude-code).
@@ -27,8 +26,8 @@ Start in your repository and ask for your feature as usual. Room stays silent wh
 **With no server configured or team choice remembered, the session is in a local room:**
 no account, no login, nothing leaves your machine. The first session in a clone starts a
 tiny relay next to the clone's `.git`; any other session started in the same clone, or in
-a worktree of it, joins the same room. The room is named `local/<repo>/<branch>` after the
-main worktree's branch.
+a worktree of it, joins the same room. The room is named `local/<repo>` after the
+main worktree's directory.
 
 Ask **"Show room state"** to see who is in the room. Then ask for your feature as usual.
 
@@ -39,8 +38,8 @@ Explicit destination arguments take precedence over `ROOM_SERVER`, then legacy `
 then the remembered choice, then local. Environment overrides are not saved as your choice.
 An agent never switches to a team room on its own initiative.
 
-On a shared branch, ask your agent to commit and push finished work to that branch. Room tells
-the others to catch up. To catch up with uncommitted edits, use `git pull --ff-only --autostash`;
+Ask your agent to commit and push finished work to your current branch. Room tells teammates
+on that branch to catch up. To catch up with uncommitted edits, use `git pull --ff-only --autostash`;
 if it refuses, stop and ask for help; never merge another branch into this one.
 
 On the first join to each server from a worktree, the agent relays one disclosure, including
@@ -50,8 +49,9 @@ Full-level example:
 
 > This clone now shares the full text of files you change with members of {repo} on {server}; to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.
 
-The sharing level is stated plainly: “the full text of files you change”, “files in your
-declared area and changed files declared earlier”, or “only your plans, no file text”.
+The sharing level is stated plainly: “the full text of files you change”, “paths of every
+changed file; text only in your declared area”, or “only your plans, no file text”.
+The 0.17 update also discloses once that teammates on any branch see what you share.
 
 When a second agent is tagged automatically (for example, `rohanz+claude`), that tag sticks
 to the clone across sessions so an offline overlay cannot be mistaken for another clone's work.
@@ -81,11 +81,11 @@ everyone else. The bus keeps a rolling window and folds older history into a led
 
 Ask for the browser link when you want to inspect participants, tasks and activity. A local
 view is served by the relay at `http://127.0.0.1:<port>/?room=…&key=…`; it only accepts
-loopback connections. The link carries the key from the Git directory’s `room-local.json`.
+loopback connections. The link carries the key from the Git directory’s `room/relay.json`.
 Anyone on this machine who holds the link can read the room.
 
 The view link needs a running session. Room history, worker records, scopes and colours
-are kept privately in the clone’s git common directory (`room-local/*.ydoc`), never shared.
+are kept privately in the clone’s git common directory (`room/relay/*.ydoc`), never shared.
 Live file text and claims are rebuilt by connected sessions. `room_close confirm=true`
 exports the ledger and forgets the local room’s saved memory; `room_leave` preserves it.
 
@@ -174,7 +174,7 @@ output changes project files when requested; exports write the room’s story to
 - The worktree’s Git directory holds `room.json` (migrated from the old root `.room.json`)
   and hook/session state.
 - The common Git directory holds `room-choice.json` (the remembered destination),
-  `room-local.json` and `room-local/*.ydoc` (local relay discovery and history), and
+  `room/relay.json` and `room/relay/*.ydoc` (local relay discovery and history), and
   `room-mcp.log`. The log records timestamped MCP events from sessions and workers,
   including room selection, relay activity, join attempts and failures, readiness and
   leaving. It is mode 0600 and rotates at 1 MB, keeping one older generation
@@ -196,11 +196,10 @@ ROOM_SERVER=wss://room.example.com codex   # your own (see deploy/self-hosting.m
 ```
 
 The first person on a repo opens it once: ask **"Open a room for this repo"** (the agent
-calls `room_create`). From then on every branch of that repo has a room, and each session
-started in a clone joins the room for its current branch automatically:
-`github.com/<owner>/<repo>/<branch>`. Nothing about your clone leaves your machine until
-that join happens, and no session joins a repo nobody has opened. Everyone in a trial must
-currently work on one shared branch; removing this boundary is the next planned change.
+calls `room_create`). From then on every branch of that repo joins one repository room:
+`github.com/<owner>/<repo>`. Each participant's branch and base are shown separately.
+Nothing about your clone leaves your machine until that join happens, and no session joins
+a repo nobody has opened.
 
 The first time you use a server, the agent runs `room_login`: open the GitHub device
 page it prints, enter the code, and approve Room. The server holds the resulting token
@@ -417,7 +416,7 @@ supplies shared state and presence; Git remains the integration mechanism.
 | `room_spawn` | Dispatch a worker into a worktree, using the caller’s host by default, in this room or a local workers room. |
 | `room_share` | Change your sharing level live: `intent`, `declared`, `full`. |
 
-**Pull requests are intent too.** Open PRs targeting the room’s branch are mirrored into the room as `pr#<n>` bot participants owned by their author, with a scope built from the files they touch, so a claim or a symbol change that lands on a file an open PR is rewriting is flagged the same way a teammate’s declared work is. The server fetches them with the GitHub token it holds from device login (`GET /github/prs`, cached a minute); one elected client keeps the mirror fresh every two minutes. In the other direction `room_pr_note` writes the branch’s coordination story onto its PR as a single comment that is edited in place, so reviewers see who declared what, which plans were fulfilled or cancelled, what was asked and answered, and which merge previews passed.
+**Pull requests are intent too.** Open PRs targeting or coming from participants’ branches are mirrored into the room as `pr#<n>` bot participants owned by their author, with a scope built from the files they touch, so a claim or a symbol change that lands on a file an open PR is rewriting is flagged the same way a teammate’s declared work is. The server fetches them with the GitHub token it holds from device login (`GET /github/prs`, cached a minute); one elected client keeps the mirror fresh every two minutes. In the other direction `room_pr_note` writes your branch’s coordination story onto its PR as a single comment that is edited in place, so reviewers see who declared what, which plans were fulfilled or cancelled, what was asked and answered, and which merge previews passed.
 
 ## Limitations and failure handling
 
@@ -491,7 +490,7 @@ GitHub-named rooms are entered only through GitHub device login (`GITHUB_CLIENT_
 server, `room_login` on the client); a `gh` token is never forwarded and would be refused. For
 local development set `GITHUB_CLIENT_ID=fake`: the server mints a session for any `fakeLogin`
 posted to `/auth/poll` (refused under `NODE_ENV=production`; `scripts/demo.sh` uses it). A repo
-must be opened once (`room_create`, or `POST /rooms`) before its branch rooms accept
+must be opened once (`room_create`, or `POST /rooms`) before its repository room accepts
 connections. For non-GitHub repos (`local/...`, `git/...`) a shared secret works instead: set
 `ROOM_TOKEN` on the server and provide the matching token in the client’s `ROOM_SERVER` URL;
 it never admits a `github.com/...` room. Set `YPERSISTENCE` to a directory to retain room

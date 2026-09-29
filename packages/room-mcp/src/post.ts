@@ -51,7 +51,7 @@ export function releasePoster(post: Post): ReleasePoster {
 export type PostLease = { name: string; epoch: number }
 export type LeaseSource = () => PostLease | undefined | Promise<PostLease | undefined>
 
-export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource): Post {
+export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource, paused?: () => string | undefined): Post {
   return <T extends Msg>(from: Identity, body: PostBody<T>, opts: PostOpts = {}): Posting<T> => {
     const id = opts.id ?? newId('m_')
     const sent = { ...outgoing<T>(from, body, id), at: Date.now() } as T

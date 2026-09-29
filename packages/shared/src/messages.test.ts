@@ -45,12 +45,12 @@ describe('MessageKinds', () => {
     expect(formatMsg(approximateClaim)).toContain('POSSIBLE conflict on x')
   })
 
-  it('wakes for base moves only with uncommitted work', () => {
+  it('does not wake for a historical base move', () => {
     const room = new RoomDoc()
     const m = hubAppend<BaseMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'base', base: 'abc', prev: 'def', commits: 1, summary: 'update', paths: [] })
     const me = { name: 'Rohan', kind: 'agent' } as const
     expect(shouldWakeOnMsg(me, m, [], false).wake).toBe(false)
-    expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(true)
+    expect(shouldWakeOnMsg(me, m, [], true).wake).toBe(false)
     room.doc.destroy()
   })
 

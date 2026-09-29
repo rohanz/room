@@ -28,18 +28,18 @@ afterEach(async () => { dispose.splice(0).forEach(fn => fn()); await closeRegist
 
 it.each(['anything', 'my room!?', undefined])('normalizes the local relay room for %s without an origin', async room => {
   await expect(joinSession({ dir, server: 'local', name: 'Ada', room })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), room === undefined ? `local/${basename(dir)}/main` : room === 'anything' ? 'local/anything' : 'local/myroom', expect.any(Object))
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), room === undefined ? `local/${basename(dir)}` : room === 'anything' ? 'local/anything' : 'local/myroom', expect.any(Object))
 })
-it('keeps a worker/bridge local name even when its branch differs', async () => {
-  await expect(joinSession({ dir, server: 'local', name: 'Ada', room: 'local/lead/main', localBranch: 'worker' })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead/main', expect.any(Object))
+it('keeps an explicit local repository name on every branch', async () => {
+  await expect(joinSession({ dir, server: 'local', name: 'Ada', room: 'local/lead' })).rejects.toThrow('relay boundary')
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
 })
 it('preserves the local room inherited through worker environment config', async () => {
-  vi.stubEnv('ROOM_ROOM', 'local/lead/main')
+  vi.stubEnv('ROOM_ROOM', 'local/lead')
   vi.stubEnv('ROOM_LEAD', 'Ada')
   const config = await resolveConfig({ dir, args: { server: 'local' } })
-  await expect(joinSession({ dir, server: config.server, room: config.room, name: 'Ada', localBranch: 'worker' })).rejects.toThrow('relay boundary')
-  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead/main', expect.any(Object))
+  await expect(joinSession({ dir, server: config.server, room: config.room, name: 'Ada' })).rejects.toThrow('relay boundary')
+  expect(ensureLocalRelay).toHaveBeenCalledWith(expect.any(String), 'local/lead', expect.any(Object))
 })
 it.each(['local', 'team'])('reports the actual %s name and preserves team arguments', async where => {
   const doc = new Y.Doc(), room = new RoomDoc(doc), awareness = new Awareness(doc)
@@ -49,7 +49,7 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   let session: Session | null = null
   const fake = {
     dir, room, awareness, roomName: name, roomUrl, browserUrl: `http://localhost/?room=${encodeURIComponent(roomUrl)}`,
-    pinnedRoom: true, me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
+    me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
     daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
     ...(where === 'local' ? { local: { url: 'ws://127.0.0.1:1' } } : {}),
   } as Session
@@ -86,7 +86,7 @@ function transitionTools() {
     dispose.push(() => { awareness.destroy(); doc.destroy() })
     const name = opts.room!, roomUrl = 'ws://127.0.0.1:1/' + encodeURIComponent(name)
     return { dir, room, awareness, roomName: name, roomUrl,
-      browserUrl: 'http://localhost/?room=' + encodeURIComponent(roomUrl), pinnedRoom: true,
+      browserUrl: 'http://localhost/?room=' + encodeURIComponent(roomUrl),
       me: { name: 'Ada', kind: 'agent' }, ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
       daemon: { touch() {}, async stop() {} }, shareMax: 'full', shareRequested: 'full',
       local: { url: 'ws://127.0.0.1:1' },
@@ -114,7 +114,7 @@ it('moves alone without a browser link, available on explicit request', async ()
   await t.tools.call('room_join', { where: 'local', room: 'custom' })
   const old = t.current()
   const reply = await t.tools.call('room_join', { where: 'local' })
-  const name = 'local/' + basename(dir) + '/main'
+  const name = 'local/' + basename(dir)
   expect(reply.split('\n')[0]).toBe('moved from local/custom to ' + name + '; links to the old room no longer show this session.')
   expect(t.leave).toHaveBeenCalledWith(old)
   expect(t.current()).not.toBe(old)

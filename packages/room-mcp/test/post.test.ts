@@ -71,7 +71,7 @@ describe('Session.post through the hub (hub §11)', () => {
     cleanups.push(() => relay.stop())
     const open = () => {
       const doc = new Y.Doc()
-      const provider = new WebsocketProvider(relay.url, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: WebSocket as never, params: { key: relay.key } })
+      const provider = new WebsocketProvider(relay.url, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: relay.key } })
       cleanups.push(() => { provider.destroy(); doc.destroy() })
       return { room: new RoomDoc(doc), provider }
     }

@@ -1,7 +1,7 @@
 /**
  * Keeps a SymbolGraph current for one room from local files and shared manifest versions.
  */
-import { bareSymbol, containsPath, manifestKey, manifestPaths, observedContractChanges, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, containsPath, holderFence, manifestKey, manifestPaths, observedContractChanges, participantRecord, snapshot, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import type * as Y from 'yjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -118,7 +118,8 @@ export class GraphIndex {
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
     const publicationKey = () => {
       const head = this.room.manifestHead.get(this.me)
-      return JSON.stringify(head && [head.fence, head.level, head.textPrefixes, head.coverage, head.complete])
+      const holder = holderFence(participantRecord(this.room, this.me)?.holder)
+      return JSON.stringify(head && [head.fence, head.level, head.textPrefixes, head.coverage, head.complete, holder])
     }
     this.ownPublicationKey = publicationKey()
     const onHead = (event: { keysChanged: Set<string> }) => {
@@ -133,9 +134,23 @@ export class GraphIndex {
     }
     this.room.manifestHead.observe(onHead)
     this.unobserve.push(() => this.room.manifestHead.unobserve(onHead))
-    const onMeta = () => { if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild() }
-    this.room.metaMap.observe(onMeta)
-    this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
+    const onParticipant = (event: { keysChanged: Set<string> }) => {
+      if (event.keysChanged.has(`${this.me}\u0000git`)) {
+        const base = participantRecord(this.room, this.me)?.git?.base
+        if (!this.stopped && this.initialStarted && base && base !== this.base) this.currentBuild = this.rebuild()
+      }
+      if (event.keysChanged.has(`${this.me}\u0000holder`)) {
+        const next = publicationKey()
+        if (next === this.ownPublicationKey) return
+        const firstHead = this.ownPublicationKey === undefined
+        this.ownPublicationKey = next
+        if (firstHead) return // the first manifest map event names every published path
+        const paths = new Set([...manifestPaths(this.room, this.me), ...this.cache.keys()])
+        for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
+      }
+    }
+    this.room.participants.observe(onParticipant)
+    this.unobserve.push(() => this.room.participants.unobserve(onParticipant))
   }
 
   stop(): void {
@@ -161,7 +176,7 @@ export class GraphIndex {
     const generation = ++this.generation
     for (const entry of this.pending.values()) entry.resolve() // release any superseded build
     this.phase = 'indexing'
-    this.base = this.room.meta.base ?? ''
+    this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
     this.observedByPath.clear()
     this.observedRevision++
     this.degradedPaths.clear()

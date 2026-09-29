@@ -81,7 +81,6 @@ export function expireParticipant(room: RoomDoc, name: string, origin: unknown, 
     room.doc.getMap('manifestHead').delete(name)
     dropOwned(room.doc.getMap('conflicts'))
     room.clearWorkerCoordination(name, `expired after ${ROOM_STALE_DAYS} days offline`, post)
-    room.bases.delete(name)
     room.expiry.delete(name)
   }, origin)
 }

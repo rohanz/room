@@ -50,9 +50,9 @@ describe('local mode (no server)', () => {
     expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   })
 
-  it('preserves an explicit local worker room across branch overrides', async () => {
-    const name = `local/${basename(dir)}/main`
-    const s = await joinSession({ dir, server: 'local', room: name, localBranch: 'worker', tag: 'worker', log: () => {} })
+  it('preserves an explicit local room for a worker', async () => {
+    const name = `local/${basename(dir)}`
+    const s = await joinSession({ dir, server: 'local', room: name, tag: 'worker', log: () => {} })
     sessions.push(s)
     expect(s.roomName).toBe(name)
   })
@@ -60,10 +60,10 @@ describe('local mode (no server)', () => {
   it('joins a local room without any server, names it after the clone, and a tagged second session shares it', async () => {
     const a = await joinSession({ dir, log: () => {} }); sessions.push(a)
     expect(a.local).toBeTruthy()
-    expect(a.roomName).toBe(`local/${basename(dir)}/main`)
+    expect(a.roomName).toBe(`local/${basename(dir)}`)
     expect(a.me).toMatchObject({ name: 'Ada', owner: 'Ada', kind: 'agent' })
     expect(a.roomUrl.startsWith('ws://127.0.0.1:')).toBe(true)
-    expect(existsSync(join(dir, '.git', 'room-local.json'))).toBe(true)
+    expect(existsSync(join(dir, '.git', 'room', 'relay.json'))).toBe(true)
     const b = await joinSession({ dir, tag: 'codex', log: () => {} }); sessions.push(b)
     expect(b.local?.owned).toBe(false)
     expect(b.me.name).toBe('Ada+codex')

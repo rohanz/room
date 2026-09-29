@@ -18,7 +18,7 @@ function setup() {
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   const room = new RoomDoc()
   const states = new Map([[1, { user: { name: 'Lead', kind: 'agent' } }]])
-  const conn = { room, displayRoomName: 'local/repo/main', onStatus: vi.fn(), provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
+  const conn = { room, displayRoomName: 'local/repo', onStatus: vi.fn(), provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   cleanups.push(() => { room.doc.destroy(); dom.window.close() })
   return { room, conn, dom }
 }

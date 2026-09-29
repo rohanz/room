@@ -6,7 +6,7 @@ import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
-import { baselineText, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
+import { baselineText, carriedPaths, carriesWork, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
@@ -132,6 +132,12 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   /** Paths a participant may have changed; the rest only the caller changed. */
   const theirPaths = new Set<string>()
   const ignoredNotes: string[] = []
+  // A lead's revert to HEAD clears its manifest entry, but still changes a file
+  // the worker inherited at spawn. Compare those carried paths explicitly.
+  for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
+    pathSet.add(p)
+    theirPaths.add(p)
+  }
   for (const [index, item] of [{ person: caller.me.name, session: caller }, ...participants].entries()) {
     const add = (p: string) => { pathSet.add(p); if (index > 0) theirPaths.add(p) }
     const worker = previewWorker(item.session, item.person)

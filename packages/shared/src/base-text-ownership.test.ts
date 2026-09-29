@@ -28,14 +28,12 @@ function sharedEntry(room: RoomDoc, person: string, path: string, base: string):
 describe('participant-owned base texts', () => {
   it('keeps B’s text when A withdraws while B publishes', () => {
     const [a, b] = peers()
-    a.setBaseOf('A', 'sha')
     a.setOverlay('A', 'file.py', 'A edit')
     a.setBaseText('A', 'sha', 'file.py', 'base')
     sync(a, b)
 
     a.clearOverlay('A', 'file.py')
     a.reconcileBaseTexts('A')
-    b.setBaseOf('B', 'sha')
     b.setOverlay('B', 'file.py', 'B edit')
     sharedEntry(b, 'B', 'file.py', 'sha')
     b.setBaseText('B', 'sha', 'file.py', 'base')
@@ -51,7 +49,6 @@ describe('participant-owned base texts', () => {
   it('collects both owners after concurrent withdrawals', () => {
     const [a, b] = peers()
     for (const [room, person] of [[a, 'A'], [b, 'B']] as const) {
-      room.setBaseOf(person, 'sha')
       room.setOverlay(person, 'file.py', `${person} edit`)
       room.setBaseText(person, 'sha', 'file.py', 'base')
     }
@@ -71,7 +68,6 @@ describe('participant-owned base texts', () => {
   it('narrowing and restart remove only the local participant’s entries', () => {
     const [a, b] = peers()
     for (const [room, person] of [[a, 'A'], [b, 'B']] as const) {
-      room.setBaseOf(person, 'sha')
       room.setOverlay(person, 'file.py', `${person} edit`)
       room.setBaseText(person, 'sha', 'file.py', 'base')
     }
@@ -106,7 +102,6 @@ describe('participant-owned base texts', () => {
     room.doc.getMap<Y.Map<string>>('basetextByPerson').set('Pre-flat', oldOwned)
     oldOwned.set('sha:past.py', 'pre-flat base')
     expect(room.baseText('Pre-flat', 'sha', 'past.py')).toBe('pre-flat base')
-    room.setBaseOf('Legacy', 'sha')
     room.setOverlay('Legacy', 'old.py', 'edit')
     room.baseTexts.set('sha:old.py', 'legacy base')
     expect(room.baseText('Legacy', 'sha', 'old.py')).toBe('legacy base')
@@ -119,7 +114,6 @@ describe('participant-owned base texts', () => {
     const [a, b] = peers()
     a.baseTexts.set('sha:file.py', 'legacy base')
     for (const person of ['A', 'B']) {
-      a.setBaseOf(person, 'sha')
       a.setOverlay(person, 'file.py', `${person} edit`)
     }
     sync(a, b)

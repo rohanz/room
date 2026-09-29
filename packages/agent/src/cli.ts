@@ -26,7 +26,7 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.help) {
-  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--session <id>] [--token <token>] [--key <local-key>] [--model <model>] [--connect-timeout-ms <ms>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin>/<branch> of the clone, or private Git room metadata; name defaults to the saved login or git config user.name)')
+  console.log('usage: roomagent [--dir <clone>] [--name <Name>] [--room ws://host:1234/<room>] [--server ws://host:1234] [--session <id>] [--token <token>] [--key <local-key>] [--model <model>] [--connect-timeout-ms <ms>] [--turn-timeout-ms <ms>]\n(room defaults to <server>/<origin> of the clone, or private Git room metadata; name defaults to the saved login or git config user.name)')
   console.log('team runner destination: --room/--server > ROOM_SERVER > ROOM_URL > saved metadata; no default server or local mode')
   process.exit(0)
 }

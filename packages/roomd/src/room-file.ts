@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { worktreeGitDirSync } from './git-dirs.js'
 
-export interface RoomFile { room?: string; name?: string; dir?: string }
+export interface RoomFile { room?: string; name?: string; dir?: string; legacy?: { room: string; name: string } }
 
 /** The current worktree's private metadata, never the shared Git directory. */
 export function roomFilePath(dir: string): string {
@@ -13,6 +13,7 @@ export function readRoomFile(dir: string): RoomFile | undefined {
   const read = (file: string): RoomFile => {
     const value = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!value || typeof value !== 'object' || Array.isArray(value) || ['room', 'name', 'dir'].some(k => value[k] !== undefined && typeof value[k] !== 'string')) throw new Error('invalid room file')
+    if (value.legacy && (typeof value.legacy.room !== 'string' || typeof value.legacy.name !== 'string')) throw new Error('invalid legacy room file')
     return value
   }
   try {

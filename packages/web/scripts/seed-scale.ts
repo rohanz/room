@@ -14,7 +14,7 @@ const option = (name: string, fallback = '') => { const i = args.indexOf(name); 
 const dir = resolve(option('--dir', `/tmp/room-scale-${Date.now()}`))
 if (existsSync(dir)) throw new Error(`Destination already exists: ${dir}. Choose a new directory.`)
 const server = option('--server', 'ws://localhost:1234').replace(/\/$/, '')
-const roomName = option('--room', `sample/atlas-commerce/preview-${Date.now()}`)
+const roomName = option('--room', `sample/atlas-commerce-${Date.now()}`)
 const roomUrl = `${server}/${encodeURIComponent(roomName)}`
 const sources = new Map<string, { symbol: string; deps: string[]; text: string }>()
 const camel = (name: string) => name.replace(/[-/]([a-z])/g, (_, c: string) => c.toUpperCase())
@@ -68,7 +68,6 @@ const participants = [
   { name: 'Alex', domain: 'payments', task: 'Add idempotent payment retries', files: ['services/payments/service.ts', 'services/payments/policy.ts', 'services/orders/worker.ts'] },
 ]
 for (const person of participants) {
-  room.setBaseOf(person.name, base)
   room.setScope({ by: person.name, byKind: 'agent', area: person.domain, summary: `[SAMPLE] ${person.task}`, paths: person.files, at: Date.now() })
   room.post<ScopeMsg>({ name: person.name, kind: 'agent' }, { type: 'scope', area: person.domain, summary: `[SAMPLE] ${person.task}`, paths: person.files })
   for (const file of person.files) {

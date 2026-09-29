@@ -1,5 +1,5 @@
 /**
- * Pull requests as intent. Open PRs targeting the room's branch are mirrored into the doc as
+ * Pull requests as intent. Open PRs on a participant's branch are mirrored into the repository doc as
  * synthetic bot participants (`pr#<n>`, owned by the PR author) with a scope built from the
  * files the PR touches, so room_impact, area ledgers and claim notes see them like any other
  * declared work. Exactly one client maintains them (the lexicographically lowest present
@@ -7,7 +7,7 @@
  * comment on the PR (room_pr_note / room_done pr_note).
  */
 import type { RoomDoc, Msg, Identity, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { archiveSummary, displayName, formatPlans } from '@room/shared'
+import { archiveSummary, displayName, formatPlans, participantRecord } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import { authFor, type Session } from './session.js'
@@ -84,10 +84,12 @@ export function prLeader(present: string[], workerNames: Iterable<string> = []):
 const httpOf = (server: string) => server.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
 const query = (o: Record<string, string | undefined>) => Object.entries(o).filter((e): e is [string, string] => !!e[1]).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
 
-/** GET /github/prs on the session's server: open PRs targeting this room's branch, or (`head`) the PRs whose head is this branch. */
+/** GET /github/prs on the session's server for an explicit participant branch. */
 export async function fetchPrs(s: Session, opts: { head?: boolean; branch?: string } = {}): Promise<PrInfo[]> {
+  const branch = opts.branch ?? participantRecord(s.room, s.me.name)?.git?.branch
+  if (!branch || branch === 'HEAD') return []
   const a = await authFor(s)
-  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, branch: opts.branch, head: opts.head ? '1' : undefined })}`, { signal: AbortSignal.timeout(20000) })
+  const res = await fetch(`${httpOf(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, branch, head: opts.head ? '1' : undefined })}`, { signal: AbortSignal.timeout(20000) })
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
   return await res.json() as PrInfo[]
 }
@@ -101,19 +103,14 @@ export async function postPrNote(s: Session, number: number, body: string): Prom
   return { url: b.url ?? '', updated: !!b.updated }
 }
 
-/** The branch part of a room name ("github.com/o/r/feature/x" -> "feature/x"). */
-export function branchOf(roomName: string): string {
-  const parts = roomName.split('/')
-  return parts.slice(roomName.startsWith('github.com/') ? 3 : roomName.startsWith('git/') ? 4 : 2).join('/') || roomName
-}
-
 /** Write the room's current and compacted bus history as a local markdown ledger. */
 export function exportRoomLedger(s: Session, opts: { path?: string; now?: number } = {}): { path: string; lines: number } {
   const now = opts.now ?? Date.now()
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
-  const defaultPath = path.join(s.dir, '.room', 'ledger', `${s.roomName.replaceAll('/', '_')}-${timestamp}.md`)
+  const branch = participantRecord(s.room, s.me.name)?.git?.branch || 'detached'
+  const defaultPath = path.join(s.dir, '.room', 'ledger', `${s.roomName.replaceAll('/', '_')}_${branch.replaceAll('/', '_')}-${timestamp}.md`)
   const outputPath = opts.path ? path.resolve(s.dir, opts.path) : defaultPath
-  const markdown = renderPrNote(s.room, { roomName: s.roomName, now, history: true })
+  const markdown = renderPrNote(s.room, { roomName: s.roomName, branch, now, history: true })
   fs.mkdirSync(path.dirname(outputPath), { recursive: true })
   fs.writeFileSync(outputPath, markdown)
   return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
@@ -124,7 +121,7 @@ export function exportRoomLedger(s: Session, opts: { path?: string; now?: number
  * plans and whether they were fulfilled, questions with answers, changes, merge previews that
  * passed, done notes. Copies routed to individuals and messages from PR mirrors are skipped.
  */
-export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: number; history?: boolean }): string {
+export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: string; now?: number; history?: boolean }): string {
   const now = opts.now ?? Date.now()
   const archived = archiveSummary(room)
   const msgs = room.messages().filter(m => !m.copyOf && !isPrName(m.from))
@@ -182,7 +179,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: numb
   }
   const stillOpen = Array.from(open.values()).filter(c => !isPrName(c.by))
   const out = [
-    `### Room ${opts.history ? 'history' : 'ledger'} for \`${branchOf(opts.roomName)}\``,
+    `### Room ${opts.history ? 'history' : 'ledger'} for \`${opts.branch || opts.roomName}\``,
     `_Generated by the room at ${t(now)} UTC from ${opts.roomName}.${opts.history ? '' : ' One comment per PR, updated in place.'}_`,
     '',
     ...(lines.length ? lines : ['- (nothing recorded on the bus yet)']),

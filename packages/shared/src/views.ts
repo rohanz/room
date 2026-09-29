@@ -69,19 +69,6 @@ export function acceptedGit(record: ParticipantRecord | undefined, view: readonl
   return expected && record?.git?.fence === expected ? record.git : 'updating'
 }
 
-/** Legacy branch parser, replaced by rooms.ts at the wave-5 cutover. */
-export function roomNameParts(roomName: string): { host?: string; owner?: string; repo: string; branch: string; local: boolean } {
-  const parts = roomName.split('/')
-  if (parts[0] === 'local' && parts.length >= 3) {
-    return { repo: parts[1], branch: parts.slice(2).join('/'), local: true }
-  }
-  const offset = parts[0] === 'git' ? 1 : 0
-  if ((parts[0] === 'github.com' || offset === 1) && parts.length >= offset + 4) {
-    return { host: parts[offset], owner: parts[offset + 1], repo: parts[offset + 2], branch: parts.slice(offset + 3).join('/'), local: false }
-  }
-  return { repo: roomName, branch: '', local: false }
-}
-
 /** Format a count with its singular or plural label. */
 export function formatCount(count: number, singular: string, plural = singular + 's'): string {
   return count + ' ' + (count === 1 ? singular : plural)
@@ -168,7 +155,6 @@ export interface ParticipantClaim extends Claim { stale: boolean }
 export interface Participant {
   name: string
   online: boolean
-  behindBase: boolean
   latestActive?: number
   kinds: Kind[]
   /** e.g. "agent of rohanz · codex"; empty for a plain human. */
@@ -186,8 +172,6 @@ export interface ParticipantInput {
   overlayPeople: readonly string[]
   changesByPerson: ReadonlyMap<string, readonly string[]>
   claims: readonly Claim[]
-  roomBase?: string
-  basesByPerson?: ReadonlyMap<string, string>
   now?: number
 }
 
@@ -231,11 +215,9 @@ export function deriveParticipants(input: ParticipantInput): Participant[] {
       return value === undefined ? presence.lastActive : Math.max(value, presence.lastActive)
     }, undefined)
     const online = current.length > 0
-    const ownBase = input.basesByPerson?.get(name)
     return {
       name,
       online,
-      behindBase: Boolean(input.roomBase && ownBase && ownBase !== input.roomBase),
       latestActive,
       kinds: Array.from(kinds).sort((a, b) => a.localeCompare(b)),
       identity: participantIdentityLine(current, name, input.workers?.find(w => w.name === name), kinds.has('agent') ? 'agent' : scope?.byKind ?? input.claims.find(c => c.by === name)?.byKind).split(' · ').slice(1).join(' · '),
@@ -392,7 +374,7 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
 }
 
 export interface ConflictResolution {
-  how: 'released' | 'narrowed' | 'merged clean' | 'base moved'
+  how: 'released' | 'narrowed' | 'merged clean'
   who?: string
   at: number
 }
@@ -413,7 +395,7 @@ export interface ConflictSpan {
 /** Reconstruct conflict history from existing bus facts; never manufacture a timestamp.
  * Missing claims alone are not proof of release (the rolling bus may be incomplete).
  */
-export function deriveConflictSpans(messages: readonly import('./types.js').Msg[], claims: readonly Claim[], base?: string): ConflictSpan[] {
+export function deriveConflictSpans(messages: readonly import('./types.js').Msg[], claims: readonly Claim[]): ConflictSpan[] {
   const bus = [...messages].sort((a, b) => a.at - b.at)
   const known = new Map<string, Claim>()
   for (const m of bus) if (m.type === 'claim' && !known.has(m.claimId)) known.set(m.claimId, { id: m.claimId, path: m.path, from: m.from_line, to: m.to_line, by: m.from, byKind: m.fromKind, intent: m.intent, plans: m.plans, at: m.at })
@@ -443,8 +425,8 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
     people = [...new Set(people)].sort()
     const cs = ids.flatMap(id => known.get(id) ?? [])
     if (cs.length === 2) { from = Math.max(...cs.map(c => c.from)); to = Math.min(...cs.map(c => c.to)) }
-    const id = ids.length === 2 ? JSON.stringify([path, ids]) : pairKey(path, people)
-    let span = spans.find(s => s.id === id || (people.length === 2 && pairKey(s.path, s.people) === pairKey(path, people) && (ids.length < 2 || s.claimIds.length < 2)))
+    const id = ids.length ? JSON.stringify([path, ids]) : pairKey(path, people)
+    let span = spans.find(s => s.id === id || (people.length === 2 && pairKey(s.path, s.people) === pairKey(path, people) && ids.length === 0 && s.claimIds.length === 0))
     if (!span) { span = { id, path, people, claimIds: ids, from, to, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
     if (ids.length === 2 && span.claimIds.length < 2) { span.claimIds = ids; span.claims = cs }
     span.events.push(m)
@@ -454,21 +436,17 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
     const a = claims[i]
     if (a.by === b.by || a.path !== b.path || a.from > b.to || b.from > a.to) continue
     const ids = [a.id, b.id].sort(), id = JSON.stringify([a.path, ids])
-    const existing = spans.find(s => s.claimIds.join() === ids.join() || (s.claimIds.length < 2 && pairKey(s.path, s.people) === pairKey(a.path, [a.by, b.by])))
+    const existing = spans.find(s => s.claimIds.join() === ids.join() || (s.claimIds.length === 0 && s.at >= Math.max(a.at, b.at) && pairKey(s.path, s.people) === pairKey(a.path, [a.by, b.by])))
     if (existing && existing.claimIds.length < 2) { existing.claimIds = ids; existing.claims = [a, b] }
     if (!existing) spans.push({ id, path: a.path, people: [a.by, b.by].sort(), claimIds: ids, from: Math.max(a.from, b.from), to: Math.min(a.to, b.to), at: Math.max(a.at, b.at), events: [], claims: [a, b], hidden: false })
   }
   for (const s of spans) {
     const lastConflict = s.events.at(-1)?.at ?? s.at
     for (const m of bus) {
-      if (m.at <= lastConflict) continue
+      if (m.at < lastConflict) continue
       let resolution: ConflictResolution | undefined
       if (m.type === 'release' && s.claimIds.includes(m.claimId)) resolution = { how: 'released', who: m.from, at: m.at }
-      if (m.type === 'note' && s.people.some(person => m.to === person && m.text === `your ${s.path} and ${s.people.find(p => p !== person)}'s merge cleanly again`)) resolution = { how: 'merged clean', who: m.to, at: m.at }
-      if (m.type === 'base' && base && (m.base === base || bus.some(next => next.type === 'base' && next.at > m.at && next.base === base))) {
-        s.hidden = true
-        resolution = { how: 'base moved', who: m.from, at: m.at }
-      }
+      if (m.type === 'note' && s.claimIds.length === 0 && s.people.some(person => m.to === person && m.text === `your ${s.path} and ${s.people.find(p => p !== person)}'s merge cleanly again`)) resolution = { how: 'merged clean', who: m.to, at: m.at }
       if (resolution) { s.resolvedBy ??= resolution; s.events.push(m) }
     }
     const live = s.claimIds.flatMap(id => current.get(id) ?? [])

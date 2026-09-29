@@ -348,3 +348,9 @@ and agents that did not help them coordinate.
 **Built when:** 21 Sep, post-hackathon: consent/configuration, collection/cleanup, lean tools and
 skills, failure notices and documentation, split across five Room workers.
 **Still open:** Rooms remain per branch, and updates take effect only in new agent sessions.
+
+## 2026-09-29 — Repository rooms in Room 0.17
+**Decision:** One room per repository, named from the canonical Git origin (`github.com/owner/repo`), or `local/<main-worktree basename>` on one machine. Each participant publishes its own branch and base. Schema 2 is a hard cutover: older team clients are refused before sync, and the new local relay uses a separate discovery file and port generation.
+**Why:** Teammates on feature branches need to coordinate in one room; the old branch room name divided their shared context.
+**Migration:** The server archives the old branch documents. The local relay keeps the old snapshots and copies new messages, claims and scopes by ID while the old relay remains live; it saves the new snapshot before its temp-and-rename catch-up ledger, then makes a final copy after the old relay exits. Closing the local room removes those archived snapshots.
+**Built when:** 29 Sep, after the hackathon, in the schema-2 redesign branch. The one-time sharing notice now states that teammates on any branch see what is shared; declared sharing says “paths of every changed file; text only in your declared area.”

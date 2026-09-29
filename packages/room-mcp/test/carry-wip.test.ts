@@ -1,3 +1,4 @@
+import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { patchPublisher, workerByTag } from './registry-fixture.js'
 import { registryForDir } from '../src/worker-registry.js'
@@ -81,7 +82,7 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   return {
-    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
+    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: head, fence: '1' } as never,
     shareMax: 'full', shareRequested: 'full',
@@ -91,7 +92,8 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
 
 function world() {
   const { a, b } = pair()
-  a.setMeta({ repo: 'x', branch: 'main', base: head })
+  a.setMeta({ repo: 'x' })
+  setParticipantBase(a, 'rohanz', head)
   let ls: Session | null = fakeSession(a, lead, repo)
   const exits = new Map<string, (code: number | null) => void>()
   const prompts = new Map<string, string>()
@@ -114,8 +116,7 @@ function world() {
   /** The worker reports with room_done through its own session, then its process exits cleanly. */
   async function finish(tag: string) {
     const w = workerByTag(repo, tag)!
-    // Pinned: the worker's clone is on room/<tag>, and its room must not follow that branch.
-    let ws: Session | null = { ...fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir), pinnedRoom: true } as Session
+    let ws: Session | null = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
     const record = registry.list().find(record => record.tag === tag)!
@@ -130,7 +131,7 @@ function world() {
   }
   async function workerPreview(tag: string, run?: string, leadShare?: 'intent' | 'declared') {
     const w = workerByTag(repo, tag)!
-    const ws = { ...fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir), pinnedRoom: true } as Session
+    const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     if (leadShare) {
       const peer = new Awareness(new Y.Doc())
       peer.setLocalState({ user: lead, share: leadShare })
@@ -494,7 +495,7 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     const { dir } = await t.spawn('committed-lead')
     put(repo, 'shared.txt', lines([2, 'lead committed']))
     git(repo, 'add', 'shared.txt'); git(repo, 'commit', '-qm', 'lead edit after spawn')
-    t.a.setBaseOf('rohanz', git(repo, 'rev-parse', 'HEAD'))
+    setParticipantBase(t.a, 'rohanz', git(repo, 'rev-parse', 'HEAD'))
     // The lead's manifest is at the new commit and lists no changed paths.
     publishFixture(t.a, 'rohanz', 'unrelated.txt', 'x\n')
     clearFixture(t.a, 'rohanz', 'unrelated.txt')
