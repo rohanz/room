@@ -204,16 +204,11 @@ export async function gitChanged(dir: string): Promise<string[]> {
 }
 
 /**
- * Set of syncable paths: git-tracked files plus untracked files that are not ignored
- * (forward-slash, relative to the repo root). Untracked files must sync too: an agent that
- * creates api/notify.py rarely stages it, and a teammate's tests still need it.
+ * Syncable paths: git-tracked files plus untracked files that are not ignored (forward-slash,
+ * relative to the repo root), and the subset in Git's index. Untracked files must sync too: an
+ * agent that creates api/notify.py rarely stages it, and a teammate's tests still need it.
  */
-export async function gitTracked(dir: string): Promise<Set<string>> {
-  return (await gitTrackedWithIndex(dir)).paths
-}
-
-/** One scan distinguishes Git-index files from untracked paths while retaining both for the watcher. */
-export async function gitTrackedWithIndex(dir: string): Promise<{ paths: Set<string>; indexed: Set<string> }> {
+export async function gitTracked(dir: string): Promise<{ paths: Set<string>; indexed: Set<string> }> {
   const out = await gitWholeTree(dir, ['ls-files', '-z', '-t', '--cached', '--others', '--exclude-standard'])
   const paths = new Set<string>(), indexed = new Set<string>()
   for (const entry of out.split('\0')) {

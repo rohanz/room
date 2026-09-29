@@ -27,11 +27,11 @@ import { claimDigest, reanchorClaims } from './reanchor.js'
 import type { Claim, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { BASE_CATCH_UP, RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
+import { BASE_CATCH_UP, RoomDoc, claimReleaseText, assertValidParticipantName, colorFor, isRegenerableBuildPath, roomNameParts, type BaseMsg, type Kind, type Msg, type NoteMsg, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline } from './baseline.js'
-import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTrackedWithIndex } from './git.js'
+import { git, gitBranch, gitChanged, gitCountBetween, gitHead, gitIgnored, gitOrigin, gitPathsBetween, gitPushedRoomHead, gitRelation, gitRoomRemoteBranchExists, gitShowMany, gitSubject, gitTracked } from './git.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
 export function observeCallback(fn: () => unknown, report: (error: unknown) => void): void {
@@ -398,7 +398,7 @@ class Daemon implements Roomd {
       gitBranch(this.dir),
       gitHead(this.dir),
       gitOrigin(this.dir),
-      gitTrackedWithIndex(this.dir),
+      gitTracked(this.dir),
     ]))
     this.branch = branch
     this.base = base
@@ -778,7 +778,7 @@ class Daemon implements Roomd {
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
     this.base = head
     this.branch = branch
-    const tracked = await gitTrackedWithIndex(this.dir)
+    const tracked = await gitTracked(this.dir)
     this.tracked = tracked.paths
     this.indexed = tracked.indexed
     await this.refreshShared()
@@ -959,7 +959,7 @@ class Daemon implements Roomd {
         const current = this.roomDoc.claims.get(release.id)
         if (current?.by !== this.name || current.mirrorOf) continue
         this.roomDoc.removeClaim(release.id, this)
-        const text = `released your claim on ${release.path}:${release.from}-${release.to}: that code changed in ${head.slice(0, 10)}`
+        const text = claimReleaseText(release.path, release.from, release.to, head.slice(0, 10))
         this.roomDoc.post<ReleaseMsg>({ name: this.name, kind: this.kind }, { type: 'release', claimId: release.id, path: release.path, summary: text }, this)
         this.roomDoc.post<NoteMsg>({ name: 'room', kind: 'bot' }, { type: 'note', to: this.name, priority: 'notify', text }, this)
         this.log(text)
@@ -1161,7 +1161,7 @@ class Daemon implements Roomd {
 
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
-    const next = await gitTrackedWithIndex(this.dir)
+    const next = await gitTracked(this.dir)
     const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
     const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath) && this.skips.ignore.has(relpath))
     const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.paths.has(relpath))
