@@ -43,7 +43,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
-      sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(), company: () => company(s), log,
+      sessionDir: () => ctx.binding?.dir(), paused: () => s.lease?.paused() ?? s.hub.paused(), company: () => company(s), log,
     }) : null
     hooks?.start()
     if (hooks) primaryHooks = hooks
@@ -159,7 +159,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     scheduleInboxWrite,
     upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
-    clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
+    clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
       wakes.stop()
       const s = ctx.getSession()

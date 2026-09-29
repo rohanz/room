@@ -5,7 +5,9 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { RoomDoc } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
+import * as Y from 'yjs'
 import { sessionDirectory, startAutoTaggedRoomd, type Session } from '../src/session.js'
+import { hubRoom } from './fixtures/hub-provider.js'
 import { createTools } from '../src/tools.js'
 import { hubSeam } from './fixtures/hub.js'
 
@@ -39,7 +41,7 @@ function boundWorker(host: 'codex' | 'claude' = 'codex') {
 
 it('publishes runtime.json after the hook rewrites it, clears a missing model, and stops polling on leave', async () => {
   const { dir, write } = boundWorker()
-  const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
+  const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
   try {
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({ model: 'gpt-6-astra' })
     write('runtime.json', { model: 'actual-model', at: 200 })
@@ -60,7 +62,7 @@ it('publishes runtime.json after the hook rewrites it, clears a missing model, a
 it('touches for new hook activity of the bound session only', async () => {
   const { dir, write } = boundWorker()
   write('hook-activity.json', { session_id: 'worker-thread', event: 'PreToolUse', at: 1 })
-  const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
+  const { daemon } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
   try {
     await new Promise(r => setTimeout(r, 700))
     expect(daemon.touch).not.toHaveBeenCalled()
@@ -76,7 +78,7 @@ it('touches for new hook activity of the bound session only', async () => {
 
 it('publishes a model the hook found in the Claude transcript on the next room tool call', async () => {
   const { dir, write } = boundWorker('claude')
-  const { daemon, me, refreshRuntime } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room' }, 'worker')
+  const { daemon, me, refreshRuntime } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
   const session = {
     room: daemon.roomDoc, provider: { ...daemon.provider, synced: true }, awareness: daemon.provider.awareness, daemon, me, ...hubSeam(daemon.roomDoc),
     dir, roomUrl: 'ws://unused/room', roomName: 'room', browserUrl: '', shareMax: 'full', shareRequested: 'full', pinnedRoom: true, refreshRuntime,

@@ -110,11 +110,12 @@ describe('server hub wiring', () => {
       const ada = await greeted(await s.open(ROOM, 'login=ada'))
       clock.advance(SETTLE_MS)
       expect(await ada.send({ op: 'acquire', name: 'bob', holder: holder('s1') })).toMatchObject({ ok: false, reason: 'not-yours' })
-      expect(await ada.send({ op: 'acquire', name: 'ada+w', holder: holder('s1') })).toMatchObject({ ok: true })
+      const w = await ada.send({ op: 'acquire', name: 'ada+w', holder: holder('s1') }) as { ok: boolean; epoch: number }
+      expect(w).toMatchObject({ ok: true })
       const viewer = await s.open(ROOM, 'view=1')
       expect(await viewer.hello()).toMatchObject({ ok: false, reason: 'read-only' })
       full = true
-      expect(await ada.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).toMatchObject({ ok: false, reason: 'room-full' })
+      expect(await ada.send({ op: 'post', lease: { name: 'ada+w', epoch: w.epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).toMatchObject({ ok: false, reason: 'room-full' })
       expect(await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: true })
       await ada.close(); await viewer.close()
     } finally { await s.close() }
@@ -172,8 +173,9 @@ describe('server hub wiring', () => {
         // Writes foreign to ada's login, made by the hub while it answers ada's frames: bob's holder record,
         // and a message from bob (the hub only observes `from`).
         expect(await bob.send({ op: 'acquire', name: 'bob', holder: holder('s2') })).toMatchObject({ ok: true })
-        expect(await ada.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'bob', text: 'x' } })).toMatchObject({ ok: true })
-        expect(await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: true })
+        const own = await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') }) as { ok: boolean; epoch: number }
+        expect(own).toMatchObject({ ok: true })
+        expect(await ada.send({ op: 'post', lease: { name: 'ada', epoch: own.epoch }, msg: { id: 'm1', type: 'note', from: 'bob', text: 'x' } })).toMatchObject({ ok: true })
         expect(docs.get(ROOM)!.getMap('participants').get('bob\u0000holder')).toMatchObject({ sessionId: 's2' })
         await write(ada, 'ada', { by: 'ada', n: 2 })
         await write(bob, 'bob', { by: 'bob', n: 1 })
@@ -189,7 +191,12 @@ describe('server hub wiring', () => {
     const clock = fakeClock(1_000_000)
     const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', sessionId: 's' }
     const start = (store: IncarnationStore) => startHub({ doc: new RoomDoc(), mono: clock.mono, wall: clock.wall, log: () => {}, store })
-    const post = (hub: Hub, id: string) => { hub.handle(hub, hello, { local: true }); return (hub.handle(hub, { v: 1, id, op: 'post', msg: { id, type: 'note', from: 'ada', text: id } }, { local: true }) as { seq: number }).seq }
+    const post = (hub: Hub, id: string) => {
+      hub.handle(hub, hello, { local: true })
+      clock.advance(SETTLE_MS)
+      const { epoch } = hub.handle(hub, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, { local: true }) as { epoch: number }
+      return (hub.handle(hub, { v: 1, id, op: 'post', lease: { name: 'ada', epoch }, msg: { id, type: 'note', from: 'ada', text: id } }, { local: true }) as { seq: number }).seq
+    }
     try {
       // Rooms A, B and C load together, so C's incarnation runs ahead of the wall clock; C posts.
       const first = incarnationFile(undefined, port)

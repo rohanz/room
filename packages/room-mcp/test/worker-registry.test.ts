@@ -495,7 +495,7 @@ describe('WorkerRegistry durable store', () => {
   it('does not release a successor holder’s claims under the same participant name', async () => {
     const registry = await openRegistry(common(), { migrate: false }), doc = new RoomDoc()
     doc.claims.set('new', { id: 'new', path: 'successor.ts', from: 1, to: 1, by: 'ben', byKind: 'agent', intent: 'new', at: 1 })
-    doc.participants.set('ben\0holder', { sessionId: 'successor', machine: 'm', pid: 2, startTime: 's', executable: '/bin/codex' })
+    doc.participants.set('ben\0holder', { sessionId: 'successor', epoch: 2, pid: 2, startTime: 's', executable: '/bin/codex', at: 1 })
     expect(await registry.reconcileIdleClaims({ roomKey: 'local/repo', sessionId: 'old', participant: 'ben', idleEpoch: 'one',
       host: 'shared-app-server', lastActivityMs: 0, monotonicMs: () => 9 * 3600_000, doc,
       ownsParticipant: () => true, postNotice: () => { throw new Error('must not post') } })).toBe(false)
@@ -510,7 +510,7 @@ describe('WorkerRegistry durable store', () => {
     const journal = path.join(dir, 'room', 'sessions', 'old', 'idle-claims', `${key}.json`)
     const child = await holdGuard(journal)
     const notices: string[] = []
-    setTimeout(() => doc.participants.set('ben\0holder', { sessionId: 'new', machine: 'm', pid: 2, startTime: 's', executable: '/bin/codex' }), 10)
+    setTimeout(() => doc.participants.set('ben\0holder', { sessionId: 'new', epoch: 3, pid: 2, startTime: 's', executable: '/bin/codex', at: 1 }), 10)
     expect(await registry.reconcileIdleClaims({ roomKey: 'local/repo', sessionId: 'old', participant: 'ben', idleEpoch: 'epoch',
       host: 'shared-app-server', lastActivityMs: 0, monotonicMs: () => 8 * 3600_000, doc,
       ownsParticipant: () => true, postNotice: (_id, text) => { notices.push(text) } })).toBe(false)

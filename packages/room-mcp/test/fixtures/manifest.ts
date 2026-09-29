@@ -14,9 +14,9 @@ export function setFixtureLocalRoot(room: RoomDoc, name: string, dir: string): v
 const FIXTURE_HOLDER = syntheticSessionId({ pid: process.pid, startTime: '', executable: '' })
 
 /** A registered worker's lease carries its registry id, as the hub records it; others hold a plain session. */
-function fixtureHolder(room: RoomDoc, name: string, sessionId: string): { sessionId: string; workerId?: string } {
+function fixtureHolder(room: RoomDoc, name: string, sessionId: string, epoch: number): { sessionId: string; epoch: number; workerId?: string } {
   const view = [...room.workerViews.values()].find(v => v.name === name)
-  return view ? { sessionId, workerId: view.id } : { sessionId }
+  return view ? { sessionId, epoch, workerId: view.id } : { sessionId, epoch }
 }
 
 /** A worker registered after its text was published takes over the fixture holder, as its lease would. */
@@ -34,13 +34,15 @@ export function publishFixture(room: RoomDoc, name: string, path: string, text: 
     fs.writeFileSync(file, text)
   }
   const record = participantRecord(room, name)
-  const fence = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
-  visiblePeer(room, name, 'agent', fence)
+  const sessionId = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
+  const epoch = record?.holder?.epoch ?? 1
+  const fence = String(epoch)
+  visiblePeer(room, name, 'agent', sessionId)
   const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)
   room.doc.transact(() => {
-    if (!record?.holder) room.participants.set(`${name}\u0000holder`, fixtureHolder(room, name, fence))
+    if (!record?.holder || record.holder.epoch === undefined) room.participants.set(`${name}\u0000holder`, fixtureHolder(room, name, sessionId, epoch))
     if (!record?.git || record.git.fence !== fence || record.git.base !== base) room.participants.set(`${name}\u0000git`, { ...(record?.git ?? {}), base, fence, rev: record?.git?.rev ?? 1 })
     let entries = room.manifest.get(key)
     if (!entries) { entries = new Y.Map<ManifestEntry>(); room.manifest.set(key, entries) }
@@ -56,13 +58,15 @@ export function deleteFixture(room: RoomDoc, name: string, path: string, options
   const local = localRoots.get(room)
   if (local?.name === name) fs.rmSync(pathModule.join(local.dir, path), { force: true })
   const record = participantRecord(room, name)
-  const fence = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
-  visiblePeer(room, name, 'agent', fence)
+  const sessionId = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
+  const epoch = record?.holder?.epoch ?? 1
+  const fence = String(epoch)
+  visiblePeer(room, name, 'agent', sessionId)
   const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)
   room.doc.transact(() => {
-    if (!record?.holder) room.participants.set(`${name}\u0000holder`, fixtureHolder(room, name, fence))
+    if (!record?.holder || record.holder.epoch === undefined) room.participants.set(`${name}\u0000holder`, fixtureHolder(room, name, sessionId, epoch))
     if (!record?.git || record.git.fence !== fence || record.git.base !== base) room.participants.set(`${name}\u0000git`, { ...(record?.git ?? {}), base, fence, rev: record?.git?.rev ?? 1 })
     let entries = room.manifest.get(key)
     if (!entries) { entries = new Y.Map<ManifestEntry>(); room.manifest.set(key, entries) }

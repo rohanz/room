@@ -15,6 +15,8 @@ export interface HubTransport {
 /** y-websocket dispatches by provider.messageHandlers (src/y-websocket.js:118-124).
  * Each provider owns a copy (line 358), and an empty encoder sends no reply (line 231). */
 export function hubTransport(provider: WebsocketProvider): HubTransport {
+  // An in-memory provider (RoomdOptions.providerFactory) has no hub channel: the hub is unreachable over it.
+  if (!provider.messageHandlers) return { send() { throw new Error('hub unreachable') }, connected: () => false, onFrame: () => () => {}, onReconnect: () => () => {} }
   const listeners = new Set<(bytes: Uint8Array) => void>()
   const reconnects = new Set<() => void>()
   const old = provider.messageHandlers[MSG_HUB]
@@ -63,7 +65,7 @@ export interface HubClientOptions {
 }
 
 export class HubClient {
-  private readonly transport: HubTransport
+  private transport: HubTransport
   private readonly mono: () => number
   private readonly wall: () => number
   private readonly timeoutMs: number
@@ -71,7 +73,7 @@ export class HubClient {
   private readonly lostLeases = new Set<string>()
   private readonly pending = new Map<string, Pending>()
   private readonly retryWaits = new Set<{ timer: ReturnType<typeof setTimeout>; reject: (error: Error) => void }>()
-  private readonly unsubs: Array<() => void>
+  private unsubs: Array<() => void>
   private readonly interval: ReturnType<typeof setInterval>
   private nextId = 0
   private helloOk = false
@@ -85,12 +87,39 @@ export class HubClient {
     this.mono = options.mono ?? (() => performance.now())
     this.wall = options.wall ?? (() => Date.now())
     this.timeoutMs = options.local === false ? REQUEST_TIMEOUT_TEAM_MS : REQUEST_TIMEOUT_LOCAL_MS
-    this.unsubs = [
+    this.unsubs = this.subscribe()
+    this.interval = setInterval(() => { void this.renewAll() }, LEASE_RENEW_MS)
+    this.interval.unref?.()
+  }
+
+  private subscribe(): Array<() => void> {
+    return [
       this.transport.onFrame(bytes => this.receive(bytes)),
       this.transport.onReconnect(() => { void this.reconnect() }),
     ]
-    this.interval = setInterval(() => { void this.renewAll() }, LEASE_RENEW_MS)
-    this.interval.unref?.()
+  }
+
+  /**
+   * Move to another connection of the same room (the join's probe hands over to the daemon's provider).
+   * Leases and their clocks stay; the next renew makes the new connection the one the hub pushes to.
+   */
+  attach(transport: HubTransport): void {
+    this.assertOpen()
+    for (const unsub of this.unsubs) unsub()
+    this.transport = transport
+    this.helloOk = false
+    this.unsubs = this.subscribe()
+    if (transport.connected()) void this.reconnect().then(() => this.renewAll())
+  }
+
+  /** The hub answered hello on the current connection, which is still up. */
+  reachable(): boolean { return !this.closed && this.helloOk && this.transport.connected() }
+
+  /** The epoch of `name`'s lease while it is valid by the send-time clock (§4.3). */
+  lease(name: string): number | undefined {
+    if (this.closed) return undefined
+    this.dropExpired()
+    return this.leases.get(name)?.epoch
   }
 
   close(): void {
@@ -147,6 +176,16 @@ export class HubClient {
     return epoch
   }
 
+  /**
+   * A lead's reservation of its worker's name (registry §15 row 3): granted like any acquire, but neither kept nor
+   * renewed here. The worker presents the epoch (`supersedes`) when it joins; a reservation it never takes up
+   * ends at the hub's TTL.
+   */
+  async reserve(name: string, holder: HolderIn): Promise<number> {
+    const reply = await this.request({ op: 'acquire', name, holder })
+    return Number(reply.epoch)
+  }
+
   async renew(name: string): Promise<void> {
     this.assertOpen()
     this.dropExpired()
@@ -181,17 +220,18 @@ export class HubClient {
     }
   }
 
-  async post(msg: PostIn, options: { lease?: { name: string; epoch: number }; auto?: boolean } = {}): Promise<Reply> {
+  /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
+  async post(msg: PostIn, options: { lease: { name: string; epoch: number }; auto?: boolean }): Promise<Reply> {
     this.assertOpen()
     if (this.paused()) throw new Error(NOT_SENT)
-    if (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT)
+    if (this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT)
     try { return await this.request({ op: 'post', msg, ...options }, () => {
-      if (this.paused() || (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch)) {
+      if (this.paused() || this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) {
         throw new Error(NOT_SENT)
       }
     }) }
     catch (error) {
-      if (error instanceof HubError && error.reason === 'stale' && options.lease
+      if (error instanceof HubError && error.reason === 'stale'
         && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name)
       throw error
     }

@@ -32,7 +32,7 @@ export type Req = { v: 1; id: string } & (
   | { op: 'acquire'; name: string; holder: HolderIn; supersedes?: number }
   | { op: 'renew'; name: string; epoch: number }
   | { op: 'release'; name: string; epoch: number }
-  | { op: 'post'; lease?: { name: string; epoch: number }; msg: PostIn; auto?: boolean })
+  | { op: 'post'; lease: { name: string; epoch: number }; msg: PostIn; auto?: boolean })
 export type Op = Req['op']
 
 export type Reason = 'version' | 'hello-first' | 'not-authority' | 'starting' | 'held' | 'not-yours' | 'stale'

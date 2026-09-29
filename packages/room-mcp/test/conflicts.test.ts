@@ -87,7 +87,7 @@ describe('room lifecycle', () => {
     const room = new RoomDoc()
     room.setMeta({ repo: 'r', branch: 'main', base })
     const joined = fakeSession(room)
-    joined.awareness.setLocalStateField('publishUnder', 'Kieran')
+    room.manifestHead.set('Rohan', { base, fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Kieran', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
     joined.awareness.setLocalStateField('watchedDirectory', dir)
     const peer = addPresence(joined.awareness, 'Kieran')
     peer.setLocalStateField('watchedDirectory', dir)

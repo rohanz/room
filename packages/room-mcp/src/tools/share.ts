@@ -3,11 +3,17 @@ import { resolveShare, sharingDescription } from '../config.js'
 import type { Session } from '../session.js'
 import { SHARE, RW, type Handler, type HandlerState, type ToolDef } from './context.js'
 
-export function publisherLine(s: Session): string | undefined {
+/** Who publishes this checkout when this session does not hold its publisher lease (registry §16, manifest §5.7). */
+export function checkoutPublisher(s: Session): string | undefined {
   const head = s.room.manifestHead.get(s.me.name)
   const publisher = head?.coverage.kind === 'none' && head.coverage.reason === 'not-publisher' ? head.publisher : undefined
-  if (typeof publisher !== 'string' || !publisher) return undefined
-  const primary = [...s.awareness.getStates().values()].find(state => state?.user?.name === publisher && !state.publishUnder)
+  return typeof publisher === 'string' && publisher ? publisher : undefined
+}
+
+export function publisherLine(s: Session): string | undefined {
+  const publisher = checkoutPublisher(s)
+  if (!publisher) return undefined
+  const primary = [...s.awareness.getStates().values()].find(state => state?.user?.name === publisher)
   const level = primary?.share === 'full' || primary?.share === 'declared' || primary?.share === 'intent' ? ` (${primary.share})` : ''
   return `This checkout's file text is published by ${publisher} and follows ${publisher}'s sharing settings${level}.`
 }

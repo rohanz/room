@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { coordinationPaths, neighbours, participantsView, displayName, formatPlans, type Presence, isAgentic } from '@room/shared'
+import { coordinationPaths, neighbours, participantsView, displayName, formatPlans, manifestPaths, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
@@ -154,7 +154,7 @@ export function hookHealthNote(s: Session, sessionDir: string | undefined, expec
   health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
   if (resolveSessionHost() === 'claude' &&
-      !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return ''
+      !(manifestPaths(s.room, s.me.name).length && (s.room.manifestHead.get(s.me.name)?.scannedAt ?? -Infinity) >= sessionStartedAt)) return ''
   health.noted = true
   return missingPreEditGuidance(s)
 }

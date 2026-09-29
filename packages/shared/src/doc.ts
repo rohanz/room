@@ -33,13 +33,22 @@ export type PostBody<T extends Msg = Msg> = Omit<T, 'id' | 'at' | 'from' | 'from
 export type ReleasePoster = (from: Identity, body: PostBody<ReleaseMsg>) => unknown
 const validColorIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) < PALETTE.length
 
+/** The hub's lease record for a name (hub §4.1); the hub alone writes it, at grant and at end. */
 export interface ParticipantHolder {
   sessionId: string
-  machine: string
+  /** The lease's monotonic epoch: the fencing token of every record written under the name. */
+  epoch: number
   pid: number
   startTime: string
   executable: string
   workerId?: string
+  at: number
+  ended?: 'released' | 'expired'
+}
+
+/** The fence a holder's writes carry: its epoch (hub §4.1). An ended holder's last fence stays readable offline. */
+export function holderFence(holder: ParticipantHolder | undefined): string | undefined {
+  return holder && Number.isSafeInteger(holder.epoch) ? String(holder.epoch) : undefined
 }
 
 export interface ParticipantGit {
@@ -146,11 +155,6 @@ export class RoomDoc {
   /** person -> ms of their last overlay write (set/clear/delete); lets a later joiner evict stale work. */
   get overlayAt(): Y.Map<number> { return this.doc.getMap<number>('overlayAt') }
   overlayAtOf(person: string): number | undefined { return this.overlayAt.get(person) }
-  /** ms since the person's last overlay write; undefined when they never wrote one. */
-  overlayAge(person: string, now = Date.now()): number | undefined {
-    const at = this.overlayAt.get(person)
-    return at === undefined ? undefined : Math.max(0, now - at)
-  }
   /** Evict a stopped participant's overlays and base texts together. The absent owner cannot reconcile them. */
   clearOverlays(person: string, origin?: unknown): number {
     const n = this.changedPaths(person).length

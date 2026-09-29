@@ -9,7 +9,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc, gitBlobHash, highestSeq, manifestKey, messageEndsWait } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
-import { NoRoom, type Session } from '../src/session.js'
+import { NoRoom, syntheticSessionId, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { ConflictSet } from '../src/conflict-set.js'
@@ -27,6 +27,7 @@ import { visiblePeer } from './fixtures/visible.js'
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
 const me: Identity = { name: 'Rohan', kind: 'agent' }
+const fixtureSessionId = syntheticSessionId({ pid: process.pid, startTime: '', executable: '' })
 let dir: string
 let base: string
 
@@ -53,7 +54,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
+    daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' },
   }
 }
 
@@ -78,17 +79,17 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
 function comparableClaimPair(room: RoomDoc): void {
   room.ensureRoomSalt()
   for (const name of ['Rohan', 'Kieran']) {
-    const fence = `lease-${name}`
+    const fence = '1'
     room.participants.set(`${name}\0id`, { name, kind: 'agent' })
-    room.participants.set(`${name}\0holder`, { sessionId: fence })
+    room.participants.set(`${name}\0holder`, { sessionId: name === 'Rohan' ? fixtureSessionId : `lease-${name}`, epoch: 1 })
     room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
     room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
     room.manifest.set(manifestKey(name, fence), new Y.Map())
   }
-  room.manifest.get(manifestKey('Rohan', 'lease-Rohan'))!.set('app.py', {
-    change: 'M', state: 'shared', hash: gitBlobHash(MINE), at: 1, fence: 'lease-Rohan',
+  room.manifest.get(manifestKey('Rohan', '1'))!.set('app.py', {
+    change: 'M', state: 'shared', hash: gitBlobHash(MINE), at: 1, fence: '1',
   })
-  room.setOverlay(manifestKey('Rohan', 'lease-Rohan'), 'app.py', MINE) // shared text lives in the incarnation's overlay
+  room.setOverlay(manifestKey('Rohan', '1'), 'app.py', MINE) // shared text lives in the incarnation's overlay
 }
 
 function addPresence(target: Awareness, name: string): Awareness {
@@ -568,7 +569,7 @@ describe('reading', () => {
     const edited = COMMITTED.replace('return 2', 'return 33')
     try {
       s.awareness.setLocalStateField('watchedDirectory', 'same-checkout')
-      s.awareness.setLocalStateField('publishUnder', 'Rohan+old')
+      t.room.manifestHead.set('Rohan', { base: '', fence: 'f', coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Rohan+old', level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
       publisher.setLocalStateField('watchedDirectory', 'same-checkout')
       applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(publisher, [publisher.clientID]), 'test')
       clearFixture(t.room, 'Rohan', 'app.py')
