@@ -15,7 +15,7 @@ const pause = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms))
 const flag = 'claude --dangerously-load-development-channels plugin:room@room'
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 const claude = { id: 'claude-1', host: 'claude' as const }
-const TEXT = '[room] 1 thing needs you: cat asked a question. Call room_state; it shows them. (#1)'
+const TEXT = '[room] 1 thing may need you: cat asked a question. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#1)'
 
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers() })
 
@@ -121,7 +121,7 @@ describe('the reconciler: one pointer per host session', () => {
       expect(texts).toHaveLength(1)
       await vi.advanceTimersByTimeAsync(1_000)
       expect(texts).toHaveLength(2)
-      expect(texts[1]).toBe('[room] 4 things need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question. Call room_state; it shows them. (#2)')
+      expect(texts[1]).toBe('[room] 4 things may need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#2)')
       expect(texts.join('\n')).not.toContain('secret body')
     } finally { t.close() }
   })
@@ -132,7 +132,7 @@ describe('the reconciler: one pointer per host session', () => {
     try {
       for (let i = 0; i < 6; i++) t.ask(`worker${i}`, i === 5 ? 'note' : 'question')
       await vi.waitFor(() => expect(texts).toHaveLength(1))
-      expect(texts[0]).toBe('[room] 6 things need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question; 2 more. Call room_state; it shows them. (#1)')
+      expect(texts[0]).toBe('[room] 6 things may need you: worker0 asked a question; worker1 asked a question; worker2 asked a question; worker3 asked a question; 2 more. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#1)')
     } finally { t.close() }
   })
 
@@ -148,7 +148,7 @@ describe('the reconciler: one pointer per host session', () => {
       expect(texts).toEqual([])
       t.ask('Ada', 'note')
       await vi.advanceTimersByTimeAsync(20)
-      expect(texts).toEqual(['[room] 1 thing needs you: Ada sent a note. Call room_state; it shows them. (#1)'])
+      expect(texts).toEqual(['[room] 1 thing may need you: Ada sent a note. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#1)'])
     } finally { t.close() }
   })
 
@@ -158,8 +158,9 @@ describe('the reconciler: one pointer per host session', () => {
     const t = setup(async (_target, text) => { texts.push(text); return 'socket' })
     try {
       hubAppend(t.room, { name: 'room', kind: 'bot' }, { type: 'note', to: 'Rohan', priority: 'notify', text: claimReleaseText('private/code.ts', 4, 9, 'abc123') })
-      await vi.advanceTimersByTimeAsync(0)
-      expect(texts).toEqual(['[room] 1 thing needs you: Room released a claim of yours. Call room_state; it shows them. (#1)'])
+      // The pass first asks git (asynchronously) whether the release came from this clone's own commit.
+      await vi.waitFor(() => expect(texts).toHaveLength(1))
+      expect(texts).toEqual(['[room] 1 thing may need you: Room released a claim of yours. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#1)'])
       expect(texts[0]).not.toContain('private/code.ts')
     } finally { t.close() }
   })

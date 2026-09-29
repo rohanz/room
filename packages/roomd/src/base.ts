@@ -105,7 +105,7 @@ async function anchor(dir: string, head: string, refs: BaseRefs): Promise<{ base
 }
 
 /** `options.carried`: a local-room worker's registry-pinned base for its worktree lifetime. */
-export async function resolveBase(dir: string, inputs: BaseInputs, options: { local?: boolean; carried?: string } = {}): Promise<ResolvedBase> {
+export async function resolveBase(dir: string, inputs: BaseInputs, options: { local?: boolean; carried?: string; knownUpstream?: { name: string; sha: string; by: string } } = {}): Promise<ResolvedBase> {
   const { head, branch, refs } = inputs
   const found = options.local
     ? { base: options.carried ?? head, anchored: true }
@@ -116,11 +116,23 @@ export async function resolveBase(dir: string, inputs: BaseInputs, options: { lo
     ;[ahead, behind] = counts
   }
   const u = refs.upstream?.name
+  let known = options.knownUpstream && options.knownUpstream.name === u && options.knownUpstream.sha !== refs.upstream?.sha ? options.knownUpstream : undefined
+  // A fetched tracking ref can later overtake the notice; never compare against an older bus head.
+  if (known && refs.upstream && await ensureCommit(dir, refs.remote, known.sha) && await isAncestor(dir, known.sha, refs.upstream.sha)) known = undefined
+  if (known) {
+    if (await ensureCommit(dir, refs.remote, known.sha)) {
+      try {
+        const counts = (await git(dir, ['rev-list', '--left-right', '--count', `${head}...${known.sha}`])).trim().split(/\s+/).map(Number)
+        ;[ahead, behind] = counts
+      } catch (error) { if (isGitTimeout(error)) throw error; ahead = behind = undefined }
+    } else ahead = behind = undefined
+  }
   const status = !found.anchored ? `no anchor on ${refs.remote ?? 'any remote'}: teammates cannot compare with you`
     : !branch ? `detached at ${head.slice(0, 10)}`
     : !u ? 'no upstream'
     : ahead && behind ? `diverged from ${u}: stop and tell your human`
-    : behind ? `behind ${u} by ${behind}: ${BASE_CATCH_UP}`
+    : behind ? known ? `behind ${u} by ${behind} (pushed by ${known.by}; not yet pulled)` : `behind ${u} by ${behind}: ${BASE_CATCH_UP}`
+    : known && behind === undefined ? `behind (remote moved to ${known.sha.slice(0, 10)})`
     : ahead ? `${ahead} unpushed`
     : `synced with ${u}`
   return {
@@ -141,9 +153,24 @@ async function pushedFromHere(dir: string, ref: string, sha: string): Promise<bo
  * both, a reset the strict-ancestor test, and a branch switch the first.
  */
 export async function pushedRange(dir: string, prev: ParticipantGit, next: Pick<ParticipantGit, 'branch' | 'base' | 'anchored' | 'upstream'>): Promise<boolean> {
+  let currentUpstream: string | undefined
+  if (next.upstream) {
+    try { currentUpstream = (await git(dir, ['rev-parse', `refs/remotes/${next.upstream}`])).trim() }
+    catch (error) { if (isGitTimeout(error)) throw error }
+  }
   return prev.branch === next.branch && prev.anchored && next.anchored && prev.base !== next.base
-    && await isAncestor(dir, prev.base, next.base)
-    && (await isAncestor(dir, next.base, prev.head) || (!!next.upstream && await pushedFromHere(dir, next.upstream, next.base)))
+    && (await isAncestor(dir, prev.base, next.base) && await isAncestor(dir, next.base, prev.head)
+      || !!next.upstream && currentUpstream === next.base && await pushedFromHere(dir, next.upstream, next.base))
+}
+
+/** Compare the previous known upstream head with the newly pushed head. Unknown is never given ff-only advice. */
+export async function pushHistory(dir: string, remote: string | undefined, oldSha: string, newSha: string): Promise<'forward' | 'yes' | 'unknown'> {
+  if (!await ensureCommit(dir, remote, oldSha) || !await ensureCommit(dir, remote, newSha)) return 'unknown'
+  return new Promise(resolve => {
+    execFile('git', ['merge-base', '--is-ancestor', oldSha, newSha], { cwd: dir, timeout: 30_000 }, error => {
+      resolve(!error ? 'forward' : (error as NodeJS.ErrnoException & { code?: number }).code === 1 ? 'yes' : 'unknown')
+    })
+  })
 }
 
 export async function pushedFacts(dir: string, fromSha: string, toSha: string): Promise<{ commits: number; paths: string[]; summary: string }> {

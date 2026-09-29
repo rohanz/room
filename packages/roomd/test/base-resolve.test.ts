@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { BASE_CATCH_UP, type ParticipantGit } from '@room/shared'
-import { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs } from '../src/base.js'
+import { comparePair, ensureCommit, pushedRange, readBaseRefs, resolveBase, roomRemote, type BaseInputs } from '../src/base.js'
 
 const sh = (dir: string, ...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
 const roots: string[] = []
@@ -44,6 +44,16 @@ async function resolve(dir: string, room: string, local = false) {
 }
 
 describe('resolveBase (reporooms §B3): the newest ancestor of HEAD on the room remote', () => {
+  it('reports a newer pushed head when the tracking ref is stale', async () => {
+    const w = world()
+    const a = w.clone('a'), b = w.clone('b')
+    const pushed = commit(b, 'new.txt', 'new\n')
+    sh(b, 'push', '-q', 'origin', 'HEAD:main')
+    const head = sh(a, 'rev-parse', 'HEAD')
+    const refs = await readBaseRefs(a, 'origin', 'main')
+    expect((await resolveBase(a, { head, branch: 'main', refs }, { knownUpstream: { name: 'origin/main', sha: pushed, by: 'Ben' } })).status)
+      .toBe('behind origin/main by 1 (pushed by Ben; not yet pulled)')
+  })
   it('synced, unpushed, behind and diverged read against my own upstream; the anchor never throws', async () => {
     const w = world()
     const a = w.clone('a'), b = w.clone('b')
@@ -128,6 +138,18 @@ describe('resolveBase (reporooms §B3): the newest ancestor of HEAD on the room 
 })
 
 describe('pairs (reporooms invariant 5): merge-base of two bases, or "cannot compare"', () => {
+  it('recognizes an own force-push even when the previous head is replaced', async () => {
+    const w = world()
+    const a = w.clone('a')
+    const first = commit(a, 'one.txt', 'one\n')
+    sh(a, 'push', '-q', 'origin', 'HEAD:main')
+    sh(a, 'reset', '-q', '--hard', 'HEAD~1')
+    const replacement = commit(a, 'two.txt', 'two\n')
+    sh(a, 'push', '-q', '--force', 'origin', 'HEAD:main')
+    expect(await pushedRange(a,
+      { branch: 'main', head: first, base: first, anchored: true, upstream: 'origin/main', rev: 1, fence: '' },
+      { branch: 'main', base: replacement, anchored: true, upstream: 'origin/main' })).toBe(true)
+  })
   const record = (base: string, anchored = true): ParticipantGit => ({ branch: 'main', head: base, base, anchored, rev: 1, fence: '' })
 
   it('a force-pushed reset leaves the pair unable to compare until the commit arrives, never an error', async () => {

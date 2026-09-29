@@ -7,7 +7,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import type { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
+import { RoomDoc, formatMsg, participantRecord, type Msg, type ParticipantGit, type PushedMsg } from '@room/shared'
 import { claimDigest } from '../src/reanchor.js'
 import { markManifestIncomplete } from '../src/manifest-publish.js'
 import { startRoomd, type Roomd, type RoomdOptions } from '../src/index.js'
@@ -104,6 +104,45 @@ function commit(dir: string, file: string, text: string, message = file): string
 }
 
 describe('participant git record (reporooms §B2, §B3)', () => {
+  it('announces an own force-push from the replaced head without fast-forward advice', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const first = commit(w.dir, 'first.txt', 'first\n')
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    await poll(daemon); await poll(daemon)
+    sh(w.dir, 'reset', '-q', '--hard', w.base)
+    const replacement = commit(w.dir, 'replacement.txt', 'replacement\n')
+    sh(w.dir, 'push', '-q', '--force', 'origin', 'rehearsal')
+    await poll(daemon); await poll(daemon)
+    const notice = pushed(daemon).at(-1)
+    expect(notice).toMatchObject({ fromSha: first, toSha: replacement, rewrite: 'yes' })
+    expect(formatMsg(notice!)).toContain('rewrote rehearsal (force-push)')
+    expect(formatMsg(notice!)).not.toContain('git pull --ff-only --autostash')
+  })
+
+  it('uses the last push notice as the replaced head when the daemon missed the intermediate poll', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const first = commit(w.dir, 'first.txt', 'first\n')
+    sh(w.dir, 'push', '-q', 'origin', 'rehearsal')
+    hubAppend<PushedMsg>(daemon.roomDoc, { name: 'Alice', kind: 'agent' }, { type: 'pushed', branch: 'rehearsal', upstream: 'origin/rehearsal', fromSha: w.base, toSha: first, commits: 1, paths: ['first.txt'], summary: 'first' })
+    sh(w.dir, 'reset', '-q', '--hard', w.base)
+    const replacement = commit(w.dir, 'replacement.txt', 'replacement\n')
+    sh(w.dir, 'push', '-q', '--force', 'origin', 'rehearsal')
+    await poll(daemon); await poll(daemon)
+    expect(pushed(daemon).at(-1)).toMatchObject({ fromSha: first, toSha: replacement, rewrite: 'yes' })
+  })
+
+  it('uses the latest pushed head for presence when its tracking ref is stale', async () => {
+    const w = await world()
+    const daemon = await w.start()
+    const bob = w.other('bob')
+    const next = commit(bob, 'next.txt', 'next\n')
+    sh(bob, 'push', '-q', 'origin', 'HEAD:rehearsal')
+    hubAppend<PushedMsg>(daemon.roomDoc, { name: 'Bob', kind: 'agent' }, { type: 'pushed', branch: 'rehearsal', upstream: 'origin/rehearsal', fromSha: w.base, toSha: next, commits: 1, paths: ['next.txt'], summary: 'next' })
+    await poll(daemon)
+    expect(status(daemon)).toBe('behind origin/rehearsal by 1 (pushed by Bob; not yet pulled)')
+  })
   it('publishes branch, head, base and anchor at start without room-wide Git metadata', async () => {
     const w = await world()
     const daemon = await w.start({ sessionId: 'host-1' })

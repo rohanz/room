@@ -38,6 +38,7 @@ describe('areaNameOf', () => {
     expect(areaNameOf('apps/**/*.ts')).toBe('apps/')
     expect(areaNameOf('/README.md')).toBe('README.md')
     expect(areaNameOf('packages/server/src/auth.ts')).toBe('packages/server/src/auth.ts')
+    expect(areaNameOf('.github/CODEOWNERS')).toBe('.github/CODEOWNERS')
   })
 })
 
@@ -60,6 +61,8 @@ describe('patternToRegExp', () => {
     expect(m('a/**', 'a/b/c')).toBe(true)
     expect(m('a?c', 'abc')).toBe(true)
     expect(m('a?c', 'a/c')).toBe(false)
+    expect(m('.github/CODEOWNERS', '.github/CODEOWNERS')).toBe(true)
+    expect(m('.github/CODEOWNERS', '.github/CODEOWNERS/child')).toBe(false)
   })
 })
 

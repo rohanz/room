@@ -137,6 +137,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const wakes = new WakeReconciler({
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
+    codexTurn: ctx.wakeProbe,
     ownWorkers: s => new Set(workers.myWorkers(s).map(w => w.name)),
   })
   const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion })
@@ -165,6 +166,12 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     async shutdown() {
       preserveBridgeFacts = true
       wakes.stop()
+      // Withdraw every joined session while its transport is still up. Worker cleanup can
+      // take 1.8 seconds, so it must not delay the lease release or offline awareness.
+      for (const joined of rooms.all()) {
+        try { await joined.lease?.end() } catch (error) { log(`shutdown lease release failed for ${joined.roomName}: ${error instanceof Error ? error.message : String(error)}`) }
+        try { joined.awareness.setLocalState(null) } catch { /* already disconnected */ }
+      }
       const s = ctx.getSession()
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
       const running = (await Promise.all(state.runningWorkers(s).map(async r => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter(r => r.action === 'stop')

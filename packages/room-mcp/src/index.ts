@@ -12,6 +12,7 @@ import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { resolveConfig } from './config.js'
 import { createWakeSender } from './wake-path.js'
+import { CodexTurnProbe } from './codex-turn.js'
 import { offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
@@ -99,8 +100,9 @@ async function main() {
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
       // Content-free wakes of this host session: the Codex queue, or Claude Code's inbox socket, then the channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, binding: sessionBinding, log })
       let presence: PresenceEnd | undefined
+      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() })
+      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
@@ -202,7 +204,12 @@ async function main() {
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
-      return { call, shutdown: async () => { presence.stop(); autoJoin.cancel(); await autoJoin.settle(); await arbitration.close(); await tools.shutdown() } }
+      return { call, shutdown: async (signal?: boolean) => {
+        presence.stop(); autoJoin.cancel()
+        if (!signal) await autoJoin.settle()
+        await tools.shutdown()
+        await arbitration.close()
+      } }
     },
   })
 
@@ -219,9 +226,7 @@ async function main() {
     if (closing) return
     closing = true
     watchdog.stop()
-    log(`stopping: ${reason}`)
-    try { await (await binding.close())?.shutdown() } catch { /* ignore */ }
-    process.exit(0)
+    await finishSignalShutdown(reason, async () => { await (await binding.close())?.shutdown(reason === 'SIGTERM' || reason === 'SIGINT') }, log, () => process.exit(0))
   }
   process.on('SIGINT', () => { void bye('SIGINT') }); process.on('SIGTERM', () => { void bye('SIGTERM') })
   mcp.onclose = () => { void bye('stdin/transport closed') }
@@ -234,6 +239,19 @@ async function main() {
   } catch (error) {
     if (!closing) throw error // non-deferred startup keeps its fatal exit policy
   }
+}
+
+/** Give signal cleanup a bounded chance to end leases and clear awareness before process exit. */
+export async function finishSignalShutdown(reason: string, leave: () => Promise<void>, report: (line: string) => void, exit: () => void, limitMs = 4_000): Promise<void> {
+  report(`stopping: ${reason}`)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const completed = await Promise.race([leave().then(() => true), new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), limitMs) })])
+    if (!completed) report(`shutdown timed out after ${limitMs}ms: ${reason}`)
+  } catch (error) { report(`shutdown error: ${error instanceof Error ? error.message : String(error)}`) }
+  finally { if (timer) clearTimeout(timer) }
+  report(`stopped: ${reason}`)
+  exit()
 }
 
 const isEntry = !!process.argv[1] && /room-mcp([\/\\]src[\/\\]index\.ts|\.mjs)?$/.test(process.argv[1])

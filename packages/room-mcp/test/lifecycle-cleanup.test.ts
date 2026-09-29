@@ -1,5 +1,6 @@
 import { publishFixture } from './fixtures/manifest.js'
 import { createHandlerState } from '../src/tools/state.js'
+import { finishSignalShutdown } from '../src/index.js'
 import { describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -187,5 +188,37 @@ describe('worker lifecycle cleanup', () => {
       expect(workerByTag(root, 'stalled')).toEqual(before)
       expect(log).toHaveBeenCalledWith('shutdown dismissal timed out for stalled; worker record kept for restart')
     } finally { release(); room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it.each(['SIGINT', 'SIGTERM'])('%s shutdown ends lease and presence before dismissing a running worker', async reason => {
+    const root = mkdtempSync(join(tmpdir(), 'room-signal-order-'))
+    execFileSync('git', ['-C', root, 'init', '-q', '-b', 'main'], { stdio: 'pipe' })
+    const room = new RoomDoc()
+    const events: string[] = []
+    const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir: root,
+      me: { name: 'lead', kind: 'agent' }, roomName: 'local/repo/main', daemon: {},
+      awareness: { setLocalState: (value: unknown) => { if (value === null) events.push('presence ended') } },
+      lease: { end: async () => { events.push('lease ended') } },
+    } as unknown as Session
+    await registerWorkers(s, [{ id: 'running-id', tag: 'running', name: 'lead+running', lead: 'lead', host: 'codex',
+      task: 'x', dir: join(root, '.room', 'workers', 'running'), branch: 'room/running', pid: process.pid,
+      processStartTime: 'test:start', startedAt: 1, status: 'running' }])
+    const worker = workerByTag(root, 'running')!
+    const state = createHandlerState({ getSession: () => s, setSession: () => {}, cwd: root,
+      leave: async () => { events.push('session left') },
+      probe: () => ({ startTime: 'test:start', executable: 'codex' }), log: () => {} })
+    const workersRoom = { roomName: 'local/repo/workers',
+      awareness: { setLocalState: (value: unknown) => { if (value === null) events.push('workers presence ended') } },
+      lease: { end: async () => { events.push('workers lease ended') } },
+    } as unknown as Session
+    state.rooms.all = () => [s, workersRoom]
+    state.runningWorkers = () => [{ s, w: worker }]
+    state.dismissWorker = async () => { events.push('worker dismissed'); await finishWorker(s, worker.tag, { status: 'dismissed', stopReason: 'lead-session-ended' }); return 'signalled' }
+    state.closeWorkersRoom = async () => { events.push('workers room closed') }
+    try {
+      await finishSignalShutdown(reason, () => state.shutdown(), line => events.push(line), () => events.push('exit'))
+      expect(events).toEqual([`stopping: ${reason}`, 'lease ended', 'presence ended', 'workers lease ended', 'workers presence ended', 'worker dismissed', 'workers room closed', 'session left', `stopped: ${reason}`, 'exit'])
+      expect(workerByTag(root, 'running')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
+    } finally { room.doc.destroy(); await closeRegistryForDir(root); rmSync(root, { recursive: true, force: true }) }
   })
 })

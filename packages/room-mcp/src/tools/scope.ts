@@ -40,7 +40,7 @@ async function workerChangedCount(s: Session, worker: LocalWorker, processGone: 
 const formatRoomMessage = (s: Session, m: Msg): string => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() })
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, readText, lines, shareOf } = state
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine, areaLines, ledgerLines, ledger, rooms, others, presences, myAreas, inMyAreas, now, personLine, claimLine, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, readText, lines, shareOf } = state
   const pathState: Handler = async a => {
       const s = S()
       if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
@@ -108,6 +108,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const publisher = publisherLine(s)
       const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.name)).size
       const participants = `${people} other participant${people === 1 ? '' : 's'}`
+      const noUnseen = !ledger.candidates(s).length
       const out: string[] = [s.local ? 'local: nothing leaves this machine' : publisher
         ? `team room: ${publisher} (${participants} in the room)`
         : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))}${shareOf(s, s.me.name) === 'declared' && s.policyStore.retained.length ? '; changed files declared earlier remain shared' : ''} with ${participants}`]
@@ -116,6 +117,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
       }
+      // Right after the sharing line, which stays first: a replayed wake reads this and stops.
+      if (noUnseen) out.splice(out.indexOf(out.find(line => line.startsWith('local: ') || line.startsWith('team room: '))!) + 1, 0, 'nothing new for you since your last read; no action needed')
       if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}; room_leave, then room_create to reopen`)
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()

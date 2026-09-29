@@ -55,7 +55,7 @@ export function areaNameOf(pattern: string): string {
   }
   if (!lit.length) return '/'
   const last = segs[lit.length - 1]
-  const isFile = lit.length === segs.length && !pattern.endsWith('/') && /\.[^/]+$/.test(last)
+  const isFile = lit.length === segs.length && filePattern(pattern)
   return isFile ? lit.join('/') : `${lit.join('/')}/`
 }
 
@@ -82,7 +82,12 @@ export function patternToRegExp(pattern: string): RegExp {
   // Anchored patterns match from the root; bare names match at any depth (like CODEOWNERS/gitignore).
   const head = anchored ? '^' : '^(?:.*/)?'
   // Whatever matched is either the whole path or a directory prefix of it.
-  return new RegExp(`${head}${re}(?:/.*)?$`)
+  return new RegExp(`${head}${re}${filePattern(pattern) ? '' : '(?:/.*)?'}$`)
+}
+
+function filePattern(pattern: string): boolean {
+  const last = pattern.split('/').at(-1) ?? ''
+  return !pattern.endsWith('/') && !/[*?[\]]/.test(last) && (/\.[^/]+$/.test(last) || last === 'CODEOWNERS')
 }
 
 export class Areas {

@@ -34,7 +34,7 @@ import { RoomDoc, assertValidParticipantName, claimReleaseText, colorFor, holder
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
 import { git, gitBlobInfoMany, gitBranch, gitChanged, gitHead, gitIgnored, gitPathsBetween, gitShowMany, gitTracked } from './git.js'
-import { pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
+import { pushHistory, pushedFacts, pushedRange, readBaseRefs, refsKey, resolveBase, roomRemote, type BaseInputs, type ResolvedBase } from './base.js'
 export { comparePair, ensureCommit, readBaseRefs, resolveBase, roomRemote, type BaseInputs, type BaseRefs, type ResolvedBase } from './base.js'
 
 /** Keep event emitters and timers from leaking both sync throws and rejected promises. */
@@ -763,7 +763,9 @@ class Daemon implements Roomd {
     }
     if (headMoved) invalidate()
     const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
-    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) {
+    const latestPush = this.roomDoc.messages().filter((m): m is PushedMsg => m.type === 'pushed' && m.upstream === inputs.refs.upstream?.name).at(-1)
+    const currentRefsKey = JSON.stringify([refsKey(inputs), latestPush?.toSha])
+    if (!headMoved && currentRefsKey === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) {
       await this.retryPendingClaims(head, fence)
       return
     }
@@ -794,7 +796,9 @@ class Daemon implements Roomd {
       this.tracked = (await gitTracked(this.dir)).paths
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
-    const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
+    const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {
+      ...(latestPush ? { knownUpstream: { name: latestPush.upstream, sha: latestPush.toSha, by: latestPush.from } } : {}),
+    })
     const claims = await this.reanchorOwnClaims(head, claimSnapshot, true, pendingIds)
     const facts = await this.transitionFacts(inputs, resolved, promoted, fence)
     // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
@@ -811,7 +815,7 @@ class Daemon implements Roomd {
     this.transitionPending = false
     this.setStatus(resolved.status)
     this.appliedHead = head
-    this.appliedRefs = refsKey(inputs)
+    this.appliedRefs = currentRefsKey
     this.appliedAsPublisher = publishing
     this.appliedFence = fence
     this.pendingClaimValidation = claims.uncertain.length ? { head, fence, claims: new Map(claimSnapshot.filter(c => claims.uncertain.includes(c.id)).map(c => [c.id, c])) } : undefined
@@ -835,7 +839,8 @@ class Daemon implements Roomd {
     // Only a surviving record yields a notice: current refs cannot recover a lost fromSha (§B4). Without a
     // poster (the CLI) nothing could ever post it, so nothing is owed.
     if (!this.poster || !prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next }
-    return { next, pushed: { fromSha: prev.base, toSha: next.base, branch, upstream: resolved.upstream } }
+    const previousPush = this.roomDoc.messages().filter((m): m is PushedMsg => m.type === 'pushed' && m.upstream === resolved.upstream).at(-1)
+    return { next, pushed: { fromSha: previousPush?.toSha !== next.base ? previousPush?.toSha ?? prev.base : prev.base, toSha: next.base, branch, upstream: resolved.upstream } }
   }
 
   /**
@@ -868,8 +873,9 @@ class Daemon implements Roomd {
     let commits = 0
     try {
       const facts = await pushedFacts(this.dir, owed.fromSha, owed.toSha)
+      const history = await pushHistory(this.dir, this.remote, owed.fromSha, owed.toSha)
       commits = facts.commits
-      answer = this.poster(from, { type: 'pushed', ...owed, ...facts } as PostBody<PushedMsg>, { id: `pushed:${this.name}:${owed.fromSha}:${owed.toSha}`, auto: true })
+      answer = this.poster(from, { type: 'pushed', ...owed, ...facts, ...(history !== 'forward' ? { rewrite: history } : {}) } as PostBody<PushedMsg>, { id: `pushed:${this.name}:${owed.fromSha}:${owed.toSha}`, auto: true })
     } catch (error) { this.pushedInFlight = false; this.log(`pushed not posted yet: ${errMsg(error)}`); return }
     void Promise.resolve(answer).then(result => {
       if (!hubAccepted(result) || this.stopped || this.fence !== fence) return

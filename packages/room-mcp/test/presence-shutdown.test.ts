@@ -9,11 +9,23 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd } from '@room/roomd'
 import { policyFromLevel } from '@room/roomd/policy'
+import { finishSignalShutdown } from '../src/index.js'
 
 const cleanup: (() => void)[] = []
 afterEach(() => cleanup.splice(0).reverse().forEach(fn => fn()))
 
 describe('roomd presence shutdown', () => {
+  it('completes SIGTERM leave and logs stopped before exiting', async () => {
+    const events: string[] = []
+    await finishSignalShutdown('SIGTERM', async () => { events.push('lease ended'); events.push('presence cleared') },
+      line => events.push(line), () => events.push('exit'))
+    expect(events).toEqual(['stopping: SIGTERM', 'lease ended', 'presence cleared', 'stopped: SIGTERM', 'exit'])
+  })
+  it('bounds a stuck SIGTERM shutdown and exits', async () => {
+    const events: string[] = []
+    await finishSignalShutdown('SIGTERM', () => new Promise<void>(() => {}), line => events.push(line), () => events.push('exit'), 20)
+    expect(events).toEqual(['stopping: SIGTERM', 'shutdown timed out after 20ms: SIGTERM', 'stopped: SIGTERM', 'exit'])
+  })
   it('publishes a null awareness state before disconnecting', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-presence-stop-'))
     cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }))

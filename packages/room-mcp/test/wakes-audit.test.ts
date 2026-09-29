@@ -299,13 +299,15 @@ describe('wakes (ledger test 11, MF8)', () => {
     try {
       const q = hubAppend<QuestionMsg>(m.s.room, kieran, { type: 'question', to: 'Rohan', text: 'which token do we use?' })
       await vi.waitFor(() => expect(texts).toHaveLength(1))
-      expect(texts[0]).toMatch(/^\[room\] 1 thing needs you: Kieran asked a question\. Call room_state; it shows them\. \(#\d+\)$/)
+      expect(texts[0]).toMatch(/^\[room\] 1 thing may need you: Kieran asked a question\. Call room_state; if it shows nothing new, they were already delivered: do nothing further\. \(#\d+\)$/)
       expect(m.s.room.seen('Rohan').has(q.id)).toBe(false)
       expect(JSON.parse(readFileSync(join(sdir(), 'wakes.json'), 'utf8'))).toMatchObject({ r: { [q.id]: { via: 'queue' } } })
       const reply = await m.tools.call('room_state', {})
       expect(reply).toContain(`[inbox 1]\n  [${q.id}] QUESTION FOR YOU: `)
       expect(m.s.room.seen('Rohan').get(q.id)).toMatchObject({ s: SID, via: 'reply' })
-      expect(await m.tools.call('room_state', {})).not.toContain('[inbox')
+      const noOp = await m.tools.call('room_state', {})
+      expect(noOp.split('\n').slice(0, 2)).toContain('nothing new for you since your last read; no action needed')
+      expect(noOp).not.toContain('[inbox')
       await quiet()
       expect(texts).toHaveLength(1)
     } finally { await m.close() }

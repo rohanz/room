@@ -8,6 +8,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { git } from '@room/roomd/git'
 import { isAgentic, manifestPaths, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
@@ -15,6 +16,7 @@ import { writeAtomic } from './leases.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { waitConsumesMessage } from './tools/messaging.js'
 import type { SendWake, WakeTarget, WakeVia } from './wake-path.js'
+import { CodexTurnProbe } from './codex-turn.js'
 
 /** After a failed send: 1, 3, 8, then every 30 s while anything stays wakeable. */
 const BACKOFF_MS = [1_000, 3_000, 8_000, 30_000]
@@ -22,6 +24,9 @@ const BACKOFF_MS = [1_000, 3_000, 8_000, 30_000]
 const WINDOW_MS = 5_000
 /** How often to look again for a bound host session while something is wakeable. */
 const POLL_MS = 5_000
+const BUSY_POLL_MS = 2_000
+const RELEASE_RECHECK_MS = 5_000
+const RELEASE_GIT_TIMEOUT_MS = 2_000
 const MAX_NAMED = 5
 
 type WakesFile = Record<string, Record<string, { via: WakeVia; at: number }>>
@@ -40,6 +45,8 @@ export interface WakeReconcilerOptions {
   backoffMs?: readonly number[]
   windowMs?: number
   pollMs?: number
+  busyPollMs?: number
+  codexTurn?: Pick<CodexTurnProbe, 'busy'>
 }
 
 export class WakeReconciler {
@@ -53,8 +60,10 @@ export class WakeReconciler {
   private sequence = 0
   private record?: { dir: string | undefined; wakes: WakesFile }
   private silent = false
+  private readonly codexTurn: Pick<CodexTurnProbe, 'busy'>
+  private readonly releaseChecks = new Map<string, { own: boolean; at: number }>()
 
-  constructor(private readonly o: WakeReconcilerOptions) {}
+  constructor(private readonly o: WakeReconcilerOptions) { this.codexTurn = o.codexTurn ?? new CodexTurnProbe() }
 
   /** Watch a joined room: any change to it (bus, receipts, outcomes, claims) reconciles. */
   attach(s: Session): void {
@@ -100,7 +109,7 @@ export class WakeReconciler {
       const done = woken[s.roomName] ?? {}
       for (const m of ledger.candidates(s)) {
         // Messages owed before this session existed are left for its first reply or hook.
-        if ((m.seq ?? 0) <= frontier || done[m.id] || ledger.reserved(s, m.id) || waitConsumesMessage(s, m)) continue
+        if ((m.seq ?? 0) <= frontier || done[m.id] || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || this.ownCommitRelease(s, m)) continue
         if (shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) out.push({ s, m })
       }
     }
@@ -116,20 +125,33 @@ export class WakeReconciler {
 
   private async pass(): Promise<void> {
     this.clearTimer()
-    const due = this.wakeable()
+    await this.refreshOwnCommitReleases()
+    if (this.stopped) return
+    let due = this.wakeable()
     if (!due.length) { this.failures = 0; return }
     const target = this.o.bound()
     if (!target) { this.arm(this.o.pollMs ?? POLL_MS); return }
+    if (target.host === 'codex' && await this.codexTurn.busy(target.id)) {
+      this.arm(this.o.busyPollMs ?? BUSY_POLL_MS)
+      return
+    }
     const windowMs = this.o.windowMs ?? WINDOW_MS
     const since = this.lastSentAt === undefined ? Infinity : this.now() - this.lastSentAt
     if (since < windowMs) { this.arm(windowMs - since); return }
+    // The turn probe and window may have taken time: hook and reply receipts, or HEAD, can move meanwhile.
+    await this.refreshOwnCommitReleases()
+    if (this.stopped) return
+    due = this.wakeable()
+    if (!due.length) { this.failures = 0; return }
+    const current = this.o.bound()
+    if (current?.id !== target.id || current.host !== target.host) { this.arm(this.o.pollMs ?? POLL_MS); return }
     let via: WakeVia | undefined
     try { via = await this.o.send(target, this.pointer(due)) }
     catch (e) {
       const delays = this.o.backoffMs ?? BACKOFF_MS
       const delay = delays[Math.min(this.failures, delays.length - 1)]
       this.failures++
-      this.o.log?.(`wake: could not wake ${target.host} session ${target.id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)}); retrying in ${delay}ms`)
+      this.o.log?.(`wake: could not wake ${target.host} session ${target.id} (${e instanceof Error ? e.message : String(e)}); retrying in ${delay}ms`)
       this.arm(delay)
       return
     }
@@ -145,10 +167,10 @@ export class WakeReconciler {
     const wakes = this.wakes()
     for (const { s, m } of due) (wakes[s.roomName] ??= {})[m.id] = { via, at }
     this.persist()
-    this.o.log?.(`wake: woke ${target.host} session ${target.id.slice(0, 8)} via ${via} for ${due.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
+    this.o.log?.(`wake: woke ${target.host} session ${target.id} via ${via} for ${due.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
   }
 
-  /** `[room] N things need you: <from> <kind>; …` — who and what kind, never the text. */
+  /** `[room] N things may need you: <from> <kind>; …` — who and what kind, never the text. */
   private pointer(due: { m: Msg }[]): string {
     const count = due.length
     const shown = count > MAX_NAMED ? MAX_NAMED - 1 : MAX_NAMED
@@ -157,7 +179,7 @@ export class WakeReconciler {
       : `${m.from.replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(m.type)}`)
     if (count > shown) phrases.push(`${count - shown} more`)
     // The sequence keeps consecutive pointers distinct: the Claude inbox drops identical repeats.
-    return `[room] ${count} ${count === 1 ? 'thing needs' : 'things need'} you: ${phrases.join('; ')}. Call room_state; it shows them. (#${++this.sequence})`
+    return `[room] ${count} ${count === 1 ? 'thing may need' : 'things may need'} you: ${phrases.join('; ')}. Call room_state; if it shows nothing new, they were already delivered: do nothing further. (#${++this.sequence})`
   }
 
   /** wakes.json of the bound session, reloaded when the binding moves; entries no longer owed are pruned on write. */
@@ -193,6 +215,45 @@ export class WakeReconciler {
 
   private clearTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined }
   private now(): number { return this.o.now?.() ?? Date.now() }
+
+  private ownCommitRelease(s: Session, m: Msg): boolean {
+    return !!claimReleaseSha(s, m) && this.releaseChecks.get(`${s.roomName}\0${m.id}`)?.own === true
+  }
+
+  /** Cache ancestry by owed message. A positive answer is final; a negative one can change after a pull. */
+  private async refreshOwnCommitReleases(): Promise<void> {
+    const now = this.now()
+    const live = new Set<string>()
+    const checks: { s: Session; sha: string; key: string }[] = []
+    for (const s of this.sessions.keys()) {
+      if (!this.o.ledger.fenced(s)) continue
+      for (const m of this.o.ledger.candidates(s)) {
+        const sha = claimReleaseSha(s, m)
+        if (!sha) continue
+        const key = `${s.roomName}\0${m.id}`
+        live.add(key)
+        const cached = this.releaseChecks.get(key)
+        if (cached?.own || (cached && now - cached.at < RELEASE_RECHECK_MS)) continue
+        checks.push({ s, sha, key })
+      }
+    }
+    for (const key of this.releaseChecks.keys()) if (!live.has(key)) this.releaseChecks.delete(key)
+    // A burst of release notes should not spawn an unbounded number of Git processes.
+    for (let i = 0; i < checks.length && !this.stopped; i += 4) {
+      await Promise.all(checks.slice(i, i + 4).map(async ({ s, sha, key }) => {
+        let own = false
+        try { await git(s.dir, ['merge-base', '--is-ancestor', sha, 'HEAD'], RELEASE_GIT_TIMEOUT_MS); own = true }
+        catch { /* unknown or not in HEAD: let the normal wake policy decide */ }
+        this.releaseChecks.set(key, { own, at: this.now() })
+      }))
+    }
+  }
+}
+
+/** The automatic release stays in the inbox, but a commit already in the holder's HEAD needs no wake. */
+function claimReleaseSha(s: Session, m: Msg): string | undefined {
+  return m.type === 'note' && m.from === 'room' && m.fromKind === 'bot' && m.to === s.me.name
+    ? parseClaimRelease(m.text)?.sha : undefined
 }
 
 function kindPhrase(type: Msg['type']): string {
