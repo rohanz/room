@@ -142,7 +142,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
-      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : a.create === true ? 'team' : undefined
+      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server
+        // Creating opens a team room: the environment's server if set, else the hosted default; never local.
+        : a.create === true && !process.env.ROOM_SERVER && !process.env.ROOM_URL ? 'team' : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
       const requestedRoom = typeof a.room === 'string' ? a.room : resolved.room
