@@ -36,11 +36,13 @@ describe('room choice', () => {
   it('defaults to local, remembers an explicit choice per clone, and lets env and arguments override it', async () => {
     expect(await configured()).toMatchObject({ server: LOCAL, whereRule: 'default', where: LOCAL })
     expect(await configured('team')).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'argument', where: 'team' })
+    expect(await configured('team', 'ws://own-team.test')).toMatchObject({ server: 'ws://own-team.test', whereRule: 'argument', where: 'team' })
     expect(await readChoice(dir)).toBeUndefined() // choosing does not remember; the join does, on success
     await writeChoice(dir, 'team', 'rohanz')
     expect(existsSync(await choiceFile(dir))).toBe(true)
     expect((await choiceFile(dir)).endsWith('/.git/room-choice.json')).toBe(true)
     expect(await configured()).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'remembered', where: 'team' })
+    expect(await configured(undefined, 'ws://own-team.test')).toMatchObject({ server: 'ws://own-team.test', whereRule: 'env' })
     expect(await configured(undefined, 'local')).toMatchObject({ server: LOCAL, whereRule: 'env' })
     expect(await configured('wss://own.example', 'local')).toMatchObject({ server: 'wss://own.example', whereRule: 'argument' })
     expect(await clearChoice(dir)).toBe(true)

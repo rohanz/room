@@ -27,6 +27,19 @@ describe('resolveConfig', () => {
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
   })
 
+  it.each(['team', 'hosted', 'web', 'shared'])('resolves %s to this person\'s configured team server', async where => {
+    const dir = repo()
+    const args = { where }
+    expect(await resolveConfig({ dir, args, env: { ROOM_SERVER: 'ws://self-hosted.test:4403', ROOM_URL: 'ws://runner.test:4403/o/r' } }))
+      .toMatchObject({ server: 'ws://self-hosted.test:4403', where: 'team', whereRule: 'argument' })
+    expect(await resolveConfig({ dir, args, env: { ROOM_URL: 'ws://runner.test:4403/o/r' } }))
+      .toMatchObject({ server: 'ws://runner.test:4403', where: 'team', whereRule: 'argument' })
+    expect(await resolveConfig({ dir, args, env: {} }))
+      .toMatchObject({ server: DEFAULT_SERVER, where: 'team', whereRule: 'argument' })
+    expect(await resolveConfig({ dir, args: { where: 'wss://explicit.test' }, env: { ROOM_SERVER: 'ws://self-hosted.test:4403' } }))
+      .toMatchObject({ server: 'wss://explicit.test', whereRule: 'argument' })
+  })
+
   it('keeps the remembered destination separate from explicit sharing inputs', async () => {
     const dir = repo()
     await writeChoice(dir, 'team', 'Ada')
