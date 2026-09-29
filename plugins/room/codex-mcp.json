@@ -36,7 +36,12 @@
         "ROOM_WORKER_ID",
         "ROOM_WORKER_RUN",
         "ROOM_LAUNCH_NONCE",
-        "ROOM_REGISTRY"
+        "ROOM_REGISTRY",
+        "ROOM_AUTO_FETCH",
+        "ROOM_GIT_TIMEOUT_MS",
+        "ROOM_IDLE_LEASE_MS",
+        "ROOM_WORKER_MAX_BUDGET_USD",
+        "ROOM_WORKER_NICE"
       ],
       "startup_timeout_sec": 30,
       "env": {

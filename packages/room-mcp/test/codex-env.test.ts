@@ -16,3 +16,12 @@ it('passes every launched worker ROOM variable through the Codex MCP allow-list'
   const missing = Object.keys(launched).filter(key => key.startsWith('ROOM_') && !passed.has(key))
   expect(missing).toEqual([])
 })
+
+it('passes the documented ROOM_ tuning knobs through the Codex MCP allow-list', () => {
+  const file = fileURLToPath(new URL('../../../plugins/room/codex-mcp.json', import.meta.url))
+  const envVars = (JSON.parse(fs.readFileSync(file, 'utf8')) as { mcpServers: { room: { env_vars: string[] } } }).mcpServers.room.env_vars
+  // A Codex-hosted MCP sees only allow-listed variables; the MCP reads these tuning knobs from its environment.
+  for (const knob of ['ROOM_AUTO_FETCH', 'ROOM_GIT_TIMEOUT_MS', 'ROOM_IDLE_LEASE_MS', 'ROOM_WORKER_MAX_BUDGET_USD', 'ROOM_WORKER_NICE']) {
+    expect(envVars).toContain(knob)
+  }
+})
