@@ -18175,7 +18175,7 @@ var init_baseline = __esm({
 // packages/roomd/src/git-dirs.ts
 import fs5 from "node:fs";
 import path3 from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes as randomBytes2 } from "node:crypto";
 function worktreeGitDirFromDotGit(dir) {
   let gitDir = path3.join(dir, ".git");
   try {
@@ -18223,7 +18223,7 @@ function readRecordSync(file) {
 }
 function writeRecordSync(file, record2) {
   fs5.mkdirSync(path3.dirname(file), { recursive: true });
-  const temp = file + "." + process.pid + "." + randomBytes(4).toString("hex") + ".tmp";
+  const temp = file + "." + process.pid + "." + randomBytes2(4).toString("hex") + ".tmp";
   try {
     fs5.writeFileSync(temp, JSON.stringify(record2), { mode: 384 });
     fs5.renameSync(temp, file);
@@ -21277,7 +21277,7 @@ var require_websocket = __commonJS({
     var http2 = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes3, createHash: createHash7 } = __require("crypto");
+    var { randomBytes: randomBytes4, createHash: createHash7 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -21815,7 +21815,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes3(16).toString("base64");
+      const key = randomBytes4(16).toString("base64");
       const request = isSecure ? https.request : http2.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -25282,7 +25282,7 @@ var init_roomignore = __esm({
 import fs9 from "node:fs";
 import path6 from "node:path";
 import os2 from "node:os";
-import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes3 } from "node:crypto";
 import { execFileSync as execFileSync2 } from "node:child_process";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
@@ -25294,9 +25294,9 @@ function machineIdentity(log2) {
   if (cached2) return cached2;
   try {
     fs9.mkdirSync(path6.dirname(file), { recursive: true, mode: 448 });
-    const temporary = `${file}.${process.pid}.${randomBytes2(8).toString("hex")}`;
+    const temporary = `${file}.${process.pid}.${randomBytes3(8).toString("hex")}`;
     try {
-      fs9.writeFileSync(temporary, randomBytes2(32).toString("hex") + "\n", { flag: "wx", mode: 384 });
+      fs9.writeFileSync(temporary, randomBytes3(32).toString("hex") + "\n", { flag: "wx", mode: 384 });
       try {
         fs9.linkSync(temporary, file);
       } catch (error2) {
@@ -42890,12 +42890,13 @@ import { performance as performance3 } from "node:perf_hooks";
 import fs2 from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 var SLOW_TOOL_MS = 2e3;
 var EVENT_LOOP_SAMPLE_MS = 500;
 var EVENT_LOOP_LAG_MS = 2e3;
 var PREVIEW_CHECK_MAX_AGE_MS = 6 * 6e4;
-var PREVIEW_CHECK_STAT_LIMIT = 50;
-var PREVIEW_CHECK_ENTRY_LIMIT = 2e3;
+var PREVIEW_CHECK_ENTRY_LIMIT = 500;
+var PREVIEW_CHECK_MARKERS = path.join(os.tmpdir(), `room-preview-checks-${process.getuid?.() ?? "user"}`);
 var context = new AsyncLocalStorage();
 var ms = (value2) => `${Math.round(value2)}ms`;
 var ToolTiming = class {
@@ -42996,25 +42997,43 @@ var ToolTiming = class {
 function currentToolTiming() {
   return context.getStore();
 }
-function countOtherPreviewChecks(ownDir, tmpDir = os.tmpdir(), now = Date.now(), readStat = (file) => fs2.lstatSync(file), openDir = (dir) => fs2.opendirSync(dir)) {
+function countOtherPreviewChecks(ownMarker, markerDir = PREVIEW_CHECK_MARKERS, now = Date.now(), readStat = (file) => fs2.lstatSync(file)) {
   try {
-    const ownName = path.basename(ownDir);
+    const ownName = path.basename(ownMarker);
     let count = 0;
-    let inspected = 0;
-    const dir = openDir(tmpDir);
+    const dir = fs2.opendirSync(markerDir);
     try {
       for (let scanned = 0; scanned < PREVIEW_CHECK_ENTRY_LIMIT; scanned++) {
         const entry = dir.readSync();
         if (!entry) return count;
-        if (!entry.isDirectory() || !entry.name.startsWith("room-merge-") || entry.name.startsWith("room-merge-file-") || entry.name === ownName) continue;
-        if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return void 0;
-        inspected++;
+        if (!entry.isFile() || entry.name === ownName) continue;
+        const match = /^(\d+)-[0-9a-f]+$/.exec(entry.name);
+        if (!match) continue;
+        const file = path.join(markerDir, entry.name);
         try {
-          const stat4 = readStat(path.join(tmpDir, entry.name));
-          if (!stat4.isDirectory()) continue;
-          const created = stat4.birthtimeMs > 0 ? stat4.birthtimeMs : stat4.ctimeMs;
-          if (created <= now + 1e3 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++;
-        } catch {
+          const stat4 = readStat(file);
+          if (!stat4.isFile()) continue;
+          const stale = stat4.mtimeMs > now + 1e3 || now - stat4.mtimeMs > PREVIEW_CHECK_MAX_AGE_MS;
+          let dead = false;
+          if (!stale) {
+            try {
+              process.kill(Number(match[1]), 0);
+            } catch (error2) {
+              dead = error2.code === "ESRCH";
+            }
+          }
+          if (stale || dead) {
+            try {
+              fs2.unlinkSync(file);
+            } catch {
+            }
+            ;
+            continue;
+          }
+          count++;
+        } catch (error2) {
+          if (error2.code === "ENOENT") continue;
+          return void 0;
         }
       }
       return void 0;
@@ -43028,12 +43047,25 @@ function countOtherPreviewChecks(ownDir, tmpDir = os.tmpdir(), now = Date.now(),
     return void 0;
   }
 }
-async function previewCheck(dir, work, sample = countOtherPreviewChecks) {
+async function previewCheck(work, { markerDir = PREVIEW_CHECK_MARKERS, sample = countOtherPreviewChecks } = {}) {
   const timing = currentToolTiming();
-  const observe = () => {
-    if (timing?.name !== "room_preview_merge") return;
+  let marker;
+  if (timing?.name === "room_preview_merge") {
     try {
-      timing.notePreviewCheckOverlap(sample(dir));
+      fs2.mkdirSync(markerDir, { recursive: true, mode: 448 });
+      const stat4 = fs2.lstatSync(markerDir);
+      if (!stat4.isDirectory() || process.getuid && stat4.uid !== process.getuid()) throw new Error("unsafe marker directory");
+      const file = path.join(markerDir, `${process.pid}-${randomBytes(8).toString("hex")}`);
+      fs2.writeFileSync(file, "", { flag: "wx", mode: 384 });
+      marker = file;
+    } catch {
+      timing.notePreviewCheckOverlap(void 0);
+    }
+  }
+  const observe = () => {
+    if (timing?.name !== "room_preview_merge" || !marker) return;
+    try {
+      timing.notePreviewCheckOverlap(sample(marker, markerDir));
     } catch {
       timing.notePreviewCheckOverlap(void 0);
     }
@@ -43043,6 +43075,10 @@ async function previewCheck(dir, work, sample = countOtherPreviewChecks) {
     return await previewPhase("check", work);
   } finally {
     observe();
+    if (marker) try {
+      fs2.unlinkSync(marker);
+    } catch {
+    }
   }
 }
 async function previewPhase(name2, work) {
@@ -50207,13 +50243,13 @@ async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */
       env2.ROOM_MERGED_TREE = dir;
       return { bash: bash2, env: env2 };
     });
-    const result = await previewCheck(dir, () => new Promise((resolve5) => {
+    const result = await previewCheck(() => new Promise((resolve5) => {
       execFile6(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
         const raw = err2 ? err2.code : 0;
         resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
       });
     }));
-    return previewPhase("collect", () => {
+    return await previewPhase("collect", () => {
       const tail = stripVTControlCharacters2(result.out).trim().split("\n").slice(-25).join("\n");
       const verdict = testVerdict(result.out, result.code);
       return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}
