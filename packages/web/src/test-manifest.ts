@@ -1,13 +1,13 @@
 import * as Y from 'yjs'
 import { gitBlobHash, manifestKey, type ManifestEntry, type RoomDoc } from '@room/shared'
+import { epochPublication } from '../../shared/src/testing.js'
 
 /** Schema-2 publication fixture for web tests; mirrors the daemon's current incarnation. */
 export function publish(room: RoomDoc, name: string, path: string, text: string, baseText = '', base = 'base'): void {
   const fence = '1'
   if (!room.participants.has(`${name}\0holder`)) {
-    room.participants.set(`${name}\0holder`, { sessionId: `lease-${name}`, epoch: 1, pid: 1, startTime: '', executable: '', at: 1 })
-    room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
-    room.manifestHead.set(name, { base, fence, level: 'full', coverage: { kind: 'all' }, excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    epochPublication(room, name, base, 1, `lease-${name}`)
+    room.manifestHead.set(name, { ...room.manifestHead.get(name)!, level: 'full' })
     room.manifest.set(manifestKey(name, fence), new Y.Map<ManifestEntry>())
     room.overlays.set(manifestKey(name, fence), new Y.Map<Y.Text>())
   }

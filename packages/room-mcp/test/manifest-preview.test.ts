@@ -79,3 +79,20 @@ it('reports anonymous exclusion and intent gaps even with no mergeable paths', a
   expect(intent).toContain('PARTIAL preview')
   expect(intent).toContain('coverage intent')
 })
+
+it('default preview includes a present neighbour whose only overlapping change is committed', async () => {
+  const { room, head, session, state } = fixture()
+  room.setScope('alice', { area: 'app', summary: 'work', paths: ['app.py'], byKind: 'agent' })
+  fs.writeFileSync(path.join(root!, 'app.py'), 'ben committed\n')
+  execFileSync('git', ['add', '.'], { cwd: root! })
+  execFileSync('git', ['commit', '-qm', 'ben change'], { cwd: root! })
+  const changedBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root!, encoding: 'utf8' }).trim()
+  room.participants.set('ben\0git', { base: changedBase, head: changedBase, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base: changedBase, rev: 2 })
+  state.presences = () => [{ user: { name: 'ben', kind: 'agent' } }] as never
+  state.baseFor = (_s: Session, person: string) => person === 'ben' ? changedBase : head.base
+  const result = await handlers(state).room_preview_merge({})
+  expect(result).toContain('ben')
+  expect(result).not.toContain('no present participants to merge')
+  expect(session.lastPreview).toBeDefined()
+})

@@ -8,13 +8,14 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId } from '../src/conflict-set.js'
+import { epochPublication } from '../../shared/src/testing.js'
 import type { Session } from '../src/session.js'
 
 describe('ConflictSlots', () => {
   it('reconciles a pre-existing conflict once and replays the same id after a hub outage', async () => {
     const room = new RoomDoc()
     const post = vi.fn().mockResolvedValueOnce({ ok: false, text: 'unreachable' }).mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     const key = slotKey('a', 'merge', 'b', 'x')
     await slots.settle(key, { status: 'conflict', inputs: 'i', factId: 'f', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
     expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
@@ -27,7 +28,7 @@ describe('ConflictSlots', () => {
   it('keeps a conflict through unknown and advances its epoch only after clean', async () => {
     const room = new RoomDoc()
     const post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     const key = slotKey('a', 'merge', 'b', 'x')
     const evaluation = { inputs: 'i', factId: 'f', path: 'x', owner: 'a', other: 'b', kind: 'merge' } as const
     await slots.settle(key, { ...evaluation, status: 'conflict' })
@@ -43,7 +44,7 @@ describe('ConflictSlots', () => {
   it('keeps hashless possible inputs stable when only edit time changes', async () => {
     const room = new RoomDoc()
     const post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     const key = slotKey('a', 'merge', 'b', 'x')
     await slots.settle(key, { status: 'possible', inputs: 'stable', factId: 'possible', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
     await slots.settle(key, { status: 'possible', inputs: 'stable', factId: 'possible', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
@@ -53,7 +54,7 @@ describe('ConflictSlots', () => {
 
   it('does not renotify unchanged conflicting hunks after an input edit', async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     const key = slotKey('a', 'merge', 'b', 'x')
     const base = { status: 'conflict' as const, factId: 'same-hunks', path: 'x', owner: 'a', other: 'b', kind: 'merge' as const }
     await slots.settle(key, { ...base, inputs: 'before' })
@@ -64,7 +65,7 @@ describe('ConflictSlots', () => {
 
   it('advances after clean then unknown then conflict', async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     const key = slotKey('a', 'merge', 'b', 'x')
     const base = { factId: 'hunks', path: 'x', owner: 'a', other: 'b', kind: 'merge' as const }
     await slots.settle(key, { ...base, status: 'conflict', inputs: '1' })
@@ -77,14 +78,14 @@ describe('ConflictSlots', () => {
 
   it('describes the held owner instead of blaming the other participant', async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, 'lease')
+    const slots = new ConflictSlots(room, post, '1')
     await slots.settle(slotKey('A', 'merge', 'B', 'x'), { owner: 'A', other: 'B', kind: 'merge', path: 'x', status: 'possible', inputs: 'i', factId: 'f', why: 'A' })
     expect(post.mock.calls[0][1].text).toContain('A changed x too, outside their declared area')
   })
 
   it('routes a claim holder notice to the holder room with the holder perspective', async () => {
     const room = new RoomDoc(), ownerPost = vi.fn().mockResolvedValue({ ok: true }), holderPost = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, ownerPost, 'lease', Date.now, () => {}, holderPost)
+    const slots = new ConflictSlots(room, ownerPost, '1', Date.now, () => {}, holderPost)
     const key = slotKey('W', 'edit-in-claim', 'B', 'x', 'claim')
     await slots.settle(key, { owner: 'W', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'claim', status: 'conflict', inputs: 'i', factId: 'f' })
     await slots.replay('W')
@@ -106,17 +107,15 @@ describe('derived pair slots', () => {
     const awareness = new Awareness(room.doc)
     const states = new Map<number, unknown>()
     let next = 1
-    const holder = (name: string, projectedBy?: string) => {
-      const fence = '1'
+    const holder = (name: string, projectedBy?: string, epoch = 1) => {
+      const fence = epochPublication(room, name, base, epoch)
       room.participants.set(`${name}\0id`, { name, kind: 'agent' })
-      room.participants.set(`${name}\0holder`, { sessionId: `session-${name}`, epoch: 1 })
-      room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
       if (projectedBy) room.participants.set(`${name}\0proj`, { projectedBy, projectedFrom: 'w' })
       states.set(next++, { user: { name, kind: 'agent' }, sessionId: `session-${name}` })
       return fence
     }
-    const entry = (name: string, text: string | undefined, held = false, projectedBy?: string) => {
-      const fence = '1'
+    const entry = (name: string, text: string | undefined, held = false, projectedBy?: string, epoch = 1) => {
+      const fence = String(epoch)
       room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'declared', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true, ...(projectedBy ? { projectedBy, projectedFrom: 'w' } : {}) })
       const values = new Y.Map<{ change: 'M'; state: 'shared' | 'held'; hash?: string; held?: 'scope'; at: number; fence: string }>()
       if (text !== undefined || held) values.set('x', { change: 'M', state: held ? 'held' : 'shared', ...(text ? { hash: gitBlobHash(text) } : {}), ...(held ? { held: 'scope' as const } : {}), at: 1, fence })
@@ -124,10 +123,32 @@ describe('derived pair slots', () => {
       if (text !== undefined) room.setOverlay(manifestKey(name, fence), 'x', text)
     }
     const post = vi.fn().mockImplementation((from, body, opts) => Promise.resolve({ ok: true, msg: { ...body, ...opts } }))
+    const localFence = { value: '1' as string | undefined }
     const session = (name: string, posting = post) => ({ room, awareness: { getStates: () => states } as unknown as Awareness,
-      provider: { synced: true, on() {}, off() {} }, me: { name, kind: 'agent' }, dir, post: posting }) as unknown as Session
-    return { room, base, dir, holder, entry, post, session, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+      provider: { synced: true, on() {}, off() {} }, me: { name, kind: 'agent' }, dir, post: posting,
+      lease: { fence: () => localFence.value } }) as unknown as Session
+    return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
+
+  it('writes the current owner epoch into slots and stops while its local lease is paused', async () => {
+    const f = fixture()
+    try {
+      f.holder('A', undefined, 101); f.holder('B', undefined, 102)
+      f.entry('A', 'A\n', false, undefined, 101); f.entry('B', 'B\n', false, undefined, 102)
+      f.localFence.value = '100'
+      const set = new ConflictSet(f.session('A'))
+      const key = slotKey('A', 'merge', 'B', 'x')
+      await set.reconcile('old local lease')
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+      f.localFence.value = '101'
+      await set.reconcile('initial')
+      expect(f.room.doc.getMap<{ fence: string }>('conflicts').get(key)?.fence).toBe('101')
+      f.localFence.value = undefined
+      f.room.doc.getMap('conflicts').delete(key)
+      await set.reconcile('paused')
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+    } finally { f.cleanup() }
+  })
 
   it('records a possible conflict for a hashless held side, then certifies after sharing', async () => {
     const f = fixture()
@@ -166,8 +187,8 @@ describe('derived pair slots', () => {
       f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' }, { name: 'B', kind: 'agent' })
       const team = f.session('L'), workersPost = vi.fn().mockResolvedValue({ ok: true })
       await reconcileProjectedConflicts({ team, workers: f.session('L', workersPost), owner: 'W' })
-      const slots = [...f.room.doc.getMap<{ owner: string; kind: string; status: string }>('conflicts').values()]
-      expect(slots).toContainEqual(expect.objectContaining({ owner: 'W', kind: 'edit-in-claim', status: 'conflict' }))
+      const slots = [...f.room.doc.getMap<{ owner: string; kind: string; status: string; fence: string }>('conflicts').values()]
+      expect(slots).toContainEqual(expect.objectContaining({ owner: 'W', kind: 'edit-in-claim', status: 'conflict', fence: '1' }))
       expect(workersPost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W', type: 'conflict' }), expect.objectContaining({ id: expect.stringMatching(/^cf:/), auto: true }))
     } finally { f.cleanup() }
   })

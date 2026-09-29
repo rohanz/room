@@ -544,7 +544,11 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       named: () => !!daemon && namesAsPublisher(daemon.roomDoc, daemon.provider.awareness, name), log: options.log,
     })
     started = daemon = await startRoomd({ ...daemonOptions, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
-      post: (from, body, opts) => { if (post) void post(from, body, opts); else options.log?.(`not posted before the hub connection: ${body.type}`) },
+      post: (from, body, opts) => {
+        if (post) return post(from, body, opts)
+        options.log?.(`not posted before the hub connection: ${body.type}`)
+        return { ok: false }
+      },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {}),
       host: resolveSessionHost(), ...resolveSessionRuntime(binding.dir()) })
   } catch (e) { await publishing?.detach(); await lease.end(); hub.close(); closeProbe(); throw e }

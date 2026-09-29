@@ -27,15 +27,15 @@ async function browserPathDigest(salt: string, path: string): Promise<string> {
 }
 
 /** The browser has no git. A missing stored base is a gap, even for an absent manifest entry. */
-export async function readWebVersion(room: RoomDoc, name: string, path: string, view: readonly ParticipantView[]): Promise<Version> {
+export async function readWebVersion(room: RoomDoc, name: string, path: string, currentView: () => readonly ParticipantView[]): Promise<Version> {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const current = snapshot(room, name, view)
+    const current = snapshot(room, name, currentView())
     const result = await versionOf(current, path, {
       gitAt: async (base, relpath) => room.baseText(name, base, relpath),
       hashText: browserBlobHash,
       digest: browserPathDigest,
     })
-    if (current && !snapshotStillCurrent(room, current, view)) continue
+    if (current && !snapshotStillCurrent(room, current, currentView())) continue
     return result.kind === 'base' && result.text === undefined
       ? { kind: 'unknown', why: 'no-base-text', detail: 'base text not in the room' }
       : result
@@ -55,8 +55,10 @@ export function webCoverage(room: RoomDoc, name: string, view: readonly Particip
   const add = (why: string, path?: string) => gaps.push({ person: name, path, why })
   if (!snap) add('no manifest record')
   else {
-    if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base || snap.record.git.fence !== snap.head.fence) add('manifest updating; re-run')
-    if (snap.head.coverage.kind === 'none') add(snap.head.coverage.reason)
+    if (!snap.head.complete || !snap.fenceValid || (!(snap.head.coverage.kind === 'none' && snap.head.coverage.reason === 'not-publisher') &&
+      (snap.head.base !== snap.record?.git?.base || snap.record.git.fence !== snap.head.fence))) add('manifest updating; re-run')
+    if (snap.head.coverage.kind === 'none') add(snap.head.coverage.reason === 'not-publisher'
+      ? `not publisher; ${snap.head.publisher ?? 'another participant'} publishes this worktree` : snap.head.coverage.reason)
     if (snap.head.excluded.length) add(`${snap.head.excluded.length} changed paths excluded; names not shared`)
     for (const [path, entry] of snap.entries) {
       if (entry.state === 'held') { held.push(path); add(heldReason(entry), path) }
