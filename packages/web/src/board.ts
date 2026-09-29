@@ -41,7 +41,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
       const raw = [...conn.provider.awareness.getStates().values()].filter(p => p?.user?.name === person.name)
       const presence = raw.find(p => p.user.kind === 'agent') ?? raw[0]
       const share: ShareLevel = ['intent', 'declared', 'full'].includes(presence?.share) ? presence.share : 'full'
-      const worker = conn.room.workerViewOf(person.name)
+      const worker = conn.room.acceptedWorkerViewOf(person.name)
       const label = worker?.status === 'failed' ? 'failed' : personLine({ name: person.name, scope: person.scope, presences: input.presences, changedPaths: person.files, messages: messages.filter((m): m is NoteMsg => m.type === 'note'), share })
       const name = h('button', { class: 'person-open mono', title: `Inspect ${named(person.name)}'s files`, onclick: () => inspect(person.name) }, named(person.name))
       const areas = [...new Set([...(person.scope?.areas ?? []), ...(person.scope ? [person.scope.area] : [])])]

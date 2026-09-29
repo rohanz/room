@@ -49,6 +49,47 @@ function live(room: RoomDoc, name: string, workerId: string): void {
 }
 
 describe('projectable(lead, roomKey) and the joined-room projector', () => {
+  it('M10 recovers an unposted witnessed failure after the first completion post fails', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'recover')
+    const s = session(LOCAL, 'lead-s1')
+    await registry.writeExit(w.id, { run: 1, code: 1, at: 5, witnessed: true })
+    const original = registry.postObservedFailure.bind(registry)
+    const spy = vi.spyOn(registry, 'postObservedFailure').mockRejectedValueOnce(new Error('hub unreachable'))
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(0)
+    spy.mockImplementation(original)
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(1)
+    expect(registry.read(w.id)?.runs[0].posted).toBe(`wk:${w.id}:1`)
+  })
+
+  it('M10 recovers an unposted room_done report after an outage', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'done')
+    const s = session(LOCAL, 'lead-s1')
+    await registry.writeReport(w.id, { run: 1, nonce: w.runs[0].nonce, chain: [], joinedAt: 2,
+      done: { at: 5, summary: 'finished safely', changed: ['app.py'] } })
+    const original = registry.postCompletion.bind(registry)
+    const spy = vi.spyOn(registry, 'postCompletion').mockRejectedValueOnce(new Error('hub unreachable'))
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(0)
+    spy.mockImplementation(original)
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toMatchObject([{ type: 'done', summary: 'finished safely' }])
+    expect(registry.reports(w.id)[0].posted).toBe(`wk:${w.id}:1`)
+  })
+
+  it('M10 posts a witnessed failure before retiring its last room record', async () => {
+    const registry = await registryForDir(dir)
+    const w = await worker(registry, 'retire-failure')
+    const s = session(LOCAL, 'lead-s1')
+    await registry.writeExit(w.id, { run: 1, code: 1, at: 5, witnessed: true })
+    await registry.beginRetirement(w.id, registry.archiveOf(w, { summary: 'failed', disposition: 'discarded' }))
+    await projectWorkers(s, registry, lead.name, 'joined')
+    expect(s.room.messages().filter(m => m.id === `wk:${w.id}:1`)).toHaveLength(1)
+    expect(s.room.workerViews.has(w.id)).toBe(false)
+  })
   it('writes one fenced view per non-retiring worker, updates it on change, and drops views of workers in neither list', async () => {
     const registry = await registryForDir(dir)
     const w = await worker(registry, 'money')

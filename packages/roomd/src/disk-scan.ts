@@ -6,7 +6,7 @@ import { git, gitBlobInfoMany, wholeTreeTimeoutMs } from './git.js'
 import { defaultExcludedPath, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** --no-index applies Git ignore rules to tracked paths too. NUL framing preserves unusual names. */
-async function ignoredTrackedPaths(dir: string, paths: readonly string[]): Promise<Set<string>> {
+export async function ignoredTrackedPaths(dir: string, paths: readonly string[]): Promise<Set<string>> {
   if (!paths.length) return new Set()
   return new Promise((resolve, reject) => {
     const child = spawn('git', ['check-ignore', '--no-index', '-z', '--stdin'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })

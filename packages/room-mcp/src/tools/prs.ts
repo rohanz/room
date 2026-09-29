@@ -42,7 +42,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       if (!s.roomName.startsWith('github.com/')) return ''
       const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
       const present = presences(s).map(p => p.user.name).filter(name => name === s.me.name || nb.has(name))
-      const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workerViews.values()).map(w => w.name))
+      const leader = prLeader(present.length ? present : [s.me.name], s.room.acceptedWorkerViews().map(w => w.name))
       if (leader !== s.me.name) return ''
       const view = participantsView(s.room, s.awareness, now())
       const names = [s.me.name, ...neighbours(view, s.me.name).names()]

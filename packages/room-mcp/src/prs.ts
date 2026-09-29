@@ -174,7 +174,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; now?: numb
         lines.push(`- ${t(m.at)} ${who(m)} moved the base to \`${m.base.slice(0, 10)}\` (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary})`)
         break
       case 'note':
-        if (/^merge preview with /.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)}: ${m.text}`)
+        if (/^(?:merge|partial) preview with /.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)}: ${m.text}`)
         else if (/^done/.test(m.text)) lines.push(`- ${t(m.at)} ${who(m)} ${m.text}`)
         break
       default: break

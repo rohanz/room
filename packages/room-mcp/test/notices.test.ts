@@ -27,7 +27,7 @@ const viewStatus: Record<LocalWorker['status'], WorkerStatus> = { running: 'runn
 /** The room's view of a worker, as its lead's projector writes it. */
 const viewOf = (w: LocalWorker): WorkerView => ({
   id: w.id, tag: w.tag, name: w.name, lead: w.lead, mode: 'local', host: w.host, task: w.task, branch: w.branch,
-  status: viewStatus[w.status], run: 1, startedAt: w.startedAt, fence: 'test',
+  status: viewStatus[w.status], run: 1, startedAt: w.startedAt, fence: '1',
   ...(w.summary !== undefined ? { summary: w.summary } : {}), ...(w.finishedAt !== undefined ? { finishedAt: w.finishedAt } : {}),
   ...(w.exitCode !== undefined ? { exitCode: w.exitCode } : {}),
 })
@@ -39,6 +39,7 @@ function fixture() {
   /** Another lead's worker is only a view; the lead's own worker is also in its registry. */
   const addWorker = (x: Session, w: LocalWorker) => {
     if (w.lead === x.me.name) own.set(x, [...(own.get(x) ?? []).filter(o => o.id !== w.id), w])
+    if (!x.room.participants.has(`${w.lead}\u0000holder`)) x.room.participants.set(`${w.lead}\u0000holder`, { sessionId: 'test', epoch: 1, pid: 1, startTime: 't', executable: 'e', at: clock })
     x.room.workerViews.set(w.id, viewOf(w))
   }
   const retire = (x: Session, w: LocalWorker, archive: { summary: string; outcome: 'merged' | 'clean' }) => {
@@ -67,6 +68,16 @@ function fixture() {
 }
 
 describe('unavailable addressed recipients', () => {
+  it('M12 treats a remote terminal view from an old lead fence as stale', async () => {
+    const { s, addWorker, tools } = fixture()
+    const remote = worker({ name: 'other+state', lead: 'other', summary: 'old completion' })
+    addWorker(s, remote)
+    s.room.participants.set('other\u0000holder', { sessionId: 'new-lead', epoch: 2, pid: 1, startTime: 't', executable: 'e', at: clock })
+    const sent = await tools.room_send({ type: 'question', to: remote.name, text: 'Current status?' })
+    expect(sent).toContain('stale')
+    expect(sent).not.toContain('old completion')
+    expect(sent).toContain('questionId=')
+  })
   it('records questions to another lead\'s exited worker, and send and wait return the same one-line notice', async () => {
     const { s, addWorker, tools } = fixture()
     addWorker(s, worker({ lead: 'other' }))

@@ -38,6 +38,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const asked = resolved.level
       s.shareWarning = resolved.warning
       const policy = await s.policyStore.setRequested(asked)
+      await state.rooms?.project?.()
       const level = policy.level
       s.shareRequested = asked
       if (level !== before) await s.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })

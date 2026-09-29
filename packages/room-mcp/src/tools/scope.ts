@@ -88,6 +88,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const areas = areasOf(s).areasOf([...paths, ...manifestPaths(s.room, s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })
       await s.policyStore.declare(paths)
+      await rooms?.project?.()
       const posted = await s.post<ScopeMsg>(s.me, { type: 'scope', area, summary, paths })
       setPresence(s, { status: `on ${area}: ${summary}`, areas })
       const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`, ...posted.ok ? [] : [`scope notice ${posted.text}`]]
@@ -133,12 +134,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return theirs.some(c => myClaims.some(m => claimsOverlap(c, m)))
       }
       const groups = splitParticipants({
-        presences: ps, workers: [...s.room.workerViews.values()], retiredWorkers: s.room.retiredWorkers(),
+        presences: ps, workers: s.room.acceptedWorkerViews(), retiredWorkers: s.room.retiredWorkers(),
         scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.manifestHead.keys()],
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
       const retiredNames = new Set(s.room.retiredWorkers().map(worker => worker.name))
-      const everyone = [s.me.name, ...nb.names().filter(name => !retiredNames.has(name) || s.room.workerViewOf(name))].sort()
+      const everyone = [s.me.name, ...nb.names().filter(name => !retiredNames.has(name) || s.room.acceptedWorkerViewOf(name))].sort()
       const names = everyone.filter(inView)
       const hidden = everyone.filter(n => !inView(n))
       const activeCount = groups.active.filter(p => names.includes(p.name)).length
@@ -147,7 +148,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`participants${all ? '' : ' overlapping your work'} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? '' : 's'}` : ''}):`)
       for (const n of names) {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
-        const worker = s.room.workerViewOf(n)
+        const worker = s.room.acceptedWorkerViewOf(n)
         const own = worker && myWorkers(s).find(w => w.id === worker.id)
         const idle = p && !worker ? idleLabel(p.idleMin, s.room.openClaims().filter(c => c.by === n).length) : undefined
         const ago = idle ?? (p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own && !state.workerAlive(s, own) }) : 'offline')

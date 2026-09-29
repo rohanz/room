@@ -12,7 +12,9 @@
  * Workers' questions to the lead and their done messages stay local; the lead reads both rooms.
  */
 import { git } from '@room/roomd/git'
-import { authorizesText, defaultIgnoredPath } from '@room/roomd'
+import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } from '@room/roomd'
+import { defaultExcludedPath } from '../../roomd/src/policy.js'
+import { ignoredTrackedPaths } from '../../roomd/src/disk-scan.js'
 import * as Y from 'yjs'
 import { digestPath, formatMsg, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshot } from '@room/shared'
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg } from '@room/shared'
@@ -42,7 +44,7 @@ export interface BridgeOptions {
 /** One projected path, before the lead's policy decides whether its hash may be published. */
 interface ProjectedFact { change: 'M' | 'A' | 'D'; hash?: string; size?: number; baseHash?: string; at: number }
 
-const headIdentity = (h: ManifestHead) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, complete: h.complete, projectedBy: h.projectedBy, projectedFrom: h.projectedFrom })
+const headIdentity = (h: ManifestHead) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, textPrefixes: h.textPrefixes, complete: h.complete, projectedBy: h.projectedBy, projectedFrom: h.projectedFrom })
 const entryIdentity = (e: ManifestEntry | undefined) => e && JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence })
 
 export class Bridge {
@@ -121,11 +123,15 @@ export class Bridge {
     l.manifestHead.observe(onLocal); l.manifest.observeDeep(onLocal)
     t.bus.observe(onTeamBus); t.claims.observe(onTeamClaims)
     t.participants.observe(onTeamLead); t.manifestHead.observe(onTeamLead)
+    const onSync = (synced: boolean) => { if (synced) this.schedule() }
+    this.team.provider.on?.('sync', onSync)
+    this.local.provider.on?.('sync', onSync)
     this.unobserve.push(
       () => l.scopes.unobserve(onLocal), () => l.claims.unobserve(onLocalClaims),
       () => l.manifestHead.unobserve(onLocal), () => l.manifest.unobserveDeep(onLocal),
       () => t.bus.unobserve(onTeamBus), () => t.claims.unobserve(onTeamClaims),
       () => t.participants.unobserve(onTeamLead), () => t.manifestHead.unobserve(onTeamLead),
+      () => this.team.provider.off?.('sync', onSync), () => this.local.provider.off?.('sync', onSync),
     )
     this.tick = setInterval(() => this.schedule(), PROJECT_TICK_MS)
     this.tick.unref?.()
@@ -242,11 +248,12 @@ export class Bridge {
    * `held: 'worker'` except D; hashes only where the lead's team policy authorizes the path's text. Coverage is
    * inherited from the source, never upgraded (N2).
    */
-  private async projectWorker(record: WorkerRecord): Promise<void> {
+  private async projectWorker(record: WorkerRecord, retry = 0): Promise<void> {
     const team = this.team.room, lead = this.team.me.name
     const leadGit = participantRecord(team, lead)?.git
     const fence = this.team.daemon.fence
     const policy = this.team.policyStore.policy
+    const rules = this.team.daemon.inputs.rules
     if (!leadGit || !fence) return // no team base or live name lease: the lead will schedule another pass
     const B = leadGit.base, C = record.base
     const view = participantsView(this.local.room, this.local.awareness, Date.now())
@@ -267,18 +274,51 @@ export class Bridge {
       })
       if (!facts) complete = false
       else {
-        const salt = team.ensureRoomSalt()
-        const rules = this.team.daemon.inputs.rules
-        for (const [path, fact] of facts.carried) {
-          if (rules.roomIgnore.ignores(path) || defaultIgnoredPath(path)) { excluded.push(digestPath(salt, path)); facts.all.delete(path) }
+        const current = this.registry?.read(record.id)
+        const latestSource = snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))
+        const latestLead = participantRecord(team, lead)?.git
+        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id
+          || this.team.daemon.fence !== fence || latestLead?.base !== B || latestLead?.fence !== leadGit.fence
+          || latestSource?.head.semRev !== sourceHead?.semRev || latestSource?.head.fence !== sourceHead?.fence
+          || !latestSource?.fenceValid || current?.id !== record.id || current?.phase !== record.phase
+          || ['retiring', 'retired', 'abandoned'].includes(current.phase)) {
+          this.o.log?.(`bridge: stale projection ${record.tag}: ${JSON.stringify({ policy: this.team.policyStore.policy !== policy, rules: this.team.daemon.inputs.rules.id !== rules.id, fence: this.team.daemon.fence !== fence, base: latestLead?.base !== B, gitFence: latestLead?.fence !== leadGit.fence, semRev: latestSource?.head.semRev !== sourceHead?.semRev, sourceFence: latestSource?.head.fence !== sourceHead?.fence, sourceValid: latestSource?.fenceValid, id: current?.id !== record.id, phase: current?.phase !== record.phase })}`)
+          if (retry < 1 && current && !['retiring', 'retired', 'abandoned'].includes(current.phase)) return this.projectWorker(current, retry + 1)
+          team.doc.transact(() => this.dropProjection(record.name), this)
+          return
         }
+        const salt = team.ensureRoomSalt()
+        const ignored = await ignoredTrackedPaths(this.local.dir, [...facts.all.keys()])
+        // The Git ignore read yields too. A newer policy, source or worker phase must win.
+        if (this.stopped || this.team.policyStore.policy !== policy || this.team.daemon.inputs.rules.id !== rules.id
+          || this.team.daemon.fence !== fence || participantRecord(team, lead)?.git?.base !== B
+          || snapshot(this.local.room, record.name, participantsView(this.local.room, this.local.awareness, Date.now()))?.head.semRev !== sourceHead?.semRev
+          || this.registry?.read(record.id)?.phase !== record.phase) {
+          if (retry < 1) return this.projectWorker(this.registry?.read(record.id) ?? record, retry + 1)
+          team.doc.transact(() => this.dropProjection(record.name), this)
+          return
+        }
+        let used = 0
         for (const [path, fact] of facts.all) {
+          if (ignored.has(path) || rules.roomIgnore.ignores(path) || defaultIgnoredPath(path)
+            || defaultExcludedPath(path) || !validRepoPath(path, DISK_READ_PATH)
+            || (fact.change !== 'D' && fact.size !== undefined && (fact.size > rules.sizeCap
+              || (authorizesText(policy, path) && used + fact.size > rules.budget)))) {
+            excluded.push(digestPath(salt, path))
+            continue
+          }
+          if (fact.change !== 'D' && authorizesText(policy, path) && fact.size !== undefined) used += fact.size
           const entry: ManifestEntry = fact.change === 'D'
             ? { change: 'D', state: 'shared', at: fact.at, fence }
             : { change: fact.change, state: 'held', held: 'worker', at: fact.at, fence }
           if (authorizesText(policy, path)) {
-            if (fact.change !== 'D' && fact.hash) { entry.hash = fact.hash; if (fact.size !== undefined) entry.size = fact.size }
-            if (fact.baseHash && fact.change !== 'A') entry.baseHash = fact.baseHash
+            if (fact.change !== 'D' && fact.hash) {
+              entry.hash = fact.hash
+              if (fact.size !== undefined) entry.size = fact.size
+              if (fact.baseHash) entry.baseHash = fact.baseHash
+            } else if (fact.change === 'D' && fact.baseHash && (facts.carried.has(path) || source.entries.get(path)?.baseHash)) {
+              entry.baseHash = fact.baseHash
+            }
           }
           entries.set(path, entry)
         }
@@ -308,7 +348,13 @@ export class Bridge {
     const proj = { projectedFrom: record.id, projectedBy: lead }
     const unchanged = head.semRev === prevHead?.semRev && git.rev === prevGit?.rev
       && JSON.stringify(team.participants.get(`${record.name}\u0000proj`)) === JSON.stringify(proj)
-    if (unchanged) return
+    if (unchanged) {
+      team.doc.transact(() => {
+        if (prevMap) for (const [p, e] of entries) if (prevMap.get(p)?.at !== e.at) prevMap.set(p, e)
+        team.manifestHead.set(record.name, head)
+      }, this)
+      return
+    }
     team.doc.transact(() => {
       for (const k of [...team.manifest.keys()]) if (k.startsWith(`${record.name}\u0000`) && k !== key) team.manifest.delete(k)
       let map = team.manifest.get(key)
@@ -367,7 +413,8 @@ export class Bridge {
     }
     for (const [path, sha] of untracked) {
       if (own.has(path)) continue
-      const fact = put(path, sha, now)
+      const size = Number((await git(dir, ['cat-file', '-s', sha])).trim())
+      const fact = put(path, sha, now, size)
       if (fact) { all.set(path, fact); carried.set(path, fact) }
     }
     return { all, carried }

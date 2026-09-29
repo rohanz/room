@@ -98,7 +98,7 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
-  if (env.ROOM_REGISTRY && path.resolve(env.ROOM_REGISTRY) !== registry.root) throw new Error('this worker run was collected, discarded or superseded')
+  if (env.ROOM_REGISTRY && fs.realpathSync(path.resolve(env.ROOM_REGISTRY)) !== fs.realpathSync(registry.root)) throw new Error('this worker run was collected, discarded or superseded')
   const processInfo = probeProcess(process.pid)
   const parentInfo = probeProcess(process.ppid)
   const chain = [{ pid: process.pid, startTime: processInfo?.startTime ?? '', executable: processInfo?.executable ?? '' },
@@ -664,7 +664,7 @@ export class WorkerRegistry {
     const report = this.reports(id).find(value => value.run === n)
     const status = this.status(id)
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
-      || (status.status !== 'failed' && !report?.done)) return false
+      || (status.status !== 'failed' && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
@@ -673,7 +673,7 @@ export class WorkerRegistry {
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`
       : (answer || tail !== '(log unavailable)') ? `${status.note ?? 'exited before reporting done'}; ${answer || tail}` : status.note
-    const message = completionMessage(record, run, { ...status, note: detail }, report)
+    const message = completionMessage(record, run, { ...status, status: record.phase === 'retiring' && !record.stop && !report?.done ? 'failed' : status.status, note: detail }, report)
     if (!message) return false
     await post(message)
     await this.update(id, old => ({ ...old, runs: old.runs.map(value => value.n === n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))

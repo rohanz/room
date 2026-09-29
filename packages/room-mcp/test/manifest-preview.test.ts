@@ -9,6 +9,7 @@ import { gitShow } from '@room/roomd/git'
 import { handlers } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
 
 let root: string | undefined
 afterEach(() => { if (root) fs.rmSync(root, { recursive: true, force: true }); root = undefined })
@@ -26,16 +27,16 @@ function fixture() {
   const base = git('rev-parse', 'HEAD')
   const room = new RoomDoc()
   room.setMeta({ base, branch: 'main', repo: 'demo' })
-  room.participants.set('ben\0holder', { sessionId: 'ben-1' })
-  room.participants.set('ben\0git', { base, head: base, fence: 'ben-1', rev: 1 })
-  const head = { base, fence: 'ben-1', coverage: { kind: 'all' as const }, level: 'declared' as const,
+  room.participants.set('ben\0holder', { sessionId: 'ben-1', epoch: 1 })
+  room.participants.set('ben\0git', { base, head: base, fence: '1', rev: 1 })
+  const head = { base, fence: '1', coverage: { kind: 'all' as const }, level: 'declared' as const,
     excluded: [] as string[], rev: 1, semRev: 1, scannedAt: Date.now(), complete: true }
   room.manifestHead.set('ben', head)
   const entries = new Y.Map<any>(), texts = new Y.Map<Y.Text>()
-  room.manifest.set(manifestKey('ben', 'ben-1'), entries)
-  room.overlays.set(manifestKey('ben', 'ben-1'), texts)
+  room.manifest.set(manifestKey('ben', '1'), entries)
+  room.overlays.set(manifestKey('ben', '1'), texts)
   const session = { dir: root, room, me: { name: 'alice', kind: 'agent' }, roomName: 'local/demo/main',
-    awareness: { getStates: () => new Map() } } as unknown as Session
+    awareness: { getStates: () => new Map([[1, { user: { name: 'ben', kind: 'agent' }, sessionId: 'ben-1', at: Date.now() }]]) }, ...hubSeam(room) } as unknown as Session
   const state = { S: () => session, rooms: { all: () => [session], holding: () => session },
     others: () => ['ben'], presences: () => [], myWorkers: () => [], baseFor: () => base, now: () => Date.now(),
     readVersion: (_s: Session, pathname: string, person: string) => versionOf(snapshot(room, person, []), pathname,
@@ -46,8 +47,8 @@ function fixture() {
 
 it('keeps a hashless held file out of the combined tree and records a partial passing run', async () => {
   const { room, entries, texts, session, state } = fixture()
-  entries.set('app.py', { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: 'ben-1' })
-  entries.set('tests.txt', { change: 'M', state: 'shared', hash: gitBlobHash('tests pass\n'), size: 11, at: Date.now(), fence: 'ben-1' })
+  entries.set('app.py', { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: '1' })
+  entries.set('tests.txt', { change: 'M', state: 'shared', hash: gitBlobHash('tests pass\n'), size: 11, at: Date.now(), fence: '1' })
   texts.set('tests.txt', new Y.Text('tests pass\n'))
   const heldRead = await handlers(state).room_read({ person: 'ben', path: 'app.py' })
   expect(heldRead).toContain('outside their declared area')
@@ -59,7 +60,11 @@ it('keeps a hashless held file out of the combined tree and records a partial pa
   expect(result).toContain('outside ben\'s declared area')
   expect(result).toContain('ran on a partial tree')
   expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false, partialPassed: true })
-  expect(room.messages().filter(message => message.type === 'note' && message.text.includes('merge preview'))).toEqual([])
+  const notes = room.messages().filter(message => message.type === 'note' && message.text.includes('partial preview'))
+  expect(notes).toHaveLength(1)
+  expect(notes[0].text).toContain('app.py')
+  expect(notes[0].text).toContain('test "$(cat tests.txt)"')
+  expect(notes[0].text).toContain('partial tree')
 })
 
 it('reports anonymous exclusion and intent gaps even with no mergeable paths', async () => {

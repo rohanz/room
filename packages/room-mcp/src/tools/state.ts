@@ -80,7 +80,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const others = (s: Session): string[] => {
     const names = neighbours(participantsView(s.room, s.awareness, now()), s.me.name).names()
     const retired = new Set(s.room.retiredWorkers().map(w => w.name))
-    return names.filter(n => !retired.has(n) || s.room.workerViewOf(n)).sort()
+    return names.filter(n => !retired.has(n) || s.room.acceptedWorkerViewOf(n)).sort()
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)

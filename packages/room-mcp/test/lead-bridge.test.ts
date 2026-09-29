@@ -21,6 +21,7 @@ import { testPolicyStore } from './policy-fixture.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { workerByTag } from './registry-fixture.js'
+import { rulesFromText } from '@room/roomd/policy'
 
 let dir: string
 let base: string
@@ -83,6 +84,21 @@ function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
 }
 
 describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
+  it('M13 reads and previews the owned local worktree after its team projection appears', async () => {
+    const t = setupBridged()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
+    // Give the fake lead the same fenced base its daemon would publish, then let the bridge project.
+    ;(t.lead().daemon as unknown as { fence: string }).fence = '1'
+    ;(t.lead().daemon as unknown as { inputs: unknown }).inputs = { rules: rulesFromText('', 1 << 20, 1 << 24) }
+    t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: '1' })
+    await vi.waitFor(() => expect(t.team.a.manifestHead.has(workerId.name)).toBe(true))
+    writeFileSync(join(dir, '.room', 'workers', 'money', 'app.py'), 'x = 3\n')
+    const read = await t.leadTools.call('room_read', { person: workerId.name, path: 'app.py' })
+    expect(read).toContain('x = 3')
+    const preview = await t.leadTools.call('room_preview_merge', { person: workerId.name })
+    expect(preview).toContain('trusted local worktree')
+    await t.leadTools.call('room_leave', { force: true })
+  })
   it('keeps mirrors of running workers, releases its own claims, and drops a finished worker\'s mirror', async () => {
     const t = setupBridged()
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
