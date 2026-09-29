@@ -171,10 +171,12 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     expect(second.getArray('retiredWorkers').toArray()).toEqual([{ id: 'retiredWorkers' }])
     expect(second.getMap('workers').get('key')).toEqual({ value: 'workers' })
     expect(second.getMap('scopes').get('key')).toEqual({ value: 'scopes' })
-    for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) {
-      // Schema 2 initializes some live roots; their old contents must not survive.
+    for (const type of ['overlays', 'deleted', 'basetext', 'graphs']) {
+      // Live file text and graphs are rebuilt, even if schema 2 initializes empty roots.
       expect(second.getMap(type).has('stale')).toBe(false)
     }
+    // Registry §18 keeps offline claims in the doc when a session ends.
+    expect(second.getMap('claims').get('stale')).toBe('text')
     const url = `http://127.0.0.1:${relay.port}/memory?room=${encodeURIComponent(room)}`
     expect((await fetch(url, { method: 'DELETE' })).status).toBe(403)
     expect(fs.existsSync(memoryFile(commonDir, room))).toBe(true)

@@ -19,6 +19,7 @@ import { workerLogTail, defaultSpawner, pidAlive, pidIsOurWorker, workerProcessO
 import { reserveWorkerPort } from '../src/port-reservations.js'
 import { registerWorkers, workerByTag } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
+import { liveness } from '../src/leases.js'
 import type { WorkerRecord } from '../src/worker-status.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -562,10 +563,13 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(t.killed).toEqual([])
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
-    // This synthetic PID is absent, so the registry already observes the requested stop.
-    expect(workerByTag(dir, 'busy')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
     const registry = await registryForDir(dir)
     const busy = registry.list().find(record => record.tag === 'busy')!
+    expect(registry.exits(busy.id)).toEqual([])
+    // Registry §6 row 8 shows "stopping" while the launcher is verifiably alive;
+    // a synthetic launcher with unknown/dead identity reaches the stopped row first.
+    const expectedStatus = liveness(busy.runs.at(-1)!.launcher) === 'alive' ? 'running' : 'dismissed'
+    expect(workerByTag(dir, 'busy')).toMatchObject({ status: expectedStatus, stopReason: 'lead-session-ended' })
     t.exits[1](null)
     await vi.waitFor(() => expect(registry.status(busy.id)?.status).toBe('stopped'))
     expect(workerByTag(dir, 'finished')).toMatchObject({ status: 'done' })
