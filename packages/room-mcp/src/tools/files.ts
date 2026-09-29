@@ -16,6 +16,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
+import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -227,7 +228,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.includeOffline !== undefined && typeof a.includeOffline !== 'boolean') return 'error: includeOffline must be a boolean'
       const explicit = Array.isArray(a.people) || !!alias
       const allSessions = rooms.all()
-      const fullName = (name: string) => allSessions.flatMap(s => localWorkers(s.dir)).find(w => w.tag === name && w.lead === caller.me.name)?.name ?? name
+      const nameContext = { all: () => allSessions, presences, myWorkers: (s: Session) => [...myWorkers(s), ...localWorkers(s.dir)] }
       const presentSession = (person: string) => allSessions.find(s => presences(s).some(p => p.user.name === person))
       const present = Array.from(new Set(allSessions.flatMap(s => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter(name => presences(s).some(p => p.user.name === name)))))
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
@@ -257,18 +258,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const runningWorkers = allSessions.flatMap(s => myWorkers(s).filter(w => w.lead === caller.me.name && w.status === 'running').map(w => w.name))
       const overlapping = explicit || a.includeOffline === true ? [] : (await Promise.all(available.filter(p => present.includes(p)).map(async p => ({ person: p, yes: await overlaps(p) })))).filter(p => p.yes).map(p => p.person)
-      const people = Array.from(new Set(explicit
-        ? Array.isArray(a.people) ? (a.people as string[]).map(p => fullName(p.trim())) : [fullName(alias)]
-        : [...(a.includeOffline === true ? available : overlapping), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
+      const dropped: string[] = []
+      const requested = explicit ? Array.isArray(a.people) ? (a.people as string[]).map(p => p.trim()) : [alias] : []
+      const resolved: string[] = []
+      for (const name of requested) {
+        const result = resolveDisplayedName(name, nameContext, caller)
+        if (result.ambiguous) return `error: ${name} is ambiguous; use a full name: ${result.ambiguous.join(', ')}`
+        if (!result.name) {
+          const known = [...new Set(allSessions.flatMap(s => [...knownNames(s, presences)]))].sort()
+          return `error: nobody called ${name} is or was in this room; known names: ${known.join(', ')}`
+        }
+        if (result.name === caller.me.name) dropped.push(`you are always included; dropped ${name}`)
+        else resolved.push(result.name)
+      }
+      const people = Array.from(new Set(explicit ? resolved : [...(a.includeOffline === true ? available : overlapping), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
       const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
       const skipped = !explicit ? offlineWithFacts.filter(person => !people.includes(person)) : []
       const skippedNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
-      const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean, anchors = '') => {
+      const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean, anchors = '', applied = true) => {
         await caller.post<NoteMsg>(caller.me, {
           type: 'note', priority: 'fyi',
-          text: `partial preview with ${names.join(', ') || 'no participants'}: ${gaps.join('; ')}${anchors}${command ? `; command "${command}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
+          text: `partial preview with ${names.join(', ') || 'no participants'}: ${gaps.join('; ')}${anchors}${command ? applied
+            ? `; command "${command}" ${ranOk ? `passed on a PARTIAL tree (excluded: ${gaps.join('; ')})` : 'failed or was not run on a partial tree'}`
+            : `; command "${command}" ran on your own tree only; no peer changes applied` : '; tests not run'}; combined work not verified`,
         })
       }
       if (!people.length) {
@@ -276,18 +290,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           caller.lastPreview = { clean: false, complete: false, testsPassed: false }
           await recordPartial([], [...unavailable, ...(skippedNote ? [skippedNote] : [])])
         }
-        return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
+        return [...dropped, 'no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       }
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
-      const anchorsFor = (result: Awaited<ReturnType<typeof buildCombinedTree>>) => result.includedParticipants.flatMap(({ person, base, gitRecord, liveShared }) => {
+      const anchorsFor = async (result: Awaited<ReturnType<typeof buildCombinedTree>>) => (await Promise.all(result.includedParticipants.map(async ({ person, base, gitRecord, liveShared }) => {
         // Only name a commit already published by this participant's accepted git record.
         if (base === result.callerBase || !gitRecord || gitRecord.base !== base) return []
-        const location = gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base
-          ? ` (pushed to ${gitRecord.upstream})`
-          : gitRecord.branch ? ` (on ${gitRecord.branch})` : ''
+        let pushed = false
+        if (gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base) {
+          try { pushed = (await git(caller.dir, ['rev-parse', '--verify', `refs/remotes/${gitRecord.upstream}`])).trim() === base }
+          catch { /* A starting anchor alone cannot prove this participant pushed it. */ }
+        }
+        const location = pushed ? ` (pushed to ${gitRecord.upstream})` : ''
         const live = liveShared ? ' + live changes' : ''
         return [`${person} at ${base.slice(0, 10)}${location}${live}`]
-      })
+      }))).flat()
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
         const ownLocalWorker = session.local && localWorkers(session.dir, record => record.name === person)[0]
@@ -300,23 +317,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
         const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
-        const anchors = anchorsFor(result)
+        const anchors = await anchorsFor(result)
         const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
         const complete = result.complete && unavailable.length === 0
-        const gapLines = [...gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`), ...unavailable]
+        const gapLines = [...gaps.map(gap => gap.path ? `${gap.path}: ${gap.person}'s version not included (${gap.why})` : `${gap.person}: ${gap.why}`), ...unavailable]
         if (!paths.length && !result.callerOnly && !run) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
           if (!complete) await recordPartial(people, gapLines, '', undefined, anchorNote)
-          return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, ...(anchors.length ? [`included ${anchors.join(', ')}`] : []), skippedNote].filter(Boolean).join('\n')
+          return [...dropped, ...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, ...(anchors.length ? [`included ${anchors.join(', ')}`] : []), skippedNote].filter(Boolean).join('\n')
         }
-        out.unshift(...missingNotes)
+        out.unshift(...dropped, ...missingNotes)
         if (skippedNote) out.push(skippedNote)
         if (!complete) out.push(`PARTIAL preview: ${gapLines.join('; ')}; the combined code was NOT fully checked`)
         for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
         out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
         if (anchors.length) out.push(`included ${anchors.join(', ')}`)
         if (noTestsNote) out.push(noTestsNote)
+        const appliedFromOthers = [...result.owners.values()].some(owners => owners.some(owner => owner !== caller.me.name))
         let ranOk = !run
         if (run) {
           if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
@@ -336,7 +354,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
             }
-            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
+            const verdict = await runInMergedTree(caller, ancestor, merged, run, modes)
+            ranOk = verdict.passed
+            const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
+              : !appliedFromOthers ? '; passed on your own tree only' : ''
+            out.push(verdict.passed && qualifier ? verdict.text.replace(/tests: PASSED( \(exit 0\))?/, match => match + qualifier) : verdict.text)
+            if (!appliedFromOthers) out.push(`no changes from ${people.join(', ')} to apply; ran the check on your own tree only`)
             if (!complete) out.push('Tests ran on a partial tree; this does not verify the combined work')
           }
         }
@@ -344,11 +367,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) }
           return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
         }
-        caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk : false,
-          ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
-        if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote)
+        caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
+          ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) }
+        if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote, appliedFromOthers)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        if (complete && !hardCount && ranOk && appliedFromOthers) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return previewPhase('collect', () => out.join('\n'))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

@@ -1,0 +1,112 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import * as Y from 'yjs'
+import { afterEach, expect, it } from 'vitest'
+import { RoomDoc, digestPath, gitBlobHash, manifestKey, snapshot, versionOf } from '@room/shared'
+import { gitShow } from '@room/roomd/git'
+import { handlers } from '../src/tools/files.js'
+import type { HandlerState } from '../src/tools/context.js'
+import type { Session } from '../src/session.js'
+import { hubSeam } from './fixtures/hub.js'
+
+let root: string | undefined
+afterEach(() => { if (root) fs.rmSync(root, { recursive: true, force: true }); root = undefined })
+
+function fixture() {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-names-'))
+  const git = (...args: string[]) => execFileSync('git', ['-C', root!, ...args], { encoding: 'utf8' }).trim()
+  git('init', '-q'); git('config', 'user.name', 'Ana'); git('config', 'user.email', 'ana@example.test')
+  fs.writeFileSync(path.join(root, 'app.py'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const base = git('rev-parse', 'HEAD')
+  const room = new RoomDoc(); room.ensureRoomSalt(); room.setMeta({ base, branch: 'main', repo: 'demo' })
+  const add = (person: string, state: 'shared' | 'held', content = '') => {
+    room.participants.set(`${person}\0holder`, { sessionId: `${person}-1`, epoch: 1 })
+    room.participants.set(`${person}\0git`, { base, head: base, fence: '1', rev: 1 })
+    room.manifestHead.set(person, { base, fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: Date.now(), complete: true })
+    const entries = new Y.Map<any>(), texts = new Y.Map<Y.Text>()
+    entries.set('app.py', state === 'shared'
+      ? { change: 'M', state, hash: gitBlobHash(content), size: Buffer.byteLength(content), at: 1, fence: '1' }
+      : { change: 'M', state, held: 'scope', at: 1, fence: '1' })
+    if (state === 'shared') texts.set('app.py', new Y.Text(content))
+    room.manifest.set(manifestKey(person, '1'), entries)
+    room.overlays.set(manifestKey(person, '1'), texts)
+  }
+  const session = { dir: root, room, me: { name: 'ana', kind: 'agent' }, roomName: 'local/demo/main',
+    awareness: { getStates: () => new Map([[1, { user: { name: 'ben', kind: 'agent' }, sessionId: 'ben-1', at: Date.now() }]]) }, ...hubSeam(room) } as unknown as Session
+  const state = { S: () => session, rooms: { all: () => [session], holding: () => session },
+    others: () => ['ben', 'chris'], presences: () => [{ user: { name: 'ben', kind: 'agent' } }],
+    myWorkers: () => [], baseFor: () => base, now: () => Date.now(),
+    readVersion: (_s: Session, pathname: string, person: string) => versionOf(snapshot(room, person, []), pathname,
+      { gitAt: (sha, relpath) => gitShow(root!, sha, relpath) }),
+  } as unknown as HandlerState
+  return { room, session, state, add }
+}
+
+it('drops the caller display name and resolves a peer display name before building', async () => {
+  const { session, state, add } = fixture()
+  add('ben', 'shared', 'ben changed\n')
+  const result = await handlers(state).room_preview_merge({ people: ['ANA’S AGENT', 'BEN’S AGENT'], run: 'test "$(cat app.py)" = "ben changed" && echo "1 passed"' })
+  expect(result).toContain('you are always included; dropped ANA’S AGENT')
+  expect(result).toContain('final combined tree: 1 path(s) applied')
+  expect(result).not.toContain('ana\'s agent: no manifest record')
+  expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
+})
+
+it('refuses an unknown explicit name before running a check', async () => {
+  const { room, session, state, add } = fixture()
+  add('ben', 'shared', 'ben changed\n')
+  const marker = path.join(root!, 'check-ran')
+  const result = await handlers(state).room_preview_merge({ people: ['ben', 'ghost'], run: `touch '${marker}'; echo '1 passed'` })
+  expect(result).toContain('error: nobody called ghost is or was in this room; known names:')
+  expect(fs.existsSync(marker)).toBe(false)
+  expect(session.lastPreview).toBeUndefined()
+  expect(room.messages().some(m => m.type === 'note' && m.text.includes('merge preview'))).toBe(false)
+})
+
+it('refuses an ambiguous display name and lists the candidates', async () => {
+  const { room, state, add } = fixture()
+  add('Ben', 'shared', 'upper\n')
+  add('ben', 'shared', 'lower\n')
+  room.setScope('Ben', { area: 'test', summary: 'upper', paths: ['app.py'], byKind: 'agent' })
+  room.setScope('ben', { area: 'test', summary: 'lower', paths: ['app.py'], byKind: 'agent' })
+  const result = await handlers(state).room_preview_merge({ person: 'BEN’S AGENT', run: 'echo "1 passed"' })
+  expect(result).toContain('error: BEN’S AGENT is ambiguous; use a full name: Ben, ben')
+  expect(result).not.toContain('final combined tree')
+})
+
+it('keeps another participant version when one version is held', async () => {
+  const { session, state, add } = fixture()
+  add('ben', 'held')
+  add('chris', 'shared', 'chris changed\n')
+  const result = await handlers(state).room_preview_merge({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
+  expect(result).toContain('final combined tree: 1 path(s) applied')
+  expect(result).toContain("app.py: ben's version not included")
+  expect(result).toContain('passed on a PARTIAL tree')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false, partialPassed: true })
+})
+
+it('keeps a shared version when another participant excluded the path', async () => {
+  const { room, session, state, add } = fixture()
+  add('ben', 'held')
+  add('chris', 'shared', 'chris changed\n')
+  room.manifest.get(manifestKey('ben', '1'))?.delete('app.py')
+  room.manifestHead.set('ben', { ...room.manifestHead.get('ben')!, excluded: [digestPath(room.ensureRoomSalt(), 'app.py')], semRev: 2 })
+  const result = await handlers(state).room_preview_merge({ people: ['ben', 'chris'], run: 'test "$(cat app.py)" = "chris changed" && echo "1 passed"' })
+  expect(result).toContain('final combined tree: 1 path(s) applied')
+  expect(result).toContain("app.py: ben's version not included")
+  expect(result).toContain('passed on a PARTIAL tree')
+  expect(session.lastPreview).toMatchObject({ complete: false, testsPassed: false, partialPassed: true })
+})
+
+it('does not endorse a passing check on the caller tree when no peer path was applied', async () => {
+  const { room, session, state, add } = fixture()
+  add('ben', 'held')
+  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'echo "1 passed"' })
+  expect(result).toContain('no changes from ben to apply; ran the check on your own tree only')
+  expect(result).not.toContain('merge preview with ben:')
+  expect(session.lastPreview).toMatchObject({ testsPassed: false })
+  expect(room.messages().some(m => m.type === 'note' && m.text.startsWith('merge preview with ben'))).toBe(false)
+})

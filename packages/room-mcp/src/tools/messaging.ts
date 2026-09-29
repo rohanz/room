@@ -1,9 +1,10 @@
-import { displayName, formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
+import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
+import { knownNames, resolveDisplayedName } from './names.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 const WAIT_DEFAULT = 30_000
@@ -43,32 +44,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const offline = (s: Session) => !!s.closed || !s.provider.synced || (s.provider as { wsconnected?: boolean }).wsconnected === false
   const unavailableQuestions = new Map<string, string>()
   const alias = (s: Session, name: string): string => s.room.doc.getMap<string>('aliases').get(name) ?? name
-  const knownNames = (s: Session): Set<string> => new Set([
-    s.me.name, ...presences(s).map(p => p.user.name), ...s.room.colors.keys(), ...s.room.scopes.keys(), ...s.room.manifestHead.keys(),
-    ...s.room.openClaims().map(c => c.by), ...Array.from(s.room.workerViews.values(), w => w.name),
-    ...s.room.retiredWorkers().map(w => w.name), ...s.room.messages().map(m => m.from),
-    ...Array.from(s.room.mail.values(), m => m.from),
-    ...Array.from(s.room.doc.getMap<{ placeholder: string }>('unresolved').values(), value => value.placeholder),
-    ...s.room.doc.getMap<string>('aliases').values(),
-  ].filter(n => !isPrName(n)))
-  const addressKey = (name: string) => name.replace(/\u2019/g, "'").toLocaleLowerCase()
-  const resolveDisplayedName = (requested: string): { name?: string; ambiguous?: string[] } => {
-    if (rooms.all().some(room => knownNames(room).has(requested))) return { name: requested }
-    const candidates = new Set<string>()
-    for (const room of rooms.all()) {
-      for (const presence of presences(room)) {
-        if (addressKey(displayName(presence.user)) === addressKey(requested)) candidates.add(presence.user.name)
-      }
-      for (const scope of room.room.allScopes()) {
-        if (addressKey(displayName({ name: scope.by, kind: scope.byKind })) === addressKey(requested)) candidates.add(scope.by)
-      }
-      for (const claim of room.room.openClaims()) {
-        if (addressKey(displayName({ name: claim.by, kind: claim.byKind })) === addressKey(requested)) candidates.add(claim.by)
-      }
-    }
-    const names = [...candidates].sort()
-    return names.length > 1 ? { ambiguous: names } : { name: names[0] }
-  }
+  const names = { all: () => rooms.all(), presences, myWorkers }
+  const known = (s: Session) => knownNames(s, presences)
   const recipientNotice = (s: Session, name: string): { text: string; terminal: boolean } | undefined => {
     const present = presences(s).some(p => p.user.name === name)
     // My own worker from my registry; anyone else's from its lead's view (registry §14).
@@ -93,10 +70,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     }
     if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
-    const known = knownNames(s)
-    if (known.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false }
+    const roomNames = known(s)
+    if (roomNames.has(name)) return { text: `${name} is offline; it will see this when it returns`, terminal: false }
     if (offline(s)) return undefined // A disconnected room cannot establish that a name is unknown.
-    return { text: `nobody called ${name} is or was in this room; participants: ${[...known].sort().join(', ')}`, terminal: true }
+    return { text: `nobody called ${name} is or was in this room; participants: ${[...roomNames].sort().join(', ')}`, terminal: true }
   }
   const unavailableQuestion = (s: Session, questionId: string): string | undefined => {
     const cached = unavailableQuestions.get(questionId)
@@ -120,15 +97,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const sendType = repliedNote ? 'note' : a.type
       // An explicit recipient must match the asker; without one, infer it from the question.
       const requestedToRaw = typeof a.to === 'string' && a.to ? a.to : sendType === 'answer' ? question?.from : repliedNote?.from
-      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw) : undefined
+      const resolvedDisplay = requestedToRaw ? resolveDisplayedName(requestedToRaw, names, lead) : undefined
       if (resolvedDisplay?.ambiguous) return `error: ${requestedToRaw} is ambiguous; use a full name: ${resolvedDisplay.ambiguous.join(', ')}`
       const requestedTo = resolvedDisplay?.name ?? requestedToRaw
       // A reply to a worker's question, or a message to a worker, belongs in the workers room.
       const wsr = rooms.workers()
       const workerMatches = requestedTo ? rooms.all().flatMap(room => myWorkers(room)
-        .filter(w => w.tag === requestedTo).map(worker => ({ room, worker }))) : []
+        .filter(w => w.tag === requestedTo || w.name === requestedTo).map(worker => ({ room, worker }))) : []
       const retiredMatches = requestedTo && !workerMatches.length ? rooms.all().flatMap(room => room.room.retiredWorkers()
-        .filter(w => w.tag === requestedTo && w.lead === room.me.name).map(worker => ({ room, worker }))) : []
+        .filter(w => (w.tag === requestedTo || w.name === requestedTo) && w.lead === room.me.name).map(worker => ({ room, worker }))) : []
       const matches = workerMatches.length ? workerMatches : retiredMatches
       if (matches.length > 1 && new Set(matches.map(x => x.room)).size > 1) {
         const names = [...new Set(matches.map(x => x.worker.name))].sort()
@@ -175,8 +152,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const text = typeof a.text === 'string' && a.text ? a.text : typeof a.message === 'string' ? a.message : ''
       if (!text) return 'error: text is required'
       if (to === s.me.name) return `error: you cannot message yourself. To ask ${s.me.name} (your human), say it in your reply.`
-      if (to && !rooms.all().some(room => knownNames(room).has(to))) {
-        const valid = [...new Set(rooms.all().flatMap(room => [...knownNames(room)]))].sort()
+      if (to && !rooms.all().some(room => known(room).has(to))) {
+        const valid = [...new Set(rooms.all().flatMap(room => [...known(room)]))].sort()
         return `error: nobody called ${to} is or was in this room; participants: ${valid.join(', ')}`
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`

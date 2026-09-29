@@ -225,7 +225,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         ? version.entry.held === 'scope' ? `changed by ${person}, outside ${person}'s declared area` : `changed by ${person}, text not shared (${version.why})`
         : version.kind === 'excluded' ? `changed by ${person}, excluded by their rules` : `${person}'s version unknown: ${version.detail}`
       gaps.push({ person, path: p, why })
-      pathSet.delete(p)
+      // Only this participant's version is unavailable; keep other versions.
     }
   }
   // A path only the caller changed cannot conflict and keeps the caller's text. Skipping it avoids reading

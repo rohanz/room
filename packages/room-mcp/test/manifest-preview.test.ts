@@ -94,22 +94,15 @@ it('yields during the path-safety pass before checking the last path', async () 
   } finally { spy.mockRestore(); registryReads.mockRestore() }
 })
 
-it('yields during the remote-gap pass even when every path is held', async () => {
+it('retains held paths as partial gaps instead of silently dropping them', async () => {
   const { entries, state } = fixture()
   for (let i = 0; i < 96; i++) entries.set(`held-${String(i).padStart(3, '0')}`, {
     change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
   })
-  const remove = Set.prototype.delete
-  let turned = false, sawTurn = false
-  const spy = vi.spyOn(Set.prototype, 'delete').mockImplementation(function(this: Set<unknown>, value: unknown) {
-    if (value === 'held-000') setImmediate(() => { turned = true })
-    if (value === 'held-095') sawTurn = turned
-    return remove.call(this, value)
-  })
-  try {
-    await handlers(state).room_preview_merge({ person: 'ben' })
-    expect(sawTurn).toBe(true)
-  } finally { spy.mockRestore() }
+  const result = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(result).toContain('PARTIAL preview')
+  expect(result).toContain('final combined tree: 96 path(s) applied')
+  expect(result).toContain("held-095: ben's version not included")
 })
 
 it('services an event-loop turn between merged file materialisations', async () => {
@@ -199,7 +192,7 @@ it('keeps a hashless held file out of the combined tree and records a partial pa
   expect(notes).toHaveLength(1)
   expect(notes[0].text).toContain('app.py')
   expect(notes[0].text).toContain('test "$(cat tests.txt)"')
-  expect(notes[0].text).toContain('partial tree')
+  expect(notes[0].text).toContain('passed on a PARTIAL tree')
 })
 
 it('reports anonymous exclusion and intent gaps even with no mergeable paths', async () => {
@@ -296,9 +289,11 @@ it('names the accepted base after a combined-tree retry', async () => {
   const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
   expect(reads).toBeGreaterThanOrEqual(3)
   expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
-  expect(result).toContain(`ben at ${c2.slice(0, 10)} (pushed to origin/r17-b)`)
+  expect(result).toContain(`ben at ${c2.slice(0, 10)}`)
+  expect(result).not.toContain('(pushed to origin/r17-b)')
   expect(result).not.toContain(`ben at ${c1.slice(0, 10)}`)
-  expect(note).toContain(`ben at ${c2.slice(0, 10)} (pushed to origin/r17-b)`)
+  expect(note).toContain(`ben at ${c2.slice(0, 10)}`)
+  expect(note).not.toContain('(pushed to origin/r17-b)')
   expect(note).not.toContain(`ben at ${c1.slice(0, 10)}`)
 })
 
