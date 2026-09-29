@@ -45848,10 +45848,12 @@ var ConflictSlots = class {
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner) {
     for (const [key2, slot] of this.owned(owner)) {
+      if (slot.kind === "contract" && slot.subject === "*") continue;
       if (slot.settled === "conflict" || slot.settled === "possible" || slot.settled === "clean" && slot.epoch > 0) await this.postNotice(key2, slot);
     }
   }
   async postNotice(key2, slot) {
+    if (slot.kind === "contract" && slot.subject === "*") return;
     const current = () => this.valid() && this.map.get(key2) === slot && (typeof this.fence === "function" ? this.fence() : this.fence) === slot.fence;
     if (!current()) return;
     const id3 = noticeId(key2, slot.epoch) + (slot.settled === "clean" ? ":clean" : "");
@@ -45934,30 +45936,28 @@ var ConflictSet = class {
     for (const other of others) {
       const head = room.manifestHead.get(other), graph = room.graphs.get(other);
       const snap = snapshot(room, other, participantsView(room, this.team.awareness, Date.now()));
-      const entries = head && room.manifest.get(manifestKey(other, head.fence));
       const stale = !head?.complete || head.coverage.kind !== "all" || !snap?.fenceValid || head.base !== snap.record?.git?.base || !graph || graph.status !== "ready" || graph.sourceFence !== head.fence || graph.sourceRev !== head.rev;
-      const hidden = this.slots.owned(this.owner).some(([, slot]) => slot.kind === "contract" && slot.other === other && (entries?.get(slot.path)?.state === "held" || !!head && !!room.roomSalt && head.excluded.includes(digestPath(room.roomSalt, slot.path))));
-      if (stale || hidden) this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", snap);
+      this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", snap, stale);
     }
   }
-  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
-  unknownOrRedactContracts(other, why, snap) {
+  contractPathReadable(snap, path45) {
     const room = this.team.room;
     const head = snap?.head;
-    const entries = head && room.manifest.get(manifestKey(other, head.fence));
+    if (!snap?.fenceValid || !head?.complete || head.coverage.kind !== "all" || head.base !== snap.record?.git?.base || !room.roomSalt) return false;
+    const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45));
+    const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path45);
+    return textAllowed && (!entry || entry.state === "shared" && !!entry.hash && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path45));
+  }
+  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
+  unknownOrRedactContracts(other, why, snap, markReadableUnknown = true) {
     const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
     const readable = /* @__PURE__ */ new Set(), withdrawn = /* @__PURE__ */ new Set();
-    const validCoverage = !!snap?.fenceValid && !!head?.complete && head.coverage.kind === "all" && head.base === snap.record?.git?.base && !!room.roomSalt;
     for (const [, slot] of slots) {
       const path45 = slot.path;
-      const entry = entries?.get(path45);
-      const textAllowed = head?.level === "full" || head?.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45));
-      const currentEntry = !entry || entry.state === "shared" && !!entry.hash && entry.fence === head?.fence;
-      if (validCoverage && textAllowed && currentEntry && !head.excluded.includes(digestPath(room.roomSalt, path45)))
-        readable.add(path45);
+      if (this.contractPathReadable(snap, path45)) readable.add(path45);
       else withdrawn.add(path45);
     }
-    if (readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable);
+    if (markReadableUnknown && readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable);
     if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn);
   }
   stop() {
@@ -46242,6 +46242,7 @@ var ConflictSet = class {
     this.log(`conflicts ${this.owner}: reconciled ${reason}`);
   }
   async contracts(other, myPaths, mine, theirs) {
+    this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", theirs, false);
     const graph = this.team.room.graphs.get(other);
     const carried = this.carriedFrom?.(this.owner);
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline);
@@ -46301,6 +46302,7 @@ var ConflictSet = class {
     }
     for (const change of changes) {
       if (change.kind === "add") continue;
+      if (!this.contractPathReadable(theirs, change.path)) continue;
       const provider = await this.read(theirs, change.path);
       if (asText(provider) === void 0 || !carriedProvider && provider.kind === "base") {
         this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
@@ -46346,6 +46348,10 @@ var ConflictSet = class {
     }
     for (const [key2, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== "contract" || slot.other !== other || live.has(key2)) continue;
+      if (!this.contractPathReadable(theirs, slot.path)) {
+        this.slots.redactContracts(this.owner, other, "provider version is not readable", /* @__PURE__ */ new Set([slot.path]));
+        continue;
+      }
       if (slot.subject === "*" && [...live].some((liveKey) => liveKey.startsWith(slotKey(this.owner, "contract", other, slot.path, "")))) {
         this.slots.drop(key2);
         continue;
