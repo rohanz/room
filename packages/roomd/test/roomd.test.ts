@@ -500,12 +500,11 @@ describe('roomd v2 push-only overlays', () => {
     expect(manifestPaths(daemon.roomDoc, 'Dirty')).toEqual(['delete.py', 'keep.py', 'new.py'])
   })
 
-  it('drops stale overlay and deleted paths when the same person restarts on a clean clone', async () => {
+  it('drops stale overlay paths when the same person restarts on a clean clone', async () => {
     const dir = await makeRepo({ 'keep.py': 'base\n' })
     const roomUrl = room()
     const peer = await start({ room: roomUrl, dir: await cloneRepo(dir), name: 'Peer' })
     peer.roomDoc.setOverlay('Alice', 'ghost.py', 'stale\n')
-    peer.roomDoc.markDeleted('Alice', 'phantom.py')
     const logs: string[] = []
 
     const alice = await start({ room: roomUrl, dir, name: 'Alice', log: line => logs.push(line) })

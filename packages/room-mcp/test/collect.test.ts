@@ -9,7 +9,7 @@ import { handlers as fileHandlers, linkSharedDirs, materializeMergedFile } from 
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 import { signalWorker, pidAlive } from '../src/worker-process.js'
-import { RoomDoc, splitParticipants, workerLines } from '@room/shared'
+import { RoomDoc, manifestPaths, splitParticipants, workerLines } from '@room/shared'
 import * as Y from 'yjs'
 import { git as roomGit } from '@room/roomd/git'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
@@ -111,7 +111,7 @@ describe('room_collect', () => {
 
   function expectRetired(t: ReturnType<typeof setup>) {
     const room = t.s.room, name = t.w.name
-    expect(room.changedPaths(name)).toEqual([])
+    expect(manifestPaths(room, name)).toEqual([])
     expect(room.overlays.has(name)).toBe(false)
     expect(room.scopes.has(name)).toBe(false)
     expect(room.openClaims().filter(c => c.by === name)).toEqual([])

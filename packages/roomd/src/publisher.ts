@@ -41,6 +41,10 @@ export interface PreparedPublication {
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
+/** Publisher-only cleanup of text from one fenced incarnation. Held manifest entries
+ * have no text and are intentionally outside this internal enumeration. */
+const incarnationOverlayPaths = (room: RoomDoc, incarnation: string): string[] =>
+  [...room.overlays.get(incarnation)?.keys() ?? []]
 
 /** Withdraw one observed publisher incarnation during a same-worktree handoff. Never touches a newer head. */
 export function withdrawFormerPublisher(room: RoomDoc, name: string, fence: string, successor: string): void {
@@ -130,7 +134,7 @@ export class Publisher {
       publishManifest({ room: host.roomDoc, name: host.name, fence, base: next.head, level: next.policy.level,
         prefixes: next.policy.textPrefixes, complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...(next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? 'another session' }) }, facts)
-      for (const path of host.roomDoc.changedPaths(incarnation)) {
+      for (const path of incarnationOverlayPaths(host.roomDoc, incarnation)) {
         if (facts.some(f => f.path === path && f.text !== undefined || f.path === path && f.change === 'D' && !f.excluded)) continue
         host.roomDoc.clearOverlay(incarnation, path, host)
       }
@@ -203,7 +207,7 @@ export class Publisher {
     host.roomDoc.doc.transact(() => {
       publishManifest({ room: host.roomDoc, name: host.name, fence, base: inputs.head, level: inputs.policy.level,
         prefixes: inputs.policy.textPrefixes, complete, ...(inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? 'another session' }) }, prepared.facts)
-      const old = new Set(host.roomDoc.changedPaths(incarnation))
+      const old = new Set(incarnationOverlayPaths(host.roomDoc, incarnation))
       for (const p of old) {
         if (desired.entries.get(p)?.state === 'shared') continue
         host.roomDoc.clearOverlay(incarnation, p, host)

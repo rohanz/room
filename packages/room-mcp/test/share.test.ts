@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, manifestPaths } from '@room/shared'
 import type { Identity } from '@room/shared'
 import type { ShareLevel } from '@room/roomd'
 import { createTools } from '../src/tools.js'
@@ -102,10 +102,10 @@ describe('room_share', () => {
     t.room.setScope({ by: 'Rohan', byKind: 'agent', area: 'api', summary: 's', paths: ['app.py'] })
     const out = t.body(await t.tools.call('room_share', { level: 'intent' }))
     expect(out).toContain('changed sharing full -> sharing: only your plans, no file text')
-    expect(t.room.changedPaths('Rohan')).toEqual([])
+    expect(manifestPaths(t.room, 'Rohan')).toEqual([])
     expect(t.room.lastMessages(1)[0]).toMatchObject({ type: 'note', text: 'now sharing only your plans, no file text' })
     expect(t.body(await t.tools.call('room_share', { level: 'full' }))).toBe('changed sharing intent -> sharing: the full text of files you change')
-    expect(t.room.changedPaths('Rohan')).toEqual(['app.py'])
+    expect(manifestPaths(t.room, 'Rohan')).toEqual(['app.py'])
   })
 
   it('stores an explicit narrower level in the policy store', async () => {
@@ -118,7 +118,7 @@ describe('room_share', () => {
     const t = setup()
     expect(t.body(await t.tools.call('room_share', { level: 'everything' }))).toContain("level='everything' is not a level; sharing plans only")
     expect(t.daemon.share).toBe('intent')
-    expect(t.room.changedPaths('Rohan')).toEqual([])
+    expect(manifestPaths(t.room, 'Rohan')).toEqual([])
     expect(t.body(await t.tools.call('room_share', { level: 'declared' }))).toContain('no scope declared yet')
   })
 

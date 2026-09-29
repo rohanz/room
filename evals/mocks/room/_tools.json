@@ -185,13 +185,17 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Write room history to a Markdown ledger.",
+      "description": "Export current ledger or room=<legacy> archive to Markdown.",
       "inputSchema": {
         "type": "object",
         "properties": {
+          "room": {
+            "type": "string",
+            "description": "legacy branch room"
+          },
           "path": {
             "type": "string",
-            "description": "output; default .room/ledger/<room>-<timestamp>.md"
+            "description": "output Markdown path"
           }
         }
       }

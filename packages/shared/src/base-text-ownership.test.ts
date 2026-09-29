@@ -146,7 +146,7 @@ describe('participant-owned base texts', () => {
     b.clearOverlays('Gone')
     sync(a, b)
     for (const room of [a, b]) {
-      expect(room.changedPaths('Gone')).toEqual([])
+      expect(room.overlays.has('Gone')).toBe(false)
       expect(room.baseText('Gone', 'sha', 'file.py')).toBeUndefined()
       expect(room.ownedBaseTexts.size).toBe(0)
     }

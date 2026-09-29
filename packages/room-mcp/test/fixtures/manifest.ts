@@ -74,7 +74,6 @@ export function deleteFixture(room: RoomDoc, name: string, path: string, options
     room.clearOverlay(key, path)
     room.manifestHead.set(name, { base, fence, coverage: { kind: 'all' }, level: 'full', excluded: [], rev: (prior?.rev ?? 0) + 1,
       semRev: (prior?.semRev ?? 0) + 1, scannedAt: Date.now(), complete: true })
-    room.markDeleted(name, path)
   })
 }
 
@@ -96,5 +95,4 @@ export function clearFixture(room: RoomDoc, name: string, path: string): void {
     room.manifestHead.set(name, { ...prior, rev: prior.rev + 1, semRev: prior.semRev + 1, scannedAt: Date.now() })
   })
   room.clearOverlay(name, path)
-  room.unmarkDeleted(name, path)
 }

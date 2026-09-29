@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { manifestPaths } from '@room/shared'
 import { gitCommonDir } from '@room/roomd'
 import type { Session } from '../src/session.js'
 import { localWorkers, registryForDir, type WorkerRegistry } from '../src/worker-registry.js'
@@ -115,7 +116,7 @@ export async function finishWorker(session: Session, tag: string, facts: Partial
     { run: run.n, code: facts.exitCode ?? (status === 'failed' ? 1 : 0), at: facts.finishedAt ?? Date.now(), witnessed: true })
   if (status === 'done' && !registry.reports(record.id).some(report => report.done)) {
     await registry.writeReport(record.id, { run: run.n, nonce: run.nonce, chain: [], joinedAt: record.createdAt,
-      done: { at: facts.finishedAt ?? Date.now(), summary: facts.summary ?? '', changed: session.room.changedPaths(record.name) } })
+      done: { at: facts.finishedAt ?? Date.now(), summary: facts.summary ?? '', changed: manifestPaths(session.room, record.name) } })
   }
   // A dismissal without a stated reason is the lead's own discard (0.16's `dismissedAt`).
   if (status === 'dismissed' && !record.stop) await registry.beginStop(record.id, facts.stopReason ?? 'discarded')

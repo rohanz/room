@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, highestSeq, manifestKey, messageEndsWait, participantRecord } from '@room/shared'
+import { RoomDoc, gitBlobHash, highestSeq, manifestKey, manifestPaths, messageEndsWait, participantRecord } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, syntheticSessionId, type Session } from '../src/session.js'
@@ -506,8 +506,8 @@ describe('one login, two agents', () => {
     const t1 = mk(a, me1, aw1), t2 = mk(b, me2, aw2)
     // awareness is not carried by doc updates; hand the codex agent's presence to the first agent as a server would
     applyAwarenessUpdate(aw1, encodeAwarenessUpdate(aw2, [b.doc.clientID]), 'test')
-    expect(a.changedPaths('rohanz')).toEqual(['app.py'])
-    expect(a.changedPaths('rohanz+codex')).toEqual(['session.py'])
+    expect(manifestPaths(a, 'rohanz')).toEqual(['app.py'])
+    expect(manifestPaths(a, 'rohanz+codex')).toEqual(['session.py'])
     const state = await t1.call('room_state', {})
     expect(state).toContain("you: rohanz's agent in r")
     expect(state).toContain('1 others: rohanz+codex (all:true for detail)')

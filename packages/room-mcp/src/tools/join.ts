@@ -15,7 +15,7 @@ import type { Ledger } from '../ledger.js'
 import type { ShareLevel } from '@room/roomd'
 import { resolveConfig, sharingDescription, sharingHumanChoices } from '../config.js'
 import { handlers as shareHandlers, publisherLine } from './share.js'
-import { exportRoomLedger } from '../prs.js'
+import { exportArchiveLedger, exportRoomLedger } from '../prs.js'
 import { decideLeave, workerRealState } from '../worker-state.js'
 
 export const defs: ToolDef[] = [
@@ -29,8 +29,8 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
   { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'On explicit request, export history then delete the repository room for everyone on all branches, or local memory. Leaves clone files intact.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } },
-  { name: 'room_export', annotations: RO, description: 'Write room history to a Markdown ledger.',
-    inputSchema: { type: 'object', properties: { path: str('output; default .room/ledger/<room>-<timestamp>.md') } } }
+  { name: 'room_export', annotations: RO, description: 'Export current ledger or room=<legacy> archive to Markdown.',
+    inputSchema: { type: 'object', properties: { room: str('legacy branch room'), path: str('output Markdown path') } } }
 ]
 
 const disclosures = new WeakMap<Session, { pending?: string; level?: ShareLevel; prepared?: Promise<void>; delivered?: boolean }>()
@@ -185,7 +185,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }) } catch (e) {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
         if (!(e instanceof NoRoom)) throw e
-        const repo = e.roomName
+        const canonical = (await deriveRoomName(dir)).repo ?? e.roomName
+        // A stale server may report the old branch key. GitHub repository names
+        // have exactly owner/repo after the host; never offer to open a branch.
+        const repo = canonical.startsWith('github.com/') ? canonical.split('/').slice(1, 3).join('/') : canonical
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.`
       }
       if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }
@@ -289,6 +292,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_export(a) {
       const s = S()
+      if (typeof a.room === 'string' && a.room) {
+        try {
+          const archive = await exportArchiveLedger(s, a.room, { path: typeof a.path === 'string' && a.path ? a.path : undefined, now: now() })
+          return `exported archive ${a.room} to ${archive.path} (${archive.lines} lines)`
+        } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+      }
       const ledger = exportRoomLedger(s, { path: typeof a.path === 'string' && a.path ? a.path : undefined, now: now() })
       return `exported room ledger to ${ledger.path} (${ledger.lines} lines)`
     }

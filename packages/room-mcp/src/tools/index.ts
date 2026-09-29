@@ -161,6 +161,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const s = ctx.getSession()
       const ws = state.rooms.workers()
       const notices = ledger.notices(batch).map(n => n.text)
+      if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
       const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatMsg(m)}`
       const room = budget - notices.reduce((n, text) => n + text.length + 1, 0)
       const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3) : { chosen: [], more: 0 }
@@ -170,7 +171,9 @@ export function createTools(ctx: ToolCtx): Tools {
     async call(name, args, signal, handoff) {
       const batch = ledger.open('reply')
       try {
-        const text = await run(name, args, signal, batch)
+        const body = await run(name, args, signal, batch)
+        const rejected = ctx.getSession()?.rejected
+        const text = rejected ? `[room] ${rejected.reason}: your changes are not reaching others; your last edits are not in the room\n\n${body}` : body
         // A cancelled call's reply is never written: its selections stay owed.
         if (signal?.aborted) ledger.release(batch)
         else if (handoff) handoff({ text, commit: () => ledger.commit(batch), release: () => ledger.discard(batch) })

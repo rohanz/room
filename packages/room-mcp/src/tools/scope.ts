@@ -116,6 +116,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()
+      if (s.rejected) out.push(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
       const since = offlineSince(s, now)
       if (since !== undefined) {
         const server = s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
@@ -129,7 +130,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const [source, value] of s.room.doc.getMap<{ placeholder: string; claims: Claim[] }>('unresolved')) {
         const [oldRoom, oldName] = source.split('\0')
         const owed = [...s.room.mail.values()].filter(m => m.to === value.placeholder).length
-        out.push(`unresolved from ${oldRoom}: ${oldName} (${value.claims.length} claims, ${owed} questions); its owner must join to reclaim it`)
+        out.push(`unresolved from ${oldRoom}: ${oldName} (${value.claims.length} claims, ${owed} questions); its owner must join to reclaim it; room_export room=${oldRoom} to read`)
       }
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)

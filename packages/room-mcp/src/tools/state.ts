@@ -44,7 +44,9 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
-      sessionDir: () => ctx.binding?.dir(), paused: () => s.lease?.paused() ?? s.hub.paused(), company: () => company(s), log,
+      sessionDir: () => ctx.binding?.dir(), paused: () => s.rejected
+        ? `[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`
+        : s.lease?.paused() ?? s.hub.paused(), company: () => company(s), log,
     }) : null
     hooks?.start()
     if (hooks) primaryHooks = hooks

@@ -55,6 +55,8 @@ export interface Session {
   graph?: GraphIndex
   /** Set when the server closed the repo (ws close 4001): the provider stops reconnecting. */
   closed?: { reason: string }
+  /** A size-cap refusal: publication stays paused until the next successful sync. */
+  rejected?: { reason: string; at: number }
   /** The server's ceiling on sharing levels (ROOM_SHARE_MAX); the daemon's level never exceeds it. */
   shareMax: ShareLevel
   /** Set in local mode (no server): the relay this session found or runs. */
@@ -585,10 +587,12 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused())
   try { if (lease.fence()) await started.validateMigratedClaims() }
   catch (error) { await publishing?.detach(); await lease.end(); await started.stop(); hub.close(); throw error }
+  const stopLegacyWatch = watchLegacyIdentity(started.roomDoc, readRoomFile(options.dir)?.legacy, name,
+    () => lease.fence(), () => started.validateMigratedClaims())
   {
     const stop = started.stop.bind(started)
     // Ending presence: withdraw and detach the publisher lease, release the hub lease while the connection is up, then stop.
-    started.stop = async (reason?: string) => { stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
+    started.stop = async (reason?: string) => { stopLegacyWatch(); stopping = true; await publicationTransition; await publishing?.detach(); await lease.end(); await stop(reason); hub.close() }
   }
   daemon = started
   // The bound session's records (ledger SF3): SessionStart's session.json, the before-edit hook's runtime.json
@@ -636,15 +640,18 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
 }
 
 /** Resolve an ambiguous 0.16 branch-room identity using this worktree's old room.json. */
-function claimLegacyIdentity(room: RoomDoc, dir: string, name: string): void {
-  const legacy = readRoomFile(dir)?.legacy
-  if (!legacy) return
+function claimLegacyIdentity(room: RoomDoc, dir: string, name: string): boolean {
+  return reclaimLegacyIdentity(room, readRoomFile(dir)?.legacy, name)
+}
+
+function reclaimLegacyIdentity(room: RoomDoc, legacy: { room: string; name: string } | undefined, name: string): boolean {
+  if (!legacy) return false
   let oldRoom: string
-  try { oldRoom = decodeRoom(new URL(legacy.room).pathname.replace(/^\/+/, '')) } catch { return }
+  try { oldRoom = decodeRoom(new URL(legacy.room).pathname.replace(/^\/+/, '')) } catch { return false }
   const unresolved = room.doc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
   const key = `${oldRoom}\0${legacy.name}`
   const entry = unresolved.get(key)
-  if (!entry) return
+  if (!entry) return false
   room.doc.transact(() => {
     for (const claim of entry.claims) if (!room.claims.has(claim.id)) room.claims.set(claim.id, { ...claim, by: name })
     if (entry.scope && !room.scopes.has(name)) room.scopes.set(name, { ...entry.scope, by: name })
@@ -656,6 +663,21 @@ function claimLegacyIdentity(room: RoomDoc, dir: string, name: string): void {
     room.doc.getMap<string>('aliases').set(entry.placeholder, name)
     unresolved.delete(key)
   })
+  return true
+}
+
+/** Local catch-up can add unresolved facts after a session has joined. Reclaim them
+ * only while this session still holds its current name fence. */
+export function watchLegacyIdentity(room: RoomDoc, legacy: { room: string; name: string } | undefined,
+  name: string, fence: () => string | undefined, validate: () => Promise<void>): () => void {
+  const unresolved = room.doc.getMap('unresolved')
+  const check = () => {
+    if (!fence() || !reclaimLegacyIdentity(room, legacy, name)) return
+    void validate().catch(() => {})
+  }
+  unresolved.observe(check)
+  check()
+  return () => unresolved.unobserve(check)
 }
 
 /** Another fresh session in the room shows `name` as the publisher of its checkout (manifest §5.7). */
@@ -821,13 +843,54 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
 
 /** Server close code when a repo is closed (DELETE /rooms): stop reconnecting and remember why. */
 const ROOM_CLOSED_CODE = 4001
-function watchClosed(s: Session, log?: (line: string) => void): void {
-  const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | null) => void) => void; disconnect?: () => void }
+const ROOM_SIZE_CAP_CODE = 4413
+const SIZE_CAP_RETRY_MS = 60_000
+const SIZE_CAP_VERIFY_MS = 2_000
+export function watchClosed(s: Session, log?: (line: string) => void): void {
+  const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | boolean | null) => void) => void; disconnect?: () => void; connect?: () => void; wsconnected?: boolean; synced?: boolean }
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let verify: ReturnType<typeof setTimeout> | undefined
+  const pauseAndRetry = () => {
+    s.daemon.setPublicationRejected(true)
+    try { p.disconnect?.() } catch { /* already gone */ }
+    if (retry) clearTimeout(retry)
+    retry = setTimeout(() => { retry = undefined; if (!s.closed && s.rejected) p.connect?.() }, SIZE_CAP_RETRY_MS)
+    retry.unref?.()
+  }
   p.on?.('connection-close', e => {
-    if (e?.code !== ROOM_CLOSED_CODE) return
-    s.closed = { reason: e.reason || 'room closed' }
+    const close = e && typeof e === 'object' ? e : undefined
+    if (close?.code === ROOM_SIZE_CAP_CODE) {
+      s.rejected = { reason: close.reason || 'room is over its size cap', at: Date.now() }
+      if (verify) clearTimeout(verify)
+      pauseAndRetry()
+      log?.(`${s.roomName}: ${s.rejected.reason}; your last edits are not in the room; retrying in 60 seconds`)
+      return
+    }
+    if (close?.code !== ROOM_CLOSED_CODE) return
+    if (retry) clearTimeout(retry)
+    if (verify) clearTimeout(verify)
+    s.closed = { reason: close.reason || 'room closed' }
     try { p.disconnect?.() } catch { /* already gone */ }
     log?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`)
+  })
+  p.on?.('sync', e => {
+    if (!e || !s.rejected) return
+    const rejected = s.rejected
+    if (retry) clearTimeout(retry)
+    retry = undefined
+    // Re-send the local publication under its current fence. A successful sync alone
+    // does not prove the server accepted the writes that triggered 4413.
+    s.daemon.setPublicationRejected(false)
+    void s.daemon.reconcileGitChanges().then(() => {
+      if (s.rejected !== rejected) return
+      verify = setTimeout(() => {
+        verify = undefined
+        if (s.rejected !== rejected) return
+        if (p.wsconnected && p.synced && s.daemon.fence) s.rejected = undefined
+        else pauseAndRetry()
+      }, SIZE_CAP_VERIFY_MS)
+      verify.unref?.()
+    }).catch(() => { if (s.rejected === rejected) pauseAndRetry() })
   })
 }
 
