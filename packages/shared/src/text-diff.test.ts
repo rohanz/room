@@ -70,6 +70,64 @@ describe('overlay text diff', () => {
     expect(changed(ops)).toBeLessThan(200)
   })
 
+  it('handles CRLF and trailing-newline changes through RoomDoc', () => {
+    const room = new RoomDoc()
+    const cases = [
+      ['one\r\ntwo\r\n', 'one\r\ninserted\r\ntwo\r\n'],
+      ['one\r\ntwo\r\n', 'one\r\ntwo'],
+      ['one\ntwo', 'one\ntwo\n'],
+      ['one\r\ntwo', 'one\ntwo\n'],
+    ] as const
+    for (const [before, after] of cases) {
+      room.setOverlay('p', 'lines.txt', before)
+      expect(apply(before, boundedTextDiff(before, after))).toBe(after)
+      room.setOverlay('p', 'lines.txt', after)
+      expect(room.text('lines.txt', 'p')).toBe(after)
+    }
+  })
+
+  it('keeps outer claim anchors when an unrelated middle exhausts the character budget', () => {
+    const room = new RoomDoc()
+    const before = `first\n${'a'.repeat(6_000)}\nlast\n`
+    const after = `first\n${'b'.repeat(6_000)}\ninserted\nlast\n`
+    room.setOverlay('p', 'large.txt', before)
+    const first = room.addClaim({ path: 'large.txt', from: 1, to: 1, by: 'p', byKind: 'agent', intent: 'first' })
+    const middle = room.addClaim({ path: 'large.txt', from: 2, to: 2, by: 'p', byKind: 'agent', intent: 'middle' })
+    const last = room.addClaim({ path: 'large.txt', from: 3, to: 3, by: 'p', byKind: 'agent', intent: 'last' })
+    const ops = boundedTextDiff(before, after)
+    expect(apply(before, ops)).toBe(after)
+    expect(ops).toContainEqual([-1, 'a'.repeat(6_000)])
+    room.setOverlay('p', 'large.txt', after)
+    expect(room.text('large.txt', 'p')).toBe(after)
+    expect(room.claimRange(first)).toEqual({ from: 1, to: 1 })
+    expect(room.claimRange(middle)).toEqual({ from: 2, to: 2 })
+    expect(room.claimRange(last)).toEqual({ from: 4, to: 4 })
+  })
+
+  it('diffs 100 small rewrites within a comparable time to the previous character diff', () => {
+    const before = 'a'.repeat(500), after = 'b'.repeat(500)
+    const start = performance.now()
+    for (let i = 0; i < 100; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
+    expect(performance.now() - start).toBeLessThan(1_000)
+  })
+
+  it('shares the character work allowance across many changed hunks', () => {
+    const before: string[] = [], after: string[] = []
+    for (let i = 0; i < 60; i++) {
+      before.push(`${'a'.repeat(100)}x${'a'.repeat(100)}\n`, `keep-${i}\n`)
+      after.push(`${'b'.repeat(100)}x${'b'.repeat(100)}\n`, `keep-${i}\n`)
+    }
+    const original = before.join(''), replacement = after.join('')
+    const ops = boundedTextDiff(original, replacement)
+    expect(apply(original, ops)).toBe(replacement)
+    // Six early hunks can keep their interior x. Later ones replace whole regions
+    // after the shared character budget is consumed, while the unchanged lines survive.
+    const preserved = ops.filter(([kind, value]) => kind === 0 && value === 'x').length
+    expect(preserved).toBeGreaterThanOrEqual(5)
+    expect(preserved).toBeLessThanOrEqual(7)
+    expect(ops.some(([kind, value]) => kind === 0 && value.includes('keep-59'))).toBe(true)
+  })
+
   it('reproduces the new text for random edits, including surrogate pairs at the edges', () => {
     const r = rng(7)
     const alphabet = ['a', 'b', '\n', ' ', '😀', 'é', '{', '"']

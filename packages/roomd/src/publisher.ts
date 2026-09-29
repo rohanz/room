@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { setImmediate } from 'node:timers/promises'
 import { scopeCovers, type RoomDoc } from '@room/shared'
 import { baselineText, type Baseline } from './baseline.js'
 import { git, gitBlobInfoMany, gitChanged, gitHead, gitShow, gitShowMany, type GitBlobInfo } from './git.js'
@@ -257,11 +258,18 @@ export class Publisher {
       if (generation !== this.host.sharingGeneration) { this.markSharingDirty(); return }
       if (await gitHead(this.host.dir) !== base) return
       if (generation !== this.host.sharingGeneration) { this.markSharingDirty(); return }
-      for (const relpath of paths) {
+      let lastYield = performance.now()
+      for (const [index, relpath] of paths.entries()) {
         if (this.host.stopped) return
         if (generation !== this.host.sharingGeneration) { this.markSharingDirty(); return }
         await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs })
         if (this.host.phase === 'seed' || this.host.phase === 'watch') this.host.onSeedProgress?.()
+        // Awaiting cached reads only advances the microtask queue. Let timers and tool calls run
+        // during a large batch, then recheck stop and sharing generation before the next file.
+        if (index + 1 < paths.length && performance.now() - lastYield >= 15) {
+          await setImmediate()
+          lastYield = performance.now()
+        }
       }
       if (generation !== this.host.sharingGeneration) this.markSharingDirty()
       else this.reconciled()

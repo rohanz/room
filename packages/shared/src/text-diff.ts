@@ -1,10 +1,11 @@
 /**
- * Overlay text diff with a fixed work budget.
+ * Overlay text diff with a per-file algorithmic budget.
  *
  * setOverlay applies edits as character operations so Yjs relative positions (claim anchors) follow them.
  * An exact character diff costs O((N+M)·D): two unrelated 230 KB files took minutes, on the event loop.
- * Here the diff runs by lines first, then by characters inside each changed hunk, each with an edit-length
- * budget. Past a budget the unresolved region is replaced whole: the text is still exact, only anchors
+ * Small changed middles take one character diff; larger ones run by lines first, then by characters
+ * inside each changed hunk, each with an edit-length budget. Past a budget the unresolved region is
+ * replaced whole: the text is still exact, only anchors
  * inside that region collapse to its edges.
  */
 import { diffChars, diffLines, type ChangeObject } from 'diff'
@@ -12,8 +13,10 @@ import { diffChars, diffLines, type ChangeObject } from 'diff'
 /** fast-diff's tuple shape: -1 delete, 0 equal, 1 insert. */
 export type TextOp = [-1 | 0 | 1, string]
 
-/** Myers steps (tokens × edit length) allowed per diff call. */
+/** Estimated Myers work allowance per file; this is not a wall-clock limit. */
 const WORK = 2_000_000
+/** Small changes avoid the line pass and use one character diff. */
+const SMALL_MIDDLE = 4_096
 
 const isHigh = (code: number) => code >= 0xd800 && code <= 0xdbff
 const isLow = (code: number) => code >= 0xdc00 && code <= 0xdfff
@@ -42,6 +45,14 @@ function fromChanges(changes: ChangeObject<string>[]): TextOp[] {
   return changes.map(c => [c.added ? 1 : c.removed ? -1 : 0, c.value])
 }
 
+/** No common code unit means there can be no equal character run to preserve. */
+function disjoint(a: string, b: string): boolean {
+  const seen = new Set<number>()
+  for (let i = 0; i < a.length; i++) seen.add(a.charCodeAt(i))
+  for (let i = 0; i < b.length; i++) if (seen.has(b.charCodeAt(i))) return false
+  return true
+}
+
 /** Character diff of one changed hunk, or a whole replacement past the budget; returns the work spent. */
 function hunk(before: string, after: string, budget: number): [TextOp[], number] {
   if (!before || !after) return [replace(before, after), 0]
@@ -53,6 +64,7 @@ function hunk(before: string, after: string, budget: number): [TextOp[], number]
     ...(tail ? [[0, before.slice(before.length - tail)] as TextOp] : []),
   ]
   if (!a || !b) return [edges(replace(a, b)), 0]
+  if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0]
   const tokens = a.length + b.length
   const maxEditLength = editBudget(tokens, budget)
   const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : undefined
@@ -67,6 +79,11 @@ export function boundedTextDiff(before: string, after: string): TextOp[] {
   const [head, tail] = commonEdges(before, after)
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail)
   const out: TextOp[] = head ? [[0, before.slice(0, head)]] : []
+  if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
+    out.push(...hunk(a, b, WORK)[0])
+    if (tail) out.push([0, before.slice(before.length - tail)])
+    return out.filter(([, value]) => value.length)
+  }
   let budget = WORK
   const lineCount = (s: string) => s.split('\n').length
   const lineEdits = editBudget(lineCount(a) + lineCount(b), budget / 2)

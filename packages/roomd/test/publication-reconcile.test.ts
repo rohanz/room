@@ -81,3 +81,53 @@ it('skips a periodic tick while its previous reconcile is in flight', async () =
   expect(writes).toBe(1)
   expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('missed edit\n')
 })
+
+it('services a timer and coalesced update during a many-file publish', async () => {
+  const config = options()
+  const files = Array.from({ length: 110 }, (_, i) => `file-${i}.txt`)
+  const oldText = `${'a'.repeat(250)}x${'a'.repeat(250)}`
+  const newText = `${'b'.repeat(250)}x${'b'.repeat(250)}`
+  const latestText = `${'c'.repeat(250)}x${'c'.repeat(250)}`
+  for (const file of files) fs.writeFileSync(path.join(config.dir, file), oldText)
+  git(config.dir, 'add', '-A'); git(config.dir, 'commit', '-qm', 'many files')
+  daemon = await startRoomd(config)
+  const internal = daemon as Roomd & {
+    watcher: { removeAllListeners(name: string): void }
+    enqueue(work: () => Promise<void>): Promise<void>
+    reconcileGitChanges(): Promise<void>
+    publisher: { reconcile(paths: Iterable<string>): Promise<void> }
+    beforePublishWrite: (relpath: string) => Promise<void>
+  }
+  internal.watcher.removeAllListeners('all')
+  for (const file of files) {
+    daemon.roomDoc.setOverlay('Alice', file, oldText)
+    fs.writeFileSync(path.join(config.dir, file), newText)
+  }
+  let writes = 0
+  let timerMs = Infinity
+  let writesAtTimer = 0
+  let followUp: Promise<void> | undefined
+  let started = 0
+  const timer = new Promise<void>(resolve => {
+    internal.beforePublishWrite = async () => {
+      if (++writes !== 1) return
+      started = performance.now()
+      setTimeout(() => {
+        timerMs = performance.now() - started
+        writesAtTimer = writes
+        fs.writeFileSync(path.join(config.dir, files[0]), latestText)
+        followUp = internal.reconcileGitChanges()
+        resolve()
+      }, 0)
+    }
+  })
+  await internal.enqueue(() => internal.publisher.reconcile(files))
+  await timer
+  await followUp
+  expect(timerMs).toBeLessThan(100)
+  expect(writesAtTimer).toBeGreaterThan(0)
+  expect(writesAtTimer).toBeLessThan(files.length)
+  for (const file of files) {
+    expect(daemon.roomDoc.text(file, 'Alice')).toBe(file === files[0] ? latestText : newText)
+  }
+}, 30_000)
