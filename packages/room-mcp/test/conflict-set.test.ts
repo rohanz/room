@@ -463,6 +463,7 @@ describe('derived pair slots', () => {
     const f = fixture()
     try {
       f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
       const consumer = 'from api import call\ncall(1)\n'
       const provider = 'def call(a, b):\n    pass\n'
       const detail = 'call(a) → call(a, b)'
@@ -474,6 +475,8 @@ describe('derived pair slots', () => {
         paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
         observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail }], truncated: false })
       await new ConflictSet(f.session('A')).reconcile('visible')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
       const head = f.room.manifestHead.get('B')!
       f.room.doc.transact(() => {
         f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
@@ -539,6 +542,7 @@ describe('derived pair slots', () => {
     let graph: GraphIndex | undefined, set: ConflictSet | undefined
     try {
       f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
       const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
       f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
       f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
@@ -647,6 +651,7 @@ describe('derived pair slots', () => {
     let graph: GraphIndex | undefined, set: ConflictSet | undefined
     try {
       f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
       const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
       const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
       const entries = f.room.manifest.get(manifestKey('B', '1'))!
@@ -810,6 +815,7 @@ describe('derived pair slots', () => {
     let graph: GraphIndex | undefined, set: ConflictSet | undefined, reader: RoomDoc | undefined
     try {
       f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
       const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
       const entries = f.room.manifest.get(manifestKey('B', '1'))!
       f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, textPrefixes: ['api.py', 'aux.py'] })
@@ -959,10 +965,11 @@ describe('derived pair slots', () => {
       await set.reconcile('redacted')
       f.room.doc.transact(() => {
         entries.delete('api.py')
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full', rev: 3, semRev: 3 })
         f.room.graphs.set('B', graph(3, false))
       })
       await set.reconcile('readable clean')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', '*'))).toMatchObject({ status: 'clean' })
       restore(4)
       await set.reconcile('same conflict')
       expect(f.room.doc.getMap<any>('conflicts').get(key)?.epoch).toBeGreaterThanOrEqual(2)
