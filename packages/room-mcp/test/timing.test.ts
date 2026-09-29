@@ -207,6 +207,19 @@ describe('tool timing', () => {
     }
   })
 
+  it.each([[undefined, 0], [0, undefined]])('omits overlap when either sample is unknown (%s, %s)', async (first, second) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-unknown-'))
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    const sample = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    try {
+      await tracker.run('room_preview_merge', () => previewCheck(() => { now += 2100 }, { markerDir: root, sample }))
+      expect(sample).toHaveBeenCalledTimes(2)
+      expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('removes its marker after a failed check', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-failed-'))
     const markerDir = path.join(root, 'room-preview-checks')
