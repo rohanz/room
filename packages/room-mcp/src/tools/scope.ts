@@ -117,8 +117,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
       }
-      // Right after the sharing line, which stays first: a replayed wake reads this and stops.
-      if (noUnseen) out.splice(out.indexOf(out.find(line => line.startsWith('local: ') || line.startsWith('team room: '))!) + 1, 0, 'nothing new for you since your last read; no action needed')
       if (s.closed) out.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}; room_leave, then room_create to reopen`)
       if (typeof a.path === 'string' && a.path) { out.push(await pathState(a)); if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`); return out.join('\n') }
       const wsRoom = rooms.workers()
@@ -129,6 +127,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`OFFLINE: not connected to ${server} since ${new Date(since).toISOString()}; showing the last known state in ${s.roomName}`)
       }
       out.push(`room: ${s.roomName} — ${describeWhere(s.local ? LOCAL : parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server)}${wsRoom ? `; workers room: local (${wsRoom.roomName}, this machine only)` : ''}`)
+      // Right after the room line, near the top: a replayed wake reads this and stops.
+      if (noUnseen) out.push('nothing new for you since your last read; no action needed')
       const ps = presences(s)
       const ownGit = participantRecord(s.room, s.me.name)?.git
       out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''})`)

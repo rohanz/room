@@ -1,5 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
+import { fileURLToPath } from 'node:url'
+import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
 export type WorkerHost = 'claude' | 'codex'
@@ -102,7 +105,36 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
 export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
 export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return host === 'claude' && effort === 'minimal' ? 'low' : effort }
 
-export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean }
+export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string }
+
+/** The bundle path identifies the plugin Claude actually loaded, even when its root env is absent. */
+export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, modulePath = fileURLToPath(import.meta.url), installedPath?: string): string | undefined {
+  const root = env.CLAUDE_PLUGIN_ROOT || (path.basename(path.dirname(modulePath)) === 'server' ? path.dirname(path.dirname(modulePath)) : undefined)
+  if (!root) return undefined
+  const resolved = path.resolve(root)
+  if (installedPath === undefined) {
+    try {
+      const file = path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'plugins', 'installed_plugins.json')
+      const installs = JSON.parse(fs.readFileSync(file, 'utf8')) as { plugins?: { 'room@room'?: { installPath?: string }[] } }
+      installedPath = installs.plugins?.['room@room']?.at(-1)?.installPath
+    } catch { /* A development plugin may have no installed copy. */ }
+  }
+  return installedPath && path.resolve(installedPath) === resolved ? undefined : resolved
+}
+
+function installedCodexRoomVersion(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const root = path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'plugins', 'cache', 'room', 'room')
+  try {
+    return fs.readdirSync(root).filter(v => /^\d+\.\d+\.\d+$/.test(v) && fs.existsSync(path.join(root, v, '.codex-plugin', 'plugin.json')))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1)
+  } catch { return undefined }
+}
+
+export function codexRoomVersionMismatch(leadVersion = pluginManifest.version, installed = installedCodexRoomVersion()): string | undefined {
+  return installed && installed !== leadVersion
+    ? `Codex has Room ${installed}, but this lead runs Room ${leadVersion}; install Room ${leadVersion} for Codex, or use host claude`
+    : undefined
+}
 export function workerCommand(host: WorkerHost, model: string | undefined, prompt: string, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort?: string, options: WorkerCommandOptions = {}): { cmd: string; args: string[] } {
   if (effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join('|')}`)
   effort = hostWorkerEffort(host, effort)
@@ -112,7 +144,7 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
     : ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
   return {
     cmd: 'claude',
-    args: [...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
+    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir, '--settings', JSON.stringify({ enabledPlugins: { 'room@room': false } })] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
   }
 }
 

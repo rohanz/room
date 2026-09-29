@@ -451,6 +451,16 @@ describe('room_spawn / room_done / room_collect discard', () => {
     return { a, b, leadTools, workerTools, workerSession: ws!, specs, exits, killed }
   }
 
+  it('records the owner when dir points at another worker worktree', async () => {
+    const t = setup()
+    expect(await t.leadTools.call('room_spawn', { tag: 'port-fix', task: 'fix port' })).toContain('spawned port-fix')
+    const owner = workerByTag(dir, 'port-fix')!
+    expect(await t.leadTools.call('room_spawn', { tag: 'port-bools', task: 'fix booleans', dir: owner.dir })).toContain('spawned port-bools')
+    expect(workerByTag(dir, 'port-bools')?.sharedWith).toBe(owner.id)
+    expect(workerByTag(dir, 'port-bools')?.dir).toBe(owner.dir)
+    await t.leadTools.shutdown()
+  })
+
   it('inherits the caller host and explains worker reporting only once', async () => {
     vi.stubEnv('ROOM_HOST', 'codex')
     try {

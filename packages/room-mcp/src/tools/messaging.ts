@@ -1,5 +1,6 @@
 import { formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
+import fs from 'node:fs'
 import type { Batch } from '../ledger.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
@@ -24,7 +25,7 @@ export function waitConsumesMessage(s: Session, m: Msg): boolean {
 }
 
 export const defs: ToolDef[] = [
-  { name: 'room_send', annotations: RW, description: 'Ask an agent (to), answer (inReplyTo), or post a note. Changes are detected automatically.',
+  { name: 'room_send', annotations: RW, description: 'Ask (to), answer (inReplyTo), note; message a finished worker to resume it in its worktree.',
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient; omit to broadcast'),
@@ -66,7 +67,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ago = finished === undefined ? '' : ` ${Math.max(0, Math.floor((now() - finished) / 60_000))}m ago`
       const summary = record.summary?.replace(/\s+/g, ' ').trim() || 'no summary recorded'
       const verb = retired || exited ? 'finished' : `reported ${worker!.status}`
-      return { text: `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
+      const resumable = !!own && own.status === 'done' && !!own.hostSessionId && fs.existsSync(own.dir) && !retired
+      return { text: resumable
+        ? `${name} ${verb}${ago}; message a finished worker to resume it in its worktree. Its summary: ${summary}`
+        : `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
     }
     if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined
@@ -109,7 +113,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const matches = workerMatches.length ? workerMatches : retiredMatches
       if (matches.length > 1 && new Set(matches.map(x => x.room)).size > 1) {
         const names = [...new Set(matches.map(x => x.worker.name))].sort()
-        return `error: worker tag ${requestedTo} is ambiguous; use a full name: ${names.join(', ')}`
+        return `error: worker tag ${requestedToRaw} is ambiguous; use a full name: ${names.join(', ')}`
       }
       const resolvedWorker = matches[0]
       let to = resolvedWorker?.worker.name ?? (requestedTo ? alias(byQuestion ?? lead, requestedTo) : undefined)

@@ -38,6 +38,9 @@ export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker
   }
   try { fs.lstatSync(w.dir); throw new Error(`worktree ${w.dir} still exists`) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  // Dynamic import avoids a module-initialization cycle: preview tools read workerOwnedPaths from here.
+  const { removePreviewCache } = await import('./tools/files.js')
+  await removePreviewCache(w.dir, leadDir)
   await git(leadDir, ['worktree', 'prune'])
   if (!manageBranch) return undefined
   const state = await workerRealState(leadDir, w, { branch: true })
@@ -309,6 +312,9 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
   }
   terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions))
   try {
+    // Remove the worker's reusable preview checkout while its own worktree still exists.
+    const { removePreviewCache } = await import('./tools/files.js')
+    await removePreviewCache(w.dir, leadDir)
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     await internalGit(leadDir, ['branch', '-D', w.branch])
     for (const ref of refs.keys()) await internalGit(leadDir, ['update-ref', '-d', ref])

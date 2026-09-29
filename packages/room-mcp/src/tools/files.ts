@@ -1,10 +1,12 @@
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
-import { ensureCommit, roomRemote } from '@room/roomd'
+import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch, diffLines } from 'diff'
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { stripVTControlCharacters } from 'node:util'
 import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, snapshot, snapshotStillCurrent, versionOf, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
@@ -529,37 +531,161 @@ export function testVerdict(output: string, code: number | null): TestResult {
   return { passed, text: [...summaries.slice(-5), verdict].join('\n') }
 }
 
-/** Materialise ancestor + merged files in a scratch dir (sharing .venv/node_modules from my clone) and run a command there. */
-async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map()): Promise<TestResult> {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-')))
+function canonicalPreviewClonePath(cloneDir: string): string {
+  let existing = path.resolve(cloneDir)
+  const missing: string[] = []
+  while (!fs.existsSync(existing)) { missing.unshift(path.basename(existing)); existing = path.dirname(existing) }
+  return path.join(fs.realpathSync(existing), ...missing)
+}
+
+/** Each clone gets one worktree under its common Git dir. The lock is outside the tree so Git clean cannot remove it. */
+export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Promise<string> {
+  const common = await fs.promises.realpath(await gitCommonDir(repoDir))
+  const key = createHash('sha256').update(canonicalPreviewClonePath(cloneDir)).digest('hex').slice(0, 20)
+  return path.join(common, 'room-preview', key)
+}
+
+const SETUP_TIMEOUT_MS = 10 * 60_000
+const gitSetup = (dir: string, args: string[]) => git(dir, args, SETUP_TIMEOUT_MS)
+
+/** Remove a clone's preview worktree before that clone is collected or discarded. repoDir supports vanished clones. */
+export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
+  const cache = await previewCachePath(cloneDir, repoDir)
+  const lock = `${cache}.lock`
+  let pid = 0
+  try { pid = Number(await fs.promises.readFile(lock, 'utf8')) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  if (fs.existsSync(lock)) {
+    if (!pid || !Number.isSafeInteger(pid)) throw new Error(`preview cache is locked: ${cache}`)
+    try { process.kill(pid, 0); throw new Error(`preview cache is in use: ${cache}`) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+    await fs.promises.rm(lock, { force: true })
+  }
+  let present = false
+  try { await fs.promises.lstat(cache); present = true }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  if (present) {
+    try { await gitSetup(repoDir, ['worktree', 'remove', '--force', cache]) }
+    catch {
+      // A broken registration cannot be removed through Git; remove only our derived private path.
+      await fs.promises.rm(cache, { recursive: true, force: true })
+    }
+  }
+  await gitSetup(repoDir, ['worktree', 'prune'])
+}
+
+async function acquirePreviewLock(file: string): Promise<(() => Promise<void>) | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await fs.promises.open(file, 'wx', 0o600)
+      try { await handle.writeFile(String(process.pid)) } finally { await handle.close() }
+      return async () => { await fs.promises.rm(file, { force: true }) }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      let pid = 0
+      try { pid = Number(await fs.promises.readFile(file, 'utf8')) } catch { /* vanished or incomplete */ }
+      if (!pid || !Number.isSafeInteger(pid)) return undefined // a lock being created is in use
+      try { process.kill(pid, 0); return undefined }
+      catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') return undefined }
+      // Dead owner's lock: a new owner may win the retry; only one can create with wx.
+      await fs.promises.rm(file, { force: true })
+    }
+  }
+  return undefined
+}
+
+async function resetPreviewTree(dir: string, ancestor: string): Promise<void> {
+  await gitSetup(dir, ['reset', '--hard', '--quiet', ancestor])
+  // -fd removes test-created untracked paths. Ignored build caches (target/, etc.) remain warm.
+  await gitSetup(dir, ['clean', '-fd', '-q'])
+}
+
+async function preparePreviewCache(cloneDir: string, dir: string, ancestor: string, observe?: { baseMaterialized?(): void }): Promise<boolean> {
+  let stat: fs.Stats | undefined
+  try { stat = await fs.promises.lstat(dir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  if (stat?.isSymbolicLink()) throw new Error('unsafe preview cache link')
+  if (stat) {
+    // A killed first checkout can leave a partial directory. Git itself verifies the worktree registration.
+    try {
+      const top = (await gitSetup(dir, ['rev-parse', '--show-toplevel'])).trim()
+      if (path.resolve(top) !== dir) throw new Error('preview cache is not its own worktree')
+    }
+    catch {
+      await fs.promises.rm(dir, { recursive: true, force: true })
+      await gitSetup(cloneDir, ['worktree', 'prune'])
+      stat = undefined
+    }
+  }
+  if (!stat) {
+    observe?.baseMaterialized?.()
+    await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
+  }
+  // Also recovers changes left by a crashed or killed preview before applying this one.
+  await resetPreviewTree(dir, ancestor)
+  return !!stat
+}
+
+/** Run against a whole ancestor tree with only merged paths changed. Cache use is exclusive per clone. */
+export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
+  let dir: string | undefined
+  let release: (() => Promise<void>) | undefined
+  let cached = false
+  let reused = false
+  let cacheReady = false
+  let setupMs = 0
+  let checkMs = 0
+  let stage: 'setup' | 'check' = 'setup'
+  const setupStart = performance.now()
   try {
     await previewPhase('setup', async () => {
-      await materializeGitTree(s.dir, ancestor, dir)
-      for (const [rel, text] of merged) {
-        await new Promise<void>(resolve => setImmediate(resolve))
-        materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
+      const cache = await previewCachePath(s.dir)
+      await fs.promises.mkdir(path.dirname(cache), { recursive: true, mode: 0o700 })
+      release = await acquirePreviewLock(`${cache}.lock`)
+      cached = !!release
+      if (cached) {
+        dir = cache
+        reused = await preparePreviewCache(s.dir, dir, ancestor, observe)
+        cacheReady = true
+      } else {
+        dir = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-')))
+        observe?.baseMaterialized?.()
+        await materializeGitTree(s.dir, ancestor, dir)
       }
-      await linkSharedDirs(s.dir, dir)
+      for (const [rel, value] of merged) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        materializeMergedFile(dir!, rel, value === null ? null : Buffer.from(value, 'latin1'), modes.get(rel) ?? 0o644)
+        observe?.mergedWrite?.(rel)
+      }
+      await linkSharedDirs(s.dir, dir!)
     })
+    setupMs = performance.now() - setupStart
+    stage = 'check'
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
-    env.ROOM_MERGED_TREE = dir
+    env.ROOM_MERGED_TREE = dir!
+    const checkStart = performance.now()
     const result = await previewCheck(() => new Promise<{ code: number | null; out: string }>(resolve => {
-      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
         const raw = err ? (err as { code?: unknown }).code : 0
         resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
       })
     }))
+    checkMs = performance.now() - checkStart
     return previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}` }
     })
-  } catch (e) {
-    if (isGitTimeout(e)) throw e
-    return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return { passed: false, text: stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}` }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      if (dir) {
+        if (cached && cacheReady) await resetPreviewTree(dir, ancestor)
+        else await fs.promises.rm(dir, { recursive: true, force: true })
+      }
+    } finally { await release?.() }
   }
 }
 
@@ -591,7 +717,7 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
       if (archiveCode === 0 && extractCode === 0) resolve()
       else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'signal'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'signal'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
     }
-    const timeout = wholeTreeTimeoutMs()
+    const timeout = Math.max(wholeTreeTimeoutMs(), SETUP_TIMEOUT_MS)
     const timer = setTimeout(() => fail(new Error(`git archive/tar extraction timed out after ${timeout}ms`)), timeout)
     timer.unref?.()
     archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })

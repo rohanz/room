@@ -134,6 +134,7 @@ Claude workers load the optional channels fallback only with `ROOM_WAKE=channels
 Send a message to a finished worker's full `<you>+<tag>` name to resume its retained
 session in the same worktree. It can address review findings with its prior context.
 A collected or discarded worker cannot resume.
+Codex workers use the installed Room plugin; if its version differs from the lead's, install the lead's Room version for Codex or choose Claude. Claude Code 2.1.285 supports the lead's development plugin via `--plugin-dir` and `--settings`.
 
 The lead calls `room_collect()` once to collect all its finished workers, in finish-time order
 (with tag as the tie-breaker). An optional `tag` selects just one. Changes arrive in its working
@@ -149,7 +150,9 @@ Parallel collections queue and name the worker ahead of them; collect-all skips 
 worker records and reports why.
 
 `discard: true` stops a worker without collecting output, saves tracked and non-ignored changes
-in a recovery patch for one week, then removes the worktree, branch and logs. If the worktree
+in a recovery patch for one week, then removes its owned worktree, branch and logs. A worker
+started with `dir=` in another worker's checkout detaches without removing that checkout;
+the owner can be discarded once its other users finish. If the worktree
 contains ignored artifacts outside dependency and cache trees, discard refuses before deletion,
 lists those artifacts and keeps the worktree so you can copy them explicitly; a repeated forced
 discard knowingly deletes them and reports what was removed. Room excludes
@@ -394,6 +397,7 @@ Developer A’s clone                                  Developer B’s clone
 5. **Integrate with Git.** Merge previews happen in memory or, when tests are requested,
    a temporary workspace. The shared base advances only when the new commit is on the
    remote. Teammates see that their clone is behind and can pull.
+   Previews with `run=` keep one reusable checkout per clone under `.git/room-preview/` (ignored build output stays warm between previews); `git worktree remove --force <path>` reclaims it.
 
 The server uses `@y/websocket-server` with GitHub device-login (or OIDC) admission, read-only
 view keys, size caps, optional LevelDB or Postgres persistence, and static browser hosting.

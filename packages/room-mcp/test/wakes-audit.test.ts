@@ -306,7 +306,7 @@ describe('wakes (ledger test 11, MF8)', () => {
       expect(reply).toContain(`[inbox 1]\n  [${q.id}] QUESTION FOR YOU: `)
       expect(m.s.room.seen('Rohan').get(q.id)).toMatchObject({ s: SID, via: 'reply' })
       const noOp = await m.tools.call('room_state', {})
-      expect(noOp.split('\n').slice(0, 2)).toContain('nothing new for you since your last read; no action needed')
+      expect(noOp.split('\n').slice(0, 4)).toContain('nothing new for you since your last read; no action needed')
       expect(noOp).not.toContain('[inbox')
       await quiet()
       expect(texts).toHaveLength(1)

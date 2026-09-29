@@ -50,7 +50,7 @@ export async function seedRegistryWorker(dir: string, tag: string, patch: Partia
 export interface FixtureWorker {
   id?: string; tag: string; name: string; lead: string; host: 'claude' | 'codex'; model?: string; effort?: string
   hostSessionId?: string; budget?: { threads: number; memGb: number; nice: number }; port?: number; share?: WorkerRecord['share']
-  link?: string[]; task: string; dir: string; branch: string; base?: string; carriedBase?: string
+  link?: string[]; task: string; dir: string; branch: string; sharedWith?: string; base?: string; carriedBase?: string
   carriedUntracked?: { path: string; sha: string; mode?: number }[]; pid: number; processStartTime?: string; startedAt: number
   status: 'running' | 'done' | 'failed' | 'dismissed'; summary?: string; exitCode?: number; finishedAt?: number
   stopReason?: 'lead-session-ended' | 'message-delivered-cancelled' | 'message-delivered-failed'; mode?: 'here' | 'local'
@@ -85,7 +85,7 @@ export async function registerWorkers(session: Session, workers: readonly Fixtur
         v: 1, id, tag: w.tag, name: w.name, mode: w.mode ?? 'local', room: session.roomName,
         lead: { participant: w.lead, room: session.roomName, instance: registry.instance },
         host: w.host, model: w.model, effort: w.effort, budget: w.budget ?? { threads: 1, memGb: 1, nice: 10 },
-        share: w.share ?? 'full', link: w.link, task: w.task, dir: w.dir, outside: false, branch: w.branch,
+        share: w.share ?? 'full', link: w.link, task: w.task, dir: w.dir, outside: false, branch: w.branch, sharedWith: w.sharedWith,
         prep: { step: 'prepared' }, base: w.base, carriedBase: w.carriedBase,
         carriedUntracked: w.carriedUntracked, port: w.port, hostSessionId: w.hostSessionId,
         capabilities: { resume: !!w.hostSessionId, signal: !!w.pid, collect: w.base ? 'delta' : 'copy' },

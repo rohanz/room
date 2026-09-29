@@ -35,6 +35,8 @@ export interface WorkerRecord {
   host: 'claude' | 'codex'; model?: string; effort?: string
   budget: { threads: number; memGb: number; nice: number }; share: ShareLevel; link?: string[]; task: string
   dir: string; outside: boolean; branch: string; prep: PrepJournal
+  /** A dir= worker borrows another worker's checkout and must never remove it. */
+  sharedWith?: string
   base?: string; carriedBase?: string; carriedUntracked?: { path: string; sha: string; mode?: number }[]
   skippedCarry?: { path: string; reason: string }[]; port?: number; hostSessionId?: string
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
@@ -113,7 +115,7 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
 export interface LocalWorker {
   id: string; tag: string; name: string; lead: string; host: 'claude' | 'codex'; model?: string; effort?: string
   hostSessionId?: string; budget: WorkerRecord['budget']; port?: number; share: ShareLevel; link?: string[]
-  task: string; dir: string; branch: string; base?: string; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked']
+  task: string; dir: string; branch: string; sharedWith?: string; base?: string; carriedBase?: string; carriedUntracked?: WorkerRecord['carriedUntracked']
   /** Zero unless the signal capability names a launched process. */
   pid: number; processStartTime?: string; startedAt: number
   status: 'running' | 'done' | 'failed' | 'dismissed'
@@ -132,7 +134,7 @@ export function realStateInput(record: WorkerRecord, status: WorkerStatusResult)
   return {
     id: record.id, tag: record.tag, name: record.name, lead: record.lead.participant, host: record.host,
     model: record.model, effort: record.effort, budget: record.budget, share: record.share, link: record.link,
-    task: record.task, dir: record.dir, branch: record.branch, base: record.base, carriedBase: record.carriedBase,
+    task: record.task, dir: record.dir, branch: record.branch, sharedWith: record.sharedWith, base: record.base, carriedBase: record.carriedBase,
     carriedUntracked: record.carriedUntracked, port: record.port, startedAt: record.createdAt,
     pid: signal ? launch.pid : 0, processStartTime: signal ? launch.process!.startTime : undefined,
     hostSessionId: record.capabilities.resume ? record.hostSessionId : undefined,

@@ -16,7 +16,7 @@ import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, hostWorkerEffort, validTag, type WorkerHost } from '../worker-config.js'
+import { workerBudget, hostWorkerEffort, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -42,7 +42,7 @@ function missingBriefPaths(task: string, leadDir: string, workerDir: string): st
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of it, not a built-in subagent. Collect with room_collect.',
+  { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in the background; for agents in parallel or codex/claude to do part of it. Use room_collect; message a finished worker to resume it in its worktree.',
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'default: caller host' }, model: str('host model override'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false: start from HEAD' }, threads: { type: 'integer', minimum: 1, description: 'worker thread budget' }, share: SHARE, allowOutside: { type: 'boolean', description: 'allow a team worker outside this repo' }, dir: str('existing directory; no new worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default) or local workers room' } }, required: ['tag', 'task'] } },
 ]
 
@@ -135,6 +135,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!task) return 'error: task is required'
       if (a.host !== undefined && a.host !== 'codex' && a.host !== 'claude') return 'error: host must be codex or claude'
       const host: WorkerHost = (a.host ?? process.env.ROOM_HOST ?? process.env.ROOM_WORKER_HOST) === 'codex' ? 'codex' : 'claude'
+      if (host === 'codex' && (process.env.ROOM_HOST || process.env.CLAUDE_PLUGIN_ROOT)) {
+        const mismatch = codexRoomVersionMismatch()
+        if (mismatch) return `error: ${mismatch}`
+      }
       const effort = hostWorkerEffort(host, requestedEffort)
       const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
@@ -176,8 +180,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       const branch = suppliedDir ? (await git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '?')).trim() : `room/${tag}`
+      const sharedOwner = suppliedDir && !outside ? registry.list().find(record => !record.sharedWith && !['retiring', 'retired', 'abandoned'].includes(record.phase)
+        && record.lead.participant === s.me.name && path.resolve(record.dir) === path.resolve(dir)) : undefined
       if (suppliedDir && !outside && !await isOwnedWorkerWorktree(s.dir,
-        { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
+        sharedOwner ? { name: sharedOwner.name, tag: sharedOwner.tag, lead: sharedOwner.lead.participant, dir, branch: sharedOwner.branch }
+          : { name, tag, lead: s.me.name, dir, branch }, s.me.name)) {
         return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`
       }
       const hostSessionId = host === 'claude' ? randomUUID() : undefined
@@ -187,7 +194,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
         host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
-        dir, outside, branch, prep, hostSessionId,
+        dir, outside, branch, prep, hostSessionId, ...(sharedOwner ? { sharedWith: sharedOwner.id } : {}),
         capabilities: { resume: true, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
         runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,
@@ -365,7 +372,7 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
       // The host's exit can also take down its dev-server children. Name and stop
       // those while they are still visible, but leave the host pid for its own handle.
       const protectedPids = w.pid ? [w.pid] : []
-      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...localWorkers(s.dir)] })).cwd
+      const ownedWorktree = !w.sharedWith && decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...localWorkers(s.dir)] })).cwd
       const stopped: string[] = []
       let cleanupError: string | undefined
       const stopCwdProcesses = async () => {

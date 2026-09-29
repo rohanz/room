@@ -402,7 +402,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Ask an agent (to), answer (inReplyTo), or post a note. Changes are detected automatically.",
+      "description": "Ask (to), answer (inReplyTo), note; message a finished worker to resume it in its worktree.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -622,7 +622,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of it, not a built-in subagent. Collect with room_collect.",
+      "description": "Start another agent (claude/codex) in the background; for agents in parallel or codex/claude to do part of it. Use room_collect; message a finished worker to resume it in its worktree.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -89,6 +89,14 @@ describe('unavailable addressed recipients', () => {
     expect(await tools.room_wait({ questionId: question.id })).toBe(notice)
   })
 
+  it('describes a finished retained worker as resumable', async () => {
+    const { s, addWorker, tools } = fixture()
+    const own = worker({ hostSessionId: 'retained-session', dir: process.cwd() })
+    addWorker(s, own)
+    const question = hubAppend(s.room, s.me, { type: 'question', to: own.name, text: 'Follow up?' })
+    expect(await tools.room_wait({ questionId: question.id })).toContain('message a finished worker to resume it in its worktree')
+  })
+
   it('routes retired worker questions to the workers room and reads the archive', async () => {
     const { rooms, makeSession, addWorker, retire, tools } = fixture()
     const ws = makeSession('workers'); rooms.add(ws, 'workers')

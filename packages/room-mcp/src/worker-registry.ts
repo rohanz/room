@@ -494,6 +494,14 @@ export class WorkerRegistry {
     if (direct) return direct
     return this.list().find(record => record.name === tagOrName && this.reserved(record.tag)?.id === record.id)
   }
+  /** Infer ownership for records written before sharedWith existed from the checkout's canonical tag. */
+  worktreeOwner(record: WorkerRecord): WorkerRecord | undefined {
+    if (record.sharedWith) return this.read(record.sharedWith)
+    if (path.basename(record.dir) === record.tag && record.branch === `room/${record.tag}`) return undefined
+    return this.list().find(peer => peer.id !== record.id && !peer.sharedWith
+      && path.resolve(peer.dir) === path.resolve(record.dir)
+      && path.basename(peer.dir) === peer.tag && peer.branch === `room/${peer.tag}`)
+  }
   status(id: string): WorkerStatusResult | undefined {
     const record = this.read(id)
     if (!record) return undefined
@@ -510,7 +518,7 @@ export class WorkerRegistry {
     return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart) }
   }
   /** No room view or remote presence can turn into a local worktree capability. */
-  async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
+  async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string, allowVanished = false): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
     let candidate = this.reservedByTagOrName(tagOrName)
     if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead)
     if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room
@@ -528,8 +536,17 @@ export class WorkerRegistry {
     let leadDir: string
     try { leadDir = fs.realpathSync(lead.dir) } catch { return undefined }
     let workerDir: string
-    try { workerDir = fs.realpathSync(candidate.dir) } catch { return undefined }
-    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(candidate, status), dir: workerDir }, lead.participant, workers)) return undefined
+    try { workerDir = fs.realpathSync(candidate.dir) }
+    catch {
+      if (allowVanished && !candidate.legacy?.unowned && !fs.existsSync(candidate.dir)
+        && roomWorkerPathMatchesBranch(leadDir, candidate.dir, candidate.branch, true)) return { record: candidate, status }
+      return undefined
+    }
+    const worktreeRecord = this.worktreeOwner(candidate) ?? candidate
+    if (!worktreeRecord || worktreeRecord.lead.participant !== lead.participant
+      || path.resolve(worktreeRecord.dir) !== path.resolve(candidate.dir)
+      || worktreeRecord.sharedWith) return undefined
+    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
     return { record: candidate, status }
   }
   private async adoptLegacy(record: WorkerRecord, lead: { participant: string; room: string; dir: string }): Promise<WorkerRecord | undefined> {
@@ -869,8 +886,18 @@ export class WorkerRegistry {
       const current = this.status(value.id)
       return current ? [realStateInput(value, current)] : []
     })
-    const owned = await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
-    if (!owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
+    const borrowed = !!record.sharedWith || !!this.worktreeOwner(record)
+    const shared = !borrowed && fs.existsSync(record.dir) ? this.list().filter(value => value.id !== id && !['retiring', 'retired', 'abandoned'].includes(value.phase)
+      && path.resolve(value.dir) === path.resolve(record!.dir)) : []
+    for (const user of shared) {
+      const userStatus = this.status(user.id)
+      if (!userStatus || (user.phase !== 'discarding' && !['done', 'failed', 'stopped'].includes(userStatus.status))) return
+      if (user.phase !== 'discarding') await this.beginDiscard(user.id, true, [])
+      await this.replayDiscard(user.id)
+      if (!['retiring', 'retired'].includes(this.read(user.id)?.phase ?? '')) return
+    }
+    const owned = !borrowed && await isOwnedWorkerWorktree(leadDir, own, record.lead.participant, workers)
+    if (!borrowed && !owned && fs.existsSync(record.dir)) throw new Error(`discard replay lost ownership of ${record.dir}`)
     if (!record.discard.steps.children) {
       for (const childId of record.discard.children) {
         const child = this.read(childId)
@@ -944,14 +971,14 @@ export class WorkerRegistry {
     if (!record.discard!.steps.cleanup) {
       if (owned) {
         if (!await cleanupWorker(leadDir, own, true, true, [], {}, record.lead.participant, workers)) return
-      } else {
+      } else if (!borrowed) {
         await pruneMissingWorkerWorktree(leadDir, own)
         cleanupWorkerLogs(leadDir, own)
-      }
+      } else cleanupWorkerLogs(leadDir, own)
       await this.markDiscardStep(id, 'cleanup')
     }
     await this.markDiscardStep(id, 'prune')
-    await this.beginRetirement(id, this.archiveOf(this.read(id)!, { summary: 'discarded', disposition: 'discarded' }))
+    await this.beginRetirement(id, this.archiveOf(this.read(id)!, { summary: borrowed ? 'detached' : 'discarded', disposition: 'discarded' }))
   }
 
   /** Admission is evidence of launch only when a run writer proves the matching nonce. */

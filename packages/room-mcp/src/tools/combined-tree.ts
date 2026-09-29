@@ -223,7 +223,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       if (version.kind === 'text' || version.kind === 'base' || version.kind === 'deleted') continue
       const why = version.kind === 'held'
         ? version.entry.held === 'scope' ? `changed by ${person}, outside ${person}'s declared area` : `changed by ${person}, text not shared (${version.why})`
-        : version.kind === 'excluded' ? `changed by ${person}, excluded by their rules` : `${person}'s version unknown: ${version.detail}`
+        : version.kind === 'excluded' ? `changed by ${person}, excluded by their rules` : `version unknown: ${version.detail}`
       gaps.push({ person, path: p, why })
       // Only this participant's version is unavailable; keep other versions.
     }

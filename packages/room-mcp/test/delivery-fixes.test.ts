@@ -117,7 +117,7 @@ it('M6: an unconfirmed tool reply leaves the disclosure owed; reopening offers i
   await flush()
   expect((await reopen(dir)).disclosed).toEqual({ level: 'full', version: 2 })
   const noOp = await second.call('room_state', {})
-  expect(noOp.split('\n').slice(0, 2)).toContain('nothing new for you since your last read; no action needed')
+  expect(noOp.split('\n').slice(0, 4)).toContain('nothing new for you since your last read; no action needed')
   expect(noOp).not.toContain('note for your human')
   await first.shutdown(); await second.shutdown()
 })
