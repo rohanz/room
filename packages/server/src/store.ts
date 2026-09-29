@@ -8,7 +8,28 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export interface OpenRepo { by?: string; at: number; branches: string[]; lastSeen?: number }
+/** The migration step is a commit record; publish a complete registry snapshot before proceeding. */
+export function writeAtomicFile(file: string, content: string): void {
+  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
+  const fd = fs.openSync(temporary, 'wx', 0o600)
+  try { fs.writeFileSync(fd, content); fs.fsyncSync(fd) }
+  finally { fs.closeSync(fd) }
+  try { fs.renameSync(temporary, file) }
+  catch (e) { fs.rmSync(temporary, { force: true }); throw e }
+  try {
+    const dir = fs.openSync(path.dirname(file), 'r')
+    try { fs.fsyncSync(dir) } finally { fs.closeSync(dir) }
+  } catch (e) {
+    if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e
+  }
+}
+
+export interface MigrationPlan { id: string; sources: string[]; moved?: string }
+export interface OpenRepo {
+  by?: string; at: number; branches: string[]; lastSeen?: number
+  mode?: 'branch' | 'repo'; legacy?: string[]; plan?: MigrationPlan
+  step?: 'planned' | 'frozen' | 'moved' | 'written'; migratedAt?: number; unresolved?: number
+}
 /** `login` is the display name (GitHub login, verified email or preferred_username). `id` is the
  *  namespaced identity used for admission and admin checks: `oidc:<issuer-host>:<sub>` for OIDC
  *  sessions; absent (same as the login) for GitHub sessions and sessions written before it existed. */
@@ -78,12 +99,12 @@ export class FileStore implements Store {
   async loadRooms(): Promise<Record<string, OpenRepo>> {
     const raw = this.readJson<Record<string, Partial<OpenRepo>>>(this.roomsFile) ?? {}
     const out: Record<string, OpenRepo> = {}
-    for (const [k, v] of Object.entries(raw)) out[k] = { by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [], lastSeen: v.lastSeen }
+    for (const [k, v] of Object.entries(raw)) out[k] = { ...v, by: v.by, at: v.at ?? Date.now(), branches: v.branches ?? [] }
     return out
   }
   saveRooms(all: Record<string, OpenRepo>): Promise<void> {
     const text = JSON.stringify(all)
-    return this.writes.run(async () => { if (this.roomsFile) fs.writeFileSync(this.roomsFile, text) })
+    return this.writes.run(async () => { if (this.roomsFile) writeAtomicFile(this.roomsFile, text) })
   }
 
   async loadSessions(): Promise<Record<string, StoredSession>> {

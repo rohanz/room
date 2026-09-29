@@ -327,6 +327,8 @@ export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: Do
  * size is asked for lazily, with the write message's byte length, so callers can cache an
  * O(doc) measurement and refresh it by traffic (see DocSizeMeter).
  */
+export function sizeCapReason(maxBytes: number): string { return `room is over its size cap (${(maxBytes / 1048576).toFixed(0)} MB)` }
+
 export function capDocSize(conn: EmitterLike, sizeBytes: (messageBytes: number) => number, maxBytes: number, onCap: (size: number) => void): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
