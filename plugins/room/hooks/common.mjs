@@ -144,25 +144,106 @@ function* inputStrings(value) {
   else if (value && typeof value === 'object') { for (const item of Object.values(value)) yield* inputStrings(item) }
 }
 
-/** Advisory write heuristic, not a shell parser. Never scan oversized command strings. */
-export function shellLooksLikeWrite(input) {
+// Advisory shell parser: recognize explicit write forms and their destinations.
+// Unknown commands stay silent. Quotes protect separators and spaces in path names.
+function shellCommands(input) {
   const command = input?.command ?? input?.cmd ?? input
-  const strings = Array.isArray(command) && command.every(v => typeof v === 'string')
-    ? [command.reduce((s, v) => s.length > 20_000 ? s : s + ' ' + v, '')] : inputStrings(command)
-  for (const text of strings) {
-    if (text.length > 20_000) continue
-    if (/>|(?:^|[\s;|&()])(?:\S*\/)?(?:sed\s+[^\n;|&]*?-[^\s]*i|perl\s+[^\n;|&]*?-[^\s]*i|(?:tee|mv|cp|rm|apply_patch)(?=\s|$)|git\s+(?:apply|checkout|restore|stash|merge|rebase)(?=\s|$)|(?:python[\d.]*|node)\s+[^\n;|&]*?(?:-[ce](?=\s|['"]|$)|<<))/.test(text)
-      || /(?:^|[;|&(){}\n])\s*(?:set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|sc|ac|ni|ri|del|mv|cp|ren)(?=\s|$)/i.test(text)) return true
+  const values = Array.isArray(command) && command.every(v => typeof v === 'string') ? [command.join(' ')] : inputStrings(command)
+  const commands = []
+  for (const value of values) {
+    if (value.length > 20_000) continue
+    let segment = '', quote = ''
+    for (let i = 0; i < value.length; i++) {
+      const c = value[i]
+      if (quote) {
+        segment += c
+        if (c === quote && value[i - 1] !== '\\') quote = ''
+      } else if (c === '"' || c === "'" || c === '`') { quote = c; segment += c }
+      else if (c === '\n' || c === ';' || c === '|' || c === '&') {
+        if (segment.trim()) commands.push(segment.trim())
+        segment = ''
+      } else segment += c
+    }
+    if (segment.trim()) commands.push(segment.trim())
   }
-  return false
+  return commands
 }
 
-/** Repo-relative paths touched by an edit or shell tool. Shell scanning skips strings
- * over 20,000 chars and checks at most 200 tokens across the entire tool input. */
+function shellWords(command) {
+  return Array.from(command.matchAll(/"(?:\\.|[^"\\])*"|'[^']*'|`[^`]*`|>>?|[^\s<>"'`]+/g), m => {
+    const word = m[0]
+    const quoted = /^['"`]/.test(word)
+    return { text: quoted ? word.slice(1, -1) : word, quoted }
+  }).slice(0, 200)
+}
+
+function writeTargets(input, powerShell = false) {
+  const targets = []
+  let cwd = ''
+  const add = value => targets.push(cwd && !/^(?:[a-z]:[\\/]|[\\/])/.test(value) ? `${cwd}/${value}` : value)
+  for (const command of shellCommands(input)) {
+    const tokens = shellWords(command)
+    const words = tokens.map(token => token.text)
+    for (let i = 0; i < words.length - 1; i++) {
+      if (!tokens[i].quoted && (words[i] === '>' || words[i] === '>>') && words[i + 1] !== '&1' && words[i + 1] !== '/dev/null') add(words[i + 1])
+    }
+    while (words.length && (/^[A-Za-z_][\w]*=/.test(words[0]) || words[0] === 'env' || words[0] === 'sudo')) words.shift()
+    const name = (words.shift() || '').split('/').at(-1).toLowerCase()
+    if (!name) continue
+    const args = words.filter(w => w !== '>' && w !== '>>')
+    const positional = args.filter(w => !w.startsWith('-'))
+    const last = positional.at(-1)
+    if (name === 'cd') { if (args[0]) cwd = path.posix.join(cwd, args[0]); continue }
+    if (powerShell) {
+      const take = (...flags) => {
+        for (let i = 0; i < args.length - 1; i++) if (flags.includes(args[i].toLowerCase())) add(args[i + 1])
+        if (!args.some(a => flags.includes(a.toLowerCase())) && positional[0]) add(positional[0])
+      }
+      if (/^(?:set-content|add-content|out-file|new-item|remove-item|sc|ac|ni|ri|del)$/.test(name)) take('-path', '-literalpath', '-filepath')
+      else if (name === 'rename-item' || name === 'ren') {
+        const i = args.findIndex(a => /^-newname$/i.test(a))
+        if (i >= 0 && args[i + 1]) add(args[i + 1])
+        else if (last) add(last)
+      }
+      else if (/^(?:move-item|copy-item|mv|cp)$/.test(name)) {
+        const i = args.findIndex(a => /^-destination$/i.test(a))
+        if (i >= 0 && args[i + 1]) add(args[i + 1])
+        else if (last) add(last)
+      }
+      continue
+    }
+    if (name === 'sed' || name === 'perl') {
+      const inPlace = args.some(a => name === 'sed' ? /^-(?:[^-\s]*i[^\s]*|i)$/.test(a) || a === '--in-place' : /^-[^-\s]*i/.test(a))
+      if (inPlace && last) add(last)
+    } else if (name === 'patch') {
+      if (!command.includes('<') && positional[0]) add(positional[0])
+    } else if (['tee', 'rm', 'touch', 'truncate', 'apply_patch'].includes(name)) {
+      if (name === 'rm' || name === 'touch' || name === 'tee') for (const arg of positional) add(arg)
+      else if (last) add(last)
+    } else if (name === 'mv') {
+      for (const arg of positional) add(arg)
+    } else if (name === 'cp') {
+      if (last) add(last)
+    } else if (name === 'find' && args.some(a => /^-(?:delete|exec|execdir|ok)$/.test(a))) {
+      if (positional[0]) add(positional[0])
+    } else if (name === 'dd') {
+      for (const arg of args) if (arg.startsWith('of=')) add(arg.slice(3))
+    } else if (name === 'git') {
+      const action = args[0]
+      if (action === 'mv' || action === 'rm') {
+        for (const arg of args.slice(1).filter(a => !a.startsWith('-'))) add(arg)
+      } else if (action === 'restore' || (action === 'checkout' && args.includes('--')) || (action === 'stash' && args.includes('--'))) {
+        if (last && last !== action) add(last)
+      }
+    }
+  }
+  return targets.filter(t => t && !t.startsWith('-') && t !== '/dev/null')
+}
+
+/** Repo-relative paths touched by an edit or shell tool. Shell commands are bounded above. */
 export function pathsOf(toolName, input, root) {
   const out = new Set()
   const shell = isShellTool(toolName)
-  let candidates = 0
   const rel = p => {
     const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(root)
     const lib = windows ? path.win32 : path
@@ -171,26 +252,25 @@ export function pathsOf(toolName, input, root) {
     const r = lib.relative(root, abs)
     return r && r !== '..' && !r.startsWith('..' + lib.sep) ? r.split(lib.sep).join('/') : undefined
   }
-  if (!shell && input && typeof input === 'object') {
+  if (shell) {
+    for (const token of writeTargets(input, toolName === 'PowerShell')) {
+      const r = rel(token)
+      if (r && (fs.existsSync(path.join(root, r)) || /[/\\.]\w/.test(token))) out.add(r)
+    }
+    return Array.from(out)
+  }
+  if (input && typeof input === 'object') {
     for (const key of ['file_path', 'path', 'filePath']) if (typeof input[key] === 'string') {
       const r = rel(input[key]); if (r) out.add(r)
     }
   }
   for (const text of inputStrings(input)) {
-    if (shell && text.length > 20_000) continue
-    if (!shell) {
-      for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
-    }
-    // Keep whole values for edit tools (including paths containing spaces). Shell
-    // punctuation separates tokens so redirects and quoted arguments work too.
-    const tokens = toolName === 'PowerShell'
-      ? Array.from(text.matchAll(/"(?:\x60.|[^"\x60])*"|'(?:''|[^'])*'|[^\s'"\x60;|&<>()]+/g), m => [m[0].replace(/^(?:"|')|(?:"|')$/g, '')])
-      : shell ? text.matchAll(/[^\s'"\x60;|&<>()]+/g) : [[text.trim()]]
-    for (const [token] of tokens) {
-      if (shell && candidates++ >= 200) return Array.from(out)
+    for (const m of text.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)) { const r = rel(m[1].trim()); if (r) out.add(r) }
+    // Edit tool path fields may contain spaces; keep each value intact.
+    for (const token of [text.trim()]) {
       if (!token || token.length >= 400 || token.includes('\n')) continue
       const r = rel(token)
-      if (r && (fs.existsSync(path.join(root, r)) || (shell && !token.startsWith('-') && /[/\\.]\w/.test(token)))) out.add(r)
+      if (r && fs.existsSync(path.join(root, r))) out.add(r)
     }
   }
   return Array.from(out)
