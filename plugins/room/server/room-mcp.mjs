@@ -7924,6 +7924,12 @@ function commonEdges(a, b) {
 function fromChanges(changes) {
   return changes.map((c) => [c.added ? 1 : c.removed ? -1 : 0, c.value]);
 }
+function disjoint(a, b) {
+  const seen = /* @__PURE__ */ new Set();
+  for (let i2 = 0; i2 < a.length; i2++) seen.add(a.charCodeAt(i2));
+  for (let i2 = 0; i2 < b.length; i2++) if (seen.has(b.charCodeAt(i2))) return false;
+  return true;
+}
 function hunk(before, after, budget) {
   if (!before || !after) return [replace(before, after), 0];
   const [head, tail] = commonEdges(before, after);
@@ -7934,6 +7940,7 @@ function hunk(before, after, budget) {
     ...tail ? [[0, before.slice(before.length - tail)]] : []
   ];
   if (!a || !b) return [edges(replace(a, b)), 0];
+  if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0];
   const tokens = a.length + b.length;
   const maxEditLength = editBudget(tokens, budget);
   const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : void 0;
@@ -7946,6 +7953,11 @@ function boundedTextDiff(before, after) {
   const [head, tail] = commonEdges(before, after);
   const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
   const out2 = head ? [[0, before.slice(0, head)]] : [];
+  if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
+    out2.push(...hunk(a, b, WORK)[0]);
+    if (tail) out2.push([0, before.slice(before.length - tail)]);
+    return out2.filter(([, value2]) => value2.length);
+  }
   let budget = WORK;
   const lineCount = (s) => s.split("\n").length;
   const lineEdits = editBudget(lineCount(a) + lineCount(b), budget / 2);
@@ -7974,12 +7986,13 @@ function boundedTextDiff(before, after) {
   if (tail) out2.push([0, before.slice(before.length - tail)]);
   return out2.filter(([, value2]) => value2.length);
 }
-var WORK, isHigh, isLow, editBudget, replace;
+var WORK, SMALL_MIDDLE, isHigh, isLow, editBudget, replace;
 var init_text_diff = __esm({
   "packages/shared/src/text-diff.ts"() {
     "use strict";
     init_libesm();
     WORK = 2e6;
+    SMALL_MIDDLE = 4096;
     isHigh = (code) => code >= 55296 && code <= 56319;
     isLow = (code) => code >= 56320 && code <= 57343;
     editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
@@ -18407,6 +18420,7 @@ var init_share_level = __esm({
 
 // packages/roomd/src/publisher.ts
 import fs8 from "node:fs";
+import { setImmediate as setImmediate2 } from "node:timers/promises";
 function eligibility(facts) {
   if (facts.ignored) return { share: false, reason: "ignore" };
   if (!facts.safe) return { share: false, reason: "unsafe" };
@@ -18631,7 +18645,8 @@ var init_publisher = __esm({
             this.markSharingDirty();
             return;
           }
-          for (const relpath of paths) {
+          let lastYield = performance.now();
+          for (const [index, relpath] of paths.entries()) {
             if (this.host.stopped) return;
             if (generation !== this.host.sharingGeneration) {
               this.markSharingDirty();
@@ -18639,6 +18654,10 @@ var init_publisher = __esm({
             }
             await this.publishDiskState(relpath, { base, texts, shared, sharedTexts, blobs });
             if (this.host.phase === "seed" || this.host.phase === "watch") this.host.onSeedProgress?.();
+            if (index + 1 < paths.length && performance.now() - lastYield >= 15) {
+              await setImmediate2();
+              lastYield = performance.now();
+            }
           }
           if (generation !== this.host.sharingGeneration) this.markSharingDirty();
           else this.reconciled();
