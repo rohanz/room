@@ -277,18 +277,28 @@ export class Rooms {
         busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
-    const posting = await beforeLaunch?.()
-    const refused = typeof posting === 'string' ? posting : undefined
-    if (refused) {
+    let posting: string | { ids: string[]; prompt: string } | undefined
+    try {
+    try {
+      posting = await beforeLaunch?.()
+      const refused = typeof posting === 'string' ? posting : undefined
+      if (refused) {
+        await registry.update(record.id, old => ({ ...old, phase: 'active',
+          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: refused } }], seq: old.seq + 1 }))
+        return refused
+      }
+      if (posting && typeof posting !== 'string' && posting.ids.length) {
+        const ids = [...new Set(posting.ids)]
+        const updated = await registry.update(record.id, old => ({ ...old,
+          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, promptMsgIds: ids }],
+          seq: old.seq + 1 }))
+        run = updated.runs.at(-1)!
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
       await registry.update(record.id, old => ({ ...old, phase: 'active',
-        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: refused } }], seq: old.seq + 1 }))
-      return refused
-    }
-    if (posting && typeof posting !== 'string' && posting.ids.length) {
-      const updated = await registry.update(record.id, old => ({ ...old,
-        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, promptMsgIds: [...new Set(posting.ids)] }],
-        seq: old.seq + 1 }))
-      run = updated.runs.at(-1)!
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: reason } }], seq: old.seq + 1 }))
+      throw error
     }
     try {
       const { server, isWorker } = workerOrigin(s)
@@ -327,6 +337,7 @@ export class Rooms {
       return launchError.delivered
         ? { delivered: true, reply: launchError.stopped ? `stopped after receiving your message: ${launchError.message}` : `could not stop ${record.tag}; left running` }
         : `error: could not resume ${record.tag}: ${launchError.message}`
+    }
     } finally { await registry.finishOperation(record.id) }
   }
 

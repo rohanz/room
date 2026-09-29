@@ -110,7 +110,7 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   const parentInfo = probeProcess(process.ppid)
   const chain = [{ pid: process.pid, startTime: processInfo?.startTime ?? '', executable: processInfo?.executable ?? '' },
     ...(parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? '', executable: parentInfo.executable ?? '' }] : [])]
-  try { await registry.admit({ id, run, nonce, dir, chain,
+  try { await registry.admit({ id, run, nonce, dir, chain, hostProcess: chain[1] ?? null,
     hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
 }
@@ -218,10 +218,14 @@ const recordShape = (value: unknown, id: string): value is WorkerRecord => objec
   && typeof value.createdAt === 'number' && Number.isSafeInteger(value.seq)
 const reportShape = (value: unknown): value is RunReport => object(value) && Number.isSafeInteger(value.run)
   && typeof value.nonce === 'string' && Array.isArray(value.chain) && value.chain.every(processShape)
+  && (value.hostProcess === undefined || value.hostProcess === null || processShape(value.hostProcess))
   && typeof value.joinedAt === 'number' && (value.hostSessionId === undefined || typeof value.hostSessionId === 'string')
   && (value.posted === undefined || typeof value.posted === 'string')
   && (value.done === undefined || (object(value.done) && typeof value.done.at === 'number'
     && typeof value.done.summary === 'string' && Array.isArray(value.done.changed)))
+/** Schema-2 admission explicitly distinguishes an unverified parent from the worker MCP. */
+const admittedHost = (report: RunReport): RunReport['chain'][number] | undefined =>
+  report.hostProcess !== undefined ? report.hostProcess ?? undefined : report.chain[1]
 const exitShape = (value: unknown): value is ExitObservation => object(value) && Number.isSafeInteger(value.run)
   && (value.code === null || Number.isSafeInteger(value.code)) && typeof value.at === 'number'
   && typeof value.witnessed === 'boolean' && (value.signal === undefined || typeof value.signal === 'string')
@@ -671,7 +675,7 @@ export class WorkerRegistry {
 
   /** The child proves the launch nonce and its checkout before it receives report authority. */
   async admit(input: { id: string; run: number; nonce: string; dir: string;
-    chain: RunReport['chain']; hostSessionId?: string }): Promise<RunReport> {
+    chain: RunReport['chain']; hostProcess?: RunReport['hostProcess']; hostSessionId?: string }): Promise<RunReport> {
     const record = this.read(input.id)
     const run = record?.runs.at(-1)
     let actual: string, expected: string
@@ -680,6 +684,7 @@ export class WorkerRegistry {
     if (!run || run.n !== input.run || run.nonce !== input.nonce || actual !== expected
       || !['prepared', 'active'].includes(record!.phase)) throw new Error('worker run not admitted')
     const report: RunReport = { run: run.n, nonce: run.nonce, chain: input.chain,
+      ...(input.hostProcess !== undefined ? { hostProcess: input.hostProcess } : {}),
       joinedAt: this.now(), ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}) }
     await this.writeReport(input.id, report)
     if (input.hostSessionId && !record!.hostSessionId && !fs.existsSync(this.opFile(input.id))) await this.update(input.id, old => ({ ...old,
@@ -955,6 +960,7 @@ export class WorkerRegistry {
       if (previous && previous.nonce !== report.nonce) throw new Error('run report nonce mismatch')
       writeAtomic(this.reportFile(id, report.run), previous ? { ...previous,
         chain: previous.chain, joinedAt: previous.joinedAt,
+        hostProcess: previous.hostProcess !== undefined ? previous.hostProcess : report.hostProcess,
         hostSessionId: previous.hostSessionId ?? report.hostSessionId,
         done: previous.done ?? report.done, posted: previous.posted ?? report.posted } : report)
     })
@@ -1050,8 +1056,9 @@ export class WorkerRegistry {
         if (writer && report) await this.update(record.id, old => {
           const latest = old.runs.at(-1)!
           if (latest.launch) return { ...old, seq: old.seq + 1 }
-          const process = report.chain[0]
-          return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...latest, launch: { outcome: 'launched', pid: process?.pid ?? 0, ...(process ? { process } : {}) } }], seq: old.seq + 1 }
+          const process = admittedHost(report)
+          return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...latest,
+            launch: process ? { outcome: 'launched', pid: process.pid, process } : { outcome: 'ambiguous', at: this.now() } }], seq: old.seq + 1 }
         })
         else if (this.alive(run.launcher) === 'dead') await this.update(record.id, old => ({ ...old,
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'ambiguous', at: this.now() } }], seq: old.seq + 1 }))
@@ -1061,8 +1068,9 @@ export class WorkerRegistry {
         const report = this.reports(record.id).find(r => r.run === run.n && r.nonce === run.nonce)
         const writer = this.readFact(this.writerFile(record.id, run.n), tokenShape)
         if (writer && report) await this.update(record.id, old => {
-          const process = report.chain[0]
-          return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process?.pid ?? 0, ...(process ? { process } : {}) } }], seq: old.seq + 1 }
+          const process = admittedHost(report)
+          if (!process) return old
+          return { ...old, phase: 'active', runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: process.pid, process } }], seq: old.seq + 1 }
         })
       }
       if (run.launch.outcome === 'launched' && !this.exits(record.id).some(e => e.run === run.n)

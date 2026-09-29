@@ -5,7 +5,9 @@
  * idle lease, and after H1's eight hours releases the claims and scope that kept it present.
  */
 import { gitCommonDir } from '@room/roomd'
-import { liveness, type ProcessIdentity } from './leases.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { liveness, withGuard, writeAtomic, type ProcessIdentity } from './leases.js'
 import { pidAlive } from './worker-process.js'
 import { boundSession, readSessionRecord, type Session } from './session.js'
 import { WorkerRegistry, registrySnapshotForDir } from './worker-registry.js'
@@ -13,6 +15,34 @@ import type { NoteMsg } from '@room/shared'
 import { parentCommand, type ParentCommandReader } from './workspace.js'
 
 export type HostKind = 'shared-app-server' | 'interactive'
+
+/** Allocate an H1 incarnation durably before this MCP can issue an idle-release notice. */
+export async function nextIdleEpisode(commonDir: string): Promise<string> {
+  const file = path.join(commonDir, 'room', 'sessions', 'idle-episode.json')
+  const deadline = performance.now() + 5_000
+  for (;;) {
+    try {
+      return withGuard(file, () => {
+        let current = 0
+        try {
+          const value: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+          if (!value || typeof value !== 'object' || !Number.isSafeInteger((value as { max?: unknown }).max)
+            || Number((value as { max: number }).max) < 0) throw new Error('invalid idle-episode counter')
+          current = (value as { max: number }).max
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        }
+        if (current >= Number.MAX_SAFE_INTEGER) throw new Error('idle-episode counter exhausted')
+        const next = current + 1
+        writeAtomic(file, { max: next })
+        return String(next)
+      })
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('lease guard busy:') || performance.now() >= deadline) throw error
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+}
 
 /** Presence decisions use every joined room, including a lead's local workers room. */
 export function joinedPresenceHolds(sessions: readonly Session[]): boolean {
@@ -99,6 +129,8 @@ export interface PresenceEndOptions {
   /** Minutes idle changed: publish it in presence (the heartbeat carries it). */
   publishIdle?(idleMin: number): void
   mono?: () => number
+  /** Unique per presence-loop incarnation; injectable for deterministic tests. */
+  episodeId?: string
   tickMs?: number
   log?: (line: string) => void
 }
@@ -107,6 +139,7 @@ export class PresenceEnd {
   readonly mono: () => number
   private last: number
   private epoch = 1
+  private readonly episodeId: string
   private published?: number
   private left = false
   private ticking?: Promise<void>
@@ -114,6 +147,8 @@ export class PresenceEnd {
 
   constructor(private readonly options: PresenceEndOptions) {
     this.mono = options.mono ?? (() => performance.now())
+    if (options.hostKind === 'shared-app-server' && !options.episodeId) throw new Error('durable idle episode required for shared app-server')
+    this.episodeId = options.episodeId ?? 'interactive'
     this.last = this.mono()
     if (options.tickMs !== 0) {
       this.timer = setInterval(() => { void this.tick() }, options.tickMs ?? PRESENCE_TICK_MS)
@@ -160,7 +195,7 @@ export class PresenceEnd {
     const idle = this.idleMs()
     if (idle >= IDLE_CLAIMS_MS) {
       // Retry a pending journal even after its first pass removed every held claim and scope.
-      try { await this.options.releaseHeld(idle, `idle-${this.epoch}`) }
+      try { await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`) }
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
     if (idle >= IDLE_LEASE_MS && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
