@@ -30,38 +30,49 @@ const linesOf = (text: string): string[] => text.endsWith('\n') ? text.slice(0, 
 /** Map inclusive, 1-based lines through a line diff. A changed hunk owns its whole destination span. */
 export function mapRange(fromText: string, toText: string, range: { from: number; to: number }): { from: number; to: number } {
   if (fromText === toText) return range
-  const old = linesOf(fromText), next = linesOf(toText)
+  const { from, to } = prepareClaimLineMap(fromText, toText)(range)
+  return { from, to }
+}
+
+/** Prepare one owner-to-local diff, then map any number of the owner's claim ranges. */
+export function prepareClaimLineMap(ownerVersion: string | undefined, myText: string): (range: { from: number; to: number }) => { from: number; to: number; approximate: boolean } {
+  const next = linesOf(myText)
+  const whole = () => ({ from: 1, to: Math.max(1, next.length), approximate: true })
+  if (ownerVersion === undefined) return whole
+  if (ownerVersion === myText) return range => ({ from: range.from, to: range.to, approximate: false })
+  const old = linesOf(ownerVersion)
   // Large files degrade conservatively instead of allocating a quadratic diff table.
-  if (old.length * next.length > 1_000_000) return { from: 1, to: Math.max(1, next.length) }
+  if (old.length * next.length > 1_000_000) return whole
   const dp = Array.from({ length: old.length + 1 }, () => new Uint32Array(next.length + 1))
   for (let i = old.length - 1; i >= 0; i--) for (let j = next.length - 1; j >= 0; j--)
     dp[i]![j] = old[i] === next[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
-  let i = 0, j = 0, start = Number.POSITIVE_INFINITY, end = 0
-  while (i < old.length || j < next.length) {
-    if (i < old.length && j < next.length && old[i] === next[j]) {
-      if (i + 1 >= range.from && i + 1 <= range.to) { start = Math.min(start, j + 1); end = Math.max(end, j + 1) }
-      i++; j++; continue
-    }
-    const oldStart = i, newStart = j
+  return range => {
+    let i = 0, j = 0, start = Number.POSITIVE_INFINITY, end = 0
     while (i < old.length || j < next.length) {
-      if (i < old.length && j < next.length && old[i] === next[j]) break
-      if (j < next.length && (i === old.length || dp[i]![j + 1]! >= dp[i + 1]![j]!)) j++
-      else i++
+      if (i < old.length && j < next.length && old[i] === next[j]) {
+        if (i + 1 >= range.from && i + 1 <= range.to) { start = Math.min(start, j + 1); end = Math.max(end, j + 1) }
+        i++; j++; continue
+      }
+      const oldStart = i, newStart = j
+      while (i < old.length || j < next.length) {
+        if (i < old.length && j < next.length && old[i] === next[j]) break
+        if (j < next.length && (i === old.length || dp[i]![j + 1]! >= dp[i + 1]![j]!)) j++
+        else i++
+      }
+      if ((i > oldStart && oldStart + 1 <= range.to && i >= range.from) ||
+          (i === oldStart && oldStart >= range.from && oldStart < range.to)) {
+        start = Math.min(start, newStart + 1)
+        end = Math.max(end, Math.max(newStart + 1, j))
+      }
     }
-    if ((i > oldStart && oldStart + 1 <= range.to && i >= range.from) ||
-        (i === oldStart && oldStart >= range.from && oldStart < range.to)) {
-      start = Math.min(start, newStart + 1)
-      end = Math.max(end, Math.max(newStart + 1, j))
-    }
+    if (!Number.isFinite(start)) start = Math.min(Math.max(1, range.from), Math.max(1, next.length))
+    return { ...clampRange(start, Math.max(start, end), next.length), approximate: false }
   }
-  if (!Number.isFinite(start)) start = Math.min(Math.max(1, range.from), Math.max(1, next.length))
-  return clampRange(start, Math.max(start, end), next.length)
 }
 
 /** Claim coordinates in the caller's text; missing owner text must not certify a narrow overlap. */
 export function claimInMyLines(claim: { from: number; to: number }, ownerVersion: string | undefined, myText: string): { from: number; to: number; approximate: boolean } {
-  if (ownerVersion === undefined) return { from: 1, to: Math.max(1, linesOf(myText).length), approximate: true }
-  return { ...mapRange(ownerVersion, myText, claim), approximate: linesOf(ownerVersion).length * linesOf(myText).length > 1_000_000 && ownerVersion !== myText }
+  return prepareClaimLineMap(ownerVersion, myText)(claim)
 }
 
 export function describeClaim(c: Claim): string {

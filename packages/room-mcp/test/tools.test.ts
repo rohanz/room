@@ -667,6 +667,64 @@ describe('reading', () => {
     } finally { spy.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   }, 30_000)
 
+  it('resolves a shared 50,000-byte owner path once for 1,000 claims', async () => {
+    const t = setup(), s = t.session!
+    const ownerText = Array.from({ length: 100 }, (_, i) => `line ${i} `.padEnd(499, 'x') + '\n').join('')
+    const localText = `local\n${ownerText}`
+    expect(Buffer.byteLength(ownerText)).toBe(50_000)
+    publishFixture(t.room, 'Rohan', 'app.py', localText)
+    publishFixture(t.room, 'Bob', 'app.py', ownerText)
+    const ownerOverlay = t.room.overlays.get(manifestKey('Bob', '1'))!.get('app.py')!
+    for (let i = 0; i < 1000; i++)
+      t.room.addClaim({ by: 'Bob', byKind: 'agent', path: 'app.py', from: i % 100 + 1, to: i % 100 + 1, intent: `owner ${i}` })
+    const original = Y.Text.prototype.toString
+    let conversions = 0
+    const reconcile = vi.spyOn(ConflictSet.prototype, 'reconcile').mockResolvedValue()
+    const preparations = vi.spyOn(Array, 'from')
+    const hashInputs = vi.spyOn(Buffer, 'from')
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString').mockImplementation(function (this: Y.Text) {
+      if (this === ownerOverlay) conversions++
+      return original.call(this)
+    })
+    try {
+      const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 101, intent: 'mine' })
+      expect(out).toContain('CONFLICT')
+      expect(out.match(/CONFLICT: overlaps/g)).toHaveLength(1000)
+      expect(conversions).toBe(1)
+      expect(hashInputs.mock.calls.filter(([text]) => text === ownerText)).toHaveLength(1)
+      expect(preparations.mock.calls.filter(([source, mapper]) =>
+        !Array.isArray(source) && typeof source === 'object' && source !== null && 'length' in source &&
+        source.length === 101 && typeof mapper === 'function')).toHaveLength(1)
+    } finally { spy.mockRestore(); hashInputs.mockRestore(); preparations.mockRestore(); reconcile.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  }, 30_000)
+
+  it('yields between distinct overlapping owner paths', async () => {
+    const t = setup(), s = t.session!
+    publishFixture(t.room, 'Bob', 'app.py', COMMITTED)
+    publishFixture(t.room, 'Bob', './app.py', COMMITTED)
+    t.room.addClaim({ by: 'Bob', byKind: 'agent', path: 'app.py', from: 1, to: 1, intent: 'first path' })
+    t.room.addClaim({ by: 'Bob', byKind: 'agent', path: './app.py', from: 1, to: 1, intent: 'second path' })
+    const overlay = t.room.overlays.get(manifestKey('Bob', '1'))!
+    const first = overlay.get('app.py')!, second = overlay.get('./app.py')!
+    const original = Y.Text.prototype.toString
+    let firstSeen = false, turnAfterFirst = false, yieldedBeforeSecond = false
+    const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString').mockImplementation(function (this: Y.Text) {
+      if (this === first && !firstSeen) {
+        firstSeen = true
+        setImmediate(() => { turnAfterFirst = true })
+      }
+      if (this === second) yieldedBeforeSecond = turnAfterFirst
+      return original.call(this)
+    })
+    try {
+      const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'mine' })
+      expect(out).toContain('CONFLICT')
+      expect(out.match(/CONFLICT: overlaps/g)).toHaveLength(2)
+      expect(firstSeen).toBe(true)
+      expect(yieldedBeforeSecond).toBe(true)
+    } finally { spy.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  }, 30_000)
+
   it('checks a large unchanged claim-owner blob before requesting its contents', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'room-claim-old-large-'))
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()

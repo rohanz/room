@@ -16988,41 +16988,45 @@ function clampRange(from2, to2, lineCount) {
   const t = Math.min(Math.max(f, Math.floor(to2)), max2);
   return { from: f, to: t };
 }
-function mapRange(fromText, toText, range) {
-  if (fromText === toText) return range;
-  const old = linesOf(fromText), next = linesOf(toText);
-  if (old.length * next.length > 1e6) return { from: 1, to: Math.max(1, next.length) };
+function prepareClaimLineMap(ownerVersion, myText) {
+  const next = linesOf(myText);
+  const whole = () => ({ from: 1, to: Math.max(1, next.length), approximate: true });
+  if (ownerVersion === void 0) return whole;
+  if (ownerVersion === myText) return (range) => ({ from: range.from, to: range.to, approximate: false });
+  const old = linesOf(ownerVersion);
+  if (old.length * next.length > 1e6) return whole;
   const dp = Array.from({ length: old.length + 1 }, () => new Uint32Array(next.length + 1));
-  for (let i3 = old.length - 1; i3 >= 0; i3--) for (let j2 = next.length - 1; j2 >= 0; j2--)
-    dp[i3][j2] = old[i3] === next[j2] ? dp[i3 + 1][j2 + 1] + 1 : Math.max(dp[i3 + 1][j2], dp[i3][j2 + 1]);
-  let i2 = 0, j = 0, start2 = Number.POSITIVE_INFINITY, end = 0;
-  while (i2 < old.length || j < next.length) {
-    if (i2 < old.length && j < next.length && old[i2] === next[j]) {
-      if (i2 + 1 >= range.from && i2 + 1 <= range.to) {
-        start2 = Math.min(start2, j + 1);
-        end = Math.max(end, j + 1);
-      }
-      i2++;
-      j++;
-      continue;
-    }
-    const oldStart = i2, newStart = j;
+  for (let i2 = old.length - 1; i2 >= 0; i2--) for (let j = next.length - 1; j >= 0; j--)
+    dp[i2][j] = old[i2] === next[j] ? dp[i2 + 1][j + 1] + 1 : Math.max(dp[i2 + 1][j], dp[i2][j + 1]);
+  return (range) => {
+    let i2 = 0, j = 0, start2 = Number.POSITIVE_INFINITY, end = 0;
     while (i2 < old.length || j < next.length) {
-      if (i2 < old.length && j < next.length && old[i2] === next[j]) break;
-      if (j < next.length && (i2 === old.length || dp[i2][j + 1] >= dp[i2 + 1][j])) j++;
-      else i2++;
+      if (i2 < old.length && j < next.length && old[i2] === next[j]) {
+        if (i2 + 1 >= range.from && i2 + 1 <= range.to) {
+          start2 = Math.min(start2, j + 1);
+          end = Math.max(end, j + 1);
+        }
+        i2++;
+        j++;
+        continue;
+      }
+      const oldStart = i2, newStart = j;
+      while (i2 < old.length || j < next.length) {
+        if (i2 < old.length && j < next.length && old[i2] === next[j]) break;
+        if (j < next.length && (i2 === old.length || dp[i2][j + 1] >= dp[i2 + 1][j])) j++;
+        else i2++;
+      }
+      if (i2 > oldStart && oldStart + 1 <= range.to && i2 >= range.from || i2 === oldStart && oldStart >= range.from && oldStart < range.to) {
+        start2 = Math.min(start2, newStart + 1);
+        end = Math.max(end, Math.max(newStart + 1, j));
+      }
     }
-    if (i2 > oldStart && oldStart + 1 <= range.to && i2 >= range.from || i2 === oldStart && oldStart >= range.from && oldStart < range.to) {
-      start2 = Math.min(start2, newStart + 1);
-      end = Math.max(end, Math.max(newStart + 1, j));
-    }
-  }
-  if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, next.length));
-  return clampRange(start2, Math.max(start2, end), next.length);
+    if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, next.length));
+    return { ...clampRange(start2, Math.max(start2, end), next.length), approximate: false };
+  };
 }
 function claimInMyLines(claim2, ownerVersion, myText) {
-  if (ownerVersion === void 0) return { from: 1, to: Math.max(1, linesOf(myText).length), approximate: true };
-  return { ...mapRange(ownerVersion, myText, claim2), approximate: linesOf(ownerVersion).length * linesOf(myText).length > 1e6 && ownerVersion !== myText };
+  return prepareClaimLineMap(ownerVersion, myText)(claim2);
 }
 function describeClaim(c) {
   const who2 = displayName({ name: c.by, kind: c.byKind });
@@ -34417,13 +34421,14 @@ async function checkoutText(dir, object4, path47, encoding = "utf8", maxBytes) {
     if (rawSize > maxBytes) return void 0;
   }
   try {
-    return (await boundedGit(
+    const output = await boundedGit(
       dir,
       ["cat-file", "--filters", `--path=${path47}`, object4],
       void 0,
       void 0,
       maxBytes === void 0 ? 64 * 1024 * 1024 : maxBytes + 1
-    )).toString(encoding);
+    );
+    return maxBytes !== void 0 && output.length > maxBytes ? void 0 : output.toString(encoding);
   } catch (error2) {
     if (maxBytes !== void 0 && (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || /maxBuffer|ERR_CHILD_PROCESS_STDIO_MAXBUFFER/.test(String(error2)))) return void 0;
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(error2.stderr))) return void 0;
@@ -39332,6 +39337,11 @@ var Daemon = class {
   // ---- watcher -----------------------------------------------------------
   async startWatcher() {
     this.beforeWatcherReady?.();
+    try {
+      fs8.readdirSync(this.dir);
+    } catch (error2) {
+      throw new RoomdError(`cannot watch ${this.dir}: ${errMsg(error2)}`, 1);
+    }
     const watchedFiles = /* @__PURE__ */ new Set();
     let warnedLarge = false;
     const countFile = (absolute, add2) => {
@@ -39864,8 +39874,10 @@ function cleanupOrphanTemps(dir, probe = probeProcess) {
   for (const name2 of fs11.readdirSync(dir)) {
     const match = tempPattern.exec(name2);
     if (!match) continue;
-    const observed = probe(Number(match[1]));
+    const pid = Number(match[1]);
+    const observed = probe(pid);
     if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    if (pidAlive(pid)) continue;
     try {
       fs11.unlinkSync(path8.join(dir, name2));
       removed++;
@@ -47349,10 +47361,23 @@ function handlers(state) {
       }
       if (superseded) await s.post(s.me, { type: "note", priority: "fyi", text: `${s.me.name} superseded ${superseded} plan(s)` });
       const overlappingPaths = s.room.openClaims().filter((c) => c.id !== claim2.id && nb.has(c.by) && !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap({ path: c.path, from: 1, to: Number.MAX_SAFE_INTEGER }, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER }));
-      const overlaps = (await Promise.all(overlappingPaths.map(async (c) => ({
-        claim: c,
-        range: await claimRangeInMyText(s, c, t ?? "")
-      })))).filter(({ claim: c, range: range2 }) => claimsOverlap({ path: c.path, ...range2 }, { path: p, ...r }));
+      const groups = /* @__PURE__ */ new Map();
+      for (const c of overlappingPaths) {
+        const key2 = `${c.by}\0${c.path}`;
+        const group = groups.get(key2);
+        if (group) group.push(c);
+        else groups.set(key2, [c]);
+      }
+      const overlaps = [];
+      for (const group of groups.values()) {
+        await new Promise((resolve5) => setImmediate(resolve5));
+        const first = group[0];
+        const map2 = await claimMapInMyText(s, first, t ?? "");
+        for (const c of group) {
+          const range2 = map2(c);
+          if (claimsOverlap({ path: c.path, ...range2 }, { path: p, ...r })) overlaps.push({ claim: c, range: range2 });
+        }
+      }
       for (const { claim: o, range: range2 } of overlaps)
         out2.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range2.approximate ? "; approximate lines" : ""}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
@@ -47394,8 +47419,8 @@ function handlers(state) {
   };
   return handlers10;
 }
-async function claimRangeInMyText(s, claim2, myText) {
-  if (claim2.path.endsWith("/")) return { from: claim2.from, to: claim2.to, approximate: false };
+async function claimMapInMyText(s, claim2, myText) {
+  if (claim2.path.endsWith("/")) return (c) => ({ from: c.from, to: c.to, approximate: false });
   for (let attempt = 0; attempt < 2; attempt++) {
     const view = participantsView(s.room, s.awareness, Date.now());
     const raw = snapshotPath(s.room, claim2.by, view, claim2.path);
@@ -47408,9 +47433,9 @@ async function claimRangeInMyText(s, claim2, myText) {
     if (raw && !snapshotStillCurrent(s.room, raw, currentView)) continue;
     if (owner && owner !== raw && !snapshotStillCurrent(s.room, owner, currentView)) continue;
     const ownerText = version3.kind === "text" ? version3.text : version3.kind === "base" ? version3.text : version3.kind === "deleted" ? "" : void 0;
-    return claimInMyLines(claim2, ownerText, myText);
+    return prepareClaimLineMap(ownerText, myText);
   }
-  return claimInMyLines(claim2, void 0, myText);
+  return prepareClaimLineMap(void 0, myText);
 }
 function releaseClaimsOnDone(s, keep, name2 = s.me.name, clearScope = true) {
   const released = s.room.openClaims().filter((c) => c.by === name2 && c.byKind !== "human" && !keep?.(c));

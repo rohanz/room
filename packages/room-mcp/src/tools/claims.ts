@@ -3,7 +3,7 @@ import { sameCheckoutSession } from '../company.js'
 import { authorizesText, claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
 import { ensureLanguages, parseFile } from '../parse/engine.js'
-import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, claimInMyLines, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
+import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshotPath, snapshotStillCurrent, versionOf, prepareClaimLineMap, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { carriedFrom } from '../worker-registry.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
@@ -83,9 +83,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const overlappingPaths = s.room.openClaims().filter(c => c.id !== claim.id && nb.has(c.by) &&
         !isMe(s, { name: c.by, kind: c.byKind }) &&
         claimsOverlap({ path: c.path, from: 1, to: Number.MAX_SAFE_INTEGER }, { path: p, from: 1, to: Number.MAX_SAFE_INTEGER }))
-      const overlaps = (await Promise.all(overlappingPaths.map(async c => ({
-        claim: c, range: await claimRangeInMyText(s, c, t ?? ''),
-      })))).filter(({ claim: c, range }) => claimsOverlap({ path: c.path, ...range }, { path: p, ...r }))
+      const groups = new Map<string, Claim[]>()
+      for (const c of overlappingPaths) {
+        const key = `${c.by}\0${c.path}`
+        const group = groups.get(key)
+        if (group) group.push(c)
+        else groups.set(key, [c])
+      }
+      const overlaps: { claim: Claim; range: MappedRange }[] = []
+      for (const group of groups.values()) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        const first = group[0]!
+        const map = await claimMapInMyText(s, first, t ?? '')
+        for (const c of group) {
+          const range = map(c)
+          if (claimsOverlap({ path: c.path, ...range }, { path: p, ...r })) overlaps.push({ claim: c, range })
+        }
+      }
       for (const { claim: o, range } of overlaps)
         out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range.approximate ? '; approximate lines' : ''}). Ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
@@ -130,9 +144,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   return handlers
 }
 
-/** A foreign claim names lines in its owner's text, not in this checkout. */
-async function claimRangeInMyText(s: Session, claim: Claim, myText: string): Promise<{ from: number; to: number; approximate: boolean }> {
-  if (claim.path.endsWith('/')) return { from: claim.from, to: claim.to, approximate: false }
+type MappedRange = { from: number; to: number; approximate: boolean }
+type ClaimMap = (claim: Pick<Claim, 'from' | 'to'>) => MappedRange
+
+/** Resolve one owner's path per claim operation; a snapshot never outlives this call. */
+async function claimMapInMyText(s: Session, claim: Claim, myText: string): Promise<ClaimMap> {
+  if (claim.path.endsWith('/')) return c => ({ from: c.from, to: c.to, approximate: false })
   for (let attempt = 0; attempt < 2; attempt++) {
     const view = participantsView(s.room, s.awareness, Date.now())
     const raw = snapshotPath(s.room, claim.by, view, claim.path)
@@ -145,9 +162,9 @@ async function claimRangeInMyText(s: Session, claim: Claim, myText: string): Pro
     if (raw && !snapshotStillCurrent(s.room, raw, currentView)) continue
     if (owner && owner !== raw && !snapshotStillCurrent(s.room, owner, currentView)) continue
     const ownerText = version.kind === 'text' ? version.text : version.kind === 'base' ? version.text : version.kind === 'deleted' ? '' : undefined
-    return claimInMyLines(claim, ownerText, myText)
+    return prepareClaimLineMap(ownerText, myText)
   }
-  return claimInMyLines(claim, undefined, myText)
+  return prepareClaimLineMap(undefined, myText)
 }
 
 /** Quietly end an owner's selected claims; collection can retain the scope for ongoing work. The fyi note is posted, not awaited. */
