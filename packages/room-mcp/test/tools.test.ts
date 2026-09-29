@@ -443,8 +443,8 @@ describe('session gating', () => {
   })
 
   it('offers to open the repository room, whatever the branch', async () => {
-    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r', 'missing') } })
-    expect(await tools.call('room_join', { where: 'team' })).toContain('No room for github.com/o/r on wss://room-rohanz.fly.dev yet.')
+    const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
+    expect(await tools.call('room_join', { where: 'team' })).toContain('No room for o/r on wss://room-rohanz.fly.dev yet.')
   })
 
   it.each(['room_state', 'room_join', 'room_done'])('shows an auto-join tag once in the first %s reply', async tool => {

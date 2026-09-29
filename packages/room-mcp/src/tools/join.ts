@@ -185,10 +185,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }) } catch (e) {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.`
         if (!(e instanceof NoRoom)) throw e
-        const canonical = (await deriveRoomName(dir)).repo ?? e.roomName
         // A stale server may report the old branch key. GitHub repository names
         // have exactly owner/repo after the host; never offer to open a branch.
-        const repo = canonical.startsWith('github.com/') ? canonical.split('/').slice(1, 3).join('/') : canonical
+        const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName
         return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.`
       }
       if (choice.rule === 'argument' || (choice.rule !== 'env' && choice.server === LOCAL && typeof a.room === 'string')) { try { await writeChoice(dir, choice.where, s.me.name, choice.server === LOCAL && typeof a.room === 'string' ? s.roomName : undefined) } catch { /* not a repository? keep going */ } }

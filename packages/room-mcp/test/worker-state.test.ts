@@ -134,7 +134,8 @@ describe('worker lifecycle decisions', () => {
   })
   it.each([
     [{ status: 'running', process: 'not-ours' }, 'stop'],
-    [{ status: 'done', process: 'ours' }, 'stop'],
+    [{ status: 'done', process: 'ours', exitCode: undefined }, 'stop'],
+    [{ status: 'done', process: 'ours', exitCode: 0 }, 'leave'],
     [{ status: 'done', process: 'not-ours' }, 'leave'],
     [{ status: 'failed', process: 'not-ours' }, 'leave'],
     [{ status: 'dismissed', process: 'not-ours' }, 'leave'],
