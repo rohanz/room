@@ -32,6 +32,7 @@ export interface MessageKind<M extends MsgBase = Msg> {
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
+const conflictLabel = (m: MsgBase & { text: string }) => m.priority !== 'fyi' ? 'CONFLICT' : /cleared$/.test(m.text) ? 'CONFLICT cleared' : 'POSSIBLE conflict'
 const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
@@ -44,8 +45,8 @@ const builtins = {
   changed: { priority: m => m.symbols?.length ? 'notify' : 'fyi', audience: 'everyone', inbox: false, wakes: 'addressed', format: m => `${priority(m)}${who(m)} changed ${m.paths.join(', ')} — ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(', ')})` : ''}` },
   question: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || (!w.claimId && !w.questionId)), format: m => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
   answer: { priority: 'notify', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: m => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-  conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  conflict: { priority: 'interrupt', audience: 'claim-holders', wakes: 'always', format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
+  'merge-conflict': { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
   contract: { priority: 'notify', audience: 'addressed', inbox: true, wakes: 'always', format: m => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
   note: { priority: m => m.to ? 'notify' : 'fyi', audience: 'everyone', inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || (!m.to && m.priority === 'interrupt' && !!w.me && messageForMe({ name: w.me }, m))), format: m => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
   done: { priority: 'fyi', audience: 'addressed', wakes: 'addressed', endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: m => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` — changed ${m.changed.join(', ')}` : ''}` },

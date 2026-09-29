@@ -14,6 +14,8 @@ import {
   type PlanMsg,
   type NoteMsg,
   type QuestionMsg,
+  type MergeConflictMsg,
+  type ConflictMsg,
   type ScopeMsg,
 } from './index.js'
 import { hubAppend } from './testing.js'
@@ -31,6 +33,17 @@ interface PingMsg extends MsgBase {
 
 describe('MessageKinds', () => {
   afterEach(() => { delete MessageKinds.ping })
+
+  it('renders a possible merge notice without a certified conflict label', () => {
+    const room = new RoomDoc()
+    const msg = hubAppend<MergeConflictMsg>(room, { name: 'room', kind: 'agent' }, { type: 'merge-conflict', path: 'x', to: 'A', priority: 'fyi', text: 'A changed x outside their declared area; Room cannot check this merge' })
+    expect(formatMsg(msg)).not.toContain('CONFLICT on')
+    expect(formatMsg(msg)).toContain('POSSIBLE conflict')
+    const cleared = hubAppend<MergeConflictMsg>(room, { name: 'room', kind: 'agent' }, { type: 'merge-conflict', path: 'x', to: 'A', priority: 'fyi', text: 'x: the conflict with B cleared' })
+    expect(formatMsg(cleared)).toContain('CONFLICT cleared on x')
+    const approximateClaim = hubAppend<ConflictMsg>(room, { name: 'room', kind: 'agent' }, { type: 'conflict', claimId: 'c', otherClaimId: '', path: 'x', to: 'A', priority: 'fyi', text: 'claims in x may overlap; line mapping is approximate' })
+    expect(formatMsg(approximateClaim)).toContain('POSSIBLE conflict on x')
+  })
 
   it('wakes for base moves only with uncommitted work', () => {
     const room = new RoomDoc()

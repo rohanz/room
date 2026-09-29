@@ -115,7 +115,7 @@ if (company) {
   })
   hook.near = Object.fromEntries(Object.entries(previousNear).slice(-200))
   const previousClaims = hook.claims ?? {}
-  const evidence = claims.map(c => ({ claim: c, key: String(c.id), signature: JSON.stringify([c.id, c.path, c.from, c.to, c.by, c.intent, c.plans]) }))
+  const evidence = claims.map(c => ({ claim: c, key: String(c.id), signature: JSON.stringify([c.id, c.path, c.from, c.to, c.approximate, c.by, c.intent, c.plans]) }))
   const untold = evidence.filter(({ key, signature }) => paths.some(p => previousClaims[p]?.[key] !== signature))
   for (const p of paths) {
     if (claims.length) {
@@ -129,7 +129,7 @@ if (company) {
   hook.claims = Object.fromEntries(Object.entries(previousClaims).slice(-200))
   if (untold.length) {
     addCoordination(`[room claims on ${paths.join(', ')}]`)
-    for (const { claim: c, key, signature } of untold) addCoordination(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`, () => {
+    for (const { claim: c, key, signature } of untold) addCoordination(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to}${c.approximate ? ' (approximate whole-file warning)' : ''} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`, () => {
       for (const p of paths) previousClaims[p][key] = signature
       changed = true
     })

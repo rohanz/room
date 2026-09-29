@@ -6,12 +6,14 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { coordinationPaths, neighbours, participantsView, displayName, formatPlans, manifestPaths, type Presence, isAgentic } from '@room/shared'
+import { execFileSync } from 'node:child_process'
+import { claimInMyLines, coordinationPaths, digestPath, gitBlobHash, neighbours, participantsView, displayName, formatPlans, manifestPaths, snapshot, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
 import { ownWorkerNames } from './worker-registry.js'
+import { workerText } from './tools/context.js'
 
 /** The bound session's write intents (recorded by before-edit.mjs): did this session write `p` in the last two minutes? */
 export function createWriteIntentReader(dir: string, sessionDir: () => string | undefined, now: () => number = Date.now): (p: string) => boolean | undefined {
@@ -89,7 +91,30 @@ export class HooksBridge {
     const me = this.s.me.name
     const openClaims = this.s.room.openClaims()
     const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
-    const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
+    const views = participantsView(this.s.room, this.s.awareness, this.now())
+    const ownerSnapshots = new Map<string, ReturnType<typeof snapshot>>()
+    const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => {
+      if (!ownerSnapshots.has(c.by)) ownerSnapshots.set(c.by, snapshot(this.s.room, c.by, views))
+      const owner = ownerSnapshots.get(c.by)
+      const entry = owner?.entries.get(c.path)
+      let ownerText: string | undefined
+      if (owner?.fenceValid && owner.head.complete && owner.head.coverage.kind === 'all' && owner.head.base === owner.record?.git?.base && owner.head.fence === owner.record.git.fence) {
+        if (entry?.change === 'D') ownerText = ''
+        else if (entry?.hash) {
+          try {
+            const text = entry.state === 'shared' ? owner.texts.get(c.path) : execFileSync('git', ['-C', this.s.dir, 'cat-file', '-p', entry.hash], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 })
+            if (text !== undefined && gitBlobHash(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) ownerText = text
+          } catch { /* whole-file approximate warning below */ }
+        } else if (!entry && !(owner.roomSalt && owner.head.excluded.includes(digestPath(owner.roomSalt, c.path)))) {
+          try { ownerText = execFileSync('git', ['-C', this.s.dir, 'show', `${owner.head.base}:${c.path}`], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) }
+          catch { /* whole-file approximate warning below */ }
+        }
+      }
+      let myText = ''
+      try { myText = workerText(this.s.dir, c.path) ?? '' } catch { /* unavailable file */ }
+      const mapped = c.path.endsWith('/') ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(c, ownerText, myText)
+      return { id: c.id, path: c.path, ...mapped, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }
+    })
     const near = coordinationPaths(this.s.room, neighbours(participantsView(this.s.room, this.s.awareness, this.now()), me), me, { includeOwnNonAgentClaims: true })
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.now())
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
