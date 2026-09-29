@@ -36,7 +36,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       s.shareRequested = asked
       await s.daemon.setShare(level) // keep following the declared scope
       try { await rememberShare(s.dir, asked) } catch { /* not a repository: keep the live choice */ }
-      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level)}`, priority: 'fyi' })
+      if (level !== before) s.room.post<NoteMsg>(s.me, { type: 'note', text: `now sharing ${sharingDescription(level, !!s.daemon.retainedDeclared?.().length)}`, priority: 'fyi' })
       const out = [level === before ? `sharing level unchanged: ${shareLine(s)}` : `changed sharing ${before} -> ${shareLine(s)}`]
       const secondary = secondaryPublishingLine(s)
       if (secondary) out.push(secondary)
@@ -60,7 +60,7 @@ export function createShare(): Pick<HandlerState, 'shareLine'> {
       const held = s.daemon.skipped?.().share ?? []
       const secondary = secondaryPublishingLine(s)
       const retained = level === 'declared' && !secondary ? s.daemon.retainedDeclared?.() ?? [] : []
-      return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ''}`
+      return `${s.shareWarning ? s.shareWarning + "; " : ""}sharing: ${secondary ?? sharingDescription(level, retained.length > 0)}${clamped}${held.length && !secondary ? `; withheld ${held.length} changed file(s): ${held.join(', ')}` : ''}${retained.length ? `; still shared from earlier: ${retainedList(retained)}` : ''}`
     }
   return { shareLine }
 }

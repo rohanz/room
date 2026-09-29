@@ -4,7 +4,7 @@
 // Reads .git/room-state.json, which the room MCP server keeps current.
 import fs from 'node:fs'
 import path from 'node:path'
-import { readStdinJson, gitRoot, sessionStateDir, readJson, readReceipt, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, shellLooksLikeWrite, companyLine, coversPath, containsPath, newestModelInTranscriptTail, receiptSessionId, writeHookReceipt } from './common.mjs'
+import { readStdinJson, gitRoot, sessionStateDir, readJson, readReceipt, readHookSeen, writeHookSeen, takePendingContext, recordWriteIntents, pathsOf, isShellTool, companyLine, coversPath, containsPath, newestModelInTranscriptTail, receiptSessionId, writeHookReceipt } from './common.mjs'
 
 const ev = readStdinJson()
 const root = gitRoot(ev.cwd)
@@ -40,7 +40,7 @@ if (state.company !== true) {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: pending.join('\n') } }))
   process.exit(0)
 }
-const paths = (isShellTool(ev.tool_name) ? shellLooksLikeWrite(ev.tool_input) : /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
+const paths = (isShellTool(ev.tool_name) || /(?:^|__)(?:apply_patch|Write|Edit|MultiEdit|NotebookEdit)$/.test(ev.tool_name))
   ? pathsOf(ev.tool_name, ev.tool_input, root) : []
 recordWriteIntents(stateDir, ev.session_id, root, paths, now)
 const seenFile = path.join(stateDir, 'room-hook-seen.json')
@@ -87,7 +87,7 @@ if (fresh.length) {
   lines.push(`[room inbox ${fresh.length}]`)
   for (const m of fresh) lines.push(`  ${m.line}`)
 }
-const nearEvidence = [...new Set(nearby.map(n => `${n.by} has ${n.reason} on ${n.path}`))].sort()
+const nearEvidence = [...new Set(nearby.map(n => n.reason === 'changed' ? `${n.by} changed ${n.path}` : `${n.by} has ${n.reason} on ${n.path}`))].sort()
 const adequateClaim = paths.length > 0 && paths.every(p => (state.ownClaims ?? []).some(c => containsPath(c.path, p)))
 const nearKey = JSON.stringify(nearEvidence)
 const previousNear = hookSeen.near ?? {}

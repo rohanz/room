@@ -19,6 +19,19 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-socket-wake-'))
 afterEach(() => vi.unstubAllEnvs())
 
 describe('Claude socket wake', () => {
+  it('describes Room claim releases as claim releases', async () => {
+    const post = vi.fn(async () => {})
+    const router = new SocketWakeRouter({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused.sock' }, notify: vi.fn(async () => {}), post, host: 'claude' })
+    try {
+      const msg = { ...makeMsg('release', 'room', 'note'), fromKind: 'bot',
+        text: 'released your claim on src/app.py:2-4: that code changed in abc123def0' } as Msg
+      router.push(wake(msg))
+      await Promise.resolve()
+      expect(post.mock.calls[0][2]).toContain('Room released your claim on src/app.py:2-4')
+      expect(post.mock.calls[0][2]).not.toContain('room sent a note')
+    } finally { router.close() }
+  })
+
   it('posts the first event immediately, one follow-up for five events, then resets after quiet', async () => {
     vi.useFakeTimers()
     const post = vi.fn(async () => {})

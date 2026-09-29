@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -9,6 +9,7 @@ import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
 import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../src/session.js'
+import { appendRoomLog } from '../src/index.js'
 
 let dir: string
 const dispose: (() => void | Promise<void>)[] = []
@@ -122,11 +123,12 @@ it('carries a requested custom destination through login and back to join', asyn
     throw new Error(`unexpected ${path}`)
   }))
   let active: Session | null = session(`local/${dir.split('/').pop()}/main`, { local: true })
+  const logFile = join(dir, '.git', 'room-mcp.log')
   const joiner = vi.fn(async (opts: JoinOptions) => {
     if (!getCredential(server)) throw new NotLoggedIn(server)
     return session(opts.room!)
   })
-  const tools = createTools({ cwd: dir, getSession: () => active, setSession: s => { active = s }, join: joiner, leave: async () => {} })
+  const tools = createTools({ cwd: dir, getSession: () => active, setSession: s => { active = s }, join: joiner, leave: async () => {}, log: line => appendRoomLog(logFile, line) })
   dispose.push(() => tools.shutdown())
 
   const refused = await tools.call('room_join', { where: server, room: 'git/example/repo/main' })
@@ -135,4 +137,6 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(await tools.call('room_login', { server, wait: 5 })).toContain('logged in')
   expect(await tools.call('room_join', { where: server, room: 'git/example/repo/main' })).toContain('joined git/example/repo/main')
   expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server]) // the first attempt stopped at the login preflight
+  joiner.mock.calls[0][0].log?.('advanced room base')
+  expect(readFileSync(logFile, 'utf8')).toContain('advanced room base')
 })

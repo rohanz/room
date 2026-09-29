@@ -128,6 +128,68 @@ describe('shell edit hooks', () => {
   const claim = { by: 'Kieran', path: 'api/tax.py', from: 1, to: 1, intent: 'tax rules' }
   const state = (extra = {}) => writeFileSync(join(dir, '.git/room-state.json'), JSON.stringify({ company: true, claims: [claim], ...extra }))
 
+  it.each([
+    ['Bash', 'grep -n "^def test" api/tax.py', false],
+    ['Bash', 'grep ">" api/tax.py', false],
+    ['Bash', "grep '>>' api/tax.py", false],
+    ['Bash', 'cat api/tax.py', false],
+    ['Bash', 'head -5 api/tax.py', false],
+    ['Bash', 'tail api/tax.py', false],
+    ['Bash', 'less api/tax.py', false],
+    ['Bash', 'wc -l api/tax.py', false],
+    ['Bash', 'ls api/', false],
+    ['Bash', 'npm test', false],
+    ['Bash', 'git diff api/tax.py', false],
+    ['Bash', 'git log -- api/tax.py', false],
+    ['Bash', 'git show HEAD:api/tax.py', false],
+    ['Bash', 'git commit -m "fix api/tax.py"', false],
+    ['Bash', 'git push', false],
+    ['Bash', 'git pull --ff-only --autostash', false],
+    ['Bash', 'pytest api/tax.py 2>&1 | tail -20', false],
+    ['Bash', 'sed -n "1,4p" api/tax.py', false],
+    ['Bash', 'rg x api/tax.py | head', false],
+    ['Bash', 'pytest api/tax.py; git add api/tax.py && git commit -m "tax"', false],
+    ['Bash', 'cd api && uv run pytest tax.py', false],
+    ['Bash', 'A=1 python -m pytest api/tax.py', false],
+    ['Bash', 'npx vitest api/tax.py || git status', false],
+    ['Bash', 'find api/tax.py -type f', false],
+    ['Bash', 'mystery api/tax.py', false],
+    ['Bash', 'python3 -c "pass" api/tax.py', false],
+    ['Bash', 'node -e "0" api/tax.py', false],
+    ['Bash', 'sed -i "s/x/y/" api/tax.py', true],
+    ['Bash', 'cd api && sed -i "s/x/y/" tax.py', true],
+    ['Bash', 'touch app.py api/tax.py', true],
+    ['Bash', 'find api/tax.py -delete', true],
+    ['Bash', 'perl -pi -e "s/x/y/" api/tax.py', true],
+    ['Bash', 'echo x > api/tax.py', true],
+    ['Bash', 'echo x >> api/tax.py', true],
+    ['Bash', 'echo x > /dev/null 2>&1', false],
+    ['Bash', 'cat api/tax.py | tee api/tax.py', true],
+    ['Bash', 'cp app.py api/tax.py', true],
+    ['Bash', 'mv api/tax.py old.py', true],
+    ['Bash', 'git mv api/tax.py old.py', true],
+    ['Bash', 'git rm api/tax.py', true],
+    ['Bash', 'patch api/tax.py fix.diff', true],
+    ['Bash', 'patch -p1 < fix.diff', false],
+    ['Bash', 'git apply fix.diff', false],
+    ['Bash', 'rm api/tax.py', true],
+    ['Bash', 'truncate -s 0 api/tax.py', true],
+    ['Bash', 'touch api/tax.py', true],
+    ['Bash', 'git checkout -- api/tax.py', true],
+    ['Bash', 'git restore api/tax.py', true],
+    ['Bash', 'dd if=app.py of=api/tax.py', true],
+    ['PowerShell', 'Get-Content api/tax.py | Select-String x', false],
+    ['PowerShell', 'Set-Content -LiteralPath api/tax.py -Value x', true],
+    ['PowerShell', 'Copy-Item app.py api/tax.py', true],
+    ['PowerShell', 'Get-Content app.py > api/tax.py', true],
+  ] as const)('warns only for target writes: %s %s', async (tool_name, command, warn) => {
+    state({ near: [{ by: 'Kieran', path: 'api/tax.py', reason: 'changed' }] })
+    writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))
+    const out = await runHook('before-edit.mjs', { tool_name, cwd: dir, tool_input: { command } })
+    expect(out.includes('Claim before editing'), command).toBe(warn)
+    if (warn) expect(out).toContain('Kieran changed api/tax.py')
+  })
+
   it('records session-specific write intents with company, including new edit files', async () => {
     state()
     await runHook('session-start.mjs', { session_id: 'intent-lead', cwd: dir })
@@ -289,7 +351,7 @@ describe('shell edit hooks', () => {
   })
 
   it('finds PowerShell write destinations, including aliases and parameter paths', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     const commands = [
       'Add-Content -Path api/tax.py -Value x', 'Out-File -FilePath api/tax.py',
       'New-Item -Path api/tax.py', 'Remove-Item -LiteralPath api/tax.py',
@@ -301,11 +363,10 @@ describe('shell edit hooks', () => {
       'CP app.py api/tax.py', 'ReN app.py api/tax.py',
     ]
     for (const command of commands) {
-      expect(shellLooksLikeWrite({ command }), command).toBe(true)
       expect(pathsOf('PowerShell', { command }, dir), command).toContain('api/tax.py')
     }
     for (const command of ['Get-Content api/tax.py', 'Select-String sc api/tax.py', 'Get-ChildItem api']) {
-      expect(shellLooksLikeWrite({ command }), command).toBe(false)
+      expect(pathsOf('PowerShell', { command }, dir), command).toEqual([])
     }
     expect(pathsOf('PowerShell', { command: 'Set-Content -Path C:\\repo\\api\\tax.py -Value x' }, 'C:\\repo')).toEqual(['api/tax.py'])
     expect(pathsOf('PowerShell', { command: 'Copy-Item -Path app.py -Destination "api/new tax.py"' }, dir)).toContain('api/new tax.py')
@@ -357,11 +418,9 @@ describe('shell edit hooks', () => {
   it.each([
     "sed -i '' 's/x/y/' api/tax.py", "perl -pi -e 's/x/y/' api/tax.py",
     'echo x >api/tax.py', 'echo x >>api/tax.py', 'tee api/tax.py',
-    'mv api/tax.py old.py', 'cp app.py api/tax.py', 'rm api/tax.py',
-    'python3 -c "pass" api/tax.py', 'node -e "0" api/tax.py',
-    "python <<'PY'\nopen('api/tax.py', 'w')\nPY", "node <<'JS'\nwrite('api/tax.py')\nJS",
-    'apply_patch api/tax.py', 'git apply api/tax.py', 'git checkout -- api/tax.py',
-    'git restore api/tax.py', 'git stash -- api/tax.py', 'git merge api/tax.py', 'git rebase api/tax.py',
+    'mv app.py api/tax.py', 'cp app.py api/tax.py', 'rm api/tax.py',
+    'apply_patch api/tax.py', 'git checkout -- api/tax.py',
+    'git restore api/tax.py', 'git stash -- api/tax.py',
   ])('warns on likely shell write: %s', async cmd => {
     state()
     const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input: { cmd } }))
@@ -384,21 +443,19 @@ describe('shell edit hooks', () => {
   })
 
   it('bounds path candidates across input strings and supports shell argv', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     expect(pathsOf('exec', { cmd: 'sed -i "s/x/y/" "api/tax.py"' }, dir)).toContain('api/tax.py')
     expect(pathsOf('exec', { cmd: 'x '.repeat(200), extra: 'api/tax.py' }, dir)).toEqual([])
-    expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual(['api/tax.py'])
-    expect(shellLooksLikeWrite({ command: ['python3', '-c', 'pass', 'api/tax.py'] })).toBe(true)
-    expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual(['api/tax.py'])
+    expect(pathsOf('exec', { cmd: 'x'.repeat(20_001), extra: 'api/tax.py' }, dir)).toEqual([])
+    expect(pathsOf('shell', { command: ['python3', '-c', 'pass', 'api/tax.py'] }, dir)).toEqual([])
     expect(pathsOf('exec', { cmd: 'rm ../outside.py /etc/hosts' }, dir)).toEqual([])
   })
 
   it('skips a 1 MB command within 100 ms and still delivers company', async () => {
-    const { pathsOf, shellLooksLikeWrite } = await import(join(HOOKS, 'common.mjs'))
+    const { pathsOf } = await import(join(HOOKS, 'common.mjs'))
     const tool_input = { cmd: 'sed -i ' + 'x'.repeat(1_000_000) + ' api/tax.py' }
     const start = performance.now()
     expect(pathsOf('exec', tool_input, dir)).toEqual([])
-    expect(shellLooksLikeWrite(tool_input)).toBe(false)
     expect(performance.now() - start).toBeLessThan(100)
     state({ company: true, others: ['Kieran'] })
     const out = JSON.parse(await runHook('before-edit.mjs', { tool_name: 'exec', cwd: dir, tool_input }))
@@ -1317,7 +1374,7 @@ it('company includes who and their scope; nearby claims are needed only for over
   expect(announce).toContain('Cy is here')
   const edit = (file_path: string) => runHook('before-edit.mjs', { cwd: dir, session_id: 'near', tool_name: 'Write', tool_input: { file_path } })
   expect(await edit('api/tax.py')).toContain('Claim before editing: Ada has scope on api/')
-  expect(await edit('other.py')).toContain('Bea has changed on other.py')
+  expect(await edit('other.py')).toContain('Bea changed other.py')
   expect(await edit('api-other/new.py')).toBe('')
   b.stop(); peer.destroy(); human.destroy(); s.awareness.destroy()
 })

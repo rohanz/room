@@ -125,3 +125,48 @@ it('retries when HEAD moves during publication', async () => {
   expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('dirty after next commit\n')
   expect(daemon!.roomDoc.baseText('Alice', finalHead, 'app.txt')).toBe('dirty before next commit\n')
 })
+
+it('does not apply an earlier line shift twice when HEAD moves after re-anchoring', async () => {
+  const { claim } = await movedHead()
+  const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<void> }
+  const reanchor = internal.reanchorOwnClaims.bind(internal)
+  let advanced = false
+  internal.reanchorOwnClaims = async (head, claims) => {
+    await reanchor(head, claims)
+    if (advanced) return
+    advanced = true
+    fs.writeFileSync(path.join(dir!, 'app.txt'), 'more\nadded\nfirst\nclaimed\nlast\n')
+    git(dir!, 'add', '-A'); git(dir!, 'commit', '-qm', 'move block again')
+  }
+  await daemon!.reconcileGitChanges()
+  await daemon!.reconcileGitChanges()
+  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 4, to: 4 })
+})
+
+it('retries when Git operation markers remain past the deadline', async () => {
+  const { newHead } = await movedHead()
+  for (const name of ['index.lock', 'MERGE_AUTOSTASH', 'MERGE_HEAD', 'REBASE_HEAD', 'rebase-apply', 'rebase-merge/autostash']) {
+    const marker = path.join(dir!, '.git', name)
+    fs.mkdirSync(path.dirname(marker), { recursive: true })
+    fs.writeFileSync(marker, newHead + '\n')
+    let tick = 0
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => ++tick * 1_000)
+    try {
+      await expect((daemon as Roomd & { waitForGitOperation(head: string): Promise<void> }).waitForGitOperation(newHead))
+        .rejects.toThrow('Git operation or worktree is still changing')
+    } finally { now.mockRestore(); fs.rmSync(marker, { force: true }); if (name.includes('/')) fs.rmSync(path.dirname(marker), { recursive: true, force: true }) }
+  }
+})
+
+it('proceeds after the deadline when only claimed file content keeps changing', async () => {
+  const { newHead } = await movedHead()
+  let tick = 0
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => ++tick * 1_000)
+  let writes = 0
+  const timer = setInterval(() => fs.writeFileSync(path.join(dir!, 'app.txt'), `busy ${++writes}\n`), 10)
+  try {
+    await expect((daemon as Roomd & { waitForGitOperation(head: string): Promise<void> }).waitForGitOperation(newHead))
+      .resolves.toBeUndefined()
+    expect(writes).toBeGreaterThan(0)
+  } finally { clearInterval(timer); now.mockRestore() }
+})

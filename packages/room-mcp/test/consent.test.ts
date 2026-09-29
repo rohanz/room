@@ -22,13 +22,13 @@ beforeEach(() => {
 })
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) })
 
-function setup(company = false) {
+function setup(company = false, retained: string[] = []) {
   let session: Session | null = null
   const joiner = vi.fn(async (opts: { share?: string; server?: string; room?: string }) => {
     const doc = new Y.Doc(), room = new RoomDoc(doc), awareness = new Awareness(doc)
     cleanup.push(() => { awareness.destroy(); doc.destroy() })
     const name = opts.room ?? 'git/example/repo/main'
-    const daemon = { share: opts.share ?? 'full', touch() {}, async stop() {}, async setShare(level: string) { daemon.share = level }, skipped: () => ({ share: [], size: [], budget: [], ignore: [] }) }
+    const daemon = { share: opts.share ?? 'full', touch() {}, async stop() {}, async setShare(level: string) { daemon.share = level }, skipped: () => ({ share: [], size: [], budget: [], ignore: [] }), retainedDeclared: () => retained }
     const s = { dir, room, awareness, roomName: name, roomUrl: `${opts.server}/${encodeURIComponent(name)}`, browserUrl: 'http://example/view', me: { name: 'Ada', kind: 'agent' }, provider: { synced: true, awareness }, daemon, shareMax: 'full', shareRequested: daemon.share, ...(opts.server === 'local' ? { local: { url: 'ws://local' } } : {}) } as Session
     if (company) {
       const other = new Y.Doc(), aw = new Awareness(other)
@@ -48,6 +48,7 @@ it.each(['full', 'declared', 'intent'] as ShareLevel[])('discloses %s on the fir
   const out = await t.tools.call('room_join', { where: 'ws://team', room: 'git/example/repo/main', share })
   expect(out).toContain('alone here')
   expect(out).toContain(`note for your human: this clone now shares ${sharingDescription(share)}`)
+  if (share === 'declared') expect(out).not.toContain('changed files declared earlier')
   if (share === 'intent') expect(out).toContain('on ws://team.')
   else expect(out).toContain('to keep file contents on this machine, say: share plans only')
   if (share === 'full') expect(out).toContain('to share only my declared files, say: only my declared files')
@@ -66,6 +67,24 @@ it('discloses when company is present and never for local joins', async () => {
   expect(await t.tools.call('room_join', { where: 'ws://team', room: 'repo/main' })).toContain('note for your human')
   await t.tools.call('room_leave', {})
   expect(await t.tools.call('room_join', { where: 'local' })).not.toContain('note for your human')
+})
+it('mentions changed files declared earlier when they remain shared', async () => {
+  const t = setup(false, ['src/app.py'])
+  const out = await t.tools.call('room_join', { where: 'ws://team', room: 'repo/main', share: 'declared' })
+  expect(out).toContain('files in your declared area and changed files declared earlier')
+})
+it('counts other sessions as participants in room_state', async () => {
+  const solo = setup()
+  await solo.tools.call('room_join', { where: 'ws://team', room: 'repo/main' })
+  expect(await solo.tools.call('room_state', {})).toContain('with 0 other participants')
+  const company = setup(true)
+  await company.tools.call('room_join', { where: 'ws://team', room: 'repo/main' })
+  expect(await company.tools.call('room_state', {})).toContain('with 1 other participant')
+  const third = new Y.Doc(), thirdAwareness = new Awareness(third)
+  thirdAwareness.setLocalState({ user: { name: 'Ada+codex', kind: 'agent', owner: 'Ada' }, lastActive: Date.now() })
+  applyAwarenessUpdate(company.session().awareness, encodeAwarenessUpdate(thirdAwareness, [third.clientID]), 'test')
+  cleanup.push(() => { thirdAwareness.destroy(); third.destroy() })
+  expect(await company.tools.call('room_state', {})).toContain('with 2 other participants')
 })
 it.each(['ROOM_SERVER', 'ROOM_URL'])('reports explicit %s and invalid environment sharing while alone', async key => {
   vi.stubEnv(key, key === 'ROOM_URL' ? 'ws://team/repo%2Fmain' : 'ws://team')

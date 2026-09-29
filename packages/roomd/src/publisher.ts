@@ -5,6 +5,8 @@ import { git, gitBlobInfoMany, gitChanged, gitHead, gitShow, gitShowMany, type G
 import type { DiskBatch } from './disk-batch.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 
+const TRACKED_ONLY_LOCKFILES = new Set(['uv.lock', 'poetry.lock', 'Pipfile.lock', 'pdm.lock', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'Cargo.lock', 'Gemfile.lock', 'composer.lock', 'go.sum'])
+
 const errMsg = (error: unknown): string => error instanceof Error ? error.message : String(error)
 class ReportedFailure extends Error {
   constructor(original: unknown) { super(errMsg(original)) }
@@ -59,6 +61,7 @@ interface PublicationHost {
   readonly share: ShareLevel
   log(line: string): void
   abs(relpath: string): string
+  isTracked(relpath: string): boolean
   isSafeRoomPath(relpath: string): boolean
   scheduleDisk(relpath: string, isNew: boolean): void
   noteSkip(relpath: string, reason: string): void
@@ -290,6 +293,12 @@ export class Publisher {
       if (this.host.publishUnder) return
       this.host.skips.size.delete(relpath)
       this.host.skips.budget.delete(relpath)
+      const trackedOnly = TRACKED_ONLY_LOCKFILES.has(relpath.slice(relpath.lastIndexOf('/') + 1))
+      if (trackedOnly && !this.host.isTracked(relpath)) {
+        this.withdrawIgnored(relpath, 'untracked lockfile')
+        return
+      }
+      if (trackedOnly) this.host.skips.ignore.delete(relpath)
       const safe = this.host.isSafeRoomPath(relpath)
       const pathEligibility = eligibility({ ...this.eligibilityFacts(relpath), safe })
       if (!pathEligibility.share && pathEligibility.reason === 'unsafe') {

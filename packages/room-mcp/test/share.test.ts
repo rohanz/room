@@ -119,9 +119,9 @@ describe('room_share', () => {
 
   it('clamps to the server ceiling and says so', async () => {
     const t = setup({ share: 'declared', shareMax: 'declared', requested: 'full' })
-    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: files in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     const out = t.body(await t.tools.call('room_share', { level: 'full' }))
-    expect(out).toContain('sharing level unchanged: sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(out).toContain('sharing level unchanged: sharing: files in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     expect(t.daemon.calls).toEqual([{ level: 'declared', paths: undefined }])
     expect(t.body(await t.tools.call('room_share', { level: 'intent' }))).toContain('changed sharing declared -> sharing: only your plans, no file text')
   })
