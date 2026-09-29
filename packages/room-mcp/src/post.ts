@@ -5,7 +5,7 @@
  */
 import { newId, outgoing, type Identity, type Msg, type PostBody, type ReleasePoster, type RoomDoc } from '@room/shared'
 import type { PostIn, Reason } from '@room/hub-core'
-import { HubError, type HubClient } from './hub-client.js'
+import { HubError, NameLeaseUnavailable, type HubClient } from './hub-client.js'
 
 export const NOT_SENT = 'not sent: hub unreachable'
 
@@ -51,7 +51,7 @@ export function releasePoster(post: Post): ReleasePoster {
 export type PostLease = { name: string; epoch: number }
 export type LeaseSource = () => PostLease | undefined | Promise<PostLease | undefined>
 
-export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource): Post {
+export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource, paused?: () => string | undefined): Post {
   return <T extends Msg>(from: Identity, body: PostBody<T>, opts: PostOpts = {}): Posting<T> => {
     const id = opts.id ?? newId('m_')
     const sent = { ...outgoing<T>(from, body, id), at: Date.now() } as T
@@ -60,13 +60,18 @@ export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource): P
         // A hello missed on reconnect is repaired here rather than reported as an outage.
         if (hub.paused()) await hub.hello().catch(() => {})
         const held = await lease()
-        if (!held) return { ok: false, msg: sent, reason: 'unreachable', text: NOT_SENT }
+        if (!held) {
+          const namePause = paused?.()?.replace(/^\[room\]\s*/, '')
+          const nameHeld = hub.reachable() && !!namePause && /another session now holds|name lease|superseded|host session changed/.test(namePause)
+          return { ok: false, msg: sent, reason: nameHeld ? 'stale' : 'unreachable', text: nameHeld ? `not sent: ${namePause}` : NOT_SENT }
+        }
         const reply = await hub.post(outgoing(from, body, id) as unknown as PostIn, { lease: held, ...(opts.auto ? { auto: true } : {}) })
         const seq = typeof reply.seq === 'number' ? reply.seq : undefined
         const at = typeof reply.at === 'number' ? reply.at : sent.at
         const msg = (room.message(id) as T | undefined) ?? { ...sent, at, ...(seq === undefined ? {} : { seq }) }
         return { ok: true, msg, ...(seq === undefined ? {} : { seq }), ...(reply.duplicate ? { duplicate: true } : {}) }
       } catch (error) {
+        if (error instanceof NameLeaseUnavailable) return { ok: false, msg: sent, reason: 'stale', text: error.message }
         if (error instanceof HubError && TOLD.has(error.reason)) return { ok: false, msg: sent, reason: error.reason as Reason, text: error.message }
         return { ok: false, msg: sent, reason: 'unreachable', text: NOT_SENT }
       }

@@ -35,11 +35,12 @@ export function hostKind(env: NodeJS.ProcessEnv = process.env, readParent: Paren
 }
 
 /** H1 (registry §18): release this session's own claims and scope after eight idle hours, journaled so a crash replays once. */
-export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: number, monotonicMs: () => number): Promise<boolean> {
+export async function releaseIdleHeld(s: Session, idleEpoch: string, idleMs: number, monotonicMs: () => number, pendingOnly = false): Promise<boolean> {
   const lease = s.lease
   if (!lease) return false
   const registry = await WorkerRegistry.open(await gitCommonDir(s.dir), { migrate: false, watch: false })
   try {
+    if (pendingOnly && !registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) return false
     const fence = lease.fence()
     if (!fence) {
       if (registry.hasPendingIdleClaims(s.roomName, lease.sessionId, idleEpoch)) throw new Error('idle claim notice pending while the name lease is paused')
@@ -93,6 +94,8 @@ export interface PresenceEndOptions {
   leave(idleMs: number): Promise<void>
   /** H1 at eight hours: release this participant's own claims and scope, with one notice per idle epoch. */
   releaseHeld(idleMs: number, idleEpoch: string): Promise<unknown>
+  /** Drain a prior process's pending H1 notice independently of new-release eligibility. */
+  replayPending?(): Promise<unknown>
   /** Minutes idle changed: publish it in presence (the heartbeat carries it). */
   publishIdle?(idleMin: number): void
   mono?: () => number
@@ -152,6 +155,8 @@ export class PresenceEnd {
     this.publish()
     if (await this.options.hostAlive() === false) { this.options.hostEnded('host session ended'); return }
     if (this.options.hostKind !== 'shared-app-server' || this.left) return
+    try { await this.options.replayPending?.() }
+    catch (error) { this.options.log?.(`idle claim notice replay pending: ${error instanceof Error ? error.message : String(error)}`); return }
     const idle = this.idleMs()
     if (idle >= IDLE_CLAIMS_MS) {
       // Retry a pending journal even after its first pass removed every held claim and scope.

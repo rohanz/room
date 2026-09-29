@@ -92,9 +92,9 @@ export interface ReleaseMsg extends MsgBase { type: 'release'; claimId: string; 
 export interface ChangedMsg extends MsgBase { type: 'changed'; paths: string[]; summary: string; symbols?: string[] }
 export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
-export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string }
+export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string; clearedFrom?: 'conflict' | 'possible' }
 /** An observed foreign contract edit that a file in the recipient's work references. */
-export interface MergeConflictMsg extends MsgBase { type: 'merge-conflict'; path: string; text: string }
+export interface MergeConflictMsg extends MsgBase { type: 'merge-conflict'; path: string; text: string; clearedFrom?: 'conflict' | 'possible' }
 export interface ContractMsg extends MsgBase { type: 'contract'; path: string; symbol: string; text: string }
 export interface NoteMsg extends MsgBase { type: 'note'; text: string; inReplyTo?: string }
 export interface ScopeMsg extends MsgBase { type: 'scope'; area: string; summary: string; paths: string[] }

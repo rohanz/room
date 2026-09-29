@@ -47,6 +47,17 @@ describe('Session.post through the hub (hub §11)', () => {
     expect(await post<NoteMsg>(ada, { type: 'note', text: 'back' })).toMatchObject({ ok: true })
   })
 
+  it('reports the held name instead of a hub outage when another session owns it', async () => {
+    const { room, hub } = seam()
+    await hub.hello()
+    const paused = () => '[room] another session now holds ada; rejoin to take a new name. Coordination is paused; your files are unaffected.'
+    const post = createPost(room, hub, () => undefined, paused)
+    const result = await post<NoteMsg>(ada, { type: 'note', text: 'late' })
+    expect(result).toMatchObject({ ok: false, reason: 'stale', text: expect.stringContaining('another session now holds ada') })
+    expect(result.text).not.toContain('hub unreachable')
+    expect(room.messages()).toEqual([])
+  })
+
   it('refuses an addressed post over the recipient cap with the hub text; an automatic post is never refused', async () => {
     const { room, post } = seam()
     for (let i = 0; i < OWED_PER_RECIPIENT; i++) hubAppend<QuestionMsg>(room, { name: 'bob', kind: 'agent' }, { type: 'question', to: 'cy', text: `q${i}` })

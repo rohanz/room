@@ -54,7 +54,7 @@ describe('HubClient', () => {
     const { client, transport } = fixture()
     await client.hello()
     expect(client.paused()).toBeUndefined()
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: name lease is no longer held')
     expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(0)
     client.close()
   })
@@ -64,7 +64,7 @@ describe('HubClient', () => {
     await client.hello(); await client.acquire('alice', holder)
     jumpWall(60_000)
     expect(client.paused()).toBe(PAUSED)
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: name lease is no longer held')
     await client.acquire('alice', holder)
     expect(client.paused()).toBeUndefined()
     await client.post({ id: 'm2', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
@@ -77,7 +77,7 @@ describe('HubClient', () => {
   it('requires an explicitly supplied post lease to match a valid local lease', async () => {
     const { client, transport } = fixture()
     await client.hello()
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: name lease is no longer held')
     expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(0)
     await client.acquire('alice', holder)
     await client.post({ id: 'm2', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
@@ -118,7 +118,7 @@ describe('HubClient', () => {
     await client.hello(); await client.acquire('alice', holder)
     jumpWall(60_000)
     expect(client.paused()).toBe(PAUSED)
-    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: hub unreachable')
+    await expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })).rejects.toThrow('not sent: name lease is no longer held')
     client.close()
   })
 
@@ -171,7 +171,7 @@ describe('HubClient', () => {
       ? (++posts === 1 ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 } : { ok: true, seq: 5, at: 1 })
       : { ok: true }
     const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
-      .rejects.toThrow('not sent: hub unreachable')
+      .rejects.toThrow('not sent: name lease is no longer held')
     await Promise.resolve()
     expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
     advance(1_000)
@@ -190,7 +190,7 @@ describe('HubClient', () => {
       ? (++posts === 1 ? { ok: false, reason: 'starting', text: 'starting', retryMs: 1_000 } : { ok: true, seq: 5, at: 1 })
       : { ok: true }
     const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
-      .rejects.toThrow('not sent: hub unreachable')
+      .rejects.toThrow('not sent: name lease is no longer held')
     await Promise.resolve()
     transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
     await vi.advanceTimersByTimeAsync(1_000)
@@ -207,7 +207,7 @@ describe('HubClient', () => {
       ? { ok: false, reason: 'hello-first', text: 'hello first' }
       : undefined
     const result = expect(client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
-      .rejects.toThrow('not sent: hub unreachable')
+      .rejects.toThrow('not sent: name lease is no longer held')
     await vi.waitFor(() => expect(transport.sent.filter(r => r.op === 'hello')).toHaveLength(2))
     const hello = transport.sent.at(-1)!
     transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })

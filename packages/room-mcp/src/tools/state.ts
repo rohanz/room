@@ -30,6 +30,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const upgraded = new Set<string>() // "msgId:person" copies already posted
   /** The lead-in-two-rooms bridge, while a workers room is open (owned by that session's attachment). */
   let roomBridge: Bridge | null = null
+  let preserveBridgeFacts = false
   /** The primary session's hooks bridge (state file); the inbox asks it to rewrite after marking messages seen. */
   let primaryHooks: HooksBridge | null = null
   const doClose = ctx.close ?? (async (s: Session) => { const a = await authFor(s); return closeRoom(a.server, s.roomName, { session: a.session, token: a.token }) })
@@ -61,7 +62,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
         wakes.detach(s); hooks?.stop(); watcher?.stop()
         if (hooks && primaryHooks === hooks) primaryHooks = null
         if (role === 'primary') prs.stopPrSync()
-        if (bridge) { bridge.stop(); if (roomBridge === bridge) roomBridge = null }
+        if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
       },
       flush: () => watcher?.flush() ?? Promise.resolve(),
       project: () => bridge?.sync() ?? Promise.resolve(),
@@ -161,6 +162,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
     clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
+      preserveBridgeFacts = true
       wakes.stop()
       const s = ctx.getSession()
       if (!s) { await state.closeWorkersRoom(true).catch(() => {}); return }
