@@ -1853,7 +1853,10 @@ describe('worker follow-up sessions', () => {
     expect(t.specs[1].env).toMatchObject({ ...t.specs[0].env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: t.specs[1].env.ROOM_LAUNCH_NONCE })
     expect(t.specs[1].env.ROOM_LAUNCH_NONCE).not.toBe(t.specs[0].env.ROOM_LAUNCH_NONCE)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
-    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, 'fix the review finding', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
+    const resumePrompt = t.specs[1].args[3]
+    expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
+    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, resumePrompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
 
@@ -1902,7 +1905,10 @@ describe('worker follow-up sessions', () => {
     await vi.waitFor(() => expect(workerByTag(dir, 'money')?.status).toBe('failed'))
     const sent = await t.leadTools.call('room_send', { type: 'note', to: 'rohanz+money', text: 'repair the failure' })
     expect(sent).toContain("resumed money's retained conversation with your message")
-    expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'repair the failure'])
+    const resumePrompt = t.specs[1].args.at(-1)!
+    expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
+    expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
+    expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', resumePrompt])
     expect(t.specs[1].cwd).toBe(initial.dir)
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
   })

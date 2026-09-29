@@ -142,7 +142,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
-      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
+      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : a.create === true ? 'team' : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
       const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
       const requestedRoom = typeof a.room === 'string' ? a.room : resolved.room
@@ -152,7 +152,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (cur) {
         const sameServer = choice.server === LOCAL ? !!cur.local
           : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
-        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir && !terminalNameLoss && a.takeover !== true) {
+        if (sameServer && targetRoom === cur.roomName && resolve(dir) === cur.dir && !terminalNameLoss && a.takeover !== true && a.create !== true) {
           return currentReply()
         }
         const running = runningWorkers(cur)

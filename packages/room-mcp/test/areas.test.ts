@@ -55,7 +55,7 @@ function agent(room: RoomDoc, me: Identity, r: { dir: string; base: string }, hu
     policyStore: testPolicyStore(),
     room, awareness, me, dir: r.dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(hubRoom), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir: r.dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: r.base } as never,
+    daemon: { touch() {}, rememberClaimDigest() {}, async stop() {}, dir: r.dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: r.base } as never,
   }
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: r.dir, log: () => {} })
   return { s, tools, awareness }

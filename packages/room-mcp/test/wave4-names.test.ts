@@ -90,7 +90,7 @@ it('M6 replays a crashed H1 notice before a replacement process reaches eight ho
   const s = memorySession({ name: 'ada', kind: 'agent' }, dir, room, 'local/repo')
   s.lease = { sessionId: 's', fence: () => '1' } as never
   s.post = (async (_from, _body, opts) => { ids.push(opts!.id!); return { ok: true } }) as Session['post']
-  const presence = new PresenceEnd({ hostKind: 'shared-app-server', tickMs: 0, mono: () => 60_000,
+  const presence = new PresenceEnd({ hostKind: 'shared-app-server', episodeId: 'new', tickMs: 0, mono: () => 60_000,
     hostAlive: () => true, holds: () => false, leadsWorkers: () => false, waiting: () => false,
     hostEnded: () => {}, leave: async () => {}, releaseHeld: async () => { throw new Error('fresh H1 release is not due') },
     replayPending: () => releaseIdleHeld(s, 'new', 60_000, () => 60_000, true) })

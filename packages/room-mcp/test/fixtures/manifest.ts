@@ -27,6 +27,9 @@ export function stampFixtureWorker(room: RoomDoc, name: string, workerId: string
 
 /** Publish a test participant's current text in the schema-2 incarnation. */
 export function publishFixture(room: RoomDoc, name: string, path: string, text: string, options: { fence?: string; base?: string; level?: 'intent' | 'declared' | 'full' } = {}): void {
+  // Schema-2 publication requires a room salt before readers can certify that
+  // an absent path was not excluded by the publisher.
+  room.ensureRoomSalt()
   const local = localRoots.get(room)
   if (local?.name === name) {
     const file = pathModule.join(local.dir, path)
