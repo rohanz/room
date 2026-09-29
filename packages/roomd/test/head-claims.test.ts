@@ -293,3 +293,52 @@ it.each(['directory', 'rename'] as const)('releases the old-path claim when a co
   expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
   expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
 })
+
+it('releases a committed claim with autocrlf even when disk bytes differ from HEAD', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-claim-crlf-'))
+  git(root, 'init', '-q', '-b', 'main')
+  git(root, 'config', 'user.email', 'test@example.com')
+  git(root, 'config', 'user.name', 'Test')
+  git(root, 'config', 'core.autocrlf', 'true')
+  const file = path.join(root, 'app.txt')
+  const original = 'first\r\nclaimed\r\nlast\r\n'
+  fs.writeFileSync(file, original)
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-crlf', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
+  fs.writeFileSync(file, 'first\r\nmy edit\r\nlast\r\n')
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'edit claimed line')
+  expect(fs.readFileSync(file, 'utf8')).toContain('\r\n')
+  expect(git(root, 'show', 'HEAD:app.txt')).not.toContain('\r')
+  expect(git(root, 'status', '--porcelain')).toBe('')
+
+  const head = git(root, 'rev-parse', 'HEAD')
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
+})
+
+it('releases a claim when a commit replaces its file with a symlink', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-claim-symlink-'))
+  git(root, 'init', '-q', '-b', 'main')
+  git(root, 'config', 'user.email', 'test@example.com')
+  git(root, 'config', 'user.name', 'Test')
+  const original = 'first\nclaimed\nlast\n'
+  fs.writeFileSync(path.join(root, 'app.txt'), original)
+  fs.writeFileSync(path.join(root, 'target.txt'), original)
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base')
+  daemon = await startRoomd({ dir: root, room: 'ws://memory/claim-symlink', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
+  fs.rmSync(path.join(root, 'app.txt'))
+  fs.symlinkSync('target.txt', path.join(root, 'app.txt'))
+  git(root, 'add', '-A'); git(root, 'commit', '-qm', 'replace claimed file with symlink')
+  const head = git(root, 'rev-parse', 'HEAD')
+
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  expect(daemon.roomDoc.baseOf('Alice')).toBe(head)
+  expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
+})
