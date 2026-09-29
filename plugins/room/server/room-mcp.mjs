@@ -45837,6 +45837,16 @@ var ROOM = { name: "room", kind: "agent" };
 var retryMinutes = [1, 2, 4, 8];
 var StaleConflictInputs = class extends Error {
 };
+var contractConsumers = /* @__PURE__ */ new Map();
+function consumerEvidence(room) {
+  const salt = room.roomSalt ?? "";
+  let evidence = contractConsumers.get(salt);
+  if (!evidence) {
+    evidence = /* @__PURE__ */ new Map();
+    contractConsumers.set(salt, evidence);
+  }
+  return evidence;
+}
 var ConflictSlots = class {
   constructor(room, post, fence, now = Date.now, log2 = () => {
   }, holderPost = post, valid = () => true) {
@@ -45892,6 +45902,11 @@ var ConflictSlots = class {
     if (old.every(([key2, slot]) => key2 === slotKey(owner, "contract", other, slot.path, "*") && slot.status === "unknown" && slot.why === why)) return;
     const byPath = /* @__PURE__ */ new Map();
     for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot]);
+    const evidence = consumerEvidence(this.room);
+    for (const [path45] of byPath) {
+      const supporting = new Set(old.filter(([, slot]) => slot.path === path45).flatMap(([key2]) => evidence.get(key2) ?? []));
+      if (supporting.size) evidence.set(slotKey(owner, "contract", other, path45, "*"), [...supporting].sort());
+    }
     this.room.doc.transact(() => {
       for (const [key2] of old) this.map.delete(key2);
       for (const [path45, slots] of byPath) {
@@ -46001,6 +46016,7 @@ var ConflictSet = class {
     this.carriedFrom = carriedFrom2;
     const fence = () => team.lease?.fence() ?? "";
     this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post, () => this.guard?.() ?? false);
+    this.consumerEvidence = consumerEvidence(team.room);
   }
   team;
   owner;
@@ -46016,6 +46032,7 @@ var ConflictSet = class {
   rerun = false;
   starts = [];
   contractCache = /* @__PURE__ */ new Map();
+  consumerEvidence;
   guard;
   start() {
     const schedule = () => {
@@ -46149,6 +46166,28 @@ var ConflictSet = class {
       }
     }
     return versionOf(snap, path45, env);
+  }
+  /** A filtered snapshot cannot turn a wrong-fenced raw entry into certified base. */
+  async readableConsumer(snap, path45) {
+    if (!snap.roomSalt || snap.head.excluded.includes(digestPath(snap.roomSalt, path45))) return void 0;
+    const raw = this.team.room.manifest.get(manifestKey(snap.name, snap.head.fence))?.get(path45);
+    if (raw && raw.fence !== snap.head.fence) return void 0;
+    const version2 = await this.read(snap, path45);
+    if (raw && !snap.entries.has(path45)) return void 0;
+    return asText(version2);
+  }
+  /** Existing slots may change only after every path that established them is readable now. */
+  async priorConsumersReadable(key2, mine) {
+    const prior = this.slots.get(key2);
+    if (!prior || prior.settled === "none") return true;
+    const paths = this.consumerEvidence.get(key2);
+    if (!paths?.length) return false;
+    for (const path45 of paths) if (await this.readableConsumer(mine, path45) === void 0) return false;
+    return true;
+  }
+  async unknownConsumer(key2, slot) {
+    const why = "consumer version is not readable";
+    await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${key2}\0${why}`), why });
   }
   async run(reason) {
     const room = this.team.room;
@@ -46414,12 +46453,17 @@ var ConflictSet = class {
         this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
         return;
       }
+      const key2 = slotKey(this.owner, "contract", other, change.path, change.symbol);
+      const prior = this.slots.get(key2);
+      if (prior && !await this.priorConsumersReadable(key2, mine)) {
+        await this.unknownConsumer(key2, prior);
+        continue;
+      }
       let uses;
       if (carriedProvider || deleted) {
         uses = [];
         for (const path45 of myPaths) {
-          const version2 = await this.read(mine, path45);
-          const text = asText(version2);
+          const text = await this.readableConsumer(mine, path45);
           if (text === void 0) {
             this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
             return;
@@ -46430,8 +46474,7 @@ var ConflictSet = class {
       } else {
         uses = [];
         for (const edge of graph.edges.filter((edge2) => edge2.source === change.path && myPaths.has(edge2.target) && edge2.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol)))) {
-          const version2 = await this.read(mine, edge.target);
-          const text = asText(version2);
+          const text = await this.readableConsumer(mine, edge.target);
           if (text === void 0) {
             this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
             return;
@@ -46441,7 +46484,6 @@ var ConflictSet = class {
         uses.sort();
       }
       if (!uses.length) continue;
-      const key2 = slotKey(this.owner, "contract", other, change.path, change.symbol);
       live.add(key2);
       const input = hash(JSON.stringify([change, uses]));
       await this.settle(key2, {
@@ -46455,6 +46497,7 @@ var ConflictSet = class {
         factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])),
         why: change.detail
       });
+      this.consumerEvidence.set(key2, uses);
     }
     for (const [key2, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== "contract" || slot.other !== other || live.has(key2)) continue;
@@ -46464,6 +46507,10 @@ var ConflictSet = class {
       }
       if (slot.subject === "*" && [...live].some((liveKey) => liveKey.startsWith(slotKey(this.owner, "contract", other, slot.path, "")))) {
         this.slots.drop(key2);
+        continue;
+      }
+      if (!await this.priorConsumersReadable(key2, mine)) {
+        await this.unknownConsumer(key2, slot);
         continue;
       }
       const provider = await this.read(theirs, slot.path);
