@@ -42,6 +42,20 @@ export interface PreparedPublication {
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
 
+/** Withdraw one observed publisher incarnation during a same-worktree handoff. Never touches a newer head. */
+export function withdrawFormerPublisher(room: RoomDoc, name: string, fence: string, successor: string): void {
+  const key = manifestKey(name, fence)
+  room.doc.transact(() => {
+    const head = room.manifestHead.get(name)
+    if (!head || head.fence !== fence || head.coverage.kind === 'none') return
+    room.manifest.delete(key)
+    room.overlays.delete(key)
+    room.manifestHead.set(name, { ...head, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: successor,
+      excluded: [], rev: head.rev + 1, semRev: head.semRev + 1, scannedAt: Date.now() })
+    for (const old of [...room.ownedBaseTexts.keys()]) if (old.startsWith(`${name}\0`)) room.ownedBaseTexts.delete(old)
+  })
+}
+
 /** A deletion mark can remain visible after its base text is no longer authorized. */
 function withdrawBaseTexts(host: Host, authorized: ReadonlySet<string>): void {
   const prefix = `${host.name}\0`
@@ -63,7 +77,12 @@ export class Publisher {
   private readonly errors = new Set<string>()
   private readonly oversizedCache = new Map<string, { size: number; mtimeMs: number; base: string; hash: string }>()
   private dirtyTimer?: ReturnType<typeof setTimeout>
-  constructor(private readonly host: Host) {}
+  private formerPublisher?: { name: string; fence: string }
+  constructor(private readonly host: Host) {
+    const name = host.inputs.policy.publisherName
+    const fence = name && host.roomDoc.manifestHead.get(name)?.fence
+    if (name && name !== host.name && fence) this.formerPublisher = { name, fence }
+  }
 
   pathsToReconcile(extra: Iterable<string> = []): Set<string> {
     const fence = this.host.fence
@@ -76,6 +95,10 @@ export class Publisher {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next: PublicationInputs): void {
     const { host } = this
+    if (next.policy.publisher && !host.inputs.policy.publisher && this.formerPublisher) {
+      withdrawFormerPublisher(host.roomDoc, this.formerPublisher.name, this.formerPublisher.fence, host.name)
+      this.formerPublisher = undefined
+    }
     const fence = host.fence
     // Paused: the next publication under a fence applies these inputs in full.
     if (fence === undefined) { this.markDirty(); return }

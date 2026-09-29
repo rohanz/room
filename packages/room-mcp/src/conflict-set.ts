@@ -23,6 +23,7 @@ export interface ConflictSlot {
   inputs: string
   factId: string
   settled: 'conflict' | 'possible' | 'clean' | 'none'
+  clearedFrom?: 'conflict' | 'possible'
   epoch: number
   lines?: number[]
   why?: string
@@ -51,6 +52,7 @@ export class ConflictSlots {
     private readonly now: () => number = Date.now,
     private readonly log: (line: string) => void = () => {},
     private readonly holderPost: Post = post,
+    private readonly valid: () => boolean = () => true,
   ) { this.map = room.doc.getMap<ConflictSlot>('conflicts') }
 
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
@@ -60,15 +62,17 @@ export class ConflictSlots {
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
     const prev = this.map.get(key)
     const now = this.now()
-    if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && (prev.retryAt ?? 0) > now) return prev
-    if (prev?.inputs === result.inputs && prev.status === result.status && prev.factId === result.factId && result.status !== 'unknown') return prev
+    const fence = typeof this.fence === 'function' ? this.fence() : this.fence
+    if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev
+    if (prev?.inputs === result.inputs && prev.status === result.status && prev.factId === result.factId && prev.fence === fence && result.status !== 'unknown') return prev
     const changedFact = result.status === 'conflict' || result.status === 'possible'
       ? prev?.settled !== result.status || prev.factId !== result.factId : false
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0)
     const settled = result.status === 'unknown' ? prev?.settled ?? 'none' : result.status
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
-      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence: typeof this.fence === 'function' ? this.fence() : this.fence, checkedAt: now,
+      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now,
+      ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
     }
     this.room.doc.transact(() => this.map.set(key, slot))
@@ -85,6 +89,8 @@ export class ConflictSlots {
   }
 
   async postNotice(key: string, slot: ConflictSlot): Promise<void> {
+    const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
+    if (!current()) return
     const id = noticeId(key, slot.epoch) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
     const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' ? 'interrupt' : 'notify'
@@ -92,21 +98,23 @@ export class ConflictSlots {
       ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate`
         : slot.kind === 'claims' ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate`
           : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge`
-      : status === 'clean' ? `${slot.path}: the conflict with ${slot.other} cleared`
+      : status === 'clean' ? `${slot.path}: the ${slot.clearedFrom === 'possible' ? 'possible conflict' : 'conflict'} with ${slot.other} cleared`
       : slot.kind === 'edit-in-claim' ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ''}`
       : slot.kind === 'claims' ? `concurrent overlapping claims in ${slot.path} with ${slot.other}`
       : slot.kind === 'contract' ? `${slot.other} changed ${slot.subject ?? 'a symbol'} in ${slot.path}${slot.why ? ` (${slot.why})` : ''}`
       : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`
+    const clearedFrom = status === 'clean' ? slot.clearedFrom : undefined
     const body = (slot.kind === 'merge'
-      ? { type: 'merge-conflict', path: slot.path, to: slot.owner, priority, text }
+      ? { type: 'merge-conflict', path: slot.path, to: slot.owner, priority, text, ...(clearedFrom ? { clearedFrom } : {}) }
       : slot.kind === 'contract'
         ? { type: 'contract', path: slot.path, symbol: slot.subject ?? '', to: slot.owner, priority, text }
-        : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text }) as unknown as PostBody<Msg>
+        : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text, ...(clearedFrom ? { clearedFrom } : {}) }) as unknown as PostBody<Msg>
     try {
       const posted = await this.post(ROOM, body, { id, auto: true })
       if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
     } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
     if (slot.kind === 'edit-in-claim' && status === 'conflict') {
+      if (!current()) return
       try {
         const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}` } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
         if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
@@ -142,7 +150,7 @@ export class ConflictSet {
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined) {
     const fence = () => team.lease?.fence() ?? ''
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post)
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
   }
 
   start(): void {
@@ -230,11 +238,15 @@ export class ConflictSet {
     if (!leaseFence) return
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
-    const ownGit = acceptedGit(participantRecord(room, this.owner), views)
-    if (!mine || mine.head.fence !== leaseFence || ownGit === 'updating') return
+    if (!mine || mine.head.fence !== leaseFence) return
+    const ownNonPublisher = mine.head.coverage.kind === 'none' && mine.head.coverage.reason === 'not-publisher' && !!mine.head.publisher
+    const ownPublisher = ownNonPublisher ? snapshot(room, mine.head.publisher!, views) : undefined
+    const ownGit = acceptedGit(participantRecord(room, ownNonPublisher ? mine.head.publisher! : this.owner), views)
+    if (ownGit === 'updating' || (ownNonPublisher && !ownPublisher)) return
     const authority = () => this.team.lease?.fence() === leaseFence
     const claimInputs = JSON.stringify(room.openClaims())
     this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) &&
+      (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) &&
       JSON.stringify(room.openClaims()) === claimInputs
     const nb = neighbours(views, this.owner)
     const names = new Set(nb.names())
@@ -248,12 +260,22 @@ export class ConflictSet {
       this.guard = () => {
         const current = participantsView(room, this.team.awareness, Date.now())
         return authority() && snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) &&
+          (!ownPublisher || snapshotStillCurrent(room, ownPublisher, current)) &&
           JSON.stringify(room.openClaims()) === claimInputs && JSON.stringify(room.graphs.get(other)) === graphInput
       }
       const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other)
       if (!theirs && !participantRecord(room, other)) {
         for (const [key] of existing) this.drop(key)
         continue
+      }
+      if (ownNonPublisher) {
+        const pair = !theirs || theirGit === 'updating' ? undefined : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
+        if (pair && !('cannotCompare' in pair)) {
+          const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`]).catch(() => '')
+          await this.claims(ownPublisher!, theirs!, other, pair.mergeBase,
+            new Set([...ownPublisher!.entries.keys(), ...committed.split('\n').filter(Boolean)]))
+        }
+        continue // only the checkout publisher owns the merge pair
       }
       if (theirs?.head.coverage.kind === 'none' && theirs.head.coverage.reason === 'not-publisher' && theirs.head.publisher) {
         const published = snapshot(room, theirs.head.publisher, views)
@@ -300,14 +322,33 @@ export class ConflictSet {
         for (const [key, slot] of existing) if (slot.kind === 'merge') await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0failed enumeration`), why: 'cannot enumerate changed paths' })
         continue
       }
-      const candidates = new Set([...aPaths].filter(p => bPaths.has(p)))
+      const ownMergePaths = new Set(aPaths)
+      const unchangedCarried = new Set<string>()
+      const carried = this.carriedFrom?.(this.owner)
+      if (carried?.lead === other && carriesWork(carried.baseline)) {
+        for (const path of aPaths) {
+          const baseline = await readBaseline(carried.baseline, path, (sha, p) => gitShow(this.team.dir, sha, p))
+          if (baseline.kind === 'unavailable') continue
+          const ownText = asText(await this.read(mine, path))
+          if (ownText !== undefined && ownText === (baseline.kind === 'absent' ? '' : baseline.text)) {
+            ownMergePaths.delete(path)
+            unchangedCarried.add(path)
+          }
+        }
+      }
+      const candidates = new Set([...ownMergePaths].filter(p => bPaths.has(p)))
       for (const [, slot] of existing) if (slot.kind === 'merge' && slot.path !== '*') candidates.add(slot.path)
       for (const path of [...candidates].sort()) {
         const key = slotKey(this.owner, 'merge', other, path)
-        const bothChanged = aPaths.has(path) && bPaths.has(path)
+        const bothChanged = ownMergePaths.has(path) && bPaths.has(path)
         const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
-          mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path)]))
+          mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path),
+          carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path)] : undefined]))
         const previous = this.slots.get(key)
+        if (unchangedCarried.has(path)) {
+          await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '' })
+          continue
+        }
         if (previous?.inputs === inputs && (previous.status !== 'unknown' || (previous.retryAt ?? 0) > Date.now())) continue
         const read = (snap: ParticipantSnapshot) => this.read(snap, path)
         const [a, b] = await Promise.all([read(mine), read(theirs)])
@@ -339,7 +380,7 @@ export class ConflictSet {
         await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: lines.length ? 'conflict' : 'clean', inputs,
           factId: lines.length ? hash(JSON.stringify([mergeBase, ...merged.conflicts.map(c => c.o)])) : '', lines })
       }
-      await this.claims(mine, theirs, other, mergeBase, aPaths)
+      await this.claims(mine, theirs, other, mergeBase, ownMergePaths)
     }
     if (this.guard && !this.guard()) throw new StaleConflictInputs()
     await this.slots.replay(this.owner)

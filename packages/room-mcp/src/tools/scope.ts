@@ -1,4 +1,5 @@
 import { sharingDescription } from '../config.js'
+import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
@@ -103,7 +104,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = S()
       await loadAreas(s)
       const m = s.room.meta
-      const out: string[] = [s.local ? 'local: nothing leaves this machine' : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size} people`]
+      const publisher = publisherLine(s)
+      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.owner ?? p.user.name)).size
+      const out: string[] = [s.local ? 'local: nothing leaves this machine' : publisher
+        ? `team room: ${publisher} (${people} other people in the room)`
+        : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))} with ${people} people`]
+      if (s.local && publisher) out.push(publisher)
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)
@@ -155,7 +161,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const who = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find(c => c.by === n)?.byKind)
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n)
-          out.push(`  - ${who}: another session in this checkout${declaredScope ? `; scope ${scopeLine(declaredScope)}` : ''} · ${ago}`)
+          out.push(`  - ${who}: another session in this checkout${n === checkoutPublisher(s) ? '; publishes this checkout' : ''}${declaredScope ? `; scope ${scopeLine(declaredScope)}` : ''} · ${ago}`)
           continue
         }
         const theirs = areasFor(s, n)

@@ -51,6 +51,8 @@ export function hubTransport(provider: WebsocketProvider): HubTransport {
 
 const PAUSED = '[room] hub unreachable; coordination paused. Your files are unaffected; messages and claims resume when it is back.'
 const NOT_SENT = 'not sent: hub unreachable'
+const NOT_SENT_LEASE = 'not sent: name lease is no longer held; rejoin to take a new name'
+export class NameLeaseUnavailable extends Error {}
 
 type Lease = { epoch: number; ttlMs: number; t0: number; w0: number }
 type RequestBody = Req extends infer R ? R extends Req ? Omit<R, 'v' | 'id'> : never : never
@@ -223,11 +225,11 @@ export class HubClient {
   /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
   async post(msg: PostIn, options: { lease: { name: string; epoch: number }; auto?: boolean }): Promise<Reply> {
     this.assertOpen()
-    if (this.paused()) throw new Error(NOT_SENT)
-    if (this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT)
+    if (this.paused()) throw this.reachable() && this.lostLeases.has(options.lease.name) ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT)
+    if (this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw this.reachable() ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT)
     try { return await this.request({ op: 'post', msg, ...options }, () => {
       if (this.paused() || this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) {
-        throw new Error(NOT_SENT)
+        throw this.reachable() ? new NameLeaseUnavailable(NOT_SENT_LEASE) : new Error(NOT_SENT)
       }
     }) }
     catch (error) {

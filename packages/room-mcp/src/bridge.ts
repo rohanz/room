@@ -146,17 +146,17 @@ export class Bridge {
     else void registryForDir(this.local.dir).then(attach, e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
   }
 
-  /** Remove mirrored claims and the coordination record, and stop observing. Projections stay until retirement. */
-  stop(): void {
+  /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
+  stop(preserveFacts = false): void {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     if (this.tick) clearInterval(this.tick)
     for (const u of this.unobserve) u()
     this.unobserve = []
-    for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this)
+    if (!preserveFacts) for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this)
     this.mirrored.clear()
     const lead = this.team.me.name
-    if (this.team.room.coordination.has(lead)) this.team.room.doc.transact(() => { this.team.room.coordination.delete(lead) }, this)
+    if (!preserveFacts && this.team.room.coordination.has(lead)) this.team.room.doc.transact(() => { this.team.room.coordination.delete(lead) }, this)
   }
 
   private localIdOf(teamId: string): string | undefined {
@@ -475,6 +475,7 @@ export class Bridge {
     if (!broadcast && !paths.length) return
     const now = Date.now()
     const hit = this.workers().filter(w => {
+      if (m.to && m.to !== w.name) return false
       if (broadcast) return true
       const sc = this.local.room.scope(w.name)
       const changed = this.changedPaths(w.name)

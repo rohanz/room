@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, formatMsg } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -91,6 +91,67 @@ describe('ConflictSlots', () => {
     await slots.replay('W')
     expect(ownerPost.mock.calls.every(c => c[1].to === 'W')).toBe(true)
     expect(holderPost.mock.calls.every(c => c[1].to === 'B' && c[1].text.includes('W edited x inside your claim'))).toBe(true)
+  })
+
+  it('re-fences an unchanged slot for a new owner epoch without sending a duplicate fact', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    let fence = '1'
+    const slots = new ConflictSlots(room, post, () => fence)
+    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const result = { owner: 'A', other: 'B', kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const, inputs: 'same', factId: 'same' }
+    await slots.settle(key, result)
+    fence = '2'
+    await slots.settle(key, result)
+    expect(slots.get(key)).toMatchObject({ fence: '2', epoch: 1 })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('R5 repairs a legacy empty-fence slot on the first valid owner evaluation', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const result = { owner: 'A', other: 'B', kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const, inputs: 'same', factId: 'same' }
+    await new ConflictSlots(room, post, '').settle(key, result)
+    await new ConflictSlots(room, post, () => '42').settle(key, result)
+    expect(room.doc.getMap<{ fence: string; epoch: number }>('conflicts').get(key)).toMatchObject({ fence: '42', epoch: 1 })
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('revalidates each replay notice after an awaited post moves the lease', async () => {
+    const room = new RoomDoc()
+    let current = true, replaying = false
+    const post = vi.fn().mockImplementation(async () => { if (replaying) current = false; return { ok: true } })
+    const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, post, () => current)
+    for (const path of ['x', 'y']) await slots.settle(slotKey('A', 'merge', 'B', path),
+      { owner: 'A', other: 'B', kind: 'merge', path, status: 'conflict', inputs: path, factId: path })
+    post.mockClear(); replaying = true
+    await slots.replay('A')
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not send the holder copy after the owner post invalidates the captured claim', async () => {
+    const room = new RoomDoc(), holderPost = vi.fn().mockResolvedValue({ ok: true })
+    let current = true
+    const ownerPost = vi.fn().mockImplementation(async () => { current = false; return { ok: true } })
+    const slots = new ConflictSlots(room, ownerPost, '1', Date.now, () => {}, holderPost, () => current)
+    const key = slotKey('W', 'edit-in-claim', 'B', 'x', 'claim')
+    await slots.settle(key, { owner: 'W', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'claim', status: 'conflict', inputs: 'i', factId: 'f' })
+    expect(ownerPost).toHaveBeenCalledTimes(1)
+    expect(holderPost).not.toHaveBeenCalled()
+  })
+
+  it('labels a cleared possibility without claiming a certified conflict existed', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockImplementation(async (_from, body) => ({ ok: true, msg: { ...body, id: 'm', from: 'room', fromKind: 'agent', at: 1 } }))
+    const slots = new ConflictSlots(room, post, '1')
+    const key = slotKey('A', 'merge', 'B', 'x')
+    const base = { owner: 'A', other: 'B', kind: 'merge' as const, path: 'x' }
+    await slots.settle(key, { ...base, status: 'possible', inputs: 'held', factId: 'f' })
+    await slots.settle(key, { ...base, status: 'clean', inputs: 'readable', factId: '' })
+    expect(post.mock.calls[1][1]).toMatchObject({ clearedFrom: 'possible' })
+    expect(formatMsg(post.mock.calls[1][1] as any)).toContain('POSSIBLE conflict cleared')
+    const certified = slotKey('A', 'merge', 'C', 'y')
+    await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'conflict', inputs: 'bad', factId: 'f' })
+    await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'clean', inputs: 'good', factId: '' })
+    expect(formatMsg(post.mock.calls[3][1] as any)).toContain('CONFLICT cleared')
   })
 })
 
@@ -245,6 +306,20 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it('evaluates the owner non-publisher claims through its publisher without a Git fact', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'changed\n'); f.entry('B', undefined)
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'A' })
+      f.room.participants.delete('B\0git')
+      f.room.addClaim({ by: 'A', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+      f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+      await new ConflictSet(f.session('B')).reconcile('owner non-publisher')
+      expect([...f.room.doc.getMap<any>('conflicts').values()]).toContainEqual(expect.objectContaining({ owner: 'B', other: 'A', kind: 'claims', status: 'conflict' }))
+    } finally { f.cleanup() }
+  })
+
   it('keeps large-file claim mapping possible rather than certified', async () => {
     const f = fixture()
     try {
@@ -357,6 +432,30 @@ describe('derived pair slots', () => {
       const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
       expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
+    } finally { f.cleanup() }
+  })
+
+  it.each([
+    { worker: 'carried\n', lead: undefined, expected: undefined, name: 'carried-only' },
+    { worker: 'worker edit\n', lead: undefined, expected: 'possible', name: 'worker-modified' },
+    { worker: 'carried\n', lead: 'old\n', expected: undefined, name: 'lead-reverted' },
+  ])('compares $name merge candidates against the carried starting tree', async ({ worker, lead, expected }) => {
+    const f = fixture()
+    try {
+      f.holder('W'); f.holder('B')
+      writeFileSync(join(f.dir, 'x'), 'carried\n')
+      execFileSync('git', ['-C', f.dir, 'add', 'x'])
+      execFileSync('git', ['-C', f.dir, 'commit', '-qm', 'carried'])
+      const carried = execFileSync('git', ['-C', f.dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+      const git = f.room.participants.get('W\0git') as any
+      f.room.participants.set('W\0git', { ...git, head: carried, base: carried, rev: git.rev + 1 })
+      f.entry('W', worker)
+      f.room.manifestHead.set('W', { ...f.room.manifestHead.get('W')!, base: carried })
+      f.entry('B', lead, lead === undefined)
+      const baseline = { worker: 'W', sha: carried, dir: f.dir, carriedCommit: true, untracked: new Map() }
+      await new ConflictSet(f.session('W'), 'W', f.session('W'), () => {}, 0,
+        person => person === 'W' ? { baseline, lead: 'B' } : undefined).reconcile('carried merge')
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'merge', 'B', 'x'))?.status).toBe(expected)
     } finally { f.cleanup() }
   })
 

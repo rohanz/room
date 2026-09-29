@@ -122,6 +122,7 @@ async function main() {
         hostEnded: reason => { void bye(reason) },
         leave: async idle => { for (const joined of [...tools.joinedSessions()].reverse()) await tools.drop(joined, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
         releaseHeld: async (idle, epoch) => { for (const joined of tools.joinedSessions()) await releaseIdleHeld(joined, epoch, idle, presence!.mono) },
+        replayPending: async () => { for (const joined of tools.joinedSessions()) await releaseIdleHeld(joined, 'replay', presence!.idleMs(), presence!.mono, true) },
         publishIdle: minutes => { for (const joined of tools.joinedSessions()) try { joined.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
         log,
       })

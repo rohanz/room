@@ -32,7 +32,9 @@ export interface MessageKind<M extends MsgBase = Msg> {
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
-const conflictLabel = (m: MsgBase & { text: string }) => m.priority !== 'fyi' ? 'CONFLICT' : /cleared$/.test(m.text) ? 'CONFLICT cleared' : 'POSSIBLE conflict'
+const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible' }) => m.clearedFrom === 'possible'
+  ? 'POSSIBLE conflict cleared' : m.clearedFrom === 'conflict' ? 'CONFLICT cleared'
+    : m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
 const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'

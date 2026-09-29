@@ -19,6 +19,7 @@ import { gitCommonDir } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, assertValidParticipantName, roomKey, type Identity, type Kind } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
+import { withdrawFormerPublisher } from '../../roomd/src/publisher.js'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
 import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
 import { createSessionBinding } from './binding.js'
@@ -542,6 +543,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
       publicationTransition = publicationTransition.then(async () => {
         if (stopping) return
         if (!fence) {
+          if (daemon && lease.epoch !== undefined) withdrawFormerPublisher(daemon.roomDoc, name, String(lease.epoch), 'another session')
           policyStore.setPublisher(false)
           const attachment = publishing
           publishing = undefined
@@ -582,7 +584,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   hub.attach(hubTransport(started.provider))
   greet(hub)
   closeProbe()
-  post = createPost(started.roomDoc, hub, () => lease.held())
+  post = createPost(started.roomDoc, hub, () => lease.held(), () => lease.paused())
   {
     const stop = started.stop.bind(started)
     // Ending presence: withdraw and detach the publisher lease, release the hub lease while the connection is up, then stop.
