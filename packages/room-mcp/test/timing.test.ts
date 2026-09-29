@@ -162,12 +162,22 @@ describe('tool timing', () => {
     let now = 0
     const lines: string[] = []
     const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
-    const sample = vi.fn(() => { now += 400 })
+    const sample = vi.fn(() => { now += 400; return 0 })
     await tracker.run('room_preview_merge', async () => {
       expect(await previewCheck('/tmp/room-merge-own', () => { now += 2310; return 'ok' }, sample)).toBe('ok')
     })
     expect(sample).toHaveBeenCalledTimes(2)
-    expect(lines).toEqual(['slow tool room_preview_merge 3110ms: check 2310ms, other 800ms'])
+    expect(lines).toEqual(['slow tool room_preview_merge 3110ms: check 2310ms, overlapped 0 other preview check(s), other 800ms'])
+  })
+
+  it.each([[undefined, 0], [0, undefined]])('omits overlap when either sample is unknown (%s, %s)', async (first, second) => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    const sample = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+    await tracker.run('room_preview_merge', () => previewCheck('/tmp/room-merge-own', () => { now += 2100 }, sample))
+    expect(sample).toHaveBeenCalledTimes(2)
+    expect(lines).toEqual(['slow tool room_preview_merge 2100ms: check 2100ms'])
   })
 
   it('stops after 50 matching scratch directories and leaves the overlap unknown', () => {
@@ -178,6 +188,17 @@ describe('tool timing', () => {
       expect(countOtherPreviewChecks(path.join(root, 'room-merge-own'), root, Date.now(), readStat)).toBeUndefined()
       expect(readStat).toHaveBeenCalledTimes(50)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('stops scanning after 2000 directory entries and closes the iterator', () => {
+    const readSync = vi.fn(() => ({ name: 'unrelated', isDirectory: () => true }) as fs.Dirent)
+    const closeSync = vi.fn()
+    const openDir = vi.fn(() => ({ readSync, closeSync }))
+    const readStat = vi.fn((file: string) => fs.lstatSync(file))
+    expect(countOtherPreviewChecks('/tmp/room-merge-own', '/tmp', Date.now(), readStat, openDir)).toBeUndefined()
+    expect(readSync).toHaveBeenCalledTimes(2000)
+    expect(readStat).not.toHaveBeenCalled()
+    expect(closeSync).toHaveBeenCalledOnce()
   })
 
   it('records connect, delayed sync, and daemon start through startAutoTaggedRoomd', async () => {
