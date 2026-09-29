@@ -700,6 +700,81 @@ describe('derived pair slots', () => {
     } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
   })
 
+  it.each([
+    ['delete', 'excluded', false], ['signature', 'excluded', false],
+    ['delete', 'wrong fence', false], ['signature', 'wrong fence', false],
+    ['delete', 'wrong fence', true], ['signature', 'wrong fence', true],
+    ['delete', 'excluded', true], ['signature', 'excluded', true],
+  ] as const)('keeps %s contract unresolved for %s consumer (claim: %s)', async (kind, withdrawal, claim) => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const accepted: string[] = [], seen = new Set<string>()
+      f.post.mockImplementation(async (_from, _body, opts) => {
+        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
+        return { ok: true }
+      })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle(); await waitForGraph(f.room, 'B', 1)
+      expect(f.room.graphs.get('B')?.edges).toContainEqual(expect.objectContaining({ source: 'api.py', target: 'consumer.py' }))
+      if (kind === 'delete') rmSync(join(f.dir, 'api.py'))
+      else writeFileSync(join(f.dir, 'api.py'), 'def call(a, b):\n    pass\n')
+      f.room.doc.transact(() => {
+        if (kind === 'delete') f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        else {
+          const provider = 'def call(a, b):\n    pass\n'
+          f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 2, fence: '1' })
+          f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+        }
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      set = new ConflictSet({ ...f.session('A'), room: reader } as Session)
+      set.start(); await set.reconcile('initial readable consumer')
+      const initial = reader.doc.getMap<any>('conflicts').get(key)
+      expect(initial).toMatchObject({ status: 'conflict', settled: 'conflict', epoch: 1 })
+      expect(accepted).toEqual([noticeId(key, 1)])
+      if (claim) reader.claims.set('consumer-claim', { id: 'consumer-claim', by: 'A', path: 'consumer.py', from: 1, to: 2, intent: 'edit', at: 1 } as any)
+
+      // Deliver A's publication only to its reader; B's running index retains
+      // the valid provider revision and the previously observed dependency.
+      reader.doc.transact(() => {
+        const entries = reader!.manifest.get(manifestKey('A', '1'))!
+        if (withdrawal === 'excluded') {
+          entries.delete('consumer.py')
+          reader!.clearOverlay(manifestKey('A', '1'), 'consumer.py')
+          reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, excluded: [digestPath(reader!.roomSalt!, 'consumer.py')], rev: 2, semRev: 2 })
+        } else {
+          entries.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 2, fence: 'wrong' })
+          reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, rev: 2, semRev: 2 })
+        }
+      })
+      expect(f.room.manifest.get(manifestKey('A', '1'))!.get('consumer.py')?.fence).toBe('1')
+      expect(reader.graphs.get('B')).toMatchObject({ status: 'ready', sourceRev: 2 })
+      await set.reconcile('consumer withdrawn')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1, factId: initial.factId })
+      expect(accepted).toEqual([noticeId(key, 1)])
+
+      reader.doc.transact(() => {
+        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 3, fence: '1' })
+        reader!.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, excluded: [], rev: 3, semRev: 3 })
+      })
+      await set.reconcile('identical consumer restored')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', settled: 'conflict', epoch: 1, factId: initial.factId })
+      expect(accepted).toEqual([noticeId(key, 1)])
+    } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
   it('clears a deletion contract after the consumer actually removes its last reference', async () => {
     const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
     let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
