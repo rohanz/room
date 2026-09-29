@@ -134,6 +134,31 @@ it('default preview includes a present neighbour whose only overlapping change i
   expect(session.lastPreview).toBeDefined()
 })
 
+it('names a pushed participant commit in complete and partial preview notes', async () => {
+  const { room, head, entries, state } = fixture()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'ben committed\n')
+  execFileSync('git', ['add', '.'], { cwd: root! })
+  execFileSync('git', ['commit', '-qm', 'ben change'], { cwd: root! })
+  const pushed = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root!, encoding: 'utf8' }).trim()
+  const origin = path.join(root!, '.git', 'origin.git')
+  execFileSync('git', ['init', '--bare', '-q', origin])
+  execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: root! })
+  execFileSync('git', ['push', '-q', 'origin', 'HEAD:r17-b'], { cwd: root! })
+  expect(execFileSync('git', ['rev-parse', 'refs/remotes/origin/r17-b'], { cwd: root!, encoding: 'utf8' }).trim()).toBe(pushed)
+  room.participants.set('ben\0git', { base: pushed, head: pushed, branch: 'r17-b', upstream: 'origin/r17-b', ahead: 0, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base: pushed, rev: 2, semRev: 2 })
+  state.baseFor = (_s: Session, person: string) => person === 'ben' ? pushed : head.base
+  const result = await handlers(state).room_preview_merge({ person: 'ben' })
+  const anchor = `ben at ${pushed.slice(0, 10)} (pushed to origin/r17-b)`
+  expect(result).toContain(anchor)
+  expect(room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text).toContain(anchor)
+  entries.set('app.py', { change: 'M', state: 'held', held: 'scope', at: Date.now(), fence: '1' })
+  const partial = await handlers(state).room_preview_merge({ person: 'ben' })
+  expect(partial).toContain('PARTIAL preview')
+  expect(partial).toContain(anchor)
+  expect(room.messages().find(message => message.type === 'note' && message.text.includes('partial preview with ben'))?.text).toContain(anchor)
+})
+
 it('fetches a reachable participant anchor before explicit preview and honours ROOM_AUTO_FETCH=0', async () => {
   const { room, head, state, session } = fixture()
   const origin = path.join(root!, '.git', 'origin.git')

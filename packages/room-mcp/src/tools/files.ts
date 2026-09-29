@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import { coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantsView, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
+import { acceptedGit, coversPath, describeClaim, manifestChangers, manifestPaths, neighbours, participantRecord, participantsView, snapshot, withLineNumbers, type NoteMsg, type Version } from '@room/shared'
 import { localWorkers } from '../worker-registry.js'
 import type { LocalWorker } from '../worker-status.js'
 import type { Session } from '../session.js'
@@ -198,10 +198,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const skippedNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
-      const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean) => {
+      const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean, anchors = '') => {
         await caller.post<NoteMsg>(caller.me, {
           type: 'note', priority: 'fyi',
-          text: `partial preview with ${names.join(', ') || 'no participants'}: ${gaps.join('; ')}${command ? `; command "${command}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
+          text: `partial preview with ${names.join(', ') || 'no participants'}: ${gaps.join('; ')}${anchors}${command ? `; command "${command}" ran on a partial tree (${ranOk ? 'passed' : 'failed or not run'})` : '; tests not run'}; combined work not verified`,
         })
       }
       if (!people.length) {
@@ -212,6 +212,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return ['no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       }
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
+      const callerBase = baseFor(caller, caller.me.name)
+      const anchors = participants.flatMap(({ person, session }) => {
+        const base = baseFor(session, person)
+        const view = participantsView(session.room, session.awareness, Date.now())
+        const gitRecord = acceptedGit(participantRecord(session.room, person), view)
+        // Only name a commit already published by this participant's accepted git record.
+        if (base === callerBase || gitRecord === 'updating' || gitRecord.base !== base) return []
+        const location = gitRecord.upstream && gitRecord.ahead === 0 && gitRecord.head === base
+          ? ` (pushed to ${gitRecord.upstream})`
+          : gitRecord.branch ? ` (on ${gitRecord.branch})` : ''
+        const live = [...snapshot(session.room, person, view)?.entries.values() ?? []].some(entry => entry.state === 'shared') ? ' + live changes' : ''
+        return [`${person} at ${base.slice(0, 10)}${location}${live}`]
+      })
+      const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
         const ownLocalWorker = session.local && localWorkers(session.dir, record => record.name === person)[0]
@@ -229,14 +243,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const gapLines = [...gaps.map(gap => `${gap.person}${gap.path ? ` ${gap.path}` : ''}: ${gap.why}`), ...unavailable]
         if (!paths.length && !result.callerOnly && !run) {
           caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
-          if (!complete) await recordPartial(people, gapLines)
-          return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, skippedNote].filter(Boolean).join('\n')
+          if (!complete) await recordPartial(people, gapLines, '', undefined, anchorNote)
+          return [...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, ...(anchors.length ? [`included ${anchors.join(', ')}`] : []), skippedNote].filter(Boolean).join('\n')
         }
         out.unshift(...missingNotes)
         if (skippedNote) out.push(skippedNote)
         if (!complete) out.push(`PARTIAL preview: ${gapLines.join('; ')}; the combined code was NOT fully checked`)
         for (const [p, text] of resolvedText) out.push(`--- resolved ${p} (write this to your clone) ---\n${text}--- end ${p} ---`)
         out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
+        if (anchors.length) out.push(`included ${anchors.join(', ')}`)
         if (noTestsNote) out.push(noTestsNote)
         let ranOk = !run
         if (run) {
@@ -265,9 +280,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk : false,
           ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run } : {}) }
-        if (!complete) await recordPartial(people, gapLines, run, ranOk)
+        if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        if (complete && !hardCount && ranOk) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return out.join('\n')
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
