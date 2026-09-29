@@ -123,7 +123,7 @@ export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), no
   } catch { return undefined }
 }
 
-export function notePreviewCheckOverlap(ownDir: string): void {
+function notePreviewCheckOverlap(ownDir: string): void {
   const timing = currentToolTiming()
   if (timing?.name !== 'room_preview_merge') return
   const count = countOtherPreviewChecks(ownDir)
