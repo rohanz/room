@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { serializedStore, startHub, type Hub } from '@room/hub-core'
+import { SETTLE_MS, serializedStore, startHub, type Hub } from '@room/hub-core'
 import { highestSeq, RoomDoc, type Msg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
@@ -27,7 +27,9 @@ const ids = (messages: readonly Msg[]) => messages.map(m => m.id)
 function post(hub: Hub, id: string): number {
   const conn = {}
   expect(hub.handle(conn, { v: 1, id: `h-${id}`, op: 'hello', proto: 1, schema: 2, client: 'test', sessionId: 'poster' }, { local: true })).toMatchObject({ ok: true })
-  const reply = hub.handle(conn, { v: 1, id: `p-${id}`, op: 'post', auto: true, msg: { id, type: 'note', priority: 'notify', from: 'quinn', text: id } }, { local: true }) as { ok: boolean; seq: number }
+  const grant = hub.handle(conn, { v: 1, id: `a-${id}`, op: 'acquire', name: 'quinn', holder: { sessionId: 'poster', pid: process.pid, startTime: '', executable: '' } }, { local: true }) as { ok: boolean; epoch: number }
+  expect(grant).toMatchObject({ ok: true })
+  const reply = hub.handle(conn, { v: 1, id: `p-${id}`, op: 'post', auto: true, lease: { name: 'quinn', epoch: grant.epoch }, msg: { id, type: 'note', priority: 'notify', from: 'quinn', text: id } }, { local: true }) as { ok: boolean; seq: number }
   expect(reply).toMatchObject({ ok: true })
   return reply.seq
 }
@@ -37,9 +39,10 @@ describe('the seq frontier', () => {
     const room = new RoomDoc()
     let max: number | undefined
     const store = serializedStore({ read: async () => max, write: async v => { max = v } })
-    let wall = Date.now()
-    const host = { doc: room, mono: () => performance.now(), wall: () => wall, log: () => {}, store }
+    let wall = Date.now(), offset = 0
+    const host = { doc: room, mono: () => performance.now() + offset, wall: () => wall, log: () => {}, store }
     const first = await startHub(host)
+    offset += SETTLE_MS
     const before = post(first, 'm_before')
     const s = session(room), l = ledger()
     l.bind(s)
@@ -47,6 +50,7 @@ describe('the seq frontier', () => {
     first.stop()
     wall -= 3_600_000
     const second = await startHub(host)
+    offset += SETTLE_MS
     expect(second.incarnation).toBeGreaterThan(first.incarnation)
     const after = post(second, 'm_after')
     expect(after).toBeGreaterThan(before)

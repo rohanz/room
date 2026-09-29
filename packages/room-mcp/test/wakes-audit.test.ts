@@ -173,9 +173,10 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
   const worker = money('done', 0)
   addWorker(main, worker)
   const question = hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Which field?' })
+  let launchedIds: string[] = []
   const resume = vi.spyOn(rooms, 'resumeWorker').mockImplementation(async (_session, _worker, prompt, _spawner, _channel, _max, _log, _at, _wait, beforeLaunch) => {
     expect(prompt).toBe('price_cents')
-    expect(await beforeLaunch?.()).toBeUndefined()
+    launchedIds = (await beforeLaunch?.())?.ids ?? []
     if (change === 'answered') hubAppend(main.room, { name: 'lead', kind: 'agent' }, { type: 'answer', to: worker.name, inReplyTo: question.id, text: 'Already answered' })
     else hubAppend(main.room, { name: worker.name, kind: 'agent' }, { type: 'question', to: 'lead', text: 'Another field?' })
     return 'resumed money'
@@ -186,7 +187,9 @@ it.each(['answered', 'new question'] as const)('posts an inferred answer after w
   expect(sent).toContain(`answered ${question.id}`)
   const answer = main.room.messages().find(m => m.type === 'answer' && m.text === 'price_cents')
   expect(answer).toMatchObject({ type: 'answer', to: worker.name, inReplyTo: question.id })
-  expect(main.room.seen(worker.name).has(answer!.id)).toBe(true)
+  expect(launchedIds).toContain(answer!.id)
+  // The mocked launcher never confirms a prompt turn; its IDs remain owed until that happens.
+  expect(main.room.seen(worker.name).has(answer!.id)).toBe(false)
 })
 
 it('finds a read answer sent before room_wait even if another room holds the question', async () => {

@@ -9,10 +9,11 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
-import type { Session } from '../src/session.js'
+import { syntheticSessionId, type Session } from '../src/session.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 /** Two repos: one with CODEOWNERS (api/ owned by kieran, web/ by rohan), one without. */
 let owned: { dir: string; base: string }
@@ -45,13 +46,15 @@ function pair() {
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
 
-function agent(room: RoomDoc, me: Identity, r: { dir: string; base: string }) {
+function agent(room: RoomDoc, me: Identity, r: { dir: string; base: string }, hubRoom = room) {
   const awareness = new Awareness(room.doc)
-  awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', lastActive: Date.now() })
+  const sessionId = syntheticSessionId({ pid: process.pid, startTime: '', executable: '' })
+  visiblePeer(room, me.name, me.kind, sessionId)
+  awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   const s: Session = {
     policyStore: testPolicyStore(),
     room, awareness, me, dir: r.dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
-    ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
+    ...hubSeam(hubRoom), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir: r.dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base: r.base } as never,
   }
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: r.dir, log: () => {} })
@@ -63,7 +66,7 @@ function two(r: { dir: string; base: string }) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo', branch: 'main', base: r.base })
   const rohan = agent(a, { name: 'Rohan', kind: 'agent' }, r)
-  const kieran = agent(b, { name: 'Kieran', kind: 'agent' }, r)
+  const kieran = agent(b, { name: 'Kieran', kind: 'agent' }, r, a)
   const sync = () => {
     applyAwarenessUpdate(rohan.awareness, encodeAwarenessUpdate(kieran.awareness, [b.doc.clientID]), 'test')
     applyAwarenessUpdate(kieran.awareness, encodeAwarenessUpdate(rohan.awareness, [a.doc.clientID]), 'test')

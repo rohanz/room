@@ -16,6 +16,7 @@ import { startArbitration, type Arbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 const SID = 'hook-fixes-session'
@@ -50,7 +51,9 @@ const settle = () => new Promise(r => setTimeout(r, 250))
 
 function addPresence(s: Session, name: string) {
   const peer = new Awareness(new Y.Doc())
-  peer.setLocalState({ user: { name, kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() })
+  const sessionId = `fixture:${name}`
+  visiblePeer(s.room, name, 'agent', sessionId)
+  peer.setLocalState({ user: { name, kind: 'agent', color: '#111' }, sessionId, status: 'idle', lastActive: Date.now() })
   applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
   return peer
 }

@@ -5,8 +5,8 @@ import { browserBlobHash, readWebVersion, webChangerLabels, webCoverage } from '
 
 function roomWith(name = 'Ben') {
   const room = new RoomDoc()
-  const fence = 'epoch-1', base = 'base-1'
-  room.participants.set(`${name}\0holder`, { sessionId: fence, machine: 'test', pid: 1, startTime: '', executable: '' })
+  const fence = '1', base = 'base-1'
+  room.participants.set(`${name}\0holder`, { sessionId: 'fixture-session', epoch: 1, pid: 1, startTime: '', executable: '', at: 1 })
   room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
   room.manifestHead.set(name, { base, fence, level: 'declared', coverage: { kind: 'all' }, excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true, textPrefixes: ['src/'] })
   const entries = new Y.Map<ManifestEntry>()

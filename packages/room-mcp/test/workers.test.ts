@@ -23,6 +23,7 @@ import type { WorkerRecord } from '../src/worker-status.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubAppend } from '@room/shared/testing'
+import { visiblePeer } from './fixtures/visible.js'
 
 /** No release notices to send here. */
 const ignore = () => {}
@@ -662,8 +663,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const st = await t.leadTools.call('room_state', { all: true })
     expect(st).toContain('workers (1):')
     expect(st).toContain('money (codex gpt-5.6 · medium, running')
-    expect(st).toContain('agent of rohanz · money · codex · gpt-5.6 · medium')
-    expect(await t.leadTools.call('room_state', {})).toContain('codex · gpt-5.6 · medium')
+    expect(st).toContain('0 changed files · branch room/money')
+    expect(await t.leadTools.call('room_state', {})).toContain('codex gpt-5.6 · medium')
     expect(await t.leadTools.call('room_spawn', { tag: 'money', task: 'again' })).toContain('tag in use: money')
     expect(await t.leadTools.call('room_spawn', { tag: 'bad tag', task: 'x' })).toContain('error: tag')
   })
@@ -1794,7 +1795,8 @@ describe('spawn inputs and effort', () => {
     const t = setupLead()
     const peerDoc = new Y.Doc()
     const peer = new Awareness(peerDoc)
-    peer.setLocalState({ user: { name: 'teammate', kind: 'agent' }, status: 'working' })
+    const sessionId = visiblePeer(t.session!.room, 'teammate', 'agent')
+    peer.setLocalState({ user: { name: 'teammate', kind: 'agent' }, sessionId, status: 'working' })
     applyAwarenessUpdate(t.session!.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
     const first = await t.leadTools.call('room_state', {})
     expect(first).toContain('For your human:')

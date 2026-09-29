@@ -464,6 +464,11 @@ export function decodeRoom(encoded: string): string { try { return decodeURIComp
 /** What a join resolved: the daemon under a leased name, its store, and the lease and hub that keep the name. */
 export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void }
 
+/** Keep a live daemon in sync when a sharing grant changes or settles. */
+export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy']): void {
+  daemon.applyInputs({ ...daemon.inputs, policy })
+}
+
 /**
  * Resolve identity before roomd can publish anything under it (registry §15): a probe connection syncs the
  * room and reaches its hub; the name is the first candidate whose O_EXCL lease in this clone and whose hub
@@ -529,7 +534,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   let publishing: Awaited<ReturnType<typeof attachPublisher>> | undefined
   try {
     policyStore = await PolicyStore.open({ dir: options.dir, room, participant: name, server: new URL(options.room).origin, requested: options.requested, ceiling: options.ceiling,
-      onChange: policy => { if (daemon) daemon.applyInputs({ ...daemon.inputs, policy }) } })
+      onChange: policy => { if (daemon) applySessionPolicy(daemon, policy) } })
     if (options.requestedExplicit) await policyStore.setRequested(options.requested)
     // One publisher per worktree (registry §16): its lease decides `publisher` before the daemon's first write.
     publishing = await attachPublisher({
