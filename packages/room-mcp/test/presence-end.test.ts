@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, releaseIdleHeld, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
+import { IDLE_CLAIMS_MS, IDLE_LEASE_MS, PresenceEnd, idleLeaseTickMs, releaseIdleHeld, resolveIdleLeaseMs, type HostKind, type PresenceEndOptions } from '../src/presence-end.js'
 import type { Session } from '../src/session.js'
 
 const MIN = 60_000
@@ -27,6 +27,34 @@ function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
 }
 
 describe('presence end and the idle lease (registry §18)', () => {
+  it('leaves after an overridden short lease on the timer', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const leaseMs = 2_000
+    const { presence, events } = fixture('shared-app-server', {
+      idleLeaseMs: leaseMs, tickMs: idleLeaseTickMs(leaseMs), mono: () => Date.now(),
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(leaseMs - 1)
+      expect(events).toEqual([])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(events).toEqual([`leave after ${leaseMs / MIN} min`])
+      expect(presence.hasLeft).toBe(true)
+    } finally {
+      presence.stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it('accepts only positive integer lease milliseconds from the environment', () => {
+    expect(resolveIdleLeaseMs('2000')).toBe(2_000)
+    for (const raw of [undefined, '', '0', '-1', '1.5', '1e3', 'garbage', '9007199254740992']) {
+      expect(resolveIdleLeaseMs(raw), String(raw)).toBe(IDLE_LEASE_MS)
+    }
+    expect(idleLeaseTickMs(500)).toBe(500)
+    expect(idleLeaseTickMs(2_000)).toBe(1_000)
+  })
+
   it('H1 refuses a lapsed or old epoch of the same host session', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'idle-epoch-'))
     try {
