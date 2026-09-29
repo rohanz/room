@@ -3,8 +3,8 @@ import { RoomDoc, formatMsg } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -166,6 +166,41 @@ describe('ConflictSlots', () => {
 })
 
 describe('derived pair slots', () => {
+  const restartChild = `
+    import { readFileSync } from 'node:fs'
+    import * as Y from 'yjs'
+    import { RoomDoc, gitBlobHash, manifestKey } from '@room/shared'
+    import { ConflictSet, slotKey, noticeId } from './src/conflict-set.ts'
+    const input = JSON.parse(readFileSync(0, 'utf8'))
+    const room = new RoomDoc()
+    Y.applyUpdate(room.doc, Buffer.from(input.update, 'base64'))
+    const accepted = []
+    const post = async (_from, _body, opts) => {
+      if (!accepted.includes(opts.id)) accepted.push(opts.id)
+      return { ok: true }
+    }
+    const states = new Map([[1, { user: { name: 'A', kind: 'agent' }, sessionId: 'session-A' }],
+      [2, { user: { name: 'B', kind: 'agent' }, sessionId: 'session-B' }]])
+    const session = { room, awareness: { getStates: () => states },
+      provider: { synced: true, on() {}, off() {} }, me: { name: 'A', kind: 'agent' },
+      dir: input.dir, post, lease: { fence: () => '1' } }
+    const set = new ConflictSet(session)
+    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const before = room.doc.getMap('conflicts').get(key)
+    if (input.incomplete) room.manifestHead.set('A', { ...room.manifestHead.get('A'), complete: false })
+    await set.reconcile('fresh process withdrawn')
+    const withdrawn = room.doc.getMap('conflicts').get(key)
+    if (input.restore !== false) room.doc.transact(() => {
+      const entries = room.manifest.get(manifestKey('A', '1'))
+      entries.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(input.consumer), at: 3, fence: '1' })
+      room.setOverlay(manifestKey('A', '1'), 'consumer.py', input.consumer)
+      room.manifestHead.set('A', { ...room.manifestHead.get('A'), level: 'full', textPrefixes: undefined,
+        excluded: [], rev: 3, semRev: 3, complete: true, coverage: { kind: 'all' } })
+    })
+    await set.reconcile('fresh process restored')
+    const restored = room.doc.getMap('conflicts').get(key)
+    process.stdout.write(JSON.stringify({ before, withdrawn, restored, accepted, initialId: noticeId(key, 1) }))
+  `
   function fixture(baseFiles: Record<string, string> = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'room-slot-'))
     const run = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
@@ -201,6 +236,93 @@ describe('derived pair slots', () => {
       lease: { fence: () => localFence.value } }) as unknown as Session
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
+
+  it.each([
+    ['delete', 'excluded', false], ['delete', 'excluded', true],
+    ['delete', 'wrong fence', false], ['delete', 'wrong fence', true],
+    ['delete', 'held', false], ['delete', 'held', true],
+    ['signature', 'excluded', false], ['signature', 'excluded', true],
+    ['signature', 'wrong fence', false], ['signature', 'wrong fence', true],
+    ['signature', 'held', false], ['signature', 'held', true],
+  ] as const)('recovers %s contract after %s across a process (%s removed)', async (kind, withdrawal, removed) => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle(); await waitForGraph(f.room, 'B', 1)
+      if (kind === 'delete') rmSync(join(f.dir, 'api.py'))
+      else writeFileSync(join(f.dir, 'api.py'), 'def call(a, b):\n    pass\n')
+      f.room.doc.transact(() => {
+        if (kind === 'delete') f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        else {
+          const provider = 'def call(a, b):\n    pass\n'
+          f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 2, fence: '1' })
+          f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+        }
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      set = new ConflictSet({ ...f.session('A'), room: reader } as Session)
+      await set.reconcile('initial')
+      const initial = reader.doc.getMap<any>('conflicts').get(key)
+      expect(initial).toMatchObject({ status: 'conflict', settled: 'conflict', epoch: 1 })
+      const evidenceDir = join(f.dir, '.git', 'room', 'contract-consumers')
+      expect(readdirSync(evidenceDir)).toHaveLength(1)
+      expect(statSync(join(evidenceDir, readdirSync(evidenceDir)[0]!)).mode & 0o777).toBe(0o600)
+      reader.doc.transact(() => {
+        const entries = reader!.manifest.get(manifestKey('A', '1'))!
+        if (withdrawal === 'excluded') {
+          entries.delete('consumer.py')
+          reader!.clearOverlay(manifestKey('A', '1'), 'consumer.py')
+          reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, excluded: [digestPath(reader!.roomSalt!, 'consumer.py')], rev: 2, semRev: 2 })
+        } else if (withdrawal === 'wrong fence') {
+          entries.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 2, fence: 'wrong' })
+          reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, rev: 2, semRev: 2 })
+        } else {
+          entries.set('consumer.py', { change: 'A', state: 'held', held: 'scope', at: 2, fence: '1' })
+          reader!.clearOverlay(manifestKey('A', '1'), 'consumer.py')
+          reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+        }
+      })
+      await set.reconcile('withdrawn')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1, factId: initial.factId })
+      set.stop(); set = undefined
+      const restoredText = removed ? 'print("done")\n' : consumer
+      const runChild = (restore: boolean, incomplete = false) => {
+        const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', restartChild], {
+          cwd: join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 15_000,
+          input: JSON.stringify({ update: Buffer.from(Y.encodeStateAsUpdate(reader!.doc)).toString('base64'), dir: f.dir, consumer: restoredText, restore, incomplete }),
+        })
+        expect(child.status, child.stderr).toBe(0)
+        return JSON.parse(child.stdout) as { withdrawn: any; restored: any; accepted: string[]; initialId: string }
+      }
+      const result = runChild(true)
+      expect(result.withdrawn).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1, factId: initial.factId })
+      expect(result.restored).toMatchObject({ status: removed ? 'clean' : 'conflict', epoch: 1,
+        ...(removed ? { settled: 'clean' } : { settled: 'conflict', factId: initial.factId }) })
+      expect(result.accepted).toEqual(removed ? [noticeId(key, 1), `${noticeId(key, 1)}:clean`] : [noticeId(key, 1)])
+      if (kind === 'delete' && withdrawal === 'excluded') {
+        // A deleted local evidence file must remain conservative during the gap,
+        // yet complete readable coverage must allow recovery after upgrade.
+        rmSync(join(f.dir, '.git', 'room', 'contract-consumers'), { recursive: true, force: true })
+        const missing = runChild(false)
+        expect(missing.withdrawn).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
+        const incomplete = runChild(false, true)
+        expect(incomplete.withdrawn).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
+        const recovered = runChild(true)
+        expect(recovered.restored.status).toBe(removed ? 'clean' : 'conflict')
+      }
+    } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
 
   it('writes the current owner epoch into slots and stops while its local lease is paused', async () => {
     const f = fixture()

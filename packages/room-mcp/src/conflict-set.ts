@@ -1,15 +1,18 @@
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
-import { comparePair } from '@room/roomd'
+import { commonGitDirFromDotGit, comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { structuredPatch } from 'diff'
 import { carriedPaths, carriesWork, readBaseline, type Baseline } from '@room/roomd/baseline'
 import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
+import { writeAtomic } from './leases.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -44,16 +47,33 @@ const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
 
-// Consumer paths are prior evidence for contract slots. Keep them in the
-// reader, never in the replicated slot: a later exclusion must not publish a
-// formerly shared path (or a digest of its contents) to new room readers.
-const contractConsumers = new Map<string, Map<string, readonly string[]>>()
-function consumerEvidence(room: RoomDoc): Map<string, readonly string[]> {
-  // The room salt is stable across Yjs copies and never exposes path details.
-  const salt = room.roomSalt ?? ''
-  let evidence = contractConsumers.get(salt)
-  if (!evidence) { evidence = new Map(); contractConsumers.set(salt, evidence) }
-  return evidence
+// Prior consumer paths are private to the clone. Never put them (or content
+// digests) in a replicated slot. A file per room and owner avoids cross-owner
+// writes and survives a fresh MCP process.
+class ConsumerEvidence {
+  private readonly paths = new Map<string, readonly string[]>()
+  constructor(private readonly file?: string, private readonly roomSalt?: string) {
+    if (!file) return
+    try {
+      const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as { v?: number; roomSalt?: string; slots?: Record<string, unknown> }
+      if (stored.v !== 1 || stored.roomSalt !== roomSalt || !stored.slots || typeof stored.slots !== 'object') return
+      for (const [key, paths] of Object.entries(stored.slots)) {
+        if (Array.isArray(paths) && paths.length && paths.every(p => typeof p === 'string')) this.paths.set(key, paths)
+      }
+    } catch { /* Missing or damaged local evidence requires conservative reconstruction. */ }
+  }
+  static forSession(dir: string, room: RoomDoc, owner: string): ConsumerEvidence {
+    const salt = room.roomSalt
+    if (!salt) return new ConsumerEvidence()
+    const name = hash(`${salt}\0${owner}`)
+    return new ConsumerEvidence(path.join(commonGitDirFromDotGit(dir), 'room', 'contract-consumers', `${name}.json`), salt)
+  }
+  get(key: string): readonly string[] | undefined { return this.paths.get(key) }
+  set(key: string, paths: readonly string[]): void { this.paths.set(key, [...new Set(paths)].sort()); this.save() }
+  delete(key: string): void { if (this.paths.delete(key)) this.save() }
+  private save(): void {
+    if (this.file) writeAtomic(this.file, { v: 1, roomSalt: this.roomSalt, slots: Object.fromEntries(this.paths) })
+  }
 }
 
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
@@ -67,11 +87,12 @@ export class ConflictSlots {
     private readonly log: (line: string) => void = () => {},
     private readonly holderPost: Post = post,
     private readonly valid: () => boolean = () => true,
+    private readonly evidence: ConsumerEvidence = new ConsumerEvidence(),
   ) { this.map = room.doc.getMap<ConflictSlot>('conflicts') }
 
   get(key: string): ConflictSlot | undefined { return this.map.get(key) }
   owned(owner: string): [string, ConflictSlot][] { return [...this.map.entries()].filter(([, slot]) => slot.owner === owner) }
-  drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)) }
+  drop(key: string): void { this.room.doc.transact(() => this.map.delete(key)); this.evidence.delete(key) }
 
   /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
   markContractsUnknown(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
@@ -95,10 +116,9 @@ export class ConflictSlots {
       slot.status === 'unknown' && slot.why === why)) return
     const byPath = new Map<string, ConflictSlot[]>()
     for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot])
-    const evidence = consumerEvidence(this.room)
     for (const [path] of byPath) {
-      const supporting = new Set(old.filter(([, slot]) => slot.path === path).flatMap(([key]) => evidence.get(key) ?? []))
-      if (supporting.size) evidence.set(slotKey(owner, 'contract', other, path, '*'), [...supporting].sort())
+      const supporting = new Set(old.filter(([, slot]) => slot.path === path).flatMap(([key]) => this.evidence.get(key) ?? []))
+      if (supporting.size) this.evidence.set(slotKey(owner, 'contract', other, path, '*'), [...supporting].sort())
     }
     this.room.doc.transact(() => {
       for (const [key] of old) this.map.delete(key)
@@ -112,6 +132,7 @@ export class ConflictSlots {
           inputs: hash(`${owner}\0${other}\0${path}\0${why}`), factId: '', why })
       }
     })
+    for (const [key, slot] of old) if (key !== slotKey(owner, 'contract', other, slot.path, '*')) this.evidence.delete(key)
   }
 
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
@@ -216,14 +237,14 @@ export class ConflictSet {
   private rerun = false
   private starts: number[] = []
   private readonly contractCache = new Map<string, ReturnType<typeof observedContractChanges>>()
-  private readonly consumerEvidence: Map<string, readonly string[]>
+  private readonly consumerEvidence: ConsumerEvidence
   private guard: (() => boolean) | undefined
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined) {
     const fence = () => team.lease?.fence() ?? ''
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
-    this.consumerEvidence = consumerEvidence(team.room)
+    this.consumerEvidence = ConsumerEvidence.forSession(team.dir, team.room, owner)
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false, this.consumerEvidence)
   }
 
   start(): void {
@@ -359,8 +380,21 @@ export class ConflictSet {
     const prior = this.slots.get(key)
     if (!prior || prior.settled === 'none') return true
     const paths = this.consumerEvidence.get(key)
-    if (!paths?.length) return false // A fresh reader cannot infer vanished evidence from current candidates.
+    if (!paths?.length) return this.canReconstructConsumers(mine)
     for (const path of paths) if (await this.readableConsumer(mine, path) === undefined) return false
+    return true
+  }
+
+  /** With no history, only a complete full publication can prove absence. */
+  private canReconstructConsumers(mine: ParticipantSnapshot): boolean {
+    const head = mine.head
+    if (!mine.fenceValid || !head.complete || head.coverage.kind !== 'all' || head.level !== 'full' ||
+        head.base !== mine.record?.git?.base || !mine.roomSalt || head.excluded.length) return false
+    const raw = this.team.room.manifest.get(manifestKey(mine.name, head.fence))
+    for (const entry of raw?.values() ?? []) {
+      if (entry.fence !== head.fence || entry.state !== 'shared' ||
+          (entry.change === 'D' ? !!entry.hash : !entry.hash)) return false
+    }
     return true
   }
 
@@ -618,7 +652,7 @@ export class ConflictSet {
         continue
       }
       if (slot.subject === '*' && [...live].some(liveKey => liveKey.startsWith(slotKey(this.owner, 'contract', other, slot.path, '')))) {
-        this.slots.drop(key)
+        this.drop(key)
         continue
       }
       if (!await this.priorConsumersReadable(key, mine)) {
