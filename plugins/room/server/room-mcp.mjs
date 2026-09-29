@@ -17888,6 +17888,16 @@ async function gitTracked(dir) {
   }
   return { paths, indexed };
 }
+async function gitCommitMissing(dir, sha, configuredTimeoutMs) {
+  const args3 = ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`];
+  const done = observeGit(args3);
+  return new Promise((resolve5) => {
+    execFile("git", args3, { cwd: dir, encoding: "utf8", timeout: timeoutMs(configuredTimeoutMs) }, (err2, stdout, stderr2) => {
+      done();
+      resolve5(Number(err2?.code) === 1 && !stdout && !stderr2);
+    });
+  });
+}
 async function gitIgnored(dir, rel, configuredTimeoutMs) {
   const timeout = timeoutMs(configuredTimeoutMs);
   const done = observeGit(["check-ignore", "-q", "--", rel]);
@@ -18354,16 +18364,25 @@ var init_retained_declared = __esm({
       participant;
       onChange;
       file;
+      changeQueued = false;
       server;
       save() {
         if (this.size) writeRecordSync(this.file, { server: this.server, room: this.room, participant: this.participant, paths: [...this] });
         else fs7.rmSync(this.file, { force: true });
       }
+      notifyChange() {
+        if (!this.onChange || this.changeQueued) return;
+        this.changeQueued = true;
+        queueMicrotask(() => {
+          this.changeQueued = false;
+          this.onChange?.();
+        });
+      }
       add(path31) {
         if (!this.has(path31)) {
           super.add(path31);
           this.save();
-          this.onChange?.();
+          this.notifyChange();
         }
         return this;
       }
@@ -18371,7 +18390,7 @@ var init_retained_declared = __esm({
         const removed = super.delete(path31);
         if (removed) {
           this.save();
-          this.onChange?.();
+          this.notifyChange();
         }
         return removed;
       }
@@ -18379,7 +18398,7 @@ var init_retained_declared = __esm({
         if (this.size) {
           super.clear();
           this.save();
-          this.onChange?.();
+          this.notifyChange();
         }
       }
     };
@@ -25572,9 +25591,7 @@ var init_src2 = __esm({
           this.roomName,
           this.name,
           splitRoomUrl(this.roomUrl).serverUrl,
-          () => {
-            if (!this.stopped) this.setStatus(this.currentStatus());
-          }
+          () => this.publishRetainedIfChanged()
         ));
         this.setStatus(this.currentStatus());
         this.roomDoc.scopes.observe((ev) => {
@@ -25747,6 +25764,13 @@ var init_src2 = __esm({
           lastActive: this.lastActive
         };
         this.provider.awareness.setLocalState(state);
+      }
+      publishRetainedIfChanged() {
+        if (this.stopped) return;
+        const current = this.provider.awareness.getLocalState() ?? {};
+        const next = this.share === "declared" && !this.publishUnder ? this.publisher.retainedDeclared().slice(0, MAX_RETAINED_PRESENCE_PATHS) : void 0;
+        const same = next === void 0 ? current.retained === void 0 : Array.isArray(current.retained) && next.length === current.retained.length && next.every((path31, i2) => path31 === current.retained[i2]);
+        if (!same) this.setStatus(this.currentStatus());
       }
       choosePublisher() {
         const states = this.provider.awareness.getStates?.();
@@ -42871,6 +42895,7 @@ var EVENT_LOOP_SAMPLE_MS = 500;
 var EVENT_LOOP_LAG_MS = 2e3;
 var PREVIEW_CHECK_MAX_AGE_MS = 6 * 6e4;
 var PREVIEW_CHECK_STAT_LIMIT = 50;
+var PREVIEW_CHECK_ENTRY_LIMIT = 2e3;
 var context = new AsyncLocalStorage();
 var ms = (value2) => `${Math.round(value2)}ms`;
 var ToolTiming = class {
@@ -42889,11 +42914,15 @@ var ToolTiming = class {
   activePhases = /* @__PURE__ */ new Set();
   queueStarted;
   overlappingPreviewChecks;
+  previewCheckOverlapUnknown = false;
   add(name2, elapsed) {
     this.phases.set(name2, (this.phases.get(name2) ?? 0) + elapsed);
   }
   notePreviewCheckOverlap(others) {
-    this.overlappingPreviewChecks = Math.max(this.overlappingPreviewChecks ?? 0, others);
+    if (others === void 0) {
+      this.previewCheckOverlapUnknown = true;
+      this.overlappingPreviewChecks = void 0;
+    } else if (!this.previewCheckOverlapUnknown) this.overlappingPreviewChecks = Math.max(this.overlappingPreviewChecks ?? 0, others);
   }
   begin(name2) {
     const start2 = this.now();
@@ -42967,46 +42996,53 @@ var ToolTiming = class {
 function currentToolTiming() {
   return context.getStore();
 }
-function countOtherPreviewChecks(ownDir, tmpDir = os.tmpdir(), now = Date.now(), readStat = (file) => fs2.lstatSync(file)) {
+function countOtherPreviewChecks(ownDir, tmpDir = os.tmpdir(), now = Date.now(), readStat = (file) => fs2.lstatSync(file), openDir = (dir) => fs2.opendirSync(dir)) {
   try {
     const ownName = path.basename(ownDir);
     let count = 0;
     let inspected = 0;
-    for (const entry of fs2.readdirSync(tmpDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith("room-merge-") || entry.name.startsWith("room-merge-file-") || entry.name === ownName) continue;
-      if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return void 0;
-      inspected++;
+    const dir = openDir(tmpDir);
+    try {
+      for (let scanned = 0; scanned < PREVIEW_CHECK_ENTRY_LIMIT; scanned++) {
+        const entry = dir.readSync();
+        if (!entry) return count;
+        if (!entry.isDirectory() || !entry.name.startsWith("room-merge-") || entry.name.startsWith("room-merge-file-") || entry.name === ownName) continue;
+        if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return void 0;
+        inspected++;
+        try {
+          const stat4 = readStat(path.join(tmpDir, entry.name));
+          if (!stat4.isDirectory()) continue;
+          const created = stat4.birthtimeMs > 0 ? stat4.birthtimeMs : stat4.ctimeMs;
+          if (created <= now + 1e3 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++;
+        } catch {
+        }
+      }
+      return void 0;
+    } finally {
       try {
-        const stat4 = readStat(path.join(tmpDir, entry.name));
-        if (!stat4.isDirectory()) continue;
-        const created = stat4.birthtimeMs > 0 ? stat4.birthtimeMs : stat4.ctimeMs;
-        if (created <= now + 1e3 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++;
+        dir.closeSync();
       } catch {
       }
     }
-    return count;
   } catch {
     return void 0;
   }
 }
-function notePreviewCheckOverlap(ownDir) {
+async function previewCheck(dir, work, sample = countOtherPreviewChecks) {
   const timing = currentToolTiming();
-  if (timing?.name !== "room_preview_merge") return;
-  const count = countOtherPreviewChecks(ownDir);
-  if (count !== void 0) timing.notePreviewCheckOverlap(count);
-}
-async function previewCheck(dir, work, sample = notePreviewCheckOverlap) {
-  try {
-    sample(dir);
-  } catch {
-  }
+  const observe = () => {
+    if (timing?.name !== "room_preview_merge") return;
+    try {
+      timing.notePreviewCheckOverlap(sample(dir));
+    } catch {
+      timing.notePreviewCheckOverlap(void 0);
+    }
+  };
+  observe();
   try {
     return await previewPhase("check", work);
   } finally {
-    try {
-      sample(dir);
-    } catch {
-    }
+    observe();
   }
 }
 async function previewPhase(name2, work) {
@@ -49269,14 +49305,10 @@ function createHandlerState(ctx) {
     } catch (e) {
       if (isGitTimeout(e)) throw e;
       const sha = baseFor(s, person);
-      try {
-        await git(diskWorker(s, person)?.dir ?? s.dir, ["cat-file", "-e", `${sha}^{commit}`]);
-      } catch (probeError) {
-        if (isGitTimeout(probeError)) throw probeError;
-        const worker = s.room.workerOf(person), baseline = workerBaseline(worker);
-        throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker.lead : void 0);
-      }
-      throw e;
+      const missing = await gitCommitMissing(diskWorker(s, person)?.dir ?? s.dir, sha);
+      if (!missing) throw e;
+      const worker = s.room.workerOf(person), baseline = workerBaseline(worker);
+      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker.lead : void 0);
     }
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
