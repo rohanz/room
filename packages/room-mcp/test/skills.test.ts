@@ -17,10 +17,10 @@ describe('room-workers skill', () => {
   })
 })
 
-it('teaches the shared branch push and safe catch-up flow in both joining skills', () => {
+it('teaches branch-specific push and safe catch-up in repository rooms', () => {
   for (const name of ['room-join', 'room-etiquette']) {
     const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
-    expect(skill).toContain('when your human asks you to push, push to the room branch; Room tells the others to catch up')
+    expect(skill).toContain('When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up')
     expect(skill).toContain('git pull --ff-only --autostash')
     expect(skill).toContain('If it refuses, or your push is rejected, stop and tell your human')
     expect(skill).toContain('do not undo, rebase or recommit your commits to get past it without their yes')

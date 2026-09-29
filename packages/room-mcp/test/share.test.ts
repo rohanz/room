@@ -124,9 +124,9 @@ describe('room_share', () => {
 
   it('clamps to the server ceiling and says so', async () => {
     const t = setup({ share: 'declared', shareMax: 'declared', requested: 'full' })
-    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: paths of every changed file; text only in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     const out = t.body(await t.tools.call('room_share', { level: 'full' }))
-    expect(out).toContain('sharing level unchanged: sharing: files in your declared area and changed files declared earlier (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
+    expect(out).toContain('sharing level unchanged: sharing: paths of every changed file; text only in your declared area (asked for full; the server caps sharing at declared, ROOM_SHARE_MAX)')
     expect(t.session.policyStore.requested).toBe('full')
     expect(t.body(await t.tools.call('room_share', { level: 'intent' }))).toContain('changed sharing declared -> sharing: only your plans, no file text')
   })

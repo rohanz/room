@@ -15,7 +15,7 @@ import { AuthorityLock, deterministicPort, ensureLocalRelay, memoryFile, readRel
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-hub-'))
 const KEY = 'hub-test-key'
 const ROOM = 'local/contract'
-const roomUrl = (port: number, room = ROOM, key = KEY) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}?key=${key}`
+const roomUrl = (port: number, room = ROOM, key = KEY) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2&key=${key}`
 
 /** The contract over a real relay: the hub runs under the clone's authority lock, on the test clock. */
 const relayEnv: MakeEnv = async clock => {

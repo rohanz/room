@@ -18,7 +18,7 @@ vi.mock('@room/roomd', async importOriginal => ({
     const roomDoc = new RoomDoc()
     const awareness = new Awareness(roomDoc.doc)
     awareness.setLocalState({ user: { name: options.name, kind: 'agent' }, host: options.host, model: options.model, effort: options.effort })
-    return { touch: vi.fn(), roomDoc, provider: { awareness, messageHandlers: [], on() {}, off() {}, wsconnected: false }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
+    return { touch: vi.fn(), validateMigratedClaims: async () => {}, roomDoc, provider: { awareness, messageHandlers: [], on() {}, off() {}, wsconnected: false }, stop: async () => { awareness.destroy(); roomDoc.doc.destroy() } }
   }),
 }))
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })

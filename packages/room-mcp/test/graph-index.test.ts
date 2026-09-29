@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc } from '@room/shared'
+import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
@@ -30,7 +31,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
   it('resolves initial readiness while a path is continually superseded', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     let edits = 0
     const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
       if (path === 'utils.py') publishFixture(room, 'Rohan', path, `def changing_${++edits}(): pass\n`)
@@ -46,7 +47,7 @@ describe('GraphIndex', () => {
   })
 
   it('waits for a read from the new base when rebuild supersedes an in-flight build', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     let release!: () => void
     let first = true
     const read = vi.fn(async (_dir: string, _sha: string, path: string): Promise<string | undefined> => {
@@ -59,7 +60,7 @@ describe('GraphIndex', () => {
       gi.start()
       await eventually(() => typeof release === 'function')
       execFileSync('git', ['-C', dir, 'commit', '--allow-empty', '-qm', 'next'])
-      room.setMeta({ base: execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD']).toString().trim() })
+      setParticipantBase(room, 'Rohan', execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD']).toString().trim())
       release()
       await gi.ready
       expect(gi.graph.has('utils.py')).toBe(true)
@@ -76,8 +77,7 @@ describe('GraphIndex', () => {
     const oldBase = git('rev-parse', 'HEAD')
     git('commit', '--allow-empty', '-qm', 'new base')
     const newBase = git('rev-parse', 'HEAD')
-    const room = new RoomDoc(); room.setMeta({ base: oldBase })
-    room.participants.set('Rohan\u0000git', { branch: 'main', head: oldBase, base: oldBase, anchored: true, fence: '1', rev: 1 })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', oldBase)
     const oldReads: (() => void)[] = []
     let releaseNinth: (() => void) | undefined
     let holdNinth = true
@@ -97,8 +97,7 @@ describe('GraphIndex', () => {
       gi.start()
       const captured = gi.ready.then(() => { settled = true; outcome = 'resolved' }, () => { settled = true; outcome = 'rejected' })
       await eventually(() => oldReads.length === 8)
-      room.setMeta({ base: newBase })
-      room.participants.set('Rohan\u0000git', { branch: 'main', head: newBase, base: newBase, anchored: true, fence: '1', rev: 2 })
+      setParticipantBase(room, 'Rohan', newBase)
       oldReads.splice(0).forEach(release => release())
       await eventually(() => releaseNinth !== undefined)
       await eventually(() => Array.from({ length: 8 }, (_, i) => gi.graph.definersOf(`current_${i}`).includes(`file${i}.py`)).every(Boolean))
@@ -120,7 +119,7 @@ describe('GraphIndex', () => {
   })
 
   it('lets a ninth path finish while eight edited paths are superseded', async () => {
-    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const first: (() => void)[] = [], later: (() => void)[] = []
     let firstReads = 0
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
@@ -151,7 +150,7 @@ describe('GraphIndex', () => {
 
   it('indexes base source files, prefers overlays, and tracks overlay edits', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base })
+    setParticipantBase(room, 'Rohan', base)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.ready
     expect(gi.graph.size).toBe(2)
@@ -168,7 +167,7 @@ describe('GraphIndex', () => {
 
   it('publishes provider-to-consumer edges and restores reverted overlays', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return verify_token(t)\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
@@ -184,7 +183,7 @@ describe('GraphIndex', () => {
   })
 
   it('indexes the latest rapid edit and removes deleted definitions', async () => {
-    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     publishFixture(room, 'Rohan', 'session.py', 'def login(t):\n    return first_token(t)\n')
@@ -199,13 +198,13 @@ describe('GraphIndex', () => {
   })
 
   it('drops files removed from a new base and publishes the new revision', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString().trim()
     git('rm', 'utils.py'); git('commit', '-qm', 'remove obsolete provider')
     const next = git('rev-parse', 'HEAD')
-    room.setMeta({ base: next })
+    setParticipantBase(room, 'Rohan', next)
     await gi.whenIdle()
     expect(gi.graph.has('utils.py')).toBe(false)
     expect(room.graphs.get('Rohan')?.base).toBe(next)
@@ -214,7 +213,7 @@ describe('GraphIndex', () => {
   })
 
   it('publishes observed contract changes from only its own overlay', async () => {
-    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     publishFixture(room, 'Kieran', 'utils.py', 'def validate_token(token, strict=False):\n    return token\n')
@@ -232,7 +231,7 @@ describe('GraphIndex', () => {
   })
 
   it('caps observed contract changes in a snapshot', async () => {
-    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     publishFixture(room, 'Rohan', 'generated.py', Array.from({ length: 205 }, (_, i) => `def added_${i}():\n    pass\n`).join('\n'))
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
@@ -251,7 +250,7 @@ describe('GraphIndex', () => {
     git(repo, 'worktree', 'add', '-q', '-b', 'room/w', wdir, head)
     writeFileSync(join(wdir, 'api.py'), 'def rate(x, year):\n    return x\n'); git(wdir, 'commit', '-qam', 'carried')
     const carried = git(wdir, 'rev-parse', 'HEAD')
-    const room = new RoomDoc(); room.setMeta({ base: head }); setFixtureLocalRoot(room, 'lead+w', wdir)
+    const room = new RoomDoc(); setParticipantBase(room, 'lead+w', carried); setFixtureLocalRoot(room, 'lead+w', wdir)
     // The carried baseline is a local fact of the lead's registry, which the worktree shares.
     await seedRegistryWorker(repo, 'w', { name: 'lead+w', dir: wdir, branch: 'room/w', base: carried, carriedBase: carried })
     publishFixture(room, 'lead+w', 'api.py', 'def rate(x, year):\n    return x * 2\n')
@@ -286,7 +285,7 @@ describe('GraphIndex snapshot discipline', () => {
   afterAll(() => rmSync(repo, { recursive: true, force: true }), 30_000)
 
   it('yields during indexing before starting edge publication', async () => {
-    const room = new RoomDoc(); room.setMeta({ base: largeBase })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', largeBase)
     const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
     let probe = false, probeAt1000 = false
     const originalSet = gi.graph.set.bind(gi.graph)
@@ -303,7 +302,7 @@ describe('GraphIndex snapshot discipline', () => {
   }, 30_000)
 
   it('yields during edge publication before publishing ready', async () => {
-    const room = new RoomDoc(); room.setMeta({ base: largeBase }); setFixtureLocalRoot(room, 'Rohan', repo)
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', largeBase); setFixtureLocalRoot(room, 'Rohan', repo)
     const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
     try {
       gi.start(); await gi.ready
@@ -328,7 +327,7 @@ describe('GraphIndex snapshot discipline', () => {
   }, 30_000)
 
   it('skips edge construction when the queued publish finds no graph changes', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     const published = (gi as unknown as { publishedGraph: typeof gi.graph }).publishedGraph
     const dependencies = vi.spyOn(published, 'dependenciesOf')
@@ -343,7 +342,7 @@ describe('GraphIndex snapshot discipline', () => {
 
   it('does not rewrite an identical snapshot and waits out the publish window', async () => {
     const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 400 })
     gi.start(); await gi.ready
     await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
@@ -366,7 +365,7 @@ describe('GraphIndex snapshot discipline', () => {
 describe('shared graph startup', () => {
   it('jitters startup with an injectable random source and cancels cleanly', async () => {
     vi.useFakeTimers()
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'New', base)
     const gi = new GraphIndex(room, 'New', dir, undefined, { random: () => 0.5 })
     try {
       gi.start()
@@ -385,13 +384,13 @@ describe('shared graph startup', () => {
     try {
       gi.start(); await gi.whenIdle()
       expect(gi.graph.size).toBe(0)
-      room.setMeta({ base }); await gi.whenIdle()
+      setParticipantBase(room, 'New', base); await gi.whenIdle()
       expect(gi.graph.has('utils.py')).toBe(true)
     } finally { gi.stop(); room.doc.destroy() }
   })
 
   it('builds locally despite a present peer snapshot and computes its own contract changes', async () => {
-    const room = new RoomDoc(); room.setMeta({ base }); setFixtureLocalRoot(room, 'New', dir)
+    const room = new RoomDoc(); setParticipantBase(room, 'New', base); setFixtureLocalRoot(room, 'New', dir)
     room.graphs.set('Peer', {
       version: 1, base, at: Date.now(), status: 'ready', truncated: false,
       paths: ['utils.py', 'session.py'],
@@ -414,7 +413,7 @@ describe('shared graph startup', () => {
   })
 
   it('ignores narrowed snapshot edges and refreshes another participant\'s import change', async () => {
-    const room = new RoomDoc(); room.setMeta({ base })
+    const room = new RoomDoc(); setParticipantBase(room, 'New', base)
     room.graphs.set('Peer', {
       version: 1, base, at: Date.now(), status: 'ready', truncated: false,
       paths: ['a.py', 'b.py', 'use-a.py', 'use-b.py'],

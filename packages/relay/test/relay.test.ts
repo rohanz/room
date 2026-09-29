@@ -171,7 +171,10 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     expect(second.getArray('retiredWorkers').toArray()).toEqual([{ id: 'retiredWorkers' }])
     expect(second.getMap('workers').get('key')).toEqual({ value: 'workers' })
     expect(second.getMap('scopes').get('key')).toEqual({ value: 'scopes' })
-    for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) expect(second.share.has(type)).toBe(false)
+    for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) {
+      // Schema 2 initializes some live roots; their old contents must not survive.
+      expect(second.getMap(type).has('stale')).toBe(false)
+    }
     const url = `http://127.0.0.1:${relay.port}/memory?room=${encodeURIComponent(room)}`
     expect((await fetch(url, { method: 'DELETE' })).status).toBe(403)
     expect(fs.existsSync(memoryFile(commonDir, room))).toBe(true)

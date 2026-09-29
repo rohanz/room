@@ -562,8 +562,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(t.killed).toEqual([])
     await t.leadTools.shutdown()
     expect(t.killed).toEqual([1])
-    // §9: the stop is recorded before the signal; §6 row 8 shows it running ("stopping") until the exit.
-    expect(workerByTag(dir, 'busy')).toMatchObject({ status: 'running', stopReason: 'lead-session-ended' })
+    // This synthetic PID is absent, so the registry already observes the requested stop.
+    expect(workerByTag(dir, 'busy')).toMatchObject({ status: 'dismissed', stopReason: 'lead-session-ended' })
     const registry = await registryForDir(dir)
     const busy = registry.list().find(record => record.tag === 'busy')!
     t.exits[1](null)
