@@ -13,7 +13,7 @@ import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, val
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
-import { diskWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { diskWorker, NeedFetch, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
   { name: 'room_read', annotations: RO, description: 'Read a live file with claims and history. diff=true compares to base; omit path for all diffs.',
@@ -74,16 +74,28 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const s = rooms.holding(person, S())
       const worker = diskWorker(s, person)
       const ownDisk = ownUnpublishedCheckout(s, person)
+      const reader = S()
+      const theirBase = baseFor(s, person)
+      const yourBase = baseFor(reader, reader.me.name)
+      const baseNote = person !== reader.me.name && !worker && theirBase !== yourBase
+        ? `${person}'s base ${theirBase.slice(0, 10)} differs from your base ${yourBase.slice(0, 10)}; this diff uses ${person}'s base.`
+        : ''
       const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
       const one = async (p: string) => {
         const l = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person)
-        const b = (await baseText(s, p, worker ? person : undefined)) ?? ''
+        let b: string
+        try { b = (await baseText(s, p, person)) ?? '' }
+        catch (e) {
+          if (person === reader.me.name || worker) throw e
+          const record = s.room.workerOf(person), baseline = workerBaseline(record)
+          throw new NeedFetch(person, theirBase, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === theirBase ? record!.lead : undefined)
+        }
         const live = l === null ? '' : l ?? b
         return live === b ? '' : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, 'base', person, { context: 3 })
       }
       const held = withheld(s, person, typeof a.path === 'string' && a.path ? a.path : undefined)
       if (held) return held
-      if (typeof a.path === 'string' && a.path) return label((await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`)
+      if (typeof a.path === 'string' && a.path) return label([baseNote, (await one(a.path)) || `${a.path}: no difference between base and ${person}'s version`].filter(Boolean).join('\n'))
       const parts: string[] = []
       const paths = worker || ownDisk ? new Set([
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
@@ -92,7 +104,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
       const level = shareOf(s, person)
       if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared)`)
-      return label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
+      return label([baseNote, parts.length ? parts.join('\n') : `${person} has no uncommitted changes`].filter(Boolean).join('\n'))
   }
   const handlers: Record<string, Handler> = {
     async room_read(a) {
