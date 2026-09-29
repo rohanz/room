@@ -21,6 +21,7 @@ import { buildCombinedTree } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
+import { probeProcess } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
@@ -84,6 +85,8 @@ export function boundedTwoFilesPatch(p: string, before: string, after: string, p
   const count = (value: string) => value ? value.split('\n').length - Number(value.endsWith('\n')) : 0
   return `===================================================================\n--- a/${p}\tbase\n+++ b/${p}\t${person}\n@@ -${before ? 1 : 0},${count(before)} +${after ? 1 : 0},${count(after)} @@\n${patchLines(before, '-')}${patchLines(after, '+')}`
 }
+
+const previewGenerations = new WeakMap<Session, number>()
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const { S, rooms, others, presences, myWorkers, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state
@@ -223,8 +226,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_preview_merge(a) {
       const caller = S()
+      const generation = (previewGenerations.get(caller) ?? 0) + 1
+      previewGenerations.set(caller, generation)
+      const recordPreview = (value: NonNullable<Session['lastPreview']>) => {
+        if (previewGenerations.get(caller) === generation) caller.lastPreview = value
+      }
       // A new request replaces the evidence consumed by room_done, including refusals.
-      caller.lastPreview = { clean: false, complete: false, testsPassed: false }
+      recordPreview({ clean: false, complete: false, testsPassed: false })
       const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
@@ -291,7 +299,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (!people.length) {
         if (unavailable.length || skippedNote) {
-          caller.lastPreview = { clean: false, complete: false, testsPassed: false }
+          recordPreview({ clean: false, complete: false, testsPassed: false })
           await recordPartial([], [...unavailable, ...(skippedNote ? [skippedNote] : [])])
         }
         return [...dropped, 'no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
@@ -327,7 +335,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const complete = result.complete && unavailable.length === 0
         const gapLines = [...gaps.map(gap => gap.path ? `${gap.path}: ${gap.person}'s version not included (${gap.why})` : `${gap.person}: ${gap.why}`), ...unavailable]
         if (!paths.length && !result.callerOnly && !run) {
-          caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false }
+          recordPreview({ clean: hardCount === 0, complete, testsPassed: false })
           if (!complete) await recordPartial(people, gapLines, '', undefined, anchorNote)
           return [...dropped, ...missingNotes, ...out, complete ? `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join('; ')}`, ...(anchors.length ? [`included ${anchors.join(', ')}`] : []), skippedNote].filter(Boolean).join('\n')
         }
@@ -368,19 +376,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
         if (!result.isCurrent()) {
-          caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) }
+          recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
           return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
         }
-        caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
-          ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) }
+        recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
+          ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) })
         if (!complete) await recordPartial(people, gapLines, run, ranOk, anchorNote, appliedFromOthers)
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (complete && !hardCount && ranOk && appliedFromOthers) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+        if (previewGenerations.get(caller) === generation && complete && !hardCount && ranOk && appliedFromOthers) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return previewPhase('collect', () => out.join('\n'))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
-        caller.lastPreview = { clean: false, complete: false }
+        recordPreview({ clean: false, complete: false })
         return `preview failed: ${message.replace(/ failed: timed out/, ' timed out')}; combined code was NOT checked`
       }
     }
@@ -582,55 +590,132 @@ export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): 
   } finally { await release() }
 }
 
-const previewProcessStarted = Math.floor(Date.now() - process.uptime() * 1000)
+const LEGACY_PREVIEW_RESIDUE_MS = 10 * 60_000
+const previewStartTime = probeProcess(process.pid)?.startTime ?? ''
+const unreleasedPreviewGates = new Map<string, string>()
+interface PreviewOwner { pid: number; startTime: string; nonce: string }
+const previewToken = (): string => JSON.stringify({ pid: process.pid, startTime: previewStartTime, nonce: randomUUID() } satisfies PreviewOwner)
 
-function deadPreviewOwner(value: string): boolean {
-  // Accept the old PID-only lock when upgrading a cached checkout.
-  const pid = Number(value.includes(':') ? value.split(':', 1)[0] : value)
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return false }
-  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' }
+function parsedPreviewOwner(value: string): PreviewOwner | undefined {
+  try {
+    const token = JSON.parse(value) as Partial<PreviewOwner>
+    if (Number.isSafeInteger(token.pid) && token.pid! > 0 && typeof token.startTime === 'string' && typeof token.nonce === 'string' && token.nonce) return token as PreviewOwner
+  } catch { /* legacy PID-only lock */ }
+  return undefined
+}
+
+function deadPreviewOwner(value: string, mtimeMs: number): boolean {
+  const owner = parsedPreviewOwner(value)
+  const legacyPid = /^([1-9]\d*)(?::\d+:[0-9a-f-]+)?$/.exec(value.trim())?.[1]
+  const pid = owner?.pid ?? (legacyPid ? Number(legacyPid) : 0)
+  if (Number.isSafeInteger(pid) && pid > 0) {
+    const observed = probeProcess(pid)
+    if (!observed) return true
+    return !!owner?.startTime && !!observed.startTime && owner.startTime !== observed.startTime
+  }
+  // Link publication never exposes an incomplete token. Old empty files/directories
+  // predate that protocol; only sufficiently old residue is reclaimable.
+  return Date.now() - mtimeMs > LEGACY_PREVIEW_RESIDUE_MS
+}
+
+async function previewOwnerAt(file: string): Promise<{ value: string; stat: fs.Stats } | undefined> {
+  try {
+    const stat = await fs.promises.lstat(file)
+    if (!stat.isFile()) return { value: '', stat }
+    return { value: await fs.promises.readFile(file, 'utf8'), stat }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }
+}
+
+async function previewTokenTemp(file: string, token: string): Promise<string> {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`
+  await fs.promises.writeFile(temp, token, { flag: 'wx', mode: 0o600 })
+  return temp
+}
+
+async function publishPreviewToken(file: string, token: string): Promise<boolean> {
+  const temp = await previewTokenTemp(file, token)
+  let published = false
+  try {
+    try { await fs.promises.link(temp, file); published = true; return true }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false; throw error }
+  } finally {
+    try { await fs.promises.rm(temp, { force: true }) }
+    catch (error) { if (!published) throw error /* an owned lock must still return its release handle */ }
+  }
+}
+
+async function releasePreviewToken(file: string, token: string): Promise<void> {
+  const current = await previewOwnerAt(file)
+  if (current?.value === token) await fs.promises.rm(file, { force: true })
+}
+
+/** Rename a dead gate aside, then verify what was actually renamed before claiming it. */
+async function recoverPreviewGate(gate: string): Promise<void> {
+  const old = await previewOwnerAt(gate)
+  if (!old || !deadPreviewOwner(old.value, old.stat.mtimeMs)) return
+  const tomb = `${gate}.${randomUUID()}.tomb`
+  try { await fs.promises.rename(gate, tomb) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+  try {
+    const moved = await previewOwnerAt(tomb)
+    if (!moved) return
+    if (moved.stat.ino !== old.stat.ino || moved.value !== old.value || !deadPreviewOwner(moved.value, moved.stat.mtimeMs)) {
+      // A rival replaced the dead gate between our read and rename. Restore its
+      // exact inode if the name is still free; never install our own gate here.
+      try {
+        if (moved.stat.isDirectory()) await fs.promises.rename(tomb, gate)
+        else await fs.promises.link(tomb, gate)
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    }
+  } finally { await fs.promises.rm(tomb, { recursive: true, force: true }) }
 }
 
 async function acquirePreviewLock(file: string): Promise<(() => Promise<void>) | undefined> {
-  const token = `${process.pid}:${previewProcessStarted}:${randomUUID()}`
-  const recoveryGate = `${file}.recover`
-  const create = async () => {
-    try {
-      const handle = await fs.promises.open(file, 'wx', 0o600)
-      try { await handle.writeFile(token) } finally { await handle.close() }
-      return async () => {
-        let current: string
-        try { current = await fs.promises.readFile(file, 'utf8') }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
-        if (current === token) await fs.promises.rm(file, { force: true })
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined
-      throw error
-    }
+  const token = previewToken(), gate = `${file}.recover`
+  const stranded = unreleasedPreviewGates.get(gate)
+  if (stranded) {
+    try { await releasePreviewToken(gate, stranded); unreleasedPreviewGates.delete(gate) }
+    catch { return undefined }
   }
-  // A recoverer may be replacing an abandoned lock. Other callers use fresh trees.
-  // Recovery takes a few filesystem calls; a gate older than a minute belongs to a recoverer that died.
-  try { if (Date.now() - (await fs.promises.stat(recoveryGate)).mtimeMs > 60_000) await fs.promises.rmdir(recoveryGate) }
-  catch { /* absent, or another caller removed it first */ }
-  if (fs.existsSync(recoveryGate)) return undefined
-  const direct = await create()
-  if (direct) return direct
-  let stale: string
-  try { stale = await fs.promises.readFile(file, 'utf8') } catch { return undefined }
-  if (!deadPreviewOwner(stale)) return undefined
-  try { await fs.promises.mkdir(recoveryGate, { mode: 0o700 }) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined; throw error }
+  // A live recoverer has exclusive access to the lock's replacement operation.
+  // In doubt, callers materialize a fresh tree instead.
+  if (await previewOwnerAt(gate)) await recoverPreviewGate(gate)
+  if (await previewOwnerAt(gate)) return undefined
+  if (await publishPreviewToken(file, token)) return () => releasePreviewToken(file, token)
+  const stale = await previewOwnerAt(file)
+  if (!stale || !deadPreviewOwner(stale.value, stale.stat.mtimeMs)) return undefined
+  const gateToken = previewToken()
+  if (!await publishPreviewToken(gate, gateToken)) return undefined
+  let acquired = false
+  let gateReleasePending = false
   try {
-    // Only the gate holder may unlink a dead lock. Re-read after acquiring the gate:
-    // another recovery might have installed a live owner before this one got here.
-    let current: string
-    try { current = await fs.promises.readFile(file, 'utf8') } catch { return undefined }
-    if (current !== stale || !deadPreviewOwner(current)) return undefined
-    await fs.promises.rm(file)
-    return await create()
-  } finally { await fs.promises.rmdir(recoveryGate) }
+    const current = await previewOwnerAt(file)
+    if (!current || current.stat.ino !== stale.stat.ino || current.value !== stale.value || !deadPreviewOwner(current.value, current.stat.mtimeMs)) return undefined
+    const temp = await previewTokenTemp(file, token)
+    try {
+      // The gate serializes recoverers. Rename replaces the dead lock without an
+      // unlocked instant in which a direct caller could acquire the cache.
+      if ((await previewOwnerAt(gate))?.value !== gateToken) return undefined
+      await fs.promises.rename(temp, file)
+      acquired = true
+    } finally {
+      try { await fs.promises.rm(temp, { force: true }) }
+      catch (error) { if (!acquired) throw error }
+    }
+  } finally {
+    // Losing gate cleanup must not discard a successfully acquired lock handle.
+    try { await releasePreviewToken(gate, gateToken) }
+    catch { gateReleasePending = true; unreleasedPreviewGates.set(gate, gateToken) }
+  }
+  return acquired ? async () => {
+    try { await releasePreviewToken(file, token) }
+    finally {
+      if (gateReleasePending) {
+        await releasePreviewToken(gate, gateToken)
+        if (unreleasedPreviewGates.get(gate) === gateToken) unreleasedPreviewGates.delete(gate)
+      }
+    }
+  } : undefined
 }
 
 async function resetPreviewTree(dir: string, ancestor: string): Promise<void> {

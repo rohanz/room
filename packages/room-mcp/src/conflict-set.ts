@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotPath, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
@@ -51,7 +52,11 @@ export const noticeId = (key: string, epoch: number, episode?: string): string =
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
-type LandedWorkerState = { id: string; status: string; run: string; seq?: number; busy: boolean }
+/** A registry record may keep the path a worktree was created with; trustedWorker reports its real path. */
+const samePath = (a: string, b: string): boolean => {
+  try { return fs.realpathSync(a) === fs.realpathSync(b) } catch { return false }
+}
+type LandedWorkerState = { id: string; name?: string; lead?: string; dir?: string; status: string; run: string; seq?: number; busy: boolean }
 
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
 export class ConflictSlots {
@@ -225,14 +230,9 @@ export class ConflictSet {
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined,
     private readonly localWorker: (name: string) => Promise<{ id: string; status: string; dir: string } | undefined> = name => trustedWorker(team, name),
-    private readonly workerState: (name: string) => LandedWorkerState | undefined = name => {
+    private readonly workerState: (id: string) => LandedWorkerState | undefined = id => {
       const registry = registrySnapshotForDir(team.dir)
-      const record = registry.reservedByTagOrName(name)
-      const status = record && registry.status(record.id)
-      if (!record || !status) return undefined
-      const run = status.run ?? record.runs.at(-1)
-      return { id: record.id, status: status.status, run: run ? `${run.n}:${run.nonce}` : '', seq: record.seq,
-        busy: registry.operationInProgress(record.id) }
+      return registry.freshness(id)
     },
     private readonly claimText: typeof workerText = workerText) {
     const fence = () => team.lease?.fence() ?? ''
@@ -564,8 +564,10 @@ export class ConflictSet {
     }
     for (const [name, claims] of groups) {
       const worker = await this.localWorker(name)
-      const initial = this.workerState(name)
-      if (worker?.status !== 'done' || !claims.length || !initial || initial.id !== worker.id ||
+      if (worker?.status !== 'done' || !claims.length) continue
+      const initial = this.workerState(worker.id)
+      if (!initial || initial.id !== worker.id || initial.name && initial.name !== name ||
+          initial.lead && initial.lead !== this.owner || initial.dir && !samePath(initial.dir, worker.dir) ||
           initial.status !== 'done' || initial.busy) continue
       const holder = JSON.stringify(participantRecord(room, name)?.holder)
       if (!holder) continue
@@ -589,7 +591,7 @@ export class ConflictSet {
         } catch { landed = false; break }
       }
       if (!landed) continue
-      const latest = this.workerState(name)
+      const latest = this.workerState(worker.id)
       if (this.team.lease?.fence() !== leaseFence || !latest || latest.busy ||
           JSON.stringify(latest) !== JSON.stringify(initial) ||
           JSON.stringify(participantRecord(room, name)?.holder) !== holder ||

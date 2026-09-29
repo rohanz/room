@@ -5,7 +5,7 @@ import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
 import { buildCombinedTree } from './combined-tree.js'
@@ -136,7 +136,7 @@ async function assertNoOperation(dir: string): Promise<void> {
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const cleanRetiredSharedOwner = async (s: Session, borrower: LocalWorker): Promise<void> => {
+  const cleanRetiredSharedOwner = async (s: Session, borrower: LocalWorker): Promise<string | undefined> => {
     const registry = await registryForDir(s.dir)
     const current = registry.read(borrower.id)
     const owner = current && registry.worktreeOwner(current)
@@ -149,7 +149,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const status = registry.status(fresh.id)
       if (!status) return
       const w = { ...realStateInput(fresh, status), status: 'done' as const, exitCode: 0 }
-      if (!await cleanupWorker(s.dir, w, true, false, [], { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) return
+      const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+      if (!await cleanupWorker(s.dir, w, true, false, [], { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s), preservation)) {
+        const details = [
+          ...(preservation.ignored.length ? [`ignored files not copied: ${preservation.ignored.join(', ')}`] : []),
+          ...(preservation.uncollected.length ? [`uncollected work: ${preservation.uncollected.join(', ')}`] : []),
+        ]
+        if (!details.length) return `kept ${fresh.tag}'s worktree: cleanup incomplete`
+        const reason = `shared checkout: no borrowers; ${details.join('; ')}`
+        await registry.update(fresh.id, old => ({ ...old, archive: { ...old.archive!, keptWorktree: w.dir, keptReason: reason }, keptWorktree: w.dir, seq: old.seq + 1 }))
+        for (const room of state.rooms.all()) {
+          const list = room.room.doc.getArray<RetiredWorker>('retiredWorkers')
+          const index = list.toArray().findIndex(entry => entry.id === fresh.id)
+          if (index >= 0) room.room.doc.transact(() => { const entry = list.get(index); list.delete(index); list.insert(index, [{ ...entry, keptWorktree: w.dir, keptReason: reason }]) })
+        }
+        return `kept ${fresh.tag}'s worktree at ${w.dir}: ${details.join('; ')}. Copy what you need from there, then room_collect(tag="${fresh.tag}", discard=true) (add force=true to delete ignored files too)`
+      }
       await registry.update(fresh.id, old => {
         const { keptWorktree: _kept, keptReason: _reason, ...archive } = old.archive ?? {}
         return { ...old, keptWorktree: undefined, archive: archive as RetiredWorker, seq: old.seq + 1 }
@@ -266,7 +281,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           })
           await registry.markDiscardStep(active.id, 'prune')
           await retireWorker(rooms, s, active.id, { ...r, summary: 'discarded', disposition: 'discarded', keptWorktree: undefined }, { keptWorktree: undefined })
-          if (borrowed) await cleanRetiredSharedOwner(s, w)
           return (borrowed ? `detached ${r.tag}; the worktree belongs to ${borrowedOwner?.tag ?? active.sharedWith}` : 'discarded ' + r.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')
         } catch (e) { await registry.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {}); return 'error: ' + (e instanceof Error ? e.message : String(e)) + '; retained ' + w.dir }
         finally { await registry.finishOperation(active.id) }
@@ -386,7 +400,6 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           summary: borrowed ? 'detached' : 'discarded', files: [], fileCount: 0, startedAt: w.startedAt,
           finishedAt: w.finishedAt ?? retiredAt, retiredAt, outcome: 'dismissed', disposition: 'discarded',
         })
-        if (borrowed) await cleanRetiredSharedOwner(s, w)
         return [...sharedResults, ...childResults, (borrowed
           ? `detached ${w.tag}; the worktree belongs to ${borrowedOwner?.tag ?? w.sharedWith}`
           : decideDiscard(afterStop) === 'retain-directory' ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : 'discarded ' + w.tag) + (missingDetail ? '; its worktree was already gone; ' + missingDetail : '') + (patch ? '; recovery patch: ' + patch + ' (kept for a week)' : '') + (terminated.length ? '; stopped processes: ' + terminated.join(', ') : '') + (ignored.length ? '; deleted without a copy: ' + ignored.join(', ') : '') + (cleanupErrors.length ? '; ' + cleanupErrors.join('; ') : '')].join('\n')
@@ -620,7 +633,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const finishOne = async (success = true) => {
           if (success && archived) {
             await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {})
-            await cleanRetiredSharedOwner(s, w)
+            const note = await cleanRetiredSharedOwner(s, w)
+            if (note) out.push(note)
           }
           else await registry.abortCollect(w.id)
           collectStarted.delete(w.id)

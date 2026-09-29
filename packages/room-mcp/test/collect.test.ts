@@ -17,6 +17,8 @@ import { finishWorker, registerWorkers, workerByTag, type FixtureWorker } from '
 import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { autoRetire } from '../src/retire.js'
+import { cleanupWorker, type WorkerCleanupPreservation } from '../src/worker-git.js'
+import { realStateInput } from '../src/worker-status.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -751,14 +753,16 @@ describe('room_collect', () => {
     expect(fs.existsSync(worker)).toBe(false)
     expect(workerByTag(lead, 'port-bools')).toBeUndefined()
   })
-  it('removes the kept owner checkout when its last borrower is discarded', async () => {
+  it('detaches the last discarded borrower without authorizing owner cleanup', async () => {
     const t = httpxWorkers('running')
     put(worker, 'new.txt', 'shared output')
     expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBe(worker)
+    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discarded port-fix')
     expect(fs.existsSync(worker)).toBe(false)
-    expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBeUndefined()
   })
   it('collects the last borrower without removing the owner checkout during its own collection', async () => {
     const t = httpxWorkers('running')
@@ -768,6 +772,53 @@ describe('room_collect', () => {
     const result = await t.call({ tag: 'port-bools' })
     expect(result).toContain('detached port-bools; the worktree belongs to port-fix')
     expect(fs.existsSync(worker)).toBe(false)
+  })
+  it('keeps late ignored owner output when collecting the last borrower', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    put(worker, 'artifact.bin', 'late ignored output')
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    const result = await t.call({ tag: 'port-bools' })
+    expect(result).toContain(`kept port-fix's worktree at ${worker}: ignored files not copied: artifact.bin`)
+    expect(result).toContain('Copy what you need from there, then room_collect(tag="port-fix", discard=true) (add force=true to delete ignored files too)')
+    expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
+    const owner = (await registryForDir(lead)).read('w_port-fix')
+    expect(owner?.keptWorktree).toBe(worker)
+    expect(owner?.archive?.keptReason).toContain('artifact.bin')
+    expect(t.s.room.retiredWorkers().find(r => r.tag === 'port-fix')?.keptReason).toContain('artifact.bin')
+    expect(await t.call({ tag: 'port-fix', discard: true })).toContain('discard refused; ignored artifacts')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(await t.call({ tag: 'port-fix', discard: true, force: true })).toContain('discarded port-fix')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+  it('keeps late ignored owner output when discarding the last borrower', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    put(worker, 'artifact.bin', 'late ignored output')
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    const result = await t.call({ tag: 'port-bools', discard: true })
+    expect(result).toContain('detached port-bools; the worktree belongs to port-fix')
+    expect(fs.readFileSync(path.join(worker, 'artifact.bin'), 'utf8')).toBe('late ignored output')
+    expect((await registryForDir(lead)).read('w_port-fix')?.keptWorktree).toBe(worker)
+  })
+  it('keeps uncollected changes made after the owner was collected', async () => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    put(worker, 'late.txt', 'new borrower work')
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
+    const registry = await registryForDir(lead)
+    const owner = registry.read('w_port-fix')!, status = registry.status(owner.id)!
+    const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+    await registry.beginOperation(owner.id, 'collect')
+    try {
+      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, true, false, [], {}, 'lead', [owner], preservation)).toBe(false)
+    } finally { await registry.finishOperation(owner.id) }
+    expect(preservation).toEqual({ ignored: [], uncollected: ['late.txt'] })
+    expect(fs.readFileSync(path.join(worker, 'late.txt'), 'utf8')).toBe('new borrower work')
   })
   it('deferred retirement keeps an owner checkout while its borrower runs', async () => {
     const t = httpxWorkers('running')
@@ -784,7 +835,7 @@ describe('room_collect', () => {
     expect(list).not.toHaveBeenCalled()
     await finishWorker(t.s, 'port-bools', { status: 'done' })
     expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
-    expect(fs.existsSync(worker)).toBe(false)
+    expect(fs.existsSync(worker)).toBe(true)
   })
   it('serializes a borrower resume with the owner cleanup decision', async () => {
     const t = httpxWorkers()

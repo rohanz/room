@@ -129,3 +129,34 @@ it('does not endorse a passing check on the caller tree when no peer path was ap
   expect(session.lastPreview).toMatchObject({ testsPassed: false })
   expect(room.messages().some(m => m.type === 'note' && m.text.startsWith('merge preview with ben'))).toBe(false)
 })
+
+it('keeps a newer refusal after an older preview succeeds', async () => {
+  const { session, state, add } = fixture()
+  add('ben', 'shared', 'ben changed\n')
+  const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
+  const preview = handlers(state).room_preview_merge
+  const older = preview({ person: 'ben', run: `touch '${marker}'; while ! test -e '${release}'; do sleep 0.05; done; echo "1 passed"` })
+  try {
+    for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(fs.existsSync(marker)).toBe(true)
+    expect(await preview({ people: ['ghost'] })).toContain('error: nobody called ghost')
+  } finally { fs.writeFileSync(release, 'go') }
+  expect(await older).toContain('tests: PASSED')
+  expect(session.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
+}, 30_000)
+
+it('keeps a newer success after an older preview fails late', async () => {
+  const { session, state, add } = fixture()
+  add('ben', 'shared', 'ben changed\n')
+  const marker = path.join(root!, 'entered'), release = path.join(root!, 'release')
+  const preview = handlers(state).room_preview_merge
+  const older = preview({ person: 'ben', run: `touch '${marker}'; while ! test -e '${release}'; do sleep 0.05; done; echo "1 failed"; exit 1` })
+  try {
+    for (let i = 0; i < 200 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(fs.existsSync(marker)).toBe(true)
+    const newer = await preview({ person: 'ben', run: 'echo "1 passed"' })
+    expect(newer).toContain('tests: PASSED')
+  } finally { fs.writeFileSync(release, 'go') }
+  expect(await older).toContain('tests: FAILED')
+  expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true, testsCommand: 'echo "1 passed"' })
+}, 30_000)

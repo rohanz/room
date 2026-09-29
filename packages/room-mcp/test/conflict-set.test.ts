@@ -4,6 +4,7 @@ import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -408,6 +409,25 @@ describe('derived pair slots', () => {
     } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
   })
 
+  it('releases when the registry records the worker dir through a symlink (/tmp vs /private/tmp)', async () => {
+    const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-link-')), linked = `${workerDir}-link`
+    try {
+      symlinkSync(workerDir, linked)
+      f.holder('L'); f.holder('L+w', 'L')
+      writeFileSync(join(workerDir, 'x'), 'worker\n')
+      writeFileSync(join(f.dir, 'x'), 'worker\n')
+      f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+      f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
+      // trustedWorker reports the real path; the registry record keeps the path it was created with.
+      const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+        async name => name === 'L+w' ? { ...state, dir: workerDir } : undefined,
+        () => ({ ...state, name: 'L+w', lead: 'L', dir: linked }))
+      await set.reconcile('manual apply')
+      expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
+    } finally { f.cleanup(); rmSync(linked, { force: true }); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
   it.each(['resumed', 'new run', 'new worker id', 'new holder', 'reanchored', 'anchor changed', 'added claim', 'removed claim', 'operation started'] as const)(
     'keeps landed worker claims when the worker is %s during disk reads', async change => {
       const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-race-'))
@@ -457,6 +477,60 @@ describe('derived pair slots', () => {
       symlinkSync('missing', join(operations, 'w_123.op'))
       expect(registry.operationInProgress('w_123')).toBe(true)
     } finally { f.cleanup() }
+  })
+
+  it('revalidates only the trusted finished worker by id in a populated registry', async () => {
+    const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-count-'))
+    try {
+      f.holder('L'); f.holder('L+w', 'L')
+      writeFileSync(join(workerDir, 'x'), 'worker\n')
+      writeFileSync(join(f.dir, 'x'), 'worker\n')
+      f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+      f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const workers = join(f.dir, '.git', 'room', 'registry', 'workers')
+      const runs = join(f.dir, '.git', 'room', 'registry', 'runs', 'w_123')
+      mkdirSync(workers, { recursive: true }); mkdirSync(runs, { recursive: true })
+      const token = { pid: 1, startTime: '', executable: '', sessionId: 'test', nonce: 'token' }
+      const record = (id: string, name: string) => ({
+        v: 1, id, tag: id, name, mode: 'local', room: 'local/test',
+        lead: { participant: 'L', room: 'local/test', instance: token }, host: 'codex',
+        budget: { threads: 1, memGb: 1, nice: 10 }, share: 'declared', task: 'test',
+        dir: workerDir, outside: false, branch: `room/${id}`, prep: { step: 'prepared' },
+        capabilities: { resume: true, signal: true, collect: 'delta' }, phase: 'active',
+        runs: [{ n: 1, mode: 'fresh', intentAt: 1, nonce: 'run', busFrontier: 0,
+          promptMsgIds: [], launcher: token, logStart: 0, launch: { outcome: 'launched', pid: 1 } }],
+        createdAt: 1, seq: 2,
+      })
+      writeFileSync(join(workers, 'w_123.json'), JSON.stringify(record('w_123', 'L+w')))
+      writeFileSync(join(runs, '1.report.json'), JSON.stringify({ run: 1, nonce: 'run', chain: [], joinedAt: 1,
+        done: { at: 2, summary: 'done', changed: [] } }))
+      writeFileSync(join(runs, '1.exit.json'), JSON.stringify({ run: 1, code: 0, at: 2, witnessed: true }))
+      for (let i = 0; i < 1_000; i++) {
+        const id = `w_history${i}`
+        writeFileSync(join(workers, `${id}.json`), JSON.stringify(record(id, `L+history${i}`)))
+      }
+      const original = fs.readFileSync
+      let recordReads = 0
+      const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+        if (typeof args[0] === 'string' && args[0].startsWith(`${workers}/`) && args[0].endsWith('.json')) recordReads++
+        return original(...args)
+      }) as typeof fs.readFileSync)
+      try {
+        const running = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+          async () => ({ id: 'w_123', status: 'running', dir: workerDir }))
+        await (running as any).releaseLandedWorkerClaims('1')
+        expect(recordReads).toBe(0)
+        const untrusted = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+          async () => undefined)
+        await (untrusted as any).releaseLandedWorkerClaims('1')
+        expect(recordReads).toBe(0)
+        const done = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+          async () => ({ id: 'w_123', status: 'done', dir: workerDir }))
+        await (done as any).releaseLandedWorkerClaims('1')
+        expect(recordReads).toBe(2)
+        expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
+      } finally { read.mockRestore() }
+    } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
   })
 
   it('reads a fresh projected held worker edit from its workers room without a stored Git blob', async () => {

@@ -31,6 +31,39 @@ export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> 
     .sort()
 }
 
+export type WorkerCleanupPreservation = { ignored: string[]; uncollected: string[] }
+
+/** Work added after an owner was collected can still be sitting in its shared checkout. */
+async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker): Promise<string[]> {
+  const exclusions = workerOwnedPaths(w).exclusions
+  const [changed, untracked] = await Promise.all([
+    git(w.dir, ['diff', '--name-only', '-z', 'HEAD', '--', '.', ...exclusions]),
+    git(w.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions]),
+  ])
+  const paths = [...new Set((changed + untracked).split('\0').filter(Boolean))]
+  const same = async (rel: string): Promise<boolean> => {
+    const left = path.join(w.dir, rel), right = path.join(leadDir, rel)
+    const stat = (file: string) => { try { return fs.lstatSync(file) } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e } }
+    const a = stat(left), b = stat(right)
+    if (!a || !b) return !a && !b
+    if (a.isSymbolicLink() || b.isSymbolicLink()) return a.isSymbolicLink() && b.isSymbolicLink() && fs.readlinkSync(left) === fs.readlinkSync(right)
+    if (!a.isFile() || !b.isFile() || a.size !== b.size || (a.mode & 0o111) !== (b.mode & 0o111)) return false
+    const x = await fs.promises.open(left, 'r'), y = await fs.promises.open(right, 'r')
+    try {
+      const one = Buffer.alloc(64 * 1024), two = Buffer.alloc(one.length)
+      for (let offset = 0; offset < a.size; offset += one.length) {
+        const length = Math.min(one.length, a.size - offset)
+        const [first, second] = await Promise.all([x.read(one, 0, length, offset), y.read(two, 0, length, offset)])
+        if (first.bytesRead !== length || second.bytesRead !== length || !one.subarray(0, length).equals(two.subarray(0, length))) return false
+      }
+      return true
+    } finally { await Promise.all([x.close(), y.close()]) }
+  }
+  const remaining: string[] = []
+  for (const rel of paths) if (!await same(rel)) remaining.push(rel)
+  return remaining.sort()
+}
+
 /** Prune a vanished Room checkout, preserving any branch commits absent from the lead HEAD. */
 export async function pruneMissingWorkerWorktree(leadDir: string, w: LocalWorker, manageBranch = true): Promise<string | undefined> {
   if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
@@ -298,7 +331,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
 }
 
 /** Remove only owned Room worktrees; failures require explicit discard. */
-export async function cleanupWorker(leadDir: string, w: LocalWorker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = []): Promise<boolean> {
+export async function cleanupWorker(leadDir: string, w: LocalWorker, collected = false, discarded = false, terminatedProcesses: string[] = [], processOptions: Parameters<typeof terminateWorktreeProcesses>[1] = {}, leadName?: string, workers: Iterable<WorktreeOwnershipRecord> = [], preservation?: WorkerCleanupPreservation): Promise<boolean> {
   // All lifecycle paths converge here. The owner operation lease must be held by
   // callers while checking this snapshot and removing the checkout.
   const available = async () => {
@@ -329,6 +362,16 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
     // Remove the worker's reusable preview checkout while its own worktree still exists.
     const { removePreviewCache } = await import('./tools/files.js')
     await removePreviewCache(w.dir, leadDir)
+    if (!await available()) return false
+    if (!discarded && w.id) {
+      const { registryForDir } = await import('./worker-registry.js')
+      const owner = (await registryForDir(leadDir)).read(w.id)
+      if (owner?.phase === 'retired' && owner.keptWorktree && owner.archive?.keptReason?.startsWith('shared checkout: ')) {
+        const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w)])
+        if (preservation) { preservation.ignored = ignored; preservation.uncollected = uncollected }
+        if (ignored.length || uncollected.length) return false
+      }
+    }
     if (!await available()) return false
     await internalGit(leadDir, ['worktree', 'remove', ...(collected ? ['--force'] : []), w.dir])
     await internalGit(leadDir, ['branch', '-D', w.branch])
