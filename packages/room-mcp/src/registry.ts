@@ -238,7 +238,7 @@ export class Rooms {
    * `beforeLaunch` runs once every check has passed and the run is reserved, just before the host starts; an
    * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
    */
-  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | undefined>): Promise<string | DeliveredResume> {
+  async resumeWorker(s: Session, w: Pick<LocalWorker, 'id' | 'tag' | 'host'>, followUp: string, spawner: Spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers?: number | string, log: (line: string) => void = console.error, at: () => number = Date.now, exitWaitMs = 30_000, beforeLaunch?: () => Promise<string | { ids: string[] } | undefined>): Promise<string | DeliveredResume> {
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
     const known = registry.reserved(w.tag)
@@ -268,11 +268,18 @@ export class Rooms {
         busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
-    const refused = await beforeLaunch?.()
+    const posting = await beforeLaunch?.()
+    const refused = typeof posting === 'string' ? posting : undefined
     if (refused) {
       await registry.update(record.id, old => ({ ...old, phase: 'active',
         runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'never', error: refused } }], seq: old.seq + 1 }))
       return refused
+    }
+    if (posting && typeof posting !== 'string' && posting.ids.length) {
+      const updated = await registry.update(record.id, old => ({ ...old,
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, promptMsgIds: [...new Set(posting.ids)] }],
+        seq: old.seq + 1 }))
+      run = updated.runs.at(-1)!
     }
     try {
       const { server, isWorker } = workerOrigin(s)

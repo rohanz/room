@@ -12,6 +12,7 @@ import { decideResume, type WorkerRealState } from '../src/worker-state.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
 import { Ledger } from '../src/ledger.js'
+import { projectWorkers } from '../src/worker-projector.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
@@ -46,7 +47,7 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
   const session = {
     room, awareness, me, dir, roomName: 'local/x/main', roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness },
-    daemon: { touch() {}, async stop() {}, share: 'full', dir, name: me.name, roomDoc: room, branch: 'main' },
+    daemon: { touch() {}, async stop() {}, share: 'full', dir, name: me.name, roomDoc: room, branch: 'main', fence: 'test-fence' },
     shareMax: 'full', shareRequested: 'full',
     local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} },
   } as unknown as Session
@@ -80,6 +81,66 @@ function setup(maxWorkers = 2, worktree?: (repo: string, tag: string) => Promise
 }
 
 describe('resumed worker boundaries', () => {
+  it('keeps a posted follow-up owed until the resumed turn is accepted', async () => {
+    const t = setup()
+    await t.seed('owed')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'owed', text: 'continue' })).toContain('resumed owed')
+    const msg = t.room.messages().find(m => m.to === 'rohanz+owed')!
+    const run = (await t.record('owed'))!.runs.at(-1)!
+    expect(run.promptMsgIds).toContain(msg.id)
+    expect(t.room.seen('rohanz+owed').has(msg.id)).toBe(false)
+  })
+
+  it('receipts the prompt on the admitted worker MCP first Room action', async () => {
+    const t = setup()
+    await t.seed('action')
+    await t.tools.call('room_send', { type: 'note', to: 'action', text: 'continue' })
+    const record = (await t.record('action'))!, run = record.runs.at(-1)!
+    const worker = { ...t.session, me: { name: record.name, kind: 'agent' as const } } as Session
+    vi.stubEnv('ROOM_WORKER_ID', record.id); vi.stubEnv('ROOM_WORKER_RUN', String(run.n)); vi.stubEnv('ROOM_LAUNCH_NONCE', run.nonce)
+    const ledger = new Ledger({ sessionId: () => record.hostSessionId!, route: () => ({}) })
+    expect(ledger.candidates(worker).map(m => m.id)).not.toContain(run.promptMsgIds[0])
+    ledger.acceptPrompt(worker)
+    expect(t.room.seen(record.name).get(run.promptMsgIds[0])).toMatchObject({ via: 'prompt', s: record.hostSessionId })
+  })
+
+  it('projector receipts only a matching Claude assistant event after a no-call resume', async () => {
+    const t = setup()
+    await t.seed('silent')
+    await t.tools.call('room_send', { type: 'note', to: 'silent', text: 'continue' })
+    const record = (await t.record('silent'))!, run = record.runs.at(-1)!
+    const log = join(t.dir, '.room', 'workers', 'silent.log')
+    const append = (event: object) => writeFileSync(log, JSON.stringify(event) + '\n', { flag: 'a' })
+    append({ type: 'system', subtype: 'init', session_id: record.hostSessionId })
+    append({ type: 'assistant', session_id: 'another-session', message: { content: [{ type: 'text', text: 'wrong' }] } })
+    t.exits[0](0)
+    const registry = await registryForDir(t.dir)
+    await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('failed'))
+    await projectWorkers(t.session, registry, 'rohanz', 'joined')
+    expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
+    append({ type: 'assistant', session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } })
+    await projectWorkers(t.session, registry, 'rohanz', 'joined')
+    expect(t.room.seen(record.name).get(run.promptMsgIds[0])).toMatchObject({ via: 'prompt', s: record.hostSessionId })
+  })
+
+  it('shows a missing Claude session while leaving its follow-up owed', async () => {
+    const t = setup()
+    await t.seed('missing')
+    await t.tools.call('room_send', { type: 'note', to: 'missing', text: 'continue' })
+    const record = (await t.record('missing'))!, run = record.runs.at(-1)!
+    writeFileSync(join(t.dir, '.room', 'workers', 'missing.log'), JSON.stringify({
+      type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 0,
+      session_id: record.hostSessionId, result: 'No conversation found',
+    }) + '\n')
+    t.exits[0](1)
+    const registry = await registryForDir(t.dir)
+    await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('failed'))
+    await vi.waitFor(() => expect(t.room.messages().some(m => m.type === 'note' && m.text.includes('no longer exists'))).toBe(true))
+    await projectWorkers(t.session, registry, 'rohanz', 'joined')
+    expect(t.room.workerViewOf(record.name)?.note).toContain('no longer exists; the message stays owed')
+    expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
+  })
+
   it('still fails a fresh worker that exits zero without room_done', async () => {
     const t = setup()
     expect(await t.tools.call('room_spawn', { tag: 'fresh', task: 'test', host: 'codex' })).toContain('spawned fresh')

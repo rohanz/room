@@ -95,6 +95,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const moved = await state.followBranch()
       if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()
+      if (s) ledger.acceptPrompt(s)
       s?.refreshRuntime?.()
       if (s && !s.provider.synced && name !== 'room_leave' && !(offlineTool && (s.closed || connectedBefore(s)))) return 'error: room not synced yet, retry'
       if (s) { trackConnection(s, state.now); state.rooms.track(s) }

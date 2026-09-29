@@ -1,5 +1,5 @@
 import type * as Y from 'yjs'
-import { formatMsg, type ChatItem, type Claim, type Identity, type Msg, type ReleaseMsg, RoomDoc, isAgentic } from '@room/shared'
+import { formatMsg, highestSeq, owed, type ChatItem, type Claim, type Identity, type Msg, type ReleaseMsg, RoomDoc, isAgentic } from '@room/shared'
 import type { Post } from '@room/room-mcp'
 import type { AgentBackend, AgentItem } from './backend.js'
 import { claimToMsg, shouldWakeOnClaim, shouldWakeOnMsg } from './wake.js'
@@ -16,6 +16,7 @@ export interface RunnerOptions {
   backend: AgentBackend
   preamble?: string
   log?: (line: string) => void
+  sessionId?: string
 }
 
 type Queued = { kind: 'human'; text: string } | { kind: 'event'; msg: Msg; line: string }
@@ -32,6 +33,8 @@ export class Runner {
   private unobserve: (() => void)[] = []
   private stopped = false
   private paused = false
+  private frontier = 0
+  private queuedIds = new Set<string>()
 
   constructor(private opts: RunnerOptions) {
     this.me = { name: opts.name, kind: 'agent' }
@@ -43,6 +46,7 @@ export class Runner {
   start(): void {
     const { room } = this.opts
     this.setStatus('idle')
+    this.frontier = highestSeq(room)
 
     // (a) human chat: only items appended after start, only role 'human'
     const chat = room.chat(this.me.name)
@@ -69,6 +73,10 @@ export class Runner {
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) this.onMsg(m)
     }
     bus.observe(onBus); this.unobserve.push(() => bus.unobserve(onBus))
+    // Addressed mail survives bus trimming and an agent restart.
+    for (const m of owed(room, this.me, { frontier: this.frontier, routed: new Set() }, {})) {
+      if (m.to === this.me.name) this.onMsg(m)
+    }
 
     // (c) claims map: new claims overlapping ours
     for (const c of room.openClaims()) this.seenClaimIds.add(c.id)
@@ -86,6 +94,7 @@ export class Runner {
   async stop(waitMs = 1000): Promise<void> {
     this.stopped = true
     this.queue.length = 0
+    this.queuedIds.clear()
     for (const u of this.unobserve) u()
     this.unobserve = []
     if (this.abort) {
@@ -113,11 +122,14 @@ export class Runner {
 
   private onMsg(m: Msg) {
     if (m.type === 'claim') this.seenClaimIds.add(m.claimId)
+    if (this.queuedIds.has(m.id) || !owed(this.room, this.me, { frontier: this.frontier, routed: new Set() },
+      { claims: this.room.openClaims().filter(c => c.by === this.me.name) }).some(candidate => candidate.id === m.id)) return
     const ownWorkers = new Set(Array.from(this.room.workerViews.values()).filter(w => w.lead === this.me.name).map(w => w.name))
     const d = shouldWakeOnMsg(this.me, m, this.room.openClaims(), false, ownWorkers)
     this.log(`bus ${m.type} from ${m.from}/${m.fromKind}: ${d.wake ? 'wake' : 'skip'} (${d.reason})`)
     if (d.wake) {
       const queued = { kind: 'event' as const, msg: m, line: formatMsg(m) }
+      this.queuedIds.add(m.id)
       if (m.priority === 'interrupt') this.preemptForConflict(queued)
       else this.enqueue(queued)
     }
@@ -168,6 +180,7 @@ export class Runner {
   stopTurn(): void {
     this.paused = true
     this.queue.length = 0
+    this.queuedIds.clear()
     const mine = this.room.openClaims().filter(c => c.by === this.me.name && isAgentic(c.byKind))
     for (const c of mine) {
       this.room.removeClaim(c.id, this)
@@ -206,12 +219,17 @@ export class Runner {
 
   private async turn(batch: Queued[]) {
     const say = (item: Omit<ChatItem, 'id' | 'at'>) => this.room.say(this.me.name, item)
+    const extra = owed(this.room, this.me, { frontier: this.frontier, routed: new Set() },
+      { claims: this.room.openClaims().filter(c => c.by === this.me.name) })
+      .filter(m => !this.queuedIds.has(m.id))
+      .map(m => ({ kind: 'event' as const, msg: m, line: formatMsg(m) }))
+    const events = [...batch.filter((q): q is Extract<Queued, { kind: 'event' }> => q.kind === 'event'), ...extra]
+    for (const q of events) say({ role: 'event', text: q.line, meta: { type: q.msg.type, from: q.msg.from, msg_id: q.msg.id } })
     let body: string
     if (batch[0].kind === 'human') {
-      body = batch[0].text
+      body = batch[0].text + (extra.length ? '\n\n' + extra.map(q => formatEvent(q.msg, q.line)).join('\n\n') : '')
     } else {
-      for (const q of batch) if (q.kind === 'event') say({ role: 'event', text: q.line, meta: { type: q.msg.type, from: q.msg.from, msg_id: q.msg.id } })
-      body = batch.flatMap(q => q.kind === 'event' ? [formatEvent(q.msg, q.line)] : []).join('\n\n')
+      body = events.map(q => formatEvent(q.msg, q.line)).join('\n\n')
     }
     let input = body
     if (this.firstTurn) { input = `${this.opts.preamble ?? preamble(this.me.name)}\n\n---\n\n${body}`; this.firstTurn = false }
@@ -225,7 +243,11 @@ export class Runner {
         if (this.stopped || this.abort !== controller) return
         const c = itemToChat(item)
         if (c) say(c)
-      }, s => { if (!this.stopped && this.abort === controller) this.setStatus(s) }, signal)
+      }, s => { if (!this.stopped && this.abort === controller) this.setStatus(s) }, signal, () => {
+        if (this.stopped || this.abort !== controller) return
+        const ids = events.flatMap(q => this.room.message(q.msg.id) || this.room.mail.has(q.msg.id) ? [q.msg.id] : [])
+        if (ids.length) this.room.markSeen(this.me.name, ids, { s: this.opts.sessionId ?? `roomagent:${process.pid}`, via: 'agent' })
+      })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (this.stopped) { /* lifecycle shutdown is silent */ }
@@ -234,6 +256,7 @@ export class Runner {
       else if (signal.aborted) { say({ role: 'status', text: 'turn aborted' }) }
       else { this.log(`turn failed: ${msg}`); say({ role: 'status', text: `turn failed: ${msg}` }) }
     } finally {
+      for (const q of batch) if (q.kind === 'event') this.queuedIds.delete(q.msg.id)
       if (this.abort === controller) {
         this.abort = null
         this.abortReason = null

@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"session-123"}
+{"type":"assistant","session_id":"another-session","message":{"content":[{"type":"text","text":"This belongs to another conversation."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"session-123","result":"Wrong conversation."}

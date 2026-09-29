@@ -91,7 +91,6 @@ export function statusOf(record: WorkerRecord, runs: Run[] = record.runs, report
     { summary: report.done.summary, finishedAt: report.done.at, ...(exit?.code != null ? { exitCode: exit.code } : {}) })
   if (record.stop?.run === current.n) return result('stopped', current, record.stop.reason, { finishedAt: record.stop.at })
   const earlierDone = ordered.some(r => r.n < current.n && reports.some(p => p.run === r.n && p.nonce === r.nonce && p.done))
-  if (exit?.witnessed && exit.code === 0 && earlierDone) return result('done', current, note, { finishedAt: exit.at, exitCode: 0 })
   if (exit?.witnessed && exit.code === 0) return result('failed', current, 'exited without room_done', { finishedAt: exit.at, exitCode: 0 })
   if (exit?.witnessed) return result('failed', current, exit.signal ?? `exit ${exit.code ?? 'unknown'}`, { finishedAt: exit.at, ...(exit.code != null ? { exitCode: exit.code } : {}) })
   if (exit && current.mode === 'resume' && earlierDone) return result('done', current, 'follow-up outcome unknown: ended while no session of yours was running', { finishedAt: exit.at })

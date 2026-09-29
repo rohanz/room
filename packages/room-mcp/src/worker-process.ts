@@ -29,6 +29,83 @@ export interface SpawnedProcess {
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 
+interface HostEvent {
+  type?: string; subtype?: string; session_id?: string; thread_id?: string
+  result?: unknown; message?: { content?: unknown } | string; item?: { type?: string; text?: unknown }
+  error?: { message?: unknown }; is_error?: boolean
+  num_turns?: number
+}
+
+/** Read complete JSON lines from one run, starting at its byte offset in the shared log. */
+function* hostEvents(file: string, start = 0): Generator<HostEvent> {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(file, 'r')
+    const size = fs.fstatSync(fd).size
+    let offset = Math.max(0, Math.min(start, size)), pending = ''
+    const chunk = Buffer.alloc(64 * 1024)
+    while (offset < size) {
+      const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, size - offset), offset)
+      if (!count) break
+      offset += count
+      pending += chunk.toString('utf8', 0, count)
+      let end: number
+      while ((end = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, end).trim()
+        pending = pending.slice(end + 1)
+        if (!line.startsWith('{')) continue
+        try { yield JSON.parse(line) as HostEvent } catch { /* stderr or a partial line */ }
+      }
+      if (pending.length > 1024 * 1024) pending = ''
+    }
+  } catch { /* unavailable logs provide no acceptance evidence */ }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
+function assistantText(event: HostEvent): string {
+  const content = typeof event.message === 'object' ? event.message?.content : undefined
+  if (!Array.isArray(content)) return ''
+  return content.filter((part): part is { type: string; text: string } => part?.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n').trim()
+}
+
+/** A prompt receipt requires model activity in this retained session's resume run. */
+export function resumeAccepted(file: string, host: 'claude' | 'codex', hostSessionId: string, logStart: number): boolean {
+  let codexThread: string | undefined
+  for (const event of hostEvents(file, logStart)) {
+    if (host === 'claude' && event.type === 'assistant' && event.session_id === hostSessionId) return true
+    if (host === 'codex') {
+      if (event.type === 'thread.started') codexThread = event.thread_id
+      if (event.type === 'turn.started' && (event.thread_id ?? codexThread) === hostSessionId) return true
+    }
+  }
+  return false
+}
+
+export function missingClaudeSession(file: string, hostSessionId: string, logStart: number): boolean {
+  let missing = false
+  for (const event of hostEvents(file, logStart)) {
+    if (event.type === 'assistant' && event.session_id === hostSessionId) return false
+    if (event.type === 'result' && event.session_id === hostSessionId
+      && event.subtype === 'error_during_execution' && event.is_error === true && event.num_turns === 0) missing = true
+  }
+  return missing
+}
+
+/** Final answer from this run; Claude result wins over interim assistant text. */
+export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart: number): string {
+  let assistant = '', result = ''
+  for (const event of hostEvents(file, logStart)) {
+    if (host === 'claude') {
+      if (event.type === 'assistant') assistant = assistantText(event) || assistant
+      if (event.type === 'result' && typeof event.result === 'string') result = event.result.trim()
+    } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+      assistant = event.item.text.trim()
+    }
+  }
+  return result || assistant
+}
+
 /** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
 export function workerLogTail(logFile: string): string {
   let fd: number | undefined
@@ -42,11 +119,13 @@ export function workerLogTail(logFile: string): string {
       const line = l.trim()
       if (!line.startsWith('{')) return line
       try {
-        const event = JSON.parse(line) as { type?: string; item?: { type?: string; text?: unknown }; error?: { message?: unknown }; message?: unknown }
+        const event = JSON.parse(line) as HostEvent
+        if (event.type === 'assistant') return assistantText(event)
+        if (event.type === 'result') return typeof event.result === 'string' ? event.result.trim() : ''
         if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') return event.item.text.trim()
         if (typeof event.error?.message === 'string') return event.error.message.trim()
         return typeof event.message === 'string' ? event.message.trim() : ''
-      } catch { return line }
+      } catch { return '' }
     }).filter(Boolean).slice(-5).join('\n').slice(-600)
   } catch { return '(log unavailable)' }
   finally { if (fd !== undefined) fs.closeSync(fd) }

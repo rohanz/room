@@ -5,7 +5,7 @@ export interface TurnResult { finalResponse: string }
 
 export interface AgentBackend {
   /** Run one turn. `onItem` fires for every completed item; `onStatus` for coarse progress. */
-  run(input: string, onItem: (item: AgentItem) => void, onStatus?: (status: string) => void, signal?: AbortSignal): Promise<TurnResult>
+  run(input: string, onItem: (item: AgentItem) => void, onStatus?: (status: string) => void, signal?: AbortSignal, onTurnStarted?: () => void): Promise<TurnResult>
 }
 
 export interface CodexBackendOptions {
@@ -32,7 +32,7 @@ export class CodexBackend implements AgentBackend {
   }
   get threadId(): string | null { return this.thread.id }
 
-  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal): Promise<TurnResult> {
+  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal, onTurnStarted?: () => void): Promise<TurnResult> {
     const controller = new AbortController()
     const abortFromCaller = () => controller.abort(signal?.reason)
     if (signal?.aborted) abortFromCaller()
@@ -49,7 +49,7 @@ export class CodexBackend implements AgentBackend {
       let finalResponse = ''
       for await (const ev of events) {
         switch (ev.type) {
-          case 'turn.started': onStatus?.('thinking'); break
+          case 'turn.started': onTurnStarted?.(); onStatus?.('thinking'); break
           case 'item.started':
             if (ev.item.type === 'command_execution') onStatus?.(`running: ${ev.item.command}`)
             else if (ev.item.type === 'mcp_tool_call') onStatus?.(`calling ${ev.item.tool}`)
@@ -84,8 +84,10 @@ export class FakeBackend implements AgentBackend {
   /** Resolve to let a turn finish (when `hold` is true). */
   private release: (() => void) | null = null
   hold = false
-  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal): Promise<TurnResult> {
+  emitTurnStarted = true
+  async run(input: string, onItem: (item: AgentItem) => void, onStatus?: (s: string) => void, signal?: AbortSignal, onTurnStarted?: () => void): Promise<TurnResult> {
     this.inputs.push(input)
+    if (this.emitTurnStarted) onTurnStarted?.()
     onStatus?.('thinking')
     if (this.hold) await new Promise<void>((r, rej) => { this.release = r; signal?.addEventListener('abort', () => rej(new Error('aborted'))) })
     const items = this.scripts.shift() ?? []
