@@ -70,6 +70,7 @@ describe('projectable(lead, roomKey) and the joined-room projector', () => {
     const s = session(LOCAL, 'lead-s1')
     await registry.writeReport(w.id, { run: 1, nonce: w.runs[0].nonce, chain: [], joinedAt: 2,
       done: { at: 5, summary: 'finished safely', changed: ['app.py'] } })
+    await registry.writeExit(w.id, { run: 1, code: 0, at: 6, witnessed: true })
     const original = registry.postCompletion.bind(registry)
     const spy = vi.spyOn(registry, 'postCompletion').mockRejectedValueOnce(new Error('hub unreachable'))
     await projectWorkers(s, registry, lead.name, 'joined')

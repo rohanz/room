@@ -17,6 +17,7 @@ import type { SessionBinding } from '../src/binding.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
+import { publishFixture } from './fixtures/manifest.js'
 
 const HOOKS = resolve(__dirname, '../../../plugins/room/hooks')
 const SID = 'hook-fixes-session'
@@ -77,6 +78,8 @@ describe('F-M1: a quiet minute does not silence the before-edit hook', () => {
   it('61 s with no doc update: the claim line still appears while the MCP is up', async () => {
     const mcp = await liveMcp()
     try {
+      // B6: both versions are known and identical, so this is an exact claim.
+      publishFixture(mcp.s.room, 'Quinn', 'api/tax.py', 'x = 1\n')
       mcp.s.room.addClaim({ path: 'api/tax.py', from: 1, to: 1, by: 'Quinn', byKind: 'agent', intent: 'rework tax' })
       await settle()
       writeSession('state.json', { ...readSession('state.json'), at: Date.now() - 61_000 })

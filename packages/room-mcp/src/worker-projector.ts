@@ -69,7 +69,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     if (!run) continue
     const report = registry.reports(record.id).find(value => value.run === run.n)
     try {
-      if (report?.done) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
+      if (report?.done && registry.exits(record.id).some(exit => exit.run === run.n)) await registry.postCompletion(record.id, run.n, async (_id, current, done) => {
         const message = completionMessage(current, run, status, done)
         if (message) await postWorkerMessage(s.post, current, message)
       })
