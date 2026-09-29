@@ -77,9 +77,15 @@ describe('GraphIndex', () => {
     git('commit', '--allow-empty', '-qm', 'new base')
     const newBase = git('rev-parse', 'HEAD')
     const room = new RoomDoc(); room.setMeta({ base: oldBase })
-    const oldReads: (() => void)[] = [], newReads: (() => void)[] = []
+    room.participants.set('Rohan\u0000git', { branch: 'main', head: oldBase, base: oldBase, anchored: true, fence: '1', rev: 1 })
+    const oldReads: (() => void)[] = []
+    let releaseNinth: (() => void) | undefined
+    let holdNinth = true
     const read = vi.fn(async (_dir: string, sha: string, path: string): Promise<string> => {
-      await new Promise<void>(resolve => (sha === oldBase ? oldReads : newReads).push(resolve))
+      if (sha === oldBase) await new Promise<void>(resolve => oldReads.push(resolve))
+      if (sha === newBase && path === 'file8.py' && holdNinth) {
+        await new Promise<void>(resolve => { releaseNinth = resolve })
+      }
       return path === 'file8.py'
         ? 'from file0 import current_0\ndef consumer(): return current_0()\n'
         : `def current_${path.slice(4, -3)}(): pass\n`
@@ -92,15 +98,14 @@ describe('GraphIndex', () => {
       const captured = gi.ready.then(() => { settled = true; outcome = 'resolved' }, () => { settled = true; outcome = 'rejected' })
       await eventually(() => oldReads.length === 8)
       room.setMeta({ base: newBase })
-      await new Promise(resolve => setTimeout(resolve, 20))
-      expect(settled).toBe(false)
+      room.participants.set('Rohan\u0000git', { branch: 'main', head: newBase, base: newBase, anchored: true, fence: '1', rev: 2 })
       oldReads.splice(0).forEach(release => release())
-      await eventually(() => newReads.length === 8)
+      await eventually(() => releaseNinth !== undefined)
+      await eventually(() => Array.from({ length: 8 }, (_, i) => gi.graph.definersOf(`current_${i}`).includes(`file${i}.py`)).every(Boolean))
       expect(settled).toBe(false)
-      newReads.splice(0).forEach(release => release())
-      await eventually(() => newReads.length === 1)
-      expect(settled).toBe(false)
-      newReads.splice(0).forEach(release => release())
+      expect(gi.graph.has('file8.py')).toBe(false)
+      holdNinth = false
+      releaseNinth!()
       await captured
       expect(outcome).toBe('resolved')
       expect(gi.graph.definersOf('current_0')).toEqual(['file0.py'])
@@ -108,7 +113,8 @@ describe('GraphIndex', () => {
       expect(room.graphs.get('Rohan')?.base).toBe(newBase)
     } finally {
       oldReads.splice(0).forEach(release => release())
-      newReads.splice(0).forEach(release => release())
+      holdNinth = false
+      releaseNinth?.()
       gi.stop(); room.doc.destroy(); rmSync(repo, { recursive: true, force: true })
     }
   })
