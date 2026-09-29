@@ -10,6 +10,7 @@ import { seedRegistryWorker } from './registry-fixture.js'
 import { defaultSpawner } from '../src/worker-process.js'
 import { workerRealState } from '../src/worker-state.js'
 import { RoomDoc } from '@room/shared'
+import { setParticipantBase } from '@room/shared/testing'
 import type { LocalWorker } from '../src/worker-status.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { carriedContentHash, carriedPaths, carriedUnchanged, checkoutText, workerBaseline, workerChangedPaths } from '@room/roomd/baseline'
@@ -210,7 +211,9 @@ describe('carry and discard safety', () => {
     const odd = 'line\nbreak.py'
     fs.writeFileSync(path.join(root, odd), 'def odd():\n    return 1\n')
     run(root, 'add', '-A'); run(root, 'commit', '-qm', 'odd source')
-    const room = new RoomDoc(); room.setMeta({ base: run(root, 'rev-parse', 'HEAD') })
+    const room = new RoomDoc()
+    const base = run(root, 'rev-parse', 'HEAD')
+    setParticipantBase(room, 'lead', base)
     const graph = new GraphIndex(room, 'lead', root, undefined, { random: () => 0, minPublishMs: 0 })
     try { graph.start(); await graph.whenIdle(); expect(graph.graph.has(odd)).toBe(true) }
     finally { graph.stop(); room.doc.destroy() }

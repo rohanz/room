@@ -207,7 +207,10 @@ export function decideRetire(s: WorkerRealState): RetiredWorker['outcome'] | und
   if (s.clean === true && s.ahead === 0) return s.merged ? 'merged' : 'clean'
   return undefined
 }
-export function decideLeave(s: WorkerRealState): 'stop' | 'leave' { return (s.status !== 'done' && s.status !== 'failed' && s.status !== 'dismissed') || s.process === 'ours' || s.process === 'unknown' ? 'stop' : 'leave' }
+export function decideLeave(s: WorkerRealState): 'stop' | 'leave' {
+  if (s.status === 'done' && s.exitCode !== undefined) return 'leave' // witnessed exit outranks a retained handle
+  return (s.status !== 'done' && s.status !== 'failed' && s.status !== 'dismissed') || s.process === 'ours' || s.process === 'unknown' ? 'stop' : 'leave'
+}
 export function decideShutdown(s: WorkerRealState): 'stop' | 'leave' { return decideLeave(s) }
 export function decidePreview(s: WorkerRealState, diskEligible: boolean): 'disk' | 'shared' {
   return diskEligible && s.worktree === 'present' ? 'disk' : 'shared'

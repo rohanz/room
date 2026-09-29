@@ -131,6 +131,8 @@ function wakes(s: Session, send: SendWake = async () => 'queue', ownWorkers: Rea
 /** A bound session with a live Room MCP: tools, ledger and the hooks' arbitration endpoint. */
 async function liveMcp(id = SID, me = { name: 'Rohan', kind: 'agent' as const }, room = new RoomDoc(), hookLeaseMs = 10_000) {
   const s = { ...session(room), me }
+  // Ledger arbitration tests supply their own notices; the schema-2 sharing notice was already handed off.
+  void s.policyStore.markDisclosed('full', 2)
   const binding: SessionBinding = { bound: () => ({ id, host: 'codex' }), id: () => id, dir: () => sdir(id), commonDir: () => join(dir, '.git') }
   const tools: Tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, hookLeaseMs })
   tools.attachHooks(s)

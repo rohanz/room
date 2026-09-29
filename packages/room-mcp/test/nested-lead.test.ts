@@ -81,7 +81,7 @@ async function nestedBatch(opts: { leadStatus?: FixtureWorker['status']; catStat
 
 /** The human's session after a crash: a fresh session in the top clone, with no process handles. */
 async function humanCollect(room: RoomDoc, workers: readonly FixtureWorker[]) {
-  const s = { ...hubSeam(room), dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top/shop', room, awareness: { getStates: () => new Map() }, daemon: { fence: '1' } }
+  const s = { ...hubSeam(room), dir: top, local: {}, me: { name: HUMAN, kind: 'agent' }, roomName: 'local/top', room, awareness: { getStates: () => new Map() }, daemon: { fence: '1' } }
   const registry = await registerWorkers(s as unknown as Session, workers)
   const state = {
     S: () => s,

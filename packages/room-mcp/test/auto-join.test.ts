@@ -82,7 +82,7 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
 describe('automatic join (real room-mcp processes)', () => {
   it('a spawned worker auto-joins and its first wait delivers the lead broadcast before the later interrupt, without old history', async () => {
     const dir = repo()
-    const room = 'local/demo/main'
+    const room = 'local/demo'
     const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
     cleanups.push(() => leaveSession(lead))
     const old = hubAppend(lead.room, lead.me, { type: 'note', text: 'OLD-NOTIFY', priority: 'notify' })

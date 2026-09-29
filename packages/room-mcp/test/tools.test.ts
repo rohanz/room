@@ -1,4 +1,4 @@
-import { clearFixture, publishFixture, setFixtureLocalRoot } from './fixtures/manifest.js'
+import { clearFixture, publishFixture as publishFixtureRaw, setFixtureLocalRoot } from './fixtures/manifest.js'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs'
@@ -16,7 +16,7 @@ import { ConflictSet } from '../src/conflict-set.js'
 import type { SendWake } from '../src/wake-path.js'
 import { waitConsumesMessage } from '../src/tools/messaging.js'
 import { suggestedTestCommand, testCommandFor } from '../src/tools/files.js'
-import { hubAppend } from '@room/shared/testing'
+import { hubAppend, setParticipantBase } from '@room/shared/testing'
 import { hubSeam, setHubReachable } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } from './registry-fixture.js'
@@ -30,6 +30,9 @@ const me: Identity = { name: 'Rohan', kind: 'agent' }
 const fixtureSessionId = syntheticSessionId({ pid: process.pid, startTime: '', executable: '' })
 let dir: string
 let base: string
+/** Published text in these tests belongs to the clone's committed base. */
+const publishFixture = (...args: Parameters<typeof publishFixtureRaw>) =>
+  publishFixtureRaw(args[0], args[1], args[2], args[3], { ...args[4], base: args[4]?.base ?? base })
 
 /** Two docs synced by update exchange: Rohan's session doc and Kieran's view. */
 function pair() {
@@ -55,12 +58,15 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, sessionId: heldSessionId, status: 'idle' })
   const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
+  const policyStore = testPolicyStore()
+  // These tests exercise room tools, not the repository-wide upgrade notice.
+  void policyStore.markDisclosed('full', 2)
   return {
     graph,
     // This fixture holds the epoch published above; a replacement or ended holder fences it out.
     lease: { sessionId: heldSessionId, fence: leaseFence, check: () => {},
       paused: () => leaseFence() ? undefined : '[room] fixture name lease paused' } as Session['lease'],
-    policyStore: testPolicyStore(),
+    policyStore,
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base, fence: '1' },
@@ -69,7 +75,8 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
 
 function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake } = {}) {
   const { a, b } = pair()
-  a.setMeta({ repo: 'demo', branch: 'main', base })
+  a.setMeta({ repo: 'demo' })
+  setParticipantBase(a, 'Rohan', base)
   setFixtureLocalRoot(a, 'Rohan', dir)
   // The caller's holder is its own host session: the bound one when the test binds a session.
   publishFixture(a, 'Rohan', 'app.py', MINE, opts.wake ? { fence: 'claude-1' } : {})
@@ -827,19 +834,7 @@ describe('plan changes', () => {
   })
 })
 
-describe('branch follow', () => {
-  it('moves to the new branch room when the clone switches branches', async () => {
-    const t = setup({ joined: false })
-    await t.tools.call('room_join', {})
-    ;(t.session as Session).roomName = 'github.com/x/y/main'
-    const { execFileSync } = await import('node:child_process')
-    execFileSync('git', ['-C', dir, 'checkout', '-q', '-b', 'feature'])
-    const out = await t.tools.call('room_state', {})
-    expect(out).toContain('left main, joined github.com/x/y/feature')
-    expect(t.joined.length).toBe(2)
-    execFileSync('git', ['-C', dir, 'checkout', '-q', '-'])
-  })
-})
+// Repository rooms §B2 "Deleted" removes followBranch; a branch switch stays in the same room.
 
 describe('inbox', () => {
   it('delivers a broadcast notify note on the next tool call, leaving fyi in the feed', async () => {

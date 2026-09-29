@@ -92,7 +92,7 @@ it('M6: an unconfirmed tool reply leaves the disclosure owed; reopening offers i
   const second = createTools({ getSession: () => b, setSession: () => {}, cwd: dir })
   expect(await second.call('room_state', {})).toContain('note for your human')
   await flush()
-  expect((await reopen(dir)).disclosed).toEqual({ level: 'full', version: 1 })
+  expect((await reopen(dir)).disclosed).toEqual({ level: 'full', version: 2 })
   expect(await second.call('room_state', {})).not.toContain('note for your human')
   await first.shutdown(); await second.shutdown()
 })
@@ -124,7 +124,7 @@ it('M6: a notice receipt without the marker (a crash between them) is recovered,
   const second = createTools({ getSession: () => b, setSession: () => {}, cwd: dir, binding: binding(dir) })
   expect(await second.call('room_state', {})).not.toContain('note for your human')
   await flush()
-  expect((await reopen(dir)).disclosed).toEqual({ level: 'full', version: 1 })
+  expect((await reopen(dir)).disclosed).toEqual({ level: 'full', version: 2 })
   await first.shutdown(); await second.shutdown()
 })
 

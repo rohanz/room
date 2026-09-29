@@ -81,7 +81,7 @@ it('starts no join under shared hosting and first binds and joins the metadata r
   if (!runtime) throw new Error('expected runtime')
   await runtime.auto.settle()
   expect(runtime.dir).toBe(fs.realpathSync(target))
-  expect(joins).toEqual(['github.com/example/target/main'])
+  expect(joins).toEqual(['github.com/example/target'])
 })
 
 it('keeps startup binding for non-shared Codex, Claude and workers with ROOM_DIR', async () => {
