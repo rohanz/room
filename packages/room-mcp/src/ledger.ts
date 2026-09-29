@@ -33,7 +33,7 @@ export class Batch {
   settled = false
   committed = false
   timer?: ReturnType<typeof setTimeout>
-  constructor(readonly id: string, readonly kind: BatchKind) {}
+  constructor(readonly id: string, readonly kind: BatchKind, readonly leaseMs: number) {}
   has(s: Session, id: string): boolean { return this.items.some(x => x.s === s && x.m.id === id) }
 }
 
@@ -66,6 +66,7 @@ export class Ledger {
   private readonly pendingNotices = new Map<string, Notice>()
   private readonly onDelivered = new Map<string, () => void>()
   private delivered?: Record<string, { at: number; via: Via }>
+  private readonly bound = new WeakSet<Session>()
 
   constructor(private readonly o: LedgerOptions) {}
 
@@ -78,14 +79,22 @@ export class Ledger {
   }
 
   open(kind: BatchKind, leaseMs = kind === 'hook' ? this.o.hookLeaseMs ?? HOOK_LEASE_MS : REPLY_LEASE_MS): Batch {
-    const batch = new Batch(randomUUID(), kind)
-    batch.timer = setTimeout(() => this.release(batch), leaseMs)
-    batch.timer.unref?.()
-    return batch
+    return new Batch(randomUUID(), kind, leaseMs)
   }
 
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
-  bind(s: Session): void { this.cursor(s) }
+  bind(s: Session): void {
+    this.cursor(s)
+    this.prune(s)
+    if (this.bound.has(s)) return
+    this.bound.add(s)
+    s.room.bus.observe(event => { if (event.changes.delta.some(change => change.delete)) this.prune(s) })
+    const removed = (event: { changes: { keys: Map<string, { action: string }> } }) => {
+      if ([...event.changes.keys.values()].some(change => change.action === 'delete')) this.prune(s)
+    }
+    s.room.mail.observe(removed)
+    s.room.outcomes.observe(removed)
+  }
 
   /** The highest hub seq `s` had observed at its first bind: only later messages can wake it (MF8). */
   frontier(s: Session): number { return this.cursor(s).frontier }
@@ -102,6 +111,7 @@ export class Ledger {
   /** `available()`, reserved into `batch`, to be receipted `via` when the batch commits. */
   select(s: Session, batch: Batch, filter?: (m: Msg) => boolean, via: Via = batch.kind === 'hook' ? 'hook' : 'reply'): Msg[] {
     const chosen = this.available(s, batch, filter)
+    if (chosen.length) this.lease(batch)
     for (const m of chosen) {
       batch.items.push({ s, m, via })
       this.reservations.set(key(s, m.id), batch)
@@ -112,6 +122,7 @@ export class Ledger {
   /** What `s` is owed now, reserved or not: for counts and wake decisions, never a receipt. */
   candidates(s: Session): Msg[] {
     if (!this.fenced(s)) return []
+    this.prune(s)
     const cursor = this.route(s)
     const prompt = new Set(this.promptIds(s))
     return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && (this.o.relevant?.(s, m) ?? true))
@@ -129,7 +140,10 @@ export class Ledger {
     }
     for (const [s, byVia] of groups) {
       if (!this.fenced(s)) { this.o.log?.(`not receipting in ${s.roomName}: this session no longer holds ${s.me.name}`); continue }
-      s.room.doc.transact(() => { for (const [via, ids] of byVia) s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via }) })
+      s.room.doc.transact(() => {
+        for (const [via, ids] of byVia) s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via })
+        this.prune(s)
+      })
     }
     if (batch.notices.length) {
       const delivered = this.deliveredNotices()
@@ -153,7 +167,10 @@ export class Ledger {
   /** A model action in the resumed worker run proves its one prompt-bearing turn was accepted. */
   acceptPrompt(s: Session): void {
     const ids = this.promptIds(s)
-    if (ids.length && this.fenced(s)) s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via: 'prompt' })
+    if (ids.length && this.fenced(s)) {
+      s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via: 'prompt' })
+      this.prune(s)
+    }
   }
 
   private promptIds(s: Session): string[] {
@@ -203,6 +220,7 @@ export class Ledger {
     const out: Notice[] = []
     for (const n of this.pendingNotices.values()) {
       if (this.noticeReservations.has(n.id) || batch.notices.some(x => x.id === n.id)) continue
+      this.lease(batch)
       batch.notices.push(n); out.push(n)
       this.noticeReservations.set(n.id, batch)
     }
@@ -215,6 +233,22 @@ export class Ledger {
     for (const { s, m } of batch.items) if (this.reservations.get(key(s, m.id)) === batch) this.reservations.delete(key(s, m.id))
     for (const n of batch.notices) if (this.noticeReservations.get(n.id) === batch) this.noticeReservations.delete(n.id)
     this.o.onSettled?.()
+  }
+
+  /** Start or renew the reservation lease only after the reply actually selects content. */
+  private lease(batch: Batch): void {
+    if (batch.timer) clearTimeout(batch.timer)
+    batch.timer = setTimeout(() => this.release(batch), batch.leaseMs)
+    batch.timer.unref?.()
+  }
+
+  /** Only the current holder removes receipts whose retained message and outcome references are gone. */
+  private prune(s: Session): void {
+    if (!this.fenced(s)) return
+    const refs = new Set([...s.room.messages().map(m => m.id), ...s.room.mail.keys(), ...s.room.outcomes.keys()])
+    const seen = s.room.seen(s.me.name)
+    const stale = [...seen.keys()].filter(id => !refs.has(id))
+    if (stale.length) s.room.doc.transact(() => { for (const id of stale) seen.delete(id) })
   }
 
   // ---- cursor (ledger "Cursor") -------------------------------------------------------------

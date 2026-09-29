@@ -185,9 +185,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, async () => {
           const refused = await post()
           if (refused) return refused
-          const ids = owed(s.room, { name: to! }, { frontier: 0, routed: new Set() }, {})
-            .filter(m => m.to === to).map(m => m.id)
-          return { ids }
+          const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set() }, {})
+            .filter(m => m.to === to)
+          // Only reserve IDs whose complete message is in this one resume turn. The new
+          // follow-up always leads; oversized backlog stays owed for ordinary delivery.
+          const ordered = [posted!.msg, ...addressed.filter(m => m.id !== posted!.msg.id)]
+          const lines: string[] = []
+          const ids: string[] = []
+          let size = 0
+          for (const m of ordered) {
+            const line = JSON.stringify(m)
+            if (ids.length && size + line.length + 1 > INBOX_BUDGET) break
+            lines.push(line); ids.push(m.id); size += line.length + 1
+          }
+          return { ids, prompt: `Room messages for this resumed turn (each line includes its message ID, sender, and reply metadata):\n${lines.join('\n')}` }
         })
         if (posted?.ok === false) return posted.text
         if (typeof result === 'string' && result.startsWith('error:')) return posted ? `sent [${posted.msg.id}] ${formatMsg(posted.msg)}; ${result}` : result

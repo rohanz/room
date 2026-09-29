@@ -10,6 +10,7 @@ import * as Y from 'yjs'
 import { RoomDoc, type NoteMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { createTools, type Settle } from '../src/tools/index.js'
+import { Ledger } from '../src/ledger.js'
 import { FlushedStdioTransport } from '../src/transport.js'
 import { PolicyStore } from '../src/policy-store.js'
 import { offerTeamSharingDisclosure } from '../src/tools/join.js'
@@ -47,6 +48,28 @@ it('M5: a reply that fails after selecting its inbox is an error that receipts n
   expect(s.room.seen(me.name).has(m.id)).toBe(false)
   fail = false
   expect(await tools.call('room_state', {})).toContain('owed to Pat')
+})
+
+it('S2: the live holder prunes receipts once bus, mail and outcomes stop referencing them', () => {
+  const dir = tmp('room-receipts-')
+  const s = memorySession(me, dir)
+  const ledger = new Ledger({ sessionId: () => 'holder', route: () => ({}) })
+  ledger.bind(s)
+  const gone = hubAppend(s.room, quinn, { type: 'note', priority: 'notify', text: 'old broadcast' })
+  const retained = hubAppend(s.room, quinn, { type: 'note', to: me.name, text: 'retained mail' })
+  const outcome = hubAppend(s.room, quinn, { type: 'note', priority: 'notify', text: 'retained outcome' })
+  const batch = ledger.open('reply')
+  ledger.select(s, batch)
+  ledger.commit(batch)
+  expect(s.room.seen(me.name).has(gone.id)).toBe(true)
+  expect(s.room.seen(me.name).has(retained.id)).toBe(true)
+  s.room.mail.set(retained.id, retained)
+  s.room.outcomes.set(outcome.id, { id: outcome.id, reason: 'expired', at: Date.now() } as never)
+  s.room.bus.delete(0, s.room.bus.length)
+  ledger.candidates(s)
+  expect(s.room.seen(me.name).has(gone.id)).toBe(false)
+  expect(s.room.seen(me.name).has(retained.id)).toBe(true)
+  expect(s.room.seen(me.name).has(outcome.id)).toBe(true)
 })
 
 it('M5: the transport commits only a reply that carries the tool\'s text; a replaced reply receipts nothing', async () => {

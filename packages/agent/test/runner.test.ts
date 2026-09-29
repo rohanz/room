@@ -86,6 +86,31 @@ describe('Runner', () => {
     expect(s.room.seen('Rohan').has(msg.id)).toBe(false)
   })
 
+  it('M2: retries an unaccepted question without another room event', async () => {
+    vi.useFakeTimers()
+    const room = new RoomDoc()
+    const inputs: string[] = []
+    let attempts = 0
+    const backend = { async run(input: string, _item: unknown, _status: unknown, _signal: unknown, onTurnStarted?: () => void) {
+      inputs.push(input)
+      if (++attempts === 1) throw new Error('backend temporarily unavailable')
+      onTurnStarted?.()
+      return { finalResponse: 'done' }
+    } } as unknown as FakeBackend
+    const runner = new Runner({ name: 'P', room, post: postTo(room), awareness: { setLocalStateField() {} }, backend,
+      authority: { sessionId: 'stable-session', acquire: async () => 1, current: () => 1 } })
+    runner.start()
+    const question = hubAppend<QuestionMsg>(room, { name: 'Q', kind: 'agent' }, { type: 'question', to: 'P', text: 'retry me' })
+    await runner.idle()
+    expect(room.seen('P').has(question.id)).toBe(false)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1]).toContain('retry me')
+    expect(room.seen('P').get(question.id)).toMatchObject({ via: 'agent' })
+    await runner.stop()
+    vi.useRealTimers()
+  })
+
   it('includes a non-waking worker progress note in the next human turn', async () => {
     s.room.workerViews.set('worker-1', { id: 'worker-1', name: 'Kieran', lead: 'Rohan' } as never)
     const msg = hubAppend<NoteMsg>(s.room, { name: 'Kieran', kind: 'agent' },
