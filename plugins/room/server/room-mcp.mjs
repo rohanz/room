@@ -39338,7 +39338,12 @@ var Daemon = class {
   async startWatcher() {
     this.beforeWatcherReady?.();
     try {
-      fs8.readdirSync(this.dir);
+      const root = fs8.opendirSync(this.dir);
+      try {
+        root.readSync();
+      } finally {
+        root.closeSync();
+      }
     } catch (error2) {
       throw new RoomdError(`cannot watch ${this.dir}: ${errMsg(error2)}`, 1);
     }
