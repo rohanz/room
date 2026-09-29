@@ -171,11 +171,14 @@ The fixes meet upstream's own tests.
   cache install. That first cy session therefore ran 0.16.39 and joined the **hosted** branch room
   `github.com/rohanz/httpx-rehearsal/r17-a` with the default credentials, with 0 changed paths and no text. It left
   a minute later through `room_leave`. `codex --no-daemon` fixed both problems. The README's
-  `ROOM_SERVER=… codex` instruction does not work under the daemon, and the docs should say so.
+  `ROOM_SERVER=… codex` instruction did not work under the daemon; README, AGENTS.md and `scripts/demo.sh` now say
+  `codex --no-daemon` (`d9b84dd`, `77311ea`).
 - **F3 (fixed in `dd91a2c`).** `plugins/room/codex-mcp.json`'s `env_vars` allow-list lacked `ROOM_IDLE_LEASE_MS`,
   `ROOM_AUTO_FETCH`, `ROOM_GIT_TIMEOUT_MS`, `ROOM_WORKER_MAX_BUDGET_USD` and `ROOM_WORKER_NICE`, so a Codex-hosted
   MCP never saw them. `codex-env.test.ts` now asserts them.
-- **F4 (wording, open).** A preview after a teammate pushes does not name the teammate commit it used.
+- **F4 (wording, fixed in `6bf1267` and `9515d38`).** A preview after a teammate pushes did not name the teammate commit
+  it used. Previews now append "included ben at <sha> (pushed to origin/r17-b)", taken from the combined-tree attempt
+  that succeeded.
 - **Side effect of the temporary install.** Another of Rohan's sessions started a `codex exec` in `/tmp/room-f40`
   (branch `fix-0.16.40`) at 18:11:55, while 0.17.0 was installed. Its Room MCP (pid 32440) loaded 0.17.0 and opened
   a 0.17 local room there: `local room local/room-f40: started relay …; hub: incarnation 1790676715`. That clone was
