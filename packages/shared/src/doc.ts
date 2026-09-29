@@ -1,6 +1,6 @@
-import diff from 'fast-diff'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
+import { boundedTextDiff } from './text-diff.js'
 import * as Y from 'yjs'
 import type {
   ChatItem,
@@ -243,7 +243,7 @@ export class RoomDoc {
     return this.overlays.get(person)?.get(relpath)
   }
 
-  /** Apply character-level diff operations, preserving Yjs relative positions. */
+  /** Apply bounded character-level diff operations, preserving Yjs relative positions. */
   setOverlay(person: string, relpath: string, content: string, origin?: unknown): void {
     const existing = this.overlayText(person, relpath)
     if (existing?.toString() === content) return
@@ -254,9 +254,9 @@ export class RoomDoc {
         this.overlay(person).set(relpath, text)
       }
       let index = 0
-      for (const [kind, value] of diff(text.toString(), content)) {
-        if (kind === diff.EQUAL) index += value.length
-        else if (kind === diff.DELETE) text.delete(index, value.length)
+      for (const [kind, value] of boundedTextDiff(text.toString(), content)) {
+        if (kind === 0) index += value.length
+        else if (kind === -1) text.delete(index, value.length)
         else {
           text.insert(index, value)
           index += value.length
