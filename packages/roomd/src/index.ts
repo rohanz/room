@@ -270,6 +270,9 @@ class Daemon implements Roomd {
   private cancelPeriodicReconcile?: () => void
   private reconcileQueued = false
   private reconcileDirty = false
+  private reconcilePass = 0
+  private reconcileCompletion: Promise<void> = Promise.resolve()
+  private nextReconcile?: { promise: Promise<void>; resolve: () => void }
   private readonly beforeWatcherReady?: () => void
   readonly sizeCap: number
   readonly totalBudget: number
@@ -652,12 +655,21 @@ class Daemon implements Roomd {
     if (this.stopped) return this.workQueue
     if (this.reconcileQueued) {
       this.reconcileDirty = true
-      return this.workQueue
+      if (this.reconcilePass === 2) {
+        if (!this.nextReconcile) {
+          let resolve!: () => void
+          const promise = new Promise<void>(done => { resolve = done })
+          this.nextReconcile = { promise, resolve }
+        }
+        return this.nextReconcile.promise
+      }
+      return this.reconcileCompletion
     }
     this.reconcileQueued = true
-    return this.enqueue(async () => {
+    this.reconcileCompletion = this.enqueue(async () => {
       try {
-        do {
+        for (let pass = 1; pass <= 2; pass++) {
+          this.reconcilePass = pass
           this.reconcileDirty = false
           try {
             await this.pollHead()
@@ -666,9 +678,20 @@ class Daemon implements Roomd {
             // A request made during this pass still needs its own attempt before its promise resolves.
             if (!this.reconcileDirty || this.stopped) throw error
           }
-        } while (this.reconcileDirty && !this.stopped)
-      } finally { this.reconcileQueued = false }
+          if (!this.reconcileDirty || this.stopped) break
+        }
+      } finally {
+        this.reconcilePass = 0
+        this.reconcileQueued = false
+        const next = this.nextReconcile
+        this.nextReconcile = undefined
+        if (this.reconcileDirty && !this.stopped) {
+          // Append after work already queued during these passes; never drain indefinitely inline.
+          void this.reconcileGitChanges().then(() => next?.resolve())
+        } else next?.resolve()
+      }
     })
+    return this.reconcileCompletion
   }
 
 

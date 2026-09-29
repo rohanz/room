@@ -18,7 +18,7 @@ const WORK = 2_000_000
 /** Small changes avoid the line pass and use one character diff. */
 const SMALL_MIDDLE = 4_096
 /** The fast path's smaller edit budget keeps near-exhaustive small rewrites below one event-loop slice. */
-const SMALL_WORK = 500_000
+const SMALL_WORK = 350_000
 
 const isHigh = (code: number) => code >= 0xd800 && code <= 0xdbff
 const isLow = (code: number) => code >= 0xdc00 && code <= 0xdfff

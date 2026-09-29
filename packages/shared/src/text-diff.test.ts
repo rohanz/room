@@ -122,12 +122,15 @@ describe('overlay text diff', () => {
     expect(performance.now() - start).toBeLessThan(1_000)
   })
 
-  it('bounds the worst small-text character diff to about one event-loop slice', () => {
-    const before = `${'a'.repeat(706)}x`, after = `x${'b'.repeat(706)}`
-    for (let i = 0; i < 3; i++) boundedTextDiff(before, after) // warm the diff path
-    const start = performance.now()
-    for (let i = 0; i < 20; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
-    expect((performance.now() - start) / 20).toBeLessThan(25)
+  it('bounds small-text character diffs across the slow 350–500 character region', () => {
+    for (const size of [350, 400, 450, 500, 707]) {
+      const before = `${'a'.repeat(size - 1)}x`, after = `x${'b'.repeat(size - 1)}`
+      for (let i = 0; i < 3; i++) boundedTextDiff(before, after) // warm the diff path
+      const start = performance.now()
+      for (let i = 0; i < 10; i++) expect(apply(before, boundedTextDiff(before, after))).toBe(after)
+      const averageMs = (performance.now() - start) / 10
+      expect(averageMs, `${size} characters per side: ${averageMs.toFixed(1)} ms/file`).toBeLessThan(20)
+    }
   })
 
   it('shares the character work allowance across many changed hunks', () => {

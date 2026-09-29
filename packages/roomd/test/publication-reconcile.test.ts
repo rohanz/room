@@ -83,6 +83,41 @@ it('coalesces a periodic tick while its previous reconcile is in flight', async 
   expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('missed edit\n')
 })
 
+it('lets queued work run between reconcile batches while requests keep arriving', async () => {
+  const config = options()
+  daemon = await startRoomd(config)
+  const internal = daemon as Roomd & {
+    enqueue(work: () => Promise<void>): Promise<void>
+    publisher: { reconcile(changed: Iterable<string>): Promise<void> }
+  }
+  const events: string[] = []
+  const requests: Promise<void>[] = []
+  let finish!: () => void
+  const finalPass = new Promise<void>(resolve => { finish = resolve })
+  let passes = 0
+  internal.publisher.reconcile = async () => {
+    passes++
+    events.push(`pass ${passes}`)
+    daemon!.roomDoc.setOverlay('Alice', 'app.txt', `edit ${passes}\n`)
+    if (passes >= 25) { finish(); return }
+    const at = passes
+    requests.push(internal.reconcileGitChanges().then(() => { expect(passes).toBeGreaterThan(at) }))
+    void internal.enqueue(async () => { events.push(`other ${at}`) })
+  }
+  const first = internal.reconcileGitChanges()
+  await finalPass
+  await first
+  await Promise.all(requests)
+  expect(passes).toBe(25)
+  expect(daemon.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe('edit 25\n')
+  let consecutivePasses = 0
+  for (const event of events) {
+    consecutivePasses = event.startsWith('pass') ? consecutivePasses + 1 : 0
+    expect(consecutivePasses).toBeLessThanOrEqual(2)
+  }
+  expect(events.indexOf('other 2')).toBeLessThan(events.indexOf('pass 3'))
+}, 30_000)
+
 it('services a timer and coalesced update during a many-file publish', async () => {
   const config = options()
   const files = Array.from({ length: 110 }, (_, i) => `file-${i}.txt`)
