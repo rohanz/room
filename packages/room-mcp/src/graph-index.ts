@@ -115,6 +115,13 @@ export class GraphIndex {
       head.excluded, holder, this.room.roomSalt])
   }
 
+  /** Grant changes can make a previously ignored peer path relevant again. */
+  private grantPaths(): Set<string> {
+    const paths = new Set([...this.cache.keys(), ...this.degradedPaths])
+    for (const person of this.room.manifestHead.keys()) for (const path of manifestPaths(this.room, person)) paths.add(path)
+    return paths
+  }
+
   start(): void {
     this.currentBuild = this.initialBuild()
     const touchedInTransaction = new WeakMap<Y.Transaction, Set<string>>()
@@ -133,6 +140,7 @@ export class GraphIndex {
       const paths = peerRefreshInTransaction.get(transaction) ?? new Set<string>()
       for (const [path, source] of this.publishedSource) if (source.kind === 'entry' && source.person === person) paths.add(path)
       for (const path of manifestPaths(this.room, person)) paths.add(path)
+      for (const path of this.degradedPaths) paths.add(path)
       peerRefreshInTransaction.set(transaction, paths)
       this.withdrawRestricted()
     }
@@ -177,7 +185,7 @@ export class GraphIndex {
       const firstHead = this.ownPublicationKey === undefined
       this.ownPublicationKey = next
       if (firstHead) return // the manifest map event names every newly published path
-      const paths = new Set([...(this.room.manifestHead.get(this.me) ? manifestPaths(this.room, this.me) : []), ...this.cache.keys()])
+      const paths = this.grantPaths()
       for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
       if (![...paths].some(isSourcePath)) void this.publish(this.phase)
     }
@@ -201,7 +209,7 @@ export class GraphIndex {
         const firstHead = this.ownPublicationKey === undefined
         this.ownPublicationKey = next
         if (firstHead) return // the first manifest map event names every published path
-        const paths = new Set([...manifestPaths(this.room, this.me), ...this.cache.keys()])
+        const paths = this.grantPaths()
         for (const path of paths) if (isSourcePath(path)) void this.refresh(path)
       }
     }
@@ -214,7 +222,7 @@ export class GraphIndex {
       this.withdrawRestricted()
       if (next === this.ownPublicationKey) return
       this.ownPublicationKey = next
-      for (const path of new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path)) void this.refresh(path)
+      for (const path of this.grantPaths()) if (isSourcePath(path)) void this.refresh(path)
     }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
@@ -368,6 +376,13 @@ export class GraphIndex {
     return !!head && (head.level === 'full' || head.level === 'declared' && (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path)))
   }
 
+  private peerTextAuthorized(person: string, path: string): boolean {
+    const head = this.room.manifestHead.get(person)
+    return !!head && (head.level === 'full' || head.level === 'declared' &&
+      (head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))) &&
+      !!this.room.roomSalt && !head.excluded.includes(digestPath(this.room.roomSalt, path))
+  }
+
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
   private deletionBaseline(path: string): string {
     const baseline = carriedFrom(this.dir, this.me)?.baseline
@@ -496,7 +511,9 @@ export class GraphIndex {
       const heldBy = text === undefined && this.ownTextAuthorized(path) ? [...this.room.manifestHead.keys()].filter(person => {
         if (person === this.me) return false
         const fence = this.room.manifestHead.get(person)?.fence
-        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path)?.state === 'held'
+        if (!fence) return false
+        const entry = this.room.manifest.get(manifestKey(person, fence))?.get(path)
+        return entry?.state === 'held' && entry.fence === fence && this.peerTextAuthorized(person, path)
       }) : []
       const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
       const symbols: FileSymbols | undefined = parsed ? {

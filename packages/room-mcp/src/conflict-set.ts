@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
@@ -25,6 +25,8 @@ export interface ConflictSlot {
   settled: 'conflict' | 'possible' | 'clean' | 'none'
   clearedFrom?: 'conflict' | 'possible'
   epoch: number
+  /** Stable within one authorized contract episode, new after the slot is withdrawn. */
+  episode?: string
   lines?: number[]
   why?: string
   fence: string
@@ -39,7 +41,8 @@ export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
   [owner, kind, other, path, subject].join('\0')
-export const noticeId = (key: string, epoch: number): string => `cf:${hash(key)}:${epoch}`
+export const noticeId = (key: string, epoch: number, episode?: string): string =>
+  `cf:${hash(key)}:${epoch}${episode ? `:${episode}` : ''}`
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
@@ -88,6 +91,7 @@ export class ConflictSlots {
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
       ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now,
+      ...(result.kind === 'contract' && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
     }
@@ -107,7 +111,7 @@ export class ConflictSlots {
   async postNotice(key: string, slot: ConflictSlot): Promise<void> {
     const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
     if (!current()) return
-    const id = noticeId(key, slot.epoch) + (slot.settled === 'clean' ? ':clean' : '')
+    const id = noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
     const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' ? 'interrupt' : 'notify'
     const text = status === 'possible'

@@ -21,6 +21,18 @@ async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<v
   }
 }
 
+async function waitForGraphStatus(room: RoomDoc, name: string, status: 'ready' | 'error'): Promise<void> {
+  const deadline = Date.now() + 3000
+  while (room.graphs.get(name)?.status !== status) {
+    if (Date.now() >= deadline) throw new Error(`graph did not become ${status}`)
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
+function contractNoticeId(room: RoomDoc, key: string, epoch = 1): string {
+  return noticeId(key, epoch, room.doc.getMap<{ episode?: string }>('conflicts').get(key)?.episode)
+}
+
 describe('ConflictSlots', () => {
   it('reconciles a pre-existing conflict once and replays the same id after a hub outage', async () => {
     const room = new RoomDoc()
@@ -420,9 +432,14 @@ describe('derived pair slots', () => {
       await new ConflictSet(f.session('A')).reconcile('graph')
       const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(1)
+      const firstId = contractNoticeId(f.room, key)
       f.room.graphs.set('B', graph('call(a) → call(a, b, c)'))
       await new ConflictSet(f.session('A')).reconcile('graph')
       expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(2)
+      const secondId = contractNoticeId(f.room, key, 2)
+      expect(secondId).not.toBe(firstId)
+      expect(secondId.split(':').at(-1)).toBe(firstId.split(':').at(-1))
+      expect(f.post.mock.calls.map(call => call[2].id)).toContain(secondId)
     } finally { f.cleanup() }
   })
 
@@ -477,6 +494,133 @@ describe('derived pair slots', () => {
       expect(JSON.stringify(f.room.graphs.get('B'))).not.toContain('public_call')
       expect(f.post.mock.calls.filter(call => call[1]?.type === 'contract')).toHaveLength(notices)
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it.each(['same', 'changed'] as const)('delivers a fresh accepted contract notice after %s-signature re-entry', async variant => {
+    const f = fixture({ 'api.py': 'def call(a):\n    return a\n' })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      const initial = 'def call(a, b):\n    return a\n'
+      const returned = variant === 'same' ? initial : 'def call(a, b, c):\n    return a\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', {
+        change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1',
+      })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      writeFileSync(join(f.dir, 'api.py'), initial)
+      entries.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(initial), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', initial)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle(); await waitForGraph(f.room, 'B', 1)
+      const accepted = new Map<string, unknown>()
+      const post = vi.fn().mockImplementation(async (_from, body, opts) => {
+        if (!accepted.has(opts.id)) accepted.set(opts.id, body)
+        return { ok: true, msg: accepted.get(opts.id) }
+      })
+      set = new ConflictSet(f.session('A', post)); set.start(); await set.reconcile('initial conflict')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(1)
+
+      f.room.doc.transact(() => {
+        entries.set('api.py', { change: 'M', state: 'held', held: 'scope', at: 2, fence: '1' })
+        f.room.clearOverlay(manifestKey('B', '1'), 'api.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
+      })
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+      await graph.whenIdle(); await set.reconcile('withdrawn')
+      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(1)
+
+      writeFileSync(join(f.dir, 'api.py'), returned)
+      f.room.doc.transact(() => {
+        entries.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(returned), at: 3, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'api.py', returned)
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, textPrefixes: ['api.py'], rev: 3, semRev: 3 })
+      })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 3)
+      await set.reconcile('re-entry')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(2)
+      expect(new Set(post.mock.calls.filter(call => call[1]?.type === 'contract').map(call => call[2].id)).size).toBe(2)
+      if (variant === 'changed') expect([...accepted.values()].at(-1)).toMatchObject({ text: expect.stringContaining('call(a, b, c)') })
+    } finally { set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it('does not let an unrelated intent peer held path suppress an authorized full-provider contract', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    return a\n', 'private.py': 'def private():\n    pass\n' })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    try {
+      for (const person of ['A', 'B', 'C']) { f.holder(person); f.entry(person, undefined) }
+      const consumer = 'from api import call\ncall(1)\n'
+      const provider = 'def call(a, b):\n    return a\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', {
+        change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1',
+      })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      writeFileSync(join(f.dir, 'api.py'), provider)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', {
+        change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1',
+      })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      f.room.manifest.get(manifestKey('C', '1'))!.set('private.py', {
+        change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
+      })
+      f.room.manifestHead.set('C', { ...f.room.manifestHead.get('C')!, level: 'intent', rev: 2, semRev: 2 })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle(); await waitForGraph(f.room, 'B', 1)
+      expect(f.room.graphs.get('B')).toMatchObject({ status: 'ready', observed: [expect.objectContaining({ path: 'api.py', symbol: 'call' })] })
+      expect(f.room.graphs.get('B')?.paths).not.toContain('private.py')
+      const fresh = new RoomDoc()
+      Y.applyUpdate(fresh.doc, Y.encodeStateAsUpdate(f.room.doc))
+      expect(fresh.graphs.get('B')?.status).toBe('ready')
+      fresh.doc.destroy()
+      set = new ConflictSet(f.session('A')); set.start(); await set.reconcile('authorized contract')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      const ids = f.post.mock.calls.filter(call => call[1]?.type === 'contract' && call[1]?.path === 'api.py').map(call => call[2].id)
+      expect(new Set(ids).size).toBe(1)
+      expect(ids[0]).toBe(noticeId(key, 1, f.room.doc.getMap<any>('conflicts').get(key).episode))
+      const reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      reader.doc.destroy()
+    } finally { set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it('refreshes held-path degradation as indexer and peer text grants narrow and widen', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    return a\n', 'private.py': 'def private():\n    pass\n' })
+    let graph: GraphIndex | undefined
+    try {
+      f.holder('B'); f.holder('C'); f.entry('B', undefined); f.entry('C', undefined)
+      const provider = 'def call(a, b):\n    return a\n'
+      writeFileSync(join(f.dir, 'api.py'), provider)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', {
+        change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1',
+      })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      f.room.manifest.get(manifestKey('C', '1'))!.set('private.py', {
+        change: 'M', state: 'held', held: 'scope', at: 1, fence: '1',
+      })
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle(); await waitForGraphStatus(f.room, 'B', 'error')
+
+      const b = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...b, level: 'declared', textPrefixes: ['api.py'], rev: 2, semRev: 2 })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 2)
+      expect(f.room.graphs.get('B')?.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call' }))
+
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full', rev: 3, semRev: 3 })
+      await graph.whenIdle(); await waitForGraphStatus(f.room, 'B', 'error')
+      const c = f.room.manifestHead.get('C')!
+      f.room.manifestHead.set('C', { ...c, level: 'intent', rev: 2, semRev: 2 })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 3)
+      f.room.manifestHead.set('C', { ...f.room.manifestHead.get('C')!, level: 'declared', textPrefixes: ['private.py'], rev: 3, semRev: 3 })
+      await graph.whenIdle(); await waitForGraphStatus(f.room, 'B', 'error')
+      f.room.manifestHead.set('C', { ...f.room.manifestHead.get('C')!, textPrefixes: [], rev: 4, semRev: 4 })
+      await graph.whenIdle(); await waitForGraph(f.room, 'B', 3)
+    } finally { graph?.stop(); f.cleanup() }
   })
 
   it('drops a contract synchronously when its consumer leaves text sharing', async () => {
@@ -537,7 +681,8 @@ describe('derived pair slots', () => {
       set.start()
       await set.reconcile('first')
       const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(accepted.filter(id => id.startsWith('cf:'))).toContain(noticeId(key, 1))
+      const firstId = contractNoticeId(f.room, key)
+      expect(accepted.filter(id => id.startsWith('cf:'))).toContain(firstId)
       const head = f.room.manifestHead.get('B')!
       f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
       expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
@@ -550,7 +695,7 @@ describe('derived pair slots', () => {
       restarted.graphs.set('B', graph(2))
       await resumed.reconcile('provenance caught up after restart')
       expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([noticeId(key, 1)])
+      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([firstId])
     } finally { restarted?.doc.destroy(); f.cleanup() }
   })
 
@@ -600,7 +745,7 @@ describe('derived pair slots', () => {
       await ready()
       await set.reconcile('graph caught up')
       expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([noticeId(key, 1)])
+      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([contractNoticeId(f.room, key)])
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
@@ -637,7 +782,7 @@ describe('derived pair slots', () => {
       await new ConflictSet({ ...f.session('A'), room: reader } as Session).reconcile('deleted provider')
       const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
       expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }), expect.objectContaining({ id: noticeId(key, 1) }))
+      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }), expect.objectContaining({ id: contractNoticeId(reader, key) }))
     } finally { graph?.stop(); reader?.doc.destroy(); f.cleanup() }
   })
 
@@ -677,7 +822,7 @@ describe('derived pair slots', () => {
       await set.reconcile('last reference removed')
       expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'clean', settled: 'clean', epoch: 1 })
       expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }),
-        expect.objectContaining({ id: `${noticeId(key, 1)}:clean` }))
+        expect.objectContaining({ id: `${contractNoticeId(reader, key)}:clean` }))
     } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
   })
 
@@ -735,7 +880,7 @@ describe('derived pair slots', () => {
       restarted.graphs.set('B', graph(3, false))
       await resumed.reconcile('current after restart')
       expect(restarted.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([noticeId(activeKey, 1)])
+      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([contractNoticeId(restarted, activeKey)])
     } finally { set?.stop(); restarted?.doc.destroy(); f.cleanup() }
   })
 
@@ -799,7 +944,7 @@ describe('derived pair slots', () => {
       await ready()
       await set.reconcile('README catch-up')
       expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([noticeId(activeKey, 1)])
+      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([contractNoticeId(f.room, activeKey)])
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
