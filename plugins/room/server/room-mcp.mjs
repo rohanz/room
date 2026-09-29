@@ -18331,10 +18331,11 @@ var init_retained_declared = __esm({
     init_git_dirs();
     init_repo_path();
     RetainedDeclaredPaths = class extends Set {
-      constructor(dir, room, participant, server) {
+      constructor(dir, room, participant, server, onChange2) {
         super();
         this.room = room;
         this.participant = participant;
+        this.onChange = onChange2;
         this.server = normaliseServer(server);
         this.file = retainedDeclaredFile(dir, room, participant, server);
         const record2 = readRecordSync(this.file);
@@ -18351,6 +18352,7 @@ var init_retained_declared = __esm({
       }
       room;
       participant;
+      onChange;
       file;
       server;
       save() {
@@ -18361,18 +18363,23 @@ var init_retained_declared = __esm({
         if (!this.has(path31)) {
           super.add(path31);
           this.save();
+          this.onChange?.();
         }
         return this;
       }
       delete(path31) {
         const removed = super.delete(path31);
-        if (removed) this.save();
+        if (removed) {
+          this.save();
+          this.onChange?.();
+        }
         return removed;
       }
       clear() {
         if (this.size) {
           super.clear();
           this.save();
+          this.onChange?.();
         }
       }
     };
@@ -25348,7 +25355,7 @@ async function startRoomd(options) {
 function errMsg2(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
-var machineHostname, machineIdentities, machineIdentityWarningLogged, RoomdError, DEFAULT_IGNORED_DIRS, ROOM_FILE, ROOMIGNORE, DEFAULT_STARTUP_TIMEOUT_MS, Daemon;
+var MAX_RETAINED_PRESENCE_PATHS, machineHostname, machineIdentities, machineIdentityWarningLogged, RoomdError, DEFAULT_IGNORED_DIRS, ROOM_FILE, ROOMIGNORE, DEFAULT_STARTUP_TIMEOUT_MS, Daemon;
 var init_src2 = __esm({
   "packages/roomd/src/index.ts"() {
     "use strict";
@@ -25374,6 +25381,7 @@ var init_src2 = __esm({
     init_baseline();
     init_git();
     init_reanchor();
+    MAX_RETAINED_PRESENCE_PATHS = 256;
     machineHostname = os2.hostname();
     machineIdentities = /* @__PURE__ */ new Map();
     machineIdentityWarningLogged = false;
@@ -25559,7 +25567,16 @@ var init_src2 = __esm({
         this.appliedHead = base;
         this.tracked = tracked.paths;
         this.indexed = tracked.indexed;
-        this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl));
+        this.publisher.setRetained(new RetainedDeclaredPaths(
+          this.dir,
+          this.roomName,
+          this.name,
+          splitRoomUrl(this.roomUrl).serverUrl,
+          () => {
+            if (!this.stopped) this.setStatus(this.currentStatus());
+          }
+        ));
+        this.setStatus(this.currentStatus());
         this.roomDoc.scopes.observe((ev) => {
           if (!ev.keysChanged.has(this.name) || this.share !== "declared" || this.explicitScopePaths) return;
           const old = ev.changes.keys.get(this.name)?.oldValue;
@@ -25724,6 +25741,7 @@ var init_src2 = __esm({
           user: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {}, color: colorFor(this.name, this.roomDoc) },
           status,
           share: this.share,
+          retained: this.share === "declared" && !this.publishUnder ? this.publisher.retainedDeclared().slice(0, MAX_RETAINED_PRESENCE_PATHS) : void 0,
           watchedDirectory: this.watchedDirectory,
           publishUnder: this.publishUnder,
           lastActive: this.lastActive
@@ -42852,6 +42870,7 @@ var SLOW_TOOL_MS = 2e3;
 var EVENT_LOOP_SAMPLE_MS = 500;
 var EVENT_LOOP_LAG_MS = 2e3;
 var PREVIEW_CHECK_MAX_AGE_MS = 6 * 6e4;
+var PREVIEW_CHECK_STAT_LIMIT = 50;
 var context = new AsyncLocalStorage();
 var ms = (value2) => `${Math.round(value2)}ms`;
 var ToolTiming = class {
@@ -42952,8 +42971,11 @@ function countOtherPreviewChecks(ownDir, tmpDir = os.tmpdir(), now = Date.now(),
   try {
     const ownName = path.basename(ownDir);
     let count = 0;
+    let inspected = 0;
     for (const entry of fs2.readdirSync(tmpDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !entry.name.startsWith("room-merge-") || entry.name.startsWith("room-merge-file-") || entry.name === ownName) continue;
+      if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return void 0;
+      inspected++;
       try {
         const stat4 = readStat(path.join(tmpDir, entry.name));
         if (!stat4.isDirectory()) continue;
@@ -42972,6 +42994,20 @@ function notePreviewCheckOverlap(ownDir) {
   if (timing?.name !== "room_preview_merge") return;
   const count = countOtherPreviewChecks(ownDir);
   if (count !== void 0) timing.notePreviewCheckOverlap(count);
+}
+async function previewCheck(dir, work, sample = notePreviewCheckOverlap) {
+  try {
+    sample(dir);
+  } catch {
+  }
+  try {
+    return await previewPhase("check", work);
+  } finally {
+    try {
+      sample(dir);
+    } catch {
+    }
+  }
 }
 async function previewPhase(name2, work) {
   const timing = currentToolTiming();
@@ -49197,8 +49233,12 @@ function createHandlerState(ctx) {
   const withheld = (s, person, p) => {
     const level = shareOf(s, person);
     if (level === "intent") return `${person} shares intent only; ask them or wait for their push`;
-    if (level === "declared" && p !== void 0 && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p) && s.room.text(p, person) === void 0 && !s.room.deleted.get(person)?.has(p)) {
-      return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`;
+    if (level === "declared" && p !== void 0) {
+      const presence = person === s.me.name ? s.awareness.getLocalState() : presences(s).find((x) => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find((x) => x.user.name === person);
+      const retained = Array.isArray(presence?.retained) ? presence.retained : [];
+      if (!scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p) && !retained.includes(p)) {
+        return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`;
+      }
     }
     return void 0;
   };
@@ -49227,8 +49267,16 @@ function createHandlerState(ctx) {
     try {
       return await baseText(s, path31, person);
     } catch (e) {
-      const sha = baseFor(s, person), worker = s.room.workerOf(person), baseline = workerBaseline(worker);
-      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker.lead : void 0);
+      if (isGitTimeout(e)) throw e;
+      const sha = baseFor(s, person);
+      try {
+        await git(diskWorker(s, person)?.dir ?? s.dir, ["cat-file", "-e", `${sha}^{commit}`]);
+      } catch (probeError) {
+        if (isGitTimeout(probeError)) throw probeError;
+        const worker = s.room.workerOf(person), baseline = workerBaseline(worker);
+        throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker.lead : void 0);
+      }
+      throw e;
     }
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
@@ -49824,7 +49872,9 @@ function handlers8(state) {
     const reader = S();
     const theirBase = baseFor(s, person);
     const yourBase = baseFor(reader, reader.me.name);
-    const baseNote = person !== reader.me.name && !worker && theirBase !== yourBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${yourBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes` : "";
+    const workerBase = workerBaseline(s.room.workerOf(person));
+    const carriedBase = workerBase?.carriedCommit && workerBase.sha === theirBase;
+    const baseNote = person !== reader.me.name && !worker && !carriedBase && theirBase !== yourBase ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${yourBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes` : "";
     const label = (text) => worker ? `${WORKTREE_NOTE}
 ${text}` : text;
     const one = async (p) => {
@@ -49841,12 +49891,17 @@ ${text}` : text;
       ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
       ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
     ].filter(Boolean)) : s.room.changedPaths(person);
+    let unshared = 0;
     for (const p of paths) {
+      if (withheld(s, person, p)) {
+        unshared++;
+        continue;
+      }
       const d = await one(p);
       if (d) parts2.push(d);
     }
     const level = shareOf(s, person);
-    if (level === "declared") parts2.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared)`);
+    if (level === "declared") parts2.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared${unshared ? `; ${unshared} other changed file(s) are not shared` : ""})`);
     return label([baseNote, parts2.length ? parts2.join("\n") : `${person} has no uncommitted changes`].filter(Boolean).join("\n"));
   };
   const handlers10 = {
@@ -50120,19 +50175,12 @@ async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */
       env2.ROOM_MERGED_TREE = dir;
       return { bash: bash2, env: env2 };
     });
-    notePreviewCheckOverlap(dir);
-    const result = await previewPhase("check", async () => {
-      try {
-        return await new Promise((resolve5) => {
-          execFile6(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
-            const raw = err2 ? err2.code : 0;
-            resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
-          });
-        });
-      } finally {
-        notePreviewCheckOverlap(dir);
-      }
-    });
+    const result = await previewCheck(dir, () => new Promise((resolve5) => {
+      execFile6(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+        const raw = err2 ? err2.code : 0;
+        resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
+      });
+    }));
     return previewPhase("collect", () => {
       const tail = stripVTControlCharacters2(result.out).trim().split("\n").slice(-25).join("\n");
       const verdict = testVerdict(result.out, result.code);
