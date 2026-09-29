@@ -7435,772 +7435,558 @@ var init_claims = __esm({
   }
 });
 
-// node_modules/fast-diff/diff.js
-var require_diff = __commonJS({
-  "node_modules/fast-diff/diff.js"(exports2, module2) {
+// node_modules/diff/libesm/diff/base.js
+var Diff;
+var init_base = __esm({
+  "node_modules/diff/libesm/diff/base.js"() {
     "use strict";
-    var DIFF_DELETE = -1;
-    var DIFF_INSERT = 1;
-    var DIFF_EQUAL = 0;
-    function diff_main(text1, text2, cursor_pos, cleanup, _fix_unicode) {
-      if (text1 === text2) {
-        if (text1) {
-          return [[DIFF_EQUAL, text1]];
+    Diff = class {
+      diff(oldStr, newStr, options = {}) {
+        let callback;
+        if (typeof options === "function") {
+          callback = options;
+          options = {};
+        } else if ("callback" in options) {
+          callback = options.callback;
         }
-        return [];
+        const oldString = this.castInput(oldStr, options);
+        const newString = this.castInput(newStr, options);
+        const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
+        const newTokens = this.removeEmpty(this.tokenize(newString, options));
+        return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
       }
-      if (cursor_pos != null) {
-        var editdiff = find_cursor_edit_diff(text1, text2, cursor_pos);
-        if (editdiff) {
-          return editdiff;
-        }
-      }
-      var commonlength = diff_commonPrefix(text1, text2);
-      var commonprefix = text1.substring(0, commonlength);
-      text1 = text1.substring(commonlength);
-      text2 = text2.substring(commonlength);
-      commonlength = diff_commonSuffix(text1, text2);
-      var commonsuffix = text1.substring(text1.length - commonlength);
-      text1 = text1.substring(0, text1.length - commonlength);
-      text2 = text2.substring(0, text2.length - commonlength);
-      var diffs = diff_compute_(text1, text2);
-      if (commonprefix) {
-        diffs.unshift([DIFF_EQUAL, commonprefix]);
-      }
-      if (commonsuffix) {
-        diffs.push([DIFF_EQUAL, commonsuffix]);
-      }
-      diff_cleanupMerge(diffs, _fix_unicode);
-      if (cleanup) {
-        diff_cleanupSemantic(diffs);
-      }
-      return diffs;
-    }
-    function diff_compute_(text1, text2) {
-      var diffs;
-      if (!text1) {
-        return [[DIFF_INSERT, text2]];
-      }
-      if (!text2) {
-        return [[DIFF_DELETE, text1]];
-      }
-      var longtext = text1.length > text2.length ? text1 : text2;
-      var shorttext = text1.length > text2.length ? text2 : text1;
-      var i2 = longtext.indexOf(shorttext);
-      if (i2 !== -1) {
-        diffs = [
-          [DIFF_INSERT, longtext.substring(0, i2)],
-          [DIFF_EQUAL, shorttext],
-          [DIFF_INSERT, longtext.substring(i2 + shorttext.length)]
-        ];
-        if (text1.length > text2.length) {
-          diffs[0][0] = diffs[2][0] = DIFF_DELETE;
-        }
-        return diffs;
-      }
-      if (shorttext.length === 1) {
-        return [
-          [DIFF_DELETE, text1],
-          [DIFF_INSERT, text2]
-        ];
-      }
-      var hm = diff_halfMatch_(text1, text2);
-      if (hm) {
-        var text1_a = hm[0];
-        var text1_b = hm[1];
-        var text2_a = hm[2];
-        var text2_b = hm[3];
-        var mid_common = hm[4];
-        var diffs_a = diff_main(text1_a, text2_a);
-        var diffs_b = diff_main(text1_b, text2_b);
-        return diffs_a.concat([[DIFF_EQUAL, mid_common]], diffs_b);
-      }
-      return diff_bisect_(text1, text2);
-    }
-    function diff_bisect_(text1, text2) {
-      var text1_length = text1.length;
-      var text2_length = text2.length;
-      var max_d = Math.ceil((text1_length + text2_length) / 2);
-      var v_offset = max_d;
-      var v_length = 2 * max_d;
-      var v1 = new Array(v_length);
-      var v2 = new Array(v_length);
-      for (var x = 0; x < v_length; x++) {
-        v1[x] = -1;
-        v2[x] = -1;
-      }
-      v1[v_offset + 1] = 0;
-      v2[v_offset + 1] = 0;
-      var delta = text1_length - text2_length;
-      var front = delta % 2 !== 0;
-      var k1start = 0;
-      var k1end = 0;
-      var k2start = 0;
-      var k2end = 0;
-      for (var d = 0; d < max_d; d++) {
-        for (var k1 = -d + k1start; k1 <= d - k1end; k1 += 2) {
-          var k1_offset = v_offset + k1;
-          var x1;
-          if (k1 === -d || k1 !== d && v1[k1_offset - 1] < v1[k1_offset + 1]) {
-            x1 = v1[k1_offset + 1];
+      diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+        var _a3;
+        const done = (value2) => {
+          value2 = this.postProcess(value2, options);
+          if (callback) {
+            setTimeout(function() {
+              callback(value2);
+            }, 0);
+            return void 0;
           } else {
-            x1 = v1[k1_offset - 1] + 1;
+            return value2;
           }
-          var y1 = x1 - k1;
-          while (x1 < text1_length && y1 < text2_length && text1.charAt(x1) === text2.charAt(y1)) {
-            x1++;
-            y1++;
-          }
-          v1[k1_offset] = x1;
-          if (x1 > text1_length) {
-            k1end += 2;
-          } else if (y1 > text2_length) {
-            k1start += 2;
-          } else if (front) {
-            var k2_offset = v_offset + delta - k1;
-            if (k2_offset >= 0 && k2_offset < v_length && v2[k2_offset] !== -1) {
-              var x2 = text1_length - v2[k2_offset];
-              if (x1 >= x2) {
-                return diff_bisectSplit_(text1, text2, x1, y1);
+        };
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let editLength = 1;
+        let maxEditLength = newLen + oldLen;
+        if (options.maxEditLength != null) {
+          maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+        }
+        const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
+        const abortAfterTimestamp = Date.now() + maxExecutionTime;
+        const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
+        let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
+        if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+        }
+        let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+        const execEditLength = () => {
+          for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+            let basePath;
+            const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+            if (removePath) {
+              bestPath[diagonalPath - 1] = void 0;
+            }
+            let canAdd = false;
+            if (addPath) {
+              const addPathNewPos = addPath.oldPos - diagonalPath;
+              canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+            }
+            const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+            if (!canAdd && !canRemove) {
+              bestPath[diagonalPath] = void 0;
+              continue;
+            }
+            if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+              basePath = this.addToPath(addPath, true, false, 0, options);
+            } else {
+              basePath = this.addToPath(removePath, false, true, 1, options);
+            }
+            newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
+            if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+              return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+            } else {
+              bestPath[diagonalPath] = basePath;
+              if (basePath.oldPos + 1 >= oldLen) {
+                maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+              }
+              if (newPos + 1 >= newLen) {
+                minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
               }
             }
           }
-        }
-        for (var k2 = -d + k2start; k2 <= d - k2end; k2 += 2) {
-          var k2_offset = v_offset + k2;
-          var x2;
-          if (k2 === -d || k2 !== d && v2[k2_offset - 1] < v2[k2_offset + 1]) {
-            x2 = v2[k2_offset + 1];
-          } else {
-            x2 = v2[k2_offset - 1] + 1;
-          }
-          var y2 = x2 - k2;
-          while (x2 < text1_length && y2 < text2_length && text1.charAt(text1_length - x2 - 1) === text2.charAt(text2_length - y2 - 1)) {
-            x2++;
-            y2++;
-          }
-          v2[k2_offset] = x2;
-          if (x2 > text1_length) {
-            k2end += 2;
-          } else if (y2 > text2_length) {
-            k2start += 2;
-          } else if (!front) {
-            var k1_offset = v_offset + delta - k2;
-            if (k1_offset >= 0 && k1_offset < v_length && v1[k1_offset] !== -1) {
-              var x1 = v1[k1_offset];
-              var y1 = v_offset + x1 - k1_offset;
-              x2 = text1_length - x2;
-              if (x1 >= x2) {
-                return diff_bisectSplit_(text1, text2, x1, y1);
+          editLength++;
+        };
+        if (callback) {
+          (function exec() {
+            setTimeout(function() {
+              if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+                return callback(void 0);
               }
+              if (!execEditLength()) {
+                exec();
+              }
+            }, 0);
+          })();
+        } else {
+          while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+            const ret = execEditLength();
+            if (ret) {
+              return ret;
             }
           }
         }
       }
-      return [
-        [DIFF_DELETE, text1],
-        [DIFF_INSERT, text2]
-      ];
-    }
-    function diff_bisectSplit_(text1, text2, x, y) {
-      var text1a = text1.substring(0, x);
-      var text2a = text2.substring(0, y);
-      var text1b = text1.substring(x);
-      var text2b = text2.substring(y);
-      var diffs = diff_main(text1a, text2a);
-      var diffsb = diff_main(text1b, text2b);
-      return diffs.concat(diffsb);
-    }
-    function diff_commonPrefix(text1, text2) {
-      if (!text1 || !text2 || text1.charAt(0) !== text2.charAt(0)) {
-        return 0;
-      }
-      var pointermin = 0;
-      var pointermax = Math.min(text1.length, text2.length);
-      var pointermid = pointermax;
-      var pointerstart = 0;
-      while (pointermin < pointermid) {
-        if (text1.substring(pointerstart, pointermid) == text2.substring(pointerstart, pointermid)) {
-          pointermin = pointermid;
-          pointerstart = pointermin;
+      addToPath(path31, added, removed, oldPosInc, options) {
+        const last2 = path31.lastComponent;
+        if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
+          return {
+            oldPos: path31.oldPos + oldPosInc,
+            lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
+          };
         } else {
-          pointermax = pointermid;
-        }
-        pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
-      }
-      if (is_surrogate_pair_start(text1.charCodeAt(pointermid - 1))) {
-        pointermid--;
-      }
-      return pointermid;
-    }
-    function diff_commonOverlap_(text1, text2) {
-      var text1_length = text1.length;
-      var text2_length = text2.length;
-      if (text1_length == 0 || text2_length == 0) {
-        return 0;
-      }
-      if (text1_length > text2_length) {
-        text1 = text1.substring(text1_length - text2_length);
-      } else if (text1_length < text2_length) {
-        text2 = text2.substring(0, text1_length);
-      }
-      var text_length = Math.min(text1_length, text2_length);
-      if (text1 == text2) {
-        return text_length;
-      }
-      var best = 0;
-      var length2 = 1;
-      while (true) {
-        var pattern = text1.substring(text_length - length2);
-        var found = text2.indexOf(pattern);
-        if (found == -1) {
-          return best;
-        }
-        length2 += found;
-        if (found == 0 || text1.substring(text_length - length2) == text2.substring(0, length2)) {
-          best = length2;
-          length2++;
+          return {
+            oldPos: path31.oldPos + oldPosInc,
+            lastComponent: { count: 1, added, removed, previousComponent: last2 }
+          };
         }
       }
-    }
-    function diff_commonSuffix(text1, text2) {
-      if (!text1 || !text2 || text1.slice(-1) !== text2.slice(-1)) {
-        return 0;
-      }
-      var pointermin = 0;
-      var pointermax = Math.min(text1.length, text2.length);
-      var pointermid = pointermax;
-      var pointerend = 0;
-      while (pointermin < pointermid) {
-        if (text1.substring(text1.length - pointermid, text1.length - pointerend) == text2.substring(text2.length - pointermid, text2.length - pointerend)) {
-          pointermin = pointermid;
-          pointerend = pointermin;
-        } else {
-          pointermax = pointermid;
-        }
-        pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
-      }
-      if (is_surrogate_pair_end(text1.charCodeAt(text1.length - pointermid))) {
-        pointermid--;
-      }
-      return pointermid;
-    }
-    function diff_halfMatch_(text1, text2) {
-      var longtext = text1.length > text2.length ? text1 : text2;
-      var shorttext = text1.length > text2.length ? text2 : text1;
-      if (longtext.length < 4 || shorttext.length * 2 < longtext.length) {
-        return null;
-      }
-      function diff_halfMatchI_(longtext2, shorttext2, i2) {
-        var seed = longtext2.substring(i2, i2 + Math.floor(longtext2.length / 4));
-        var j = -1;
-        var best_common = "";
-        var best_longtext_a, best_longtext_b, best_shorttext_a, best_shorttext_b;
-        while ((j = shorttext2.indexOf(seed, j + 1)) !== -1) {
-          var prefixLength = diff_commonPrefix(
-            longtext2.substring(i2),
-            shorttext2.substring(j)
-          );
-          var suffixLength = diff_commonSuffix(
-            longtext2.substring(0, i2),
-            shorttext2.substring(0, j)
-          );
-          if (best_common.length < suffixLength + prefixLength) {
-            best_common = shorttext2.substring(j - suffixLength, j) + shorttext2.substring(j, j + prefixLength);
-            best_longtext_a = longtext2.substring(0, i2 - suffixLength);
-            best_longtext_b = longtext2.substring(i2 + prefixLength);
-            best_shorttext_a = shorttext2.substring(0, j - suffixLength);
-            best_shorttext_b = shorttext2.substring(j + prefixLength);
+      extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+        while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
+          newPos++;
+          oldPos++;
+          commonCount++;
+          if (options.oneChangePerToken) {
+            basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
           }
         }
-        if (best_common.length * 2 >= longtext2.length) {
-          return [
-            best_longtext_a,
-            best_longtext_b,
-            best_shorttext_a,
-            best_shorttext_b,
-            best_common
-          ];
+        if (commonCount && !options.oneChangePerToken) {
+          basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+        }
+        basePath.oldPos = oldPos;
+        return newPos;
+      }
+      equals(left, right, options) {
+        if (options.comparator) {
+          return options.comparator(left, right);
         } else {
-          return null;
+          return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
         }
       }
-      var hm1 = diff_halfMatchI_(
-        longtext,
-        shorttext,
-        Math.ceil(longtext.length / 4)
-      );
-      var hm2 = diff_halfMatchI_(
-        longtext,
-        shorttext,
-        Math.ceil(longtext.length / 2)
-      );
-      var hm;
-      if (!hm1 && !hm2) {
-        return null;
-      } else if (!hm2) {
-        hm = hm1;
-      } else if (!hm1) {
-        hm = hm2;
+      removeEmpty(array2) {
+        const ret = [];
+        for (let i2 = 0; i2 < array2.length; i2++) {
+          if (array2[i2]) {
+            ret.push(array2[i2]);
+          }
+        }
+        return ret;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      castInput(value2, options) {
+        return value2;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      tokenize(value2, options) {
+        return Array.from(value2);
+      }
+      join(chars) {
+        return chars.join("");
+      }
+      postProcess(changeObjects, options) {
+        return changeObjects;
+      }
+      get useLongestToken() {
+        return false;
+      }
+      buildValues(lastComponent, newTokens, oldTokens) {
+        const components = [];
+        let nextComponent;
+        while (lastComponent) {
+          components.push(lastComponent);
+          nextComponent = lastComponent.previousComponent;
+          delete lastComponent.previousComponent;
+          lastComponent = nextComponent;
+        }
+        components.reverse();
+        const componentLen = components.length;
+        let componentPos = 0, newPos = 0, oldPos = 0;
+        for (; componentPos < componentLen; componentPos++) {
+          const component = components[componentPos];
+          if (!component.removed) {
+            if (!component.added && this.useLongestToken) {
+              let value2 = newTokens.slice(newPos, newPos + component.count);
+              value2 = value2.map(function(value3, i2) {
+                const oldValue = oldTokens[oldPos + i2];
+                return oldValue.length > value3.length ? oldValue : value3;
+              });
+              component.value = this.join(value2);
+            } else {
+              component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+            }
+            newPos += component.count;
+            if (!component.added) {
+              oldPos += component.count;
+            }
+          } else {
+            component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+            oldPos += component.count;
+          }
+        }
+        return components;
+      }
+    };
+  }
+});
+
+// node_modules/diff/libesm/diff/character.js
+function diffChars(oldStr, newStr, options) {
+  return characterDiff.diff(oldStr, newStr, options);
+}
+var CharacterDiff, characterDiff;
+var init_character = __esm({
+  "node_modules/diff/libesm/diff/character.js"() {
+    "use strict";
+    init_base();
+    CharacterDiff = class extends Diff {
+    };
+    characterDiff = new CharacterDiff();
+  }
+});
+
+// node_modules/diff/libesm/diff/line.js
+function diffLines(oldStr, newStr, options) {
+  return lineDiff.diff(oldStr, newStr, options);
+}
+function tokenize(value2, options) {
+  if (options.stripTrailingCr) {
+    value2 = value2.replace(/\r\n/g, "\n");
+  }
+  const retLines = [], linesAndNewlines = value2.split(/(\n|\r\n)/);
+  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
+    linesAndNewlines.pop();
+  }
+  for (let i2 = 0; i2 < linesAndNewlines.length; i2++) {
+    const line = linesAndNewlines[i2];
+    if (i2 % 2 && !options.newlineIsToken) {
+      retLines[retLines.length - 1] += line;
+    } else {
+      retLines.push(line);
+    }
+  }
+  return retLines;
+}
+var LineDiff, lineDiff;
+var init_line = __esm({
+  "node_modules/diff/libesm/diff/line.js"() {
+    "use strict";
+    init_base();
+    LineDiff = class extends Diff {
+      constructor() {
+        super(...arguments);
+        this.tokenize = tokenize;
+      }
+      equals(left, right, options) {
+        if (options.ignoreWhitespace) {
+          if (!options.newlineIsToken || !left.includes("\n")) {
+            left = left.trim();
+          }
+          if (!options.newlineIsToken || !right.includes("\n")) {
+            right = right.trim();
+          }
+        } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
+          if (left.endsWith("\n")) {
+            left = left.slice(0, -1);
+          }
+          if (right.endsWith("\n")) {
+            right = right.slice(0, -1);
+          }
+        }
+        return super.equals(left, right, options);
+      }
+    };
+    lineDiff = new LineDiff();
+  }
+});
+
+// node_modules/diff/libesm/patch/create.js
+function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  let optionsObj;
+  if (!options) {
+    optionsObj = {};
+  } else if (typeof options === "function") {
+    optionsObj = { callback: options };
+  } else {
+    optionsObj = options;
+  }
+  if (typeof optionsObj.context === "undefined") {
+    optionsObj.context = 4;
+  }
+  const context2 = optionsObj.context;
+  if (optionsObj.newlineIsToken) {
+    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
+  }
+  if (!optionsObj.callback) {
+    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
+  } else {
+    const { callback } = optionsObj;
+    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff) => {
+      const patch = diffLinesResultToPatch(diff);
+      callback(patch);
+    } }));
+  }
+  function diffLinesResultToPatch(diff) {
+    if (!diff) {
+      return;
+    }
+    diff.push({ value: "", lines: [] });
+    function contextLines(lines) {
+      return lines.map(function(entry) {
+        return " " + entry;
+      });
+    }
+    const hunks = [];
+    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
+    for (let i2 = 0; i2 < diff.length; i2++) {
+      const current = diff[i2], lines = current.lines || splitLines(current.value);
+      current.lines = lines;
+      if (current.added || current.removed) {
+        if (!oldRangeStart) {
+          const prev = diff[i2 - 1];
+          oldRangeStart = oldLine;
+          newRangeStart = newLine;
+          if (prev) {
+            curRange = context2 > 0 ? contextLines(prev.lines.slice(-context2)) : [];
+            oldRangeStart -= curRange.length;
+            newRangeStart -= curRange.length;
+          }
+        }
+        for (const line of lines) {
+          curRange.push((current.added ? "+" : "-") + line);
+        }
+        if (current.added) {
+          newLine += lines.length;
+        } else {
+          oldLine += lines.length;
+        }
       } else {
-        hm = hm1[4].length > hm2[4].length ? hm1 : hm2;
+        if (oldRangeStart) {
+          if (lines.length <= context2 * 2 && i2 < diff.length - 2) {
+            for (const line of contextLines(lines)) {
+              curRange.push(line);
+            }
+          } else {
+            const contextSize = Math.min(lines.length, context2);
+            for (const line of contextLines(lines.slice(0, contextSize))) {
+              curRange.push(line);
+            }
+            const hunk2 = {
+              oldStart: oldRangeStart,
+              oldLines: oldLine - oldRangeStart + contextSize,
+              newStart: newRangeStart,
+              newLines: newLine - newRangeStart + contextSize,
+              lines: curRange
+            };
+            hunks.push(hunk2);
+            oldRangeStart = 0;
+            newRangeStart = 0;
+            curRange = [];
+          }
+        }
+        oldLine += lines.length;
+        newLine += lines.length;
       }
-      var text1_a, text1_b, text2_a, text2_b;
-      if (text1.length > text2.length) {
-        text1_a = hm[0];
-        text1_b = hm[1];
-        text2_a = hm[2];
-        text2_b = hm[3];
-      } else {
-        text2_a = hm[0];
-        text2_b = hm[1];
-        text1_a = hm[2];
-        text1_b = hm[3];
-      }
-      var mid_common = hm[4];
-      return [text1_a, text1_b, text2_a, text2_b, mid_common];
     }
-    function diff_cleanupSemantic(diffs) {
-      var changes = false;
-      var equalities = [];
-      var equalitiesLength = 0;
-      var lastequality = null;
-      var pointer = 0;
-      var length_insertions1 = 0;
-      var length_deletions1 = 0;
-      var length_insertions2 = 0;
-      var length_deletions2 = 0;
-      while (pointer < diffs.length) {
-        if (diffs[pointer][0] == DIFF_EQUAL) {
-          equalities[equalitiesLength++] = pointer;
-          length_insertions1 = length_insertions2;
-          length_deletions1 = length_deletions2;
-          length_insertions2 = 0;
-          length_deletions2 = 0;
-          lastequality = diffs[pointer][1];
+    for (const hunk2 of hunks) {
+      for (let i2 = 0; i2 < hunk2.lines.length; i2++) {
+        if (hunk2.lines[i2].endsWith("\n")) {
+          hunk2.lines[i2] = hunk2.lines[i2].slice(0, -1);
         } else {
-          if (diffs[pointer][0] == DIFF_INSERT) {
-            length_insertions2 += diffs[pointer][1].length;
-          } else {
-            length_deletions2 += diffs[pointer][1].length;
-          }
-          if (lastequality && lastequality.length <= Math.max(length_insertions1, length_deletions1) && lastequality.length <= Math.max(length_insertions2, length_deletions2)) {
-            diffs.splice(equalities[equalitiesLength - 1], 0, [
-              DIFF_DELETE,
-              lastequality
-            ]);
-            diffs[equalities[equalitiesLength - 1] + 1][0] = DIFF_INSERT;
-            equalitiesLength--;
-            equalitiesLength--;
-            pointer = equalitiesLength > 0 ? equalities[equalitiesLength - 1] : -1;
-            length_insertions1 = 0;
-            length_deletions1 = 0;
-            length_insertions2 = 0;
-            length_deletions2 = 0;
-            lastequality = null;
-            changes = true;
-          }
+          hunk2.lines.splice(i2 + 1, 0, "\\ No newline at end of file");
+          i2++;
         }
-        pointer++;
-      }
-      if (changes) {
-        diff_cleanupMerge(diffs);
-      }
-      diff_cleanupSemanticLossless(diffs);
-      pointer = 1;
-      while (pointer < diffs.length) {
-        if (diffs[pointer - 1][0] == DIFF_DELETE && diffs[pointer][0] == DIFF_INSERT) {
-          var deletion = diffs[pointer - 1][1];
-          var insertion = diffs[pointer][1];
-          var overlap_length1 = diff_commonOverlap_(deletion, insertion);
-          var overlap_length2 = diff_commonOverlap_(insertion, deletion);
-          if (overlap_length1 >= overlap_length2) {
-            if (overlap_length1 >= deletion.length / 2 || overlap_length1 >= insertion.length / 2) {
-              diffs.splice(pointer, 0, [
-                DIFF_EQUAL,
-                insertion.substring(0, overlap_length1)
-              ]);
-              diffs[pointer - 1][1] = deletion.substring(
-                0,
-                deletion.length - overlap_length1
-              );
-              diffs[pointer + 1][1] = insertion.substring(overlap_length1);
-              pointer++;
-            }
-          } else {
-            if (overlap_length2 >= deletion.length / 2 || overlap_length2 >= insertion.length / 2) {
-              diffs.splice(pointer, 0, [
-                DIFF_EQUAL,
-                deletion.substring(0, overlap_length2)
-              ]);
-              diffs[pointer - 1][0] = DIFF_INSERT;
-              diffs[pointer - 1][1] = insertion.substring(
-                0,
-                insertion.length - overlap_length2
-              );
-              diffs[pointer + 1][0] = DIFF_DELETE;
-              diffs[pointer + 1][1] = deletion.substring(overlap_length2);
-              pointer++;
-            }
-          }
-          pointer++;
-        }
-        pointer++;
       }
     }
-    var nonAlphaNumericRegex_ = /[^a-zA-Z0-9]/;
-    var whitespaceRegex_ = /\s/;
-    var linebreakRegex_ = /[\r\n]/;
-    var blanklineEndRegex_ = /\n\r?\n$/;
-    var blanklineStartRegex_ = /^\r?\n\r?\n/;
-    function diff_cleanupSemanticLossless(diffs) {
-      function diff_cleanupSemanticScore_(one, two) {
-        if (!one || !two) {
-          return 6;
-        }
-        var char1 = one.charAt(one.length - 1);
-        var char2 = two.charAt(0);
-        var nonAlphaNumeric1 = char1.match(nonAlphaNumericRegex_);
-        var nonAlphaNumeric2 = char2.match(nonAlphaNumericRegex_);
-        var whitespace1 = nonAlphaNumeric1 && char1.match(whitespaceRegex_);
-        var whitespace2 = nonAlphaNumeric2 && char2.match(whitespaceRegex_);
-        var lineBreak1 = whitespace1 && char1.match(linebreakRegex_);
-        var lineBreak2 = whitespace2 && char2.match(linebreakRegex_);
-        var blankLine1 = lineBreak1 && one.match(blanklineEndRegex_);
-        var blankLine2 = lineBreak2 && two.match(blanklineStartRegex_);
-        if (blankLine1 || blankLine2) {
-          return 5;
-        } else if (lineBreak1 || lineBreak2) {
-          return 4;
-        } else if (nonAlphaNumeric1 && !whitespace1 && whitespace2) {
-          return 3;
-        } else if (whitespace1 || whitespace2) {
-          return 2;
-        } else if (nonAlphaNumeric1 || nonAlphaNumeric2) {
-          return 1;
-        }
-        return 0;
-      }
-      var pointer = 1;
-      while (pointer < diffs.length - 1) {
-        if (diffs[pointer - 1][0] == DIFF_EQUAL && diffs[pointer + 1][0] == DIFF_EQUAL) {
-          var equality1 = diffs[pointer - 1][1];
-          var edit = diffs[pointer][1];
-          var equality2 = diffs[pointer + 1][1];
-          var commonOffset = diff_commonSuffix(equality1, edit);
-          if (commonOffset) {
-            var commonString = edit.substring(edit.length - commonOffset);
-            equality1 = equality1.substring(0, equality1.length - commonOffset);
-            edit = commonString + edit.substring(0, edit.length - commonOffset);
-            equality2 = commonString + equality2;
-          }
-          var bestEquality1 = equality1;
-          var bestEdit = edit;
-          var bestEquality2 = equality2;
-          var bestScore = diff_cleanupSemanticScore_(equality1, edit) + diff_cleanupSemanticScore_(edit, equality2);
-          while (edit.charAt(0) === equality2.charAt(0)) {
-            equality1 += edit.charAt(0);
-            edit = edit.substring(1) + equality2.charAt(0);
-            equality2 = equality2.substring(1);
-            var score = diff_cleanupSemanticScore_(equality1, edit) + diff_cleanupSemanticScore_(edit, equality2);
-            if (score >= bestScore) {
-              bestScore = score;
-              bestEquality1 = equality1;
-              bestEdit = edit;
-              bestEquality2 = equality2;
-            }
-          }
-          if (diffs[pointer - 1][1] != bestEquality1) {
-            if (bestEquality1) {
-              diffs[pointer - 1][1] = bestEquality1;
-            } else {
-              diffs.splice(pointer - 1, 1);
-              pointer--;
-            }
-            diffs[pointer][1] = bestEdit;
-            if (bestEquality2) {
-              diffs[pointer + 1][1] = bestEquality2;
-            } else {
-              diffs.splice(pointer + 1, 1);
-              pointer--;
-            }
-          }
-        }
-        pointer++;
-      }
+    return {
+      oldFileName,
+      newFileName,
+      oldHeader,
+      newHeader,
+      hunks
+    };
+  }
+}
+function formatPatch(patch, headerOptions) {
+  if (!headerOptions) {
+    headerOptions = INCLUDE_HEADERS;
+  }
+  if (Array.isArray(patch)) {
+    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
+      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
     }
-    function diff_cleanupMerge(diffs, fix_unicode) {
-      diffs.push([DIFF_EQUAL, ""]);
-      var pointer = 0;
-      var count_delete = 0;
-      var count_insert = 0;
-      var text_delete = "";
-      var text_insert = "";
-      var commonlength;
-      while (pointer < diffs.length) {
-        if (pointer < diffs.length - 1 && !diffs[pointer][1]) {
-          diffs.splice(pointer, 1);
-          continue;
-        }
-        switch (diffs[pointer][0]) {
-          case DIFF_INSERT:
-            count_insert++;
-            text_insert += diffs[pointer][1];
-            pointer++;
-            break;
-          case DIFF_DELETE:
-            count_delete++;
-            text_delete += diffs[pointer][1];
-            pointer++;
-            break;
-          case DIFF_EQUAL:
-            var previous_equality = pointer - count_insert - count_delete - 1;
-            if (fix_unicode) {
-              if (previous_equality >= 0 && ends_with_pair_start(diffs[previous_equality][1])) {
-                var stray = diffs[previous_equality][1].slice(-1);
-                diffs[previous_equality][1] = diffs[previous_equality][1].slice(
-                  0,
-                  -1
-                );
-                text_delete = stray + text_delete;
-                text_insert = stray + text_insert;
-                if (!diffs[previous_equality][1]) {
-                  diffs.splice(previous_equality, 1);
-                  pointer--;
-                  var k = previous_equality - 1;
-                  if (diffs[k] && diffs[k][0] === DIFF_INSERT) {
-                    count_insert++;
-                    text_insert = diffs[k][1] + text_insert;
-                    k--;
-                  }
-                  if (diffs[k] && diffs[k][0] === DIFF_DELETE) {
-                    count_delete++;
-                    text_delete = diffs[k][1] + text_delete;
-                    k--;
-                  }
-                  previous_equality = k;
-                }
-              }
-              if (starts_with_pair_end(diffs[pointer][1])) {
-                var stray = diffs[pointer][1].charAt(0);
-                diffs[pointer][1] = diffs[pointer][1].slice(1);
-                text_delete += stray;
-                text_insert += stray;
-              }
-            }
-            if (pointer < diffs.length - 1 && !diffs[pointer][1]) {
-              diffs.splice(pointer, 1);
-              break;
-            }
-            if (text_delete.length > 0 || text_insert.length > 0) {
-              if (text_delete.length > 0 && text_insert.length > 0) {
-                commonlength = diff_commonPrefix(text_insert, text_delete);
-                if (commonlength !== 0) {
-                  if (previous_equality >= 0) {
-                    diffs[previous_equality][1] += text_insert.substring(
-                      0,
-                      commonlength
-                    );
-                  } else {
-                    diffs.splice(0, 0, [
-                      DIFF_EQUAL,
-                      text_insert.substring(0, commonlength)
-                    ]);
-                    pointer++;
-                  }
-                  text_insert = text_insert.substring(commonlength);
-                  text_delete = text_delete.substring(commonlength);
-                }
-                commonlength = diff_commonSuffix(text_insert, text_delete);
-                if (commonlength !== 0) {
-                  diffs[pointer][1] = text_insert.substring(text_insert.length - commonlength) + diffs[pointer][1];
-                  text_insert = text_insert.substring(
-                    0,
-                    text_insert.length - commonlength
-                  );
-                  text_delete = text_delete.substring(
-                    0,
-                    text_delete.length - commonlength
-                  );
-                }
-              }
-              var n = count_insert + count_delete;
-              if (text_delete.length === 0 && text_insert.length === 0) {
-                diffs.splice(pointer - n, n);
-                pointer = pointer - n;
-              } else if (text_delete.length === 0) {
-                diffs.splice(pointer - n, n, [DIFF_INSERT, text_insert]);
-                pointer = pointer - n + 1;
-              } else if (text_insert.length === 0) {
-                diffs.splice(pointer - n, n, [DIFF_DELETE, text_delete]);
-                pointer = pointer - n + 1;
-              } else {
-                diffs.splice(
-                  pointer - n,
-                  n,
-                  [DIFF_DELETE, text_delete],
-                  [DIFF_INSERT, text_insert]
-                );
-                pointer = pointer - n + 2;
-              }
-            }
-            if (pointer !== 0 && diffs[pointer - 1][0] === DIFF_EQUAL) {
-              diffs[pointer - 1][1] += diffs[pointer][1];
-              diffs.splice(pointer, 1);
-            } else {
-              pointer++;
-            }
-            count_insert = 0;
-            count_delete = 0;
-            text_delete = "";
-            text_insert = "";
-            break;
-        }
+    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
+  }
+  const ret = [];
+  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
+    ret.push("Index: " + patch.oldFileName);
+  }
+  if (headerOptions.includeUnderline) {
+    ret.push("===================================================================");
+  }
+  if (headerOptions.includeFileHeaders) {
+    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
+    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+  }
+  for (let i2 = 0; i2 < patch.hunks.length; i2++) {
+    const hunk2 = patch.hunks[i2];
+    if (hunk2.oldLines === 0) {
+      hunk2.oldStart -= 1;
+    }
+    if (hunk2.newLines === 0) {
+      hunk2.newStart -= 1;
+    }
+    ret.push("@@ -" + hunk2.oldStart + "," + hunk2.oldLines + " +" + hunk2.newStart + "," + hunk2.newLines + " @@");
+    for (const line of hunk2.lines) {
+      ret.push(line);
+    }
+  }
+  return ret.join("\n") + "\n";
+}
+function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  if (typeof options === "function") {
+    options = { callback: options };
+  }
+  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
+    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
+    if (!patchObj) {
+      return;
+    }
+    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
+  } else {
+    const { callback } = options;
+    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
+      if (!patchObj) {
+        callback(void 0);
+      } else {
+        callback(formatPatch(patchObj, options.headerOptions));
       }
-      if (diffs[diffs.length - 1][1] === "") {
-        diffs.pop();
-      }
-      var changes = false;
-      pointer = 1;
-      while (pointer < diffs.length - 1) {
-        if (diffs[pointer - 1][0] === DIFF_EQUAL && diffs[pointer + 1][0] === DIFF_EQUAL) {
-          if (diffs[pointer][1].substring(
-            diffs[pointer][1].length - diffs[pointer - 1][1].length
-          ) === diffs[pointer - 1][1]) {
-            diffs[pointer][1] = diffs[pointer - 1][1] + diffs[pointer][1].substring(
-              0,
-              diffs[pointer][1].length - diffs[pointer - 1][1].length
-            );
-            diffs[pointer + 1][1] = diffs[pointer - 1][1] + diffs[pointer + 1][1];
-            diffs.splice(pointer - 1, 1);
-            changes = true;
-          } else if (diffs[pointer][1].substring(0, diffs[pointer + 1][1].length) == diffs[pointer + 1][1]) {
-            diffs[pointer - 1][1] += diffs[pointer + 1][1];
-            diffs[pointer][1] = diffs[pointer][1].substring(diffs[pointer + 1][1].length) + diffs[pointer + 1][1];
-            diffs.splice(pointer + 1, 1);
-            changes = true;
-          }
-        }
-        pointer++;
-      }
-      if (changes) {
-        diff_cleanupMerge(diffs, fix_unicode);
+    } }));
+  }
+}
+function splitLines(text) {
+  const hasTrailingNl = text.endsWith("\n");
+  const result = text.split("\n").map((line) => line + "\n");
+  if (hasTrailingNl) {
+    result.pop();
+  } else {
+    result.push(result.pop().slice(0, -1));
+  }
+  return result;
+}
+var INCLUDE_HEADERS;
+var init_create = __esm({
+  "node_modules/diff/libesm/patch/create.js"() {
+    "use strict";
+    init_line();
+    INCLUDE_HEADERS = {
+      includeIndex: true,
+      includeUnderline: true,
+      includeFileHeaders: true
+    };
+  }
+});
+
+// node_modules/diff/libesm/index.js
+var init_libesm = __esm({
+  "node_modules/diff/libesm/index.js"() {
+    "use strict";
+    init_character();
+    init_line();
+    init_create();
+  }
+});
+
+// packages/shared/src/text-diff.ts
+function commonEdges(a, b) {
+  const shortest = Math.min(a.length, b.length);
+  let head = 0;
+  while (head < shortest && a.charCodeAt(head) === b.charCodeAt(head)) head++;
+  if (head > 0 && isHigh(a.charCodeAt(head - 1))) head--;
+  let tail = 0;
+  while (tail < shortest - head && a.charCodeAt(a.length - 1 - tail) === b.charCodeAt(b.length - 1 - tail)) tail++;
+  if (tail > 0 && isLow(a.charCodeAt(a.length - tail))) tail--;
+  return [head, tail];
+}
+function fromChanges(changes) {
+  return changes.map((c) => [c.added ? 1 : c.removed ? -1 : 0, c.value]);
+}
+function hunk(before, after, budget) {
+  if (!before || !after) return [replace(before, after), 0];
+  const [head, tail] = commonEdges(before, after);
+  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
+  const edges = (middle) => [
+    ...head ? [[0, before.slice(0, head)]] : [],
+    ...middle,
+    ...tail ? [[0, before.slice(before.length - tail)]] : []
+  ];
+  if (!a || !b) return [edges(replace(a, b)), 0];
+  const tokens = a.length + b.length;
+  const maxEditLength = editBudget(tokens, budget);
+  const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : void 0;
+  if (!changes) return [edges(replace(a, b)), tokens * maxEditLength];
+  const ops = fromChanges(changes);
+  return [edges(ops), tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0)];
+}
+function boundedTextDiff(before, after) {
+  if (before === after) return before ? [[0, before]] : [];
+  const [head, tail] = commonEdges(before, after);
+  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
+  const out2 = head ? [[0, before.slice(0, head)]] : [];
+  let budget = WORK;
+  const lineCount = (s) => s.split("\n").length;
+  const lineEdits = editBudget(lineCount(a) + lineCount(b), budget / 2);
+  const lines = a && b && lineEdits > 0 ? diffLines(a, b, { maxEditLength: lineEdits }) : void 0;
+  budget /= 2;
+  if (!lines) out2.push(...hunk(a, b, budget)[0]);
+  else {
+    let removed = "", added = "";
+    const flush = () => {
+      if (!removed && !added) return;
+      const [ops, spent] = hunk(removed, added, budget);
+      out2.push(...ops);
+      budget = Math.max(0, budget - spent);
+      removed = added = "";
+    };
+    for (const change of lines) {
+      if (change.removed) removed += change.value;
+      else if (change.added) added += change.value;
+      else {
+        flush();
+        out2.push([0, change.value]);
       }
     }
-    function is_surrogate_pair_start(charCode) {
-      return charCode >= 55296 && charCode <= 56319;
-    }
-    function is_surrogate_pair_end(charCode) {
-      return charCode >= 56320 && charCode <= 57343;
-    }
-    function starts_with_pair_end(str3) {
-      return is_surrogate_pair_end(str3.charCodeAt(0));
-    }
-    function ends_with_pair_start(str3) {
-      return is_surrogate_pair_start(str3.charCodeAt(str3.length - 1));
-    }
-    function remove_empty_tuples(tuples) {
-      var ret = [];
-      for (var i2 = 0; i2 < tuples.length; i2++) {
-        if (tuples[i2][1].length > 0) {
-          ret.push(tuples[i2]);
-        }
-      }
-      return ret;
-    }
-    function make_edit_splice(before, oldMiddle, newMiddle, after) {
-      if (ends_with_pair_start(before) || starts_with_pair_end(after)) {
-        return null;
-      }
-      return remove_empty_tuples([
-        [DIFF_EQUAL, before],
-        [DIFF_DELETE, oldMiddle],
-        [DIFF_INSERT, newMiddle],
-        [DIFF_EQUAL, after]
-      ]);
-    }
-    function find_cursor_edit_diff(oldText, newText, cursor_pos) {
-      var oldRange = typeof cursor_pos === "number" ? { index: cursor_pos, length: 0 } : cursor_pos.oldRange;
-      var newRange = typeof cursor_pos === "number" ? null : cursor_pos.newRange;
-      var oldLength = oldText.length;
-      var newLength = newText.length;
-      if (oldRange.length === 0 && (newRange === null || newRange.length === 0)) {
-        var oldCursor = oldRange.index;
-        var oldBefore = oldText.slice(0, oldCursor);
-        var oldAfter = oldText.slice(oldCursor);
-        var maybeNewCursor = newRange ? newRange.index : null;
-        editBefore: {
-          var newCursor = oldCursor + newLength - oldLength;
-          if (maybeNewCursor !== null && maybeNewCursor !== newCursor) {
-            break editBefore;
-          }
-          if (newCursor < 0 || newCursor > newLength) {
-            break editBefore;
-          }
-          var newBefore = newText.slice(0, newCursor);
-          var newAfter = newText.slice(newCursor);
-          if (newAfter !== oldAfter) {
-            break editBefore;
-          }
-          var prefixLength = Math.min(oldCursor, newCursor);
-          var oldPrefix = oldBefore.slice(0, prefixLength);
-          var newPrefix = newBefore.slice(0, prefixLength);
-          if (oldPrefix !== newPrefix) {
-            break editBefore;
-          }
-          var oldMiddle = oldBefore.slice(prefixLength);
-          var newMiddle = newBefore.slice(prefixLength);
-          return make_edit_splice(oldPrefix, oldMiddle, newMiddle, oldAfter);
-        }
-        editAfter: {
-          if (maybeNewCursor !== null && maybeNewCursor !== oldCursor) {
-            break editAfter;
-          }
-          var cursor = oldCursor;
-          var newBefore = newText.slice(0, cursor);
-          var newAfter = newText.slice(cursor);
-          if (newBefore !== oldBefore) {
-            break editAfter;
-          }
-          var suffixLength = Math.min(oldLength - cursor, newLength - cursor);
-          var oldSuffix = oldAfter.slice(oldAfter.length - suffixLength);
-          var newSuffix = newAfter.slice(newAfter.length - suffixLength);
-          if (oldSuffix !== newSuffix) {
-            break editAfter;
-          }
-          var oldMiddle = oldAfter.slice(0, oldAfter.length - suffixLength);
-          var newMiddle = newAfter.slice(0, newAfter.length - suffixLength);
-          return make_edit_splice(oldBefore, oldMiddle, newMiddle, oldSuffix);
-        }
-      }
-      if (oldRange.length > 0 && newRange && newRange.length === 0) {
-        replaceRange: {
-          var oldPrefix = oldText.slice(0, oldRange.index);
-          var oldSuffix = oldText.slice(oldRange.index + oldRange.length);
-          var prefixLength = oldPrefix.length;
-          var suffixLength = oldSuffix.length;
-          if (newLength < prefixLength + suffixLength) {
-            break replaceRange;
-          }
-          var newPrefix = newText.slice(0, prefixLength);
-          var newSuffix = newText.slice(newLength - suffixLength);
-          if (oldPrefix !== newPrefix || oldSuffix !== newSuffix) {
-            break replaceRange;
-          }
-          var oldMiddle = oldText.slice(prefixLength, oldLength - suffixLength);
-          var newMiddle = newText.slice(prefixLength, newLength - suffixLength);
-          return make_edit_splice(oldPrefix, oldMiddle, newMiddle, oldSuffix);
-        }
-      }
-      return null;
-    }
-    function diff2(text1, text2, cursor_pos, cleanup) {
-      return diff_main(text1, text2, cursor_pos, cleanup, true);
-    }
-    diff2.INSERT = DIFF_INSERT;
-    diff2.DELETE = DIFF_DELETE;
-    diff2.EQUAL = DIFF_EQUAL;
-    module2.exports = diff2;
+    flush();
+  }
+  if (tail) out2.push([0, before.slice(before.length - tail)]);
+  return out2.filter(([, value2]) => value2.length);
+}
+var WORK, isHigh, isLow, editBudget, replace;
+var init_text_diff = __esm({
+  "packages/shared/src/text-diff.ts"() {
+    "use strict";
+    init_libesm();
+    WORK = 2e6;
+    isHigh = (code) => code >= 55296 && code <= 56319;
+    isLow = (code) => code >= 56320 && code <= 57343;
+    editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
+    replace = (before, after) => [
+      ...before ? [[-1, before]] : [],
+      ...after ? [[1, after]] : []
+    ];
   }
 });
 
@@ -9055,9 +8841,9 @@ var init_decoding = __esm({
        */
       read() {
         if (this.count === 0) {
-          const diff2 = readVarInt(this);
-          const hasCount = diff2 & 1;
-          this.diff = floor(diff2 / 2);
+          const diff = readVarInt(this);
+          const hasCount = diff & 1;
+          this.diff = floor(diff / 2);
           this.count = 1;
           if (hasCount) {
             this.count = readVarUint(this) + 2;
@@ -10262,9 +10048,9 @@ var init_yjs = __esm({
        * @return {number}
        */
       readDsLen() {
-        const diff2 = readVarUint(this.restDecoder) + 1;
-        this.dsCurrVal += diff2;
-        return diff2;
+        const diff = readVarUint(this.restDecoder) + 1;
+        this.dsCurrVal += diff;
+        return diff;
       }
     };
     UpdateDecoderV2 = class extends DSDecoderV2 {
@@ -10491,9 +10277,9 @@ var init_yjs = __esm({
        * @param {number} clock
        */
       writeDsClock(clock) {
-        const diff2 = clock - this.dsCurrVal;
+        const diff = clock - this.dsCurrVal;
         this.dsCurrVal = clock;
-        writeVarUint(this.restEncoder, diff2);
+        writeVarUint(this.restEncoder, diff);
       }
       /**
        * @param {number} len
@@ -11055,10 +10841,10 @@ var init_yjs = __esm({
     };
     getItemWithOffset = (store, id2) => {
       const item = getItem(store, id2);
-      const diff2 = id2.clock - item.id.clock;
+      const diff = id2.clock - item.id.clock;
       return {
         item,
-        diff: diff2
+        diff
       };
     };
     createAbsolutePositionFromRelativePosition = (rpos, doc, followUndoneDeletions = true) => {
@@ -11533,13 +11319,13 @@ var init_yjs = __esm({
       }
     };
     mergeUpdates = (updates) => mergeUpdatesV2(updates, UpdateDecoderV1, UpdateEncoderV1);
-    sliceStruct = (left, diff2) => {
+    sliceStruct = (left, diff) => {
       if (left.constructor === GC) {
         const { client, clock } = left.id;
-        return new GC(createID(client, clock + diff2), left.length - diff2);
+        return new GC(createID(client, clock + diff), left.length - diff);
       } else if (left.constructor === Skip) {
         const { client, clock } = left.id;
-        return new Skip(createID(client, clock + diff2), left.length - diff2);
+        return new Skip(createID(client, clock + diff), left.length - diff);
       } else {
         const leftItem = (
           /** @type {Item} */
@@ -11547,14 +11333,14 @@ var init_yjs = __esm({
         );
         const { client, clock } = leftItem.id;
         return new Item(
-          createID(client, clock + diff2),
+          createID(client, clock + diff),
           null,
-          createID(client, clock + diff2 - 1),
+          createID(client, clock + diff - 1),
           null,
           leftItem.rightOrigin,
           leftItem.parent,
           leftItem.parentSub,
-          leftItem.content.splice(diff2)
+          leftItem.content.splice(diff)
         );
       }
     };
@@ -11617,17 +11403,17 @@ var init_yjs = __esm({
                 currWrite.struct.length = curr.id.clock + curr.length - currWrite.struct.id.clock;
               } else {
                 writeStructToLazyStructWriter(lazyStructEncoder, currWrite.struct, currWrite.offset);
-                const diff2 = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
-                const struct = new Skip(createID(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff2);
+                const diff = curr.id.clock - currWrite.struct.id.clock - currWrite.struct.length;
+                const struct = new Skip(createID(firstClient, currWrite.struct.id.clock + currWrite.struct.length), diff);
                 currWrite = { struct, offset: 0 };
               }
             } else {
-              const diff2 = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
-              if (diff2 > 0) {
+              const diff = currWrite.struct.id.clock + currWrite.struct.length - curr.id.clock;
+              if (diff > 0) {
                 if (currWrite.struct.constructor === Skip) {
-                  currWrite.struct.length -= diff2;
+                  currWrite.struct.length -= diff;
                 } else {
-                  curr = sliceStruct(curr, diff2);
+                  curr = sliceStruct(curr, diff);
                 }
               }
               if (!currWrite.struct.mergeWith(
@@ -15730,32 +15516,32 @@ var init_yjs = __esm({
     readContentType = (decoder) => new ContentType(typeRefs[decoder.readTypeRef()](decoder));
     followRedone = (store, id2) => {
       let nextID = id2;
-      let diff2 = 0;
+      let diff = 0;
       let item;
       do {
-        if (diff2 > 0) {
-          nextID = createID(nextID.client, nextID.clock + diff2);
+        if (diff > 0) {
+          nextID = createID(nextID.client, nextID.clock + diff);
         }
         item = getItem(store, nextID);
-        diff2 = nextID.clock - item.id.clock;
+        diff = nextID.clock - item.id.clock;
         nextID = item.redone;
       } while (nextID !== null && item instanceof Item);
       return {
         item,
-        diff: diff2
+        diff
       };
     };
-    splitItem = (transaction, leftItem, diff2) => {
+    splitItem = (transaction, leftItem, diff) => {
       const { client, clock } = leftItem.id;
       const rightItem = new Item(
-        createID(client, clock + diff2),
+        createID(client, clock + diff),
         leftItem,
-        createID(client, clock + diff2 - 1),
+        createID(client, clock + diff - 1),
         leftItem.right,
         leftItem.rightOrigin,
         leftItem.parent,
         leftItem.parentSub,
-        leftItem.content.splice(diff2)
+        leftItem.content.splice(diff)
       );
       if (leftItem.deleted) {
         rightItem.markDeleted();
@@ -15764,7 +15550,7 @@ var init_yjs = __esm({
         rightItem.keep = true;
       }
       if (leftItem.redone !== null) {
-        rightItem.redone = createID(leftItem.redone.client, leftItem.redone.clock + diff2);
+        rightItem.redone = createID(leftItem.redone.client, leftItem.redone.clock + diff);
       }
       leftItem.right = rightItem;
       if (rightItem.right !== null) {
@@ -15774,7 +15560,7 @@ var init_yjs = __esm({
       if (rightItem.parentSub !== null && rightItem.right === null) {
         rightItem.parent._map.set(rightItem.parentSub, rightItem);
       }
-      leftItem.length = diff2;
+      leftItem.length = diff;
       return rightItem;
     };
     Item = class _Item extends AbstractStruct {
@@ -16321,13 +16107,13 @@ function makeAnchor(text, from2, to2) {
     to: relativePositionToJSON(createRelativePositionFromTypeIndex(text, lineStart(text.toString(), to2)))
   };
 }
-var import_fast_diff, validColorIndex, RoomDoc;
+var validColorIndex, RoomDoc;
 var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
-    import_fast_diff = __toESM(require_diff(), 1);
     init_claims();
     init_messages();
+    init_text_diff();
     init_yjs();
     init_identity();
     init_ledger();
@@ -16585,7 +16371,7 @@ var init_doc = __esm({
       overlayText(person, relpath) {
         return this.overlays.get(person)?.get(relpath);
       }
-      /** Apply character-level diff operations, preserving Yjs relative positions. */
+      /** Apply bounded character-level diff operations, preserving Yjs relative positions. */
       setOverlay(person, relpath, content, origin) {
         const existing = this.overlayText(person, relpath);
         if (existing?.toString() === content) return;
@@ -16596,9 +16382,9 @@ var init_doc = __esm({
             this.overlay(person).set(relpath, text);
           }
           let index = 0;
-          for (const [kind, value2] of (0, import_fast_diff.default)(text.toString(), content)) {
-            if (kind === import_fast_diff.default.EQUAL) index += value2.length;
-            else if (kind === import_fast_diff.default.DELETE) text.delete(index, value2.length);
+          for (const [kind, value2] of boundedTextDiff(text.toString(), content)) {
+            if (kind === 0) index += value2.length;
+            else if (kind === -1) text.delete(index, value2.length);
             else {
               text.insert(index, value2);
               index += value2.length;
@@ -27437,464 +27223,6 @@ Call room_state, then react per the room-etiquette skill.`;
   }
 });
 
-// node_modules/diff/libesm/diff/base.js
-var Diff;
-var init_base = __esm({
-  "node_modules/diff/libesm/diff/base.js"() {
-    "use strict";
-    Diff = class {
-      diff(oldStr, newStr, options = {}) {
-        let callback;
-        if (typeof options === "function") {
-          callback = options;
-          options = {};
-        } else if ("callback" in options) {
-          callback = options.callback;
-        }
-        const oldString = this.castInput(oldStr, options);
-        const newString = this.castInput(newStr, options);
-        const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
-        const newTokens = this.removeEmpty(this.tokenize(newString, options));
-        return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
-      }
-      diffWithOptionsObj(oldTokens, newTokens, options, callback) {
-        var _a3;
-        const done = (value2) => {
-          value2 = this.postProcess(value2, options);
-          if (callback) {
-            setTimeout(function() {
-              callback(value2);
-            }, 0);
-            return void 0;
-          } else {
-            return value2;
-          }
-        };
-        const newLen = newTokens.length, oldLen = oldTokens.length;
-        let editLength = 1;
-        let maxEditLength = newLen + oldLen;
-        if (options.maxEditLength != null) {
-          maxEditLength = Math.min(maxEditLength, options.maxEditLength);
-        }
-        const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
-        const abortAfterTimestamp = Date.now() + maxExecutionTime;
-        const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
-        let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
-        if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-          return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
-        }
-        let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
-        const execEditLength = () => {
-          for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
-            let basePath;
-            const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
-            if (removePath) {
-              bestPath[diagonalPath - 1] = void 0;
-            }
-            let canAdd = false;
-            if (addPath) {
-              const addPathNewPos = addPath.oldPos - diagonalPath;
-              canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
-            }
-            const canRemove = removePath && removePath.oldPos + 1 < oldLen;
-            if (!canAdd && !canRemove) {
-              bestPath[diagonalPath] = void 0;
-              continue;
-            }
-            if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
-              basePath = this.addToPath(addPath, true, false, 0, options);
-            } else {
-              basePath = this.addToPath(removePath, false, true, 1, options);
-            }
-            newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
-            if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-              return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
-            } else {
-              bestPath[diagonalPath] = basePath;
-              if (basePath.oldPos + 1 >= oldLen) {
-                maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
-              }
-              if (newPos + 1 >= newLen) {
-                minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
-              }
-            }
-          }
-          editLength++;
-        };
-        if (callback) {
-          (function exec() {
-            setTimeout(function() {
-              if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
-                return callback(void 0);
-              }
-              if (!execEditLength()) {
-                exec();
-              }
-            }, 0);
-          })();
-        } else {
-          while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
-            const ret = execEditLength();
-            if (ret) {
-              return ret;
-            }
-          }
-        }
-      }
-      addToPath(path31, added, removed, oldPosInc, options) {
-        const last2 = path31.lastComponent;
-        if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
-          return {
-            oldPos: path31.oldPos + oldPosInc,
-            lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
-          };
-        } else {
-          return {
-            oldPos: path31.oldPos + oldPosInc,
-            lastComponent: { count: 1, added, removed, previousComponent: last2 }
-          };
-        }
-      }
-      extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
-        const newLen = newTokens.length, oldLen = oldTokens.length;
-        let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
-        while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
-          newPos++;
-          oldPos++;
-          commonCount++;
-          if (options.oneChangePerToken) {
-            basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
-          }
-        }
-        if (commonCount && !options.oneChangePerToken) {
-          basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
-        }
-        basePath.oldPos = oldPos;
-        return newPos;
-      }
-      equals(left, right, options) {
-        if (options.comparator) {
-          return options.comparator(left, right);
-        } else {
-          return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
-        }
-      }
-      removeEmpty(array2) {
-        const ret = [];
-        for (let i2 = 0; i2 < array2.length; i2++) {
-          if (array2[i2]) {
-            ret.push(array2[i2]);
-          }
-        }
-        return ret;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      castInput(value2, options) {
-        return value2;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      tokenize(value2, options) {
-        return Array.from(value2);
-      }
-      join(chars) {
-        return chars.join("");
-      }
-      postProcess(changeObjects, options) {
-        return changeObjects;
-      }
-      get useLongestToken() {
-        return false;
-      }
-      buildValues(lastComponent, newTokens, oldTokens) {
-        const components = [];
-        let nextComponent;
-        while (lastComponent) {
-          components.push(lastComponent);
-          nextComponent = lastComponent.previousComponent;
-          delete lastComponent.previousComponent;
-          lastComponent = nextComponent;
-        }
-        components.reverse();
-        const componentLen = components.length;
-        let componentPos = 0, newPos = 0, oldPos = 0;
-        for (; componentPos < componentLen; componentPos++) {
-          const component = components[componentPos];
-          if (!component.removed) {
-            if (!component.added && this.useLongestToken) {
-              let value2 = newTokens.slice(newPos, newPos + component.count);
-              value2 = value2.map(function(value3, i2) {
-                const oldValue = oldTokens[oldPos + i2];
-                return oldValue.length > value3.length ? oldValue : value3;
-              });
-              component.value = this.join(value2);
-            } else {
-              component.value = this.join(newTokens.slice(newPos, newPos + component.count));
-            }
-            newPos += component.count;
-            if (!component.added) {
-              oldPos += component.count;
-            }
-          } else {
-            component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
-            oldPos += component.count;
-          }
-        }
-        return components;
-      }
-    };
-  }
-});
-
-// node_modules/diff/libesm/diff/line.js
-function diffLines(oldStr, newStr, options) {
-  return lineDiff.diff(oldStr, newStr, options);
-}
-function tokenize(value2, options) {
-  if (options.stripTrailingCr) {
-    value2 = value2.replace(/\r\n/g, "\n");
-  }
-  const retLines = [], linesAndNewlines = value2.split(/(\n|\r\n)/);
-  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
-    linesAndNewlines.pop();
-  }
-  for (let i2 = 0; i2 < linesAndNewlines.length; i2++) {
-    const line = linesAndNewlines[i2];
-    if (i2 % 2 && !options.newlineIsToken) {
-      retLines[retLines.length - 1] += line;
-    } else {
-      retLines.push(line);
-    }
-  }
-  return retLines;
-}
-var LineDiff, lineDiff;
-var init_line = __esm({
-  "node_modules/diff/libesm/diff/line.js"() {
-    "use strict";
-    init_base();
-    LineDiff = class extends Diff {
-      constructor() {
-        super(...arguments);
-        this.tokenize = tokenize;
-      }
-      equals(left, right, options) {
-        if (options.ignoreWhitespace) {
-          if (!options.newlineIsToken || !left.includes("\n")) {
-            left = left.trim();
-          }
-          if (!options.newlineIsToken || !right.includes("\n")) {
-            right = right.trim();
-          }
-        } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
-          if (left.endsWith("\n")) {
-            left = left.slice(0, -1);
-          }
-          if (right.endsWith("\n")) {
-            right = right.slice(0, -1);
-          }
-        }
-        return super.equals(left, right, options);
-      }
-    };
-    lineDiff = new LineDiff();
-  }
-});
-
-// node_modules/diff/libesm/patch/create.js
-function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  let optionsObj;
-  if (!options) {
-    optionsObj = {};
-  } else if (typeof options === "function") {
-    optionsObj = { callback: options };
-  } else {
-    optionsObj = options;
-  }
-  if (typeof optionsObj.context === "undefined") {
-    optionsObj.context = 4;
-  }
-  const context2 = optionsObj.context;
-  if (optionsObj.newlineIsToken) {
-    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
-  }
-  if (!optionsObj.callback) {
-    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
-  } else {
-    const { callback } = optionsObj;
-    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff2) => {
-      const patch = diffLinesResultToPatch(diff2);
-      callback(patch);
-    } }));
-  }
-  function diffLinesResultToPatch(diff2) {
-    if (!diff2) {
-      return;
-    }
-    diff2.push({ value: "", lines: [] });
-    function contextLines(lines) {
-      return lines.map(function(entry) {
-        return " " + entry;
-      });
-    }
-    const hunks = [];
-    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
-    for (let i2 = 0; i2 < diff2.length; i2++) {
-      const current = diff2[i2], lines = current.lines || splitLines(current.value);
-      current.lines = lines;
-      if (current.added || current.removed) {
-        if (!oldRangeStart) {
-          const prev = diff2[i2 - 1];
-          oldRangeStart = oldLine;
-          newRangeStart = newLine;
-          if (prev) {
-            curRange = context2 > 0 ? contextLines(prev.lines.slice(-context2)) : [];
-            oldRangeStart -= curRange.length;
-            newRangeStart -= curRange.length;
-          }
-        }
-        for (const line of lines) {
-          curRange.push((current.added ? "+" : "-") + line);
-        }
-        if (current.added) {
-          newLine += lines.length;
-        } else {
-          oldLine += lines.length;
-        }
-      } else {
-        if (oldRangeStart) {
-          if (lines.length <= context2 * 2 && i2 < diff2.length - 2) {
-            for (const line of contextLines(lines)) {
-              curRange.push(line);
-            }
-          } else {
-            const contextSize = Math.min(lines.length, context2);
-            for (const line of contextLines(lines.slice(0, contextSize))) {
-              curRange.push(line);
-            }
-            const hunk = {
-              oldStart: oldRangeStart,
-              oldLines: oldLine - oldRangeStart + contextSize,
-              newStart: newRangeStart,
-              newLines: newLine - newRangeStart + contextSize,
-              lines: curRange
-            };
-            hunks.push(hunk);
-            oldRangeStart = 0;
-            newRangeStart = 0;
-            curRange = [];
-          }
-        }
-        oldLine += lines.length;
-        newLine += lines.length;
-      }
-    }
-    for (const hunk of hunks) {
-      for (let i2 = 0; i2 < hunk.lines.length; i2++) {
-        if (hunk.lines[i2].endsWith("\n")) {
-          hunk.lines[i2] = hunk.lines[i2].slice(0, -1);
-        } else {
-          hunk.lines.splice(i2 + 1, 0, "\\ No newline at end of file");
-          i2++;
-        }
-      }
-    }
-    return {
-      oldFileName,
-      newFileName,
-      oldHeader,
-      newHeader,
-      hunks
-    };
-  }
-}
-function formatPatch(patch, headerOptions) {
-  if (!headerOptions) {
-    headerOptions = INCLUDE_HEADERS;
-  }
-  if (Array.isArray(patch)) {
-    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
-      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
-    }
-    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
-  }
-  const ret = [];
-  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
-    ret.push("Index: " + patch.oldFileName);
-  }
-  if (headerOptions.includeUnderline) {
-    ret.push("===================================================================");
-  }
-  if (headerOptions.includeFileHeaders) {
-    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
-    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
-  }
-  for (let i2 = 0; i2 < patch.hunks.length; i2++) {
-    const hunk = patch.hunks[i2];
-    if (hunk.oldLines === 0) {
-      hunk.oldStart -= 1;
-    }
-    if (hunk.newLines === 0) {
-      hunk.newStart -= 1;
-    }
-    ret.push("@@ -" + hunk.oldStart + "," + hunk.oldLines + " +" + hunk.newStart + "," + hunk.newLines + " @@");
-    for (const line of hunk.lines) {
-      ret.push(line);
-    }
-  }
-  return ret.join("\n") + "\n";
-}
-function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  if (typeof options === "function") {
-    options = { callback: options };
-  }
-  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
-    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
-    if (!patchObj) {
-      return;
-    }
-    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
-  } else {
-    const { callback } = options;
-    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
-      if (!patchObj) {
-        callback(void 0);
-      } else {
-        callback(formatPatch(patchObj, options.headerOptions));
-      }
-    } }));
-  }
-}
-function splitLines(text) {
-  const hasTrailingNl = text.endsWith("\n");
-  const result = text.split("\n").map((line) => line + "\n");
-  if (hasTrailingNl) {
-    result.pop();
-  } else {
-    result.push(result.pop().slice(0, -1));
-  }
-  return result;
-}
-var INCLUDE_HEADERS;
-var init_create = __esm({
-  "node_modules/diff/libesm/patch/create.js"() {
-    "use strict";
-    init_line();
-    INCLUDE_HEADERS = {
-      includeIndex: true,
-      includeUnderline: true,
-      includeFileHeaders: true
-    };
-  }
-});
-
-// node_modules/diff/libesm/index.js
-var init_libesm = __esm({
-  "node_modules/diff/libesm/index.js"() {
-    "use strict";
-    init_create();
-  }
-});
-
 // node_modules/node-diff3/dist/diff3.mjs
 function LCS(buffer1, buffer2) {
   let equivalenceClasses = /* @__PURE__ */ Object.create(null);
@@ -27989,10 +27317,10 @@ function diff3MergeRegions(a, o, b) {
     }
   }
   while (hunks.length) {
-    let hunk = hunks.shift();
-    let regionStart = hunk.oStart;
-    let regionEnd = hunk.oStart + hunk.oLength;
-    let regionHunks = [hunk];
+    let hunk2 = hunks.shift();
+    let regionStart = hunk2.oStart;
+    let regionEnd = hunk2.oStart + hunk2.oLength;
+    let regionHunks = [hunk2];
     advanceTo(regionStart);
     while (hunks.length) {
       const nextHunk = hunks[0];
@@ -28003,14 +27331,14 @@ function diff3MergeRegions(a, o, b) {
       regionHunks.push(hunks.shift());
     }
     if (regionHunks.length === 1) {
-      if (hunk.abLength > 0) {
-        const buffer = hunk.ab === "a" ? a : b;
+      if (hunk2.abLength > 0) {
+        const buffer = hunk2.ab === "a" ? a : b;
         results.push({
           stable: true,
-          buffer: hunk.ab,
-          bufferStart: hunk.abStart,
-          bufferLength: hunk.abLength,
-          bufferContent: buffer.slice(hunk.abStart, hunk.abStart + hunk.abLength)
+          buffer: hunk2.ab,
+          bufferStart: hunk2.abStart,
+          bufferLength: hunk2.abLength,
+          bufferContent: buffer.slice(hunk2.abStart, hunk2.abStart + hunk2.abLength)
         });
       }
     } else {
@@ -28019,12 +27347,12 @@ function diff3MergeRegions(a, o, b) {
         b: [b.length, -1, o.length, -1]
       };
       while (regionHunks.length) {
-        hunk = regionHunks.shift();
-        const oStart = hunk.oStart;
-        const oEnd = oStart + hunk.oLength;
-        const abStart = hunk.abStart;
-        const abEnd = abStart + hunk.abLength;
-        let b2 = bounds[hunk.ab];
+        hunk2 = regionHunks.shift();
+        const oStart = hunk2.oStart;
+        const oEnd = oStart + hunk2.oLength;
+        const abStart = hunk2.abStart;
+        const abEnd = abStart + hunk2.abLength;
+        let b2 = bounds[hunk2.ab];
         b2[0] = Math.min(abStart, b2[0]);
         b2[1] = Math.max(abEnd, b2[1]);
         b2[2] = Math.min(oStart, b2[2]);
@@ -29860,7 +29188,7 @@ var require_tree_sitter = __commonJS({
               functionsInTableMap.set(func2, ret);
               return ret;
             };
-            var updateGOT = (exports2, replace) => {
+            var updateGOT = (exports2, replace2) => {
               for (var symName in exports2) {
                 if (isInternalSym(symName)) {
                   continue;
@@ -29868,13 +29196,13 @@ var require_tree_sitter = __commonJS({
                 var value2 = exports2[symName];
                 if (symName.startsWith("orig$")) {
                   symName = symName.split("$")[1];
-                  replace = true;
+                  replace2 = true;
                 }
                 GOT[symName] ||= new WebAssembly.Global({
                   "value": "i32",
                   "mutable": true
                 });
-                if (replace || GOT[symName].value == 0) {
+                if (replace2 || GOT[symName].value == 0) {
                   if (typeof value2 == "function") {
                     GOT[symName].value = addFunction(value2);
                   } else if (typeof value2 == "number") {
@@ -29885,7 +29213,7 @@ var require_tree_sitter = __commonJS({
                 }
               }
             };
-            var relocateExports = (exports2, memoryBase2, replace) => {
+            var relocateExports = (exports2, memoryBase2, replace2) => {
               var relocated = {};
               for (var e in exports2) {
                 var value2 = exports2[e];
@@ -29897,7 +29225,7 @@ var require_tree_sitter = __commonJS({
                 }
                 relocated[e] = value2;
               }
-              updateGOT(relocated, replace);
+              updateGOT(relocated, replace2);
               return relocated;
             };
             var isSymbolDefined = (symName) => {
@@ -49447,7 +48775,7 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 // plugins/room/.claude-plugin/plugin.json
 var plugin_default = {
   name: "room",
-  version: "0.16.39",
+  version: "0.16.40",
   description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
   author: {
     name: "Rohan",
