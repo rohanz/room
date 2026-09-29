@@ -17,7 +17,7 @@ import { FlushedStdioTransport } from './transport.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
-import { PresenceEnd, hostKind, hostSessionAlive, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld } from './presence-end.js'
+import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { ownWorkerNames } from './worker-registry.js'
 
@@ -114,8 +114,11 @@ async function main() {
 
       // Presence ends once the host session has finished (registry §18): its process gone, or the idle lease.
       const presenceHostKind = hostKind()
+      const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS)
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
+        idleLeaseMs,
+        tickMs: idleLeaseTickMs(idleLeaseMs),
         ...(presenceHostKind === 'shared-app-server' ? { episodeId: await nextIdleEpisode(await gitCommonDir(dir)) } : {}),
         hostAlive: () => hostSessionAlive(dir),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),

@@ -94,6 +94,7 @@ exports the ledger and forgets the local room’s saved memory; `room_leave` pre
 Room caps math-library threads per worker; include the spawn reply’s budget in compute-heavy tasks, use `threads` (or `ROOM_WORKER_THREADS` on the lead) to override it, and stagger heavy jobs.
 `ROOM_WORKER_MAX_BUDGET_USD` caps each Claude worker with the documented `--max-budget-usd`
 flag. Set it on the lead before spawning workers.
+`ROOM_IDLE_LEASE_MS` sets the positive integer idle lease in milliseconds for an unheld Codex app-server session (default: 30 minutes); the presence tick shortens automatically for brief leases.
 
 Ask in your own words: "use a couple of subagents for this" or "split this up".
 The agent loads the room-workers skill and handles dispatch, questions, preview and merge.

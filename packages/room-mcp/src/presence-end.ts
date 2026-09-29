@@ -108,6 +108,18 @@ export const IDLE_LEASE_MS = 30 * MINUTE
 export const IDLE_CLAIMS_MS = 8 * 60 * MINUTE
 export const PRESENCE_TICK_MS = 30_000
 
+/** Positive integer milliseconds only; malformed overrides retain the production lease. */
+export function resolveIdleLeaseMs(raw: string | undefined): number {
+  if (!raw || !/^\d+$/.test(raw)) return IDLE_LEASE_MS
+  const ms = Number(raw)
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : IDLE_LEASE_MS
+}
+
+/** Check often enough to honour a short lease, without running the tick faster than needed. */
+export function idleLeaseTickMs(leaseMs: number): number {
+  return Math.min(leaseMs, PRESENCE_TICK_MS, Math.max(1_000, Math.floor(leaseMs / 4)))
+}
+
 export interface PresenceEndOptions {
   hostKind: HostKind
   /** False once the bound host session's process is gone (its `session.json` hostPid); undefined when unbound. */
@@ -131,6 +143,8 @@ export interface PresenceEndOptions {
   mono?: () => number
   /** Unique per presence-loop incarnation; injectable for deterministic tests. */
   episodeId?: string
+  idleLeaseMs?: number
+  idleClaimsMs?: number
   tickMs?: number
   log?: (line: string) => void
 }
@@ -193,12 +207,12 @@ export class PresenceEnd {
     try { await this.options.replayPending?.() }
     catch (error) { this.options.log?.(`idle claim notice replay pending: ${error instanceof Error ? error.message : String(error)}`); return }
     const idle = this.idleMs()
-    if (idle >= IDLE_CLAIMS_MS) {
+    if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       // Retry a pending journal even after its first pass removed every held claim and scope.
       try { await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`) }
       catch (error) { this.options.log?.(`idle claim release pending: ${error instanceof Error ? error.message : String(error)}`); return }
     }
-    if (idle >= IDLE_LEASE_MS && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
+    if (idle >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
       this.left = true
       this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`)
       try { await this.options.leave(idle) }
