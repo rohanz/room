@@ -10,7 +10,7 @@ import { RoomDoc } from '@room/shared'
 import { carriedContentHash } from '@room/roomd/baseline'
 import { setGitObserver } from '@room/roomd/git'
 import { startAutoTaggedRoomd } from '../src/session.js'
-import { currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
+import { countOtherPreviewChecks, currentToolTiming, previewPhase, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 
 const joinClock = vi.hoisted(() => ({ now: 0 }))
 vi.mock('@room/roomd', async importOriginal => ({
@@ -118,6 +118,43 @@ describe('tool timing', () => {
       await timing.phase('daemon start', () => { now += 900 })
     })
     expect(lines).toEqual(['slow tool room_join 4350ms: resolve 100ms, preflight 1200ms, connect 50ms, sync 2100ms, daemon start 900ms'])
+  })
+
+  it('logs preview merge, setup, check, collect, remainder, and sampled concurrent checks', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_preview_merge', async () => {
+      await previewPhase('merge', () => { now += 1000 })
+      await previewPhase('setup', () => { now += 500 })
+      await previewPhase('check', () => { now += 2310 })
+      await previewPhase('collect', () => { now += 100 })
+      currentToolTiming()!.notePreviewCheckOverlap(2)
+      now += 190
+    })
+    expect(lines[0]).toBe('slow tool room_preview_merge 4100ms: merge 1000ms, setup 500ms, check 2310ms, overlapped 2 other preview check(s), collect 100ms, other 190ms')
+    now = 0
+    await tracker.run('room_preview_merge', async () => { await previewPhase('merge', () => { now += 2100 }) })
+    expect(lines[1]).toBe('slow tool room_preview_merge 2100ms: merge 2100ms')
+  })
+
+  it('counts fresh scratch previews across processes but ignores stale directories and its own', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-count-'))
+    const own = path.join(root, 'room-merge-own')
+    const fresh = path.join(root, 'room-merge-fresh')
+    const stale = path.join(root, 'room-merge-stale')
+    const unrelated = path.join(root, 'unrelated')
+    for (const dir of [own, fresh, stale, unrelated]) fs.mkdirSync(dir)
+    const now = Date.now()
+    try {
+      const count = countOtherPreviewChecks(own, root, now, file => {
+        const stat = fs.lstatSync(file)
+        return file === stale ? new Proxy(stat, { get(target, key) { return key === 'birthtimeMs' ? now - 7 * 60_000 : Reflect.get(target, key) } }) : stat
+      })
+      expect(count).toBe(1)
+      expect(countOtherPreviewChecks(own, root, now, () => { throw Error('vanished') })).toBe(0)
+      expect(countOtherPreviewChecks(own, path.join(root, 'missing'), now)).toBeUndefined()
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
   it('records connect, delayed sync, and daemon start through startAutoTaggedRoomd', async () => {

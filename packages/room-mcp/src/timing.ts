@@ -1,10 +1,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { setGitObserver } from '@room/roomd/git'
 
 const SLOW_TOOL_MS = 2_000
 const EVENT_LOOP_SAMPLE_MS = 500
 const EVENT_LOOP_LAG_MS = 2_000
+const PREVIEW_CHECK_MAX_AGE_MS = 6 * 60_000 // five-minute command timeout plus one minute for setup and teardown
 
 type Clock = () => number
 type Logger = (line: string) => void
@@ -20,10 +24,12 @@ export class ToolTiming {
   private worktreeAddMs = 0
   private readonly activePhases = new Set<string>()
   private queueStarted?: number
+  private overlappingPreviewChecks?: number
 
   constructor(readonly name: string, private readonly now: Clock = () => performance.now()) { this.started = now() }
 
   add(name: string, elapsed: number): void { this.phases.set(name, (this.phases.get(name) ?? 0) + elapsed) }
+  notePreviewCheckOverlap(others: number): void { this.overlappingPreviewChecks = Math.max(this.overlappingPreviewChecks ?? 0, others) }
 
   begin(name: string): () => void {
     const start = this.now()
@@ -69,7 +75,8 @@ export class ToolTiming {
     const pieces: string[] = []
     const spawnPhases = this.phases.has('prepare') || this.phases.has('launch') || this.phases.has('lease')
     const joinPhases = (this.name === 'room_join' || this.name === 'room_create') && ['resolve', 'preflight', 'connect', 'sync', 'daemon start'].some(name => this.phases.has(name))
-    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : joinPhases ? ['settle', 'resolve', 'preflight', 'connect', 'sync', 'daemon start'] : ['settle', 'body']
+    const previewPhases = this.name === 'room_preview_merge' && ['merge', 'setup', 'check', 'collect'].some(name => this.phases.has(name))
+    const names = spawnPhases ? ['settle', 'queue', 'lease', 'prepare', 'launch'] : joinPhases ? ['settle', 'resolve', 'preflight', 'connect', 'sync', 'daemon start'] : previewPhases ? ['settle', 'merge', 'setup', 'check', 'collect'] : ['settle', 'body']
     for (const name of names) {
       const elapsed = name === 'body' ? Math.max(0, (this.phases.get('body') ?? 0) - (this.phases.get('settle') ?? 0)) : this.phases.get(name)
       if (elapsed === undefined) continue
@@ -80,8 +87,9 @@ export class ToolTiming {
         piece += ')'
       }
       pieces.push(piece)
+      if (name === 'check' && previewPhases && this.overlappingPreviewChecks !== undefined) pieces.push(`overlapped ${this.overlappingPreviewChecks} other preview check(s)`)
     }
-    if (spawnPhases || joinPhases) {
+    if (spawnPhases || joinPhases || previewPhases) {
       const accounted = names.reduce((sum, name) => sum + (this.phases.get(name) ?? 0), 0)
       const other = Math.max(0, total - accounted)
       if (Math.round(other) > 0) pieces.push(`other ${ms(other)}`)
@@ -92,6 +100,37 @@ export class ToolTiming {
 }
 
 export function currentToolTiming(): ToolTiming | undefined { return context.getStore() }
+
+/** Scratch directories are visible across MCP processes on this machine. Ignore old crash leftovers. */
+export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), now = Date.now(), readStat: (file: string) => fs.Stats = file => fs.lstatSync(file)): number | undefined {
+  try {
+    const ownName = path.basename(ownDir)
+    let count = 0
+    for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name === ownName) continue
+      try {
+        const stat = readStat(path.join(tmpDir, entry.name))
+        if (!stat.isDirectory()) continue
+        const created = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs
+        if (created <= now + 1_000 && now - created <= PREVIEW_CHECK_MAX_AGE_MS) count++
+      } catch { /* A preview may remove its scratch directory between listing and stat. */ }
+    }
+    return count
+  } catch { return undefined }
+}
+
+export function notePreviewCheckOverlap(ownDir: string): void {
+  const timing = currentToolTiming()
+  if (timing?.name !== 'room_preview_merge') return
+  const count = countOtherPreviewChecks(ownDir)
+  if (count !== undefined) timing.notePreviewCheckOverlap(count)
+}
+
+/** Name preview internals without changing timing or output for collection callers. */
+export async function previewPhase<T>(name: 'merge' | 'setup' | 'check' | 'collect', work: () => Promise<T> | T): Promise<T> {
+  const timing = currentToolTiming()
+  return timing?.name === 'room_preview_merge' ? timing.phase(name, work) : work()
+}
 
 /** Install once in the MCP process; roomd observes Git regardless of which module launched it. */
 export function registerPrepareGitTiming(): void {
