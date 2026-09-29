@@ -7,6 +7,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
+import { notePreviewCheckOverlap, previewPhase } from '../timing.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
@@ -192,7 +193,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
       try {
-        const result = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) })
+        const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out } = result
         if (!paths.length && !result.callerOnly && result.ignoredNotes.length) return [...missingNotes, 'no mergeable changes', ...result.ignoredNotes].join('\n')
         if (!paths.length && !result.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(', ')}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join('\n')
@@ -205,26 +206,31 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (run) {
           if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
           else {
-            const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
-              const w = result.diskWorkers.get(person)
-              if (!w) return undefined
-              const dir = result.roots.get(path.resolve(w.dir))
-              if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
-              return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
-            }))).filter((x): x is NonNullable<typeof x> => !!x)
-            const modes = new Map<string, number>()
-            for (const p of merged.keys()) {
-              let leadMode = 0o644
-              try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
-              modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
-            }
+            const modes = await previewPhase('setup', async () => {
+              const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
+                const w = result.diskWorkers.get(person)
+                if (!w) return undefined
+                const dir = result.roots.get(path.resolve(w.dir))
+                if (!dir) throw new Error('uncaptured preview root: ' + w.dir)
+                return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result.deltaBases.get(person)!), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map(entry => entry.path) ?? []) }
+              }))).filter((x): x is NonNullable<typeof x> => !!x)
+              const modes = new Map<string, number>()
+              for (const p of merged.keys()) {
+                let leadMode = 0o644
+                try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+                modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
+              }
+              return modes
+            })
             const verdict = await runInMergedTree(caller, ancestor, merged, run, modes); out.push(verdict.text); ranOk = verdict.passed
           }
         }
-        caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
-        // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
-        if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
-        return out.join('\n')
+        return previewPhase('collect', () => {
+          caller.lastPreview = { clean: hardCount === 0, ...(run ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run } : {}) }
+          // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
+          if (!hardCount && ranOk) caller.room.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
+          return out.join('\n')
+        })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
@@ -372,21 +378,31 @@ export function testVerdict(output: string, code: number | null): TestResult {
 async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map()): Promise<TestResult> {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-merge-')))
   try {
-    await materializeGitTree(s.dir, ancestor, dir)
-    for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
-    linkSharedDirs(s.dir, dir)
-    const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
-    env.ROOM_MERGED_TREE = dir
-    const result = await new Promise<{ code: number | null; out: string }>(resolve => {
-      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
-        const raw = err ? (err as { code?: unknown }).code : 0
-        resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
-      })
+    const { bash, env } = await previewPhase('setup', async () => {
+      await materializeGitTree(s.dir, ancestor, dir)
+      for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, 'latin1'), modes.get(rel) ?? 0o644)
+      linkSharedDirs(s.dir, dir)
+      const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
+      env.ROOM_MERGED_TREE = dir
+      return { bash, env }
     })
-    const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
-    const verdict = testVerdict(result.out, result.code)
-    return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
+    notePreviewCheckOverlap(dir)
+    const result = await previewPhase('check', async () => {
+      try {
+        return await new Promise<{ code: number | null; out: string }>(resolve => {
+          execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+            const raw = err ? (err as { code?: unknown }).code : 0
+            resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
+          })
+        })
+      } finally { notePreviewCheckOverlap(dir) }
+    })
+    return previewPhase('collect', () => {
+      const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
+      const verdict = testVerdict(result.out, result.code)
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}\n${tail}\n${verdict.text}` }
+    })
   } catch (e) {
     if (isGitTimeout(e)) throw e
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` }
