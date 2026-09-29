@@ -1,6 +1,6 @@
 import { neighbours, participantRecord, participantsView, type NoteMsg } from '@room/shared'
 import { fetchPrs, postPrNote, prLeader, renderPrNote, syncPrs } from '../prs.js'
-import { openPrs, branchOf, type PrInfo } from '../prs.js'
+import { openPrs, type PrInfo } from '../prs.js'
 import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -23,7 +23,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         pr = openPrs(s.room).find(p => p.number === n) ?? { number: n, title: `#${n}`, author: '', head: '', files: [], updatedAt: '', url: '' }
       } else {
         pr = await myPr(s)
-        if (!pr) { const open = openPrs(s.room); return `no open PR has ${branchOf(s.roomName)} as its head${open.length ? `; open PRs targeting this branch: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}. Pass number=<n>` : ''}` }
+        if (!pr) {
+          const branch = participantRecord(s.room, s.me.name)?.git?.branch
+          if (!branch || branch === 'HEAD') return "check out the PR's branch, or pass number"
+          const open = openPrs(s.room)
+          return `no open PR has ${branch} as its head${open.length ? `; open PRs targeting branches here: ${open.map(p => `#${p.number} (${p.head})`).join(', ')}` : ''}. Pass number=<n>`
+        }
       }
       return postLedger(s, pr)
     }
@@ -48,7 +53,7 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       const names = [s.me.name, ...neighbours(view, s.me.name).names()]
       const active = new Map(presences(s).map(p => [p.user.name, p.lastActive ?? 0]))
       const branches = [...new Set(names.sort((a, b) => (active.get(b) ?? 0) - (active.get(a) ?? 0))
-        .map(name => participantRecord(s.room, name)?.git?.branch).filter((branch): branch is string => !!branch && !branch.startsWith('room/')))].slice(0, 10)
+        .map(name => participantRecord(s.room, name)?.git?.branch).filter((branch): branch is string => !!branch && branch !== 'HEAD' && !branch.startsWith('room/')))].slice(0, 10)
       let prs: PrInfo[]
       try {
         const fetched = await Promise.all(branches.flatMap(branch => [fetchPrList(s, { branch }), fetchPrList(s, { branch, head: true })]))
@@ -73,16 +78,17 @@ export function createPrs(deps: Pick<HandlerState, 'ctx' | 'presences' | 'log' |
       const prs = openPrs(s.room)
       if (!prs.length) return []
       const out = [`open pull requests (${prs.length}):`]
-      for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head} → ${branchOf(s.roomName)}): ${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
+      for (const pr of prs) out.push(`  - PR #${pr.number} "${pr.title}" by ${pr.author} (${pr.head}): ${pr.files.length ? pr.files.slice(0, 8).join(', ') + (pr.files.length > 8 ? `, +${pr.files.length - 8} more` : '') : 'no files'} · ${pr.url}`)
       return out
     }
   const myPr = async (s: Session): Promise<PrInfo | undefined> => {
-      const head = branchOf(s.roomName)
-      try { const byHead = (await fetchPrList(s, { head: true })).find(p => p.head === head); if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
+      const head = participantRecord(s.room, s.me.name)?.git?.branch
+      if (!head || head === 'HEAD') return undefined
+      try { const byHead = (await fetchPrList(s, { branch: head, head: true })).find(p => p.head === head); if (byHead) return byHead } catch (e) { log(`pull requests by head: ${e instanceof Error ? e.message : String(e)}`) }
       return openPrs(s.room).find(p => p.head === head)
     }
   const postLedger = async (s: Session, pr: PrInfo): Promise<string> => {
-      const body = renderPrNote(s.room, { roomName: s.roomName, now: now() })
+      const body = renderPrNote(s.room, { roomName: s.roomName, branch: participantRecord(s.room, s.me.name)?.git?.branch, now: now() })
       const r = await postNote(s, pr.number, body)
       await s.post<NoteMsg>(s.me, { type: 'note', text: `${r.updated ? 'updated' : 'posted'} the room ledger on PR #${pr.number}${r.url ? ` (${r.url})` : ''}`, priority: 'fyi' })
       return `${r.updated ? 'updated' : 'posted'} the room ledger comment on PR #${pr.number} "${pr.title}"${r.url ? `: ${r.url}` : ''} (${body.split('\n').length} lines)`

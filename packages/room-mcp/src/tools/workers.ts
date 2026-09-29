@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionMessage, highestSeq, manifestPaths, type DoneMsg, type NoteMsg } from '@room/shared'
+import { completionMessage, highestSeq, manifestPaths, participantRecord, type DoneMsg, type NoteMsg } from '@room/shared'
 import { reconcileProjectedConflicts } from '../conflict-set.js'
 import { parseShare } from '@room/roomd'
 import { git } from '@room/roomd/git'
@@ -19,7 +19,6 @@ import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, hostWorkerEffort, validTag, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
-import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
@@ -109,7 +108,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (a.pr_note === true) {
         await refreshPrs(s)
         const pr = await myPr(s)
-        if (!pr) out.push(`pr_note: no open PR has ${branchOf(s.roomName)} as its head; nothing posted (room_pr_note number=<n> to pick one)`)
+        if (!pr) out.push(`pr_note: ${participantRecord(s.room, s.me.name)?.git?.branch ? `no open PR has ${participantRecord(s.room, s.me.name)!.git!.branch} as its head` : "check out the PR's branch"}; nothing posted (room_pr_note number=<n> to pick one)`)
         else { try { out.push(await postLedger(s, pr)) } catch (e) { out.push(`pr_note failed: ${e instanceof Error ? e.message : String(e)}`) } }
       }
       return out.join('\n')

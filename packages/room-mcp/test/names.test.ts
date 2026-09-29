@@ -76,7 +76,7 @@ async function relayHub() {
   const room = 'local/names/main'
   const connect = async (sessionId: string, clock?: { mono: () => number; wall: () => number }) => {
     const doc = new Y.Doc()
-    const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), doc, { WebSocketPolyfill: WebSocket as any, params: { key: 'k' } })
+    const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), doc, { WebSocketPolyfill: WebSocket as any, params: { schema: '2', key: 'k' } })
     await new Promise<void>(resolve => provider.once('sync', () => resolve()))
     const hub = new HubClient({ transport: hubTransport(provider), client: 'test', sessionId, local: true, ...clock })
     cleanup.push(() => { hub.close(); provider.destroy(); doc.destroy() })

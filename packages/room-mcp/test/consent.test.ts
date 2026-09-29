@@ -65,6 +65,15 @@ it.each(['full', 'declared', 'intent'] as ShareLevel[])('discloses %s on the fir
   await t.tools.call('room_leave', {})
   expect(await t.tools.call('room_join', { room: 'git/example/repo/main', share })).not.toContain('note for your human')
 })
+it('re-discloses the repository boundary and D1 text once to a previously disclosed declared session', async () => {
+  const store = await PolicyStore.open({ dir, room: 'git/example/repo', participant: 'Ada', server: 'ws://team', requested: 'declared' })
+  await store.markDisclosed('declared', 1)
+  const t = setup()
+  const first = await t.tools.call('room_join', { where: 'ws://team', room: 'git/example/repo', share: 'declared' })
+  expect(first).toContain('paths of every changed file; text only in your declared area')
+  expect(first).toContain('teammates on any branch see what you share')
+  expect(await t.tools.call('room_state', {})).not.toContain('teammates on any branch see what you share')
+})
 it('discloses when company is present and never for local joins', async () => {
   const t = setup(true)
   expect(await t.tools.call('room_join', { where: 'ws://team', room: 'repo/main' })).toContain('note for your human')

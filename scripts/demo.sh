@@ -43,12 +43,12 @@ fake_session() {
 }
 ROHAN_SESSION="$(fake_session Rohan)"
 KIERAN_SESSION="$(fake_session Kieran)"
-curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin/main\",\"session\":\"$ROHAN_SESSION\"}" >/dev/null \
+curl -sf -X POST "http://localhost:$PORT/rooms" -H 'content-type: application/json' -d "{\"room\":\"local/origin\",\"schema\":2,\"session\":\"$ROHAN_SESSION\"}" >/dev/null \
   || { echo "[demo] could not open the room on :$PORT" >&2; exit 1; }
 
 cat <<MSG
 
-Room server: ws://localhost:$PORT   (room opened for local/origin; branch rooms derive from the clone, e.g. local/origin/main)
+Room server: ws://localhost:$PORT   (one room for local/origin across all branches)
   Rohan's clone:  $A
   Kieran's clone: $B
   The server uses the fake GitHub issuer: each agent runs room_login once and is admitted at the code it shows

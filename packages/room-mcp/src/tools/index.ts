@@ -100,8 +100,7 @@ export function createTools(ctx: ToolCtx): Tools {
       current?.daemon.touch()
       const closed = current?.closed
       const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'
-      if (closed && name !== 'room_leave' && !offlineTool) { const rn = current!.roomName; return `error: the room for ${rn.slice(0, rn.lastIndexOf('/'))} was closed (${closed.reason}); room_leave, then room_create to reopen` }
-      const moved = await state.followBranch()
+      if (closed && name !== 'room_leave' && !offlineTool) return `error: the room for ${current!.roomName} was closed (${closed.reason}); room_leave, then room_create to reopen`
       if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()
       if (s) ledger.acceptPrompt(s)
@@ -120,7 +119,6 @@ export function createTools(ctx: ToolCtx): Tools {
         const s2 = ctx.getSession()
         if (s2 && s2 !== s) s2.refreshRuntime?.()
         if (s2 && autoJoin && (name === 'room_join' || name === 'room_create')) autoJoin.retarget(s2)
-        const prefix = moved ? `${moved}\n\n` : ''
         const unread = s2 && name !== 'room_join' && name !== 'room_create' ? state.inbox(s2, batch) : ''
         if (s2) await offerTeamSharingDisclosure(s2, ledger)
         withdrawStartup()
@@ -130,7 +128,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
         const autoTag = s2?.autoTagNote
         if (s2) delete s2.autoTagNote
-        return prefix + notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
+        return notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
         // The reply is an error line now: whatever was selected for it is not in it (M5).
         ledger.discard(batch)

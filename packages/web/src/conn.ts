@@ -49,7 +49,7 @@ export function connect(search = location.search): Conn {
   const room = new RoomDoc(doc)
   const q = new URLSearchParams(search)
   const token = q.get('token') ?? '', view = q.getAll('view').find(value => value !== 'board' && value !== 'code') ?? '', key = q.get('key') ?? ''
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: key ? { key } : view ? { view } : token ? { token } : {} })
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: { schema: '2', ...(key ? { key } : view ? { view } : token ? { token } : {}) } })
   // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
   // Shared view links and local keys already carry access; avoid an unauthenticated preflight.
   // A local relay has no /view-token endpoint.
@@ -127,7 +127,7 @@ async function explainAccess(loc: RoomLocation, auth: { view: string; token: str
     el.textContent = `Cannot open ${roomName}: ${why}`
   }
   try {
-    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, ...(auth.token ? { token: auth.token } : {}) }) })
+    const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...(auth.token ? { token: auth.token } : {}) }) })
     if (res.ok) return
     if (!auth.view && !auth.token) show('this link has no access key. Ask your agent for the room view URL (it ends with &view=...), or use room_state.')
     else if (auth.view) show('the view key on this link has expired or is for another room. Ask your agent for a fresh link (room_state prints it).')

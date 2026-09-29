@@ -38,7 +38,7 @@ export function publishFixture(room: RoomDoc, name: string, path: string, text: 
   const epoch = record?.holder?.epoch ?? 1
   const fence = String(epoch)
   visiblePeer(room, name, 'agent', sessionId)
-  const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
+  const base = options.base ?? record?.git?.base ?? room.manifestHead.get(name)?.base ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)
   room.doc.transact(() => {
@@ -62,7 +62,7 @@ export function deleteFixture(room: RoomDoc, name: string, path: string, options
   const epoch = record?.holder?.epoch ?? 1
   const fence = String(epoch)
   visiblePeer(room, name, 'agent', sessionId)
-  const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
+  const base = options.base ?? record?.git?.base ?? room.manifestHead.get(name)?.base ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)
   room.doc.transact(() => {

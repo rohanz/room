@@ -11,14 +11,14 @@ import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { branchOf, exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
+import { exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
 
 let dir: string
 let base: string
-const ROOM = 'github.com/o/r/main'
+const ROOM = 'github.com/o/r'
 
 /** Two docs synced by update exchange, as the in-memory transport in tools.test.ts. */
 function pair() {
@@ -30,15 +30,16 @@ function pair() {
 const PR7: PrInfo = { number: 7, title: 'Add login', author: 'kieran', head: 'feat/login', files: ['src/auth.py', 'src/session.py'], updatedAt: '2026-09-15T10:00:00Z', url: 'https://github.com/o/r/pull/7' }
 const PR9: PrInfo = { number: 9, title: 'Fix orders', author: 'sam', head: 'main', files: ['orders.py'], updatedAt: '2026-09-15T09:00:00Z', url: 'https://github.com/o/r/pull/9' }
 
-function session(room: RoomDoc, me: Identity, roomName = ROOM): Session {
+function session(room: RoomDoc, me: Identity, roomName = ROOM, branch = 'main'): Session {
   const awareness = new Awareness(room.doc)
   const sessionId = visiblePeer(room, me.name, me.kind)
-  room.participants.set(`${me.name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: sessionId })
+  room.participants.set(`${me.name}\0git`, { branch, head: base, base, anchored: true, rev: 1, fence: sessionId })
   awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   return {
     room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base },
+    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch, base },
+    ...(roomName.startsWith('local/') ? { local: { url: 'ws://x', key: 'k' } } : {}),
   }
 }
 
@@ -77,8 +78,6 @@ describe('PR mirror in the doc', () => {
     expect(prArea([])).toBe('root')
     expect(prLeader(['rohanz+share', 'rohanz+areas', 'pr#7', 'kieran'])).toBe('kieran')
     expect(prLeader([])).toBeUndefined()
-    expect(branchOf('github.com/o/r/feature/x')).toBe('feature/x')
-    expect(branchOf('local/dir/main')).toBe('main')
   })
 
   it('only the lowest present participant maintains the mirror; PRs show in room_state and impact, never as people', async () => {
@@ -97,8 +96,8 @@ describe('PR mirror in the doc', () => {
     expect(fetches).toEqual(['alice', 'alice']) // target and head queries; bob is not the leader
     const state = await tb.call('room_state', {})
     expect(state).toContain('open pull requests (2):')
-    expect(state).toContain('  - PR #7 "Add login" by kieran (feat/login → main): src/auth.py, src/session.py · https://github.com/o/r/pull/7')
-    expect(state).toContain('  - PR #9 "Fix orders" by sam (main → main): orders.py')
+    expect(state).toContain('  - PR #7 "Add login" by kieran (feat/login): src/auth.py, src/session.py · https://github.com/o/r/pull/7')
+    expect(state).toContain('  - PR #9 "Fix orders" by sam (main): orders.py')
     // PR mirrors are never people: they get no routed copies (others() skips them)
     await tb.call('room_send', { type: 'changed', paths: ['src/auth.py'], text: 'touched auth', symbols: ['login'] })
     expect(b.messages().some(m => m.to === 'pr#7')).toBe(false)
@@ -151,7 +150,7 @@ describe('ledger to PR', () => {
   }
 
   it('renderPrNote tells the story in bus order with plan outcomes and answers', () => {
-    const md = renderPrNote(story(), { roomName: 'github.com/o/r/feat/login', now: Date.UTC(2026, 8, 15, 12) })
+    const md = renderPrNote(story(), { roomName: ROOM, branch: 'feat/login', now: Date.UTC(2026, 8, 15, 12) })
     const lines = md.split('\n')
     expect(lines[0]).toBe('### Room ledger for `feat/login`')
     expect(lines[1]).toContain('2026-09-15 12:00 UTC')
@@ -179,12 +178,12 @@ describe('ledger to PR', () => {
   })
 
   it('exports a history headed as a file while PR notes retain their comment heading', () => {
-    const s = session(story(), { name: 'alice', kind: 'agent' }, 'github.com/o/r/feat/login')
+    const s = session(story(), { name: 'alice', kind: 'agent' }, ROOM, 'feat/login')
     const file = join(dir, 'room-history.md')
     exportRoomLedger(s, { path: file, now: Date.UTC(2026, 8, 15, 12) })
     const history = readFileSync(file, 'utf8')
     expect(history).toContain('### Room history for `feat/login`')
-    expect(history).toContain('Generated by the room at 2026-09-15 12:00 UTC from github.com/o/r/feat/login')
+    expect(history).toContain('Generated by the room at 2026-09-15 12:00 UTC from github.com/o/r')
     expect(history).not.toContain('One comment per PR')
     expect(renderPrNote(s.room, { roomName: s.roomName })).toContain('One comment per PR, updated in place')
   })
@@ -205,9 +204,9 @@ describe('ledger to PR', () => {
     expect(await t1.call('room_pr_note', { number: 7 })).toContain('posted the room ledger comment on PR #7 "Add login"')
     expect(await t1.call('room_pr_note', { number: -1 })).toMatch(/^error: number/)
     // a branch nobody opened a PR for
-    const s2 = session(a, { name: 'alice', kind: 'agent', owner: 'alice' }, 'github.com/o/r/wip')
+    const s2 = session(pair().a, { name: 'alice', kind: 'agent', owner: 'alice' }, ROOM, 'wip')
     const t2 = mkTools(s2)
-    expect(await t2.call('room_pr_note', {})).toContain('no open PR has wip as its head; open PRs targeting this branch: #7 (feat/login), #9 (main)')
+    expect(await t2.call('room_pr_note', {})).toContain('no open PR has wip as its head; open PRs targeting branches here: #7 (feat/login), #9 (main)')
     // room_done with pr_note
     const before = posted.length
     const done = await t1.call('room_done', { summary: 'all green', pr_note: true })
@@ -216,7 +215,7 @@ describe('ledger to PR', () => {
     expect(posted.length).toBe(before + 1)
     expect(await t2.call('room_done', { summary: 'x', pr_note: true })).toContain('pr_note: no open PR has wip as its head')
     // non-GitHub rooms have no PRs
-    const s3 = session(pair().a, { name: 'alice', kind: 'agent' }, 'local/dir/main')
+    const s3 = session(pair().a, { name: 'alice', kind: 'agent' }, 'local/dir')
     expect(await mkTools(s3).call('room_pr_note', {})).toMatch(/^error: this room is not a GitHub repo/)
     // the post failing is reported, not thrown
     const failing = createTools({ getSession: () => s1, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async () => [PR9], post: async () => { throw new Error('HTTP 403 no GitHub token') } } })
@@ -231,8 +230,7 @@ describe('PR selection by head (fix 13)', () => {
     const posted: number[] = []
     const asks: { head?: boolean }[] = []
     const featPr = { number: 21, title: 'Login', author: 'rohanz', head: 'feat/login', files: ['src/auth.py'], updatedAt: '', url: 'https://github.com/o/r/pull/21' }
-    const s = session(a, { name: 'rohanz', kind: 'agent', owner: 'rohanz' })
-    s.roomName = 'github.com/o/r/feat/login'
+    const s = session(a, { name: 'rohanz', kind: 'agent', owner: 'rohanz' }, ROOM, 'feat/login')
     const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, prs: { intervalMs: 0, fetch: async (_s, opts) => { asks.push(opts ?? {}); return opts?.head ? [featPr] : [] }, post: async (_s, number) => { posted.push(number); return { url: 'u', updated: false } } } })
     const out = await tools.call('room_pr_note', {})
     expect(out).toContain('PR #21')

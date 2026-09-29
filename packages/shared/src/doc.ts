@@ -235,7 +235,6 @@ export class RoomDoc {
         for (const key of [...this.overlays.keys()]) if (key.startsWith(`${name}\u0000`)) this.overlays.delete(key)
         for (const key of [...this.participants.keys()]) if (key.startsWith(`${name}\u0000`)) this.participants.delete(key)
         this.colors.delete(name)
-        this.bases.delete(name)
         this.seen(name).clear()
       }
       this.workerViews.delete(id)
@@ -265,12 +264,13 @@ export class RoomDoc {
     return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath)) ?? this.oldOwnedBaseTexts(person)?.get(key) ?? this.baseTexts.get(key)
   }
   /** Remove only this participant's entries that no longer back their live work. */
-  reconcileBaseTexts(person: string, origin?: unknown): void {
+  reconcileBaseTexts(person: string, origin?: unknown, baseSha?: string): void {
     const head = this.manifestHead.get(person)
+    const base = baseSha ?? head?.base
     const current = head ? this.manifest.get(manifestKey(person, head.fence)) : undefined
     const wanted = new Set([...current?.entries() ?? []]
       .filter(([, entry]) => entry.fence === head?.fence && entry.held !== 'scope')
-      .map(([path]) => `${this.baseOf(person)}:${path}`))
+      .map(([path]) => `${base}:${path}`))
     this.doc.transact(() => {
       const prefix = this.baseTextPrefix(person)
       for (const key of this.ownedBaseTexts.keys()) {
@@ -293,10 +293,6 @@ export class RoomDoc {
     if (this.ownedBaseTexts.get(key) === text) return
     this.doc.transact(() => { this.ownedBaseTexts.set(key, text) }, origin)
   }
-  /** Each person's own HEAD: the commit their overlay is a delta from. */
-  get bases(): Y.Map<string> { return this.doc.getMap<string>('bases') }
-  baseOf(person: string): string | undefined { return this.bases.get(person) ?? this.meta.base }
-  setBaseOf(person: string, sha: string, origin?: unknown): void { this.doc.transact(() => { this.bases.set(person, sha) }, origin) }
 
   // ---- overlays ----------------------------------------------------------
 
@@ -428,8 +424,6 @@ export class RoomDoc {
     const map = this.metaMap
     return {
       repo: map.get('repo') as string | undefined,
-      branch: map.get('branch') as string | undefined,
-      base: map.get('base') as string | undefined,
       createdAt: map.get('createdAt') as number | undefined,
       seededBy: map.get('seededBy') as string | undefined,
       schemaVersion: map.get('schemaVersion') as number | undefined,

@@ -20,7 +20,7 @@ const provider = new WebsocketProvider(serverUrl, encodedRoomName, doc, { WebSoc
 
 provider.once('sync', () => {
   const now = Date.now()
-  room.setMeta({ repo: 'demo/shop', branch: 'main', base: 'a1b2c3d4e5f6a7b8', createdAt: now, seededBy: 'seed' })
+  room.setMeta({ repo: 'demo/shop', createdAt: now, seededBy: 'seed' })
   room.setOverlay('Kieran', 'shop/handlers.py', [
     'def checkout(cart):',
     '    total = sum(item.price for item in cart)',

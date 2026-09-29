@@ -16,6 +16,10 @@ const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
 const openRegistry = (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => WorkerRegistry.open(dir, { ...options, watch: false })
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
+const legacyMemoryFile = (commonDir: string, room: string) => path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
+it('refuses a worker launched by an older Room before it can publish', async () => {
+  await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("this worker runs Room 0.17 but its lead runs an older Room")
+})
 it('admits a worker when ROOM_REGISTRY uses a symlink to the same registry root', async () => {
   const dir = common(), alias = `${dir}-alias`
   execFileSync('git', ['-C', dir, 'init', '-q'])
@@ -379,6 +383,8 @@ describe('WorkerRegistry durable store', () => {
     expect(saveMemory(commonDir, room, doc.doc, () => {})).toBe(true)
     expect(fs.statSync(memoryFile(commonDir, room)).size).toBeGreaterThan(5 * 1024 * 1024)
     expect(fs.statSync(memoryFile(commonDir, room)).size).toBeLessThan(ROOM_DOC_MAX_BYTES)
+    fs.mkdirSync(path.dirname(legacyMemoryFile(commonDir, room)), { recursive: true })
+    fs.copyFileSync(memoryFile(commonDir, room), legacyMemoryFile(commonDir, room))
     const store = await openRegistry(commonDir)
     expect(store.list()[0]).toMatchObject({ phase: 'retired', keptWorktree: workerDir })
     expect(await store.trusted({ participant: 'rohanz', room: 'local/explicit', dir }, 'tests')).toBeUndefined()
@@ -395,7 +401,7 @@ describe('WorkerRegistry durable store', () => {
       fs.mkdirSync(path.dirname(workerDir), { recursive: true })
       git('worktree', 'add', '-qb', 'room/tests', workerDir)
       const commonDir = path.resolve(dir, git('rev-parse', '--git-common-dir'))
-      const file = memoryFile(commonDir, 'local/repo/main')
+      const file = legacyMemoryFile(commonDir, 'local/repo/main')
       fs.mkdirSync(path.dirname(file), { recursive: true })
       if (corrupt) fs.writeFileSync(file, new Uint8Array([255, 255, 255]))
       else { fs.writeFileSync(file, new Uint8Array([0])); fs.truncateSync(file, ROOM_DOC_MAX_BYTES + 1) }

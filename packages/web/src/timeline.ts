@@ -1,5 +1,4 @@
-import { type Claim, type ConflictSpan } from '@room/shared'
-import { deriveConflictSpans } from './conflicts.ts'
+import { deriveConflictSpans, type Claim, type ConflictSpan } from '@room/shared'
 import type { Msg, ScopeMsg } from '@room/shared'
 
 export interface TimelineItem {
@@ -111,8 +110,8 @@ export function groupEpisodes(messages: readonly Msg[]): Episode[] {
   return episodes.sort((a, b) => a.at - b.at)
 }
 
-export function collapseConflictTimeline(messages: readonly Msg[], claims: readonly Claim[] = [], base?: string): (Folded & { conflict?: ConflictSpan })[] {
-  const conflicts = deriveConflictSpans(messages, claims, base).filter(s => s.events.length)
+export function collapseConflictTimeline(messages: readonly Msg[], claims: readonly Claim[] = []): (Folded & { conflict?: ConflictSpan })[] {
+  const conflicts = deriveConflictSpans(messages, claims).filter(s => s.events.length)
   const grouped = new Set(conflicts.flatMap(s => s.events.map(m => m.id)))
   return [...foldUpgradeCopies(messages).filter(e => !grouped.has(e.message.id)), ...conflicts.map(conflict => ({ message: conflict.events[0], alsoSentTo: [], conflict }))].sort((a, b) => a.message.at - b.message.at)
 }

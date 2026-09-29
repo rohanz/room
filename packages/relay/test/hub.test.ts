@@ -14,7 +14,7 @@ import { AuthorityLock, deterministicPort, ensureLocalRelay, memoryFile, readRel
 
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-hub-'))
 const KEY = 'hub-test-key'
-const ROOM = 'local/contract/main'
+const ROOM = 'local/contract'
 const roomUrl = (port: number, room = ROOM, key = KEY) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}?key=${key}`
 
 /** The contract over a real relay: the hub runs under the clone's authority lock, on the test clock. */
@@ -54,20 +54,20 @@ describe('relay hub wiring', () => {
     const common = await makeCommonDir()
     const squatter = http.createServer((_q, res) => { res.end('not a relay') })
     await new Promise<void>(r => squatter.listen(deterministicPort(common), '127.0.0.1', r))
-    const [a, b] = await Promise.all([ensureLocalRelay(common, 'local/x/main', { watchMs: 100 }), ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })])
+    const [a, b] = await Promise.all([ensureLocalRelay(common, 'local/x', { watchMs: 100 }), ensureLocalRelay(common, 'local/x', { watchMs: 100 })])
     const stray = await startRelay(0, { key: a.key, commonDir: common })
     try {
       expect([a.owned, b.owned].filter(Boolean)).toHaveLength(1)
       expect(a.port).toBe(b.port)
       expect(readRelayInfo(common)?.port).toBe(a.port)
-      const client = await socketClient(roomUrl(a.port, 'local/x/main', a.key))
+      const client = await socketClient(roomUrl(a.port, 'local/x', a.key))
       await waitFor(async () => (await client.hello()).ok)
       expect(await client.hello()).toMatchObject({ ok: true, authority: true })
       const lease = await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }) as { ok: boolean; epoch: number }; return r.ok && r }, 10_000)
       expect(await client.send({ op: 'post', lease: { name: 'ada', epoch: lease.epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'hi' } })).toMatchObject({ ok: true })
       await client.close()
 
-      const other = await socketClient(roomUrl(stray.port, 'local/x/main', a.key))
+      const other = await socketClient(roomUrl(stray.port, 'local/x', a.key))
       expect(await other.hello()).toMatchObject({ ok: false, reason: 'not-authority' })
       expect(await other.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: false, reason: 'not-authority' })
       await other.close()
@@ -122,7 +122,7 @@ describe('relay hub wiring', () => {
     const reports = new Map<number, Report>()
     const contender = (): ChildProcess => {
       // `--import tsx`, not tsx's CLI, which runs the script in a second process that the signals would miss.
-      const child = spawn(process.execPath, ['--import', 'tsx', path.join(here, 'authority-child.ts'), common, 'local/x/main', barrier], { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] })
+      const child = spawn(process.execPath, ['--import', 'tsx', path.join(here, 'authority-child.ts'), common, 'local/x', barrier], { cwd: here, stdio: ['ignore', 'pipe', 'ignore'] })
       let buffered = ''
       child.stdout!.on('data', chunk => {
         buffered += chunk
@@ -144,7 +144,7 @@ describe('relay hub wiring', () => {
       const { port, key } = reports.get(owner.pid!)!
       expect(reports.get(survivor.pid!)).toMatchObject({ owned: false, port, key })
       expect(lockOwner()).toBe(owner.pid)
-      const client = await socketClient(roomUrl(port, 'local/x/main', key))
+      const client = await socketClient(roomUrl(port, 'local/x', key))
       const first = await waitFor(async () => { const r = await client.hello(); return r.ok && r }, 5000)
       const epoch = (await waitFor(async () => { const r = await client.send({ op: 'acquire', name: 'ada', holder: holder('s1') }); return r.ok && r }, 10_000)).epoch as number
       await client.close()
@@ -155,7 +155,7 @@ describe('relay hub wiring', () => {
       expect(reports.get(survivor.pid!)!.owned).toBe(false)
       expect(lockOwner()).toBe(owner.pid)
       owner.kill('SIGCONT')
-      const resumed = await socketClient(roomUrl(port, 'local/x/main', key))
+      const resumed = await socketClient(roomUrl(port, 'local/x', key))
       expect(await waitFor(async () => { const r = await resumed.hello(); return r.ok && r }, 5000)).toMatchObject({ incarnation: first.incarnation })
       await resumed.close()
 
@@ -164,7 +164,7 @@ describe('relay hub wiring', () => {
       await new Promise(r => owner.once('exit', r))
       await waitFor(() => reports.get(survivor.pid!)!.owned, 10_000)
       expect(lockOwner()).toBe(survivor.pid)
-      const next = await waitFor(async () => { try { return await socketClient(roomUrl(port, 'local/x/main', key)) } catch { return undefined } }, 5000)
+      const next = await waitFor(async () => { try { return await socketClient(roomUrl(port, 'local/x', key)) } catch { return undefined } }, 5000)
       const hello = await waitFor(async () => { const r = await next.hello(); return r.ok && r }, 5000)
       expect(hello.incarnation as number).toBeGreaterThan(first.incarnation as number)
       expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: true })
@@ -182,12 +182,12 @@ describe('relay hub wiring', () => {
     const replica = new RoomDoc()
     const inherited = encodeSeq(5, 3)
     replica.participants.set('ada\u0000holder', { ...holder('s1'), epoch: inherited, at: 1 })
-    const owner = await ensureLocalRelay(common, 'local/x/main', { watchMs: 30_000 })
-    const b = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100, seed: () => Y.encodeStateAsUpdate(replica.doc) })
+    const owner = await ensureLocalRelay(common, 'local/x', { watchMs: 30_000 })
+    const b = await ensureLocalRelay(common, 'local/x', { watchMs: 100, seed: () => Y.encodeStateAsUpdate(replica.doc) })
     try {
       await owner.stop()
       await waitFor(() => b.owned, 8000)
-      const c = await socketClient(roomUrl(b.port, 'local/x/main', b.key))
+      const c = await socketClient(roomUrl(b.port, 'local/x', b.key))
       const hello = await waitFor(async () => { const r = await c.hello(); return r.ok && r })
       expect(hello.incarnation as number).toBeGreaterThan(5)
       expect(await c.send({ op: 'renew', name: 'ada', epoch: inherited })).toMatchObject({ ok: true })

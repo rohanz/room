@@ -1,3 +1,4 @@
+import { participantRecord } from '@room/shared'
 import { incarnationText } from './manifest-assert.js'
 import { policyFromLevel } from '../src/policy.js'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -57,25 +58,37 @@ it('retries an injected Git failure through the whole HEAD transition', async ()
   probe.failTracked = true
   await daemon!.reconcileGitChanges()
   expect(daemon!.base).toBe(newHead)
-  expect(daemon!.roomDoc.baseOf('Alice')).toBe(oldHead)
+  expect(participantRecord(daemon!.roomDoc, 'Alice')?.git?.base).toBe(oldHead)
   expect(daemon!.roomDoc.manifestHead.get('Alice')?.complete).toBe(false)
   await daemon!.reconcileGitChanges()
   expect(daemon!.base).toBe(newHead)
-  expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
+  expect(participantRecord(daemon!.roomDoc, 'Alice')?.git?.base).toBe(newHead)
   expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 3, to: 3 })
+})
+
+it('reanchors a recovered branch-room claim against this checkout and releases a stale one', async () => {
+  await movedHead()
+  await daemon!.reconcileGitChanges()
+  const good = { id: 'legacy-good', path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent' as const,
+    intent: 'edit', at: 1, claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2), origin: 'local/repo/main' }
+  daemon!.roomDoc.claims.set(good.id, good)
+  daemon!.roomDoc.claims.set('legacy-stale', { ...good, id: 'legacy-stale', claimedHash: 'missing' })
+  await daemon!.validateMigratedClaims()
+  expect(daemon!.roomDoc.claims.get(good.id)).toMatchObject({ from: 3, to: 3 })
+  expect(daemon!.roomDoc.claims.has('legacy-stale')).toBe(false)
 })
 
 it('keeps the new baseline after publishing a dirty overlay', async () => {
   const { newHead } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'dirty after commit\n')
   await daemon!.reconcileGitChanges()
-  expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
+  expect(participantRecord(daemon!.roomDoc, 'Alice')?.git?.base).toBe(newHead)
   expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('dirty after commit\n')
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBe('added\nfirst\nclaimed\nlast\n')
 })
 
 it('retries after publication and claim re-anchoring without losing the baseline or moving claims twice', async () => {
-  const { newHead, claim } = await movedHead()
+  const { oldHead, newHead, claim } = await movedHead()
   fs.writeFileSync(path.join(dir!, 'app.txt'), 'added\nfirst\nclaimed\nlast\ndirty\n')
   const internal = daemon as Roomd & { reanchorOwnClaims(head: string, claims: unknown[]): Promise<unknown>; appliedHead: string }
   const reanchor = internal.reanchorOwnClaims.bind(internal)
@@ -87,7 +100,7 @@ it('retries after publication and claim re-anchoring without losing the baseline
   }
   await daemon!.reconcileGitChanges()
   expect(internal.appliedHead).not.toBe(newHead)
-  expect(daemon!.roomDoc.baseOf('Alice')).toBe(newHead)
+  expect(participantRecord(daemon!.roomDoc, 'Alice')?.git?.base).toBe(oldHead)
   expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')).toBeUndefined()
   expect(daemon!.roomDoc.baseText('Alice', newHead, 'app.txt')).toBeUndefined()
   await daemon!.reconcileGitChanges()
@@ -113,7 +126,7 @@ it('retries when HEAD moves during publication', async () => {
   await daemon!.reconcileGitChanges()
   const finalHead = git(dir!, 'rev-parse', 'HEAD')
   expect(internal.appliedHead).toBe(finalHead)
-  expect(daemon!.roomDoc.baseOf('Alice')).toBe(finalHead)
+  expect(participantRecord(daemon!.roomDoc, 'Alice')?.git?.base).toBe(finalHead)
   expect(incarnationText(daemon!.roomDoc, 'Alice', 'app.txt')?.toString()).toBe('dirty after next commit\n')
   expect(daemon!.roomDoc.baseText('Alice', finalHead, 'app.txt')).toBe('dirty before next commit\n')
 })

@@ -165,7 +165,7 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "On explicit request, export history then delete local room memory or all branch rooms for everyone on the team server. Leaves clone files intact.",
+      "description": "On explicit request, export history then delete the repository room for everyone on all branches, or local memory. Leaves clone files intact.",
       "inputSchema": {
         "type": "object",
         "properties": {

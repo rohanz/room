@@ -35,9 +35,10 @@ it('saves on close and a new relay memory instance restores only memory with pri
   expect(second.doc.getArray('bus').toArray()).toEqual([{ id: 'bus' }])
   expect(second.doc.getArray('retiredWorkers').toArray()).toEqual([{ id: 'retiredWorkers' }])
   for (const type of ['workers', 'scopes', 'colors', 'meta', 'ledger']) expect(second.doc.getMap(type).get('key')).toEqual({ value: type })
-  for (const type of ['overlays', 'deleted', 'basetext', 'graphs', 'claims']) expect(second.doc.share.has(type)).toBe(false)
+  for (const type of ['overlays', 'deleted', 'basetext', 'graphs']) expect(second.doc.share.has(type)).toBe(false)
+  expect(second.doc.getMap('claims').get('stale')).toBe('text')
   expect(fs.statSync(memoryFile(dir, room)).mode & 0o777).toBe(0o600)
-  expect(fs.statSync(path.join(dir, 'room-local')).mode & 0o777).toBe(0o700)
+  expect(fs.statSync(path.dirname(memoryFile(dir, room))).mode & 0o777).toBe(0o700)
 })
 it('debounces for 2s and saves at least every 10s under constant changes', () => {
   vi.useFakeTimers()
@@ -50,10 +51,10 @@ it('debounces for 2s and saves at least every 10s under constant changes', () =>
   expect(load().getArray('bus').length).toBe(11)
 })
 it('quarantines corrupt files and starts empty, logging once', () => {
-  fs.mkdirSync(path.dirname(memoryFile(dir, room)))
+  fs.mkdirSync(path.dirname(memoryFile(dir, room)), { recursive: true })
   fs.writeFileSync(memoryFile(dir, room), new Uint8Array([255, 255, 255]))
   expect(load().share.size).toBe(0)
-  expect(fs.readdirSync(path.join(dir, 'room-local'))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
+  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
   expect(load().share.size).toBe(0)
   expect(log).toHaveBeenCalledTimes(1)
 })
@@ -77,7 +78,7 @@ it.each(['write', 'rename'])('preserves the old file and removes temporary files
   }
   expect(saveMemory(dir, room, memory.doc, log)).toBe(false)
   expect(fs.readFileSync(memoryFile(dir, room))).toEqual(original)
-  expect(fs.readdirSync(path.join(dir, 'room-local'))).toEqual([path.basename(memoryFile(dir, room))])
+  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([path.basename(memoryFile(dir, room))])
 })
 it('saves the smallest snapshot when protected data alone exceeds 5MB, keeping mail owed since, and warns once a minute', () => {
   const memory = open()
@@ -106,7 +107,7 @@ it('quarantines files over the 64MB ceiling on load', () => {
   const memory = open(); memory.flush()
   fs.truncateSync(memoryFile(dir, room), ROOM_DOC_MAX_BYTES + 1)
   expect(load().share.size).toBe(0)
-  expect(fs.readdirSync(path.join(dir, 'room-local'))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
+  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([expect.stringMatching(/\.ydoc\.corrupt-\d+$/)])
   expect(log).toHaveBeenCalledWith(expect.stringContaining('exceeds 64 MB'))
 })
 it('still saves when sibling roots push the snapshot past 5MB, shedding archive and broadcasts but not mail', () => {

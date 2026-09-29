@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc, manifestKey } from '@room/shared'
+import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
 import { gitShow } from '@room/roomd/git'
 import * as Y from 'yjs'
@@ -79,8 +80,7 @@ describe('GraphIndex overlay events', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
   it('marks held remote changes as contract coverage gaps', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     publishFixture(room, 'Kieran', 'hidden.py', 'def secret(x):\n    return x\n')
     const head = room.manifestHead.get('Kieran')!
     const key = manifestKey('Kieran', head.fence)
@@ -100,8 +100,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('continues past an unchanged participant to a later changed version', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     publishFixture(room, 'Ada', 'other.py', 'def other():\n    pass\n')
     publishFixture(room, 'Kieran', 'utils.py', 'def replacement():\n    pass\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
@@ -113,8 +112,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('replacing one person map refreshes only its changed overlay, not 40 unrelated changed files', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     for (let i = 0; i < 40; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
     publishFixture(room, 'Kieran', 'utils.py', 'def old_name():\n    pass\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
@@ -129,8 +127,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('initial refresh covers every changed source file', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     for (let i = 0; i < 16; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     try {
@@ -142,8 +139,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('limits initial refresh to eight active file reads', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     for (let i = 0; i < 16; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    pass\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     const target = gi as unknown as { textFor(path: string): Promise<string | undefined> }
@@ -168,8 +164,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('limits incremental refresh to eight active file reads', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
     const target = gi as unknown as { textFor(path: string): Promise<string | undefined> }
@@ -197,8 +192,7 @@ describe('GraphIndex overlay events', () => {
   // A lead with hundreds of changed files sat near 100% CPU while workers edited: every overlay
   // event re-parsed (and git-showed) every changed path of every participant.
   it('an edit refreshes only the path it touched, and a path leaving the changed set is refreshed', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     for (let i = 0; i < 40; i++) publishFixture(room, 'Rohan', `mod${i}.py`, `def f${i}():\n    return ${i}\n`)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
     gi.start(); await gi.whenIdle()
@@ -228,8 +222,7 @@ describe('GraphIndex overlay events', () => {
   })
 
   it('a participant dropping all their work still refreshes each of their paths', async () => {
-    const room = new RoomDoc()
-    room.setMeta({ base }); setFixtureLocalRoot(room, 'Rohan', dir)
+    const room = graphRoom()
     publishFixture(room, 'Kieran', 'utils.py', 'def verify_token(t):\n    return t\n')
     publishFixture(room, 'Kieran', 'extra.py', 'def extra():\n    return 1\n')
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
@@ -248,3 +241,11 @@ describe('GraphIndex overlay events', () => {
     gi.stop(); room.doc.destroy()
   })
 })
+
+function graphRoom(): RoomDoc {
+  const room = new RoomDoc()
+  room.setMeta({ repo: 'github.com/example/graph' })
+  setParticipantBase(room, 'Rohan', base)
+  setFixtureLocalRoot(room, 'Rohan', dir)
+  return room
+}

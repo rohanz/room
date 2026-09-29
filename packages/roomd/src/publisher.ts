@@ -134,7 +134,7 @@ export class Publisher {
         if (facts.some(f => f.path === path && f.text !== undefined || f.path === path && f.change === 'D' && !f.excluded)) continue
         host.roomDoc.clearOverlay(incarnation, path, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host)
+      host.roomDoc.reconcileBaseTexts(host.name, host, host.shared)
       withdrawBaseTexts(host, new Set(facts.filter(f => !f.excluded && authorizesText(next.policy, f.path)).map(f => f.path)))
     }, host)
     this.markDirty()
@@ -218,7 +218,7 @@ export class Publisher {
         const base = prepared.baseTexts.get(p)
         if (base !== undefined) host.roomDoc.setBaseText(host.name, host.shared || inputs.head, p, base, host)
       }
-      host.roomDoc.reconcileBaseTexts(host.name, host)
+      host.roomDoc.reconcileBaseTexts(host.name, host, host.shared)
       withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === 'shared' && authorizesText(inputs.policy, p)).map(([p]) => p)))
     }, host)
     this.excludedPaths.clear()

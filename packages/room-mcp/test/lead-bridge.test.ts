@@ -40,7 +40,7 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
   const graph = new GraphIndex(room, me.name, dir); graph.start()
   const policyStore = testPolicyStore()
   return {
-    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
+    graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base,
       inputs: { policy: policyStore.policy, rules: rulesFromText('', 512 * 1024, 8 * 1024 * 1024), head: base } } as never,
@@ -70,7 +70,7 @@ function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
   const team = pair(), local = pair()
   team.a.setMeta({ repo: 'x', branch: 'main', base }); local.a.setMeta({ repo: 'x', branch: 'main', base })
   let ls: Session | null = fakeSession(team.a, lead, false)
-  ls!.roomName = 'github.com/rohanz/x/main'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx%2Fmain'
+  ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
   const exits: ((code: number | null) => void)[] = []
   const leadTools = createTools({
     getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined, listCwdProcesses: () => [],

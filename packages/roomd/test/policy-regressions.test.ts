@@ -30,7 +30,7 @@ function provider(doc: Y.Doc): WebsocketProvider {
 }
 async function daemonFor(files: Record<string, string>) {
   const repo = checkout(files)
-  const daemon = await startRoomd({ dir: repo.dir, room: 'ws://memory/local/r/main', localKey: 'test', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'),
+  const daemon = await startRoomd({ dir: repo.dir, room: 'ws://memory/local/r', localKey: 'test', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'),
     providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60000, log: () => {} })
   daemons.push(daemon)
   return { ...repo, daemon, entries: () => daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))! }
@@ -93,7 +93,7 @@ it('withdraws a deleted file base text on full to declared and after prefix sett
   const { dir, daemon, entries } = await daemonFor({ 'src/x': 'private base' })
   fs.rmSync(path.join(dir, 'src/x'))
   await (daemon as any).publisher.reconcile('all')
-  const base = daemon.roomDoc.baseOf('Ben')!
+  const base = participantRecord(daemon.roomDoc, 'Ben')!.git!.base
   expect(daemon.roomDoc.baseText('Ben', base, 'src/x')).toBe('private base')
   daemon.applyInputs({ ...daemon.inputs, policy: policyFromLevel('declared') })
   expect(entries().get('src/x')?.change).toBe('D')

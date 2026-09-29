@@ -24,20 +24,19 @@ describe('local rooms', () => {
     const dir = await makeRepo()
     const wt = path.join(dir, '.room', 'workers', 'x')
     sh(dir, ['worktree', 'add', '-q', '-b', 'room/x', wt, 'HEAD'])
-    expect(await localRoomName(dir)).toBe(`local/${path.basename(dir)}/main`)
-    expect(await localRoomName(wt)).toBe(`local/${path.basename(dir)}/main`)
-    expect(await localRoomName(wt, 'feature')).toBe(`local/${path.basename(dir)}/feature`)
+    expect(await localRoomName(dir)).toBe(`local/${path.basename(dir)}`)
+    expect(await localRoomName(wt)).toBe(`local/${path.basename(dir)}`)
     expect(fs.realpathSync(await gitCommonDir(wt))).toBe(fs.realpathSync(path.join(dir, '.git')))
   })
 
   it('starts the relay in the clone\'s common git dir', async () => {
     const dir = await makeRepo()
     const common = await gitCommonDir(dir)
-    const a = await ensureLocalRelay(common, 'local/x/main', { watchMs: 100 })
+    const a = await ensureLocalRelay(common, 'local/x', { watchMs: 100 })
     try {
       expect(a.owned).toBe(true)
       expect(readRelayInfo(common)?.port).toBe(a.port)
-      expect(fs.existsSync(path.join(common, 'room-local.json'))).toBe(true)
+      expect(fs.existsSync(path.join(common, 'room', 'relay.json'))).toBe(true)
     } finally { await a.stop() }
   })
 })

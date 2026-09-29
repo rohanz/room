@@ -104,14 +104,15 @@ function commit(dir: string, file: string, text: string, message = file): string
 }
 
 describe('participant git record (reporooms §B2, §B3)', () => {
-  it('publishes branch, head, base and anchor at start, and keeps the one-time meta seed for legacy readers', async () => {
+  it('publishes branch, head, base and anchor at start without room-wide Git metadata', async () => {
     const w = await world()
     const daemon = await w.start({ sessionId: 'host-1' })
     expect(git(daemon)).toEqual({ branch: 'rehearsal', head: w.base, base: w.base, anchored: true, remote: 'origin', upstream: 'origin/rehearsal', ahead: 0, behind: 0, rev: 1, fence: 'host-1' })
     expect(daemon.anchor).toEqual({ base: w.base, anchored: true })
     expect(status(daemon)).toBe('synced with origin/rehearsal')
     expect((daemon.provider.awareness.getLocalState() as { sessionId?: string }).sessionId).toBe('host-1')
-    expect(daemon.roomDoc.meta).toMatchObject({ base: w.base, branch: 'rehearsal', seededBy: 'Alice' })
+    expect(daemon.roomDoc.meta.base).toBeUndefined()
+    expect(daemon.roomDoc.meta.branch).toBeUndefined()
   })
 
   it('an unpushed commit keeps the anchor; its push moves it and posts one pushed {fromSha, toSha}', async () => {
@@ -131,7 +132,7 @@ describe('participant git record (reporooms §B2, §B3)', () => {
       fromSha: w.base, toSha: local, commits: 1, paths: ['a.txt'], summary: 'add a',
     }])
     expect(pushed(daemon)[0].to).toBeUndefined()
-    expect(daemon.roomDoc.meta.base).toBe(w.base) // the legacy room base is never advanced again
+    expect(participantRecord(daemon.roomDoc, 'Alice')?.git?.base).toBe(local)
     expect(daemon.roomDoc.messages().filter(m => m.type === 'base')).toEqual([])
   })
 

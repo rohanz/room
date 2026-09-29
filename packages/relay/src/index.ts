@@ -1,7 +1,7 @@
 /**
  * @room/relay — the local room relay. No server: the first process to join a clone's local
  * room starts a tiny y-websocket relay on 127.0.0.1 (with private memory snapshots) and records it in
- * `<git common dir>/room-local.json` (mode 0600, with a random key every websocket must
+ * `<git common dir>/room/relay.json` (mode 0600, with a random key every websocket must
  * present). The relay binds a port derived from the common dir, so two processes starting at
  * the same moment cannot end up in two rooms: one binds, the other gets EADDRINUSE and joins.
  * Later processes find the file, check the relay answers as a room relay, and connect. Only the
@@ -12,6 +12,7 @@
  * document, so a relay restart loses nothing: clients sync their state back into the new one.
  */
 import { RoomMemory, memoryFile } from './memory.js'
+import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
 import { pidAlive } from './process.js'
 import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory } from './memory.js'
@@ -51,6 +52,8 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
   if (d) return d
   const memory = opts.commonDir ? new RoomMemory(opts.commonDir, decodeURIComponent(name), opts.log) : undefined
   const doc = memory?.doc ?? new Y.Doc({ gc: true })
+  if (doc.getMap('meta').get('schemaVersion') !== 2) doc.getMap('meta').set('schemaVersion', 2)
+  if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name), doc, opts.log)
   const awareness = new awarenessProtocol.Awareness(doc)
   awareness.setLocalState(null)
   d = { doc, awareness, conns: new Map(), memory }
@@ -147,7 +150,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
   }
 }
 
-export interface LocalRelayInfo { port: number; pid: number; room: string; startedAt: number; key: string }
+export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
@@ -155,7 +158,7 @@ export interface LocalRelay {
   /** http://127.0.0.1:<port>: the browser view (same machine only). */
   httpUrl: string
   port: number
-  /** Secret every websocket to this relay must carry as ?key=; lives in room-local.json (0600). */
+  /** Secret every websocket to this relay must carry as ?key=; lives in room/relay.json (0600). */
   key: string
   /** True when this process runs the relay. */
   owned: boolean
@@ -166,15 +169,15 @@ export interface LocalRelay {
   stop(): Promise<void>
 }
 
-export const LOCAL_FILE = 'room-local.json'
+export const LOCAL_FILE = path.join('room', 'relay.json')
 
 export function relayFile(commonDir: string): string { return path.join(commonDir, LOCAL_FILE) }
 
 export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
   try {
     const v = JSON.parse(fs.readFileSync(relayFile(commonDir), 'utf8')) as Partial<LocalRelayInfo>
-    return typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
-      ? { port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key }
+    return v.schema === 2 && typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
+      ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key }
       : undefined
   } catch { return undefined }
 }
@@ -183,7 +186,7 @@ export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
 export function deterministicPort(commonDir: string): number {
   let real = commonDir
   try { real = fs.realpathSync.native(commonDir) } catch { /* use as given */ }
-  const h = crypto.createHash('sha1').update(real).digest()
+  const h = crypto.createHash('sha1').update('schema-2\0').update(real).digest()
   return 40000 + (h.readUInt32BE(0) % 20000)
 }
 
@@ -201,11 +204,11 @@ export function cloneId(commonDir: string): string {
  */
 export async function probeRelay(port: number, commonDir: string, key: string, timeoutMs = 800): Promise<'ours' | 'foreign' | 'none'> {
   const h = await health(port, key, timeoutMs)
-  if (h?.local !== true) return 'none'
+  if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return 'none'
   return h.clone === cloneId(commonDir) && h.key === true ? 'ours' : 'foreign'
 }
 
-function health(port: number, key: string | undefined, timeoutMs: number): Promise<{ local?: unknown; clone?: unknown; key?: unknown } | undefined> {
+function health(port: number, key: string | undefined, timeoutMs: number): Promise<{ local?: unknown; schema?: unknown; hub?: unknown; clone?: unknown; key?: unknown } | undefined> {
   return new Promise(resolve => {
     const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) }, res => {
       let body = ''
@@ -274,7 +277,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         // Open to joiners; with the clone's key it also confirms the key, so a stale discovery file is never trusted.
         const keyOk = !!opts.key && isLoopback(req.socket.remoteAddress) && req.headers.authorization === 'Bearer ' + opts.key
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, local: true, hub: 1, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(keyOk ? { key: true } : {}) }))
+        res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(keyOk ? { key: true } : {}) }))
         return
       }
       if (req.method === 'DELETE' && url.pathname === '/memory') {
@@ -284,6 +287,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
           const d = docs.get(encodeURIComponent(room))
           if (d?.memory) d.memory.forget()
           else if (opts.commonDir) fs.rmSync(memoryFile(opts.commonDir, room), { force: true })
+          if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room)
           res.writeHead(204); res.end()
         } catch { res.writeHead(500); res.end('could not forget local memory') }
         return
@@ -303,11 +307,18 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     const wss = new WebSocketServer({ noServer: true })
     const docs = relayDocs()
     wss.on('connection', (conn, req) => attach(docs, conn, req, docOptions))
-    const ticker = setInterval(() => { for (const d of docs.values()) d.hub?.tick() }, 1000)
+    const ticker = setInterval(() => {
+      for (const [name, d] of docs) {
+        d.hub?.tick()
+        if (opts.commonDir && d.memory) try { catchUpLocal(opts.commonDir, decodeURIComponent(name), d.doc, opts.log) }
+        catch (error) { opts.log?.(`local migration: ${error instanceof Error ? error.message : String(error)}`) }
+      }
+    }, 1000)
     ticker.unref?.()
     server.on('upgrade', (req, socket, head) => {
       const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`); socket.destroy() }
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
+      if (new URL(req.url ?? '/', 'http://x').searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
       if (opts.key) {
         const given = new URL(req.url ?? '/', 'http://x').searchParams.get('key') ?? ''
@@ -367,7 +378,8 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   const write = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`
     try {
-      fs.writeFileSync(tmp, JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
       fs.chmodSync(tmp, 0o600)
       fs.renameSync(tmp, file)
     } catch (e) {

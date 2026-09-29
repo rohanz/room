@@ -17,13 +17,13 @@ describe('base catch-up guidance', () => {
     room.doc.destroy()
   })
 
-  it('wakes for same-name human base messages only with uncommitted work', () => {
+  it('keeps a historical base message without waking a current session', () => {
     const room = new RoomDoc()
     const human = hubAppend<BaseMsg>(room, { name: 'Alice', kind: 'human' }, {
       type: 'base', prev: 'old', base: 'new', commits: 1, paths: [], summary: 'change',
     })
     const me = { name: 'Alice', kind: 'agent' } as const
-    expect(shouldWakeOnMsg(me, human, [], true).wake).toBe(true)
+    expect(shouldWakeOnMsg(me, human, [], true).wake).toBe(false)
     expect(shouldWakeOnMsg(me, human, [], false).wake).toBe(false)
     expect(shouldWakeOnMsg(me, { ...human, fromKind: undefined } as unknown as BaseMsg, [], true).wake).toBe(false)
     room.doc.destroy()

@@ -25,7 +25,7 @@ function largestRoots(update: Uint8Array): string {
   } finally { doc.destroy() }
 }
 export function memoryFile(commonDir: string, room: string): string {
-  return path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
+  return path.join(commonDir, 'room', 'relay', `${encodeURIComponent(room)}.ydoc`)
 }
 
 /** Failure is isolated to a disposable doc; even a partially applied corrupt update is discarded. */

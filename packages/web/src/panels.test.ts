@@ -17,7 +17,7 @@ describe('shortPill', () => {
 
 describe('state pill: done and working', () => {
   it('shows done after room_done and working while scoped', () => {
-    const base = { online: true, latestActive: Date.now(), behindBase: false, claims: [] as never[] }
+    const base = { online: true, latestActive: Date.now(), claims: [] as never[] }
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'done: coupons landed' }] })).toBe('done')
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'on orders: coupons' }] })).toBe('working')
   })
@@ -25,10 +25,10 @@ describe('state pill: done and working', () => {
 
 describe('room URL parsing', () => {
   it('keeps the last segment encoded and decodes it for display', () => {
-    expect(parseRoomUrl('ws://localhost:1244/local%2Fbare%2Fmain')).toEqual({
+    expect(parseRoomUrl('ws://localhost:1244/local%2Fbare')).toEqual({
       serverUrl: 'ws://localhost:1244',
-      encodedRoomName: 'local%2Fbare%2Fmain',
-      displayRoomName: 'local/bare/main',
+      encodedRoomName: 'local%2Fbare',
+      displayRoomName: 'local/bare',
     })
   })
 })
@@ -56,14 +56,13 @@ describe('participant cards', () => {
   })
 
   it('derives one state pill with operational states taking precedence', () => {
-    const base = { online: true, behindBase: false, statuses: [] as { kind: 'agent'; status: string }[], claims: [] as (Claim & { stale: boolean })[] }
+    const base = { online: true, statuses: [] as { kind: 'agent'; status: string }[], claims: [] as (Claim & { stale: boolean })[] }
     const claim: Claim & { stale: boolean } = {
       id: 'c', path: 'src/parser.ts', from: 1, to: 3, by: 'Ada', byKind: 'agent', intent: 'rename parser', at: 1, stale: false,
       plans: [{ kind: 'rename', symbol: 'parse', detail: 'parse_payload' }],
     }
     expect(deriveStatePill({ ...base, online: false })).toBe('offline')
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'waiting on Rohan' }] })).toBe('waiting on Rohan')
-    expect(deriveStatePill({ ...base, behindBase: true })).toBe('behind base')
     expect(deriveStatePill({ ...base, statuses: [{ kind: 'agent', status: 'ahead by 1' }] })).toBe('ahead (unpushed)')
     expect(deriveStatePill({ ...base, claims: [claim] })).toBe('editing parse')
     expect(deriveStatePill(base)).toBe('activity unknown')
@@ -73,13 +72,10 @@ describe('participant cards', () => {
 
 describe('roomNameParts', () => {
   it.each([
-    ['github.com/rohanz/room/main', { host: 'github.com', owner: 'rohanz', repo: 'room', branch: 'main', local: false }],
-    ['local/room/main', { repo: 'room', branch: 'main', local: true }],
-    ['git/gitlab.com/team/room/main', { host: 'gitlab.com', owner: 'team', repo: 'room', branch: 'main', local: false }],
-    ['github.com/rohanz/room/feature/header/chips', { host: 'github.com', owner: 'rohanz', repo: 'room', branch: 'feature/header/chips', local: false }],
-    ['local/room/feature/header', { repo: 'room', branch: 'feature/header', local: true }],
-    ['git/gitlab.com/team/room/feature/header', { host: 'gitlab.com', owner: 'team', repo: 'room', branch: 'feature/header', local: false }],
-    ['demo', { repo: 'demo', branch: '', local: false }],
+    ['github.com/rohanz/room', { host: 'github.com', owner: 'rohanz', repo: 'room', local: false }],
+    ['local/room', { repo: 'room', local: true }],
+    ['git/gitlab.com/team/room', { host: 'gitlab.com', owner: 'team', repo: 'room', local: false }],
+    ['demo', { repo: 'demo', local: false }],
   ])('parses %s', (name, expected) => {
     expect(roomNameParts(name)).toEqual(expected)
   })
@@ -104,9 +100,9 @@ class HeaderElement {
 describe('room header', () => {
   afterEach(() => vi.unstubAllGlobals())
   it.each([
-    ['github.com/rohanz/room/feature/header', 'rohanz / room', ['feature/header']],
-    ['local/room/main', 'room', ['local', 'main']],
-    ['git/gitlab.com/team/room/main', 'team / room', ['main']],
+    ['github.com/rohanz/room', 'rohanz / room', []],
+    ['local/room', 'room', ['local']],
+    ['git/gitlab.com/team/room', 'team / room', []],
   ])('renders %s with host only in the title', (displayRoomName, label, chips) => {
     vi.stubGlobal('document', { createElement: () => new HeaderElement() })
     const room = new RoomDoc()
@@ -123,7 +119,6 @@ describe('room header', () => {
       expect(element.find('room-name')?.textContent).toBe(label)
       expect(element.find('room-name')?.title).toBe(displayRoomName)
       expect(element.children.filter((c): c is HeaderElement => typeof c !== 'string' && c.className === 'room-chip mono').map(c => c.textContent)).toEqual(chips)
-      expect(element.textContent).toContain('base abcdef1')
       expect(element.textContent).toContain('0 active')
     } finally { room.doc.destroy() }
   })
@@ -155,7 +150,6 @@ describe('merged pane participant choices', () => {
     vi.stubGlobal('document', { createElement: () => new MergeElement(), addEventListener: vi.fn(), removeEventListener: vi.fn() })
     const room = new RoomDoc()
     for (const person of ['Ada', 'Ben', 'Cy']) {
-      room.setBaseOf(person, 'base')
       for (const path of ['a.ts', 'b.ts']) {
         room.setBaseText(person, 'base', path, 'base')
         publish(room, person, path, person, 'base')
@@ -274,7 +268,6 @@ it('shows annotations and details in Merged, Diff and File without floating code
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
-  room.setBaseOf('Ada', 'base')
   room.setBaseText('Ada', 'base', 'a.ts', 'base\nkeep\n')
   publish(room, 'Ada', 'a.ts', 'edit\nkeep\n', 'base\nkeep\n')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
@@ -306,9 +299,7 @@ it('reads the selected participant’s base in the File tab', async () => {
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
-  room.setMeta({ base: 'sha' })
   for (const [person, base] of [['Ada', 'Ada base'], ['Ben', 'Ben base']] as const) {
-    room.setBaseOf(person, 'sha')
     room.setBaseText(person, 'sha', 'a.ts', `${base}\nkept\n`)
     publish(room, person, 'a.ts', `${person} edit\nkept\n`, `${base}\nkept\n`, 'sha')
   }
@@ -335,9 +326,7 @@ it('marks different participant bases as unmergeable in the git-less browser', a
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
-  room.setMeta({ base: 'head' })
   room.setBaseText('lead', 'head', 'a.ts', 'base\nkeep\n')
-  room.setBaseOf('lead+w', 'carried')
   room.setBaseText('lead+w', 'carried', 'a.ts', 'carried\nkeep\n')
   publish(room, 'lead+w', 'a.ts', 'carried\nworker\n', 'carried\nkeep\n', 'carried')
   publish(room, 'lead', 'a.ts', 'carried\nkeep\n', 'base\nkeep\n', 'head')

@@ -31,7 +31,7 @@ function fakeSession(room: RoomDoc, extra: Partial<Session> = {}): Session {
   awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
   return {
     policyStore: testPolicyStore(),
-    room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr%2Fmain', roomName: 'github.com/o/r/main', browserUrl: 'http://x',
+    room, awareness, me, dir, roomUrl: 'ws://x/github.com%2Fo%2Fr', roomName: 'github.com/o/r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
     daemon: { touch() {}, async stop() {}, dir, name: 'Rohan', roomDoc: room, provider: null as never, branch: 'main', base },
     ...extra,
@@ -45,13 +45,13 @@ function addPresence(target: Awareness, name: string): Awareness {
 }
 function setup(opts: { now?: () => number; joined?: boolean; session?: Partial<Session> } = {}) {
   const { a, b } = pair()
-  a.setMeta({ repo: 'r', branch: 'main', base })
+  a.setMeta({ repo: 'github.com/o/r' })
   setFixtureLocalRoot(a, 'Rohan', dir)
   let session: Session | null = opts.joined === false ? null : fakeSession(a, opts.session)
   const closed: string[] = []
   const tools = createTools({
     getSession: () => session, setSession: s => { session = s }, cwd: dir, now: opts.now, conflictDebounceMs: 5,
-    join: async () => fakeSession(a), leave: async () => {}, close: async s => { closed.push(s.roomName); return ['github.com/o/r/main', 'github.com/o/r/dev'] },
+    join: async () => fakeSession(a), leave: async () => {}, close: async s => { closed.push(s.roomName); return ['github.com/o/r'] },
     log: () => {},
   })
   activeTools.add(tools)
@@ -129,14 +129,14 @@ describe('room lifecycle', () => {
     expect(await t.tools.call('room_close', {})).toContain('confirm=true')
     expect(t.closed).toEqual([])
     const out = await t.tools.call('room_close', { confirm: true })
-    expect(t.closed).toEqual(['github.com/o/r/main'])
-    expect(out).toContain('closed github.com/o/r for everyone: removed github.com/o/r/main, github.com/o/r/dev')
-    const ledger = join(dir, '.room', 'ledger', 'github.com_o_r_main-2026-09-15T08-30-00-000Z.md')
+    expect(t.closed).toEqual(['github.com/o/r'])
+    expect(out).toContain('closed github.com/o/r for everyone: removed github.com/o/r')
+    const ledger = join(dir, '.room', 'ledger', 'github.com_o_r_detached-2026-09-15T08-30-00-000Z.md')
     expect(out).toContain(ledger)
     expect(existsSync(ledger)).toBe(true)
     expect(readFileSync(ledger, 'utf8')).toContain('done (api): shipped')
     expect(t.session).toBeNull()
-    expect(t.room.messages().some(m => m.type === 'note' && m.priority === 'interrupt' && m.text.includes('closing the room'))).toBe(true)
+    expect(t.room.messages().some(m => m.type === 'note' && m.priority === 'interrupt' && m.text.includes('closing github.com/o/r for everyone'))).toBe(true)
   })
 
   it('room_export writes the current ledger to a requested path and reports its line count', async () => {
@@ -144,7 +144,7 @@ describe('room lifecycle', () => {
     hubAppend(t.other, kieran, { type: 'note', text: 'done (tests): 12 pass', priority: 'fyi' })
     const out = await t.tools.call('room_export', { path: '.room/custom-story.md' })
     const ledger = join(dir, '.room', 'custom-story.md')
-    expect(out).toBe(`exported room ledger to ${ledger} (4 lines)`)
+    expect(out).toContain(`exported room ledger to ${ledger} (4 lines)`)
     expect(readFileSync(ledger, 'utf8')).toContain('done (tests): 12 pass')
     expect(t.session).not.toBeNull()
   })

@@ -5,7 +5,7 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import { neighbours, participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
+import { neighbours, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
@@ -91,11 +91,10 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
   }
-  const base = (s: Session) => s.room.meta.base ?? 'HEAD'
-  /** The commit a person's overlay is a delta from (their own HEAD), falling back to the room base. A carried worker in a
+  /** The commit a person's overlay is a delta from (their own HEAD). A carried worker in a
    *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
    *  and its workers) uses the carried commit itself. */
-  const baseFor = (s: Session, person: string) => s.room.manifestHead.get(person)?.base ?? s.room.baseOf(person) ?? base(s)
+  const baseFor = (s: Session, person: string) => s.room.manifestHead.get(person)?.base ?? participantRecord(s.room, person)?.git?.base ?? 'HEAD'
   const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => gitShow(s.dir, baseFor(s, person), path)
   const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -121,7 +120,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   }
   const lines = (t: string) => t.endsWith('\n') ? t.split('\n').length - 1 : t.split('\n').length
 
-  const areas = createAreas({ ctx, log, base, presences, others, shareOf, now, isMe })
+  const areas = createAreas({ ctx, log, presences, others, shareOf, now, isMe })
   const claims = createClaims({ log, ctx })
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite()
   const ledger: Ledger = new Ledger({
@@ -155,7 +154,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine, 
     hasCompany: company, others, presences,
-    shareOf, setPresence, base, baseFor, baseText, readVersion, readText, lines,
+    shareOf, setPresence, baseFor, baseText, readVersion, readText, lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded,

@@ -1,9 +1,9 @@
 import { subscribeRender } from './scheduler.ts'
 import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-window.ts'
 import { inlineDetails } from './inline-detail.ts'
-import { deriveConflictSpans } from './conflicts.ts'
 import {
   RoomDoc,
+  deriveConflictSpans,
   activityLabel,
   type ConflictSpan,
   areaMembershipSummary,
@@ -105,12 +105,11 @@ export function shortPill(state: string, max = 26): string {
 }
 
 /** Derives the single prominent state shown on a person card. */
-export function deriveStatePill(person: Pick<Participant, 'online' | 'behindBase' | 'statuses' | 'claims' | 'latestActive'>): string {
+export function deriveStatePill(person: Pick<Participant, 'online' | 'statuses' | 'claims' | 'latestActive'>): string {
   if (!person.online) return 'offline'
   const statuses = person.statuses.map(item => item.status.trim()).filter(Boolean)
   const waiting = statuses.find(status => status.toLowerCase().startsWith('waiting'))
   if (waiting) return `waiting${waiting.slice(7)}`
-  if (person.behindBase || statuses.some(status => status.toLowerCase().includes('behind'))) return 'behind base'
   if (statuses.some(status => /ahead|unpushed/i.test(status))) return 'ahead (unpushed)'
   const explicitEditing = statuses.find(status => status.toLowerCase().startsWith('editing '))
   if (explicitEditing) return `editing${explicitEditing.slice(7)}`
@@ -156,8 +155,6 @@ export function participantInput(conn: Conn): ParticipantInput {
     overlayPeople: manifestPeople(conn.room),
     changesByPerson: changes,
     claims: conn.room.openClaims(),
-    roomBase: conn.room.meta.base,
-    basesByPerson: new Map(conn.room.bases.entries()),
   }
 }
 
@@ -740,7 +737,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
 
-    const conflicts = deriveConflictSpans(conn.room.messages(), conn.room.openClaims(), conn.room.meta.base).filter(s => s.path === selected.path)
+    const conflicts = deriveConflictSpans(conn.room.messages(), conn.room.openClaims()).filter(s => s.path === selected.path)
     // Text computations and annotations have separate invalidation: new claims must
     // repaint gutters, but cannot make us repeat an unchanged merge or diff.
     const paint = (names: string[], texts: (string | undefined)[], compute: () => MergedLine[], merged: boolean, spans = conflicts) => {
@@ -947,7 +944,7 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const render = () => {
     const shouldFollow = followNewest
     const messages = conn.room.messages()
-    const entries = collapseConflictTimeline(messages, conn.room.openClaims(), conn.room.meta.base)
+    const entries = collapseConflictTimeline(messages, conn.room.openClaims())
     const allEpisodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
     const areaPersonMatching = entries.filter(e => focus.person
       ? e.message.from === focus.person || e.conflict?.people.includes(focus.person) || ('to' in e.message && e.message.to === focus.person)
@@ -1013,13 +1010,10 @@ export function header(conn: Conn): HTMLElement {
   const label = parts.owner ? parts.owner + ' / ' + parts.repo : parts.repo
   const roomName = h('span', { class: 'room-name', title: conn.displayRoomName }, h('bdi', { dir: 'ltr' }, label))
   const local = parts.local ? h('span', { class: 'room-chip mono' }, 'local') : null
-  const branch = parts.branch ? h('span', { class: 'room-chip mono', title: parts.branch }, h('bdi', { dir: 'ltr' }, parts.branch)) : null
-  const base = h('span', { class: 'header-detail mono' }, 'base —')
   const count = h('span', { class: 'header-detail' }, '0 active')
   const connection = h('span', { class: 'connection' }, 'disconnected')
-  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, branch, base, count, h('span', { class: 'sp' }), connection)
+  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, count, h('span', { class: 'sp' }), connection)
   const render = () => {
-    base.textContent = `base ${(conn.room.meta.base ?? '').slice(0, 7) || '—'}`
     const total = participantGroups(conn).active.length
     count.textContent = `${total} active`
   }

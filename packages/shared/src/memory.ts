@@ -8,11 +8,12 @@ export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
  * server image ships without @room/shared. */
 export const ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024
 
-/** Memory is kept; live state is rebuilt by whoever is present. Unknown types are
- * deliberately excluded, including claims, file text, graphs and overlay timestamps. */
+/** Memory keeps coordination (including migrated claims awaiting an old owner's return).
+ * Live file text and graphs are rebuilt by whoever is present. */
 export const MEMORY_TYPES = {
   bus: 'array', ledger: 'map', retiredWorkers: 'array', workers: 'map',
-  scopes: 'map', colors: 'map', meta: 'map', mail: 'map', outcomes: 'map', archive: 'map',
+  scopes: 'map', claims: 'map', unresolved: 'map', aliases: 'map', colors: 'map',
+  meta: 'map', mail: 'map', outcomes: 'map', archive: 'map',
 } as const
 
 /** Dynamic top-level maps: seen:<encoded participant> holds message-id -> receipt.

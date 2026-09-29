@@ -21,7 +21,7 @@ let seq = 0
 const message = (fields: Record<string, unknown> = {}): Msg =>
   ({ id: `m_${String(++seq).padStart(6, '0')}`, type: 'note', priority: 'notify', from: 'quinn', fromKind: 'agent', at: NOW - 1000 + seq, text: 'n', ...fields }) as Msg
 
-it('keeps memory by value, excludes all live state and unknown future types, and leaves the source intact', () => {
+it('keeps coordination by value, excludes live text and unknown future types, and leaves the source intact', () => {
   const source = new Y.Doc(), wire = new Y.Doc(), restored = new Y.Doc()
   for (const name of ['ledger', 'workers', 'scopes', 'colors', 'meta', 'mail', 'outcomes', 'archive']) source.getMap(name).set('key', { nested: ['kept'] })
   for (const name of ['bus', 'retiredWorkers']) source.getArray(name).push([{ id: 'kept' }])
@@ -29,7 +29,7 @@ it('keeps memory by value, excludes all live state and unknown future types, and
   const before = Y.encodeStateAsUpdate(source)
   Y.applyUpdate(wire, before)
   Y.applyUpdate(restored, memorySnapshot(wire))
-  expect([...restored.share.keys()].sort()).toEqual(['archive', 'bus', 'colors', 'ledger', 'mail', 'meta', 'outcomes', 'retiredWorkers', 'scopes', 'workers'])
+  expect([...restored.share.keys()].sort()).toEqual(['archive', 'bus', 'claims', 'colors', 'ledger', 'mail', 'meta', 'outcomes', 'retiredWorkers', 'scopes', 'workers'])
   expect(restored.getArray('bus').toArray()).toEqual([{ id: 'kept' }])
   expect(restored.getMap('workers').toJSON()).toEqual({ key: { nested: ['kept'] } })
   expect(restored.getMap('mail').toJSON()).toEqual({ key: { nested: ['kept'] } })

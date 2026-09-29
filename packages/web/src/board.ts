@@ -65,7 +65,7 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     hide.classList.toggle('active', hideOffline)
     offline.hidden = hideOffline || !grouped.offline.length
     offline.replaceChildren(h('summary', {}, `${groups.offlineTeammates.length} offline · worker history`), h('div', { class: 'board-grid' }, ...grouped.offline))
-    const events = collapseConflictTimeline(messages, conn.room.openClaims(), conn.room.meta.base).reverse()
+    const events = collapseConflictTimeline(messages, conn.room.openClaims()).reverse()
     const areaOf = (m: typeof messages[number]) => 'area' in m && typeof m.area === 'string' ? m.area : conn.room.scopes.get(m.from)?.area ?? 'other'
     const chip = (text: string, active: boolean, action: () => void) => h('button', { class: `filter-chip${active ? ' active' : ''}`, ariaPressed: String(active), onclick: action }, text)
     const matching = events.filter(({ message: m, conflict }) => (!personFilter || m.from === personFilter || conflict?.people.includes(personFilter)) && (!areaFilter || areaOf(m) === areaFilter))

@@ -1,3 +1,4 @@
+import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -35,7 +36,7 @@ describe('merge preview materialization', () => {
 
     const doc = new Y.Doc(), room = new RoomDoc(doc)
     room.setMeta({ repo: 'demo', branch: 'main', base })
-    room.setBaseOf('Rohan', base); room.setBaseOf('Kieran', base)
+    setParticipantBase(room, 'Rohan', base); setParticipantBase(room, 'Kieran', base)
     publishFixture(room, 'Kieran', 'app.txt', 'peer change\n')
     const me: Identity = { name: 'Rohan', kind: 'agent' }
     const awareness = new Awareness(doc)

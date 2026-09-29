@@ -1,3 +1,4 @@
+import { setParticipantBase } from '@room/shared/testing'
 import { publishFixture } from './fixtures/manifest.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { createHandlerState } from '../src/tools/state.js'
@@ -30,7 +31,7 @@ beforeEach(async () => {
   fs.writeFileSync(path.join(workerDir, 'file.txt'), 'worker edit\n')
   const doc = new Y.Doc(), room = new RoomDoc(doc)
   room.setMeta({ base })
-  room.setBaseOf('worker', base)
+  setParticipantBase(room, 'worker', base)
   awareness = new Awareness(doc); awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
   session = { dir, room, awareness, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', local: {}, daemon: {} } as Session
   await registerWorkers(session, [{ tag: 'worker', name: 'worker', lead: 'lead', host: 'codex', task: 't', dir: workerDir, branch: 'room/worker', base, pid: 0, startedAt: 1, status: 'done' }])

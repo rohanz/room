@@ -1,3 +1,4 @@
+import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { afterEach, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -32,7 +33,7 @@ function teammate(): { dir: string; base: string } {
 async function session(dir: string, base: string, person: string, sha: string, record?: Partial<FixtureWorker>): Promise<Session> {
   const room = new RoomDoc(new Y.Doc())
   room.setMeta({ repo: 'demo', branch: 'main', base })
-  room.setBaseOf(person, sha)
+  setParticipantBase(room, person, sha)
   publishFixture(room, person, 'app.py', 'temporary\n', { base: sha })
   clearFixture(room, person, 'app.py')
   const awareness = new Awareness(room.doc)

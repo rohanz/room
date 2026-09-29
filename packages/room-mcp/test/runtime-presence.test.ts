@@ -118,7 +118,7 @@ it('publishes a model the hook found in the Claude transcript on the next room t
   const { daemon, me, refreshRuntime } = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
   const session = {
     room: daemon.roomDoc, provider: { ...daemon.provider, synced: true }, awareness: daemon.provider.awareness, daemon, me, ...hubSeam(daemon.roomDoc),
-    dir, roomUrl: 'ws://unused/room', roomName: 'room', browserUrl: '', shareMax: 'full', shareRequested: 'full', pinnedRoom: true, refreshRuntime,
+    dir, roomUrl: 'ws://unused/room', roomName: 'room', browserUrl: '', shareMax: 'full', shareRequested: 'full', refreshRuntime,
   } as unknown as Session
   const tools = createTools({ cwd: dir, getSession: () => session, setSession: () => {} })
   try {

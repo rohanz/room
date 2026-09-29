@@ -27,7 +27,7 @@ async function fixture() {
   sh(dir, 'config', 'user.name', 'Test'); sh(dir, 'config', 'user.email', 'test@example.com')
   fs.writeFileSync(path.join(dir, 'x'), 'base')
   sh(dir, 'add', '-A'); sh(dir, 'commit', '-qm', 'base')
-  const daemon = await startRoomd({ dir, room: 'ws://memory/local/r/main', localKey: 'test', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'),
+  const daemon = await startRoomd({ dir, room: 'ws://memory/local/r', localKey: 'test', name: 'Ben', sessionId: 's1', policy: policyFromLevel('full'),
     providerFactory: (_s, _n, doc) => provider(doc), basePollMs: 0, trackedRefreshMs: 60000, log: () => {} })
   daemons.push(daemon)
   return { dir, daemon, entries: () => daemon.roomDoc.manifest.get(manifestKey('Ben', 's1'))! }

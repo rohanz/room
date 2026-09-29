@@ -1,4 +1,4 @@
-import { deriveConflictSpans } from './conflicts.ts'
+import { deriveConflictSpans } from '@room/shared'
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -28,10 +28,9 @@ it('only accepts later clean messages for the exact path and participants', () =
   expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again")], claims)[0].resolvedBy).toBeUndefined()
   for (const m of [note("your b.ts and tiers's merge cleanly again"), note("your a.ts and other's merge cleanly again"), note("your a.ts and tiers's merge cleanly again", 5)]) expect(deriveConflictSpans([conflict, m], claims)[0].resolvedBy).toBeUndefined()
 })
-it('hides spans when the observed base advances, retaining resolution in history', () => {
-  expect(deriveConflictSpans([conflict, base], claims, 'new')[0]).toMatchObject({ hidden: true, resolvedBy: { how: 'base moved', at: 30 } })
-  expect(deriveConflictSpans([conflict, base], claims, 'old')[0].hidden).toBe(false)
-  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again"), base], claims, 'new')[0]).toMatchObject({ hidden: true, resolvedBy: { how: 'base moved' } })
+it('a base event cannot hide a conflict between participants on separate branches', () => {
+  expect(deriveConflictSpans([conflict, base], claims)[0]).toMatchObject({ hidden: false })
+  expect(deriveConflictSpans([conflict, base], claims)[0].resolvedBy).toBeUndefined()
 })
 it('collapses matching conflicts but keeps pair-only resolution notes separate', () => {
   const events: Msg[] = [conflict, { ...conflict, id: 'copy', priority: 'notify', at: 11, claimId: 'c1', otherClaimId: 'c0' }, note("your a.ts and tiers's merge cleanly again")]
