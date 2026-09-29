@@ -119,7 +119,7 @@ export interface HandlerState {
   ledgerLines: (s: Session, query: NonNullable<Parameters<RoomDoc['ledger']>[0]>, label: string, excludeId?: string) => string[]
   scopeLine: (scope: Scope) => string
   personLine: (s: Session, name: string) => string
-  serverOf: (args: Record<string, unknown>) => string
+  serverOf: (args: Record<string, unknown>, resolvedServer: string) => string
   LOCAL_LOGIN: string
   codeLine: (pending: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => string
   refreshPrs: (s: Session) => Promise<string>

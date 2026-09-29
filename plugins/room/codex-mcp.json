@@ -41,7 +41,8 @@
         "ROOM_GIT_TIMEOUT_MS",
         "ROOM_IDLE_LEASE_MS",
         "ROOM_WORKER_MAX_BUDGET_USD",
-        "ROOM_WORKER_NICE"
+        "ROOM_WORKER_NICE",
+        "ROOM_WAKE"
       ],
       "startup_timeout_sec": 30,
       "env": {
