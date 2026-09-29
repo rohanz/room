@@ -98,11 +98,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const config = await resolveConfig({ dir: ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === 'string' ? a.credentials : ctx.config?.credentialsPath } })
     configureCredentials(config.credentialsPath)
     ctx.config = { ...config, ...ctx.config, credentialsPath: config.credentialsPath }
+    return config
   }
   const handlers: Record<string, Handler> = {
     async room_login(a) {
-      await configureLogin(a)
-      const server = serverOf(a)
+      const config = await configureLogin(a)
+      const server = serverOf(a, config.server)
       if (server === LOCAL) return LOCAL_LOGIN
       if (a.action === 'logout') {
         setPending(server, undefined)
@@ -142,15 +143,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return currentReply()
       }
       const dir = typeof a.dir === 'string' && a.dir ? a.dir : cur?.dir ?? ctx.cwd ?? process.cwd()
-      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server
-        // Creating opens a team room: use the configured server, then the hosted default.
-        : a.create === true && !process.env.ROOM_SERVER && !process.env.ROOM_URL ? 'team' : undefined
+      const whereArg = typeof a.where === 'string' && a.where ? a.where : typeof a.server === 'string' && a.server ? a.server : undefined
       const resolved = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === 'string' ? a.name : undefined, room: typeof a.room === 'string' ? a.room : undefined, share: typeof a.share === 'string' ? a.share : undefined } })
-      const choice = { server: resolved.server, where: resolved.where, rule: resolved.whereRule }
-      const requestedRoom = typeof a.room === 'string' ? a.room : resolved.room
+      // Opening always needs a team server. A remembered URL survives a later process;
+      // only a local/default destination falls back to the hosted server.
+      const createFromLocal = a.create === true && resolved.server === LOCAL
+      const choice = { server: createFromLocal ? DEFAULT_SERVER : resolved.server, where: createFromLocal ? 'team' : resolved.where, rule: resolved.whereRule }
+      const requestedRoom = createFromLocal && resolved.whereRule === 'remembered' ? (typeof a.room === 'string' ? a.room : process.env.ROOM_ROOM) : resolved.room
       const targetRoom = choice.server === LOCAL
         ? requestedRoom !== undefined ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir)
-        : resolved.room ?? (await deriveRoomName(dir)).roomName
+        : requestedRoom ?? (await deriveRoomName(dir)).roomName
       if (cur) {
         const sameServer = choice.server === LOCAL ? !!cur.local
           : !cur.local && parseServer(choice.server).server === parseServer(cur.roomUrl.slice(0, cur.roomUrl.lastIndexOf('/'))).server
@@ -177,7 +179,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         dir,
         credentialsPath: resolved.credentialsPath,
         name: resolved.name,
-        room: choice.server === LOCAL ? targetRoom : resolved.room,
+        room: choice.server === LOCAL ? targetRoom : requestedRoom,
         server: choice.server,
         create: a.create === true,
         confirm: a.confirm === true,
@@ -329,7 +331,12 @@ export function createJoin(deps: Pick<HandlerState, 'ctx' | 'log' | 'doJoin' | '
     }, s.me)
     return released
   }
-  const serverOf = (a: Record<string, unknown>) => { const r = resolveServer(typeof a.server === 'string' && a.server ? a.server : ctx.config?.server ?? process.env.ROOM_SERVER); return r === LOCAL ? LOCAL : parseServer(r).server }
+  const serverOf = (a: Record<string, unknown>, resolvedServer: string) => {
+    const current = ctx.getSession()
+    const requested = typeof a.server === 'string' && a.server ? resolveServer(a.server) : undefined
+    const r = requested ?? (current ? current.local ? LOCAL : current.roomUrl.slice(0, current.roomUrl.lastIndexOf('/')) : resolvedServer)
+    return r === LOCAL ? LOCAL : parseServer(r).server
+  }
   const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`
   const codeLine = (p: { provider?: string; verification_uri?: string; user_code?: string; url?: string; expires_in: number }) => p.provider === 'oidc' || p.url
       ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.`

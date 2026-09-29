@@ -55,8 +55,8 @@ Room server: ws://localhost:$PORT   (one room for local/origin across all branch
   (any login name is accepted; nothing talks to GitHub).
 
 Join with plain Codex (plugin installed via: codex plugin marketplace add $ROOT && codex plugin add room@room):
-  cd $A && ROOM_SERVER=ws://localhost:$PORT codex     # then: \$room-join
-  cd $B && ROOM_SERVER=ws://localhost:$PORT codex     # then: \$room-join
+  cd $A && ROOM_SERVER=ws://localhost:$PORT codex --no-daemon     # then: \$room-join
+  cd $B && ROOM_SERVER=ws://localhost:$PORT codex --no-daemon     # then: \$room-join
 
 Or leave an agent on duty (reacts to interrupts and questions unattended):
   ROOM_SERVER=ws://localhost:$PORT ROOM_SESSION=$ROHAN_SESSION npx tsx $ROOT/packages/agent/src/cli.ts --dir $A --name Rohan
