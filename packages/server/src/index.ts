@@ -357,7 +357,9 @@ const server = http.createServer((req, res) => {
       if (o.schema !== 2 && existing?.mode === 'repo') return text(403, upgradeText(name))
       if (!existing) {
         created = true
-        const oldDocs = o.schema === 2 && (await listDocs()).some(doc => doc === name || repoRoomOf(doc, key => key === name) === name)
+        const priorDocs = await listDocs()
+        const oldDocs = o.schema === 2 && priorDocs.some(doc => doc === name || repoRoomOf(doc, key => key === name) === name)
+        const fresh = !priorDocs.includes(name) && !oldDocs
         rooms.set(name, { by, at: Date.now(), branches: [], mode: o.schema === 2 && !oldDocs ? 'repo' : 'branch',
           ...(o.schema === 2 && !oldDocs ? { migratedAt: Date.now() } : {}) })
         if (o.schema === 2 && !oldDocs) {
@@ -365,6 +367,7 @@ const server = http.createServer((req, res) => {
           await writeDoc(name, Y.encodeStateAsUpdate(empty))
         }
         await saveRooms()
+        if (fresh) hubs.markFresh(name)
         console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`)
         audit({ event: 'room_opened', room: name, login: by, id: v.id })
       }

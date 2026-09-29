@@ -19,6 +19,26 @@ const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', se
 const local = { local: true } as const
 
 describe('hub in process', () => {
+  it('grants a name immediately only for a genuinely fresh room', async () => {
+    const h = host({ fresh: true } as Partial<HubHost>)
+    const hub = await startHub(h)
+    const conn = {}
+    hub.handle(conn, hello, local)
+    const first = hub.handle(conn, { v: 1, id: 'fresh', op: 'acquire', name: 'ada', holder: holder('s1') }, local) as { ok: true; epoch: number }
+    expect(first).toMatchObject({ ok: true })
+
+    // A new process loading that room must retain the settle window for old grants.
+    hub.stop()
+    h.doc.participants.delete('ada\u0000holder') // the old grant's holder record has not synced yet
+    const reopened = host({ doc: h.doc, fresh: true } as Partial<HubHost>)
+    const next = await startHub(reopened)
+    const other = {}
+    next.handle(other, hello, local)
+    expect(next.handle(other, { v: 1, id: 'reopen', op: 'acquire', name: 'ben', holder: holder('s2') }, local)).toMatchObject({ ok: false, reason: 'starting' })
+    expect(next.handle(other, { v: 1, id: 'renew', op: 'renew', name: 'ada', epoch: first.epoch }, local)).toMatchObject({ ok: true })
+    next.stop()
+  })
+
   it('answers invalid frames and refuses a view connection', async () => {
     const h = host()
     const hub = await startHub(h)

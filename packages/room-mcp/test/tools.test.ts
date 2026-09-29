@@ -903,6 +903,7 @@ describe('scope, claims, plans, ledger', () => {
 
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
+    await t.session!.graph!.ready
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename validate', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
@@ -923,11 +924,64 @@ describe('scope, claims, plans, ledger', () => {
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 5, to: 5, intent: 'also b' })
     expect(out).toContain('CONFLICT: overlaps')
+    await new ConflictSet(t.session!).reconcile('test')
     const c = t.room.messages().find(m => m.type === 'conflict' && m.id.startsWith('cf:'))
     expect(c).toMatchObject({ priority: 'notify', to: 'Rohan' })
     expect([...t.room.doc.getMap<{ kind: string; status: string }>('conflicts').values()]).toContainEqual(
       expect.objectContaining({ kind: 'claims', status: 'conflict' }))
   })
+
+  it('keeps a claim independent of repository-wide conflict and graph builds', async () => {
+    const t = setup(), s = t.session!
+    comparableClaimPair(t.room)
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'app', paths: ['app.py'] })
+    let reconciles = 0, graphWaits = 0
+    const reconcile = vi.spyOn(ConflictSet.prototype, 'reconcile').mockImplementation(async () => { reconciles++ })
+    Object.defineProperty(s.graph, 'ready', { configurable: true, get: () => { graphWaits++; return Promise.resolve() } })
+    try {
+      const out = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate' }] })
+      expect(out).toContain('claimed')
+      expect(reconciles).toBe(0)
+      expect(graphWaits).toBeLessThanOrEqual(2)
+    } finally { reconcile.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  })
+
+  it('profiles five warm claims in a synthetic repository with 2,000 source files', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'room-claim-profile-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    mkdirSync(join(repo, 'src'))
+    for (let i = 0; i < 2000; i++) writeFileSync(join(repo, 'src', `file-${i}.ts`), `export const value${i} = ${i}\n`)
+    const targetText = 'export function targetFn() { return 1 }\n'.repeat(5)
+    writeFileSync(join(repo, 'target.ts'), targetText)
+    git('add', '.'); git('commit', '-qm', 'synthetic claim profile')
+    const head = git('rev-parse', 'HEAD')
+    const t = setup(), s = t.session!
+    s.graph?.stop(); s.dir = repo
+    setParticipantBase(t.room, 'Rohan', head)
+    publishFixture(t.room, 'Rohan', 'target.ts', targetText, { base: head })
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'target', summary: 'target', paths: ['target.ts'] })
+    s.graph = new GraphIndex(t.room, 'Rohan', repo, () => {}, { random: () => 0 })
+    s.graph.start()
+    try {
+      await s.graph.ready
+      const trace = join(repo, 'git.trace'), oldTrace = process.env.GIT_TRACE
+      process.env.GIT_TRACE = trace
+      const times: number[] = []
+      try {
+        for (let i = 0; i < 5; i++) {
+          const started = performance.now()
+          expect(await t.tools.call('room_claim', { path: 'target.ts', from: i + 1, to: i + 1, intent: `profile ${i}`, plans: [{ kind: 'signature', symbol: 'targetFn' }] })).toContain('claimed')
+          times.push(Math.round(performance.now() - started))
+        }
+      } finally { if (oldTrace === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = oldTrace }
+      const traceText = (() => { try { return readFileSync(trace, 'utf8') } catch { return '' } })()
+      const invocations = traceText.split('\n').filter(line => /built-in: git /.test(line))
+      expect(invocations.filter(line => /ls-tree|diff --name-only/.test(line))).toHaveLength(0)
+      expect(invocations.length).toBeLessThan(20)
+      console.log(`claim profile: 2000 source files; warm calls ${times.join(', ')} ms; git invocations ${invocations.length}`)
+    } finally { await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy(); rmSync(repo, { recursive: true, force: true }) }
+  }, 120_000)
 
   it('refuses a directory claim that would cover another participant\'s declared file or claim', async () => {
     const t = setup()
@@ -1036,6 +1090,7 @@ describe('claim by symbol and read receipts', () => {
 describe('plan changes', () => {
   it('a released-undone plan is cancelled and routed to whoever was shown it; a re-declared plan is superseded', async () => {
     const t = setup()
+    await t.session!.graph!.ready
     t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 's', paths: ['session.py'] })
     t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby work', paths: ['app.py', 'src/'] })
     await t.tools.call('room_claim', { path: 'app.py', symbol: 'validate', intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate', detail: 'verify' }] })
@@ -1059,7 +1114,7 @@ describe('plan changes', () => {
     const state = await ktools.call('room_state', {})
     expect(state.split('\n\n')[0]).not.toMatch(/superseded plan/)
     expect(state.split('\n\n')[0]).toMatch(/interrupt.*cancelled plan rename validate → check/)
-  })
+  }, 15_000)
 })
 
 // Repository rooms §B2 "Deleted" removes followBranch; a branch switch stays in the same room.

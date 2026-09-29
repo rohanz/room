@@ -63,7 +63,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const posting = s.post<ClaimMsg>(s.me, { type: 'claim', claimId: claim.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...(plans.length ? { plans } : {}) })
       s.room.setClaimMsg(claim.id, posting.id)
       const posted = await posting
-      await new ConflictSet(s, s.me.name, s, state.log, 0).reconcile('claim').catch(e => state.log(`claim conflicts: ${String(e)}`))
+      // The session's ConflictSet observes claim changes and reconciles in the background.
+      // A synchronous pass here traverses every comparable path and runs whole-tree git diffs.
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
       const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]]
@@ -103,17 +104,21 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const { claim: o, range } of overlaps)
         out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range.approximate ? '; approximate lines' : ''}). Ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
-        await s.graph.ready
-        for (const pl of plans) {
+        if (s.graph.isReady) for (const pl of plans) {
           const users = s.graph.graph.usersOf(pl.symbol)
           out.push(users.length ? `impact: ${pl.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl.symbol} has no other users in the indexed graph`)
         }
+        else out.push('impact not yet indexed; run room_impact after indexing completes')
       }
       const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && nearby.some(n => n.by === sc.by && n.reason === 'scope') && scopeCovers(sc, p))
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
       await loadAreas(s)
       out.push(...ownerHints(s, [areasOf(s).areaOf(p)]))
-      if (posted.ok) out.push(...await upgrade(s, posted.msg, [p], plans.map(x => x.symbol)))
+      if (posted.ok && plans.length && s.graph && !s.graph.isReady) {
+        void s.graph.ready.then(async () => {
+          if (s.room.claims.get(claim.id) && s.lease?.fence()) await upgrade(s, posted.msg, [p], plans.map(x => x.symbol))
+        }).catch(e => state.log(`deferred claim impact: ${String(e)}`))
+      } else if (posted.ok) out.push(...await upgrade(s, posted.msg, [p], plans.map(x => x.symbol)))
       return out.join('\n')
     },
     async room_release(a) {

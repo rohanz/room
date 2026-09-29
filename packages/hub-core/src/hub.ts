@@ -43,6 +43,8 @@ export function serializedStore(record: { read(): Promise<number | undefined>; w
 
 export interface HubHost {
   doc: RoomDoc
+  /** This process created the room and loaded no prior room document. */
+  fresh?: boolean
   /** Monotonic milliseconds: lease TTLs and absence. */
   mono(): number
   /** Wall-clock milliseconds: message `at`, grant `at`, the incarnation floor. */
@@ -160,6 +162,7 @@ class RoomHub implements Hub {
   private lastSeq?: number
   private reincarnating?: Promise<void>
   private startedAt = 0
+  private freshAtStart = false
   private settled = false
   private maintainedAt = 0
   private dirty = false
@@ -183,6 +186,8 @@ class RoomHub implements Hub {
   private get doc(): RoomDoc { return this.host.doc }
 
   async start(): Promise<void> {
+    const before = visible(this.doc)
+    this.freshAtStart = this.host.fresh === true && before.epoch === undefined && before.seq === undefined && before.incarnation < 0
     await this.incarnate()
     this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono())
     this.startedAt = this.maintainedAt = this.host.mono()
@@ -213,7 +218,7 @@ class RoomHub implements Hub {
     for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = undefined
   }
 
-  private settling(): boolean { return this.host.mono() - this.startedAt < SETTLE_MS }
+  private settling(): boolean { return !this.freshAtStart && this.host.mono() - this.startedAt < SETTLE_MS }
 
   private notify(name: string, lease: Lease, reason: LeaseLostReason): void {
     if (lease.conn) this.push(lease.conn, { v: 1, push: 'lease-lost', name, epoch: lease.epoch, reason })

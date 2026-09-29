@@ -82,9 +82,13 @@ const owns = (p: Principal, name: string) => !('login' in p) || !p.login || owns
 /** The hubs of the rooms this process has loaded. */
 export class ServerHubs {
   private readonly entries = new Map<string, Entry>()
+  private readonly freshRooms = new Set<string>()
   private readonly loads = new WeakMap<Y.Doc, Loading>()
   private readonly pendingWrites = new Map<string, Promise<unknown>>()
   constructor(private readonly opts: ServerHubsOptions) {}
+
+  /** Called only by the room-opening endpoint after it creates a room with no prior document. */
+  markFresh(name: string): void { this.freshRooms.add(name) }
 
   /** The stock bind code plus a `loaded` promise per doc; the hub starts after it (§6). */
   persistence(provider: PersistenceProvider): { provider: PersistenceProvider; bindState(docName: string, doc: Y.Doc): Promise<void>; writeState(docName: string): Promise<void> } {
@@ -116,6 +120,7 @@ export class ServerHubs {
     if (current?.doc === doc) return
     if (current) this.stop(name)
     const entry: Entry = { doc, room: new RoomDoc(doc) }
+    const fresh = this.freshRooms.delete(name)
     this.entries.set(name, entry)
     doc.once('destroy', () => { if (this.entries.get(name) === entry) this.stop(name) })
     const loading = this.loads.get(doc)
@@ -123,7 +128,7 @@ export class ServerHubs {
     void (loading?.loaded ?? Promise.resolve())
       .then(() => startHub({
         doc: entry.room, mono: this.opts.mono ?? (() => performance.now()), wall: this.opts.wall ?? Date.now, log,
-        store: this.opts.store, owns, full: () => this.opts.full(name),
+        store: this.opts.store, owns, full: () => this.opts.full(name), fresh,
       }))
       .then(async hub => {
         await loading?.stored() // the incarnation's meta mirror, stored before the hub serves

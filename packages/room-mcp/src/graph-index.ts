@@ -89,6 +89,8 @@ export class GraphIndex {
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
   private currentBuild: Promise<void> = Promise.resolve()
+  /** A claim can use the graph without waiting for the repository-wide initial build. */
+  get isReady(): boolean { return this.phase === 'ready' }
   /** Resolves when the current build is done, even if a captured waiter is superseded. */
   get ready(): Promise<void> { return this.waitForCurrentBuild() }
 
