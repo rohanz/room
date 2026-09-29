@@ -58,7 +58,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   return {
     graph,
     // This fixture holds the epoch published above; a replacement or ended holder fences it out.
-    lease: { sessionId: heldSessionId, fence: leaseFence,
+    lease: { sessionId: heldSessionId, fence: leaseFence, check: () => {},
       paused: () => leaseFence() ? undefined : '[room] fixture name lease paused' } as Session['lease'],
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
@@ -391,7 +391,7 @@ describe('session gating', () => {
     expect(out).not.toContain('next: room_scope')
   })
 
-  it('a fresh join clears stale claims and scope left under my name; shutdown leaves cleanly', async () => {
+  it('a fresh join clears stale claims and scope left under my name; shutdown keeps them for offline coordination (registry §18)', async () => {
     const t = setup({ joined: false })
     t.room.setScope({ by: 'Rohan', byKind: 'agent', area: 'old', summary: 'from last time', paths: ['app.py'] })
     t.room.addClaim({ path: 'app.py', from: 1, to: 1, by: 'Rohan', byKind: 'agent', intent: 'ghost' })
@@ -404,8 +404,8 @@ describe('session gating', () => {
     await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'z' })
     await t.tools.shutdown()
     expect(t.session).toBeNull()
-    expect(t.room.scope('Rohan')).toBeUndefined()
-    expect(t.room.openClaims()).toEqual([])
+    expect(t.room.scope('Rohan')).toMatchObject({ area: 'x' })
+    expect(t.room.openClaims()).toMatchObject([{ path: 'app.py', by: 'Rohan' }])
   })
 
   it('room_done releases, clears scope, posts a done note, keeps the session', async () => {

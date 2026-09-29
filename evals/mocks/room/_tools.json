@@ -128,6 +128,10 @@
               "full"
             ],
             "description": "intent: plans only; declared: scoped files; full: all changed files"
+          },
+          "takeover": {
+            "type": "boolean",
+            "description": "take a local name only when its process identity is unknown"
           }
         }
       }
@@ -140,7 +144,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone’s remembered destination.",
+      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone\u2019s remembered destination.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -512,7 +516,7 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch’s open PR.",
+      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch\u2019s open PR.",
       "inputSchema": {
         "type": "object",
         "properties": {
