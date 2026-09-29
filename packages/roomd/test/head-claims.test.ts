@@ -130,3 +130,120 @@ for (const addedAbove of [0, 5]) {
     expect(doc.messages().filter(m => m.type === 'note' && m.to === 'Alice')).toHaveLength(1)
   })
 }
+
+async function pulledClaim(incomingPath: 'app.txt' | 'other.txt', incomingLine: number, transient = true, shifted = false) {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-autostash-'))
+  const remote = path.join(root, 'remote.git')
+  const local = path.join(root, 'local')
+  const peer = path.join(root, 'peer')
+  git(root, 'init', '-q', '--bare', '-b', 'main', remote)
+  git(root, 'clone', '-q', remote, local)
+  git(local, 'config', 'user.email', 'test@example.com')
+  git(local, 'config', 'user.name', 'Test')
+  const original = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
+  fs.writeFileSync(path.join(local, 'app.txt'), original)
+  fs.writeFileSync(path.join(local, 'other.txt'), original)
+  git(local, 'add', '-A'); git(local, 'commit', '-qm', 'base'); git(local, 'push', '-q', 'origin', 'HEAD:main')
+  git(root, 'clone', '-q', remote, peer)
+  git(peer, 'config', 'user.email', 'peer@example.com')
+  git(peer, 'config', 'user.name', 'Peer')
+  daemon = await startRoomd({ dir: local, room: 'ws://memory/autostash', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const edited = shifted ? 'mine\n'.repeat(5) + original.replace('line 11\n', 'my line 11\n') : original.replace('line 6\n', 'my line 6\n')
+  const from = shifted ? 15 : 6
+  const to = shifted ? 19 : 6
+  fs.writeFileSync(path.join(local, 'app.txt'), edited)
+  daemon.roomDoc.setOverlay('Alice', 'app.txt', edited)
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from, to, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(edited, from, to) })
+  const changed = incomingLine === 0 ? 'peer insertion\n' + original : original.replace(`line ${incomingLine}\n`, `peer line ${incomingLine}\n`)
+  fs.writeFileSync(path.join(peer, incomingPath), changed)
+  git(peer, 'add', '-A'); git(peer, 'commit', '-qm', 'peer edit'); git(peer, 'push', '-q', 'origin', 'HEAD:main')
+  // Hold Git's autostash marker across a deterministic clean-tree phase.
+  // The direct-pull case below uses Git's own autostash end to end.
+  if (transient) git(local, 'stash', 'push', '-q')
+  git(local, 'pull', '-q', '--ff-only', '--autostash')
+  let restore: Promise<void> | undefined
+  if (transient) {
+    const marker = path.join(local, '.git', 'MERGE_AUTOSTASH')
+    fs.writeFileSync(marker, 'autostash in progress\n')
+    restore = new Promise<void>((resolve, reject) => setTimeout(() => {
+      try { git(local, 'stash', 'pop', '-q'); fs.rmSync(marker); resolve() } catch (error) { reject(error) }
+    }, 200))
+  }
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await restore
+  return { local, claim, edited }
+}
+
+it('keeps an edited claim when a pull changes other lines in the same file', async () => {
+  const { claim } = await pulledClaim('app.txt', 10)
+  expect(daemon!.roomDoc.claims.get(claim.id)).toBeDefined()
+})
+
+it('keeps an edited claim when a pull does not touch its file', async () => {
+  const { claim } = await pulledClaim('other.txt', 10)
+  expect(daemon!.roomDoc.claims.get(claim.id)).toBeDefined()
+})
+
+it('moves an edited claim when a pull inserts lines above it', async () => {
+  const { claim } = await pulledClaim('app.txt', 0)
+  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 7, to: 7 })
+})
+
+it('keeps an edited claim through a real pull --ff-only --autostash', async () => {
+  const { local, claim, edited } = await pulledClaim('other.txt', 10, false)
+  expect(fs.readFileSync(path.join(local, 'app.txt'), 'utf8')).toBe(edited)
+  expect(daemon!.roomDoc.claims.get(claim.id)).toBeDefined()
+})
+
+it('keeps a working-tree shifted claim when the incoming hunk only overlaps its working coordinates', async () => {
+  const { local, claim, edited } = await pulledClaim('app.txt', 17, false, true)
+  expect(fs.readFileSync(path.join(local, 'app.txt'), 'utf8')).toContain('my line 11')
+  expect(daemon!.roomDoc.claims.get(claim.id)).toMatchObject({ from: 15, to: 19, claimedHash: claimDigest(edited, 15, 19) })
+})
+
+it('waits for an in-progress autostash before publishing the new HEAD', async () => {
+  const { local, claim, edited } = await pulledClaim('other.txt', 10)
+  // A second incoming commit gives the daemon a new transition to reconcile.
+  const peer = path.join(root!, 'peer')
+  fs.writeFileSync(path.join(peer, 'other.txt'), 'another line\n')
+  git(peer, 'add', '-A'); git(peer, 'commit', '-qm', 'another peer edit'); git(peer, 'push', '-q', 'origin', 'HEAD:main')
+  git(local, 'pull', '-q', '--ff-only', '--autostash')
+  git(local, 'stash', 'push', '-q')
+  const marker = path.join(local, '.git', 'MERGE_AUTOSTASH')
+  fs.writeFileSync(marker, 'autostash in progress\n')
+  const restore = new Promise<void>((resolve, reject) => setTimeout(() => {
+    try { git(local, 'stash', 'pop', '-q'); fs.rmSync(marker); resolve() } catch (error) { reject(error) }
+  }, 200))
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  await restore
+  expect(daemon!.roomDoc.claims.get(claim.id)).toBeDefined()
+  expect(daemon!.roomDoc.overlayText('Alice', 'app.txt')?.toString()).toBe(edited)
+})
+
+it('releases a claim when an incoming commit changes its claimed line', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-incoming-claim-'))
+  const local = path.join(root, 'local')
+  const peer = path.join(root, 'peer')
+  git(root, 'init', '-q', '--bare', '-b', 'main', path.join(root, 'remote.git'))
+  git(root, 'clone', '-q', path.join(root, 'remote.git'), local)
+  git(local, 'config', 'user.email', 'test@example.com'); git(local, 'config', 'user.name', 'Test')
+  fs.writeFileSync(path.join(local, 'app.txt'), 'first\nclaimed\nlast\n')
+  git(local, 'add', '-A'); git(local, 'commit', '-qm', 'base'); git(local, 'push', '-q', 'origin', 'HEAD:main')
+  git(root, 'clone', '-q', path.join(root, 'remote.git'), peer)
+  git(peer, 'config', 'user.email', 'peer@example.com'); git(peer, 'config', 'user.name', 'Peer')
+  daemon = await startRoomd({ dir: local, room: 'ws://memory/incoming-claim', name: 'Alice', kind: 'agent',
+    providerFactory: (_server, _name, doc) => provider(doc), basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {},
+  })
+  const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest('first\nclaimed\nlast\n', 2, 2) })
+  fs.writeFileSync(path.join(peer, 'app.txt'), 'first\npeer change\nlast\n')
+  git(peer, 'add', '-A'); git(peer, 'commit', '-qm', 'change claimed line'); git(peer, 'push', '-q', 'origin', 'HEAD:main')
+  git(local, 'pull', '-q', '--ff-only', '--autostash')
+  const commit = git(local, 'rev-parse', '--short=10', 'HEAD')
+  await (daemon as unknown as { pollHead(): Promise<void> }).pollHead()
+  expect(daemon.roomDoc.claims.get(claim.id)).toBeUndefined()
+  expect(daemon.roomDoc.messages()).toContainEqual(expect.objectContaining({
+    type: 'note', from: 'room', to: 'Alice', text: `released your claim on app.txt:2-2: that code changed in ${commit}`,
+  }))
+})

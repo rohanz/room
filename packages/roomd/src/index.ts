@@ -7,7 +7,7 @@
 import { readRoomFile, roomFilePath } from './room-file.js'
 export { validRepoPath, isInsideRoot, containedRepoPath, MATERIALIZED_PATH, DISK_READ_PATH, LINK_INPUT_PATH, RECORDED_PATH, CARRIED_PATH, type RepoPathSyntax, type RepoLeafPolicy, type RepoContainmentOptions } from './repo-path.js'
 export { readRoomFile, roomFilePath, type RoomFile } from './room-file.js'
-import { commonGitDirFromDotGit } from './git-dirs.js'
+import { commonGitDirFromDotGit, worktreeGitDirFromDotGit } from './git-dirs.js'
 import { RetainedDeclaredPaths } from './retained-declared.js'
 export { RetainedDeclaredPaths, retainedDeclaredFile, deleteRetainedDeclaredRecord } from './retained-declared.js'
 export { worktreeGitDirFromDotGit, worktreeGitDirSync, commonGitDirFromDotGit, gitCommonDir, realGitCommonDir, carryRecord, carryRecordSync } from './git-dirs.js'
@@ -771,6 +771,7 @@ class Daemon implements Roomd {
       if (roomBase && roomBase !== head) await this.refreshBaseStatus()
       return
     }
+    await this.waitForGitOperation(head)
     const prev = this.appliedHead
     const claimSnapshot = prev !== head ? await this.snapshotOwnClaims(prev) : []
     this.base = head
@@ -882,6 +883,32 @@ class Daemon implements Roomd {
     else this.setStatus(`${rel === 'unknown' ? 'behind base (fetch)' : 'diverged from base'}${this.isWorkerWorktree() ? '' : `: ${BASE_CATCH_UP}`}`)
   }
 
+  /** Delay a HEAD transition until Git's index and worktree stop changing. */
+  private async waitForGitOperation(head: string): Promise<void> {
+    const gitDir = worktreeGitDirFromDotGit(this.dir)
+    const markers = ['index.lock', 'MERGE_HEAD', 'MERGE_AUTOSTASH', 'REBASE_HEAD', 'rebase-apply', 'rebase-merge']
+    const busy = () => markers.some(marker => fs.existsSync(path.join(gitDir, marker)))
+    const claimedPaths = [...new Set([...this.roomDoc.claims.values()]
+      .filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/') && this.isSafeRoomPath(c.path, false))
+      .map(c => c.path))].sort()
+    const fingerprint = () => claimedPaths.map(rel => {
+      try {
+        const stat = fs.lstatSync(path.join(this.dir, rel))
+        return `${rel}:${stat.size}:${stat.mtimeMs}`
+      } catch { return `${rel}:missing` }
+    }).join('\n')
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      if (!busy()) {
+        const before = fingerprint()
+        await new Promise(resolve => setTimeout(resolve, 75))
+        if (!busy() && before === fingerprint() && await gitHead(this.dir) === head) return
+      } else await new Promise(resolve => setTimeout(resolve, 75))
+    }
+    if (busy()) throw new Error('Git operation or worktree is still changing; retry HEAD reconciliation')
+    if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during Git operation')
+  }
+
   /** Capture the claimed code before a commit can clear its overlay. */
   private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
     const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
@@ -899,14 +926,25 @@ class Daemon implements Roomd {
     })
   }
 
-  /** Validate only this daemon's claims against the new HEAD or current overlay. */
+  /** Only paths changed by the incoming commits need their claims re-anchored. */
   private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<void> {
     if (!snapshot.length || this.stopped || await gitHead(this.dir) !== head) return
+    await this.waitForGitOperation(head)
     const paths = [...new Set(snapshot.map(c => c.path))]
-    const headTexts = await gitShowMany(this.dir, head, paths)
+    const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head))
+    const changed = paths.filter(p => changedPaths.has(p) && this.isSafeRoomPath(p, false))
+    if (!changed.length) return
+    const changedClaims = new Set(changed)
+    const headTexts = await gitShowMany(this.dir, head, changed)
     if (this.stopped || await gitHead(this.dir) !== head) return
-    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]))
-    const { moves, releases } = reanchorClaims(this.name, snapshot, currentTexts)
+    const currentTexts = new Map(changed.map(p => {
+      try { return [p, fs.readFileSync(this.abs(p), 'utf8')] as const }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        return [p, headTexts.get(p)] as const
+      }
+    }))
+    const { moves, releases } = reanchorClaims(this.name, snapshot.filter(c => changedClaims.has(c.path)), currentTexts)
     const hashById = new Map(snapshot.map(c => [c.id, c.claimedHash]))
     this.roomDoc.doc.transact(() => {
       for (const move of moves) {
