@@ -45165,12 +45165,55 @@ var GraphIndex = class {
   }
   start() {
     this.currentBuild = this.initialBuild();
+    const touchedInTransaction = /* @__PURE__ */ new WeakMap();
+    const peerRefreshInTransaction = /* @__PURE__ */ new WeakMap();
+    const peerPublicationKey = (person) => {
+      const head = this.room.manifestHead.get(person);
+      const record2 = participantRecord(this.room, person);
+      return JSON.stringify([
+        head?.fence,
+        head?.level,
+        head?.textPrefixes,
+        head?.coverage,
+        head?.complete,
+        head?.excluded,
+        head?.base,
+        holderFence(record2?.holder),
+        record2?.git?.base,
+        record2?.git?.fence
+      ]);
+    };
+    const peerKeys = new Map([...this.room.manifestHead.keys()].filter((person) => person !== this.me).map((person) => [person, peerPublicationKey(person)]));
+    const refreshPeerPublication = (person, transaction) => {
+      const next = peerPublicationKey(person);
+      if (next === peerKeys.get(person)) return;
+      peerKeys.set(person, next);
+      const paths = peerRefreshInTransaction.get(transaction) ?? /* @__PURE__ */ new Set();
+      for (const [path45, source] of this.publishedSource) if (source.kind === "entry" && source.person === person) paths.add(path45);
+      for (const path45 of manifestPaths(this.room, person)) paths.add(path45);
+      peerRefreshInTransaction.set(transaction, paths);
+      this.withdrawRestricted();
+    };
+    const afterTransaction = (transaction) => {
+      const paths = peerRefreshInTransaction.get(transaction);
+      if (!paths || !this.base || this.stopped) return;
+      const touched = touchedInTransaction.get(transaction);
+      for (const path45 of paths) if (isSourcePath(path45) && !touched?.has(path45)) void this.refresh(path45);
+      if (![...paths].some(isSourcePath) && !touched?.size) void this.publish(this.phase);
+    };
+    this.room.doc.on("afterTransaction", afterTransaction);
+    this.unobserve.push(() => this.room.doc.off("afterTransaction", afterTransaction));
     const observe = (root) => {
       const known = new Map([...root].map(([person, map2]) => [person, new Set(map2.keys())]));
       return (events) => {
         if (this.stopped) return;
         this.withdrawRestricted();
         const paths = touchedPaths(events, root, known);
+        for (const event of events) {
+          const touched = touchedInTransaction.get(event.transaction) ?? /* @__PURE__ */ new Set();
+          for (const path45 of paths) touched.add(path45);
+          touchedInTransaction.set(event.transaction, touched);
+        }
         if (this.base) {
           for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
         }
@@ -45181,7 +45224,7 @@ var GraphIndex = class {
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest));
     this.ownPublicationKey = this.publicationKey();
     const onHead = (event) => {
-      if ([...event.keysChanged].some((person) => person !== this.me)) this.withdrawRestricted();
+      for (const person of event.keysChanged) if (person !== this.me) refreshPeerPublication(person, event.transaction);
       if (!event.keysChanged.has(this.me)) return;
       const next = this.publicationKey();
       this.withdrawRestricted();
@@ -45201,6 +45244,12 @@ var GraphIndex = class {
     this.room.manifestHead.observe(onHead);
     this.unobserve.push(() => this.room.manifestHead.unobserve(onHead));
     const onParticipant = (event) => {
+      for (const key2 of event.keysChanged) {
+        const divider = key2.indexOf("\0");
+        if (divider < 0) continue;
+        const person = key2.slice(0, divider), field = key2.slice(divider + 1);
+        if (person !== this.me && (field === "holder" || field === "git")) refreshPeerPublication(person, event.transaction);
+      }
       if (event.keysChanged.has(`${this.me}\0git`)) {
         const base = participantRecord(this.room, this.me)?.git?.base;
         if (!this.stopped && this.initialStarted && base && base !== this.base) this.currentBuild = this.rebuild();
@@ -45382,10 +45431,15 @@ var GraphIndex = class {
     const head = this.room.manifestHead.get(this.me);
     return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45)));
   }
+  /** The baseline read for a deletion may include a worker's carried, untracked blob. */
+  deletionBaseline(path45) {
+    const baseline = carriedFrom(this.dir, this.me)?.baseline;
+    return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path45)?.sha, baseline?.carriedCommit ?? false]);
+  }
   entryAuthorized(person, path45, entry) {
     const head = this.room.manifestHead.get(person);
     const record2 = participantRecord(this.room, person);
-    return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && !!entry.hash && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path45));
+    return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path45));
   }
   publicationAllowed(path45, source = this.publishedSource.get(path45)) {
     if (!source) return false;
@@ -45394,9 +45448,9 @@ var GraphIndex = class {
     const record2 = participantRecord(this.room, this.me);
     if (!head.complete || head.coverage.kind !== "all" || holderFence(record2?.holder) !== head.fence || record2?.git?.base !== head.base || record2.git.fence !== head.fence || !this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, path45))) return false;
     const ownEntry = this.room.manifest.get(manifestKey(this.me, head.fence))?.get(path45);
-    if (ownEntry) return source.kind === "entry" && source.person === this.me && source.fence === head.fence && source.hash === ownEntry.hash && this.entryAuthorized(this.me, path45, ownEntry);
+    if (ownEntry) return this.entryAuthorized(this.me, path45, ownEntry) && (ownEntry.change === "D" ? source.kind === "deletion" && source.person === this.me && source.fence === head.fence && source.base === this.base && source.baseline === this.deletionBaseline(path45) : source.kind === "entry" && source.person === this.me && source.fence === head.fence && source.hash === ownEntry.hash);
     if (source.kind === "base") return source.base === head.base && source.base === this.base;
-    if (source.person === this.me) return false;
+    if (source.person === this.me || source.kind === "deletion") return false;
     const peerEntry = this.room.manifest.get(manifestKey(source.person, source.fence))?.get(path45);
     return source.fence === this.room.manifestHead.get(source.person)?.fence && source.hash === peerEntry?.hash && this.entryAuthorized(source.person, path45, peerEntry);
   }
@@ -45406,7 +45460,7 @@ var GraphIndex = class {
     const head = this.room.manifestHead.get(this.me);
     if (!head && graph?.sourceFence === void 0) return;
     const allowed = (p) => (graph?.sourceFence === void 0 || graph.sourceFence === head?.fence) && this.publicationAllowed(p);
-    for (const path45 of this.publishedCache.keys()) if (!allowed(path45)) {
+    for (const path45 of this.publishedSource.keys()) if (!allowed(path45)) {
       this.publishedCache.delete(path45);
       this.publishedSource.delete(path45);
       this.publishedGraph.remove(path45);
@@ -45429,6 +45483,8 @@ var GraphIndex = class {
       sourceRev: head?.rev,
       at: Date.now()
     });
+    this.lastPublished.key = "";
+    this.lastPublishedRevision = { graph: -1, observed: -1, base: "", provenance: "" };
   }
   refresh(path45) {
     if (this.stopped) return Promise.resolve();
@@ -45569,6 +45625,14 @@ var GraphIndex = class {
         }
         this.degradedPaths.delete(path45);
         const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : publicText ?? "", path45, parseFile).map((change) => ({ path: path45, ...change }));
+        if (changes.length && mineDeleted && baseRead?.kind === "available" && this.entryAuthorized(this.me, path45, myEntry) && publicationSource?.fenceValid && snapshotStillCurrent(this.room, publicationSource, []))
+          this.publishedSource.set(path45, {
+            kind: "deletion",
+            person: this.me,
+            fence: myEntry.fence,
+            base: this.base,
+            baseline: JSON.stringify([own2?.sha ?? this.base, own2?.untracked.get(path45)?.sha, own2?.carriedCommit ?? false])
+          });
         if (changes.length) this.observedByPath.set(path45, changes);
         else this.observedByPath.delete(path45);
       } else {
@@ -45632,7 +45696,7 @@ var GraphIndex = class {
       }
     }
     let edgeList = [...edges.values()];
-    const allObserved = [...this.observedByPath.values()].flat().filter((change) => allowedPaths.has(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
+    const allObserved = [...this.observedByPath.values()].flat().filter((change) => (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === "deletion") && this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
     let observedTruncated = allObserved.length > MAX_OBSERVED;
     const observed = allObserved.slice(0, MAX_OBSERVED);
     let body2 = JSON.stringify({ paths, edges: edgeList, observed });
@@ -45987,7 +46051,7 @@ var ConflictSet = class {
     if (!snap?.fenceValid || !head?.complete || head.coverage.kind !== "all" || head.base !== snap.record?.git?.base || !room.roomSalt) return false;
     const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45));
     const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path45);
-    return textAllowed && (!entry || entry.state === "shared" && !!entry.hash && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path45));
+    return textAllowed && (!entry || entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path45));
   }
   /** Only a current text grant permits an old signature identity to remain in replicated slots. */
   unknownOrRedactContracts(other, why, snap, markReadableUnknown = true) {
@@ -46345,12 +46409,13 @@ var ConflictSet = class {
       if (change.kind === "add") continue;
       if (!this.contractPathReadable(theirs, change.path)) continue;
       const provider = await this.read(theirs, change.path);
-      if (asText(provider) === void 0 || !carriedProvider && provider.kind === "base") {
+      const deleted = change.kind === "delete" && provider.kind === "deleted";
+      if (!deleted && (asText(provider) === void 0 || !carriedProvider && provider.kind === "base")) {
         this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
         return;
       }
       let uses;
-      if (carriedProvider) {
+      if (carriedProvider || deleted) {
         uses = [];
         for (const path45 of myPaths) {
           const version2 = await this.read(mine, path45);
