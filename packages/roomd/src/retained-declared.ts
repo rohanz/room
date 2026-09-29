@@ -8,7 +8,7 @@ import { RECORDED_PATH, validRepoPath } from './repo-path.js'
 export class RetainedDeclaredPaths extends Set<string> {
   private readonly file: string
 
-  constructor(dir: string, private readonly room: string, private readonly participant: string, server: string) {
+  constructor(dir: string, private readonly room: string, private readonly participant: string, server: string, private readonly onChange?: () => void) {
     super()
     this.server = normaliseServer(server)
     this.file = retainedDeclaredFile(dir, room, participant, server)
@@ -31,18 +31,18 @@ export class RetainedDeclaredPaths extends Set<string> {
   }
 
   override add(path: string): this {
-    if (!this.has(path)) { super.add(path); this.save() }
+    if (!this.has(path)) { super.add(path); this.save(); this.onChange?.() }
     return this
   }
 
   override delete(path: string): boolean {
     const removed = super.delete(path)
-    if (removed) this.save()
+    if (removed) { this.save(); this.onChange?.() }
     return removed
   }
 
   override clear(): void {
-    if (this.size) { super.clear(); this.save() }
+    if (this.size) { super.clear(); this.save(); this.onChange?.() }
   }
 }
 

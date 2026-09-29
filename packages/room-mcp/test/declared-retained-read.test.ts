@@ -63,7 +63,10 @@ async function setup() {
   const readerTools = createTools({ cwd: readerDir, getSession: () => reader, setSession: () => {} })
   active.push({ daemon, ownerTools, readerTools, root, readerAwareness })
   const pending = (path: string) => (daemon as unknown as { batch: { add(path: string, fresh: boolean): void } }).batch.add(path, false)
-  return { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending }
+  const ownerPresenceId = daemon.roomDoc.doc.clientID
+  const syncOwnerPresence = () => applyAwarenessUpdate(readerAwareness, encodeAwarenessUpdate(daemon.provider.awareness, [ownerPresenceId]), 'test')
+  const readerOwnerPresence = () => readerAwareness.getStates().get(ownerPresenceId) as { share?: string; retained?: string[] }
+  return { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending, syncOwnerPresence, readerOwnerPresence }
 }
 
 afterEach(async () => {
@@ -77,7 +80,7 @@ afterEach(async () => {
 })
 
 it('reads and previews edited and deleted declared files retained after room_done, then refuses a reverted path', async () => {
-  const { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending } = await setup()
+  const { daemon, ownerTools, readerTools, ownerDir, readerRoom, pending, syncOwnerPresence, readerOwnerPresence } = await setup()
   daemon.roomDoc.setScope({ by: 'Owner', byKind: 'agent', area: 'change', summary: 'edit two files', paths: ['a.py', 'b.py'] })
   writeFileSync(join(ownerDir, 'a.py'), 'edited a\n')
   rmSync(join(ownerDir, 'b.py'))
@@ -92,6 +95,10 @@ it('reads and previews edited and deleted declared files retained after room_don
   expect(done).toContain('2 changed file(s) you declared earlier stay shared while they differ from your base: a.py, b.py')
   expect(readerRoom.scope('Owner')).toBeUndefined()
   expect(daemon.retainedDeclared()).toEqual(['a.py', 'b.py'])
+  expect(daemon.provider.awareness.getLocalState()?.publishUnder).toBeUndefined()
+  expect(daemon.provider.awareness.getLocalState()).toMatchObject({ share: 'declared', retained: ['a.py', 'b.py'] })
+  syncOwnerPresence()
+  expect(readerOwnerPresence().retained).toEqual(['a.py', 'b.py'])
 
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('edited a')
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('deleted by Owner')
@@ -118,6 +125,8 @@ it('reads and previews edited and deleted declared files retained after room_don
     expect(daemon.retainedDeclared()).toEqual(['b.py'])
     expect(readerRoom.text('a.py', 'Owner')).toBeUndefined()
   })
+  syncOwnerPresence()
+  expect(readerOwnerPresence().retained).toEqual(['b.py'])
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py' })).toContain('not shared')
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'a.py', diff: true })).toContain('not shared')
 
@@ -127,5 +136,51 @@ it('reads and previews edited and deleted declared files retained after room_don
     expect(daemon.retainedDeclared()).toEqual([])
     expect(readerRoom.deleted.get('Owner')?.has('b.py')).toBe(false)
   })
+  syncOwnerPresence()
+  expect(readerOwnerPresence().retained).toEqual([])
   expect(await readerTools.call('room_read', { person: 'Owner', path: 'b.py' })).toContain('not shared')
+})
+
+it('refuses a stale full-sharing overlay on a declared restart without a retained record', async () => {
+  const { readerRoom, readerTools, readerOwnerPresence } = await setup()
+  // A resumed room can deliver its old overlay before the new daemon reconciles it.
+  readerRoom.setOverlay('Owner', 'private.py', 'old full-sharing text\n')
+  expect(readerOwnerPresence().share).toBe('declared')
+  expect(readerOwnerPresence().retained).toEqual([])
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py', diff: true })).toContain('not shared')
+  const all = await readerTools.call('room_read', { person: 'Owner', diff: true })
+  expect(all).not.toContain('old full-sharing text')
+  expect(all).toContain('1 other changed file(s) are not shared')
+  delete readerOwnerPresence().retained // an older client has no retained field
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
+})
+
+it('refuses an out-of-scope overlay as soon as full sharing narrows to declared', async () => {
+  const { readerRoom, readerTools, readerOwnerPresence } = await setup()
+  readerRoom.setOverlay('Owner', 'private.py', 'full-sharing text\n')
+  const presence = readerOwnerPresence()
+  presence.share = 'full'
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('full-sharing text')
+  // Awareness can arrive ahead of the overlay withdrawal on another machine.
+  presence.share = 'declared'
+  presence.retained = []
+  expect(readerRoom.text('private.py', 'Owner')).toBe('full-sharing text\n')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: 'private.py' })).toContain('not shared')
+  const all = await readerTools.call('room_read', { person: 'Owner', diff: true })
+  expect(all).not.toContain('full-sharing text')
+  expect(all).toContain('1 other changed file(s) are not shared')
+})
+
+it('bounds retained paths in presence and keeps paths beyond the cap private', async () => {
+  const { daemon, readerRoom, readerTools, syncOwnerPresence, readerOwnerPresence } = await setup()
+  const paths = Array.from({ length: 257 }, (_, i) => `file-${i}.py`)
+  ;(daemon as unknown as { publisher: { setRetained(paths: Set<string>): void } }).publisher.setRetained(new Set(paths))
+  daemon.touch()
+  syncOwnerPresence()
+  const published = readerOwnerPresence().retained ?? []
+  expect(published).toHaveLength(256)
+  const omitted = paths.find(path => !published.includes(path))!
+  readerRoom.setOverlay('Owner', omitted, 'stale text\n')
+  expect(await readerTools.call('room_read', { person: 'Owner', path: omitted })).toContain('not shared')
 })

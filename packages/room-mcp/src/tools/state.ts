@@ -98,12 +98,15 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const withheld = (s: Session, person: string, p?: string): string | undefined => {
     const level = shareOf(s, person)
     if (level === 'intent') return `${person} shares intent only; ask them or wait for their push`
-    // The publisher keeps a declared path visible after room_done only while its
-    // changed overlay or deletion is still in the room. Readers use that published
-    // state, not the publisher's private retained-path record.
-    if (level === 'declared' && p !== undefined && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)
-      && s.room.text(p, person) === undefined && !s.room.deleted.get(person)?.has(p)) {
-      return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+    if (level === 'declared' && p !== undefined) {
+      // A stale overlay can outlive a sharing change, so a published overlay is not proof of sharing. A declared
+      // path is shared when it is in scope or in the publisher's retained list; older clients without it are scope-only.
+      const presence = person === s.me.name ? s.awareness.getLocalState() as SharePresence | null
+        : presences(s).find(x => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find(x => x.user.name === person)
+      const retained = Array.isArray(presence?.retained) ? presence.retained : []
+      if (!scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p) && !retained.includes(p)) {
+        return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`
+      }
     }
     return undefined
   }

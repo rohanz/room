@@ -96,9 +96,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
       ].filter(Boolean)) : s.room.changedPaths(person)
-      for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
+      let unshared = 0
+      for (const p of paths) {
+        if (withheld(s, person, p)) { unshared++; continue }
+        const d = await one(p); if (d) parts.push(d)
+      }
       const level = shareOf(s, person)
-      if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared)`)
+      if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared${unshared ? `; ${unshared} other changed file(s) are not shared` : ''})`)
       return label([baseNote, parts.length ? parts.join('\n') : `${person} has no uncommitted changes`].filter(Boolean).join('\n'))
   }
   const handlers: Record<string, Handler> = {
