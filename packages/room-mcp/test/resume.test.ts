@@ -12,7 +12,7 @@ import { decideResume, type WorkerRealState } from '../src/worker-state.js'
 import { prepareWorktree } from '../src/worker-git.js'
 import { HooksBridge } from '../src/hooks-bridge.js'
 import { Ledger } from '../src/ledger.js'
-import { projectWorkers } from '../src/worker-projector.js'
+import { WorkerProjector, projectWorkers } from '../src/worker-projector.js'
 import type { Session } from '../src/session.js'
 import type { PreparedWorktree } from '../src/worker-git.js'
 import type { SpawnSpec } from '../src/worker-process.js'
@@ -171,6 +171,82 @@ describe('resumed worker boundaries', () => {
     t.room.mail.delete(run.promptMsgIds[0])
     await projectWorkers(t.session, registry, 'rohanz', 'joined')
     expect(t.room.seen(record.name).has(run.promptMsgIds[0])).toBe(false)
+  })
+
+  it.each([
+    ['explicit pass', 'outcome'],
+    ['bus trim event', 'bus'],
+    ['mail trim event', 'mail'],
+    ['outcome trim event', 'outcome'],
+  ] as const)('S2: %s prunes an older receipt after a later resume is rejected', async (trigger, lastReference) => {
+    const t = setup()
+    await t.seed('prune')
+    const registry = await registryForDir(t.dir)
+    const projector = trigger === 'explicit pass' ? undefined : new WorkerProjector(t.session, registry)
+    projector?.start()
+    try {
+      expect(await t.tools.call('room_send', { type: 'note', to: 'prune', text: 'accepted' })).toContain('resumed prune')
+      const first = (await t.record('prune'))!, firstRun = first.runs.at(-1)!
+      const firstMessage = t.room.message(firstRun.promptMsgIds[0])!
+      const log = join(t.dir, '.room', 'workers', 'prune.log')
+      writeFileSync(log, JSON.stringify({ type: 'assistant', session_id: first.hostSessionId,
+        message: { content: [{ type: 'text', text: 'accepted' }] } }) + '\n')
+      t.exits[0](0)
+      await vi.waitFor(() => expect(registry.status(first.id)?.status).toBe('done'))
+      await projectWorkers(t.session, registry, 'rohanz', 'joined')
+      expect(t.room.seen(first.name).has(firstMessage.id)).toBe(true)
+
+      expect(await t.tools.call('room_send', { type: 'note', to: 'prune', text: 'rejected' })).toContain('resumed prune')
+      const secondRun = (await t.record('prune'))!.runs.at(-1)!
+      expect(secondRun.n).toBeGreaterThan(firstRun.n)
+      writeFileSync(log, JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true,
+        num_turns: 0, session_id: first.hostSessionId, result: 'No conversation found' }) + '\n', { flag: 'a' })
+      t.exits[1](1)
+      await vi.waitFor(() => expect(registry.status(first.id)?.status).toBe('failed'))
+      await projectWorkers(t.session, registry, 'rohanz', 'joined')
+      expect(t.room.seen(first.name).has(secondRun.promptMsgIds[0])).toBe(false)
+      await projector?.project() // Drain any registry-triggered passes before testing the trim event.
+
+      if (lastReference !== 'bus') {
+        if (lastReference === 'mail') t.room.mail.set(firstMessage.id, firstMessage)
+        else t.room.outcomes.set(firstMessage.id, { to: first.name, from: firstMessage.from, outcome: 'expired', at: Date.now() })
+      }
+      expect(t.room.seen(first.name).has(firstMessage.id)).toBe(true)
+      t.room.bus.delete(0, t.room.bus.length)
+      if (lastReference !== 'bus') {
+        if (trigger === 'explicit pass') await projectWorkers(t.session, registry, 'rohanz', 'joined')
+        else await projector?.project()
+        expect(t.room.seen(first.name).has(firstMessage.id)).toBe(true)
+      }
+      if (lastReference === 'mail') t.room.mail.delete(firstMessage.id)
+      if (lastReference === 'outcome') t.room.outcomes.delete(firstMessage.id)
+      if (trigger === 'explicit pass') await projectWorkers(t.session, registry, 'rohanz', 'joined')
+      else await vi.waitFor(() => expect(t.room.seen(first.name).has(firstMessage.id)).toBe(false))
+      expect(t.room.seen(first.name).has(firstMessage.id)).toBe(false)
+    } finally { projector?.stop() }
+  })
+
+  it('S2: a lapsed projector fence leaves an orphaned older receipt intact', async () => {
+    const t = setup()
+    await t.seed('unfenced')
+    const registry = await registryForDir(t.dir)
+    const projector = new WorkerProjector(t.session, registry)
+    projector.start()
+    try {
+      expect(await t.tools.call('room_send', { type: 'note', to: 'unfenced', text: 'accepted' })).toContain('resumed unfenced')
+      const record = (await t.record('unfenced'))!, id = record.runs.at(-1)!.promptMsgIds[0]
+      writeFileSync(join(t.dir, '.room', 'workers', 'unfenced.log'), JSON.stringify({ type: 'assistant',
+        session_id: record.hostSessionId, message: { content: [{ type: 'text', text: 'accepted' }] } }) + '\n')
+      t.exits[0](0)
+      await vi.waitFor(() => expect(registry.status(record.id)?.status).toBe('done'))
+      await projectWorkers(t.session, registry, 'rohanz', 'joined')
+      expect(t.room.seen(record.name).has(id)).toBe(true)
+      ;(t.session.daemon as { fence?: string }).fence = undefined
+      t.room.bus.delete(0, t.room.bus.length)
+      await projectWorkers(t.session, registry, 'rohanz', 'joined')
+      await projector.project()
+      expect(t.room.seen(record.name).has(id)).toBe(true)
+    } finally { projector.stop() }
   })
 
   it('shows a missing Claude session while leaving its follow-up owed', async () => {

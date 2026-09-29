@@ -36,13 +36,17 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
     for (const { record, status } of write) {
       const run = status.run
       const ended = ['done', 'failed', 'stopped'].includes(status.status)
+      const ownsName = s.room.workerOwnsName(record.id, record.name)
       const logFile = path.join(s.dir, '.room', 'workers', `${record.tag}.log`)
-      if (ended && run?.mode === 'resume' && run.promptMsgIds.length && record.hostSessionId
+      if (ended && ownsName && s.daemon.fence === fence && run?.mode === 'resume' && run.promptMsgIds.length && record.hostSessionId
         && resumeAccepted(logFile, record.host, record.hostSessionId, run.logStart)) {
         const retained = run.promptMsgIds.filter(id => s.room.message(id) || s.room.outcomes.has(id))
         s.room.markSeen(record.name, retained, { s: record.hostSessionId, via: 'prompt' })
-        s.room.pruneSeen(record.name, () => s.daemon.fence === fence)
       }
+      // Older receipts can become orphaned even when this run was not accepted. Only the
+      // projector of an ended worker's current incarnation may clean up its ledger.
+      if (ended && ownsName) s.room.pruneSeen(record.name,
+        () => s.daemon.fence === fence && s.room.workerOwnsName(record.id, record.name))
       const missing = ended && record.host === 'claude' && run?.mode === 'resume' && record.hostSessionId
         && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
       const shown = missing ? { ...status, note: `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed` } : status
@@ -116,6 +120,12 @@ export function localWorkerView(s: Session, id: string): WorkerView | undefined 
 export class WorkerProjector {
   private unsubscribe?: () => void
   private onSync = (synced: boolean) => { if (synced) void this.project() }
+  private onBusDelete = (event: { changes: { delta: { delete?: number }[] } }) => {
+    if (event.changes.delta.some(change => change.delete)) void this.project()
+  }
+  private onReferenceDelete = (event: { changes: { keys: Map<string, { action: string }> } }) => {
+    if ([...event.changes.keys.values()].some(change => change.action === 'delete')) void this.project()
+  }
   private running: Promise<void> = Promise.resolve()
   private stopped = false
 
@@ -124,6 +134,9 @@ export class WorkerProjector {
   start(): void {
     this.unsubscribe = this.registry.onChange(() => { void this.project() })
     this.s.provider.on?.('sync', this.onSync)
+    this.s.room.bus.observe(this.onBusDelete)
+    this.s.room.mail.observe(this.onReferenceDelete)
+    this.s.room.outcomes.observe(this.onReferenceDelete)
     void this.project()
   }
 
@@ -131,6 +144,9 @@ export class WorkerProjector {
     this.stopped = true
     this.unsubscribe?.()
     this.s.provider.off?.('sync', this.onSync)
+    this.s.room.bus.unobserve(this.onBusDelete)
+    this.s.room.mail.unobserve(this.onReferenceDelete)
+    this.s.room.outcomes.unobserve(this.onReferenceDelete)
   }
 
   /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */
