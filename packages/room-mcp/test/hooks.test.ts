@@ -157,6 +157,9 @@ describe('shell edit hooks', () => {
     ['Bash', 'python3 -c "pass" api/tax.py', false],
     ['Bash', 'node -e "0" api/tax.py', false],
     ['Bash', 'sed -i "s/x/y/" api/tax.py', true],
+    ['Bash', 'sed -i.bak "s/x/y/" api/tax.py', true],
+    ['Bash', 'sed --in-place "s/x/y/" api/tax.py', true],
+    ['Bash', 'sed --in-place=.bak "s/x/y/" api/tax.py', true],
     ['Bash', 'cd api && sed -i "s/x/y/" tax.py', true],
     ['Bash', 'touch app.py api/tax.py', true],
     ['Bash', 'find api/tax.py -delete', true],
@@ -170,6 +173,7 @@ describe('shell edit hooks', () => {
     ['Bash', 'git mv api/tax.py old.py', true],
     ['Bash', 'git rm api/tax.py', true],
     ['Bash', 'patch api/tax.py fix.diff', true],
+    ['Bash', 'patch api/tax.py < fix.diff', true],
     ['Bash', 'patch -p1 < fix.diff', false],
     ['Bash', 'git apply fix.diff', false],
     ['Bash', 'rm api/tax.py', true],
@@ -182,6 +186,15 @@ describe('shell edit hooks', () => {
     ['PowerShell', 'Set-Content -LiteralPath api/tax.py -Value x', true],
     ['PowerShell', 'Copy-Item app.py api/tax.py', true],
     ['PowerShell', 'Get-Content app.py > api/tax.py', true],
+    ['PowerShell', 'git restore api/tax.py', true],
+    ['PowerShell', 'git checkout -- api/tax.py', true],
+    ['PowerShell', 'git rm api/tax.py', true],
+    ['PowerShell', 'rm api/tax.py', true],
+    ['PowerShell', 'sed -i.bak "s/x/y/" api/tax.py', true],
+    ['PowerShell', 'sed --in-place "s/x/y/" api/tax.py', true],
+    ['PowerShell', 'sed --in-place=.bak "s/x/y/" api/tax.py', true],
+    ['PowerShell', 'patch api/tax.py < fix.diff', true],
+    ['PowerShell', 'patch -p1 < fix.diff', false],
   ] as const)('warns only for target writes: %s %s', async (tool_name, command, warn) => {
     state({ near: [{ by: 'Kieran', path: 'api/tax.py', reason: 'changed' }] })
     writeFileSync(join(dir, '.git/room-hook-seen.json'), JSON.stringify({ seen: [], companyTold: true }))

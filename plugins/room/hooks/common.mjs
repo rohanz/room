@@ -207,7 +207,10 @@ function writeTargets(input, powerShell = false, root = '') {
         for (let i = 0; i < args.length - 1; i++) if (flags.includes(args[i].toLowerCase())) add(args[i + 1])
         if (!args.some(a => flags.includes(a.toLowerCase())) && positional[0]) add(positional[0])
       }
-      if (/^(?:set-content|add-content|out-file|new-item|remove-item|sc|ac|ni|ri|del)$/.test(name)) take('-path', '-literalpath', '-filepath')
+      if (/^(?:set-content|add-content|out-file|new-item|remove-item|sc|ac|ni|ri|del|rm)$/.test(name)) {
+        take('-path', '-literalpath', '-filepath')
+        continue
+      }
       else if (name === 'rename-item' || name === 'ren') {
         const source = args.findIndex(a => /^-(?:path|literalpath)$/i.test(a))
         if (source >= 0 && args[source + 1]) add(args[source + 1])
@@ -215,6 +218,7 @@ function writeTargets(input, powerShell = false, root = '') {
         const i = args.findIndex(a => /^-newname$/i.test(a))
         if (i >= 0 && args[i + 1]) add(args[i + 1])
         else if (last) add(last)
+        continue
       }
       else if (/^(?:move-item|copy-item|mv|cp)$/.test(name)) {
         if (name === 'move-item' || name === 'mv') {
@@ -225,11 +229,11 @@ function writeTargets(input, powerShell = false, root = '') {
         const i = args.findIndex(a => /^-destination$/i.test(a))
         if (i >= 0 && args[i + 1]) add(args[i + 1])
         else if (last) add(last)
+        continue
       }
-      continue
     }
     if (name === 'sed' || name === 'perl') {
-      const inPlace = args.some(a => name === 'sed' ? /^-(?:[^-\s]*i[^\s]*|i)$/.test(a) || a === '--in-place' : /^-[^-\s]*i/.test(a))
+      const inPlace = args.some(a => name === 'sed' ? /^-(?:[^-\s]*i[^\s]*|i)$/.test(a) || /^--in-place(?:=.*)?$/.test(a) : /^-[^-\s]*i/.test(a))
       if (inPlace) {
         let scriptSupplied = false, scriptSkipped = false
         for (let i = 0; i < args.length; i++) {
@@ -245,7 +249,7 @@ function writeTargets(input, powerShell = false, root = '') {
         }
       }
     } else if (name === 'patch') {
-      if (!command.includes('<') && positional[0]) add(positional[0])
+      if (positional[0]) add(positional[0])
     } else if (['tee', 'rm', 'touch', 'truncate', 'apply_patch'].includes(name)) {
       if (name === 'rm' || name === 'touch' || name === 'tee') for (const arg of positional) add(arg)
       else if (last) add(last)
