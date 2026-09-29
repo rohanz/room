@@ -344,7 +344,10 @@ export class GraphIndex {
         ) : undefined
       // The base read can yield after a valid shared version was selected. A holder-only
       // epoch change leaves the manifest head unchanged, but revokes that version.
-      if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) return false
+      if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
+        await this.yieldAfterIndex()
+        return false
+      }
       if (this.stopped) return true
       if (generation !== this.generation) return false
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }

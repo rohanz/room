@@ -38,11 +38,13 @@ function fakeSession(room: RoomDoc, me: Identity, local = true): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, me.name, dir); graph.start()
+  const policyStore = testPolicyStore()
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx%2Fmain', roomName: 'local/x/main', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced: true, awareness } as unknown as Session['provider'],
-    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base } as never,
-    shareMax: 'full', shareRequested: 'full', policyStore: testPolicyStore(),
+    daemon: { touch() {}, async stop() {}, dir, name: me.name, roomDoc: room, provider: null as never, branch: 'main', base,
+      inputs: { policy: policyStore.policy, rules: rulesFromText('', 512 * 1024, 8 * 1024 * 1024), head: base } } as never,
+    shareMax: 'full', shareRequested: 'full', policyStore,
     ...(local ? { local: { url: 'ws://127.0.0.1:1', port: 1, owned: true, async stop() {} } } : {}),
   } as Session
 }
@@ -89,7 +91,6 @@ describe("the lead's room_done and its workers' mirrored claims (B2)", () => {
     await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
     // Give the fake lead the same fenced base its daemon would publish, then let the bridge project.
     ;(t.lead().daemon as unknown as { fence: string }).fence = '1'
-    ;(t.lead().daemon as unknown as { inputs: unknown }).inputs = { rules: rulesFromText('', 1 << 20, 1 << 24) }
     t.team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: '1' })
     await vi.waitFor(() => expect(t.team.a.manifestHead.has(workerId.name)).toBe(true))
     writeFileSync(join(dir, '.room', 'workers', 'money', 'app.py'), 'x = 3\n')
