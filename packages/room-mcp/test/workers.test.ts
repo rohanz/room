@@ -710,7 +710,18 @@ describe('room_spawn / room_done / room_collect discard', () => {
     await new Promise(r => setTimeout(r, 50))
     await t.workerTools.call('room_done', { summary: 'done in cents' })
     const out = await waiting
-    expect(out).toContain('worker done:')
+    expect(out).toContain('worker reported done; its process is still exiting (room_collect waits up to 15 s for it):')
+    expect(out).toContain('done in cents')
+  })
+
+  it("room_wait says ready to collect when the worker's process has exited", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    await t.workerTools.call('room_done', { summary: 'done in cents' })
+    t.exits[0](0)
+    await vi.waitFor(() => expect(t.a.workers.get('money')?.exitCode).toBe(0))
+    const out = await t.leadTools.call('room_wait', { timeoutMs: 100 })
+    expect(out).toContain('worker done, ready to collect:')
     expect(out).toContain('done in cents')
   })
 

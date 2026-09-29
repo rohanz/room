@@ -174,6 +174,21 @@ describe('shell edit hooks', () => {
     expect(existsSync(join(state, 'room-hook-receipts'))).toBe(false)
   })
 
+  it.each(['x'.repeat(257), 'a\nb'])('does not write legacy activity for an invalid session id', async session_id => {
+    const activity = join(dir, '.git/room-hook-activity.json')
+    rmSync(activity, { force: true })
+    await runHook('before-edit.mjs', { session_id, cwd: dir, tool_name: 'Bash', tool_input: { cmd: 'ls' } })
+    expect(existsSync(activity)).toBe(false)
+  })
+
+  it('replaces oversized legacy activity without failing the hook', async () => {
+    const activity = join(dir, '.git/room-hook-activity.json')
+    writeFileSync(activity, JSON.stringify({ session_id: 'bounded-activity', event: 'PreToolUse', at: Date.now(), padding: 'x'.repeat(5000) }))
+    expect(await runHook('before-edit.mjs', { session_id: 'bounded-activity', cwd: dir, tool_name: 'Edit', tool_input: { file_path: 'app.py' } })).toBe('')
+    expect(JSON.parse(readFileSync(activity, 'utf8'))).toMatchObject({ session_id: 'bounded-activity', event: 'PreToolUse' })
+    expect(fs.statSync(activity).size).toBeLessThan(4096)
+  })
+
   it('prunes week-old receipts at most every ten minutes, scanning a bounded number of entries', async () => {
     const { writeHookReceipt, pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
     const state = join(dir, '.git'), receiptsDir = join(state, 'room-hook-receipts')
@@ -196,6 +211,70 @@ describe('shell edit hooks', () => {
     const left = fs.readdirSync(receiptsDir).filter(n => n.startsWith('bulk-')).length
     expect(left).toBeGreaterThanOrEqual(200)
     expect(left).toBeLessThan(700)
+  })
+
+  it('advances pruning past a stable prefix of 500 fresh receipts', async () => {
+    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
+    const receiptsDir = join(dir, '.git/room-hook-receipts')
+    rmSync(receiptsDir, { force: true, recursive: true }); mkdirSync(receiptsDir)
+    const now = Date.now(), old = new Date(now - 8 * 86400_000)
+    for (let i = 0; i < 500; i++) writeFileSync(join(receiptsDir, `a-${String(i).padStart(3, '0')}.json`), '{}')
+    const stale = join(receiptsDir, 'z-stale.json')
+    writeFileSync(stale, '{}'); fs.utimesSync(stale, old, old)
+    pruneHookReceipts(receiptsDir, now)
+    expect(existsSync(stale)).toBe(true)
+    fs.utimesSync(join(receiptsDir, '.pruned'), old, old)
+    pruneHookReceipts(receiptsDir, now)
+    expect(existsSync(stale)).toBe(false)
+  })
+
+  it('keeps a receipt refreshed just before pruning renames it', async () => {
+    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
+    const receiptsDir = join(dir, '.git/room-hook-receipts')
+    rmSync(receiptsDir, { force: true, recursive: true }); mkdirSync(receiptsDir)
+    const now = Date.now(), file = join(receiptsDir, 'old.json')
+    writeFileSync(file, '{"at":1}'); fs.utimesSync(file, new Date(now - 8 * 86400_000), new Date(now - 8 * 86400_000))
+    const rename = fs.renameSync.bind(fs)
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from) === file && String(to).includes('.pruning.')) writeFileSync(file, '{"at":2}')
+      return rename(from, to)
+    })
+    try { pruneHookReceipts(receiptsDir, now) } finally { spy.mockRestore() }
+    expect(readFileSync(file, 'utf8')).toBe('{"at":2}')
+  })
+
+  it.each(['EPERM', 'EEXIST', 'COPY_EEXIST'])('cleans up a fresh tombstone when restore fails with %s', async code => {
+    const { pruneHookReceipts } = await import(join(HOOKS, 'common.mjs'))
+    const receiptsDir = join(dir, '.git/room-hook-receipts')
+    rmSync(receiptsDir, { force: true, recursive: true }); mkdirSync(receiptsDir)
+    const now = Date.now(), file = join(receiptsDir, 'old.json')
+    writeFileSync(file, '{"at":1}'); fs.utimesSync(file, new Date(now - 8 * 86400_000), new Date(now - 8 * 86400_000))
+    const rename = fs.renameSync.bind(fs)
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      rename(from, to)
+      if (String(from) === file && String(to).includes('.pruning.')) fs.utimesSync(to, new Date(now), new Date(now))
+    })
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((from, to) => {
+      if (String(to) === file) {
+        if (code === 'EEXIST') writeFileSync(file, '{"at":2}')
+        const linkCode = code === 'EEXIST' ? 'EEXIST' : 'EPERM'
+        throw Object.assign(new Error(linkCode), { code: linkCode })
+      }
+      throw new Error('unexpected link')
+    })
+    const copy = fs.copyFileSync.bind(fs)
+    const copySpy = vi.spyOn(fs, 'copyFileSync').mockImplementation((from, to, flags) => {
+      expect(flags).toBe(fs.constants.COPYFILE_EXCL)
+      if (code === 'COPY_EEXIST') {
+        writeFileSync(file, '{"at":2}')
+        throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
+      }
+      return copy(from, to, flags)
+    })
+    try { expect(() => pruneHookReceipts(receiptsDir, now)).not.toThrow() }
+    finally { copySpy.mockRestore(); linkSpy.mockRestore(); renameSpy.mockRestore() }
+    expect(readFileSync(file, 'utf8')).toBe(code === 'EPERM' ? '{"at":1}' : '{"at":2}')
+    expect(fs.readdirSync(receiptsDir).filter(name => name.includes('.pruning.'))).toEqual([])
   })
 
   it('records PowerShell write targets but not read-only commands', async () => {

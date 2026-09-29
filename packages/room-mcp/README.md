@@ -161,6 +161,7 @@ down and drop the mirrored claims.
 (and `ROOM_TOKEN` when the lead joined a shared-token server). Other parent environment variables
 are inherited except for the explicit lead-only Room variables.
 Output goes to `.room/workers/<tag>.log`, the worker's MCP log to `.room/workers/<tag>.mcp.log`.
+If a root watcher config excludes `.room`, the spawn reply warns that a dev server inside the worktree may miss changes and suggests using a config that watches `.room`.
 A stale worktree registration for the tag is pruned first. The worker's prompt is a fixed preamble (follow the etiquette,
 ask the lead with `room_send`, `room_preview_merge`, then `room_done`) followed by the
 task. The doc's `workers` map records tag, name, host, model, task, dir, branch, pid,

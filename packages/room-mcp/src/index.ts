@@ -19,6 +19,7 @@ import { SocketWakeRouter } from './wake-path.js'
 import { waitConsumesMessage } from './tools/messaging.js'
 import { markTeamSharingDisclosureDelivered, pendingTeamSharingDisclosure, prepareTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
+import { currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog, ToolTimingTracker } from './timing.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
@@ -73,6 +74,9 @@ export function createBundleUpdateNotice(file: string): () => string {
 
 async function main() {
   let closing = false
+  const timing = new ToolTimingTracker({ log })
+  registerPrepareGitTiming()
+  const watchdog = startEventLoopWatchdog(timing, { log })
   const bundleUpdateNotice = createBundleUpdateNotice(process.argv[1] ?? '')
   const mcp = new Server(
     { name: 'room', version: RELEASE_VERSION },
@@ -105,7 +109,7 @@ async function main() {
       }
 
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) => {
-        await autoJoin.settle() // a join in progress decides which session the disclosure below is about
+        await (currentToolTiming()?.phase('settle', () => autoJoin.settle()) ?? autoJoin.settle()) // a join in progress decides which session the disclosure below is about
         let disclosure = ''
         if (session) {
           const sentence = pendingTeamSharingDisclosure(session)
@@ -117,6 +121,7 @@ async function main() {
             }
           }
         }
+        if (req.params.name === 'room_spawn') currentToolTiming()?.startQueue()
         const body = await tools.call(req.params.name, req.params.arguments ?? {}, signal)
         const delivery = startupNotice ? consumeHookNotice(dir, startupNotice) : undefined
         const notice = session || delivery === 'hook' || delivery === 'pending' ? '' : startupNotice
@@ -185,13 +190,14 @@ async function main() {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }))
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     noteHostTurnMetadata(req.params._meta)
-    const result = await binding.run(req.params, runtime => runtime.call(req, extra.signal))
+    const result = await timing.run(req.params.name, () => binding.run(req.params, runtime => runtime.call(req, extra.signal)))
     return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })
 
   const bye = async (reason: string) => {
     if (closing) return
     closing = true
+    watchdog.stop()
     log(`stopping: ${reason}`)
     try { await (await binding.close())?.shutdown() } catch { /* ignore */ }
     process.exit(0)

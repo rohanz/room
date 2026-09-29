@@ -291,7 +291,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
         const deadline = now() + 15_000
         while (state.workerAlive(s, w) && now() < deadline) await sleep(Math.min(250, deadline - now()))
-        if (state.workerAlive(s, w)) { out.push('skipped ' + w.tag + ': process has not exited after 15 s'); continue }
+        if (state.workerAlive(s, w)) { out.push(`skipped ${w.tag}: process still exiting after 15 s; call room_collect tag=${w.tag} again in a few seconds`); continue }
         const unsafeAfterWait = await unverifiedLive(s, w)
         if (unsafeAfterWait) { out.push(unsafeAfterWait); continue }
         const current = s.room.workers.get(w.tag)

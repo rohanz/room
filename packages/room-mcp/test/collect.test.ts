@@ -801,10 +801,10 @@ describe('room_collect', () => {
     t.state.now = () => at
     t.state.ctx = { listCwdProcesses: () => [], sleep: async (ms: number) => { at += ms } } as HandlerState['ctx']
     t.state.workerAlive = () => true
-    expect(await t.call({ tag: 'test' })).toContain('skipped test: process has not exited after 15 s')
+    expect(await t.call({ tag: 'test' })).toContain('skipped test: process still exiting after 15 s; call room_collect tag=test again in a few seconds')
     expect(at).toBe(15_000)
     expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
-    expect(await t.call({ tag: 'test', force: true })).toContain('skipped test: process has not exited')
+    expect(await t.call({ tag: 'test', force: true })).toContain('skipped test: process still exiting')
     expect(at).toBe(30_000)
   })
 

@@ -17,6 +17,7 @@ import os from 'node:os'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
+import { CoalescedPoll } from './poll.js'
 import { Publisher } from './publisher.js'
 import { clampShare, type ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
@@ -291,6 +292,8 @@ class Daemon implements Roomd {
   private tracked = new Set<string>()
   private watcher: FSWatcher | null = null
   private timers = new Set<NodeJS.Timeout>()
+  private readonly gitPolls: CoalescedPoll[] = []
+  private trackedPoll?: CoalescedPoll
   readonly batch: DiskBatch
   private readonly publisher: Publisher
   private workQueue: Promise<void> = Promise.resolve()
@@ -461,8 +464,9 @@ class Daemon implements Roomd {
     if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
     this.trimBusIfLeader()
     if (this.busTrimMs > 0) this.every(this.busTrimMs, () => this.trimBusIfLeader())
-    this.every(this.trackedRefreshMs, () => this.refreshTracked())
-    this.every(this.basePollMs, () => this.enqueue(async () => { await this.pollHead() }))
+    this.trackedPoll = new CoalescedPoll('tracked refresh', this.trackedRefreshMs, () => this.refreshTracked(), this.log)
+    this.gitPolls.push(this.trackedPoll)
+    this.gitPolls.push(new CoalescedPoll('HEAD poll', this.basePollMs, () => this.queuedHeadPoll(), this.log))
     this.roomDoc.metaMap.observe(() => observeCallback(() => this.refreshBaseStatus(), error => this.log(`warn: ${errMsg(error)}`)))
     await this.refreshBaseStatus()
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
@@ -540,6 +544,7 @@ class Daemon implements Roomd {
     this.remoteRepairTimer?.()
     this.publisher.stopRetry()
     this.cancelPeriodicReconcile?.()
+    for (const poll of this.gitPolls) poll.stop()
     this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     for (const timer of this.timers) clearInterval(timer)
@@ -614,6 +619,11 @@ class Daemon implements Roomd {
   enqueue(work: () => Promise<void>): Promise<void> {
     this.workQueue = this.workQueue.then(() => this.stopped ? undefined : work()).catch(error => this.publisher.reconcileFailed(error))
     return this.workQueue
+  }
+
+  /** A timer HEAD check in the work queue. Failures go to the publisher's retry, as before 0.16.37, so this poll never backs off. */
+  private queuedHeadPoll(): Promise<void> {
+    return this.enqueue(() => this.pollHead())
   }
 
   /** Level-triggered check, shared by startup, the slow timer and failed-publish retry. */
@@ -1032,7 +1042,10 @@ class Daemon implements Roomd {
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
       if (!this.isSafeRoomPath(relpath)) { this.onScanned?.(relpath); return }
       if (event === 'addDir' || event === 'unlinkDir') return
-      if (path.basename(relpath) === '.gitignore') this.refreshTracked().catch(() => {})
+      if (path.basename(relpath) === '.gitignore') {
+        if (this.trackedPoll) this.trackedPoll.trigger()
+        else observeCallback(() => this.refreshTracked(), error => this.log(`warn: ${errMsg(error)}`))
+      }
       if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
     })
@@ -1104,28 +1117,24 @@ class Daemon implements Roomd {
 
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
-    try {
-      const next = await gitTracked(this.dir)
-      const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
-      const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
-      this.tracked = next
-      for (const relpath of added) {
-        if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
-          this.scheduleDisk(relpath, true)
-          if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
-        }
+    const next = await gitTracked(this.dir)
+    const added = Array.from(next).filter(relpath => !this.tracked.has(relpath))
+    const removed = Array.from(new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter(relpath => !next.has(relpath))
+    this.tracked = next
+    for (const relpath of added) {
+      if (!this.isIgnoredPath(relpath) && fs.existsSync(this.abs(relpath))) {
+        this.scheduleDisk(relpath, true)
+        if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath))
       }
-      // Untracked files disappear from ls-files when deleted, so polling must
-      // publish their deletion even if the platform watcher misses the unlink.
-      for (const relpath of removed) {
-        if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
-          this.publisher.withdrawIgnored(relpath, '.gitignore')
-        } else if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
-          this.scheduleDisk(relpath, false)
-        }
+    }
+    // Untracked files disappear from ls-files when deleted, so polling must
+    // publish their deletion even if the platform watcher misses the unlink.
+    for (const relpath of removed) {
+      if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
+        this.publisher.withdrawIgnored(relpath, '.gitignore')
+      } else if (this.roomDoc.overlayText(this.name, relpath) && !fs.existsSync(this.abs(relpath))) {
+        this.scheduleDisk(relpath, false)
       }
-    } catch (error) {
-      this.log(`warn: git ls-files: ${errMsg(error)}`)
     }
   }
 }

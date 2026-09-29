@@ -38,3 +38,9 @@ it('lists TypeScript incremental state among regenerable worker output', () => {
   const skill = readFileSync(new URL('../../../plugins/room/skills/room-workers/SKILL.md', import.meta.url), 'utf8')
   expect(skill).toContain('`*.tsbuildinfo`')
 })
+
+it('explains that a finished worker can resume until collection', () => {
+  const skill = readFileSync(new URL('../../../plugins/room/skills/room-etiquette/SKILL.md', import.meta.url), 'utf8')
+  expect(skill).toContain('A message to a finished worker resumes its retained session')
+  expect(skill).not.toContain('Finished headless workers cannot answer new questions')
+})

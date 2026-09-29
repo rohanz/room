@@ -1,0 +1,160 @@
+import { describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { carriedContentHash } from '@room/roomd/baseline'
+import { setGitObserver } from '@room/roomd/git'
+import { currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
+
+describe('tool timing', () => {
+  it('records phases and nested git worktree calls, and logs only slow calls', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_spawn', async () => {
+      const timing = currentToolTiming()!
+      await timing.phase('settle', async () => { now += 3 })
+      timing.add('lease', 0)
+      await timing.phase('prepare', async () => {
+        now += 3500; timing.recordGit(['worktree', 'add'], 3500)
+        now += 400; timing.recordGit(['status'], 400)
+        now += 200
+      })
+      await timing.phase('launch', async () => { now += 1200 })
+    })
+    expect(lines).toEqual(['slow tool room_spawn 5303ms: settle 3ms, lease 0ms, prepare 4100ms (git 2 calls 3900ms, worktree add 3500ms), launch 1200ms'])
+    now = 0
+    await tracker.run('room_state', async () => { now += 1999 })
+    expect(lines).toHaveLength(1)
+    await tracker.run('room_state', async () => { now += 2000 })
+    expect(lines[1]).toBe('slow tool room_state 2000ms: body 2000ms')
+  })
+
+  it('keeps concurrent call phases separate, including rejected work', async () => {
+    let releaseA!: () => void
+    const gate = new Promise<void>(resolve => { releaseA = resolve })
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => performance.now(), log: line => lines.push(line) })
+    let first: ToolTiming | undefined
+    let second: ToolTiming | undefined
+    const a = tracker.run('room_spawn', async () => { first = currentToolTiming(); first!.add('prepare', 2100); await gate; expect(currentToolTiming()).toBe(first) })
+    const b = tracker.run('room_state', async () => { second = currentToolTiming(); second!.add('settle', 2200); expect(second).not.toBe(first); throw Error('test') })
+    await expect(b).rejects.toThrow('test')
+    expect(tracker.runningAt()).toEqual([expect.stringMatching(/^room_spawn \d+ms$/)])
+    releaseA()
+    await a
+    expect(tracker.runningAt()).toEqual([])
+    expect(lines[0]).toMatch(/^slow tool room_state .*: settle 2200ms, body /)
+    expect(lines[1]).toMatch(/^slow tool room_spawn .*: prepare 2100ms$/)
+  })
+
+  it('records dispatch queue time before spawn starts', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_spawn', async () => {
+      const timing = currentToolTiming()!
+      timing.startQueue()
+      now = 2050
+      timing.endQueue()
+      timing.add('lease', 0)
+    })
+    expect(lines).toEqual(['slow tool room_spawn 2050ms: queue 2050ms, lease 0ms'])
+  })
+
+  it('accounts for time between spawn queue and preparation', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_spawn', async () => {
+      const timing = currentToolTiming()!
+      timing.startQueue(); now += 100; timing.endQueue()
+      now += 118_000 // ensureWorkersRoom / resolveConfig
+      timing.add('lease', 100)
+      now += 100
+      await timing.phase('prepare', () => { now += 500 })
+    })
+    expect(lines).toEqual(['slow tool room_spawn 118700ms: queue 100ms, lease 100ms, prepare 500ms, other 118000ms'])
+  })
+
+  it('subtracts settle from a non-spawn body', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_state', async () => {
+      await currentToolTiming()!.phase('settle', () => { now += 3000 })
+      now += 100
+    })
+    expect(lines).toEqual(['slow tool room_state 3100ms: settle 3000ms, body 100ms'])
+  })
+
+  it('counts baseline hash-object Git during a real preparation path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-timing-'))
+    try {
+      execFileSync('git', ['init', '-q', dir])
+      fs.writeFileSync(path.join(dir, 'carried.txt'), 'carried')
+      const lines: string[] = []
+      const tracker = new ToolTimingTracker({ log: line => lines.push(line) })
+      registerPrepareGitTiming()
+      await tracker.run('room_spawn', async () => {
+        await currentToolTiming()!.phase('prepare', () => {
+          expect(carriedContentHash(dir, 'carried.txt', true)).toMatch(/^[a-f0-9]{40}$/)
+        })
+        currentToolTiming()!.add('prepare', 2100)
+      })
+      expect(lines).toMatchObject([expect.stringMatching(/prepare \d+ms \(git 1 calls \d+ms\)/)])
+    } finally {
+      setGitObserver(undefined)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['room_wait', 'room_login'])('does not call an intentional %s slow, but reports a slow settle or queue', async name => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run(name, async () => {
+      expect(tracker.runningAt()).toEqual([`${name} 0ms`])
+      now = 100_000
+      expect(tracker.runningAt()).toEqual([`${name} 100000ms`])
+    })
+    expect(lines).toEqual([])
+    await tracker.run(name, async () => {
+      const timing = currentToolTiming()!
+      await timing.phase('settle', async () => { now += 2100 })
+      now += 100_000
+    })
+    expect(lines).toEqual([`slow tool ${name} 102100ms: settle 2100ms`])
+    await tracker.run(name, async () => {
+      const timing = currentToolTiming()!
+      timing.startQueue(); now += 2200; timing.endQueue()
+      now += 100_000
+    })
+    expect(lines[1]).toBe(`slow tool ${name} 102200ms: queue 2200ms`)
+  })
+})
+
+describe('event loop watchdog', () => {
+  it('is unrefed, reports excessive drift with in-flight names, and stops', async () => {
+    let now = 0
+    let tick!: () => void
+    const unref = vi.fn()
+    const clear = vi.fn()
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    const watchdog = startEventLoopWatchdog(tracker, { now: () => now, log: line => lines.push(line),
+      every: (_callback, _ms) => { tick = _callback; return { unref } as unknown as NodeJS.Timeout }, clear })
+    expect(unref).toHaveBeenCalledOnce()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const work = tracker.run('room_spawn', () => gate)
+    now = 2499; tick()
+    expect(lines).toEqual([])
+    now = 5500; tick()
+    expect(lines).toEqual(['event loop lag 2501ms: in flight room_spawn 5500ms'])
+    watchdog.stop()
+    expect(clear).toHaveBeenCalledOnce()
+    release(); await work
+  })
+})

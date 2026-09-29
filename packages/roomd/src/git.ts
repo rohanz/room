@@ -1,5 +1,23 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
+
+export type GitObserver = (args: readonly string[], elapsedMs: number) => void
+let gitObserver: GitObserver | undefined
+const noGitObservation = () => {}
+/** Process-wide, optional observation at the Git execution boundary. */
+export function setGitObserver(observer: GitObserver | undefined): void { gitObserver = observer }
+export function observeGit(args: readonly string[]): () => void {
+  const observer = gitObserver
+  if (!observer) return noGitObservation
+  const started = performance.now()
+  let called = false
+  return () => {
+    if (called) return
+    called = true
+    try { observer(args, performance.now() - started) } catch { /* observation cannot fail Git */ }
+  }
+}
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000
 export const UNKNOWN_WHOLE_TREE_PATHS = 10_000
@@ -31,8 +49,10 @@ export const isGitTimeout = (error: unknown): error is Error =>
 
 export function git(dir: string, args: string[], configuredTimeoutMs?: number): Promise<string> {
   const timeout = timeoutMs(configuredTimeoutMs)
+  const done = observeGit(args)
   return new Promise((resolve, reject) => {
     execFile('git', args, { cwd: dir, maxBuffer: 64 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
+      done()
       if (err) {
         const stopped = err as NodeJS.ErrnoException & { killed?: boolean; signal?: string }
         const missing = missingGitCwd(dir, stopped)
@@ -120,6 +140,7 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
   }
   if (!batch.length) return out
   const timeout = wholeTreeTimeoutMs(batch.length, configuredTimeoutMs)
+  const done = observeGit(['cat-file', '--batch'])
   const raw = await new Promise<Buffer>((resolve, reject) => {
     const child = spawn('git', ['cat-file', '--batch'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
@@ -127,8 +148,8 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
     const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch failed: timed out after ${timeout}ms`)) }, timeout)
     child.stdout.on('data', (c: Buffer) => chunks.push(c))
     child.stderr.on('data', (c: Buffer) => { stderr += c })
-    child.on('error', e => { clearTimeout(timer); reject(e) })
-    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
+    child.on('error', e => { clearTimeout(timer); done(); reject(e) })
+    child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
     child.stdin.on('error', () => { /* reported by close */ })
     child.stdin.end(batch.map(p => `${base}:${p}\n`).join(''))
   })
@@ -154,6 +175,7 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
   const out = new Map<string, GitBlobInfo | undefined>()
   if (!paths.length) return out
   const timeout = wholeTreeTimeoutMs(paths.length, configuredTimeoutMs)
+  const done = observeGit(['cat-file', '--batch-check', '-Z'])
   const raw = await new Promise<string>((resolve, reject) => {
     const child = spawn('git', ['cat-file', '--batch-check', '-Z'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
@@ -161,8 +183,8 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
     const timer = setTimeout(() => { child.kill(); reject(new Error(`git cat-file --batch-check failed: timed out after ${timeout}ms`)) }, timeout)
     child.stdout.on('data', (c: Buffer) => chunks.push(c))
     child.stderr.on('data', (c: Buffer) => { stderr += c })
-    child.on('error', e => { clearTimeout(timer); reject(e) })
-    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr.trim() || `exit ${code}`}`)) })
+    child.on('error', e => { clearTimeout(timer); done(); reject(e) })
+    child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr.trim() || `exit ${code}`}`)) })
     child.stdin.on('error', () => { /* reported by close */ })
     child.stdin.end(paths.map(p => `${base}:${p}\0`).join(''))
   })
@@ -194,8 +216,10 @@ export async function gitTracked(dir: string): Promise<Set<string>> {
 /** True when git would ignore this path (so it must not be synced). */
 export async function gitIgnored(dir: string, rel: string, configuredTimeoutMs?: number): Promise<boolean> {
   const timeout = timeoutMs(configuredTimeoutMs)
+  const done = observeGit(['check-ignore', '-q', '--', rel])
   return new Promise((resolve, reject) => {
     execFile('git', ['check-ignore', '-q', '--', rel], { cwd: dir, timeout }, err => {
+      done()
       const stopped = err as (NodeJS.ErrnoException & { killed?: boolean; signal?: string }) | null
       if (stopped?.killed || stopped?.signal) reject(new Error(`git check-ignore timed out after ${timeout}ms`))
       else resolve(!err || Number(stopped?.code) !== 1)

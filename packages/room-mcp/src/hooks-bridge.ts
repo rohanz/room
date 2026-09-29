@@ -478,18 +478,27 @@ export function hookReceiptPath(dir: string, sessionId: string): string {
 
 /** The newest before-edit receipt from one of `ids`: each id's own receipt file, else the single latest-receipt file. */
 function latestOwnReceipt(dir: string, ids: ReadonlySet<string>): number | undefined {
+  const readBounded = (file: string): unknown => {
+    const fd = fs.openSync(file, 'r')
+    try {
+      if (fs.fstatSync(fd).size > 4096) return undefined
+      const bytes = Buffer.alloc(4097)
+      const count = fs.readSync(fd, bytes, 0, bytes.length, 0)
+      return count <= 4096 ? JSON.parse(bytes.toString('utf8', 0, count)) : undefined
+    } finally { fs.closeSync(fd) }
+  }
   let latest: number | undefined
   const take = (at: unknown) => { if (typeof at === 'number' && Number.isFinite(at) && (latest === undefined || at > latest)) latest = at }
   for (const id of ids) {
     if (id.length > 256 || /[\u0000-\u001f\u007f]/.test(id)) continue
     try {
-      const receipt = JSON.parse(fs.readFileSync(hookReceiptPath(dir, id), 'utf8'))
+      const receipt = readBounded(hookReceiptPath(dir, id)) as { sessionId?: string; at?: number } | undefined
       if (receipt?.sessionId === id) take(receipt.at)
     } catch { /* none yet, or an older hook script */ }
   }
   try {
-    const activity = JSON.parse(fs.readFileSync(gitStatePath(dir, 'room-hook-activity.json'), 'utf8'))
-    if (activity.event === 'PreToolUse' && ids.has(activity.session_id)) take(activity.at)
+    const activity = readBounded(gitStatePath(dir, 'room-hook-activity.json')) as { event?: string; session_id?: string; at?: number } | undefined
+    if (activity?.event === 'PreToolUse' && activity.session_id && ids.has(activity.session_id)) take(activity.at)
   } catch { /* no receipt yet */ }
   return latest
 }

@@ -216,7 +216,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (messageEndsWait(m, { claimId, questionId, me: x.me.name, workersRoom })) {
           received(x, m)
           if (m.type === 'answer') return `answered: ${formatMsg(m)}`
-          if (m.type === 'done') return `worker done: ${formatMsg(m)}`
+          if (m.type === 'done') {
+            const worker = x.room.workers.get(m.tag)
+            const sameWorker = worker && (!m.workerId || worker.id === m.workerId)
+            if (!sameWorker) return `worker reported done: ${formatMsg(m)}`
+            return workerAlive(x, worker)
+              ? `worker reported done; its process is still exiting (room_collect waits up to 15 s for it): ${formatMsg(m)}`
+              : `worker done, ready to collect: ${formatMsg(m)}`
+          }
           if (m.type === 'merge-conflict') return formatMsg(m)
           if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
           return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`

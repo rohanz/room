@@ -9,8 +9,8 @@ import { coordinationPaths, coversPath, nearPath, claimsOverlap, clampRange, des
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. Use a directory ending /, symbol, or lines. Declare public API plans.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), symbol: str('definition name'), from: int('first line'), to: int('last line'), intent: str('intent'), plans: PLANS }, required: ['path', 'intent'] } },
+  { name: 'room_claim', annotations: RW, description: 'Claim only where another participant is near. File: symbol, or from and to (whole file: from=1, to=last line). Directory: path ending /. Declare public API plans.',
+    inputSchema: { type: 'object', properties: { path: str('repo-relative path; directory ends /'), symbol: str('definition name, or from/to'), from: int('first line'), to: int('last line'), intent: str('intent'), plans: PLANS }, required: ['path', 'intent'] } },
   { name: 'room_release', annotations: RW, description: 'Release early; room_done releases remaining claims. List completed plan symbols in done.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('completed symbols') }, required: ['claimId'] } }
 ]
@@ -50,7 +50,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
         range = r0
       } else {
-        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return 'error: pass symbol, or from and to'
+        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`
         range = { from: Number(a.from), to: Number(a.to) }
       }
       const r = directory ? range : clampRange(range.from, range.to, n)

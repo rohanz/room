@@ -15,8 +15,8 @@ import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef }
 
 
 export const defs: ToolDef[] = [
-  { name: 'room_scope', annotations: RW, description: 'Declare your task and paths once when working with others.',
-    inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('files or directories you expect to touch') }, required: ['area', 'summary', 'paths'] } },
+  { name: 'room_scope', annotations: RW, description: 'Declare task and edit paths once; read-only reviewers need no scope.',
+    inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('non-empty edit files or directories') }, required: ['area', 'summary', 'paths'] } },
   { name: 'room_state', annotations: RO, description: 'Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
 ]
@@ -64,7 +64,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const area = String(a.area ?? '').trim().toLowerCase().split(/\s+/)[0]
       const summary = String(a.summary ?? '').trim()
       const paths = Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string' && !!x) : []
-      if (!area || !summary || !paths.length) return 'error: area, summary and paths are required'
+      if (!area || !summary) return 'error: area and summary are required'
+      if (!paths.length) return 'error: paths must list files or directories you expect to edit; read-only reviewers with no edit paths need no scope. Use room_state and room_read to review.'
       await loadAreas(s)
       const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)])
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas })

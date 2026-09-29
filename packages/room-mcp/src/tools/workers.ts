@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks'
+import { currentToolTiming } from '../timing.js'
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
 import { pidPresent, pidIsOurWorker, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
@@ -22,6 +24,7 @@ import { branchOf } from '../prs.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
+import { watcherExclusionWarning } from '../watcher-exclusions.js'
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -91,6 +94,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_spawn(a) {
+      const timing = currentToolTiming()
+      timing?.endQueue()
       const lead = S()
       if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
       const requestedEffort = a.effort as string | undefined
@@ -126,13 +131,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // preparation below awaits git, and a second room_spawn for the same tag must not slip in meanwhile.
       // A move may have replaced the session this call started with (moves and spawns are serialized, but the check is cheap).
       if (!rooms.all().includes(lead) || !rooms.all().includes(s)) return 'error: the room changed while this worker was being prepared; nothing was started. Call room_spawn again.'
-      if (!rooms.reserve(idBase)) return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
+      const leaseStarted = performance.now()
+      if (!rooms.reserve(idBase)) {
+        timing?.add('lease', performance.now() - leaseStarted)
+        return `error: worker ${tag} is being spawned right now (another room_spawn is preparing its worktree); pick another tag`
+      }
       const starting = runningWorkers(lead).length
       const launchLease = reserveWorkerLaunch(rooms, max, starting)
+      timing?.add('lease', performance.now() - leaseStarted)
       if (!launchLease) {
         rooms.unreserve(idBase)
         return `error: ${rooms.launchUsage(starting)} workers already running or starting (max ${max}, ROOM_MAX_WORKERS); wait for one to finish or room_collect discard=true for it`
       }
+      const markPrepare = timing?.begin('prepare') ?? (() => {})
       try {
         let dir: string, branch: string, base: string | undefined, created = false, outside = false
         let carried: PreparedWorktree['carried'], carryFailed = false, carryError: string | undefined
@@ -192,8 +203,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const hostSessionId = host === 'claude' ? randomUUID() : undefined
         const spawnedAfter = s.room.lastMessages(1)[0]?.id ?? ''
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
+        markPrepare()
         try {
-          launched = await launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
+          const launch = () => launchWorkerProcess({ rooms, session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, gen, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
@@ -211,6 +223,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const current = s.room.workerById(id)
             if (current && current.pid === proc.pid && !current.hostSessionId) s.room.updateWorker(tag, { hostSessionId: sessionId }, id)
           })
+          launched = await (timing ? timing.phase('launch', launch) : launch())
         } catch (e) {
           const error = e instanceof WorkerLaunchError ? e : new WorkerLaunchError('start', String(e))
           if (error.delivered) {
@@ -255,10 +268,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
           } else if (carryFailed) out.push(`note: could not carry your uncommitted changes${carryError ? ` (${carryError})` : ''}; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
         }
+        if (typeof a.dir !== 'string' || !a.dir) {
+          const warning = watcherExclusionWarning(lead.dir)
+          if (warning) out.push(warning)
+        }
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
       } finally {
+        markPrepare()
         launchLease.release()
         rooms.unreserve(idBase)
       }

@@ -1359,3 +1359,18 @@ it('puts an installed-version warning above a repository-problem room_state repl
     expect(state).toContain(`Room works inside a git repository, and ${folder} isn't one.`)
   } finally { await tools.shutdown(); rmSync(folder, { recursive: true, force: true }) }
 })
+
+it('explains how to claim a whole file and why an empty reviewer scope is unnecessary', async () => {
+  const t = setup()
+  const s = t.session!
+  try {
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'edit', paths: ['app.py'] })
+    const claim = await t.tools.call('room_claim', { path: 'app.py', intent: 'edit whole file' })
+    expect(claim).toContain('pass from=1 and to=<last line>')
+    const scope = await t.tools.call('room_scope', { area: 'review', summary: 'read only', paths: [] })
+    expect(scope).toContain('read-only reviewers with no edit paths need no scope')
+    expect(t.room.scope(me.name)).toBeUndefined()
+  } finally {
+    await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+  }
+})
