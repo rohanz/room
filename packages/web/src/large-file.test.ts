@@ -6,6 +6,7 @@ import { RoomDoc } from '@room/shared'
 import { classifyNWay, unifiedDiffLines } from './merged.ts'
 import { centrePanel, createFocusState, renderCodeLines } from './panels.ts'
 import type { Conn } from './conn.ts'
+import { publish } from './test-manifest.ts'
 const csv = Array.from({ length: 32000 }, (_, i) => `${i},a,b`).join('\n') + '\n'
 afterEach(() => vi.unstubAllGlobals())
 it('bounds 32k-line computations including additions, deletions, identical and unrelated versions', () => {
@@ -25,20 +26,20 @@ it('bounds 32k-line computations including additions, deletions, identical and u
   expect(measure('merge competing', () => classifyNWay('base\n'.repeat(32000), [{ name: 'A', text: csv }, { name: 'B', text: other }])).some(l => l.conflict)).toBe(true)
   console.log('32k fixture timings (ms):', timings)
 })
-it('limits all three tabs, pages 500 more rows and resets on tab/file selection', () => {
+it('limits all three tabs, pages 500 more rows and resets on tab/file selection', async () => {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document); vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
-  room.setOverlay('rohanz', 'big.csv', csv)
-  room.setOverlay('other', 'big.csv', '')
-  room.setOverlay('rohanz', 'small.csv', 'small\n')
+  publish(room, 'rohanz', 'big.csv', csv)
+  publish(room, 'other', 'big.csv', '')
+  publish(room, 'rohanz', 'small.csv', 'small\n')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
   try {
     const focus = createFocusState(); focus.set('rohanz')
     const panel = centrePanel(conn, focus); document.body.append(panel)
     for (const tab of ['Merged', 'Diff', 'File']) {
       Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === tab)!.click()
-      expect(panel.querySelectorAll('.code-line')).toHaveLength(500)
+      await vi.waitFor(() => expect(panel.querySelectorAll('.code-line')).toHaveLength(500))
       expect(panel.querySelector('.large-file-notice')?.textContent).toContain('32,000 lines, showing 500')
       panel.querySelector<HTMLButtonElement>('.line-gap-show')!.click()
       expect(panel.querySelectorAll('.code-line')).toHaveLength(1000)
@@ -47,7 +48,7 @@ it('limits all three tabs, pages 500 more rows and resets on tab/file selection'
     const files = Array.from(panel.querySelectorAll<HTMLButtonElement>('.file-item'))
     files.find(b => b.title === 'small.csv')!.click()
     files.find(b => b.title === 'big.csv')!.click()
-    expect(panel.querySelectorAll('.code-line')).toHaveLength(500)
+    await vi.waitFor(() => expect(panel.querySelectorAll('.code-line')).toHaveLength(500))
   } finally { room.doc.destroy(); dom.window.close() }
 })
 it('renders show all in 500-row frames and cancels when the host is replaced', () => {

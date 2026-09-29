@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { coordinationPaths, displayName, formatPlans, type Presence, isAgentic } from '@room/shared'
+import { coordinationPaths, neighbours, participantsView, displayName, formatPlans, manifestPaths, type Presence, isAgentic } from '@room/shared'
 import type { Session } from './session.js'
 import { hasCompany, describeCompany, type CompanyState } from './company.js'
 import { resolveSessionHost } from './config.js'
@@ -90,7 +90,7 @@ export class HooksBridge {
     const openClaims = this.s.room.openClaims()
     const ownClaims = openClaims.filter(c => c.by === me && isAgentic(c.byKind)).map(c => ({ path: c.path, from: c.from, to: c.to }))
     const claims = openClaims.filter(c => !(c.by === me && isAgentic(c.byKind))).map(c => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) }))
-    const near = coordinationPaths(this.s.room, me, { includeOwnNonAgentClaims: true })
+    const near = coordinationPaths(this.s.room, neighbours(participantsView(this.s.room, this.s.awareness, this.now()), me), me, { includeOwnNonAgentClaims: true })
     const company = this.o.company?.() ?? hasCompany(this.s, [], this.now())
     const presences = [...this.s.awareness.getStates().values()] as Partial<Presence>[]
     const others = company.others.map(name => displayName({ name, kind: (presences.find(p => p.user?.name === name && p.user.kind === 'agent') ?? presences.find(p => p.user?.name === name))?.user?.kind ?? this.s.room.scope(name)?.byKind ?? 'agent' }))
@@ -154,7 +154,7 @@ export function hookHealthNote(s: Session, sessionDir: string | undefined, expec
   health.calls++
   if (health.calls < 2 || now - health.since < 30_000) return ''
   if (resolveSessionHost() === 'claude' &&
-      !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return ''
+      !(manifestPaths(s.room, s.me.name).length && (s.room.manifestHead.get(s.me.name)?.scannedAt ?? -Infinity) >= sessionStartedAt)) return ''
   health.noted = true
   return missingPreEditGuidance(s)
 }

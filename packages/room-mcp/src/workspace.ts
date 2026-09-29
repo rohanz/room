@@ -10,7 +10,7 @@ export function fallbackWorkspace(env: NodeJS.ProcessEnv, processDir: string): s
   return value('ROOM_DIR') ?? value('PWD') ?? value('INIT_CWD') ?? processDir
 }
 
-const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
+export const parentCommand: ParentCommandReader = () => execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], {
   encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'],
 }).trim()
 

@@ -147,27 +147,30 @@ export function contractSuite(name: string, make: MakeEnv): void {
         refused(await fresh.send({ op: 'post', msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } }), 'hello-first')
         expect(refused(await fresh.send({ op: 'hello', proto: 2, schema: 2, client: 't', sessionId: 's' }), 'version').text).toMatch(/hub needs updating/)
         expect(refused(await fresh.send({ op: 'hello', proto: 0, schema: 2, client: 't', sessionId: 's' }), 'version').text).toMatch(/update Room/)
-        refused(await a.send({ op: 'post', msg: { id: 'mx', type: 'nope', from: 'ada' } }), 'invalid')
+        const L = { name: 'ada', epoch: ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number }
+        refused(await a.send({ op: 'post', lease: L, msg: { id: 'mx', type: 'nope', from: 'ada' } }), 'invalid')
+        // Every post carries the poster's own name lease (wave 4).
+        expect(refused(await a.send({ op: 'post', msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } }), 'invalid').text).toBe("a post carries the poster's name lease")
 
-        const first = ok(await a.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'hello' } }))
-        const second = ok(await a.send({ op: 'post', msg: { id: 'm2', type: 'note', from: 'ada', text: 'again' } }))
+        const first = ok(await a.send({ op: 'post', lease: L, msg: { id: 'm1', type: 'note', from: 'ada', text: 'hello' } }))
+        const second = ok(await a.send({ op: 'post', lease: L, msg: { id: 'm2', type: 'note', from: 'ada', text: 'again' } }))
         expect(second.seq as number).toBeGreaterThan(first.seq as number)
         expect(first.at).toBe(env.clock.wall())
         expect(env.doc().messages().map(m => [m.id, (m as unknown as { seq: number }).seq, m.priority])).toEqual([['m1', first.seq, 'fyi'], ['m2', second.seq, 'fyi']])
         expect(env.doc().metaMap.get('hubSeq')).toBe(second.seq)
 
-        const again = ok(await a.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'hello' } }))
+        const again = ok(await a.send({ op: 'post', lease: L, msg: { id: 'm1', type: 'note', from: 'ada', text: 'hello' } }))
         expect(again).toMatchObject({ duplicate: true, seq: first.seq })
         expect(env.doc().messages()).toHaveLength(2)
         env.doc().doc.transact(() => { env.doc().archive.set('m-old', ['note', 'ada', 1, []]) })
-        const gone = ok(await a.send({ op: 'post', msg: { id: 'm-old', type: 'note', from: 'ada', text: 'x' } }))
+        const gone = ok(await a.send({ op: 'post', lease: L, msg: { id: 'm-old', type: 'note', from: 'ada', text: 'x' } }))
         expect(gone).toMatchObject({ duplicate: true, gone: true })
         expect(gone).not.toHaveProperty('seq')
 
-        refused(await a.send({ op: 'post', msg: { id: 'big', type: 'note', from: 'ada', text: 'x'.repeat(70 * 1024) } }), 'too-large')
-        for (let i = 0; i < OWED_PER_RECIPIENT; i++) ok(await a.send({ op: 'post', msg: { id: `q${i}`, type: 'question', from: 'ada', to: 'bob', text: `q${i}` } }))
-        expect(refused(await a.send({ op: 'post', msg: { id: 'q-over', type: 'question', from: 'ada', to: 'bob', text: 'one more' } }), 'over-cap').text).toMatch(/bob has 200 undelivered/)
-        ok(await a.send({ op: 'post', msg: { id: 'auto-1', type: 'note', from: 'ada', to: 'bob', text: 'automatic' }, auto: true }))
+        refused(await a.send({ op: 'post', lease: L, msg: { id: 'big', type: 'note', from: 'ada', text: 'x'.repeat(70 * 1024) } }), 'too-large')
+        for (let i = 0; i < OWED_PER_RECIPIENT; i++) ok(await a.send({ op: 'post', lease: L, msg: { id: `q${i}`, type: 'question', from: 'ada', to: 'bob', text: `q${i}` } }))
+        expect(refused(await a.send({ op: 'post', lease: L, msg: { id: 'q-over', type: 'question', from: 'ada', to: 'bob', text: 'one more' } }), 'over-cap').text).toMatch(/bob has 200 undelivered/)
+        ok(await a.send({ op: 'post', lease: L, msg: { id: 'auto-1', type: 'note', from: 'ada', to: 'bob', text: 'automatic' }, auto: true }))
 
         const epoch = ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number
         refused(await a.send({ op: 'post', lease: { name: 'ada', epoch: epoch + 1 }, msg: { id: 'm3', type: 'note', from: 'ada', text: 'x' } }), 'stale')
@@ -203,7 +206,7 @@ export function contractSuite(name: string, make: MakeEnv): void {
         const { a } = env
         const before = env.incarnation()
         const ada = ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number
-        const seq = ok(await a.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).seq as number
+        const seq = ok(await a.send({ op: 'post', lease: { name: 'ada', epoch: ada }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).seq as number
         const snapshot = Y.encodeStateAsUpdate(env.doc().doc)
         const cy = ok(await a.send({ op: 'acquire', name: 'cy', holder: holder('s3') })).epoch as number
         const dee = ok(await a.send({ op: 'acquire', name: 'dee', holder: holder('s4') })).epoch as number
@@ -222,7 +225,7 @@ export function contractSuite(name: string, make: MakeEnv): void {
         env.clock.advance(SETTLE_MS)
         refused(await c.send({ op: 'renew', name: 'dee', epoch: dee }), 'stale')
         const bob = ok(await c.send({ op: 'acquire', name: 'bob', holder: holder('s2') })).epoch as number
-        const seq2 = ok(await c.send({ op: 'post', msg: { id: 'm2', type: 'note', from: 'ada', text: 'y' } })).seq as number
+        const seq2 = ok(await c.send({ op: 'post', lease: { name: 'bob', epoch: bob }, msg: { id: 'm2', type: 'note', from: 'ada', text: 'y' } })).seq as number
         expect(bob).toBeGreaterThan(Math.max(ada, cy, dee, seq))
         expect(seq2).toBeGreaterThan(Math.max(ada, cy, dee, seq))
         // A carried lease gets a fresh TTL from the restart, not from its grant a second earlier.
@@ -243,16 +246,14 @@ export function contractSuite(name: string, make: MakeEnv): void {
         const snapshot = Y.encodeStateAsUpdate(env.doc().doc)
         const issued: number[] = []
         issued.push(ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number)
-        for (let i = 0; i < 3; i++) issued.push(ok(await a.send({ op: 'post', msg: { id: `m${i}`, type: 'note', from: 'ada', text: 'x' } })).seq as number)
+        for (let i = 0; i < 3; i++) issued.push(ok(await a.send({ op: 'post', lease: { name: 'ada', epoch: issued[0] }, msg: { id: `m${i}`, type: 'note', from: 'ada', text: 'x' } })).seq as number)
         await a.close()
         await env.restart(snapshot)
         await env.restart(snapshot)
         env.clock.advance(SETTLE_MS)
         const c = await greeted(env)
-        const later = [
-          ok(await c.send({ op: 'acquire', name: 'ada', holder: holder('s2') })).epoch as number,
-          ok(await c.send({ op: 'post', msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } })).seq as number,
-        ]
+        const epoch2 = ok(await c.send({ op: 'acquire', name: 'ada', holder: holder('s2') })).epoch as number
+        const later = [epoch2, ok(await c.send({ op: 'post', lease: { name: 'ada', epoch: epoch2 }, msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } })).seq as number]
         for (const v of later) expect(v).toBeGreaterThan(Math.max(...issued))
         await c.close()
       } finally { await env.close() }
@@ -263,7 +264,7 @@ export function contractSuite(name: string, make: MakeEnv): void {
       try {
         const { a } = env
         const epoch = ok(await a.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number
-        const seq = ok(await a.send({ op: 'post', msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).seq as number
+        const seq = ok(await a.send({ op: 'post', lease: { name: 'ada', epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).seq as number
         const doc = env.doc()
         doc.doc.transact(() => { doc.archive.set('m-archived', ['note', 'ada', 1, []]) })
         // A replica that saw everything writes older values over them (a value copy with new CRDT items).

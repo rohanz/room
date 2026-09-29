@@ -2,8 +2,8 @@ import { sharingDescription } from '../config.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
-import { coordinationPaths, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
-import { activityLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { coordinationPaths, neighbours, participantsView, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
+import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { localWorkerView } from '../worker-projector.js'
@@ -53,7 +53,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const tagged = (x: Session, line: string) => x === s ? line : `${line} (workers room)`
       const who = new Map<string, 'shared' | 'not shared'>()
       for (const x of inRooms) {
+        const nb = neighbours(participantsView(x.room, x.awareness, now()), s.me.name)
         for (const c of x.room.openClaims()) {
+          if (c.by !== s.me.name && !nb.has(c.by)) continue
           // A teammate's line claim is in their text: map it into mine (reporooms §B6).
           if (c.path !== p || c.by === s.me.name || typeof t !== 'string') {
             if (claimsOverlap(c, { path: p, ...r })) out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`))
@@ -65,8 +67,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const moved = mapped.approximate ? ` (your lines ${mapped.from}-${mapped.to}, approximate)` : mapped.from !== c.from || mapped.to !== c.to ? ` (your lines ${mapped.from}-${mapped.to})` : ''
           out.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}${moved}`))
         }
-        for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
-        for (const n of manifestChangers(x.room, p)) if (n !== s.me.name && !sameCheckoutSession(s, n)) {
+        for (const sc of x.room.allScopes()) if ((nb.has(sc.by) || isPrName(sc.by)) && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
+        for (const n of manifestChangers(x.room, p)) if (nb.has(n) && !sameCheckoutSession(s, n)) {
           const fence = x.room.manifestHead.get(n)?.fence
           const entry = fence ? x.room.manifest.get(manifestKey(n, fence))?.get(p) : undefined
           who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
@@ -90,7 +92,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       setPresence(s, { status: `on ${area}: ${summary}`, areas })
       const out = [`scope set: ${scopeLine({ area, summary, paths } as Scope)}`, ...posted.ok ? [] : [`scope notice ${posted.text}`]]
       out.push(...areaLines(s, areas))
-      const overlapping = s.room.allScopes().filter(sc => sc.by !== s.me.name && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
+      const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
+      const overlapping = s.room.allScopes().filter(sc => (nb.has(sc.by) || isPrName(sc.by)) && paths.some(p => scopeCovers(sc, p) || sc.paths.some(q => scopeCovers({ paths }, q))))
       for (const sc of overlapping) out.push(`overlaps ${sc.by}'s scope ${scopeLine(sc)} — coordinate before touching shared files`)
       out.push(...ledgerLines(s, { area, limit: 20 }, area, posted.msg.id))
       return out.join('\n')
@@ -121,7 +124,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const myPaths = [...(s.room.scope(s.me.name)?.paths ?? []), ...manifestPaths(s.room, s.me.name), ...myClaims.map(c => c.path)]
       const overlapsMyPath = (p: string) => myPaths.some(q => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q))
       const pathInView = (p: string) => all || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p))
-      const nearby = coordinationPaths(s.room, s.me.name)
+      const nb = neighbours(participantsView(s.room, s.awareness, now()), s.me.name)
+      const nearby = coordinationPaths(s.room, nb, s.me.name)
       const inView = (person: string) => {
         if (all || person === s.me.name || sameCheckoutSession(s, person)) return true
         if (nearby.some(entry => entry.by === person && entry.reason !== 'claim' && overlapsMyPath(entry.path))) return true
@@ -133,7 +137,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.manifestHead.keys()],
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
-      const everyone = [...groups.active, ...groups.offlineTeammates].map(p => p.name).filter(n => !isPrName(n)).sort()
+      const retiredNames = new Set(s.room.retiredWorkers().map(worker => worker.name))
+      const everyone = [s.me.name, ...nb.names().filter(name => !retiredNames.has(name) || s.room.workerViewOf(name))].sort()
       const names = everyone.filter(inView)
       const hidden = everyone.filter(n => !inView(n))
       const activeCount = groups.active.filter(p => names.includes(p.name)).length
@@ -144,7 +149,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const p = ps.find(x => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find(x => x.user.name === n)
         const worker = s.room.workerViewOf(n)
         const own = worker && myWorkers(s).find(w => w.id === worker.id)
-        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own && !state.workerAlive(s, own) }) : 'offline'
+        const idle = p && !worker ? idleLabel(p.idleMin, s.room.openClaims().filter(c => c.by === n).length) : undefined
+        const ago = idle ?? (p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own && !state.workerAlive(s, own) }) : 'offline')
         const who = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find(c => c.by === n)?.byKind)
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n)
@@ -160,10 +166,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`  ${hidden.length} others: ${hidden.map(label).join(', ')} (all:true for detail)`)
       }
       if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
-      const areaScopes = all ? s.room.allScopes() : s.room.allScopes().filter(sc => inView(sc.by))
+      const areaScopes = s.room.allScopes().filter(sc => nb.has(sc.by) && (all || inView(sc.by)) || sc.by === s.me.name)
       const summary = s.room.areaSummary().filter(l => areaScopes.some(sc => l.startsWith(`${sc.area} (`)))
       if (summary.length) { out.push('activity by scope area:'); for (const l of summary) out.push(`  - ${l}`) }
-      const cs = s.room.openClaims()
+      const cs = s.room.openClaims().filter(c => c.by === s.me.name || nb.has(c.by))
       out.push(`open claims (${cs.length}):`)
       const byPerson = new Map<string, Claim[]>()
       for (const c of cs) { const claims = byPerson.get(c.by) ?? []; claims.push(c); byPerson.set(c.by, claims) }
@@ -237,6 +243,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'base' | 'p
     }
   const areasOf = (s: Session): Areas => areaIndex.get(s) ?? Areas.topLevel()
   const areasFor = (s: Session, person: string): string[] => {
+      if (person !== s.me.name && !neighbours(participantsView(s.room, s.awareness, now()), s.me.name).has(person)) return []
       const sc = s.room.scope(person)
       const paths = [...(sc?.paths ?? []), ...manifestPaths(s.room, person), ...(person === s.me.name ? presences(s).filter(p => sameCheckoutSession(s, p.user.name)).flatMap(p => manifestPaths(s.room, p.user.name)) : [])]
       const stored = sc?.areas ?? presences(s).find(p => p.user.name === person)?.areas ?? []

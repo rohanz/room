@@ -268,22 +268,26 @@ describe('roomd v2 push-only overlays', () => {
     } finally { reader.mockRestore() }
   })
 
-  it('publishes only once for a shared real directory and logs its stop reason once', async () => {
+  it('publishes a shared real directory only from the publisher lease holder, and logs its stop reason once', async () => {
     const dir = await makeRepo({ 'app.py': 'x = 1\n' }), url = room()
     const primary = await start({ room: url, dir, name: 'Zoe' })
     const logs: string[] = []
-    const secondary = await start({ room: url, dir, name: 'Amy', log: line => logs.push(line) })
+    const secondary = await startRoomd({ log: line => logs.push(line), debounceMs: 20, trackedRefreshMs: 100, providerFactory, room: url, dir, name: 'Amy',
+      policy: Object.freeze({ ...policyFromLevel('full', [], 'full', false), publisherName: 'Zoe' }) })
+    daemons.push(secondary)
     const state = secondary.provider.awareness.getLocalState()!
     expect(state.watchedDirectory).toMatch(/^[a-f0-9]{64}$/)
     expect(state.watchedDirectory).toBe(primary.provider.awareness.getLocalState()!.watchedDirectory)
-    expect(state.publishUnder).toBe('Zoe')
     await fsp.writeFile(path.join(dir, 'app.py'), 'x = 2\n')
     await waitFor(() => manifestText(primary.roomDoc, 'app.py', 'Zoe') === 'x = 2\n')
-    await setPolicy(secondary, 'full')
+    await secondary.reconcileGitChanges()
     expect(manifestPaths(secondary.roomDoc, 'Amy')).toEqual([])
+    expect(secondary.roomDoc.manifestHead.get('Amy')).toMatchObject({ coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'Zoe' })
+    // Zoe's process releases the lease on leaving; Amy's next tick takes it and her store says so.
     await primary.stop('handoff')
-    await waitFor(() => secondary.provider.awareness.getLocalState()!.publishUnder === undefined
-      && manifestText(secondary.roomDoc, 'app.py', 'Amy') === 'x = 2\n')
+    secondary.applyInputs({ ...secondary.inputs, policy: policyFromLevel('full') })
+    await secondary.reconcileGitChanges()
+    await waitFor(() => manifestText(secondary.roomDoc, 'app.py', 'Amy') === 'x = 2\n')
     await secondary.stop('test complete'); await secondary.stop('again')
     expect(logs.filter(line => line.startsWith('stopped:'))).toEqual(['stopped: test complete'])
   })
@@ -298,7 +302,6 @@ describe('roomd v2 push-only overlays', () => {
       const b = await start({ room: url, dir, name: 'Bea' })
       expect(a.provider.awareness.getLocalState()!.watchedDirectory)
         .not.toBe(b.provider.awareness.getLocalState()!.watchedDirectory)
-      expect(b.provider.awareness.getLocalState()!.publishUnder).toBeUndefined()
     } finally {
       if (previous === undefined) delete process.env.ROOM_MACHINE_ID
       else process.env.ROOM_MACHINE_ID = previous

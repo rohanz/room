@@ -27,7 +27,7 @@ import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease } from '
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, assertValidParticipantName, colorFor, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
@@ -105,9 +105,16 @@ export interface RoomdOptions {
   token?: string
   /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
   session?: string
-  /** The bound host session (registry §17): published in presence and fences this daemon's records. */
+  /** The bound host session (registry §17): published in presence, where it makes the holder fresh. */
   sessionId?: string
-  /** A worker daemon's carried baseline, from its lead's registry record (registry N2, F2); never from the room. */
+  /**
+   * The name lease (registry §15, hub §4.1): the fence this daemon's records carry, its hub epoch, while
+   * the lease is good; undefined while paused (hub §7), when no fenced write goes out. A new value is a
+   * new incarnation: the next transition republishes everything under it. Without it (the standalone
+   * CLI, tests) the daemon fences on its session id, or an id of its own.
+   */
+  lease?: () => string | undefined
+  /** A worker daemon's carried baseline from its lead's registry record. */
   carried?: BaselineSource
   /** Local relay key (room-local.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
   localKey?: string
@@ -174,9 +181,7 @@ export interface Roomd {
   readonly anchor: { base: string; anchored: boolean }
   readonly share: ShareLevel
   readonly inputs: PublicationInputs
-  /** This daemon's writer incarnation: its session id until names are hub leases (hub §4.1). */
-  readonly fence: string
-  readonly publishUnder?: string
+  readonly fence: string | undefined
   /** Atomically narrow old publication under a new input snapshot, then queue a full scan. */
   applyInputs(next: PublicationInputs): void
   /** Files excluded by size, budget or ignore rules. */
@@ -266,8 +271,10 @@ class Daemon implements Roomd {
   /** The remote whose URL names the room (§B3); read at start. */
   private remote?: string
   private readonly sessionId?: string
-  /** Fences this daemon's records: the host session, or a per-daemon id until wave 4 binds one. */
-  readonly fence: string
+  private readonly lease?: () => string | undefined
+  private readonly ownFence: string
+  /** The incarnation the last completed transition wrote under; a new one forces the next. */
+  private appliedFence?: string
 
   readonly dir: string
   readonly name: string
@@ -311,8 +318,6 @@ class Daemon implements Roomd {
   private readonly publisher: Publisher
   private workQueue: Promise<void> = Promise.resolve()
   private readonly watchedDirectory: string
-  publishUnder?: string
-  private publisherChosen = false
   private symlinks = new Set<string>()
   private loggedSkips = new Set<string>()
   /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
@@ -341,7 +346,8 @@ class Daemon implements Roomd {
     this.roomUrl = options.room
     this.localRoom = !!options.localKey
     this.sessionId = options.sessionId
-    this.fence = options.sessionId ?? newId('daemon_')
+    this.lease = options.lease
+    this.ownFence = options.sessionId ?? newId('daemon_')
     this.log = options.log ?? (line => process.stderr.write(`[roomd] ${line}\n`))
     this.remoteRepairSchedule = options.remoteRepairSchedule ?? (run => {
       const timer = setTimeout(() => { void run() }, 40)
@@ -416,7 +422,6 @@ class Daemon implements Roomd {
     await this.step('sync', () => this.waitForSync())
     this.observeOwnedData()
     this.phase = 'base'
-    this.choosePublisher()
     this.roomDoc.assignColor(this.name, this)
     this.setStatus(this.currentStatus())
     await this.refreshShared()
@@ -442,7 +447,7 @@ class Daemon implements Roomd {
     this.loadRoomIgnore()
     this.inputs = { ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) }
     await this.step('seed', () => this.seedLocalOverlay())
-    if (!this.publishUnder) this.writeRoomFile()
+    if (this.inputs.policy.publisher) this.writeRoomFile()
     this.excludeRoomFile()
     await this.step('watch', () => this.startWatcher())
     // Events can be missed between the seed scan and watch readiness.
@@ -533,35 +538,19 @@ class Daemon implements Roomd {
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       share: this.share,
       watchedDirectory: this.watchedDirectory,
-      publishUnder: this.publishUnder,
       lastActive: this.lastActive,
     }
     this.provider.awareness.setLocalState(state)
   }
 
-  choosePublisher(): void {
-    const states = this.provider.awareness.getStates?.()
-    if (!states) return
-    const peers = Array.from(states.values()) as Partial<Presence>[]
-    const colocated = peers.filter(p => p.watchedDirectory === this.watchedDirectory && p.user?.name !== this.name && p.user?.name)
-    // A newly joining daemon follows the existing publisher. If two starters see each
-    // other before either has settled, name ordering breaks the resulting cycle.
-    const incumbent = colocated.find(p => p.user!.name === this.publishUnder)
-    let publisher: string | undefined
-    if (incumbent && !incumbent.publishUnder) publisher = incumbent.user!.name
-    else if (incumbent?.publishUnder === this.name) publisher = [this.name, incumbent.user!.name].sort()[0]
-    else {
-      const active = colocated.filter(p => !p.publishUnder && (!this.publisherChosen || p.status !== 'syncing')).map(p => p.user!.name).sort()
-      publisher = this.publisherChosen && !this.publishUnder ? [this.name, ...active].sort()[0] : active[0]
-    }
-    this.publisherChosen = true
-    const next = publisher === this.name ? undefined : publisher
-    if (next === this.publishUnder) return
-    this.publishUnder = next
-    this.applyInputs({ ...this.inputs, policy: Object.freeze({ ...this.inputs.policy, publisher: !next, ...(next ? { publisherName: next } : { publisherName: undefined }) }) })
-    if (next) {
-      this.log(`publishing under ${next} (same watched directory)`)
-    } else this.log('publishing watched directory')
+  /**
+   * The fence of every record this daemon writes, or undefined while it may write none: its name lease is
+   * paused, or the hub-written holder already names another incarnation (a successor, hub §4.3).
+   */
+  get fence(): string | undefined {
+    const fence = this.lease ? this.lease() : this.ownFence
+    const holder = participantRecord(this.roomDoc, this.name)?.holder
+    return fence !== undefined && (!holder || holderFence(holder) === fence) ? fence : undefined
   }
 
   enqueue(work: () => Promise<void>): Promise<void> {
@@ -644,14 +633,17 @@ class Daemon implements Roomd {
   // ---- base commit tracking ---------------------------------------------
 
 
-  /** A live owner can restore a peer's mistaken eviction from its current disk and sharing policy. */
+  /** A live owner can restore a peer's mistaken deletion of its current incarnation. */
   private observeOwnedData(): void {
     const removedOwnEntry = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
       if (transaction.origin === this || this.stopped) return
+      const fence = this.fence
+      if (!fence) return
+      const incarnation = manifestKey(this.name, fence)
       if (events.some(event => event instanceof Y.YMapEvent && (
-        event.target === this.roomDoc.overlays || event.target === this.roomDoc.deleted
-          ? event.changes.keys.get(this.name)?.action === 'delete'
-          : event.path[0] === this.name && [...event.changes.keys.values()].some(change => change.action === 'delete')
+        event.target === this.roomDoc.overlays || event.target === this.roomDoc.manifest
+          ? event.changes.keys.get(incarnation)?.action === 'delete'
+          : event.path[0] === incarnation && [...event.changes.keys.values()].some(change => change.action === 'delete')
       ))) this.scheduleRemoteRepair()
     }
     const changedBaseText = (event: Y.YMapEvent<string>, transaction: Y.Transaction) => {
@@ -660,15 +652,15 @@ class Daemon implements Roomd {
         const split = key.indexOf('\u0000')
         if (split < 0 || key.slice(split + 1).includes('\u0000')) return false
         const owner = key.slice(0, split)
-        return owner === this.name || (change.action === 'add' && !this.roomDoc.overlays.get(owner)?.size && !this.roomDoc.deleted.get(owner)?.size)
+        return owner === this.name || (change.action === 'add' && manifestPaths(this.roomDoc, owner).length === 0)
       })) this.scheduleRemoteRepair()
     }
     this.roomDoc.overlays.observeDeep(removedOwnEntry)
-    this.roomDoc.deleted.observeDeep(removedOwnEntry)
+    this.roomDoc.manifest.observeDeep(removedOwnEntry)
     this.roomDoc.ownedBaseTexts.observe(changedBaseText)
     this.unobserveOwnedData = () => {
       this.roomDoc.overlays.unobserveDeep(removedOwnEntry)
-      this.roomDoc.deleted.unobserveDeep(removedOwnEntry)
+      this.roomDoc.manifest.unobserveDeep(removedOwnEntry)
       this.roomDoc.ownedBaseTexts.unobserve(changedBaseText)
     }
   }
@@ -682,30 +674,30 @@ class Daemon implements Roomd {
     })
   }
 
-  /** The worktree's publisher alone writes base facts and posts `pushed` (invariant 11); wave 4 gates this on the publisher lease. */
-  private publishesBaseFacts(): boolean { return !this.publishUnder }
+  /** The holder of the worktree's publisher lease alone writes base facts and posts `pushed` (invariant 11, registry §16). */
+  private publishesBaseFacts(): boolean { return this.inputs.policy.publisher }
 
   /**
    * One HEAD transition (§B2): a commit, pull, reset, branch switch, or a fetch or force-push that moved
    * the room remote's refs. The applied state advances only when the whole transition has committed.
    */
   private async pollHead(): Promise<void> {
-    if (this.stopped) return
-    this.choosePublisher()
-    // Every poll (so startup and every reconnect too) retries a `pushed` the record still owes (§B2 step 6).
+    const fence = this.fence
+    // Paused (hub §7): nothing fenced goes out, and nothing is applied, so the resumed transition redoes it all.
+    if (this.stopped || fence === undefined) return
     await this.postPushedPending()
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
     const branch = branchName(rawBranch)
     const inputs: BaseInputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) }
     const headMoved = head !== this.appliedHead || branch !== this.branch
     const publishing = this.publishesBaseFacts()
-    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher) return
+    if (!headMoved && refsKey(inputs) === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) return
     // Invalidate every disk scan captured before this transition, before the first await.
     this.inputs = { ...this.inputs }
     // §B2 step 1, before any awaited work: readers stop trusting my manifest until the transition completes.
     if (publishing) {
       this.transitionPending = true
-      markManifestIncomplete(this.roomDoc, this.name, this.fence)
+      markManifestIncomplete(this.roomDoc, this.name, fence)
     }
     // A promoted session's own record predates the other publisher's tenure: it yields no pushed (§B4).
     const promoted = publishing && this.appliedAsPublisher === false
@@ -717,6 +709,7 @@ class Daemon implements Roomd {
       this.branch = branch
       this.tracked = await gitTracked(this.dir)
       await this.refreshShared()
+      if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
       // The receipt may run ahead of overlays briefly; the transition is retried until every step succeeds.
       this.roomDoc.doc.transact(() => {
         this.roomDoc.setBaseOf(this.name, this.shared, this)
@@ -725,11 +718,12 @@ class Daemon implements Roomd {
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
     const claims = await this.reanchorOwnClaims(head, claimSnapshot)
-    const facts = await this.transitionFacts(inputs, resolved, promoted)
+    const facts = await this.transitionFacts(inputs, resolved, promoted, fence)
     // A disk scan or policy change during preparation invalidates it; prepare again rather than fail the move.
     for (let attempt = 1; ; attempt++) {
       const publication = await this.publisher.prepare(this.inputs = { ...this.inputs, head: resolved.base })
       if (await gitHead(this.dir) !== head) throw new Error('HEAD moved during reconciliation')
+      if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
       if (this.commitTransition(inputs, claims, facts, publication, resolved.anchored)) break
       if (attempt === TRANSITION_ATTEMPTS) throw new Error(`publication changed during HEAD transition ${attempt} times`)
     }
@@ -739,19 +733,20 @@ class Daemon implements Roomd {
     this.appliedHead = head
     this.appliedRefs = refsKey(inputs)
     this.appliedAsPublisher = publishing
+    this.appliedFence = fence
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`)
     // §B2 step 6, after the transaction.
     await this.postPushedPending()
   }
 
-  /** The awaited half of §B2 step 5: the next `git` record and whether it yields `pushed` (§B4). */
-  private async transitionFacts({ head, branch }: BaseInputs, resolved: ResolvedBase, promoted: boolean): Promise<TransitionFacts> {
+  /** The awaited half of §B2 step 5: the next `git` record, under the transition's fence, and whether it yields `pushed` (§B4). */
+  private async transitionFacts({ head, branch }: BaseInputs, resolved: ResolvedBase, promoted: boolean, fence: string): Promise<TransitionFacts> {
     if (!this.publishesBaseFacts()) return {}
     const prev = participantRecord(this.roomDoc, this.name)?.git
     const fields = {
       branch, head, base: resolved.base, anchored: resolved.anchored,
       ...(resolved.remote ? { remote: resolved.remote } : {}), ...(resolved.upstream ? { upstream: resolved.upstream } : {}),
-      ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence: this.fence,
+      ...(resolved.ahead !== undefined ? { ahead: resolved.ahead, behind: resolved.behind } : {}), fence,
     }
     const { rev: _rev, pushedPending: _owed, ...recorded } = prev ?? { rev: 0 }
     if (JSON.stringify(recorded) === JSON.stringify(fields)) return {}
@@ -784,7 +779,8 @@ class Daemon implements Roomd {
    */
   private async postPushedPending(): Promise<void> {
     const owed = this.publishesBaseFacts() ? participantRecord(this.roomDoc, this.name)?.git?.pushedPending : undefined
-    if (!owed || !this.poster || this.pushedInFlight || this.stopped) return
+    const fence = this.fence
+    if (!owed || !this.poster || this.pushedInFlight || this.stopped || !fence) return
     this.pushedInFlight = true
     const from: Identity = { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}) }
     let answer: unknown
@@ -795,7 +791,7 @@ class Daemon implements Roomd {
       answer = this.poster(from, { type: 'pushed', ...owed, ...facts } as PostBody<PushedMsg>, { id: `pushed:${this.name}:${owed.fromSha}:${owed.toSha}`, auto: true })
     } catch (error) { this.pushedInFlight = false; this.log(`pushed not posted yet: ${errMsg(error)}`); return }
     void Promise.resolve(answer).then(result => {
-      if (!hubAccepted(result) || this.stopped) return
+      if (!hubAccepted(result) || this.stopped || this.fence !== fence) return
       this.log(`${owed.upstream} now has ${owed.fromSha.slice(0, 10)}..${owed.toSha.slice(0, 10)} (+${commits})`)
       const record = participantRecord(this.roomDoc, this.name)?.git
       const current = record?.pushedPending
@@ -867,7 +863,9 @@ class Daemon implements Roomd {
   /** Capture the claimed code before a commit can clear its overlay. */
   private async snapshotOwnClaims(prev: string): Promise<Claim[]> {
     const owned = [...this.roomDoc.claims.values()].filter(c => c.by === this.name && !c.mirrorOf && !c.path.endsWith('/'))
-    const incarnation = manifestKey(this.name, this.fence)
+    const fence = this.fence
+    if (!fence) return []
+    const incarnation = manifestKey(this.name, fence)
     const oldPaths = [...new Set(owned.filter(c => !this.roomDoc.overlayText(incarnation, c.path) && !c.claimedHash).map(c => c.path))]
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : new Map<string, string | undefined>()
     return owned.map(c => {
@@ -885,9 +883,11 @@ class Daemon implements Roomd {
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
   private async reanchorOwnClaims(head: string, snapshot: readonly Claim[]): Promise<ClaimChanges> {
     if (!snapshot.length) return NO_CLAIM_CHANGES
+    const fence = this.fence
+    if (!fence) return NO_CLAIM_CHANGES
     const paths = [...new Set(snapshot.map(c => c.path))]
     const headTexts = await gitShowMany(this.dir, head, paths)
-    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, manifestKey(this.name, this.fence)) ?? headTexts.get(p)]))
+    const currentTexts = new Map(paths.map(p => [p, this.roomDoc.text(p, manifestKey(this.name, fence)) ?? headTexts.get(p)]))
     return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map(c => [c.id, c.claimedHash])) }
   }
 
@@ -1068,7 +1068,7 @@ class Daemon implements Roomd {
       for (const relpath of removed) {
         if (fs.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
           this.scheduleDisk(relpath, false)
-        } else if (this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs.existsSync(this.abs(relpath))) {
+        } else if (this.fence && this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs.existsSync(this.abs(relpath))) {
           this.scheduleDisk(relpath, false)
         }
       }

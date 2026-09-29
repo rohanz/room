@@ -5,14 +5,13 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import { participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
+import { neighbours, participantsView, snapshot, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
 import { WakeReconciler } from '../wake-reconciler.js'
 import { ConflictSet } from '../conflict-set.js'
-import { isPrName } from '../prs.js'
 import { Rooms, type Attachment, type Role } from '../registry.js'
 import { authFor, closeRoom, joinSession, leaveSession, syntheticSessionId, type Session } from '../session.js'
 import { Ledger } from '../ledger.js'
@@ -44,7 +43,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
       owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
-      sessionDir: () => ctx.binding?.dir(), paused: () => s.hub.paused(), company: () => company(s), log,
+      sessionDir: () => ctx.binding?.dir(), paused: () => s.lease?.paused() ?? s.hub.paused(), company: () => company(s), log,
     }) : null
     hooks?.start()
     if (hooks) primaryHooks = hooks
@@ -79,13 +78,9 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const mine = (s: Session) => s.room.openClaims().filter(c => c.by === s.me.name && c.byKind === s.me.kind)
 
   const others = (s: Session): string[] => {
-    const names = new Set<string>()
-    for (const k of s.room.scopes.keys()) names.add(k)
-    for (const k of s.room.manifestHead.keys()) names.add(k)
-    for (const p of presences(s)) names.add(p.user.name)
-    names.delete(s.me.name)
+    const names = neighbours(participantsView(s.room, s.awareness, now()), s.me.name).names()
     const retired = new Set(s.room.retiredWorkers().map(w => w.name))
-    return Array.from(names).filter(n => !isPrName(n) && (!retired.has(n) || s.room.workerViewOf(n))).sort() // PR mirrors and retired workers are not routed to
+    return names.filter(n => !retired.has(n) || s.room.workerViewOf(n)).sort()
   }
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
@@ -164,7 +159,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     scheduleInboxWrite,
     upgraded,
     attachHooks: (s: Session) => rooms.add(s, 'primary'),
-    clearStale: (s: Session) => { join.evictStale(s); return state.cleanupMine(s, 'stale from an earlier session') },
+    clearStale: (s: Session) => state.cleanupMine(s, 'stale from an earlier session'),
     async shutdown() {
       wakes.stop()
       const s = ctx.getSession()

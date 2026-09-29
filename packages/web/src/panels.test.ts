@@ -1,8 +1,9 @@
 import { renderScheduler } from './scheduler.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RoomDoc, colorFor, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
+import { RoomDoc, colorFor, manifestKey, roomNameParts, type Claim, type Presence, type Scope } from '@room/shared'
 import { parseRoomUrl, type Conn } from './conn.ts'
 import { deriveParticipants, deriveStatePill, shortPill, header, centrePanel, createFocusState } from './panels.ts'
+import { publish } from './test-manifest.ts'
 
 describe('shortPill', () => {
   it('keeps the state and a short detail', () => {
@@ -157,7 +158,7 @@ describe('merged pane participant choices', () => {
       room.setBaseOf(person, 'base')
       for (const path of ['a.ts', 'b.ts']) {
         room.setBaseText(person, 'base', path, 'base')
-        room.setOverlay(person, path, person)
+        publish(room, person, path, person, 'base')
       }
     }
     const states = new Map<number, unknown>()
@@ -176,12 +177,12 @@ describe('merged pane participant choices', () => {
     return { room, panel, presence, chips, selected }
   }
 
-  it('defaults all chips on when no participant with file changes is online', () => {
+  it('defaults all chips on when no participant with file changes is online', async () => {
     const s = setup(['Unrelated'])
     try {
       expect(s.selected()).toEqual(["Ada's agent", "Ben's agent", "Cy's agent"])
       expect(s.panel.find('merge-hint muted')?.textContent).toBe("Showing 3 participants' changes")
-      expect(s.panel.find('editor-wrap')?.textContent).toContain('Ada')
+      await vi.waitFor(() => expect(s.panel.find('editor-wrap')?.textContent).toContain('Ada'))
     } finally { s.room.doc.destroy() }
   })
 
@@ -235,23 +236,59 @@ describe('merged pane participant choices', () => {
 
 // All three tabs must use the same inline interaction, even without conflicts.
 import { JSDOM } from 'jsdom'
-it('shows annotations and details in Merged, Diff and File without floating code tooltips', () => {
+it('shows held changes as PARTIAL instead of an unchanged merge', async () => {
+  const dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document); vi.stubGlobal('window', dom.window)
+  const room = new RoomDoc()
+  publish(room, 'Ada', 'config.ts', 'private change', 'base')
+  const head = room.manifestHead.get('Ada')!
+  room.manifest.get(manifestKey('Ada', head.fence))!.set('config.ts', { change: 'M', state: 'held', held: 'scope', at: 1, fence: head.fence })
+  room.overlays.get(manifestKey('Ada', head.fence))!.delete('config.ts')
+  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  try {
+    const panel = centrePanel(conn, createFocusState())
+    document.body.append(panel)
+    await vi.waitFor(() => expect(panel.querySelector('.editor-wrap')?.textContent).toContain('PARTIAL'))
+    expect(panel.querySelector('.editor-wrap')?.textContent).toContain('outside declared area')
+    expect(panel.querySelector('.merge-coverage')?.textContent).toContain('1 not shared')
+  } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
+})
+
+it('shows no-base-text for an unchanged peer instead of comparing with an empty file', async () => {
+  const dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document); vi.stubGlobal('window', dom.window)
+  const room = new RoomDoc()
+  publish(room, 'Alice', 'a.ts', 'changed', 'base')
+  publish(room, 'Ben', 'other.ts', 'other', 'base')
+  const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
+  try {
+    const panel = centrePanel(conn, createFocusState())
+    document.body.append(panel)
+    await vi.waitFor(() => expect(panel.querySelector('.merge-coverage')?.textContent).toContain('Complete'))
+    await vi.waitFor(() => expect(panel.querySelector('.legend')?.textContent).toContain('Ben: base text not in the room'))
+    expect(panel.querySelector('.code-line')?.textContent).toContain('changed')
+  } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
+})
+it('shows annotations and details in Merged, Diff and File without floating code tooltips', async () => {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
   const room = new RoomDoc()
   room.setBaseOf('Ada', 'base')
   room.setBaseText('Ada', 'base', 'a.ts', 'base\nkeep\n')
-  room.setOverlay('Ada', 'a.ts', 'edit\nkeep\n')
+  publish(room, 'Ada', 'a.ts', 'edit\nkeep\n', 'base\nkeep\n')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
   try {
     const panel = centrePanel(conn, createFocusState())
     document.body.append(panel)
     for (const tab of ['Merged', 'Diff', 'File']) {
       Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === tab)!.click()
+      await vi.waitFor(() => expect(panel.querySelector('.code-line')).not.toBeNull())
+      await vi.waitFor(() => {
+        panel.querySelector<HTMLElement>('.code-line')!.dispatchEvent(new dom.window.Event('pointerenter'))
+        expect(panel.querySelector('.line-annotation')?.textContent).toBe(tab === 'Diff' ? 'unchanged from base' : 'changed by Ada')
+      })
       const row = panel.querySelector<HTMLElement>('.code-line')!
-      row.dispatchEvent(new dom.window.Event('pointerenter'))
-      expect(panel.querySelector('.line-annotation')?.textContent).toBe(tab === 'Diff' ? 'unchanged from base' : 'changed by Ada')
       row.click()
       expect(panel.querySelectorAll('.inline-detail')).toHaveLength(1)
       expect(row.nextElementSibling?.className).toBe('inline-detail')
@@ -264,7 +301,7 @@ it('shows annotations and details in Merged, Diff and File without floating code
   } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })
 
-it('reads the selected participant’s base in the File tab', () => {
+it('reads the selected participant’s base in the File tab', async () => {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
@@ -273,7 +310,7 @@ it('reads the selected participant’s base in the File tab', () => {
   for (const [person, base] of [['Ada', 'Ada base'], ['Ben', 'Ben base']] as const) {
     room.setBaseOf(person, 'sha')
     room.setBaseText(person, 'sha', 'a.ts', `${base}\nkept\n`)
-    room.setOverlay(person, 'a.ts', `${person} edit\nkept\n`)
+    publish(room, person, 'a.ts', `${person} edit\nkept\n`, `${base}\nkept\n`, 'sha')
   }
   const reads = vi.spyOn(room, 'baseText')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
@@ -284,16 +321,16 @@ it('reads the selected participant’s base in the File tab', () => {
     const select = panel.querySelector<HTMLSelectElement>('.person-select')!
     select.value = 'Ben'
     select.dispatchEvent(new dom.window.Event('change'))
-    expect(reads).toHaveBeenCalledWith('Ben', 'sha', 'a.ts')
+    await vi.waitFor(() => expect(reads).toHaveBeenCalledWith('Ben', 'sha', 'a.ts'))
     panel.querySelector('.code-line')?.dispatchEvent(new dom.window.Event('pointerenter'))
     expect(panel.querySelector('.line-annotation')?.textContent).toBe('changed by Ben')
     select.value = 'Ada'
     select.dispatchEvent(new dom.window.Event('change'))
-    expect(reads).toHaveBeenCalledWith('Ada', 'sha', 'a.ts')
+    await vi.waitFor(() => expect(reads).toHaveBeenCalledWith('Ada', 'sha', 'a.ts'))
   } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })
 
-it('measures a carried worker in the Merged tab against its own base', () => {
+it('marks different participant bases as unmergeable in the git-less browser', async () => {
   const dom = new JSDOM('<body></body>')
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('window', dom.window)
@@ -302,16 +339,14 @@ it('measures a carried worker in the Merged tab against its own base', () => {
   room.setBaseText('lead', 'head', 'a.ts', 'base\nkeep\n')
   room.setBaseOf('lead+w', 'carried')
   room.setBaseText('lead+w', 'carried', 'a.ts', 'carried\nkeep\n')
-  room.setOverlay('lead+w', 'a.ts', 'carried\nworker\n')
-  room.setOverlay('lead', 'a.ts', 'carried\nkeep\n')
+  publish(room, 'lead+w', 'a.ts', 'carried\nworker\n', 'carried\nkeep\n', 'carried')
+  publish(room, 'lead', 'a.ts', 'carried\nkeep\n', 'base\nkeep\n', 'head')
   const conn = { room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } } as unknown as Conn
   try {
     const panel = centrePanel(conn, createFocusState())
     document.body.append(panel)
     Array.from(panel.querySelectorAll<HTMLButtonElement>('.tab')).find(b => b.textContent === 'Merged')!.click()
-    const rows = Array.from(panel.querySelectorAll<HTMLElement>('.code-line'))
-    expect(rows.map(row => row.querySelector('code')?.textContent)).toEqual(['carried', 'worker'])
-    const notes = rows.map(row => { row.dispatchEvent(new dom.window.Event('pointerenter')); return row.querySelector('.line-annotation')?.textContent })
-    expect(notes).toEqual(['changed by lead', 'changed by lead+w'])
+    await vi.waitFor(() => expect(panel.querySelector('.editor-wrap')?.textContent).toContain('branches differ'))
+    expect(panel.querySelectorAll('.code-line')).toHaveLength(0)
   } finally { room.doc.destroy(); dom.window.close(); vi.unstubAllGlobals() }
 })

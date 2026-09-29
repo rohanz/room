@@ -10,7 +10,7 @@ import { hubAppend } from '@room/shared/testing'
 import { ensureLocalRelay } from '@room/relay'
 import { HubClient, hubTransport, type HubTransport } from '../src/hub-client.js'
 import { createPost, NOT_SENT } from '../src/post.js'
-import { memoryTransport } from './fixtures/hub.js'
+import { memoryTransport, testLease } from './fixtures/hub.js'
 
 const ada = { name: 'ada', kind: 'agent' as const }
 const cleanups: (() => unknown)[] = []
@@ -20,7 +20,7 @@ function seam(room = new RoomDoc()) {
   const transport = memoryTransport(room)
   const hub = new HubClient({ transport, client: 'test', sessionId: 's1' })
   cleanups.push(() => hub.close())
-  return { room, transport, hub, post: createPost(room, hub) }
+  return { room, transport, hub, post: createPost(room, hub, testLease(hub)) }
 }
 
 describe('Session.post through the hub (hub §11)', () => {
@@ -60,7 +60,7 @@ describe('Session.post through the hub (hub §11)', () => {
     const room = new RoomDoc()
     const hub = new HubClient({ transport: silent, client: 'test', sessionId: 's1' })
     cleanups.push(() => hub.close())
-    const result = await createPost(room, hub)<NoteMsg>(ada, { type: 'note', text: 'x' })
+    const result = await createPost(room, hub, testLease(hub))<NoteMsg>(ada, { type: 'note', text: 'x' })
     expect(result).toMatchObject({ ok: false, reason: 'unreachable', text: NOT_SENT })
   }, 20_000)
 
@@ -79,7 +79,7 @@ describe('Session.post through the hub (hub §11)', () => {
     await Promise.all([a, b].map(x => new Promise<void>(r => x.provider.once('sync', () => r()))))
     const hub = new HubClient({ transport: hubTransport(a.provider), client: 'test', sessionId: 's1' })
     cleanups.push(() => hub.close())
-    const result = await createPost(a.room, hub)<NoteMsg>(ada, { type: 'note', text: 'over the wire' })
+    const result = await createPost(a.room, hub, testLease(hub))<NoteMsg>(ada, { type: 'note', text: 'over the wire' })
     expect(result).toMatchObject({ ok: true, seq: expect.any(Number) })
     await expect.poll(() => b.room.message(result.msg.id)).toMatchObject({ text: 'over the wire', seq: result.ok ? result.seq : -1 })
   }, 20_000)

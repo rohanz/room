@@ -1,18 +1,21 @@
 /** Tests: a session's hub seam over an in-process hub-core `Hub` on the session's own doc. */
-import { decodeFrame, encodeFrame, serializedStore, startHub, type Hub } from '@room/hub-core'
+import { SETTLE_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub } from '@room/hub-core'
 import type { RoomDoc } from '@room/shared'
 import { HubClient, type HubTransport } from '../../src/hub-client.js'
-import { createPost, greet, type Post } from '../../src/post.js'
+import { createPost, greet, type LeaseSource, type Post } from '../../src/post.js'
 
 const hubs = new WeakMap<RoomDoc, Promise<Hub>>()
 const transports = new WeakMap<HubClient, ReturnType<typeof memoryTransport>>()
+let seams = 0
 
 /** One hub per doc; `up()` / `down()` simulate the hub becoming reachable or not. */
 export function memoryTransport(room: RoomDoc): HubTransport & { up(): void; down(): void } {
   let hub = hubs.get(room)
   if (!hub) {
-    let max: number | undefined
-    hub = startHub({ doc: room, mono: () => performance.now(), wall: () => Date.now(), log: () => {}, store: serializedStore({ read: async () => max, write: async v => { max = v } }) })
+    let max: number | undefined, settled = 0
+    // Tests start with the settle window already over (hub §4.4), so a first acquire is granted at once.
+    hub = startHub({ doc: room, mono: () => performance.now() + settled, wall: () => Date.now(), log: () => {}, store: serializedStore({ read: async () => max, write: async v => { max = v } }) })
+      .then(h => { settled = SETTLE_MS; return h })
     hubs.set(room, hub)
   }
   const ready = hub
@@ -34,13 +37,27 @@ export function memoryTransport(room: RoomDoc): HubTransport & { up(): void; dow
   }
 }
 
+/** A name lease for a test poster: acquired on first use, and again if it lapsed. */
+export function testLease(hub: HubClient, name = 'test-poster', sessionId = 'test-session', room?: RoomDoc): LeaseSource {
+  let acquiring: Promise<number | undefined> | undefined
+  const acquire = () => acquiring ??= hub.acquire(name, { sessionId, pid: process.pid, startTime: '', executable: '' })
+    .then(epoch => { if (room) room.expiry.set(name, { observedMs: Date.now(), epoch: String(epoch) }); return epoch })
+    .catch(() => undefined).finally(() => { acquiring = undefined })
+  void acquire()
+  return async () => {
+    const epoch = hub.lease(name) ?? await acquire()
+    return epoch === undefined ? undefined : { name, epoch }
+  }
+}
+
 /** The `hub` and `post` fields of a Session whose room has an in-process hub. */
 export function hubSeam(room: RoomDoc, sessionId = 'test-session'): { hub: HubClient; post: Post } {
   const transport = memoryTransport(room)
   const hub = new HubClient({ transport, client: 'test', sessionId })
   transports.set(hub, transport)
   greet(hub)
-  return { hub, post: createPost(room, hub) }
+  // Each seam posts under a name lease of its own, so two seams on one room never supersede each other.
+  return { hub, post: createPost(room, hub, testLease(hub, `test-poster-${++seams}`, sessionId, room)) }
 }
 
 /** Make a session's hub (un)reachable, as a dropped relay or server connection would. */

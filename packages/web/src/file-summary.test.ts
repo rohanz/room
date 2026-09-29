@@ -5,6 +5,7 @@ import type { Conn } from './conn.ts'
 import { createFocusState, participantsPanel } from './panels.ts'
 import { renderScheduler } from './scheduler.ts'
 import { readFileSync } from 'node:fs'
+import { publish } from './test-manifest.ts'
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(fn => fn()); vi.unstubAllGlobals() })
@@ -14,7 +15,7 @@ function panel(paths: string[]) {
   vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
   vi.stubGlobal('cancelAnimationFrame', vi.fn())
   const room = new RoomDoc()
-  for (const path of paths) room.setOverlay('Ada', path, 'changed')
+  for (const path of paths) publish(room, 'Ada', path, 'changed')
   const states = new Map([[1, { user: { name: 'Ada', kind: 'agent' } }]])
   const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   const rail = participantsPanel(conn, createFocusState())
@@ -36,7 +37,7 @@ it('shows a compact 48-file People summary and expands folder groups', () => {
   const group = [...rail.querySelectorAll('.files-group')].find(node => node.querySelector('summary')?.textContent === 'art/main-street/ (44)')!
   expect(group).toBeTruthy()
   expect(group.querySelectorAll('.files-name')).toHaveLength(44)
-  room.setOverlay('Ada', 'src/new.ts', 'changed')
+  publish(room, 'Ada', 'src/new.ts', 'changed')
   renderScheduler.flushNow()
   expect(rail.querySelector('.files-toggle')?.textContent).toBe('Show less')
   expect(rail.querySelector('.files-groups')).toBeTruthy()

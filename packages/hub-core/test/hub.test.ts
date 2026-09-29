@@ -71,7 +71,9 @@ describe('hub in process', () => {
     const hub = await startHub(h)
     const conn = {}
     hub.handle(conn, hello, local)
-    const post = (id: string) => hub.handle(conn, { v: 1, id, op: 'post', msg: { id, type: 'note', from: 'ada', text: id } }, local) as { ok: boolean; seq?: number; reason?: string }
+    h.clock.advance(SETTLE_MS)
+    const { epoch } = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s1') }, local) as { epoch: number }
+    const post = (id: string) => hub.handle(conn, { v: 1, id, op: 'post', lease: { name: 'ada', epoch }, msg: { id, type: 'note', from: 'ada', text: id } }, local) as { ok: boolean; seq?: number; reason?: string }
     const first = hub.incarnation
     const seqs = [post('m1').seq!, post('m2').seq!]
     expect(post('m3')).toMatchObject({ ok: false, reason: 'starting' })
@@ -114,7 +116,9 @@ describe('hub in process', () => {
     const hub = await startHub(h)
     const conn = {}
     hub.handle(conn, hello, local)
-    hub.handle(conn, { v: 1, id: 'p', op: 'post', msg: { id: 'q1', type: 'question', from: 'ada', to: 'bob', text: '?' } }, local)
+    h.clock.advance(SETTLE_MS)
+    const { epoch } = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s1') }, local) as { epoch: number }
+    hub.handle(conn, { v: 1, id: 'p', op: 'post', lease: { name: 'ada', epoch }, msg: { id: 'q1', type: 'question', from: 'ada', to: 'bob', text: '?' } }, local)
     h.clock.advance(OWED_TTL_MS + MAINTENANCE_MS)
     hub.tick()
     expect(h.doc.outcomes.get('q1')).toMatchObject({ outcome: 'expired', to: 'bob' })
@@ -172,7 +176,7 @@ describe('hub in process', () => {
     hub.handle(conn, hello, local)
     h.clock.advance(SETTLE_MS)
     const { epoch } = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'gone', holder: holder('s1') }, local) as { epoch: number }
-    const { seq } = hub.handle(conn, { v: 1, id: 'p', op: 'post', msg: { id: 'm1', type: 'note', from: 'gone', text: 'x' } }, local) as { seq: number }
+    const { seq } = hub.handle(conn, { v: 1, id: 'p', op: 'post', lease: { name: 'gone', epoch }, msg: { id: 'm1', type: 'note', from: 'gone', text: 'x' } }, local) as { seq: number }
     h.doc.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'gone', byKind: 'agent', intent: 'edit' })
     hub.handle(conn, { v: 1, id: 'r', op: 'release', name: 'gone', epoch }, local)
     const expired = () => h.logs.some(l => l.includes('expired gone'))

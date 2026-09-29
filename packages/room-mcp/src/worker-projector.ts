@@ -23,6 +23,7 @@ const inRole = (record: WorkerRecord, roomKey: string, role: ProjectorRole): boo
  */
 export async function projectWorkers(s: Session, registry: WorkerRegistry, lead: string, role: ProjectorRole, origin?: unknown): Promise<WorkerRecord[]> {
   const roomKey = s.roomName, fence = s.daemon.fence
+  if (!fence) return []
   const { write: all, retire: retiring } = registry.projectable(lead, roomKey)
   const write = all.filter(({ record }) => inRole(record, roomKey, role))
   const retire = retiring.filter(record => inRole(record, roomKey, role))
@@ -55,6 +56,7 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
 
 /** The lead's own view of one of its workers, straight from its registry (room_state's worker lines). */
 export function localWorkerView(s: Session, id: string): WorkerView | undefined {
+  if (!s.daemon.fence) return undefined
   const registry = registrySnapshotForDir(s.dir)
   const record = registry.read(id), status = registry.status(id)
   return record && status ? workerView(record, status, s.daemon.fence) : undefined

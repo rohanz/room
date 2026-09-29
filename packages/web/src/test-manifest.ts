@@ -1,0 +1,31 @@
+import * as Y from 'yjs'
+import { gitBlobHash, manifestKey, type ManifestEntry, type RoomDoc } from '@room/shared'
+
+/** Schema-2 publication fixture for web tests; mirrors the daemon's current incarnation. */
+export function publish(room: RoomDoc, name: string, path: string, text: string, baseText = '', base = 'base'): void {
+  const fence = `lease-${name}`
+  if (!room.participants.has(`${name}\0holder`)) {
+    room.participants.set(`${name}\0holder`, { sessionId: fence, machine: 'test', pid: 1, startTime: '', executable: '' })
+    room.participants.set(`${name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence })
+    room.manifestHead.set(name, { base, fence, level: 'full', coverage: { kind: 'all' }, excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    room.manifest.set(manifestKey(name, fence), new Y.Map<ManifestEntry>())
+    room.overlays.set(manifestKey(name, fence), new Y.Map<Y.Text>())
+  }
+  const entries = room.manifest.get(manifestKey(name, fence))!
+  const overlays = room.overlays.get(manifestKey(name, fence))!
+  entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(text), size: new TextEncoder().encode(text).length, at: Date.now(), fence })
+  let overlay = overlays.get(path)
+  if (!overlay) { overlay = new Y.Text(); overlays.set(path, overlay) }
+  overlay.delete(0, overlay.length)
+  overlay.insert(0, text)
+  room.setBaseText(name, base, path, baseText)
+  const head = room.manifestHead.get(name)!
+  room.manifestHead.set(name, { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
+}
+
+export function deletePublished(room: RoomDoc, name: string, path: string): void {
+  const head = room.manifestHead.get(name)!
+  room.manifest.get(manifestKey(name, head.fence))!.set(path, { change: 'D', state: 'shared', at: Date.now(), fence: head.fence })
+  room.overlays.get(manifestKey(name, head.fence))?.delete(path)
+  room.manifestHead.set(name, { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
+}

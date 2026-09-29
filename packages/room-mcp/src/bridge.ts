@@ -247,7 +247,7 @@ export class Bridge {
     const leadGit = participantRecord(team, lead)?.git
     const fence = this.team.daemon.fence
     const policy = this.team.policyStore.policy
-    if (!leadGit) return // no team base yet: the lead's own transition will schedule another pass
+    if (!leadGit || !fence) return // no team base or live name lease: the lead will schedule another pass
     const B = leadGit.base, C = record.base
     const view = participantsView(this.local.room, this.local.awareness, Date.now())
     const source = snapshot(this.local.room, record.name, view)

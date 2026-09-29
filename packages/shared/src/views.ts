@@ -1,6 +1,6 @@
 import { describeClaim } from './claims.js'
 import { describeIdentity, isAgentic } from './identity.js'
-import { participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
+import { holderFence, participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
 import { workerLive, type Claim, type Kind, type NoteMsg, type Presence, type RetiredWorker, type Scope, type ShareLevel, type WorkerView } from './types.js'
 
 export const ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1000
@@ -13,6 +13,8 @@ export interface ParticipantView {
   visible: boolean
   holder?: ParticipantHolder
   projectedBy?: string
+  /** The holder session's own idle measure, from its presence (registry §18). */
+  idleMin?: number
 }
 
 export interface AwarenessView {
@@ -40,7 +42,8 @@ export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: nu
   return [...names].sort().map(name => {
     const record = participantRecord(doc, name)
     const presences = current.get(name) ?? []
-    const fresh = !!record?.holder && presences.some(state => state.sessionId === record.holder?.sessionId)
+    const own = record?.holder ? presences.find(state => state.sessionId === record.holder?.sessionId) : undefined
+    const fresh = !!own
     const observedMs = doc.expiry.get(name)?.observedMs ?? 0
     return {
       name,
@@ -49,19 +52,20 @@ export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: nu
       visible: fresh || (!!record && observedMs < ROOM_STALE_MS),
       ...(record?.holder ? { holder: record.holder } : {}),
       ...(record?.proj ? { projectedBy: record.proj.projectedBy } : {}),
+      ...(typeof own?.idleMin === 'number' ? { idleMin: own.idleMin } : {}),
     }
   })
 }
 
-/** A holder is live only while awareness names that exact host session. */
+/** The fence of an un-ended holder while awareness names that exact host session. */
 export function liveHolder(view: readonly ParticipantView[], name: string): string | undefined {
   const participant = view.find(p => p.name === name)
-  return participant?.fresh ? participant.holder?.sessionId : undefined
+  return participant?.fresh && !participant.holder?.ended ? holderFence(participant.holder) : undefined
 }
 
 /** The only reader for a participant's git fact; stale writer incarnations read as updating. */
 export function acceptedGit(record: ParticipantRecord | undefined, view: readonly ParticipantView[]): ParticipantGit | 'updating' {
-  const expected = record?.proj ? liveHolder(view, record.proj.projectedBy) : record?.holder?.sessionId
+  const expected = record?.proj ? liveHolder(view, record.proj.projectedBy) : holderFence(record?.holder)
   return expected && record?.git?.fence === expected ? record.git : 'updating'
 }
 
@@ -123,14 +127,14 @@ export function summarizeFiles(paths: readonly string[], options: FileSummaryOpt
 
 const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
 const STOPPED_UNWITNESSED = 'stopped while no session of yours was running; reason unknown'
-const stoppedWithSession = (w: Pick<WorkerView, 'stopReason'>): boolean => w.stopReason === 'lead-session-ended'
-const stoppedAfterMessage = (w: Pick<WorkerView, 'stopReason'>): string | undefined =>
+const stoppedWithSession = (w: { stopReason?: WorkerView['stopReason'] }): boolean => w.stopReason === 'lead-session-ended'
+const stoppedAfterMessage = (w: { stopReason?: WorkerView['stopReason'] }): string | undefined =>
   w.stopReason?.startsWith('message-delivered-')
     ? `stopped after receiving your message: ${w.stopReason === 'message-delivered-cancelled' ? 'cancelled' : 'launch failed'}`
     : undefined
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
-export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: Pick<WorkerView, 'status' | 'finishedAt' | 'stopReason'> } = {}): string {
+export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: { status: WorkerView['status']; finishedAt?: number; stopReason?: WorkerView['stopReason'] } } = {}): string {
   if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION
   if (options.worker && workerLive(options.worker.status) && options.processGone) return STOPPED_UNWITNESSED
   const finished = options.worker !== undefined && !workerLive(options.worker.status)
@@ -142,6 +146,16 @@ export function activityLabel(lastActive: number | undefined, now = Date.now(), 
   if (finished) return 'finished ' + duration + ' ago'
   if (running) return now - lastActive > 300_000 ? 'running · quiet ' + duration : 'running'
   return seconds < 90 ? 'working' : 'last action ' + duration + ' ago'
+}
+
+/** Views show a quiet session as idle from this many minutes of its own idle measure (registry §18). */
+export const IDLE_SHOWN_MIN = 10
+
+/** "idle 25 min", "idle 3 h; holds 2 claims"; nothing under ten minutes. */
+export function idleLabel(idleMin: number | undefined, claims = 0): string | undefined {
+  if (idleMin === undefined || !Number.isFinite(idleMin) || idleMin < IDLE_SHOWN_MIN) return undefined
+  const span = idleMin < 60 ? `${Math.floor(idleMin)} min` : `${Math.floor(idleMin / 60)} h`
+  return `idle ${span}${claims ? `; holds ${claims} claim${claims === 1 ? '' : 's'}` : ''}`
 }
 
 /** Keep candidate names that have a current awareness entry, preserving candidate order. */

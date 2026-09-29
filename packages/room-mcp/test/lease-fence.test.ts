@@ -11,6 +11,7 @@ import { Ledger } from '../src/ledger.js'
 import { createRelevance } from '../src/relevance.js'
 import type { Session } from '../src/session.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 // Ledger test 13. The hub-lease half (a lease that lapses on the client's clock) arrives with wave 4's
 // epoch fences; the holder record half is here.
@@ -29,8 +30,8 @@ beforeAll(() => {
 })
 afterAll(() => rmSync(repo, { recursive: true, force: true }))
 
-const holder = (sessionId: string): ParticipantHolder => ({ sessionId, machine: 'm', pid: 1, startTime: 't', executable: 'codex' })
-const hold = (room: RoomDoc, name: string, sessionId: string) => room.participants.set(`${name}\u0000holder`, holder(sessionId))
+const holder = (sessionId: string): ParticipantHolder => ({ sessionId, epoch: sessionId === 'B' ? 2 : 1, pid: 1, startTime: 't', executable: 'codex', at: 1 })
+const hold = (room: RoomDoc, name: string, sessionId: string) => { visiblePeer(room, name); room.participants.set(`${name}\u0000holder`, holder(sessionId)) }
 const session = (room: RoomDoc, name: string, dir = repo): Session =>
   ({ room, awareness: new Awareness(room.doc), me: { name, kind: 'agent' }, roomName: 'r', dir } as unknown as Session)
 
@@ -61,6 +62,7 @@ describe('fencing (ledger test 13)', () => {
 
   it('a pushed {fromSha, toSha} with no `to` is offered to routed neighbours by HEAD, and nothing is written for it', () => {
     const room = new RoomDoc()
+    visiblePeer(room, 'ben')
     const ledger = new Ledger({ sessionId: () => 'S', route: () => ({}), relevant: createRelevance() })
     const current = session(room, 'cy'), stale = session(room, 'dee', behind), author = session(room, 'ben')
     for (const s of [current, stale, author]) ledger.bind(s)

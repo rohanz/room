@@ -47,7 +47,7 @@ export interface ToolCtx {
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */
-  prs?: { fetch?: (s: Session, opts?: { head?: boolean }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  prs?: { fetch?: (s: Session, opts?: { head?: boolean; branch?: string }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean; base?: string }>
@@ -115,7 +115,6 @@ export interface HandlerState {
   describeUsers: (s: Session, files: string[]) => string
   planChanged: (s: Session, claim: Claim, plan: Plan, status: PlanMsg['status'], text: string, replacedBy?: Plan) => string[]
   followBranch: () => Promise<string>
-  evictStale: (s: Session) => string[]
   cleanupMine: (s: Session, why: string, keep?: (claim: Claim) => boolean) => number
   upgrade: (s: Session, msg: Msg, paths: string[], symbols: string[]) => Promise<string[]>
   claimLine: (s: Session, claim: Claim) => string

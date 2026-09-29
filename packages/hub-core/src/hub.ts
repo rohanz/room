@@ -424,10 +424,9 @@ class RoomHub implements Hub {
     const msg = req.msg as PostIn | undefined
     if (!isObject(msg) || typeof msg.id !== 'string' || !msg.id || typeof msg.type !== 'string' || !MessageKinds[msg.type]
       || !isName(msg.from) || (msg.to !== undefined && typeof msg.to !== 'string')) return fail('invalid', 'post needs a message with an id, a known type and a sender')
-    if (req.lease !== undefined) {
-      if (!isObject(req.lease) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail('invalid', 'post lease needs a name and an epoch')
-      if (this.live(req.lease.name)?.epoch !== req.lease.epoch) return fail('stale', `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`)
-    }
+    // The fence: the poster's own live lease, whatever `from` says (a bridge posts for its workers under its own).
+    if (!isObject(req.lease) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail('invalid', "a post carries the poster's name lease")
+    if (this.live(req.lease.name)?.epoch !== req.lease.epoch) return fail('stale', `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`)
     const found = this.doc.messages().find(m => m.id === msg.id) ?? this.doc.mail.get(msg.id)
     if (found) {
       const seq = (found as { seq?: unknown }).seq

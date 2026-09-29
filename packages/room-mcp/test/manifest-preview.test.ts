@@ -37,7 +37,7 @@ function fixture() {
   const session = { dir: root, room, me: { name: 'alice', kind: 'agent' }, roomName: 'local/demo/main',
     awareness: { getStates: () => new Map() } } as unknown as Session
   const state = { S: () => session, rooms: { all: () => [session], holding: () => session },
-    others: () => ['ben'], presences: () => [], baseFor: () => base, now: () => Date.now(),
+    others: () => ['ben'], presences: () => [], myWorkers: () => [], baseFor: () => base, now: () => Date.now(),
     readVersion: (_s: Session, pathname: string, person: string) => versionOf(snapshot(room, person, []), pathname,
       { gitAt: (sha, relpath) => gitShow(root!, sha, relpath) }),
   } as unknown as HandlerState

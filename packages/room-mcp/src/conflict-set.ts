@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, observedContractChanges, participantRecord, participantsView, snapshot, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, bareSymbol, claimInMyLines, claimsOverlap, coversPath, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git, gitShow } from '@room/roomd/git'
@@ -175,7 +175,9 @@ export class ConflictSet {
     const mine = snapshot(room, this.owner, views)
     const ownGit = acceptedGit(participantRecord(room, this.owner), views)
     if (!mine || ownGit === 'updating') return
-    const names = new Set([...room.manifestHead.keys(), ...room.openClaims().map(c => c.by), ...this.slots.owned(this.owner).map(([, s]) => s.other)])
+    const nb = neighbours(views, this.owner)
+    const names = new Set(nb.names())
+    for (const [key, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) this.slots.drop(key)
     names.delete(this.owner)
     if (this.owner !== this.team.me.name) names.delete(this.team.me.name) // lead/own worker pair belongs to the workers room
     for (const other of [...names].sort()) {

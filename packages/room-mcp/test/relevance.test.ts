@@ -9,6 +9,7 @@ import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
 import { createRelevance } from '../src/relevance.js'
 import { memorySession } from './fixtures/session.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -20,6 +21,7 @@ it('a pushed or base notice already in HEAD is not owed and gets no receipt; one
   git(dir, 'commit', '--allow-empty', '-qm', 'one')
   const integrated = git(dir, 'rev-parse', 'HEAD')
   const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)
+  visiblePeer(s.room, 'Ben')
   s.room.setOverlay('Pat', 'a.txt', 'work in progress\n')
   const ledger = new Ledger({ sessionId: () => 'session', route: () => ({}), relevant: createRelevance() })
   ledger.bind(s)
@@ -43,6 +45,7 @@ it('the ancestry answer follows the observed HEAD: a reset before B owes it agai
   git(dir, 'commit', '--allow-empty', '-qm', 'B')
   const b = git(dir, 'rev-parse', 'HEAD')
   const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)
+  visiblePeer(s.room, 'Ben')
   const daemon = s.daemon as { base: string }
   daemon.base = b
   const ledger = new Ledger({ sessionId: () => 'session', route: () => ({}), relevant: createRelevance() })
@@ -62,6 +65,7 @@ it('rechecks B after a reset to A when the daemon never observed B (S1 re-review
   git(dir, 'commit', '--allow-empty', '-qm', 'A')
   const a = git(dir, 'rev-parse', 'HEAD')
   const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)
+  visiblePeer(s.room, 'Ben')
   ;(s.daemon as { base: string }).base = a
   const ledger = new Ledger({ sessionId: () => 'session', route: () => ({}), relevant: createRelevance() })
   ledger.bind(s)

@@ -11,7 +11,7 @@ const ignore = () => {}
 
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
-const holder = (sessionId: string, workerId?: string): ParticipantHolder => ({ sessionId, machine: 'm', pid: 1, startTime: 't', executable: 'codex', ...(workerId ? { workerId } : {}) })
+const holder = (sessionId: string, workerId?: string): ParticipantHolder => ({ sessionId, epoch: 1, pid: 1, startTime: 't', executable: 'codex', at: 0, ...(workerId ? { workerId } : {}) })
 
 function withRecord(room: RoomDoc, name: string, h: ParticipantHolder = holder(`${name}-s`)): void {
   room.participants.set(`${name}\0id`, { name, kind: 'agent' })

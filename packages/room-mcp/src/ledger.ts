@@ -71,6 +71,8 @@ export class Ledger {
 
   /** A session may deliver for P only while it is P's holder (or no holder is recorded yet, before wave 4). */
   fenced(s: Session): boolean {
+    // A joined session is fenced by its name lease's epoch (hub §4.1, §7); paused, it writes no receipt.
+    if (s.lease) return s.lease.fence() !== undefined
     const holder = participantRecord(s.room, s.me.name)?.holder
     return !holder || holder.sessionId === this.o.sessionId()
   }

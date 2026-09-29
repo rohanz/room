@@ -17,6 +17,7 @@ import { FlushedStdioTransport } from './transport.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
+import { PresenceEnd, hostKind, hostSessionAlive, releaseIdleHeld } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { ownWorkerNames } from './worker-registry.js'
 
@@ -104,11 +105,27 @@ async function main() {
         if (n) log(`cleared ${n} stale claim(s) from an earlier session`)
       }
 
+      // Presence ends once the host session has finished (registry §18): its process gone, or the idle lease.
+      const presence: PresenceEnd = new PresenceEnd({
+        hostKind: hostKind(),
+        hostAlive: () => hostSessionAlive(dir),
+        holds: () => !!session && (!!session.room.scope(session.me.name) || session.room.openClaims().some(c => c.by === session!.me.name)),
+        leadsWorkers: () => !!session && [...session.room.workerViews.values()].some(w => w.lead === session!.me.name && w.status === 'running'),
+        waiting: () => tools.waiting(),
+        hostEnded: reason => { void bye(reason) },
+        leave: async idle => { if (session) await tools.drop(session, `idle ${Math.floor(idle / 60_000)} min with nothing held (idle lease)`) },
+        releaseHeld: (idle, epoch): Promise<unknown> => session ? releaseIdleHeld(session, epoch, idle, presence.mono) : Promise.resolve(),
+        publishIdle: minutes => { try { session?.awareness.setLocalStateField('idleMin', minutes) } catch { /* leaving */ } },
+        log,
+      })
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
+        const away = presence.hasLeft
+        const idle = presence.activity()
         await autoJoin.settle() // a join in progress decides which session the reply is about
         const body = await tools.call(req.params.name, req.params.arguments ?? {}, signal, handoff)
         const updateNotice = bundleUpdateNotice()
-        return (updateNotice ? updateNotice + '\n\n' : '') + body
+        const rejoined = away && session ? `[room] rejoined ${decodeRoom(session.roomName)} as ${displayName(session.me)} after ${Math.floor(idle / 60_000)} min idle` : ''
+        return (rejoined ? rejoined + '\n\n' : '') + (updateNotice ? updateNotice + '\n\n' : '') + body
       }
 
       const joined = (s: Session) => log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
@@ -154,7 +171,7 @@ async function main() {
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
-      return { call, shutdown: async () => { autoJoin.cancel(); await autoJoin.settle(); await arbitration.close(); await tools.shutdown() } }
+      return { call, shutdown: async () => { presence.stop(); autoJoin.cancel(); await autoJoin.settle(); await arbitration.close(); await tools.shutdown() } }
     },
   })
 
