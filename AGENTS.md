@@ -143,8 +143,9 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   codex-cli 0.155.1). Check `model/list` before choosing a model on a different installation.
 - Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
-  from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex`, then `$room-join`) or
+  from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex --no-daemon`, then `$room-join`) or
   with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
+  Codex's shared app-server daemon does not pass your shell's `ROOM_*` variables to Room.
 - With no `ROOM_SERVER` a session is in a local room (`local/<repo>/<branch>`, relay on loopback,
   `.git/room-local.json`). Team rooms are named `<host/owner/repo>/<branch>` from the clone's origin
   (non-GitHub hosts become `git/<host>/…`); URL-encoded in the ws path. A repo must be opened once
