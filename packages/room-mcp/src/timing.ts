@@ -9,6 +9,7 @@ const SLOW_TOOL_MS = 2_000
 const EVENT_LOOP_SAMPLE_MS = 500
 const EVENT_LOOP_LAG_MS = 2_000
 const PREVIEW_CHECK_MAX_AGE_MS = 6 * 60_000 // five-minute command timeout plus one minute for setup and teardown
+const PREVIEW_CHECK_STAT_LIMIT = 50
 
 type Clock = () => number
 type Logger = (line: string) => void
@@ -106,8 +107,11 @@ export function countOtherPreviewChecks(ownDir: string, tmpDir = os.tmpdir(), no
   try {
     const ownName = path.basename(ownDir)
     let count = 0
+    let inspected = 0
     for (const entry of fs.readdirSync(tmpDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !entry.name.startsWith('room-merge-') || entry.name.startsWith('room-merge-file-') || entry.name === ownName) continue
+      if (inspected >= PREVIEW_CHECK_STAT_LIMIT) return undefined // More matches exist; the overlap is unknown.
+      inspected++
       try {
         const stat = readStat(path.join(tmpDir, entry.name))
         if (!stat.isDirectory()) continue
@@ -124,6 +128,13 @@ export function notePreviewCheckOverlap(ownDir: string): void {
   if (timing?.name !== 'room_preview_merge') return
   const count = countOtherPreviewChecks(ownDir)
   if (count !== undefined) timing.notePreviewCheckOverlap(count)
+}
+
+/** Samples overlap on either side of the command timer, never inside it. */
+export async function previewCheck<T>(dir: string, work: () => Promise<T> | T, sample: (dir: string) => void = notePreviewCheckOverlap): Promise<T> {
+  try { sample(dir) } catch { /* Diagnostic sampling must not fail the preview. */ }
+  try { return await previewPhase('check', work) }
+  finally { try { sample(dir) } catch { /* Diagnostic sampling must not fail the preview. */ } }
 }
 
 /** Name preview internals without changing timing or output for collection callers. */

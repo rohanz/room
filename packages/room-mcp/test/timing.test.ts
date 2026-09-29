@@ -10,7 +10,7 @@ import { RoomDoc } from '@room/shared'
 import { carriedContentHash } from '@room/roomd/baseline'
 import { setGitObserver } from '@room/roomd/git'
 import { startAutoTaggedRoomd } from '../src/session.js'
-import { countOtherPreviewChecks, currentToolTiming, previewPhase, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
+import { countOtherPreviewChecks, currentToolTiming, previewCheck, previewPhase, registerPrepareGitTiming, startEventLoopWatchdog, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 
 const joinClock = vi.hoisted(() => ({ now: 0 }))
 vi.mock('@room/roomd', async importOriginal => ({
@@ -155,6 +155,28 @@ describe('tool timing', () => {
       expect(count).toBe(1)
       expect(countOtherPreviewChecks(own, root, now, () => { throw Error('vanished') })).toBe(0)
       expect(countOtherPreviewChecks(own, path.join(root, 'missing'), now)).toBeUndefined()
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('keeps both slow overlap samples outside the check phase', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    const sample = vi.fn(() => { now += 400 })
+    await tracker.run('room_preview_merge', async () => {
+      expect(await previewCheck('/tmp/room-merge-own', () => { now += 2310; return 'ok' }, sample)).toBe('ok')
+    })
+    expect(sample).toHaveBeenCalledTimes(2)
+    expect(lines).toEqual(['slow tool room_preview_merge 3110ms: check 2310ms, other 800ms'])
+  })
+
+  it('stops after 50 matching scratch directories and leaves the overlap unknown', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-limit-'))
+    try {
+      for (let i = 0; i < 51; i++) fs.mkdirSync(path.join(root, `room-merge-${i}`))
+      const readStat = vi.fn((file: string) => fs.lstatSync(file))
+      expect(countOtherPreviewChecks(path.join(root, 'room-merge-own'), root, Date.now(), readStat)).toBeUndefined()
+      expect(readStat).toHaveBeenCalledTimes(50)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
