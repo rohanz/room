@@ -42684,12 +42684,16 @@ async function projectWorkers(s, registry2, lead, role, origin) {
     for (const { record: record2, status } of write2) {
       const run2 = status.run;
       const ended = ["done", "failed", "stopped"].includes(status.status);
+      const ownsName = s.room.workerOwnsName(record2.id, record2.name);
       const logFile = path14.join(s.dir, ".room", "workers", `${record2.tag}.log`);
-      if (ended && run2?.mode === "resume" && run2.promptMsgIds.length && record2.hostSessionId && resumeAccepted(logFile, record2.host, record2.hostSessionId, run2.logStart)) {
+      if (ended && ownsName && s.daemon.fence === fence && run2?.mode === "resume" && run2.promptMsgIds.length && record2.hostSessionId && resumeAccepted(logFile, record2.host, record2.hostSessionId, run2.logStart)) {
         const retained = run2.promptMsgIds.filter((id3) => s.room.message(id3) || s.room.outcomes.has(id3));
         s.room.markSeen(record2.name, retained, { s: record2.hostSessionId, via: "prompt" });
-        s.room.pruneSeen(record2.name, () => s.daemon.fence === fence);
       }
+      if (ended && ownsName) s.room.pruneSeen(
+        record2.name,
+        () => s.daemon.fence === fence && s.room.workerOwnsName(record2.id, record2.name)
+      );
       const missing2 = ended && record2.host === "claude" && run2?.mode === "resume" && record2.hostSessionId && missingClaudeSession(logFile, record2.hostSessionId, run2.logStart);
       const shown = missing2 ? { ...status, note: `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` } : status;
       const view = workerView(record2, shown, fence);
@@ -42766,6 +42770,12 @@ var WorkerProjector = class {
   onSync = (synced) => {
     if (synced) void this.project();
   };
+  onBusDelete = (event) => {
+    if (event.changes.delta.some((change) => change.delete)) void this.project();
+  };
+  onReferenceDelete = (event) => {
+    if ([...event.changes.keys.values()].some((change) => change.action === "delete")) void this.project();
+  };
   running = Promise.resolve();
   stopped = false;
   start() {
@@ -42773,12 +42783,18 @@ var WorkerProjector = class {
       void this.project();
     });
     this.s.provider.on?.("sync", this.onSync);
+    this.s.room.bus.observe(this.onBusDelete);
+    this.s.room.mail.observe(this.onReferenceDelete);
+    this.s.room.outcomes.observe(this.onReferenceDelete);
     void this.project();
   }
   stop() {
     this.stopped = true;
     this.unsubscribe?.();
     this.s.provider.off?.("sync", this.onSync);
+    this.s.room.bus.unobserve(this.onBusDelete);
+    this.s.room.mail.unobserve(this.onReferenceDelete);
+    this.s.room.outcomes.unobserve(this.onReferenceDelete);
   }
   /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */
   project() {
@@ -45113,6 +45129,21 @@ var GraphIndex = class {
       if (build === this.currentBuild) return;
     }
   }
+  publicationKey() {
+    const head = this.room.manifestHead.get(this.me);
+    if (!head) return void 0;
+    const holder = holderFence(participantRecord(this.room, this.me)?.holder);
+    return JSON.stringify([
+      head.fence,
+      head.level,
+      head.textPrefixes,
+      head.coverage,
+      head.complete,
+      head.excluded,
+      holder,
+      this.room.roomSalt
+    ]);
+  }
   start() {
     this.currentBuild = this.initialBuild();
     const observe = (root) => {
@@ -45129,15 +45160,10 @@ var GraphIndex = class {
     const onManifest = observe(this.room.manifest);
     this.room.manifest.observeDeep(onManifest);
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest));
-    const publicationKey = () => {
-      const head = this.room.manifestHead.get(this.me);
-      const holder = holderFence(participantRecord(this.room, this.me)?.holder);
-      return JSON.stringify(head && [head.fence, head.level, head.textPrefixes, head.coverage, head.complete, holder]);
-    };
-    this.ownPublicationKey = publicationKey();
+    this.ownPublicationKey = this.publicationKey();
     const onHead = (event) => {
       if (!event.keysChanged.has(this.me)) return;
-      const next = publicationKey();
+      const next = this.publicationKey();
       this.withdrawRestricted();
       if (next === this.ownPublicationKey) {
         setImmediate(() => {
@@ -45160,7 +45186,7 @@ var GraphIndex = class {
         if (!this.stopped && this.initialStarted && base && base !== this.base) this.currentBuild = this.rebuild();
       }
       if (event.keysChanged.has(`${this.me}\0holder`)) {
-        const next = publicationKey();
+        const next = this.publicationKey();
         this.withdrawRestricted();
         if (next === this.ownPublicationKey) return;
         const firstHead = this.ownPublicationKey === void 0;
@@ -45172,6 +45198,17 @@ var GraphIndex = class {
     };
     this.room.participants.observe(onParticipant);
     this.unobserve.push(() => this.room.participants.unobserve(onParticipant));
+    const onMeta = (event) => {
+      if (!event.keysChanged.has("roomSalt")) return;
+      if (this.ownPublicationKey === void 0) return;
+      const next = this.publicationKey();
+      this.withdrawRestricted();
+      if (next === this.ownPublicationKey) return;
+      this.ownPublicationKey = next;
+      for (const path45 of /* @__PURE__ */ new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path45)) void this.refresh(path45);
+    };
+    this.room.metaMap.observe(onMeta);
+    this.unobserve.push(() => this.room.metaMap.unobserve(onMeta));
   }
   stop() {
     this.stopped = true;
@@ -45309,16 +45346,23 @@ var GraphIndex = class {
   /** A new reader must never receive derived text after its grant is withdrawn. */
   withdrawRestricted() {
     const graph = this.room.graphs.get(this.me);
-    if (!graph) return;
     const head = this.room.manifestHead.get(this.me);
-    if (!head && graph.sourceFence === void 0) return;
+    if (!head && graph?.sourceFence === void 0) return;
     const entries = head && this.room.manifest.get(manifestKey(this.me, head.fence));
     const allowed = (p) => {
-      if (!head?.complete || head.coverage.kind !== "all" || graph.sourceFence !== head.fence) return false;
+      if (!head?.complete || head.coverage.kind !== "all" || graph?.sourceFence !== void 0 && graph.sourceFence !== head.fence || holderFence(participantRecord(this.room, this.me)?.holder) !== head.fence) return false;
       if (!this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, p))) return false;
       const entry = entries?.get(p);
       return !entry || entry.fence === head.fence && entry.state === "shared" && this.ownTextAuthorized(p);
     };
+    for (const path45 of this.publishedCache.keys()) if (!allowed(path45)) {
+      this.publishedCache.delete(path45);
+      this.publishedGraph.remove(path45);
+      this.observedByPath.delete(path45);
+      this.graphRevision++;
+      this.observedRevision++;
+    }
+    if (!graph) return;
     const paths = graph.paths.filter(allowed);
     const edges = graph.edges.filter((e) => allowed(e.source) && allowed(e.target));
     const observed = graph.observed?.filter((o) => allowed(o.path));
@@ -45500,7 +45544,7 @@ var GraphIndex = class {
     if (this.stopped) return;
     if (generation !== this.generation) return;
     if (this.degradedPaths.size) status = "error";
-    const authorization = this.ownPublicationKey;
+    const authorization = this.publicationKey();
     const sourceHead = this.room.manifestHead.get(this.me);
     const sourceFence = sourceHead?.fence, sourceRev = sourceHead?.rev;
     const provenance = JSON.stringify([sourceFence, sourceRev]);
@@ -45547,7 +45591,7 @@ var GraphIndex = class {
     const key2 = `${this.base}|${status}|${provenance}|${body2.length}|${hashOf(body2)}`;
     const now = Date.now();
     const currentHead = this.room.manifestHead.get(this.me);
-    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision || authorization !== this.ownPublicationKey || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return;
+    if (this.stopped || generation !== this.generation || graphRevision !== this.graphRevision || observedRevision !== this.observedRevision || authorization !== this.publicationKey() || currentHead?.fence !== sourceFence || currentHead?.rev !== sourceRev) return;
     if (key2 === this.lastPublished.key) {
       this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance };
       return;
@@ -45709,16 +45753,7 @@ var ConflictSlots = class {
       for (const [key2] of old) this.map.delete(key2);
       for (const [path45, slots] of byPath) {
         const prior = slots.find((slot) => slot.settled === "conflict") ?? slots.find((slot) => slot.settled === "possible") ?? slots[0];
-        const identities = /* @__PURE__ */ new Map();
-        for (const [key2, slot] of old) {
-          if (slot.path !== path45) continue;
-          for (const identity2 of slot.redacted ?? []) identities.set(identity2.keyHash, identity2);
-          if (slot.subject && slot.subject !== "*") {
-            const identity2 = { keyHash: hash(key2), epoch: slot.epoch, settled: slot.settled, factId: slot.factId };
-            const existing = identities.get(identity2.keyHash);
-            if (!existing || existing.epoch <= identity2.epoch) identities.set(identity2.keyHash, identity2);
-          }
-        }
+        const epoch = Math.max(...slots.map((slot) => slot.epoch));
         this.map.set(slotKey(owner, "contract", other, path45, "*"), {
           owner,
           other,
@@ -45727,13 +45762,12 @@ var ConflictSlots = class {
           subject: "*",
           status: "unknown",
           settled: prior.settled,
-          epoch: prior.epoch,
+          epoch,
           fence: prior.fence,
           checkedAt: this.now(),
           inputs: hash(`${owner}\0${other}\0${path45}\0${why}`),
           factId: "",
-          why,
-          redacted: [...identities.values()]
+          why
         });
       }
     });
@@ -45741,16 +45775,13 @@ var ConflictSlots = class {
   async settle(key2, result2) {
     let prev = this.map.get(key2);
     if (!prev && result2.kind === "contract" && result2.subject !== "*") {
-      const aggregate = this.map.get(slotKey(result2.owner, "contract", result2.other, result2.path, "*"));
-      const identity2 = aggregate?.redacted?.find((item) => item.keyHash === hash(key2));
-      if (aggregate && identity2) prev = {
-        ...aggregate,
-        subject: result2.subject,
-        epoch: identity2.epoch,
-        settled: identity2.settled,
-        factId: identity2.factId,
-        inputs: ""
-      };
+      const prefix = slotKey(result2.owner, "contract", result2.other, result2.path, "");
+      const siblings = [...this.map.entries()].filter(([siblingKey]) => siblingKey.startsWith(prefix)).map(([, slot2]) => slot2);
+      const history = siblings.filter((slot2) => slot2.subject === "*" || slot2.noticeFloor !== void 0);
+      if (history.length) {
+        const epoch2 = Math.max(...history.map((slot2) => slot2.epoch));
+        prev = { ...history[0], subject: result2.subject, epoch: epoch2, settled: "none", factId: "", inputs: "", noticeFloor: epoch2 };
+      }
     }
     const now = this.now();
     const fence = typeof this.fence === "function" ? this.fence() : this.fence;
@@ -45767,6 +45798,7 @@ var ConflictSlots = class {
       epoch,
       fence,
       checkedAt: now,
+      ...prev?.noticeFloor !== void 0 ? { noticeFloor: prev.noticeFloor } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
     };
@@ -55334,6 +55366,14 @@ var MINUTE = 6e4;
 var IDLE_LEASE_MS = 30 * MINUTE;
 var IDLE_CLAIMS_MS = 8 * 60 * MINUTE;
 var PRESENCE_TICK_MS = 3e4;
+function resolveIdleLeaseMs(raw) {
+  if (!raw || !/^\d+$/.test(raw)) return IDLE_LEASE_MS;
+  const ms = Number(raw);
+  return Number.isSafeInteger(ms) && ms > 0 ? ms : IDLE_LEASE_MS;
+}
+function idleLeaseTickMs(leaseMs) {
+  return Math.min(leaseMs, PRESENCE_TICK_MS, Math.max(1e3, Math.floor(leaseMs / 4)));
+}
 var PresenceEnd = class {
   constructor(options) {
     this.options = options;
@@ -55406,7 +55446,7 @@ var PresenceEnd = class {
       return;
     }
     const idle = this.idleMs();
-    if (idle >= IDLE_CLAIMS_MS) {
+    if (idle >= (this.options.idleClaimsMs ?? IDLE_CLAIMS_MS)) {
       try {
         await this.options.releaseHeld(idle, `idle-${this.episodeId}-${this.epoch}`);
       } catch (error2) {
@@ -55414,7 +55454,7 @@ var PresenceEnd = class {
         return;
       }
     }
-    if (idle >= IDLE_LEASE_MS && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
+    if (idle >= (this.options.idleLeaseMs ?? IDLE_LEASE_MS) && !this.options.holds() && !this.options.leadsWorkers() && !this.options.waiting()) {
       this.left = true;
       this.options.log?.(`idle ${Math.floor(idle / MINUTE)} min with nothing held: leaving presence (idle lease)`);
       try {
@@ -55558,8 +55598,11 @@ async function main() {
         }
       };
       const presenceHostKind = hostKind();
+      const idleLeaseMs = resolveIdleLeaseMs(process.env.ROOM_IDLE_LEASE_MS);
       presence = new PresenceEnd({
         hostKind: presenceHostKind,
+        idleLeaseMs,
+        tickMs: idleLeaseTickMs(idleLeaseMs),
         ...presenceHostKind === "shared-app-server" ? { episodeId: await nextIdleEpisode(await gitCommonDir(dir)) } : {},
         hostAlive: () => hostSessionAlive(dir),
         holds: () => joinedPresenceHolds(tools.joinedSessions()),
