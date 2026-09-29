@@ -25,7 +25,7 @@ export interface PrepJournal {
   previousCarryRefs?: Record<string, string | null>; untrackedTree?: string
   created?: boolean; branchCreated?: boolean
 }
-export interface DiscardPlan {
+interface DiscardPlan {
   force: boolean; children: string[]; steps: Partial<Record<'children' | 'stop' | 'patch' | 'cleanup' | 'prune', boolean>>
   patch?: { path: string; sha256: string }
 }
@@ -50,7 +50,7 @@ export interface WorkerRecord {
 }
 export interface WorkerStatusResult { status: WorkerStatus; run?: Run; note?: string; exitCode?: number; finishedAt?: number; summary?: string; followUp?: string }
 export type LivenessProbe = (identity: ProcessIdentity) => Liveness
-export const IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1000
+const IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1000
 /** Only the session's own monotonic clock is comparable with its activity marker. */
 export function idleClaimsDue(input: { host: 'shared-app-server' | 'interactive'; lastActivityMs: number; nowMs: number; heldClaims: number; hasScope?: boolean }): boolean {
   return input.host === 'shared-app-server' && (input.heldClaims > 0 || input.hasScope === true)

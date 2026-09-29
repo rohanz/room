@@ -36,7 +36,8 @@
     },
     "packages/relay": {
       "entry": [
-        "test/**/*.test.ts"
+        "test/**/*.test.ts",
+        "test/authority-child.ts"
       ],
       "project": [
         "src/**/*.ts",

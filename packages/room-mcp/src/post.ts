@@ -48,7 +48,7 @@ export function releasePoster(post: Post): ReleasePoster {
 }
 
 /** The poster's own name lease, which every post carries (hub §2.3); undefined while it has none (paused, hub §7). */
-export type PostLease = { name: string; epoch: number }
+type PostLease = { name: string; epoch: number }
 export type LeaseSource = () => PostLease | undefined | Promise<PostLease | undefined>
 
 export function createPost(room: RoomDoc, hub: HubClient, lease: LeaseSource, paused?: () => string | undefined): Post {

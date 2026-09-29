@@ -24,7 +24,7 @@ export function writeAtomicFile(file: string, content: string): void {
   }
 }
 
-export interface MigrationPlan { id: string; sources: string[]; moved?: string }
+interface MigrationPlan { id: string; sources: string[]; moved?: string }
 export interface OpenRepo {
   by?: string; at: number; branches: string[]; lastSeen?: number
   mode?: 'branch' | 'repo'; legacy?: string[]; plan?: MigrationPlan

@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process'
 import { BASE_CATCH_UP, canonicalRepo, type ParticipantGit } from '@room/shared'
 import { git, gitCountBetween, gitPathsBetween, gitSubject, isGitTimeout, normalizeGitOrigin } from './git.js'
 
-export interface BaseRef { name: string; sha: string }
+interface BaseRef { name: string; sha: string }
 export interface BaseRefs {
   remote?: string
   /** Remote-tracking refs on the room's remote, in preference order: my upstream, <remote>/<branch>, <remote>/HEAD. */

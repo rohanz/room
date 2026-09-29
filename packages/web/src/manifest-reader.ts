@@ -43,7 +43,7 @@ export async function readWebVersion(room: RoomDoc, name: string, path: string, 
   return { kind: 'unknown', why: 'updating', detail: `${name}'s changes moved during the read; re-run` }
 }
 
-export interface WebGap { person: string; path?: string; why: string }
+interface WebGap { person: string; path?: string; why: string }
 export interface WebCoverage { complete: boolean; gaps: WebGap[]; shared: string[]; held: string[]; unchanged: string[]; declaredDirectories: number }
 
 /** Coverage is a participant property too: intent and unnamed excluded changes stay visible as gaps. */
@@ -77,7 +77,7 @@ export function webCoverage(room: RoomDoc, name: string, view: readonly Particip
   return { complete: gaps.length === 0, gaps, shared: shared.sort(), held: held.sort(), unchanged: unchanged.sort(), declaredDirectories }
 }
 
-export function heldReason(entry: ManifestEntry): string {
+function heldReason(entry: ManifestEntry): string {
   if (entry.held === 'scope') return 'outside declared area; text not shared'
   if (entry.held === 'binary') return 'binary text not shared'
   if (entry.held === 'worker') return 'worker text not shared'

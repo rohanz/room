@@ -35,7 +35,7 @@ export const defs: ToolDef[] = [
 
 const disclosures = new WeakMap<Session, { pending?: string; level?: ShareLevel; prepared?: Promise<void>; delivered?: boolean }>()
 
-export function sharingSentence(s: Session): string {
+function sharingSentence(s: Session): string {
   const server = parseServer(s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))).server
   const repo = s.roomName
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
@@ -50,7 +50,7 @@ export function sharingSentence(s: Session): string {
  * Establish whether this session has a disclosure pending without consuming its one delivery: the durable
  * `disclosed` marker advances only once the notice's handoff is confirmed (ledger MF10).
  */
-export async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
+async function prepareTeamSharingDisclosure(s: Session): Promise<void> {
   let state = disclosures.get(s)
   if (!state) { state = {}; disclosures.set(s, state) }
   if (state.prepared || state.delivered) return state.prepared

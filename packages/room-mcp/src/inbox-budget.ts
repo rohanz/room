@@ -13,7 +13,7 @@ export const INBOX_BUDGET = 6_000
 
 const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
 /** Interrupts, then questions, then notify, then fyi; oldest first within each. */
-export const inboxOrder = (m: Msg): number => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
+const inboxOrder = (m: Msg): number => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
 
 export interface Chosen { s: Session; m: Msg }
 

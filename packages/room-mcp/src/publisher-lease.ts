@@ -17,7 +17,7 @@ export interface PublisherLeaseFile {
   attachments: Record<string, string>
 }
 
-export function publisherLeaseFile(commonDir: string, worktree: string): string {
+function publisherLeaseFile(commonDir: string, worktree: string): string {
   return path.join(commonDir, 'room', 'publishers', `${createHash('sha256').update(worktree).digest('hex')}.json`)
 }
 
@@ -137,7 +137,7 @@ export interface PublisherAttachment {
   detach(): Promise<void>
 }
 
-export const PUBLISHER_TICK_MS = 5_000
+const PUBLISHER_TICK_MS = 5_000
 
 /**
  * Attach one room's session to its worktree's lease and keep its sharing policy's `publisher` in step:

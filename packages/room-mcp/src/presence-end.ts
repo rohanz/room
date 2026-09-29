@@ -106,7 +106,7 @@ const MINUTE = 60_000
 export const IDLE_LEASE_MS = 30 * MINUTE
 /** H1: a quiet app-server session's own claims and scope are released after this. */
 export const IDLE_CLAIMS_MS = 8 * 60 * MINUTE
-export const PRESENCE_TICK_MS = 30_000
+const PRESENCE_TICK_MS = 30_000
 
 /** Positive integer milliseconds only; malformed overrides retain the production lease. */
 export function resolveIdleLeaseMs(raw: string | undefined): number {
