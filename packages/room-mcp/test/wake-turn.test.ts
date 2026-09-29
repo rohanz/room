@@ -48,6 +48,55 @@ function rig(started: boolean) {
   return { s, ledger, wakes, texts, log, note, event, close, head, room, id, rollout }
 }
 
+function appendItems(rollout: string, count = 1_300) {
+  appendFileSync(rollout, Array.from({ length: count }, (_, n) => JSON.stringify({
+    type: 'response_item', payload: { n, text: 'x'.repeat(1_000) },
+  }) + '\n').join(''))
+}
+
+it('finds task_started in a cold rollout larger than the unread window', async () => {
+  const r = rig(true)
+  try {
+    appendItems(r.rollout)
+    const probe = new CodexTurnProbe({ contactAgeMs: () => 20_000 })
+    expect(await probe.busy(r.id)).toBe(true)
+  } finally { r.close() }
+})
+
+it('finds task_started after a warm task_complete despite a large append', async () => {
+  const r = rig(false)
+  try {
+    r.event('task_complete')
+    const probe = new CodexTurnProbe({ contactAgeMs: () => 20_000 })
+    expect(await probe.busy(r.id)).toBe(false)
+    r.event('task_started')
+    appendItems(r.rollout)
+    expect(await probe.busy(r.id)).toBe(true)
+  } finally { r.close() }
+})
+
+it('finds task_complete after a warm task_started despite a large append', async () => {
+  const r = rig(true)
+  try {
+    const probe = new CodexTurnProbe({ contactAgeMs: () => 20_000 })
+    expect(await probe.busy(r.id)).toBe(true)
+    r.event('task_complete')
+    appendItems(r.rollout)
+    expect(await probe.busy(r.id)).toBe(false)
+  } finally { r.close() }
+})
+
+it('stays busy while the backward scan budget is exhausted, then resolves', async () => {
+  const r = rig(false)
+  try {
+    r.event('task_complete')
+    appendItems(r.rollout, 9_000)
+    const probe = new CodexTurnProbe({ contactAgeMs: () => 20_000 })
+    expect(await probe.busy(r.id)).toBe(true)
+    expect(await probe.busy(r.id)).toBe(false)
+  } finally { r.close() }
+})
+
 it('uses recent Room tool or hook contact only when the rollout is unavailable', async () => {
   const r = rig(false)
   try {
@@ -68,7 +117,7 @@ it('keeps the last turn event across more than a tail of item lines, including a
     appendFileSync(r.rollout, Array.from({ length: 250 }, (_, n) => JSON.stringify({ type: 'response_item', payload: { n, text: 'x'.repeat(800) } }) + '\n').join(''))
     expect(await probe.busy(r.id)).toBe(true)
     appendFileSync(r.rollout, Array.from({ length: 1_200 }, (_, n) => JSON.stringify({ type: 'response_item', payload: { n, text: 'y'.repeat(1_000) } }) + '\n').join(''))
-    expect(await probe.busy(r.id)).toBe(true) // bounded skip keeps the previously observed task_started
+    expect(await probe.busy(r.id)).toBe(true) // backward scan finds the latest task_started
     const complete = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })
     appendFileSync(r.rollout, complete.slice(0, 25))
     expect(await probe.busy(r.id)).toBe(true)

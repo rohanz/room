@@ -2,7 +2,7 @@ import { git, gitCommitMissing, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs }
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch, diffLines } from 'diff'
 import { execFile, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -223,6 +223,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     },
     async room_preview_merge(a) {
       const caller = S()
+      // A new request replaces the evidence consumed by room_done, including refusals.
+      caller.lastPreview = { clean: false, complete: false, testsPassed: false }
       const alias = typeof a.person === 'string' && a.person.trim() ? a.person.trim() : ''
       if (a.people !== undefined && !Array.isArray(a.people)) return 'error: people must be an array of names'
       if (Array.isArray(a.people) && a.people.some(p => typeof p !== 'string' || !p.trim())) return 'error: people must contain non-empty names'
@@ -399,22 +401,33 @@ export async function linkSharedDirs(cloneDir: string, scratchDir: string): Prom
   await yieldTurn()
   ensureMergedDirectory(scratchDir, '')
   const venv = path.join(cloneDir, '.venv')
-  if (fs.existsSync(venv) && !fs.existsSync(path.join(scratchDir, '.venv'))) fs.symlinkSync(venv, path.join(scratchDir, '.venv'))
-  const candidates = ['node_modules']
+  const scratchVenv = path.join(scratchDir, '.venv')
+  try { if ((await fs.promises.lstat(scratchVenv)).isSymbolicLink()) await fs.promises.unlink(scratchVenv) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  if (fs.existsSync(venv) && !fs.existsSync(scratchVenv)) fs.symlinkSync(venv, scratchVenv)
+  const candidates = new Set(['node_modules'])
   for (const top of ['packages', 'apps', 'libs']) {
     await yieldTurn()
-    const d = path.join(cloneDir, top)
-    if (!fs.existsSync(d)) continue
-    let count = 0
-    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (count++ % 32 === 0) await yieldTurn()
-      if (e.isDirectory()) candidates.push(path.join(top, e.name, 'node_modules'))
+    for (const root of [cloneDir, scratchDir]) {
+      const d = path.join(root, top)
+      try { if (!(await fs.promises.lstat(d)).isDirectory()) continue }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
+      let count = 0
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        if (count++ % 32 === 0) await yieldTurn()
+        if (e.isDirectory()) candidates.add(path.join(top, e.name, 'node_modules'))
+      }
     }
   }
-  for (const [index, rel] of candidates.entries()) {
+  for (const [index, rel] of [...candidates].entries()) {
     if (index % 32 === 0) await yieldTurn()
     const src = path.join(cloneDir, rel), dst = path.join(scratchDir, rel)
-    if (!fs.existsSync(src) || fs.existsSync(dst)) continue
+    if (rel !== 'node_modules') ensureMergedDirectory(scratchDir, path.dirname(rel))
+    // These shallow trees contain only links created by Room. Rebuild them each time so
+    // npm installs, package additions and workspace relinks are reflected in the check.
+    try { await fs.promises.lstat(dst); await fs.promises.rm(dst, { recursive: true, force: true }) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (!fs.existsSync(src)) continue
     await mirrorLinks(cloneDir, scratchDir, src, dst)
   }
 }
@@ -551,47 +564,73 @@ const gitSetup = (dir: string, args: string[]) => git(dir, args, SETUP_TIMEOUT_M
 /** Remove a clone's preview worktree before that clone is collected or discarded. repoDir supports vanished clones. */
 export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
   const cache = await previewCachePath(cloneDir, repoDir)
-  const lock = `${cache}.lock`
-  let pid = 0
-  try { pid = Number(await fs.promises.readFile(lock, 'utf8')) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  if (fs.existsSync(lock)) {
-    if (!pid || !Number.isSafeInteger(pid)) throw new Error(`preview cache is locked: ${cache}`)
-    try { process.kill(pid, 0); throw new Error(`preview cache is in use: ${cache}`) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
-    await fs.promises.rm(lock, { force: true })
-  }
-  let present = false
-  try { await fs.promises.lstat(cache); present = true }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  if (present) {
-    try { await gitSetup(repoDir, ['worktree', 'remove', '--force', cache]) }
-    catch {
-      // A broken registration cannot be removed through Git; remove only our derived private path.
-      await fs.promises.rm(cache, { recursive: true, force: true })
+  await fs.promises.mkdir(path.dirname(cache), { recursive: true, mode: 0o700 })
+  const release = await acquirePreviewLock(`${cache}.lock`)
+  if (!release) throw new Error(`preview cache is in use or its lock is uncertain: ${cache}`)
+  try {
+    let present = false
+    try { await fs.promises.lstat(cache); present = true }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (present) {
+      try { await gitSetup(repoDir, ['worktree', 'remove', '--force', cache]) }
+      catch {
+        // A broken registration cannot be removed through Git; remove only our derived private path.
+        await fs.promises.rm(cache, { recursive: true, force: true })
+      }
     }
-  }
-  await gitSetup(repoDir, ['worktree', 'prune'])
+    await gitSetup(repoDir, ['worktree', 'prune'])
+  } finally { await release() }
+}
+
+const previewProcessStarted = Math.floor(Date.now() - process.uptime() * 1000)
+
+function deadPreviewOwner(value: string): boolean {
+  // Accept the old PID-only lock when upgrading a cached checkout.
+  const pid = Number(value.includes(':') ? value.split(':', 1)[0] : value)
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return false }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' }
 }
 
 async function acquirePreviewLock(file: string): Promise<(() => Promise<void>) | undefined> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const token = `${process.pid}:${previewProcessStarted}:${randomUUID()}`
+  const recoveryGate = `${file}.recover`
+  const create = async () => {
     try {
       const handle = await fs.promises.open(file, 'wx', 0o600)
-      try { await handle.writeFile(String(process.pid)) } finally { await handle.close() }
-      return async () => { await fs.promises.rm(file, { force: true }) }
+      try { await handle.writeFile(token) } finally { await handle.close() }
+      return async () => {
+        let current: string
+        try { current = await fs.promises.readFile(file, 'utf8') }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+        if (current === token) await fs.promises.rm(file, { force: true })
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      let pid = 0
-      try { pid = Number(await fs.promises.readFile(file, 'utf8')) } catch { /* vanished or incomplete */ }
-      if (!pid || !Number.isSafeInteger(pid)) return undefined // a lock being created is in use
-      try { process.kill(pid, 0); return undefined }
-      catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ESRCH') return undefined }
-      // Dead owner's lock: a new owner may win the retry; only one can create with wx.
-      await fs.promises.rm(file, { force: true })
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined
+      throw error
     }
   }
-  return undefined
+  // A recoverer may be replacing an abandoned lock. Other callers use fresh trees.
+  // Recovery takes a few filesystem calls; a gate older than a minute belongs to a recoverer that died.
+  try { if (Date.now() - (await fs.promises.stat(recoveryGate)).mtimeMs > 60_000) await fs.promises.rmdir(recoveryGate) }
+  catch { /* absent, or another caller removed it first */ }
+  if (fs.existsSync(recoveryGate)) return undefined
+  const direct = await create()
+  if (direct) return direct
+  let stale: string
+  try { stale = await fs.promises.readFile(file, 'utf8') } catch { return undefined }
+  if (!deadPreviewOwner(stale)) return undefined
+  try { await fs.promises.mkdir(recoveryGate, { mode: 0o700 }) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined; throw error }
+  try {
+    // Only the gate holder may unlink a dead lock. Re-read after acquiring the gate:
+    // another recovery might have installed a live owner before this one got here.
+    let current: string
+    try { current = await fs.promises.readFile(file, 'utf8') } catch { return undefined }
+    if (current !== stale || !deadPreviewOwner(current)) return undefined
+    await fs.promises.rm(file)
+    return await create()
+  } finally { await fs.promises.rmdir(recoveryGate) }
 }
 
 async function resetPreviewTree(dir: string, ancestor: string): Promise<void> {

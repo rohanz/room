@@ -549,6 +549,11 @@ export class WorkerRegistry {
     if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(worktreeRecord, this.status(worktreeRecord.id) ?? status), dir: workerDir }, lead.participant, workers)) return undefined
     return { record: candidate, status }
   }
+  /** Any operation lease, including an unreadable one, blocks automatic claim release. */
+  operationInProgress(id: string): boolean {
+    try { fs.lstatSync(this.opFile(id)); return true }
+    catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+  }
   private async adoptLegacy(record: WorkerRecord, lead: { participant: string; room: string; dir: string }): Promise<WorkerRecord | undefined> {
     if (!lead.participant || !lead.room || record.phase !== 'active') return undefined
     let leadDir: string

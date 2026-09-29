@@ -4,7 +4,7 @@ import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -12,6 +12,7 @@ import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, notic
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
+import { registrySnapshotForDir } from '../src/worker-registry.js'
 
 async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
   const deadline = Date.now() + 3000
@@ -394,8 +395,10 @@ describe('derived pair slots', () => {
       writeFileSync(join(f.dir, 'x'), 'worker\n')
       f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
       f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+      const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
       const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
-        async name => name === 'L+w' ? { status: 'done', dir: workerDir } : undefined)
+        async name => name === 'L+w' ? { ...state, dir: workerDir } : undefined,
+        () => ({ ...state }))
       await set.reconcile('manual apply')
       expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
       expect(f.post.mock.calls.filter(c => c[1].type === 'conflict')).toEqual([])
@@ -403,6 +406,57 @@ describe('derived pair slots', () => {
       await set.reconcile('again')
       expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
     } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+  })
+
+  it.each(['resumed', 'new run', 'new worker id', 'new holder', 'reanchored', 'anchor changed', 'added claim', 'removed claim', 'operation started'] as const)(
+    'keeps landed worker claims when the worker is %s during disk reads', async change => {
+      const f = fixture(), workerDir = mkdtempSync(join(tmpdir(), 'room-worker-race-'))
+      try {
+        f.holder('L'); f.holder('L+w', 'L')
+        writeFileSync(join(workerDir, 'x'), 'worker\n')
+        writeFileSync(join(f.dir, 'x'), 'worker\n')
+        f.entry('L', 'worker\n'); f.entry('L+w', 'worker\n', false, 'L')
+        const original = f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+        const state = { id: 'w_123', status: 'done', run: '1:first', busy: false }
+        let unblock!: () => void, entered!: () => void
+        const blocked = new Promise<void>(resolve => { unblock = resolve })
+        const reading = new Promise<void>(resolve => { entered = resolve })
+        const read = async (dir: string, path: string) => { entered(); await blocked; return dir === workerDir || dir === f.dir ? 'worker\n' : null }
+        const set = new ConflictSet(f.session('L'), 'L', f.session('L'), () => {}, 0, undefined,
+          async name => name === 'L+w' ? { ...state, dir: workerDir } : undefined,
+          () => ({ ...state }), read)
+        const pass = (set as any).releaseLandedWorkerClaims('1') as Promise<void>
+        await reading
+        if (change === 'resumed') { state.status = 'running'; state.run = '2:second' }
+        if (change === 'new run') state.run = '2:second'
+        if (change === 'new worker id') state.id = 'w_456'
+        if (change === 'new holder') f.holder('L+w', 'L', 2)
+        if (change === 'reanchored') f.room.claims.set(original.id, { ...f.room.claims.get(original.id)!, from: 3, to: 4, at: original.at + 1 })
+        if (change === 'anchor changed') f.room.claims.set(original.id, { ...f.room.claims.get(original.id)!, anchor: { from: { assoc: -1 }, to: { assoc: 1 } } })
+        if (change === 'added claim') f.room.addClaim({ by: 'L+w', byKind: 'agent', path: 'x', from: 3, to: 3, intent: 'more work' })
+        if (change === 'removed claim') f.room.removeClaim(original.id)
+        if (change === 'operation started') state.busy = true
+        unblock()
+        await pass
+        expect(f.room.claims.has(original.id)).toBe(change !== 'removed claim')
+        expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(0)
+      } finally { f.cleanup(); rmSync(workerDir, { recursive: true, force: true }) }
+    })
+
+  it('treats an existing or unreadable worker operation lease as in progress', () => {
+    const f = fixture()
+    try {
+      const registry = registrySnapshotForDir(f.dir)
+      const operations = join(f.dir, '.git', 'room', 'registry', 'workers')
+      mkdirSync(operations, { recursive: true })
+      expect(registry.operationInProgress('w_123')).toBe(false)
+      writeFileSync(join(operations, 'w_123.op'), '{invalid json')
+      expect(registry.operationInProgress('w_123')).toBe(true)
+      expect(registry.operationInProgress('../invalid')).toBe(true)
+      rmSync(join(operations, 'w_123.op'))
+      symlinkSync('missing', join(operations, 'w_123.op'))
+      expect(registry.operationInProgress('w_123')).toBe(true)
+    } finally { f.cleanup() }
   })
 
   it('reads a fresh projected held worker edit from its workers room without a stored Git blob', async () => {

@@ -11,6 +11,7 @@ import { ensureLanguages, parseFile } from './parse/engine.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
+import { registrySnapshotForDir } from './worker-registry.js'
 
 export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
 type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
@@ -50,6 +51,7 @@ export const noticeId = (key: string, epoch: number, episode?: string): string =
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
+type LandedWorkerState = { id: string; status: string; run: string; seq?: number; busy: boolean }
 
 /** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
 export class ConflictSlots {
@@ -222,7 +224,17 @@ export class ConflictSet {
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: (participant: string) => { baseline: Baseline; lead: string } | undefined,
-    private readonly localWorker: (name: string) => Promise<{ status: string; dir: string } | undefined> = name => trustedWorker(team, name)) {
+    private readonly localWorker: (name: string) => Promise<{ id: string; status: string; dir: string } | undefined> = name => trustedWorker(team, name),
+    private readonly workerState: (name: string) => LandedWorkerState | undefined = name => {
+      const registry = registrySnapshotForDir(team.dir)
+      const record = registry.reservedByTagOrName(name)
+      const status = record && registry.status(record.id)
+      if (!record || !status) return undefined
+      const run = status.run ?? record.runs.at(-1)
+      return { id: record.id, status: status.status, run: run ? `${run.n}:${run.nonce}` : '', seq: record.seq,
+        busy: registry.operationInProgress(record.id) }
+    },
+    private readonly claimText: typeof workerText = workerText) {
     const fence = () => team.lease?.fence() ?? ''
     this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log, team.post, () => this.guard?.() ?? false)
   }
@@ -552,7 +564,15 @@ export class ConflictSet {
     }
     for (const [name, claims] of groups) {
       const worker = await this.localWorker(name)
-      if (worker?.status !== 'done' || !claims.length) continue
+      const initial = this.workerState(name)
+      if (worker?.status !== 'done' || !claims.length || !initial || initial.id !== worker.id ||
+          initial.status !== 'done' || initial.busy) continue
+      const holder = JSON.stringify(participantRecord(room, name)?.holder)
+      if (!holder) continue
+      const currentClaims = () => room.openClaims().filter(claim => claim.by === name)
+        .sort((a, b) => a.id.localeCompare(b.id))
+      const claimSnapshot = JSON.stringify(currentClaims())
+      if (claimSnapshot !== JSON.stringify([...claims].sort((a, b) => a.id.localeCompare(b.id)))) continue
       let landed = true
       for (const claim of claims) {
         try {
@@ -562,14 +582,18 @@ export class ConflictSet {
             : new Set([claim.path])
           if (paths.size > 2000) { landed = false; break }
           for (const path of paths) {
-            const [leadText, finalText] = await Promise.all([workerText(this.team.dir, path), workerText(worker.dir, path)])
+            const [leadText, finalText] = await Promise.all([this.claimText(this.team.dir, path), this.claimText(worker.dir, path)])
             if (leadText !== finalText) { landed = false; break }
           }
           if (!landed) break
         } catch { landed = false; break }
       }
       if (!landed) continue
-      if (this.team.lease?.fence() !== leaseFence || claims.some(claim => !room.claims.has(claim.id))) return
+      const latest = this.workerState(name)
+      if (this.team.lease?.fence() !== leaseFence || !latest || latest.busy ||
+          JSON.stringify(latest) !== JSON.stringify(initial) ||
+          JSON.stringify(participantRecord(room, name)?.holder) !== holder ||
+          JSON.stringify(currentClaims()) !== claimSnapshot) return
       room.doc.transact(() => { for (const claim of claims) room.removeClaim(claim.id) }, this.team.me)
       await this.team.post<NoteMsg>(ROOM, { type: 'note', to: this.owner, priority: 'fyi', text: `released ${name}'s claims: its changes are in your tree` },
         { id: `cf:${hash([this.owner, name, claims.map(c => c.id).sort().join(',')].join('\0'))}:landed`, auto: true })

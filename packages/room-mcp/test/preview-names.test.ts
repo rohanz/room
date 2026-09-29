@@ -62,8 +62,27 @@ it('refuses an unknown explicit name before running a check', async () => {
   const result = await handlers(state).room_preview_merge({ people: ['ben', 'ghost'], run: `touch '${marker}'; echo '1 passed'` })
   expect(result).toContain('error: nobody called ghost is or was in this room; known names:')
   expect(fs.existsSync(marker)).toBe(false)
-  expect(session.lastPreview).toBeUndefined()
+  expect(session.lastPreview?.testsPassed).not.toBe(true)
   expect(room.messages().some(m => m.type === 'note' && m.text.includes('merge preview'))).toBe(false)
+})
+
+it('clears a previous passing preview when a later name is refused or only names the caller', async () => {
+  const { session, state, add } = fixture()
+  add('ben', 'shared', 'ben changed\n')
+  const preview = handlers(state).room_preview_merge
+  const passed = await preview({ person: 'ben', run: 'test "$(cat app.py)" = "ben changed" && echo "1 passed"' })
+  expect(passed).toContain('tests: PASSED')
+  expect(session.lastPreview?.testsPassed).toBe(true)
+
+  const refused = await preview({ people: ['ben', 'ghost'], run: 'echo "1 passed"' })
+  expect(refused).toContain('error: nobody called ghost')
+  expect(session.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
+
+  await preview({ person: 'ben', run: 'echo "1 passed"' })
+  expect(session.lastPreview?.testsPassed).toBe(true)
+  const ownOnly = await preview({ people: ['ana'] })
+  expect(ownOnly).toContain('no present participants to merge')
+  expect(session.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
 })
 
 it('refuses an ambiguous display name and lists the candidates', async () => {
