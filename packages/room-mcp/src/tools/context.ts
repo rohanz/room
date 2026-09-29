@@ -47,7 +47,7 @@ export interface ToolCtx {
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */
-  prs?: { fetch?: (s: Session, opts?: { head?: boolean }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
+  prs?: { fetch?: (s: Session, opts?: { head?: boolean; branch?: string }) => Promise<PrInfo[]>; post?: (s: Session, number: number, body: string) => Promise<{ url: string; updated: boolean }>; intervalMs?: number }
   /** Workers (room_spawn): injectable process starter and worktree maker for tests. */
   spawner?: Spawner
   worktree?: (repoDir: string, tag: string) => Promise<{ dir: string; branch: string; created: boolean; base?: string }>

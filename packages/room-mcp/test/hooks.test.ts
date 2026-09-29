@@ -23,6 +23,7 @@ import type { LocalWorker } from '../src/worker-status.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { registerWorkers } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.clearAllMocks() })
 
@@ -67,12 +68,17 @@ const context = (out: string) => out ? JSON.parse(out).hookSpecificOutput.additi
 
 function session(room: RoomDoc): Session {
   const awareness = new Awareness(room.doc)
+  visiblePeer(room, 'Rohan', 'agent', SID)
+  const setScope = room.setScope.bind(room), addClaim = room.addClaim.bind(room)
+  room.setScope = (...args) => { visiblePeer(room, args[0].by, args[0].byKind ?? 'agent'); return setScope(...args) }
+  room.addClaim = (...args) => { visiblePeer(room, args[0].by, args[0].byKind ?? 'agent'); return addClaim(...args) }
   return { room, awareness, me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: '', shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true } as never, daemon: { touch() {}, async stop() {} } as never }
 }
 
 function addPresence(s: Session, name: string, kind: 'agent' | 'human' = 'agent', status = 'idle') {
+  const sessionId = visiblePeer(s.room, name, kind)
   const peer = new Awareness(new Y.Doc())
-  peer.setLocalState({ user: { name, kind, color: '#111' }, status, lastActive: Date.now() })
+  peer.setLocalState({ user: { name, kind, color: '#111' }, sessionId, status, lastActive: Date.now() })
   applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
   return peer
 }
@@ -127,6 +133,7 @@ describe('hasCompany', () => {
   it('counts an old lastActive with a fresh awareness heartbeat', () => {
     const stale = session(new RoomDoc())
     const peer = new Awareness(new Y.Doc())
+    visiblePeer(stale.room, 'Kieran')
     peer.setLocalState({ user: { name: 'Kieran', kind: 'agent', color: '#111' }, status: 'idle', lastActive: Date.now() - 5 * 60_000 })
     applyAwarenessUpdate(stale.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
     expect(hasCompany(stale)).toEqual({ company: true, others: ['Kieran'] })
@@ -147,6 +154,7 @@ describe('hasCompany', () => {
   it('counts a running worker', () => {
     const s = session(new RoomDoc())
     const worker = { name: 'Rohan+tests', status: 'running' } as LocalWorker
+    visiblePeer(s.room, worker.name)
     expect(hasCompany(s, [worker])).toMatchObject({ company: true, others: ['Rohan+tests'] })
   })
 
@@ -801,6 +809,7 @@ describe('wakes: capability presence and the lead\'s own workers', () => {
 
   it('wakes for own worker questions and failures, but not progress notes', async () => {
     const s = session(new RoomDoc())
+    visiblePeer(s.room, 'Rohan+money')
     const send = vi.fn(async () => 'queue' as const)
     const w = wakes(s, send, new Set(['Rohan+money']))
     const from = { name: 'Rohan+money', kind: 'agent' } as const
@@ -845,4 +854,3 @@ it('matches the shared overlap rule on exact files, directory boundaries and nor
     expect(shared.nearPath(path, evidence)).toEqual(evidence.filter(entry => hook.coversPath(path, entry.path)))
   }
 })
-

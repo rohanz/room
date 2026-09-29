@@ -1,21 +1,32 @@
 import type { RoomDoc } from './doc.js'
 import { isAgentic } from './identity.js'
 import { manifestPaths } from './manifest.js'
+import type { ParticipantView } from './views.js'
 
 /** File-level coordination evidence, excluding the current participant. */
 export interface NearPath { by: string; path: string; reason: 'scope' | 'claim' | 'changed' }
 
+export interface Neighbourhood { readonly everyone: boolean; has(name: string): boolean; names(): string[] }
+
+/** One selection seam for evaluators and recipients. */
+export function neighbours(view: ParticipantView[], me: string): Neighbourhood {
+  const names = view.filter(p => p.visible && p.name !== me && !p.name.startsWith('pr#')).map(p => p.name).sort()
+  const selected = new Set(names)
+  return { everyone: true, has: name => selected.has(name), names: () => [...names] }
+}
+
 /** Owns the room's scope, claim, and changed-path evidence for proximity decisions. */
-export function coordinationPaths(room: RoomDoc, excludingParticipant: string, options: { includeOwnNonAgentClaims?: boolean } = {}): NearPath[] {
+export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string, options: { includeOwnNonAgentClaims?: boolean } = {}): NearPath[] {
+  const evidence = (name: string) => nb.has(name) || name.startsWith('pr#')
   return [
-    ...room.allScopes().filter(scope => scope.by !== excludingParticipant)
+    ...room.allScopes().filter(scope => evidence(scope.by))
       .flatMap(scope => scope.paths.map(path => ({ by: scope.by, path, reason: 'scope' as const }))),
-    ...[...room.coordination].filter(([by]) => by !== excludingParticipant)
+    ...[...room.coordination].filter(([by]) => nb.has(by))
       .flatMap(([by, record]) => record.paths.map(path => ({ by, path, reason: 'scope' as const }))),
-    ...room.openClaims().filter(claim => claim.by !== excludingParticipant || (options.includeOwnNonAgentClaims && !isAgentic(claim.byKind)))
+    ...room.openClaims().filter(claim => nb.has(claim.by) || (claim.by === me && options.includeOwnNonAgentClaims && !isAgentic(claim.byKind)))
       .map(claim => ({ by: claim.by, path: claim.path, reason: 'claim' as const })),
     ...[...room.manifestHead.keys()]
-      .filter(by => by !== excludingParticipant)
+      .filter(by => nb.has(by))
       .flatMap(by => manifestPaths(room, by).map(path => ({ by, path, reason: 'changed' as const }))),
   ]
 }

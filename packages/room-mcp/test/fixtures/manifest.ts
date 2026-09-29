@@ -4,6 +4,7 @@ import pathModule from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { gitBlobHash, manifestKey, participantRecord, type ManifestEntry, type RoomDoc } from '@room/shared'
 import { syntheticSessionId } from '../../src/session.js'
+import { visiblePeer } from './visible.js'
 
 const localRoots = new WeakMap<RoomDoc, { name: string; dir: string }>()
 /** The caller's own version comes from its checkout, including in tests. */
@@ -34,6 +35,7 @@ export function publishFixture(room: RoomDoc, name: string, path: string, text: 
   }
   const record = participantRecord(room, name)
   const fence = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
+  visiblePeer(room, name, 'agent', fence)
   const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)
@@ -55,6 +57,7 @@ export function deleteFixture(room: RoomDoc, name: string, path: string, options
   if (local?.name === name) fs.rmSync(pathModule.join(local.dir, path), { force: true })
   const record = participantRecord(room, name)
   const fence = options.fence ?? record?.holder?.sessionId ?? FIXTURE_HOLDER
+  visiblePeer(room, name, 'agent', fence)
   const base = options.base ?? record?.git?.base ?? room.baseOf(name) ?? 'HEAD'
   const prior = room.manifestHead.get(name)
   const key = manifestKey(name, fence)

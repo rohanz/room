@@ -14,6 +14,7 @@ import { testPolicyStore } from './policy-fixture.js'
 import { branchOf, exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 let dir: string
 let base: string
@@ -31,7 +32,9 @@ const PR9: PrInfo = { number: 9, title: 'Fix orders', author: 'sam', head: 'main
 
 function session(room: RoomDoc, me: Identity, roomName = ROOM): Session {
   const awareness = new Awareness(room.doc)
-  awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', lastActive: Date.now() })
+  const sessionId = visiblePeer(room, me.name, me.kind)
+  room.participants.set(`${me.name}\0git`, { branch: 'main', head: base, base, anchored: true, rev: 1, fence: sessionId })
+  awareness.setLocalState({ user: { ...me, color: '#000' }, sessionId, status: 'idle', lastActive: Date.now() })
   return {
     room, awareness, me, dir, roomUrl: `ws://x/${encodeURIComponent(roomName)}`, roomName, browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
@@ -91,7 +94,7 @@ describe('PR mirror in the doc', () => {
     const ta = mk(alice), tb = mk(bob)
     ta.attachHooks(alice); tb.attachHooks(bob)
     await new Promise(r => setTimeout(r, 20))
-    expect(fetches).toEqual(['alice']) // bob is not the leader
+    expect(fetches).toEqual(['alice', 'alice']) // target and head queries; bob is not the leader
     const state = await tb.call('room_state', {})
     expect(state).toContain('open pull requests (2):')
     expect(state).toContain('  - PR #7 "Add login" by kieran (feat/login → main): src/auth.py, src/session.py · https://github.com/o/r/pull/7')

@@ -22,6 +22,7 @@ import { testPolicyStore } from './policy-fixture.js'
 import { fixtureId, registerWorkers, seedRegistryWorker, type FixtureWorker } from './registry-fixture.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
+import { visiblePeer } from './fixtures/visible.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -34,7 +35,13 @@ function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
-  return { a: new RoomDoc(a), b: new RoomDoc(b) }
+  const rooms = { a: new RoomDoc(a), b: new RoomDoc(b) }
+  for (const room of Object.values(rooms)) {
+    const setScope = room.setScope.bind(room), addClaim = room.addClaim.bind(room)
+    room.setScope = (...args) => { visiblePeer(room, args[0].by, args[0].byKind ?? 'agent'); return setScope(...args) }
+    room.addClaim = (...args) => { visiblePeer(room, args[0].by, args[0].byKind ?? 'agent'); return addClaim(...args) }
+  }
+  return rooms
 }
 
 function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Session {
@@ -85,6 +92,7 @@ function comparableClaimPair(room: RoomDoc): void {
 }
 
 function addPresence(target: Awareness, name: string): Awareness {
+  visiblePeer(new RoomDoc(target.doc), name)
   const doc = new Y.Doc()
   const peer = new Awareness(doc)
   peer.setLocalState({ user: { name, kind: 'agent', color: '#000' }, status: 'idle' })
