@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, highestSeq, manifestKey, messageEndsWait } from '@room/shared'
+import { RoomDoc, gitBlobHash, highestSeq, manifestKey, messageEndsWait, participantRecord } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, syntheticSessionId, type Session } from '../src/session.js'
@@ -46,11 +46,20 @@ function pair() {
 }
 
 function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Session {
+  const held = participantRecord(room, me.name)?.holder
+  const heldSessionId = held?.sessionId, heldEpoch = held?.epoch
+  const leaseFence = () => {
+    const current = participantRecord(room, me.name)?.holder
+    return current && !current.ended && current.sessionId === heldSessionId && current.epoch === heldEpoch ? String(heldEpoch) : undefined
+  }
   const awareness = new Awareness(room.doc)
-  awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle' })
+  awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, sessionId: heldSessionId, status: 'idle' })
   const graph = new GraphIndex(room, 'Rohan', dir); graph.start()
   return {
     graph,
+    // This fixture holds the epoch published above; a replacement or ended holder fences it out.
+    lease: { sessionId: heldSessionId, fence: leaseFence,
+      paused: () => leaseFence() ? undefined : '[room] fixture name lease paused' } as Session['lease'],
     policyStore: testPolicyStore(),
     room, awareness, me, dir, roomUrl: 'ws://x/r', roomName: 'r', browserUrl: 'http://x',
     ...hubSeam(room), provider: { synced, awareness, ...(wsconnected === undefined ? {} : { wsconnected }) } as unknown as Session['provider'],
