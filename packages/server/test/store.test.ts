@@ -43,6 +43,16 @@ describe('FileStore', () => {
     expect(await s.readAudit()).toEqual([{ at: 1, event: 'logout', login: 'a' }])
   })
 
+  it('persists migration progress as a complete registry snapshot', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-store-migrate-'))
+    const s = new FileStore({ dir }); await s.init()
+    const entry = { at: 1, branches: ['github.com/o/r/main'], mode: 'repo' as const,
+      legacy: ['github.com/o/r/main'], plan: { id: 'p1', sources: ['github.com/o/r/main'] }, step: 'frozen' as const }
+    await s.saveRooms({ 'github.com/o/r': entry })
+    expect(await new FileStore({ dir }).loadRooms()).toMatchObject({ 'github.com/o/r': entry })
+    expect(fs.readdirSync(dir).filter(name => name.endsWith('.tmp'))).toEqual([])
+  })
+
   it('keeps at most MEM_AUDIT_MAX in-memory audit entries, dropping the oldest', async () => {
     const s = new FileStore()
     for (let at = 1; at <= MEM_AUDIT_MAX + 25; at++) await s.audit({ at, event: 'join', room: 'r' })

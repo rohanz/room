@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as encoding from 'lib0/encoding'
 import { EventEmitter } from 'node:events'
-import { DocSizeMeter, capDocSize } from '../src/readonly.js'
+import { DocSizeMeter, capDocSize, sizeCapReason } from '../src/readonly.js'
 
 /** A sync update message (type 0, sub-type 2) carrying `n` payload bytes. */
 function update(n: number): Uint8Array {
@@ -11,6 +11,9 @@ function update(n: number): Uint8Array {
 }
 
 describe('DocSizeMeter', () => {
+  it('gives the visible websocket rejection reason at the configured cap', () => {
+    expect(sizeCapReason(64 * 1048576)).toBe('room is over its size cap (64 MB)')
+  })
   it('re-measures after 30 s, 200 writes or 8 MB, whichever comes first', () => {
     let t = 0, measured = 0, size = 10
     const m = new DocSizeMeter(() => { measured++; return size }, { now: () => t })

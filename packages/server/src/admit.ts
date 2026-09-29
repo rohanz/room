@@ -8,7 +8,7 @@
  *    the server has a login provider, and are open when it has neither.
  */
 import type { Auth, Provider } from './auth.js'
-import { githubRepoOf, repoOf, roomNameOf } from './names.js'
+import { githubRepoOf, roomNameOf } from './names.js'
 
 export interface Creds { gh?: string; token?: string; session?: string }
 /** `login` is the display name; `id` the namespaced identity (`oidc:<issuer-host>:<sub>`) when the provider has one. */
@@ -59,7 +59,7 @@ export function makeAdmitted(o: AdmitOptions): (room: string, c: Creds) => Promi
         if (st) return { ok: true, login: st.login, id: st.id, provider: st.provider }
         if (auth.providers.length) return { ok: false, status: 401, why: 'session expired or unknown: run room_login' }
       }
-      if (auth.providers.length) return { ok: false, status: 401, why: `not logged in: run room_login (room ${repoOf(roomNameOf(room))})` }
+      if (auth.providers.length) return { ok: false, status: 401, why: `not logged in: run room_login (room ${roomNameOf(room)})` }
       if (TOKEN) return { ok: false, status: 401, why: 'token required or wrong: set ROOM_SERVER=ws://host/?token=<shared token>' }
       return { ok: true }
     }
