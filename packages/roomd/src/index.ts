@@ -409,7 +409,7 @@ class Daemon implements Roomd {
     this.tracked = tracked.paths
     this.indexed = tracked.indexed
     this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl,
-      () => { if (!this.stopped) this.setStatus(this.currentStatus()) }))
+      () => this.publishRetainedIfChanged()))
     this.setStatus(this.currentStatus())
     // Scope can change during sync or seed. Keep the observer live before either await.
     this.roomDoc.scopes.observe(ev => {
@@ -592,6 +592,17 @@ class Daemon implements Roomd {
       lastActive: this.lastActive,
     }
     this.provider.awareness.setLocalState(state)
+  }
+
+  private publishRetainedIfChanged(): void {
+    if (this.stopped) return
+    const current = (this.provider.awareness.getLocalState() ?? {}) as Partial<SharePresence>
+    const next = this.share === 'declared' && !this.publishUnder
+      ? this.publisher.retainedDeclared().slice(0, MAX_RETAINED_PRESENCE_PATHS) : undefined
+    const same = next === undefined ? current.retained === undefined
+      : Array.isArray(current.retained) && next.length === current.retained.length
+        && next.every((path, i) => path === current.retained![i])
+    if (!same) this.setStatus(this.currentStatus())
   }
 
   choosePublisher(): void {

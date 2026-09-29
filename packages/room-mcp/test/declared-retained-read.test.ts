@@ -184,3 +184,31 @@ it('bounds retained paths in presence and keeps paths beyond the cap private', a
   readerRoom.setOverlay('Owner', omitted, 'stale text\n')
   expect(await readerTools.call('room_read', { person: 'Owner', path: omitted })).toContain('not shared')
 })
+
+it('coalesces presence updates for a large scope end and promptly publishes a withdrawal', async () => {
+  const { daemon, syncOwnerPresence, readerOwnerPresence } = await setup()
+  const paths = Array.from({ length: 500 }, (_, i) => `bulk/file-${String(i).padStart(3, '0')}.py`)
+  daemon.roomDoc.setScope({ by: 'Owner', byKind: 'agent', area: 'bulk', summary: 'edit many', paths: ['bulk/'] })
+  for (const path of paths) daemon.roomDoc.setOverlay('Owner', path, 'changed\n')
+  const presenceWrites = vi.spyOn(daemon.provider.awareness, 'setLocalState')
+
+  daemon.roomDoc.clearScope('Owner')
+  await Promise.resolve() // the coalesced notification must settle by the next microtask
+  expect(daemon.retainedDeclared()).toHaveLength(500)
+  expect(presenceWrites.mock.calls.length).toBeLessThanOrEqual(3)
+  syncOwnerPresence()
+  expect(readerOwnerPresence().retained).toEqual(paths.slice(0, 256))
+
+  presenceWrites.mockClear()
+  const retained = (daemon as unknown as { publisher: { retainedDeclaredPaths: Set<string> } }).publisher.retainedDeclaredPaths
+  retained.delete(paths[0])
+  await Promise.resolve()
+  syncOwnerPresence()
+  expect(readerOwnerPresence().retained).toEqual(paths.slice(1, 257))
+  expect(presenceWrites).toHaveBeenCalledTimes(1)
+
+  presenceWrites.mockClear()
+  retained.delete(paths[499]) // outside the published prefix
+  await Promise.resolve()
+  expect(presenceWrites).not.toHaveBeenCalled()
+})
