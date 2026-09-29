@@ -1,16 +1,28 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
+import { RoomDoc, type Worker } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
 
+const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined }))
+vi.mock('@room/roomd/git', async importOriginal => {
+  const original = await importOriginal<typeof import('@room/roomd/git')>()
+  return { ...original, gitShow: async (...args: Parameters<typeof original.gitShow>) => {
+    if (gitShowFailure.error) throw gitShowFailure.error
+    return original.gitShow(...args)
+  } }
+})
+
 const dirs: string[] = []
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => {
+  gitShowFailure.error = undefined
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 function flaskChanges() {
   const dir = mkdtempSync(join(tmpdir(), 'room-diff-base-'))
@@ -44,7 +56,7 @@ function flaskChanges() {
     daemon: { touch() {}, async stop() {}, dir, name: 'Ana', roomDoc: room, base: readerBase },
   } as unknown as Session
   const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
-  return { tools, oldBase, readerBase, anaEntry, benEntry, awareness, room }
+  return { tools, dir, git, oldBase, readerBase, anaEntry, benEntry, awareness, room }
 }
 
 it.each([
@@ -73,6 +85,59 @@ it('a teammate overlay still asks for fetch when its base is absent locally', as
     expect(diff).toMatch(/error: Ben's HEAD c0ffee0000 is not in this clone/)
     expect(diff).toContain('run git fetch, then retry')
   } finally {
+    await t.tools.shutdown()
+    t.awareness.destroy()
+    t.room.doc.destroy()
+  }
+})
+
+it.each(['git show timed out after 30000ms', 'git show failed: permission denied'])(
+  'a git failure with a present teammate base is reported unchanged (%s)', async message => {
+    const t = flaskChanges()
+    try {
+      gitShowFailure.error = new Error(message)
+      const diff = await t.tools.call('room_read', { person: 'Ben', path: 'CHANGES.rst', diff: true })
+      expect(diff).toContain(message)
+      expect(diff).not.toContain('git fetch')
+      expect(diff).not.toContain("Ben's HEAD")
+    } finally {
+      await t.tools.shutdown()
+      t.awareness.destroy()
+      t.room.doc.destroy()
+    }
+  }
+)
+
+it('a connected carried worker diff contains only the worker edit and no misleading base note', async () => {
+  const t = flaskChanges()
+  const name = 'Ana+w'
+  const carriedEntry = 'Ana: carried uncommitted wording.\n'
+  const workerEntry = 'Worker: revised validation note.\n'
+  const carriedText = `Changelog\n=========\n\nExisting release notes.\n${t.anaEntry}${carriedEntry}`
+  const peer = new Awareness(new Y.Doc())
+  try {
+    t.git('checkout', '-qb', 'room/w')
+    writeFileSync(join(t.dir, 'CHANGES.rst'), carriedText)
+    t.git('commit', '-qam', 'carried lead work')
+    const carriedBase = t.git('rev-parse', 'HEAD')
+    t.git('checkout', '-q', 'main')
+    t.room.setWorker({ id: 'Ana/w#1', tag: 'w', name, host: 'codex', task: 'edit changelog', dir: t.dir,
+      branch: 'room/w', pid: 1, startedAt: 0, status: 'running', lead: 'Ana', base: carriedBase, carriedBase } as Worker)
+    t.room.setBaseOf(name, t.readerBase)
+    t.room.setOverlay(name, 'CHANGES.rst', carriedText + workerEntry)
+    peer.setLocalState({ user: { name, kind: 'agent', color: '#000' }, status: 'idle' })
+    applyAwarenessUpdate(t.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+
+    for (const args of [{ path: 'CHANGES.rst' }, {}]) {
+      const diff = await t.tools.call('room_read', { person: name, diff: true, ...args })
+      expect(diff).toContain(`+${workerEntry}`)
+      expect(diff).not.toContain(`+${carriedEntry}`)
+      expect(diff).not.toContain(`-${carriedEntry}`)
+      expect(diff).not.toContain('commits only one of you has')
+      expect(diff).not.toContain('note: Ana+w is on base')
+    }
+  } finally {
+    peer.destroy(); peer.doc.destroy()
     await t.tools.shutdown()
     t.awareness.destroy()
     t.room.doc.destroy()

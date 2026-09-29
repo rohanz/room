@@ -7,7 +7,7 @@ import path from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
 import { describeClaim, withLineNumbers, type NoteMsg, type Worker } from '@room/shared'
 import type { Session } from '../session.js'
-import { notePreviewCheckOverlap, previewPhase } from '../timing.js'
+import { previewCheck, previewPhase } from '../timing.js'
 import { sameCheckoutSession } from '../company.js'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
@@ -78,7 +78,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const reader = S()
       const theirBase = baseFor(s, person)
       const yourBase = baseFor(reader, reader.me.name)
-      const baseNote = person !== reader.me.name && !worker && theirBase !== yourBase
+      const workerBase = workerBaseline(s.room.workerOf(person))
+      const carriedBase = workerBase?.carriedCommit && workerBase.sha === theirBase
+      const baseNote = person !== reader.me.name && !worker && !carriedBase && theirBase !== yourBase
         ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${yourBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes`
         : ''
       const label = (text: string) => worker ? `${WORKTREE_NOTE}\n${text}` : text
@@ -96,9 +98,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', baseFor(s, person), '--'])).split('\0'),
         ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
       ].filter(Boolean)) : s.room.changedPaths(person)
-      for (const p of paths) { const d = await one(p); if (d) parts.push(d) }
+      let unshared = 0
+      for (const p of paths) {
+        if (withheld(s, person, p)) { unshared++; continue }
+        const d = await one(p); if (d) parts.push(d)
+      }
       const level = shareOf(s, person)
-      if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared)`)
+      if (level === 'declared') parts.push(`(${person} shares declared paths only: current-scope paths and changed files still published from earlier scopes are shared${unshared ? `; ${unshared} other changed file(s) are not shared` : ''})`)
       return label([baseNote, parts.length ? parts.join('\n') : `${person} has no uncommitted changes`].filter(Boolean).join('\n'))
   }
   const handlers: Record<string, Handler> = {
@@ -381,17 +387,12 @@ async function runInMergedTree(s: Session, ancestor: string, merged: Map<string,
       env.ROOM_MERGED_TREE = dir
       return { bash, env }
     })
-    notePreviewCheckOverlap(dir)
-    const result = await previewPhase('check', async () => {
-      try {
-        return await new Promise<{ code: number | null; out: string }>(resolve => {
-          execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
-            const raw = err ? (err as { code?: unknown }).code : 0
-            resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
-          })
-        })
-      } finally { notePreviewCheckOverlap(dir) }
-    })
+    const result = await previewCheck(dir, () => new Promise<{ code: number | null; out: string }>(resolve => {
+      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+        const raw = err ? (err as { code?: unknown }).code : 0
+        resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
+      })
+    }))
     return previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)

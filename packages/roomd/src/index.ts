@@ -45,7 +45,10 @@ export function observeCallback(fn: () => unknown, report: (error: unknown) => v
  *  - full: every changed file (the original behaviour).
  */
 /** Presence as this daemon publishes it: the shared Presence plus the sharing level. */
-export type SharePresence = Presence & { share?: ShareLevel }
+export type SharePresence = Presence & { share?: ShareLevel; retained?: string[] }
+
+/** Keep awareness updates bounded; paths past this limit remain private to readers. */
+const MAX_RETAINED_PRESENCE_PATHS = 256
 export { claimDigest } from './reanchor.js'
 
 const machineHostname = os.hostname()
@@ -405,7 +408,9 @@ class Daemon implements Roomd {
     this.appliedHead = base
     this.tracked = tracked.paths
     this.indexed = tracked.indexed
-    this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl))
+    this.publisher.setRetained(new RetainedDeclaredPaths(this.dir, this.roomName, this.name, splitRoomUrl(this.roomUrl).serverUrl,
+      () => { if (!this.stopped) this.setStatus(this.currentStatus()) }))
+    this.setStatus(this.currentStatus())
     // Scope can change during sync or seed. Keep the observer live before either await.
     this.roomDoc.scopes.observe(ev => {
       if (!ev.keysChanged.has(this.name) || this.share !== 'declared' || this.explicitScopePaths) return
@@ -580,6 +585,8 @@ class Daemon implements Roomd {
       user: { name: this.name, kind: this.kind, owner: this.owner, ...(this.label ? { label: this.label } : {}), color: colorFor(this.name, this.roomDoc) },
       status,
       share: this.share,
+      retained: this.share === 'declared' && !this.publishUnder
+        ? this.publisher.retainedDeclared().slice(0, MAX_RETAINED_PRESENCE_PATHS) : undefined,
       watchedDirectory: this.watchedDirectory,
       publishUnder: this.publishUnder,
       lastActive: this.lastActive,
