@@ -8,7 +8,7 @@ import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { baselineText, carriedPaths, carriesWork, checkoutText, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
-import { participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantSnapshot, type Version } from '@room/shared'
+import { acceptedGit, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
 
@@ -27,9 +27,14 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const { rooms, baseFor } = state
   const people = participants.map(p => p.person)
   const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
-  if (!options.diskOnly) for (const { person, session } of participants) snapshots.set(person, {
-    session, snap: snapshot(session.room, person, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []),
-  })
+  const acceptedRecords = new Map<string, ParticipantGit>()
+  if (!options.diskOnly) for (const { person, session } of participants) {
+    const view = session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
+    const snap = snapshot(session.room, person, view)
+    snapshots.set(person, { session, snap })
+    const record = acceptedGit(snap ? snap.record : participantRecord(session.room, person), view)
+    if (record !== 'updating') acceptedRecords.set(person, { ...record })
+  }
   const gaps: PreviewGap[] = []
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
@@ -227,6 +232,14 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     })
   }
   const paths = Array.from(pathSet).sort()
+  const includedParticipants = participants.map(({ person, session }) => {
+    const base = bases.find(item => item.person === person)!.base
+    const snap = snapshots.get(person)?.snap
+    return {
+      person, base, gitRecord: acceptedRecords.get(person),
+      liveShared: !previewWorker(session, person) && !!snap && paths.some(p => snap.entries.get(p)?.state === 'shared'),
+    }
+  })
   const merged = new Map<string, string | null>()
   const owners = new Map<string, string[]>()
   for (const p of paths) {
@@ -338,7 +351,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
   const isCurrent = () => [...snapshots.values()].every(({ session, snap }) => !snap || snapshotStillCurrent(session.room, snap, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []))
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent }
+  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

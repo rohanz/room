@@ -159,6 +159,64 @@ it('names a pushed participant commit in complete and partial preview notes', as
   expect(room.messages().find(message => message.type === 'note' && message.text.includes('partial preview with ben'))?.text).toContain(anchor)
 })
 
+it('names the accepted base after a combined-tree retry', async () => {
+  const { room, head, state, session } = fixture()
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root!, encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'older\n')
+  git('add', 'app.py'); git('commit', '-qm', 'C1')
+  const c1 = git('rev-parse', 'HEAD')
+  fs.writeFileSync(path.join(root!, 'app.py'), 'newest\n')
+  git('add', 'app.py'); git('commit', '-qm', 'C2')
+  const c2 = git('rev-parse', 'HEAD')
+  git('reset', '--hard', head.base)
+  const publish = (base: string, rev: number) => {
+    room.participants.set('ben\0git', { base, head: base, branch: 'r17-b', upstream: 'origin/r17-b', ahead: 0, fence: '1', rev })
+    room.manifestHead.set('ben', { ...head, base, rev, semRev: rev })
+  }
+  publish(c1, 2)
+  let reads = 0
+  state.baseFor = (_s: Session, person: string) => {
+    if (person !== 'ben') return head.base
+    if (++reads === 2) publish(c2, 3)
+    return reads >= 2 ? c2 : c1
+  }
+  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat app.py)" = newest && echo "1 passed"' })
+  const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
+  expect(reads).toBeGreaterThanOrEqual(3)
+  expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
+  expect(result).toContain(`ben at ${c2.slice(0, 10)} (pushed to origin/r17-b)`)
+  expect(result).not.toContain(`ben at ${c1.slice(0, 10)}`)
+  expect(note).toContain(`ben at ${c2.slice(0, 10)} (pushed to origin/r17-b)`)
+  expect(note).not.toContain(`ben at ${c1.slice(0, 10)}`)
+})
+
+it('labels live changes from the accepted retry snapshot', async () => {
+  const { room, head, entries, texts, state, session } = fixture()
+  fs.writeFileSync(path.join(root!, 'app.py'), 'committed\n')
+  execFileSync('git', ['add', 'app.py'], { cwd: root! })
+  execFileSync('git', ['commit', '-qm', 'participant commit'], { cwd: root! })
+  const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root!, encoding: 'utf8' }).trim()
+  execFileSync('git', ['reset', '--hard', head.base], { cwd: root! })
+  room.participants.set('ben\0git', { base, head: base, fence: '1', rev: 2 })
+  room.manifestHead.set('ben', { ...head, base, rev: 2, semRev: 2 })
+  let reads = 0
+  state.baseFor = (_s: Session, person: string) => {
+    if (person !== 'ben') return head.base
+    if (++reads === 2) {
+      entries.set('tests.txt', { change: 'M', state: 'shared', hash: gitBlobHash('live\n'), size: 5, at: Date.now(), fence: '1' })
+      texts.set('tests.txt', new Y.Text('live\n'))
+      room.manifestHead.set('ben', { ...head, base, rev: 2, semRev: 3 })
+    }
+    return base
+  }
+  const result = await handlers(state).room_preview_merge({ person: 'ben', run: 'test "$(cat tests.txt)" = live && echo "1 passed"' })
+  const note = room.messages().find(message => message.type === 'note' && message.text.includes('merge preview with ben'))?.text
+  expect(reads).toBeGreaterThanOrEqual(3)
+  expect(session.lastPreview).toMatchObject({ complete: true, testsPassed: true })
+  expect(result).toContain(`ben at ${base.slice(0, 10)} + live changes`)
+  expect(note).toContain(`ben at ${base.slice(0, 10)} + live changes`)
+})
+
 it('fetches a reachable participant anchor before explicit preview and honours ROOM_AUTO_FETCH=0', async () => {
   const { room, head, state, session } = fixture()
   const origin = path.join(root!, '.git', 'origin.git')
