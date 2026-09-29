@@ -3277,8 +3277,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path46) {
-      let input = path46;
+    function removeDotSegments(path45) {
+      let input = path45;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3687,8 +3687,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path46 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path46 && path46 !== "/" ? path46 : void 0;
+        const path45 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path45 && path45 !== "/" ? path45 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7200,12 +7200,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name2}"`);
       return f;
     };
-    function addFormats(ajv, list, fs47, exportName) {
+    function addFormats(ajv, list, fs46, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs47[f]);
+        ajv.addFormat(f, fs46[f]);
     }
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -9106,14 +9106,14 @@ var init_function = __esm({
     "use strict";
     init_object();
     init_equality();
-    callAll = (fs47, args3, i2 = 0) => {
+    callAll = (fs46, args3, i2 = 0) => {
       try {
-        for (; i2 < fs47.length; i2++) {
-          fs47[i2](...args3);
+        for (; i2 < fs46.length; i2++) {
+          fs46[i2](...args3);
         }
       } finally {
-        if (i2 < fs47.length) {
-          callAll(fs47, args3, i2 + 1);
+        if (i2 < fs46.length) {
+          callAll(fs46, args3, i2 + 1);
         }
       }
     };
@@ -11208,15 +11208,15 @@ var init_yjs = __esm({
           sortAndMergeDeleteSet(ds);
           transaction.afterState = getStateVector(transaction.doc.store);
           doc.emit("beforeObserverCalls", [transaction, doc]);
-          const fs47 = [];
+          const fs46 = [];
           transaction.changed.forEach(
-            (subs, itemtype) => fs47.push(() => {
+            (subs, itemtype) => fs46.push(() => {
               if (itemtype._item === null || !itemtype._item.deleted) {
                 itemtype._callObserver(transaction, subs);
               }
             })
           );
-          fs47.push(() => {
+          fs46.push(() => {
             transaction.changedParentTypes.forEach((events, type) => {
               if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
                 events = events.filter(
@@ -11227,19 +11227,19 @@ var init_yjs = __esm({
                   event._path = null;
                 });
                 events.sort((event1, event2) => event1.path.length - event2.path.length);
-                fs47.push(() => {
+                fs46.push(() => {
                   callEventHandlerListeners(type._dEH, events, transaction);
                 });
               }
             });
-            fs47.push(() => doc.emit("afterTransaction", [transaction, doc]));
-            fs47.push(() => {
+            fs46.push(() => doc.emit("afterTransaction", [transaction, doc]));
+            fs46.push(() => {
               if (transaction._needFormattingCleanup) {
                 cleanupYTextAfterTransaction(transaction);
               }
             });
           });
-          callAll(fs47, []);
+          callAll(fs46, []);
         } finally {
           if (doc.gc) {
             tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -11780,10 +11780,10 @@ var init_yjs = __esm({
       }
     };
     getPathTo = (parent, child) => {
-      const path46 = [];
+      const path45 = [];
       while (child._item !== null && child !== parent) {
         if (child._item.parentSub !== null) {
-          path46.unshift(child._item.parentSub);
+          path45.unshift(child._item.parentSub);
         } else {
           let i2 = 0;
           let c = (
@@ -11796,12 +11796,12 @@ var init_yjs = __esm({
             }
             c = c.right;
           }
-          path46.unshift(i2);
+          path45.unshift(i2);
         }
         child = /** @type {AbstractType<any>} */
         child._item.parent;
       }
-      return path46;
+      return path45;
     };
     warnPrematureAccess = () => {
       warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -16078,13 +16078,13 @@ function msgPaths(m) {
   if ("path" in m) return [m.path];
   return [];
 }
-function scopeCovers(scope, path46) {
-  return scope.paths.some((p) => containsPath(p, path46));
+function scopeCovers(scope, path45) {
+  return scope.paths.some((p) => containsPath(p, path45));
 }
 function messageAreas(m, scopes) {
   const out2 = /* @__PURE__ */ new Set();
   if (m.type === "scope") out2.add(m.area);
-  for (const path46 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path46)) out2.add(scope.area);
+  for (const path45 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path45)) out2.add(scope.area);
   return Array.from(out2).sort();
 }
 function ledger(messages, scopes, q = {}) {
@@ -16373,7 +16373,7 @@ var init_doc = __esm({
         const head = this.manifestHead.get(person);
         const base = baseSha ?? head?.base;
         const current = head ? this.manifest.get(manifestKey(person, head.fence)) : void 0;
-        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path46]) => `${base}:${path46}`));
+        const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path45]) => `${base}:${path45}`));
         this.doc.transact(() => {
           const prefix = this.baseTextPrefix(person);
           for (const key2 of this.ownedBaseTexts.keys()) {
@@ -16675,10 +16675,10 @@ function summarizeFiles(paths, options = {}) {
   const sorted2 = [...paths].sort(byPath);
   const folders = /* @__PURE__ */ new Map();
   const immediate = /* @__PURE__ */ new Map();
-  for (const path46 of sorted2) {
-    const parts2 = path46.split("/");
+  for (const path45 of sorted2) {
+    const parts2 = path45.split("/");
     const folder = parts2.length > 1 ? parts2.slice(0, -1).join("/") + "/" : "./";
-    immediate.set(folder, [...immediate.get(folder) ?? [], path46]);
+    immediate.set(folder, [...immediate.get(folder) ?? [], path45]);
     for (let i2 = 1; i2 < parts2.length; i2++) {
       const prefix = parts2.slice(0, i2).join("/") + "/";
       folders.set(prefix, (folders.get(prefix) ?? 0) + 1);
@@ -16689,13 +16689,13 @@ function summarizeFiles(paths, options = {}) {
   const dominant = winner ? { folder: winner[0], count: winner[1] } : void 0;
   const ordered = [...sorted2].sort((a, b) => Number(!!dominant && a.startsWith(dominant.folder)) - Number(!!dominant && b.startsWith(dominant.folder)) || byPath(a, b));
   const selected = ordered.slice(0, options.namedLimit ?? 3);
-  const basename4 = (path46) => path46.slice(path46.lastIndexOf("/") + 1);
+  const basename4 = (path45) => path45.slice(path45.lastIndexOf("/") + 1);
   const counts = /* @__PURE__ */ new Map();
-  for (const path46 of selected) counts.set(basename4(path46), (counts.get(basename4(path46)) ?? 0) + 1);
+  for (const path45 of selected) counts.set(basename4(path45), (counts.get(basename4(path45)) ?? 0) + 1);
   return {
     count: sorted2.length,
     dominant,
-    named: selected.map((path46) => ({ path: path46, label: counts.get(basename4(path46)) > 1 ? path46 : basename4(path46) })),
+    named: selected.map((path45) => ({ path: path45, label: counts.get(basename4(path45)) > 1 ? path45 : basename4(path45) })),
     groups: [...immediate].sort(([a], [b]) => a.localeCompare(b)).map(([folder, groupPaths]) => ({ folder, paths: groupPaths }))
   };
 }
@@ -16862,9 +16862,9 @@ __export(manifest_node_exports, {
   gitBlobHash: () => gitBlobHash
 });
 import { createHash } from "node:crypto";
-function digestPath(roomSalt, path46) {
+function digestPath(roomSalt, path45) {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error("invalid roomSalt");
-  return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path46), "utf8").digest("hex");
+  return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path45), "utf8").digest("hex");
 }
 function gitBlobHash(text, format = "sha1") {
   const bytes = Buffer.from(text);
@@ -16884,10 +16884,10 @@ function manifestKey(name2, fence) {
 function manifestPaths(room, name2) {
   const fence = room.manifestHead.get(name2)?.fence;
   if (!fence) return [];
-  return [...room.manifest.get(manifestKey(name2, fence))?.entries() ?? []].filter(([, entry]) => entry.fence === fence).map(([path46]) => path46).sort();
+  return [...room.manifest.get(manifestKey(name2, fence))?.entries() ?? []].filter(([, entry]) => entry.fence === fence).map(([path45]) => path45).sort();
 }
-function manifestChangers(room, path46) {
-  return [...room.manifestHead.keys()].filter((name2) => manifestPaths(room, name2).includes(path46)).sort();
+function manifestChangers(room, path45) {
+  return [...room.manifestHead.keys()].filter((name2) => manifestPaths(room, name2).includes(path45)).sort();
 }
 function fenceValid(head, record2, view) {
   const expected = head.projectedFrom ? liveHolder(view, head.projectedBy ?? "") : holderFence(record2?.holder);
@@ -16898,12 +16898,12 @@ function snapshot(room, name2, view) {
   if (!head) return void 0;
   const record2 = participantRecord(room, name2);
   const entries = /* @__PURE__ */ new Map();
-  for (const [path46, entry] of room.manifest.get(manifestKey(name2, head.fence))?.entries() ?? []) {
-    if (entry.fence === head.fence) entries.set(path46, { ...entry });
+  for (const [path45, entry] of room.manifest.get(manifestKey(name2, head.fence))?.entries() ?? []) {
+    if (entry.fence === head.fence) entries.set(path45, { ...entry });
   }
   const texts = /* @__PURE__ */ new Map();
   const overlay = room.overlays.get(manifestKey(name2, head.fence));
-  for (const [path46, text] of overlay?.entries() ?? []) texts.set(path46, text.toString());
+  for (const [path45, text] of overlay?.entries() ?? []) texts.set(path45, text.toString());
   return { name: name2, head: { ...head, excluded: [...head.excluded] }, record: record2, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record2, view) };
 }
 function snapshotStillCurrent(room, snap, view) {
@@ -16913,7 +16913,7 @@ function snapshotStillCurrent(room, snap, view) {
   const a = snap.head, b = head;
   return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base && a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy && a.projectedFrom === b.projectedFrom && a.publisher === b.publisher && JSON.stringify(a.coverage) === JSON.stringify(b.coverage) && JSON.stringify(a.excluded) === JSON.stringify(b.excluded) && JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) && snap.roomSalt === room.roomSalt && snap.record?.git?.head === record2?.git?.head && snap.record?.git?.base === record2?.git?.base && snap.record?.git?.fence === record2?.git?.fence && snap.record?.git?.rev === record2?.git?.rev;
 }
-async function versionOf(snap, path46, env = {}) {
+async function versionOf(snap, path45, env = {}) {
   if (!snap) return { kind: "unknown", why: "no-record", detail: "no manifest record" };
   const { head } = snap;
   if (!head.complete || !snap.fenceValid) {
@@ -16924,10 +16924,10 @@ async function versionOf(snap, path46, env = {}) {
   if (head.base !== snap.record?.git?.base || snap.record.git.fence !== head.fence)
     return { kind: "unknown", why: "updating", detail: "manifest is updating" };
   if (head.coverage.kind === "none") return { kind: "unknown", why: "intent", detail: head.coverage.reason };
-  const entry = snap.entries.get(path46);
+  const entry = snap.entries.get(path45);
   if (entry) {
     if (entry.change === "D") return { kind: "deleted", entry };
-    const text = entry.state === "shared" ? snap.texts.get(path46) : entry.hash ? await env.known?.(entry.hash) : void 0;
+    const text = entry.state === "shared" ? snap.texts.get(path45) : entry.hash ? await env.known?.(entry.hash) : void 0;
     const hashText = env.hashText ?? (async (value2, format) => (await Promise.resolve().then(() => (init_manifest_node(), manifest_node_exports))).gitBlobHash(value2, format));
     if (text !== void 0 && entry.hash && await hashText(text, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return { kind: "text", text, entry };
     if (entry.state === "held") return { kind: "held", entry, why: entry.held ?? "text not shared" };
@@ -16936,10 +16936,10 @@ async function versionOf(snap, path46, env = {}) {
   if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt))
     return { kind: "unknown", why: "updating", detail: "room salt is missing or invalid; exclusion coverage cannot be certified" };
   const digest = env.digest ?? (async (salt, value2) => (await Promise.resolve().then(() => (init_manifest_node(), manifest_node_exports))).digestPath(salt, value2));
-  if (head.excluded.includes(await digest(snap.roomSalt, path46))) return { kind: "excluded" };
+  if (head.excluded.includes(await digest(snap.roomSalt, path45))) return { kind: "excluded" };
   if (!env.gitAt) return { kind: "unknown", why: "no-base-text", detail: "base text not in the room" };
   try {
-    return { kind: "base", text: await env.gitAt(head.base, path46) };
+    return { kind: "base", text: await env.gitAt(head.base, path45) };
   } catch {
     return { kind: "unknown", why: "fetch", detail: "base commit is unavailable" };
   }
@@ -16961,10 +16961,10 @@ function neighbours(view, me) {
 function coordinationPaths(room, nb, me, options = {}) {
   const evidence = (name2) => nb.has(name2) || name2.startsWith("pr#");
   return [
-    ...room.allScopes().filter((scope) => evidence(scope.by)).flatMap((scope) => scope.paths.map((path46) => ({ by: scope.by, path: path46, reason: "scope" }))),
-    ...[...room.coordination].filter(([by]) => nb.has(by)).flatMap(([by, record2]) => record2.paths.map((path46) => ({ by, path: path46, reason: "scope" }))),
+    ...room.allScopes().filter((scope) => evidence(scope.by)).flatMap((scope) => scope.paths.map((path45) => ({ by: scope.by, path: path45, reason: "scope" }))),
+    ...[...room.coordination].filter(([by]) => nb.has(by)).flatMap(([by, record2]) => record2.paths.map((path45) => ({ by, path: path45, reason: "scope" }))),
     ...room.openClaims().filter((claim2) => nb.has(claim2.by) || claim2.by === me && options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
-    ...[...room.manifestHead.keys()].filter((by) => nb.has(by)).flatMap((by) => manifestPaths(room, by).map((path46) => ({ by, path: path46, reason: "changed" })))
+    ...[...room.manifestHead.keys()].filter((by) => nb.has(by)).flatMap((by) => manifestPaths(room, by).map((path45) => ({ by, path: path45, reason: "changed" })))
   ];
 }
 function normalizeCoordinationPath(p) {
@@ -16985,8 +16985,8 @@ function containsPath(parent, child) {
 function coversPath(a, b) {
   return containsPath(a, b) || containsPath(b, a);
 }
-function nearPath(path46, others) {
-  return others.filter((other) => coversPath(path46, other.path));
+function nearPath(path45, others) {
+  return others.filter((other) => coversPath(path45, other.path));
 }
 var init_near = __esm({
   "packages/shared/src/near.ts"() {
@@ -20850,11 +20850,11 @@ var require_tree_sitter = __commonJS({
               throw toThrow;
             };
             var scriptDirectory = "";
-            function locateFile(path46) {
+            function locateFile(path45) {
               if (Module["locateFile"]) {
-                return Module["locateFile"](path46, scriptDirectory);
+                return Module["locateFile"](path45, scriptDirectory);
               }
-              return scriptDirectory + path46;
+              return scriptDirectory + path45;
             }
             var readAsync, readBinary;
             if (ENVIRONMENT_IS_NODE) {
@@ -23375,8 +23375,8 @@ var require_tree_sitter = __commonJS({
                 } else {
                   const url = input;
                   if (typeof process !== "undefined" && process.versions && process.versions.node) {
-                    const fs47 = __require("fs");
-                    bytes = Promise.resolve(fs47.readFileSync(url));
+                    const fs46 = __require("fs");
+                    bytes = Promise.resolve(fs46.readFileSync(url));
                   } else {
                     bytes = fetch(url).then((response) => response.arrayBuffer().then((buffer) => {
                       if (response.ok) {
@@ -23705,8 +23705,8 @@ ${JSON.stringify(symbolNames, null, 2)}`);
 });
 
 // packages/room-mcp/src/index.ts
-import fs46 from "node:fs";
-import path45 from "node:path";
+import fs45 from "node:fs";
+import path44 from "node:path";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -23888,10 +23888,10 @@ function mergeDefs(...defs10) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path46) {
-  if (!path46)
+function getElementAtPath(obj, path45) {
+  if (!path45)
     return obj;
-  return path46.reduce((acc, key2) => acc?.[key2], obj);
+  return path45.reduce((acc, key2) => acc?.[key2], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -24303,11 +24303,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path46, issues) {
+function prefixIssues(path45, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path46);
+    iss.path.unshift(path45);
     return iss;
   });
 }
@@ -24736,16 +24736,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path46 = []) => {
+  const processError = (error3, path45 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path46, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path45, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path46, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path45, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path46, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path45, ...issue2.path]);
       } else {
-        const fullpath = [...path46, ...issue2.path];
+        const fullpath = [...path45, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -33197,9 +33197,9 @@ function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorker
   if (kind.wakes === "interrupt" || typeof kind.wakes === "function") return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
   if (kind.wakes === "addressed" && !addressed) return { wake: false, mustAnswer: false, reason: "not addressed to me" };
   if (kind.audience === "claim-holders" && !addressed && !(m.from === me.name && m.fromKind === "human")) {
-    const path46 = "path" in m && typeof m.path === "string" ? m.path : "";
-    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === path46);
-    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path46}, not near my claims` };
+    const path45 = "path" in m && typeof m.path === "string" ? m.path : "";
+    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === path45);
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path45}, not near my claims` };
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
 }
@@ -33415,8 +33415,8 @@ var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
 var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
 var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-var regexExtractor = (path46, text) => {
-  const ext = path46.slice(path46.lastIndexOf(".") + 1);
+var regexExtractor = (path45, text) => {
+  const ext = path45.slice(path45.lastIndexOf(".") + 1);
   const defs10 = /* @__PURE__ */ new Set();
   if (ext === "py") {
     for (const m of text.matchAll(PY_DEF)) defs10.add(m[1]);
@@ -33483,8 +33483,8 @@ function pythonHeader(line) {
   return line;
 }
 var definitionName = (definition) => definition.container ? `${definition.container}.${definition.name}` : definition.name;
-function definitionLines(path46, text, parse3) {
-  const parsed = parse3?.(path46, text);
+function definitionLines(path45, text, parse3) {
+  const parsed = parse3?.(path45, text);
   if (parsed) {
     const out3 = /* @__PURE__ */ new Map();
     for (const definition of parsed.defs) {
@@ -33497,7 +33497,7 @@ function definitionLines(path46, text, parse3) {
     }
     return out3;
   }
-  const ext = path46.slice(path46.lastIndexOf(".") + 1);
+  const ext = path45.slice(path45.lastIndexOf(".") + 1);
   const out2 = /* @__PURE__ */ new Map();
   const add2 = (name2, raw, signature = raw) => {
     const display = normalized(raw);
@@ -33534,8 +33534,8 @@ function definitionLines(path46, text, parse3) {
   } else return void 0;
   return out2;
 }
-function observedContractChanges(baseText, overlayText, path46, parse3) {
-  const before = definitionLines(path46, baseText, parse3), after = definitionLines(path46, overlayText, parse3);
+function observedContractChanges(baseText, overlayText, path45, parse3) {
+  const before = definitionLines(path45, baseText, parse3), after = definitionLines(path45, overlayText, parse3);
   if (!before || !after) return [];
   const changes = [];
   const signatureSet = (lines) => lines.map((line) => line.canonical).sort().join("\0");
@@ -33560,28 +33560,28 @@ var SymbolGraph = class {
   get size() {
     return this.files.size;
   }
-  has(path46) {
-    return this.files.has(path46);
+  has(path45) {
+    return this.files.has(path45);
   }
   /** Index or re-index one file. Returns false when the extractor does not handle it. */
-  set(path46, text) {
-    this.remove(path46);
-    const syms = this.extract(path46, text);
+  set(path45, text) {
+    this.remove(path45);
+    const syms = this.extract(path45, text);
     if (!syms) return false;
-    this.files.set(path46, syms);
-    for (const d of syms.defs) add(this.definers, d, path46);
-    for (const r of syms.refs) add(this.users, r, path46);
+    this.files.set(path45, syms);
+    for (const d of syms.defs) add(this.definers, d, path45);
+    for (const r of syms.refs) add(this.users, r, path45);
     return true;
   }
-  remove(path46) {
-    const prev = this.files.get(path46);
+  remove(path45) {
+    const prev = this.files.get(path45);
     if (!prev) return;
-    for (const d of prev.defs) del(this.definers, d, path46);
-    for (const r of prev.refs) del(this.users, r, path46);
-    this.files.delete(path46);
+    for (const d of prev.defs) del(this.definers, d, path45);
+    for (const r of prev.refs) del(this.users, r, path45);
+    this.files.delete(path45);
   }
-  symbolsOf(path46) {
-    return this.files.get(path46);
+  symbolsOf(path45) {
+    return this.files.get(path45);
   }
   definersOf(symbol) {
     return Array.from(this.definers.get(symbol) ?? []).sort();
@@ -33589,27 +33589,27 @@ var SymbolGraph = class {
   /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
   usersOf(symbol) {
     const defs10 = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
-    return Array.from(this.users.get(symbol) ?? []).filter((path46) => !defs10.has(path46) && (defs10.size === 0 || this.resolvedDefiners(symbol, path46).length > 0)).sort();
+    return Array.from(this.users.get(symbol) ?? []).filter((path45) => !defs10.has(path45) && (defs10.size === 0 || this.resolvedDefiners(symbol, path45).length > 0)).sort();
   }
   /** Symbols a file uses that some other file defines. */
-  dependenciesOf(path46) {
-    const syms = this.files.get(path46);
+  dependenciesOf(path45) {
+    const syms = this.files.get(path45);
     if (!syms) return [];
     const out2 = [];
     for (const r of syms.refs) {
-      const definedIn = this.resolvedDefiners(r, path46);
-      if (definedIn.length) out2.push({ symbol: r, definedIn, usedIn: [path46] });
+      const definedIn = this.resolvedDefiners(r, path45);
+      if (definedIn.length) out2.push({ symbol: r, definedIn, usedIn: [path45] });
     }
     return out2.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
   /** Symbols a file defines and the other files that use them. */
-  dependentsOf(path46) {
-    const syms = this.files.get(path46);
+  dependentsOf(path45) {
+    const syms = this.files.get(path45);
     if (!syms) return [];
     const out2 = [];
     for (const d of syms.defs) {
-      const usedIn = Array.from(this.users.get(d) ?? []).filter((consumer) => consumer !== path46 && this.resolvedDefiners(d, consumer).includes(path46)).sort();
-      if (usedIn.length) out2.push({ symbol: d, definedIn: [path46], usedIn });
+      const usedIn = Array.from(this.users.get(d) ?? []).filter((consumer) => consumer !== path45 && this.resolvedDefiners(d, consumer).includes(path45)).sort();
+      if (usedIn.length) out2.push({ symbol: d, definedIn: [path45], usedIn });
     }
     return out2.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
   }
@@ -33617,10 +33617,10 @@ var SymbolGraph = class {
     return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) };
   }
   resolvedDefiners(symbol, consumer) {
-    const candidates = this.definersOf(symbol).filter((path46) => path46 !== consumer);
+    const candidates = this.definersOf(symbol).filter((path45) => path45 !== consumer);
     const imports = importsOf(this.files.get(consumer));
     if (imports === void 0) return candidates;
-    const scored = candidates.map((path46) => ({ path: path46, score: Math.max(0, ...imports.map((value2) => importMatchScore(value2, path46, consumer, symbol))) }));
+    const scored = candidates.map((path45) => ({ path: path45, score: Math.max(0, ...imports.map((value2) => importMatchScore(value2, path45, consumer, symbol))) }));
     const best = Math.max(0, ...scored.map((candidate) => candidate.score));
     if (best) return scored.filter((candidate) => candidate.score === best).map((candidate) => candidate.path);
     return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates;
@@ -33679,14 +33679,14 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path46, text, symbol, parse3) {
-  const parsed = parse3?.(path46, text);
+function symbolRange(path45, text, symbol, parse3) {
+  const parsed = parse3?.(path45, text);
   if (parsed) {
     const definition = parsed.defs.find((candidate) => candidate.name === symbol || definitionName(candidate) === symbol);
     return definition ? { from: definition.from, to: definition.to } : void 0;
   }
   const lines = text.split("\n");
-  const ext = path46.slice(path46.lastIndexOf(".") + 1);
+  const ext = path45.slice(path45.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
     const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
@@ -33820,8 +33820,8 @@ var Areas = class _Areas {
     return Array.from(new Set(this.rules.map((r) => r.area))).sort();
   }
   /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
-  areaOf(path46) {
-    const p = path46.replace(/^\.?\//, "");
+  areaOf(path45) {
+    const p = path45.replace(/^\.?\//, "");
     if (this.source === "codeowners") {
       let best;
       for (let i2 = 0; i2 < this.rules.length; i2++) {
@@ -33848,9 +33848,9 @@ var Areas = class _Areas {
     return this.ownersOf(area).some((o) => o.toLowerCase() === me);
   }
 };
-function topLevelArea(path46) {
-  const i2 = path46.indexOf("/");
-  return i2 < 0 ? "/" : `${path46.slice(0, i2)}/`;
+function topLevelArea(path45) {
+  const i2 = path45.indexOf("/");
+  return i2 < 0 ? "/" : `${path45.slice(0, i2)}/`;
 }
 function sharesArea(a, b) {
   if (!a?.length || !b?.length) return true;
@@ -34424,61 +34424,61 @@ function boundedGit(dir, args3, wholeTreePaths, env) {
     });
   });
 }
-async function checkoutText(dir, object4, path46, encoding = "utf8") {
+async function checkoutText(dir, object4, path45, encoding = "utf8") {
   try {
-    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path46}`, object4])).toString(encoding);
+    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path45}`, object4])).toString(encoding);
   } catch (error2) {
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(error2.stderr))) return void 0;
     throw error2;
   }
 }
 var MissingBaseBlob = class extends Error {
-  constructor(path46) {
-    super(`missing private base blob: ${path46}`);
-    this.path = path46;
+  constructor(path45) {
+    super(`missing private base blob: ${path45}`);
+    this.path = path45;
   }
   path;
 };
-async function baselineText(baseline, path46, read2, encoding = "utf8") {
-  const carried = baseline.untracked.get(path46);
-  if (carried === void 0) return read2(baseline.sha, path46);
+async function baselineText(baseline, path45, read2, encoding = "utf8") {
+  const carried = baseline.untracked.get(path45);
+  if (carried === void 0) return read2(baseline.sha, path45);
   try {
-    return await checkoutText(baseline.dir, carried.sha, path46, encoding);
+    return await checkoutText(baseline.dir, carried.sha, path45, encoding);
   } catch {
-    throw new MissingBaseBlob(path46);
+    throw new MissingBaseBlob(path45);
   }
 }
-async function readBaseline(baseline, path46, read2, encoding = "utf8") {
+async function readBaseline(baseline, path45, read2, encoding = "utf8") {
   try {
-    const text = await baselineText(baseline, path46, read2, encoding);
+    const text = await baselineText(baseline, path45, read2, encoding);
     return text == null ? { kind: "absent" } : { kind: "available", text };
   } catch (error2) {
     return { kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) };
   }
 }
-function carriedContentHash(dir, path46, write2 = false) {
-  const source = nodePath2.join(dir, path46), stat4 = fs3.lstatSync(source);
-  const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path46];
-  const out2 = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args3, "--stdin"], { input: Buffer.from(fs3.readlinkSync(source)) }) : boundedGitSync(dir, [...args3, "--", path46]);
+function carriedContentHash(dir, path45, write2 = false) {
+  const source = nodePath2.join(dir, path45), stat4 = fs3.lstatSync(source);
+  const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path45];
+  const out2 = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args3, "--stdin"], { input: Buffer.from(fs3.readlinkSync(source)) }) : boundedGitSync(dir, [...args3, "--", path45]);
   return out2.toString().trim();
 }
-function carriedUnchanged(baseline, path46) {
-  const carried = baseline.untracked.get(path46);
-  if (!carried || !validRepoPath(path46, CARRIED_PATH)) return false;
+function carriedUnchanged(baseline, path45) {
+  const carried = baseline.untracked.get(path45);
+  if (!carried || !validRepoPath(path45, CARRIED_PATH)) return false;
   try {
     const root = fs3.realpathSync(baseline.dir);
-    if (!containedRepoPath(root, nodePath2.join(root, path46), { leaf: "replace-link" }).ok) return false;
-    const stat4 = fs3.lstatSync(nodePath2.join(root, path46));
+    if (!containedRepoPath(root, nodePath2.join(root, path45), { leaf: "replace-link" }).ok) return false;
+    const stat4 = fs3.lstatSync(nodePath2.join(root, path45));
     if (!stat4.isFile() && !stat4.isSymbolicLink()) return false;
     if (stat4.isFile() && carried.mode !== void 0 && (stat4.mode & 511) !== carried.mode) return false;
-    return carriedContentHash(root, path46) === carried.sha;
+    return carriedContentHash(root, path45) === carried.sha;
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return false;
     throw e;
   }
 }
 function carriedUnchangedPaths(baseline) {
-  return new Set([...baseline?.untracked.keys() ?? []].filter((path46) => carriedUnchanged(baseline, path46)));
+  return new Set([...baseline?.untracked.keys() ?? []].filter((path45) => carriedUnchanged(baseline, path45)));
 }
 async function workerChangedPaths(worker) {
   const baseline = workerBaseline(worker);
@@ -34582,30 +34582,30 @@ var DiskBatch = class {
   knownPaths() {
     return [.../* @__PURE__ */ new Set([...this.pending.keys(), ...this.active.keys()])];
   }
-  published(path46) {
+  published(path45) {
     const now = this.now();
-    const times = (this.publications.get(path46) ?? []).filter((at) => now - at < 12e4);
+    const times = (this.publications.get(path45) ?? []).filter((at) => now - at < 12e4);
     times.push(now);
-    this.publications.set(path46, times);
-    if (times.length > 5) this.hot.add(path46);
+    this.publications.set(path45, times);
+    if (times.length > 5) this.hot.add(path45);
   }
-  add(path46, isNew) {
+  add(path45, isNew) {
     if (this.stopped) return;
     const now = this.now();
-    this.pending.set(path46, isNew || this.pending.get(path46) === true);
-    this.arrivals.set(path46, now);
+    this.pending.set(path45, isNew || this.pending.get(path45) === true);
+    this.arrivals.set(path45, now);
     for (const [p, at] of this.arrivals) if (now - at >= 1e3) this.arrivals.delete(p);
     this.settleAt = Math.max(this.settleAt, now + (this.arrivals.size > 20 ? 2e3 : this.debounceMs));
     this.arm();
   }
   /** Recheck when queued work executes: another publish may have made the path hot. */
-  deferHot(path46) {
-    if (!this.hot.has(path46) || this.due(path46) <= this.now()) return false;
-    this.add(path46, true);
+  deferHot(path45) {
+    if (!this.hot.has(path45) || this.due(path45) <= this.now()) return false;
+    this.add(path45, true);
     return true;
   }
-  due(path46) {
-    return this.hot.has(path46) ? (this.publications.get(path46)?.at(-1) ?? 0) + this.hotThrottleMs : 0;
+  due(path45) {
+    return this.hot.has(path45) ? (this.publications.get(path45)?.at(-1) ?? 0) + this.hotThrottleMs : 0;
   }
   arm() {
     clearTimeout(this.timer);
@@ -35038,22 +35038,22 @@ var Publisher = class {
     const facts = [];
     let budget = 0;
     if (next.policy.level !== "intent" && next.policy.publisher) {
-      for (const [path46, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
-        if (defaultExcludedPath(path46) || next.rules.roomIgnore.ignores(path46) || entry.size !== void 0 && entry.size > next.rules.sizeCap) {
-          facts.push({ path: path46, change: entry.change, excluded: true });
-          this.excludedPaths.add(path46);
+      for (const [path45, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
+        if (defaultExcludedPath(path45) || next.rules.roomIgnore.ignores(path45) || entry.size !== void 0 && entry.size > next.rules.sizeCap) {
+          facts.push({ path: path45, change: entry.change, excluded: true });
+          this.excludedPaths.add(path45);
           continue;
         }
-        const permit = authorizesText(next.policy, path46);
-        const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path46)?.toString() : void 0;
+        const permit = authorizesText(next.policy, path45);
+        const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path45)?.toString() : void 0;
         if (text !== void 0 && budget + Buffer.byteLength(text) > next.rules.budget) {
-          facts.push({ path: path46, change: entry.change, excluded: true });
-          this.excludedPaths.add(path46);
+          facts.push({ path: path45, change: entry.change, excluded: true });
+          this.excludedPaths.add(path45);
           continue;
         }
         if (text !== void 0) budget += Buffer.byteLength(text);
         facts.push({
-          path: path46,
+          path: path45,
           change: entry.change,
           ...permit ? { hash: entry.hash, size: entry.size, baseHash: entry.baseHash } : {},
           ...text !== void 0 ? { text } : {},
@@ -35061,7 +35061,7 @@ var Publisher = class {
           at: entry.at
         });
       }
-      for (const path46 of this.excludedPaths) if (!facts.some((f) => f.path === path46)) facts.push({ path: path46, change: "M", excluded: true });
+      for (const path45 of this.excludedPaths) if (!facts.some((f) => f.path === path45)) facts.push({ path: path45, change: "M", excluded: true });
     }
     host.roomDoc.doc.transact(() => {
       publishManifest({
@@ -35074,9 +35074,9 @@ var Publisher = class {
         complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? "another session" }
       }, facts);
-      for (const path46 of incarnationOverlayPaths(host.roomDoc, incarnation)) {
-        if (facts.some((f) => f.path === path46 && f.text !== void 0 || f.path === path46 && f.change === "D" && !f.excluded)) continue;
-        host.roomDoc.clearOverlay(incarnation, path46, host);
+      for (const path45 of incarnationOverlayPaths(host.roomDoc, incarnation)) {
+        if (facts.some((f) => f.path === path45 && f.text !== void 0 || f.path === path45 && f.change === "D" && !f.excluded)) continue;
+        host.roomDoc.clearOverlay(incarnation, path45, host);
       }
       host.roomDoc.reconcileBaseTexts(host.name, host, next.head);
       withdrawBaseTexts(host, new Set(facts.filter((f) => !f.excluded && authorizesText(next.policy, f.path)).map((f) => f.path)));
@@ -35116,8 +35116,8 @@ var Publisher = class {
       if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p));
     }
     const facts = [];
-    for (const [path46, entry] of desired.entries) facts.push({ path: path46, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === "binary", at: entry.at });
-    for (const path46 of desired.excludedPaths) facts.push({ path: path46, change: "M", excluded: true });
+    for (const [path45, entry] of desired.entries) facts.push({ path: path45, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === "binary", at: entry.at });
+    for (const path45 of desired.excludedPaths) facts.push({ path: path45, change: "M", excluded: true });
     return { inputs, desired, baseTexts, facts };
   }
   /** Final synchronous gate; called immediately before the Y transaction. */
@@ -36061,7 +36061,7 @@ var ReaddirpStream = class extends Readable {
     this._directoryFilter = normalizeFilter(opts.directoryFilter);
     const statMethod = opts.lstat ? lstat : stat;
     if (wantBigintFsStats) {
-      this._stat = (path46) => statMethod(path46, { bigint: true });
+      this._stat = (path45) => statMethod(path45, { bigint: true });
     } else {
       this._stat = statMethod;
     }
@@ -36086,8 +36086,8 @@ var ReaddirpStream = class extends Readable {
         const par = this.parent;
         const fil = par && par.files;
         if (fil && fil.length > 0) {
-          const { path: path46, depth } = par;
-          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path46));
+          const { path: path45, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path45));
           const awaited = await Promise.all(slice);
           for (const entry of awaited) {
             if (!entry)
@@ -36127,20 +36127,20 @@ var ReaddirpStream = class extends Readable {
       this.reading = false;
     }
   }
-  async _exploreDir(path46, depth) {
+  async _exploreDir(path45, depth) {
     let files2;
     try {
-      files2 = await readdir(path46, this._rdOptions);
+      files2 = await readdir(path45, this._rdOptions);
     } catch (error2) {
       this._onError(error2);
     }
-    return { files: files2, depth, path: path46 };
+    return { files: files2, depth, path: path45 };
   }
-  async _formatEntry(dirent, path46) {
+  async _formatEntry(dirent, path45) {
     let entry;
     const basename4 = this._isDirent ? dirent.name : dirent;
     try {
-      const fullPath = presolve(pjoin(path46, basename4));
+      const fullPath = presolve(pjoin(path45, basename4));
       entry = { path: prelative(this._root, fullPath), fullPath, basename: basename4 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
     } catch (err2) {
@@ -36540,16 +36540,16 @@ var delFromSet = (main2, prop, item) => {
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
 var FsWatchInstances = /* @__PURE__ */ new Map();
-function createFsWatchInstance(path46, options, listener, errHandler, emitRaw) {
+function createFsWatchInstance(path45, options, listener, errHandler, emitRaw) {
   const handleEvent = (rawEvent, evPath) => {
-    listener(path46);
-    emitRaw(rawEvent, evPath, { watchedPath: path46 });
-    if (evPath && path46 !== evPath) {
-      fsWatchBroadcast(sysPath.resolve(path46, evPath), KEY_LISTENERS, sysPath.join(path46, evPath));
+    listener(path45);
+    emitRaw(rawEvent, evPath, { watchedPath: path45 });
+    if (evPath && path45 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path45, evPath), KEY_LISTENERS, sysPath.join(path45, evPath));
     }
   };
   try {
-    return fs_watch(path46, {
+    return fs_watch(path45, {
       persistent: options.persistent
     }, handleEvent);
   } catch (error2) {
@@ -36565,12 +36565,12 @@ var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
     listener(val1, val2, val3);
   });
 };
-var setFsWatchListener = (path46, fullPath, options, handlers10) => {
+var setFsWatchListener = (path45, fullPath, options, handlers10) => {
   const { listener, errHandler, rawEmitter } = handlers10;
   let cont = FsWatchInstances.get(fullPath);
   let watcher;
   if (!options.persistent) {
-    watcher = createFsWatchInstance(path46, options, listener, errHandler, rawEmitter);
+    watcher = createFsWatchInstance(path45, options, listener, errHandler, rawEmitter);
     if (!watcher)
       return;
     return watcher.close.bind(watcher);
@@ -36581,7 +36581,7 @@ var setFsWatchListener = (path46, fullPath, options, handlers10) => {
     addAndConvert(cont, KEY_RAW, rawEmitter);
   } else {
     watcher = createFsWatchInstance(
-      path46,
+      path45,
       options,
       fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
       errHandler,
@@ -36596,7 +36596,7 @@ var setFsWatchListener = (path46, fullPath, options, handlers10) => {
         cont.watcherUnusable = true;
       if (isWindows && error2.code === "EPERM") {
         try {
-          const fd = await open2(path46, "r");
+          const fd = await open2(path45, "r");
           await fd.close();
           broadcastErr(error2);
         } catch (err2) {
@@ -36627,7 +36627,7 @@ var setFsWatchListener = (path46, fullPath, options, handlers10) => {
   };
 };
 var FsWatchFileInstances = /* @__PURE__ */ new Map();
-var setFsWatchFileListener = (path46, fullPath, options, handlers10) => {
+var setFsWatchFileListener = (path45, fullPath, options, handlers10) => {
   const { listener, rawEmitter } = handlers10;
   let cont = FsWatchFileInstances.get(fullPath);
   const copts = cont && cont.options;
@@ -36649,7 +36649,7 @@ var setFsWatchFileListener = (path46, fullPath, options, handlers10) => {
         });
         const currmtime = curr.mtimeMs;
         if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
-          foreach(cont.listeners, (listener2) => listener2(path46, curr));
+          foreach(cont.listeners, (listener2) => listener2(path45, curr));
         }
       })
     };
@@ -36677,13 +36677,13 @@ var NodeFsHandler = class {
    * @param listener on fs change
    * @returns closer for the watcher instance
    */
-  _watchWithNodeFs(path46, listener) {
+  _watchWithNodeFs(path45, listener) {
     const opts = this.fsw.options;
-    const directory = sysPath.dirname(path46);
-    const basename4 = sysPath.basename(path46);
+    const directory = sysPath.dirname(path45);
+    const basename4 = sysPath.basename(path45);
     const parent = this.fsw._getWatchedDir(directory);
     parent.add(basename4);
-    const absolutePath = sysPath.resolve(path46);
+    const absolutePath = sysPath.resolve(path45);
     const options = {
       persistent: opts.persistent
     };
@@ -36693,12 +36693,12 @@ var NodeFsHandler = class {
     if (opts.usePolling) {
       const enableBin = opts.interval !== opts.binaryInterval;
       options.interval = enableBin && isBinaryPath(basename4) ? opts.binaryInterval : opts.interval;
-      closer = setFsWatchFileListener(path46, absolutePath, options, {
+      closer = setFsWatchFileListener(path45, absolutePath, options, {
         listener,
         rawEmitter: this.fsw._emitRaw
       });
     } else {
-      closer = setFsWatchListener(path46, absolutePath, options, {
+      closer = setFsWatchListener(path45, absolutePath, options, {
         listener,
         errHandler: this._boundHandleError,
         rawEmitter: this.fsw._emitRaw
@@ -36720,7 +36720,7 @@ var NodeFsHandler = class {
     let prevStats = stats;
     if (parent.has(basename4))
       return;
-    const listener = async (path46, newStats) => {
+    const listener = async (path45, newStats) => {
       if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
         return;
       if (!newStats || newStats.mtimeMs === 0) {
@@ -36734,11 +36734,11 @@ var NodeFsHandler = class {
             this.fsw._emit(EV.CHANGE, file, newStats2);
           }
           if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
-            this.fsw._closeFile(path46);
+            this.fsw._closeFile(path45);
             prevStats = newStats2;
             const closer2 = this._watchWithNodeFs(file, listener);
             if (closer2)
-              this.fsw._addPathCloser(path46, closer2);
+              this.fsw._addPathCloser(path45, closer2);
           } else {
             prevStats = newStats2;
           }
@@ -36770,7 +36770,7 @@ var NodeFsHandler = class {
    * @param item basename of this item
    * @returns true if no more processing is needed for this entry.
    */
-  async _handleSymlink(entry, directory, path46, item) {
+  async _handleSymlink(entry, directory, path45, item) {
     if (this.fsw.closed) {
       return;
     }
@@ -36780,7 +36780,7 @@ var NodeFsHandler = class {
       this.fsw._incrReadyCount();
       let linkPath;
       try {
-        linkPath = await fsrealpath(path46);
+        linkPath = await fsrealpath(path45);
       } catch (e) {
         this.fsw._emitReady();
         return true;
@@ -36790,12 +36790,12 @@ var NodeFsHandler = class {
       if (dir.has(item)) {
         if (this.fsw._symlinkPaths.get(full) !== linkPath) {
           this.fsw._symlinkPaths.set(full, linkPath);
-          this.fsw._emit(EV.CHANGE, path46, entry.stats);
+          this.fsw._emit(EV.CHANGE, path45, entry.stats);
         }
       } else {
         dir.add(item);
         this.fsw._symlinkPaths.set(full, linkPath);
-        this.fsw._emit(EV.ADD, path46, entry.stats);
+        this.fsw._emit(EV.ADD, path45, entry.stats);
       }
       this.fsw._emitReady();
       return true;
@@ -36824,9 +36824,9 @@ var NodeFsHandler = class {
         return;
       }
       const item = entry.path;
-      let path46 = sysPath.join(directory, item);
+      let path45 = sysPath.join(directory, item);
       current.add(item);
-      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path46, item)) {
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path45, item)) {
         return;
       }
       if (this.fsw.closed) {
@@ -36835,8 +36835,8 @@ var NodeFsHandler = class {
       }
       if (item === target || !target && !previous.has(item)) {
         this.fsw._incrReadyCount();
-        path46 = sysPath.join(dir, sysPath.relative(dir, path46));
-        this._addToNodeFs(path46, initialAdd, wh, depth + 1);
+        path45 = sysPath.join(dir, sysPath.relative(dir, path45));
+        this._addToNodeFs(path45, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
     return new Promise((resolve5, reject) => {
@@ -36905,13 +36905,13 @@ var NodeFsHandler = class {
    * @param depth Child path actually targeted for watch
    * @param target Child path actually targeted for watch
    */
-  async _addToNodeFs(path46, initialAdd, priorWh, depth, target) {
+  async _addToNodeFs(path45, initialAdd, priorWh, depth, target) {
     const ready = this.fsw._emitReady;
-    if (this.fsw._isIgnored(path46) || this.fsw.closed) {
+    if (this.fsw._isIgnored(path45) || this.fsw.closed) {
       ready();
       return false;
     }
-    const wh = this.fsw._getWatchHelpers(path46);
+    const wh = this.fsw._getWatchHelpers(path45);
     if (priorWh) {
       wh.filterPath = (entry) => priorWh.filterPath(entry);
       wh.filterDir = (entry) => priorWh.filterDir(entry);
@@ -36927,8 +36927,8 @@ var NodeFsHandler = class {
       const follow = this.fsw.options.followSymlinks;
       let closer;
       if (stats.isDirectory()) {
-        const absPath = sysPath.resolve(path46);
-        const targetPath = follow ? await fsrealpath(path46) : path46;
+        const absPath = sysPath.resolve(path45);
+        const targetPath = follow ? await fsrealpath(path45) : path45;
         if (this.fsw.closed)
           return;
         closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
@@ -36938,29 +36938,29 @@ var NodeFsHandler = class {
           this.fsw._symlinkPaths.set(absPath, targetPath);
         }
       } else if (stats.isSymbolicLink()) {
-        const targetPath = follow ? await fsrealpath(path46) : path46;
+        const targetPath = follow ? await fsrealpath(path45) : path45;
         if (this.fsw.closed)
           return;
         const parent = sysPath.dirname(wh.watchPath);
         this.fsw._getWatchedDir(parent).add(wh.watchPath);
         this.fsw._emit(EV.ADD, wh.watchPath, stats);
-        closer = await this._handleDir(parent, stats, initialAdd, depth, path46, wh, targetPath);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path45, wh, targetPath);
         if (this.fsw.closed)
           return;
         if (targetPath !== void 0) {
-          this.fsw._symlinkPaths.set(sysPath.resolve(path46), targetPath);
+          this.fsw._symlinkPaths.set(sysPath.resolve(path45), targetPath);
         }
       } else {
         closer = this._handleFile(wh.watchPath, stats, initialAdd);
       }
       ready();
       if (closer)
-        this.fsw._addPathCloser(path46, closer);
+        this.fsw._addPathCloser(path45, closer);
       return false;
     } catch (error2) {
       if (this.fsw._handleError(error2)) {
         ready();
-        return path46;
+        return path45;
       }
     }
   }
@@ -37003,26 +37003,26 @@ function createPattern(matcher) {
   }
   return () => false;
 }
-function normalizePath(path46) {
-  if (typeof path46 !== "string")
+function normalizePath(path45) {
+  if (typeof path45 !== "string")
     throw new Error("string expected");
-  path46 = sysPath2.normalize(path46);
-  path46 = path46.replace(/\\/g, "/");
+  path45 = sysPath2.normalize(path45);
+  path45 = path45.replace(/\\/g, "/");
   let prepend = false;
-  if (path46.startsWith("//"))
+  if (path45.startsWith("//"))
     prepend = true;
   const DOUBLE_SLASH_RE2 = /\/\//;
-  while (path46.match(DOUBLE_SLASH_RE2))
-    path46 = path46.replace(DOUBLE_SLASH_RE2, "/");
+  while (path45.match(DOUBLE_SLASH_RE2))
+    path45 = path45.replace(DOUBLE_SLASH_RE2, "/");
   if (prepend)
-    path46 = "/" + path46;
-  return path46;
+    path45 = "/" + path45;
+  return path45;
 }
 function matchPatterns(patterns, testString, stats) {
-  const path46 = normalizePath(testString);
+  const path45 = normalizePath(testString);
   for (let index = 0; index < patterns.length; index++) {
     const pattern = patterns[index];
-    if (pattern(path46, stats)) {
+    if (pattern(path45, stats)) {
       return true;
     }
   }
@@ -37062,19 +37062,19 @@ var toUnix = (string3) => {
   }
   return str3;
 };
-var normalizePathToUnix = (path46) => toUnix(sysPath2.normalize(toUnix(path46)));
-var normalizeIgnored = (cwd = "") => (path46) => {
-  if (typeof path46 === "string") {
-    return normalizePathToUnix(sysPath2.isAbsolute(path46) ? path46 : sysPath2.join(cwd, path46));
+var normalizePathToUnix = (path45) => toUnix(sysPath2.normalize(toUnix(path45)));
+var normalizeIgnored = (cwd = "") => (path45) => {
+  if (typeof path45 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path45) ? path45 : sysPath2.join(cwd, path45));
   } else {
-    return path46;
+    return path45;
   }
 };
-var getAbsolutePath = (path46, cwd) => {
-  if (sysPath2.isAbsolute(path46)) {
-    return path46;
+var getAbsolutePath = (path45, cwd) => {
+  if (sysPath2.isAbsolute(path45)) {
+    return path45;
   }
-  return sysPath2.join(cwd, path46);
+  return sysPath2.join(cwd, path45);
 };
 var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
 var DirEntry = class {
@@ -37129,10 +37129,10 @@ var DirEntry = class {
 var STAT_METHOD_F = "stat";
 var STAT_METHOD_L = "lstat";
 var WatchHelper = class {
-  constructor(path46, follow, fsw) {
+  constructor(path45, follow, fsw) {
     this.fsw = fsw;
-    const watchPath = path46;
-    this.path = path46 = path46.replace(REPLACER_RE, "");
+    const watchPath = path45;
+    this.path = path45 = path45.replace(REPLACER_RE, "");
     this.watchPath = watchPath;
     this.fullWatchPath = sysPath2.resolve(watchPath);
     this.dirParts = [];
@@ -37254,20 +37254,20 @@ var FSWatcher = class extends EventEmitter {
     this._closePromise = void 0;
     let paths = unifyPaths(paths_);
     if (cwd) {
-      paths = paths.map((path46) => {
-        const absPath = getAbsolutePath(path46, cwd);
+      paths = paths.map((path45) => {
+        const absPath = getAbsolutePath(path45, cwd);
         return absPath;
       });
     }
-    paths.forEach((path46) => {
-      this._removeIgnoredPath(path46);
+    paths.forEach((path45) => {
+      this._removeIgnoredPath(path45);
     });
     this._userIgnored = void 0;
     if (!this._readyCount)
       this._readyCount = 0;
     this._readyCount += paths.length;
-    Promise.all(paths.map(async (path46) => {
-      const res = await this._nodeFsHandler._addToNodeFs(path46, !_internal, void 0, 0, _origAdd);
+    Promise.all(paths.map(async (path45) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path45, !_internal, void 0, 0, _origAdd);
       if (res)
         this._emitReady();
       return res;
@@ -37289,17 +37289,17 @@ var FSWatcher = class extends EventEmitter {
       return this;
     const paths = unifyPaths(paths_);
     const { cwd } = this.options;
-    paths.forEach((path46) => {
-      if (!sysPath2.isAbsolute(path46) && !this._closers.has(path46)) {
+    paths.forEach((path45) => {
+      if (!sysPath2.isAbsolute(path45) && !this._closers.has(path45)) {
         if (cwd)
-          path46 = sysPath2.join(cwd, path46);
-        path46 = sysPath2.resolve(path46);
+          path45 = sysPath2.join(cwd, path45);
+        path45 = sysPath2.resolve(path45);
       }
-      this._closePath(path46);
-      this._addIgnoredPath(path46);
-      if (this._watched.has(path46)) {
+      this._closePath(path45);
+      this._addIgnoredPath(path45);
+      if (this._watched.has(path45)) {
         this._addIgnoredPath({
-          path: path46,
+          path: path45,
           recursive: true
         });
       }
@@ -37363,38 +37363,38 @@ var FSWatcher = class extends EventEmitter {
    * @param stats arguments to be passed with event
    * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
    */
-  async _emit(event, path46, stats) {
+  async _emit(event, path45, stats) {
     if (this.closed)
       return;
     const opts = this.options;
     if (isWindows)
-      path46 = sysPath2.normalize(path46);
+      path45 = sysPath2.normalize(path45);
     if (opts.cwd)
-      path46 = sysPath2.relative(opts.cwd, path46);
-    const args3 = [path46];
+      path45 = sysPath2.relative(opts.cwd, path45);
+    const args3 = [path45];
     if (stats != null)
       args3.push(stats);
     const awf = opts.awaitWriteFinish;
     let pw;
-    if (awf && (pw = this._pendingWrites.get(path46))) {
+    if (awf && (pw = this._pendingWrites.get(path45))) {
       pw.lastChange = /* @__PURE__ */ new Date();
       return this;
     }
     if (opts.atomic) {
       if (event === EVENTS.UNLINK) {
-        this._pendingUnlinks.set(path46, [event, ...args3]);
+        this._pendingUnlinks.set(path45, [event, ...args3]);
         setTimeout(() => {
-          this._pendingUnlinks.forEach((entry, path47) => {
+          this._pendingUnlinks.forEach((entry, path46) => {
             this.emit(...entry);
             this.emit(EVENTS.ALL, ...entry);
-            this._pendingUnlinks.delete(path47);
+            this._pendingUnlinks.delete(path46);
           });
         }, typeof opts.atomic === "number" ? opts.atomic : 100);
         return this;
       }
-      if (event === EVENTS.ADD && this._pendingUnlinks.has(path46)) {
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path45)) {
         event = EVENTS.CHANGE;
-        this._pendingUnlinks.delete(path46);
+        this._pendingUnlinks.delete(path45);
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
@@ -37412,16 +37412,16 @@ var FSWatcher = class extends EventEmitter {
           this.emitWithAll(event, args3);
         }
       };
-      this._awaitWriteFinish(path46, awf.stabilityThreshold, event, awfEmit);
+      this._awaitWriteFinish(path45, awf.stabilityThreshold, event, awfEmit);
       return this;
     }
     if (event === EVENTS.CHANGE) {
-      const isThrottled = !this._throttle(EVENTS.CHANGE, path46, 50);
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path45, 50);
       if (isThrottled)
         return this;
     }
     if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
-      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path46) : path46;
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path45) : path45;
       let stats2;
       try {
         stats2 = await stat3(fullPath);
@@ -37452,23 +37452,23 @@ var FSWatcher = class extends EventEmitter {
    * @param timeout duration of time to suppress duplicate actions
    * @returns tracking object or false if action should be suppressed
    */
-  _throttle(actionType, path46, timeout) {
+  _throttle(actionType, path45, timeout) {
     if (!this._throttled.has(actionType)) {
       this._throttled.set(actionType, /* @__PURE__ */ new Map());
     }
     const action = this._throttled.get(actionType);
     if (!action)
       throw new Error("invalid throttle");
-    const actionPath = action.get(path46);
+    const actionPath = action.get(path45);
     if (actionPath) {
       actionPath.count++;
       return false;
     }
     let timeoutObject;
     const clear = () => {
-      const item = action.get(path46);
+      const item = action.get(path45);
       const count = item ? item.count : 0;
-      action.delete(path46);
+      action.delete(path45);
       clearTimeout(timeoutObject);
       if (item)
         clearTimeout(item.timeoutObject);
@@ -37476,7 +37476,7 @@ var FSWatcher = class extends EventEmitter {
     };
     timeoutObject = setTimeout(clear, timeout);
     const thr = { timeoutObject, clear, count: 0 };
-    action.set(path46, thr);
+    action.set(path45, thr);
     return thr;
   }
   _incrReadyCount() {
@@ -37490,44 +37490,44 @@ var FSWatcher = class extends EventEmitter {
    * @param event
    * @param awfEmit Callback to be called when ready for event to be emitted.
    */
-  _awaitWriteFinish(path46, threshold, event, awfEmit) {
+  _awaitWriteFinish(path45, threshold, event, awfEmit) {
     const awf = this.options.awaitWriteFinish;
     if (typeof awf !== "object")
       return;
     const pollInterval = awf.pollInterval;
     let timeoutHandler;
-    let fullPath = path46;
-    if (this.options.cwd && !sysPath2.isAbsolute(path46)) {
-      fullPath = sysPath2.join(this.options.cwd, path46);
+    let fullPath = path45;
+    if (this.options.cwd && !sysPath2.isAbsolute(path45)) {
+      fullPath = sysPath2.join(this.options.cwd, path45);
     }
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
       statcb(fullPath, (err2, curStat) => {
-        if (err2 || !writes.has(path46)) {
+        if (err2 || !writes.has(path45)) {
           if (err2 && err2.code !== "ENOENT")
             awfEmit(err2);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
         if (prevStat && curStat.size !== prevStat.size) {
-          writes.get(path46).lastChange = now2;
+          writes.get(path45).lastChange = now2;
         }
-        const pw = writes.get(path46);
+        const pw = writes.get(path45);
         const df = now2 - pw.lastChange;
         if (df >= threshold) {
-          writes.delete(path46);
+          writes.delete(path45);
           awfEmit(void 0, curStat);
         } else {
           timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
         }
       });
     }
-    if (!writes.has(path46)) {
-      writes.set(path46, {
+    if (!writes.has(path45)) {
+      writes.set(path45, {
         lastChange: now,
         cancelWait: () => {
-          writes.delete(path46);
+          writes.delete(path45);
           clearTimeout(timeoutHandler);
           return event;
         }
@@ -37538,8 +37538,8 @@ var FSWatcher = class extends EventEmitter {
   /**
    * Determines whether user has asked to ignore this path.
    */
-  _isIgnored(path46, stats) {
-    if (this.options.atomic && DOT_RE.test(path46))
+  _isIgnored(path45, stats) {
+    if (this.options.atomic && DOT_RE.test(path45))
       return true;
     if (!this._userIgnored) {
       const { cwd } = this.options;
@@ -37549,17 +37549,17 @@ var FSWatcher = class extends EventEmitter {
       const list = [...ignoredPaths.map(normalizeIgnored(cwd)), ...ignored];
       this._userIgnored = anymatch(list, void 0);
     }
-    return this._userIgnored(path46, stats);
+    return this._userIgnored(path45, stats);
   }
-  _isntIgnored(path46, stat4) {
-    return !this._isIgnored(path46, stat4);
+  _isntIgnored(path45, stat4) {
+    return !this._isIgnored(path45, stat4);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
    * @param path file or directory pattern being watched
    */
-  _getWatchHelpers(path46) {
-    return new WatchHelper(path46, this.options.followSymlinks, this);
+  _getWatchHelpers(path45) {
+    return new WatchHelper(path45, this.options.followSymlinks, this);
   }
   // Directory helpers
   // -----------------
@@ -37591,63 +37591,63 @@ var FSWatcher = class extends EventEmitter {
    * @param item      base path of item/directory
    */
   _remove(directory, item, isDirectory) {
-    const path46 = sysPath2.join(directory, item);
-    const fullPath = sysPath2.resolve(path46);
-    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path46) || this._watched.has(fullPath);
-    if (!this._throttle("remove", path46, 100))
+    const path45 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path45);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path45) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path45, 100))
       return;
     if (!isDirectory && this._watched.size === 1) {
       this.add(directory, item, true);
     }
-    const wp = this._getWatchedDir(path46);
+    const wp = this._getWatchedDir(path45);
     const nestedDirectoryChildren = wp.getChildren();
-    nestedDirectoryChildren.forEach((nested) => this._remove(path46, nested));
+    nestedDirectoryChildren.forEach((nested) => this._remove(path45, nested));
     const parent = this._getWatchedDir(directory);
     const wasTracked = parent.has(item);
     parent.remove(item);
     if (this._symlinkPaths.has(fullPath)) {
       this._symlinkPaths.delete(fullPath);
     }
-    let relPath = path46;
+    let relPath = path45;
     if (this.options.cwd)
-      relPath = sysPath2.relative(this.options.cwd, path46);
+      relPath = sysPath2.relative(this.options.cwd, path45);
     if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
       const event = this._pendingWrites.get(relPath).cancelWait();
       if (event === EVENTS.ADD)
         return;
     }
-    this._watched.delete(path46);
+    this._watched.delete(path45);
     this._watched.delete(fullPath);
     const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
-    if (wasTracked && !this._isIgnored(path46))
-      this._emit(eventName, path46);
-    this._closePath(path46);
+    if (wasTracked && !this._isIgnored(path45))
+      this._emit(eventName, path45);
+    this._closePath(path45);
   }
   /**
    * Closes all watchers for a path
    */
-  _closePath(path46) {
-    this._closeFile(path46);
-    const dir = sysPath2.dirname(path46);
-    this._getWatchedDir(dir).remove(sysPath2.basename(path46));
+  _closePath(path45) {
+    this._closeFile(path45);
+    const dir = sysPath2.dirname(path45);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path45));
   }
   /**
    * Closes only file-specific watchers
    */
-  _closeFile(path46) {
-    const closers = this._closers.get(path46);
+  _closeFile(path45) {
+    const closers = this._closers.get(path45);
     if (!closers)
       return;
     closers.forEach((closer) => closer());
-    this._closers.delete(path46);
+    this._closers.delete(path45);
   }
-  _addPathCloser(path46, closer) {
+  _addPathCloser(path45, closer) {
     if (!closer)
       return;
-    let list = this._closers.get(path46);
+    let list = this._closers.get(path45);
     if (!list) {
       list = [];
-      this._closers.set(path46, list);
+      this._closers.set(path45, list);
     }
     list.push(closer);
   }
@@ -43109,23 +43109,23 @@ var Bridge = class {
           return;
         }
         let used = 0;
-        for (const [path46, fact] of facts.all) {
-          if (ignored.has(path46) || rules.roomIgnore.ignores(path46) || defaultIgnoredPath(path46) || defaultExcludedPath(path46) || !validRepoPath(path46, DISK_READ_PATH) || fact.change !== "D" && fact.mode !== void 0 && fact.mode !== 33188 && fact.mode !== 33261 || fact.change !== "D" && fact.size !== void 0 && (fact.size > rules.sizeCap || authorizesText(policy, path46) && used + fact.size > rules.budget)) {
-            excluded.push(digestPath(salt, path46));
+        for (const [path45, fact] of facts.all) {
+          if (ignored.has(path45) || rules.roomIgnore.ignores(path45) || defaultIgnoredPath(path45) || defaultExcludedPath(path45) || !validRepoPath(path45, DISK_READ_PATH) || fact.change !== "D" && fact.mode !== void 0 && fact.mode !== 33188 && fact.mode !== 33261 || fact.change !== "D" && fact.size !== void 0 && (fact.size > rules.sizeCap || authorizesText(policy, path45) && used + fact.size > rules.budget)) {
+            excluded.push(digestPath(salt, path45));
             continue;
           }
-          if (fact.change !== "D" && authorizesText(policy, path46) && fact.size !== void 0) used += fact.size;
+          if (fact.change !== "D" && authorizesText(policy, path45) && fact.size !== void 0) used += fact.size;
           const entry = fact.change === "D" ? { change: "D", state: "shared", at: fact.at, fence } : { change: fact.change, state: "held", held: "worker", at: fact.at, fence };
-          if (authorizesText(policy, path46)) {
+          if (authorizesText(policy, path45)) {
             if (fact.change !== "D" && fact.hash) {
               entry.hash = fact.hash;
               if (fact.size !== void 0) entry.size = fact.size;
               if (fact.baseHash) entry.baseHash = fact.baseHash;
-            } else if (fact.change === "D" && fact.baseHash && (facts.carried.has(path46) || source.entries.get(path46)?.baseHash)) {
+            } else if (fact.change === "D" && fact.baseHash && (facts.carried.has(path45) || source.entries.get(path45)?.baseHash)) {
               entry.baseHash = fact.baseHash;
             }
           }
-          entries.set(path46, entry);
+          entries.set(path45, entry);
         }
       }
     } else if (coverage.kind === "all") complete = false;
@@ -43196,11 +43196,11 @@ var Bridge = class {
       const raw = await git(dir, ["diff", "--raw", "--no-renames", "--no-abbrev", "-z", B, C2]);
       const parts2 = raw.split("\0");
       for (let i2 = 0; i2 + 1 < parts2.length; i2 += 2) {
-        const meta2 = parts2[i2].replace(/^:/, "").split(" "), path46 = parts2[i2 + 1];
-        if (meta2.length < 5 || !path46) continue;
+        const meta2 = parts2[i2].replace(/^:/, "").split(" "), path45 = parts2[i2 + 1];
+        if (meta2.length < 5 || !path45) continue;
         const status = meta2[4][0];
         if (!["M", "A", "D"].includes(status)) continue;
-        between.set(path46, { change: status, ...status !== "A" ? { oldBlob: meta2[2] } : {}, ...status !== "D" ? { newBlob: meta2[3] } : {} });
+        between.set(path45, { change: status, ...status !== "A" ? { oldBlob: meta2[2] } : {}, ...status !== "D" ? { newBlob: meta2[3] } : {} });
       }
     }
     const untracked = new Map((record2.carriedUntracked ?? []).map((f) => [f.path, f.sha]));
@@ -43208,32 +43208,32 @@ var Bridge = class {
     const atB = await blobsAt(dir, B, candidates);
     const all2 = /* @__PURE__ */ new Map(), carried = /* @__PURE__ */ new Map();
     const now = Date.now();
-    const put = (path46, hash2, at, size2, mode2) => {
-      const base = atB.get(path46);
+    const put = (path45, hash2, at, size2, mode2) => {
+      const base = atB.get(path45);
       if (hash2 === void 0) return base ? { change: "D", baseHash: base.blob, at } : void 0;
       if (base?.blob === hash2) return void 0;
       return { change: base ? "M" : "A", hash: hash2, ...size2 !== void 0 ? { size: size2 } : {}, ...mode2 !== void 0 ? { mode: mode2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
     };
-    for (const [path46, e] of own2) {
-      const fact = e.change === "D" ? put(path46, void 0, e.at) : e.hash ? put(path46, e.hash, e.at, e.size) : { change: atB.has(path46) ? "M" : "A", ...atB.get(path46) ? { baseHash: atB.get(path46).blob } : {}, at: e.at };
-      if (fact) all2.set(path46, fact);
+    for (const [path45, e] of own2) {
+      const fact = e.change === "D" ? put(path45, void 0, e.at) : e.hash ? put(path45, e.hash, e.at, e.size) : { change: atB.has(path45) ? "M" : "A", ...atB.get(path45) ? { baseHash: atB.get(path45).blob } : {}, at: e.at };
+      if (fact) all2.set(path45, fact);
     }
     const sizes = await blobsAt(dir, C2, [...between.keys()].filter((p) => !own2.has(p) && between.get(p).newBlob));
-    for (const [path46, d] of between) {
-      if (own2.has(path46) || untracked.has(path46)) continue;
-      const fact = put(path46, d.newBlob, now, sizes.get(path46)?.size, sizes.get(path46)?.mode);
+    for (const [path45, d] of between) {
+      if (own2.has(path45) || untracked.has(path45)) continue;
+      const fact = put(path45, d.newBlob, now, sizes.get(path45)?.size, sizes.get(path45)?.mode);
       if (fact) {
-        all2.set(path46, fact);
-        carried.set(path46, fact);
+        all2.set(path45, fact);
+        carried.set(path45, fact);
       }
     }
-    for (const [path46, sha] of untracked) {
-      if (own2.has(path46)) continue;
+    for (const [path45, sha] of untracked) {
+      if (own2.has(path45)) continue;
       const size2 = Number((await git(dir, ["cat-file", "-s", sha])).trim());
-      const fact = put(path46, sha, now, size2, record2.carriedUntracked?.find((entry) => entry.path === path46)?.mode);
+      const fact = put(path45, sha, now, size2, record2.carriedUntracked?.find((entry) => entry.path === path45)?.mode);
       if (fact) {
-        all2.set(path46, fact);
-        carried.set(path46, fact);
+        all2.set(path45, fact);
+        carried.set(path45, fact);
       }
     }
     return { all: all2, carried };
@@ -43343,8 +43343,6 @@ async function blobsAt(dir, commit, paths) {
 
 // packages/room-mcp/src/conflict-set.ts
 import { createHash as createHash8 } from "node:crypto";
-import fs20 from "node:fs";
-import path18 from "node:path";
 
 // packages/room-mcp/src/merge.ts
 import { execFile as execFile5 } from "node:child_process";
@@ -43765,16 +43763,16 @@ var Diff = class {
       }
     }
   }
-  addToPath(path46, added, removed, oldPosInc, options) {
-    const last2 = path46.lastComponent;
+  addToPath(path45, added, removed, oldPosInc, options) {
+    const last2 = path45.lastComponent;
     if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
       return {
-        oldPos: path46.oldPos + oldPosInc,
+        oldPos: path45.oldPos + oldPosInc,
         lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
       };
     } else {
       return {
-        oldPos: path46.oldPos + oldPosInc,
+        oldPos: path45.oldPos + oldPosInc,
         lastComponent: { count: 1, added, removed, previousComponent: last2 }
       };
     }
@@ -44867,8 +44865,8 @@ var languageSpecs = [
   spec14,
   spec15
 ];
-function specForPath(path46) {
-  const lower = path46.toLowerCase();
+function specForPath(path45) {
+  const lower = path45.toLowerCase();
   return languageSpecs.find((spec16) => spec16.extensions.some((extension2) => lower.endsWith(extension2)));
 }
 
@@ -44941,14 +44939,14 @@ async function loadLanguage(spec16) {
 }
 async function ensureLanguages(paths) {
   const needed = /* @__PURE__ */ new Map();
-  for (const path46 of paths) {
-    const spec16 = specForPath(path46);
+  for (const path45 of paths) {
+    const spec16 = specForPath(path45);
     if (spec16) needed.set(spec16.grammar, spec16);
   }
   await Promise.all([...needed.values()].map(loadLanguage));
 }
-function loadedForPath(path46) {
-  const lower = path46.toLowerCase();
+function loadedForPath(path45) {
+  const lower = path45.toLowerCase();
   let best;
   for (const [extension2, loaded] of loadedByExtension) {
     if (lower.endsWith(extension2) && (!best || extension2.length > best[0])) best = [extension2.length, loaded];
@@ -44998,8 +44996,8 @@ function parsedDefinition(match, capture) {
     signature: signatureOf(capture.node, match)
   };
 }
-var parseFile = (path46, text) => {
-  const loaded = loadedForPath(path46);
+var parseFile = (path45, text) => {
+  const loaded = loadedForPath(path45);
   if (!loaded || text.length > MAX_BYTES) return void 0;
   let tree;
   try {
@@ -45055,7 +45053,7 @@ var parseFile = (path46, text) => {
 // packages/room-mcp/src/graph-index.ts
 import fs18 from "node:fs";
 import path16 from "node:path";
-var isSourcePath = (path46) => specForPath(path46) !== void 0;
+var isSourcePath = (path45) => specForPath(path45) !== void 0;
 var MAX_FILES = 3e3;
 var MAX_BYTES2 = 256 * 1024;
 var MAX_REFRESH_CONCURRENCY = 8;
@@ -45066,10 +45064,10 @@ var MIN_PUBLISH_MS = 2e4;
 var YIELD_EVERY = 100;
 var YIELD_AFTER_MS = 50;
 var yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
-async function referencesSymbol(path46, text, symbol) {
-  if (!isSourcePath(path46) || text.length > MAX_BYTES2) return false;
-  await ensureLanguages([path46]);
-  const parsed = parseFile(path46, text);
+async function referencesSymbol(path45, text, symbol) {
+  if (!isSourcePath(path45) || text.length > MAX_BYTES2) return false;
+  await ensureLanguages([path45]);
+  const parsed = parseFile(path45, text);
   if (!parsed) return false;
   const wanted = bareSymbol(symbol);
   return [...parsed.refs, ...parsed.ownRefs].some((ref) => bareSymbol(ref) === wanted);
@@ -45080,10 +45078,10 @@ async function consumesSymbol(consumer, text, provider, symbol, known) {
   const parsed = parseFile(consumer, text);
   const name2 = symbol.split(/[.:]+/).filter(Boolean).at(-1) ?? symbol;
   const files2 = /* @__PURE__ */ new Map([[provider, { defs: [name2], refs: [], imports: [] }]]);
-  for (const path46 of known?.definersOf(name2) ?? []) if (path46 !== provider && path46 !== consumer) files2.set(path46, known.symbolsOf(path46));
+  for (const path45 of known?.definersOf(name2) ?? []) if (path45 !== provider && path45 !== consumer) files2.set(path45, known.symbolsOf(path45));
   files2.set(consumer, { defs: parsed.defs.map((definition) => definition.name), refs: parsed.refs, imports: parsed.imports });
-  const graph = new SymbolGraph((path46) => files2.get(path46));
-  for (const path46 of files2.keys()) graph.set(path46, "");
+  const graph = new SymbolGraph((path45) => files2.get(path45));
+  for (const path45 of files2.keys()) graph.set(path45, "");
   return graph.dependenciesOf(consumer).some((dep) => dep.symbol === name2 && dep.definedIn.includes(provider));
 }
 var GraphIndex = class {
@@ -45094,8 +45092,8 @@ var GraphIndex = class {
     this.dir = dir;
     this.log = log2;
     this.opts = opts;
-    this.graph = new SymbolGraph((path46) => this.cache.get(path46));
-    this.publishedGraph = new SymbolGraph((path46) => this.publishedCache.get(path46));
+    this.graph = new SymbolGraph((path45) => this.cache.get(path45));
+    this.publishedGraph = new SymbolGraph((path45) => this.publishedCache.get(path45));
   }
   room;
   me;
@@ -45191,8 +45189,8 @@ var GraphIndex = class {
       if (next === peerKeys.get(person)) return;
       peerKeys.set(person, next);
       const paths = peerRefreshInTransaction.get(transaction) ?? /* @__PURE__ */ new Set();
-      for (const [path46, source] of this.publishedSource) if (source.kind === "entry" && source.person === person) paths.add(path46);
-      for (const path46 of manifestPaths(this.room, person)) paths.add(path46);
+      for (const [path45, source] of this.publishedSource) if (source.kind === "entry" && source.person === person) paths.add(path45);
+      for (const path45 of manifestPaths(this.room, person)) paths.add(path45);
       peerRefreshInTransaction.set(transaction, paths);
       this.withdrawRestricted();
     };
@@ -45200,7 +45198,7 @@ var GraphIndex = class {
       const paths = peerRefreshInTransaction.get(transaction);
       if (!paths || !this.base || this.stopped) return;
       const touched = touchedInTransaction.get(transaction);
-      for (const path46 of paths) if (isSourcePath(path46) && !touched?.has(path46)) void this.refresh(path46);
+      for (const path45 of paths) if (isSourcePath(path45) && !touched?.has(path45)) void this.refresh(path45);
       if (![...paths].some(isSourcePath) && !touched?.size) void this.publish(this.phase);
     };
     this.room.doc.on("afterTransaction", afterTransaction);
@@ -45213,11 +45211,11 @@ var GraphIndex = class {
         const paths = touchedPaths(events, root, known);
         for (const event of events) {
           const touched = touchedInTransaction.get(event.transaction) ?? /* @__PURE__ */ new Set();
-          for (const path46 of paths) touched.add(path46);
+          for (const path45 of paths) touched.add(path45);
           touchedInTransaction.set(event.transaction, touched);
         }
         if (this.base) {
-          for (const path46 of paths) if (isSourcePath(path46)) void this.refresh(path46);
+          for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
         }
       };
     };
@@ -45240,7 +45238,7 @@ var GraphIndex = class {
       this.ownPublicationKey = next;
       if (firstHead) return;
       const paths = /* @__PURE__ */ new Set([...this.room.manifestHead.get(this.me) ? manifestPaths(this.room, this.me) : [], ...this.cache.keys()]);
-      for (const path46 of paths) if (isSourcePath(path46)) void this.refresh(path46);
+      for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
       if (![...paths].some(isSourcePath)) void this.publish(this.phase);
     };
     this.room.manifestHead.observe(onHead);
@@ -45264,7 +45262,7 @@ var GraphIndex = class {
         this.ownPublicationKey = next;
         if (firstHead) return;
         const paths = /* @__PURE__ */ new Set([...manifestPaths(this.room, this.me), ...this.cache.keys()]);
-        for (const path46 of paths) if (isSourcePath(path46)) void this.refresh(path46);
+        for (const path45 of paths) if (isSourcePath(path45)) void this.refresh(path45);
       }
     };
     this.room.participants.observe(onParticipant);
@@ -45276,7 +45274,7 @@ var GraphIndex = class {
       this.withdrawRestricted();
       if (next === this.ownPublicationKey) return;
       this.ownPublicationKey = next;
-      for (const path46 of /* @__PURE__ */ new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path46)) void this.refresh(path46);
+      for (const path45 of /* @__PURE__ */ new Set([...this.cache.keys(), ...manifestPaths(this.room, this.me)])) if (isSourcePath(path45)) void this.refresh(path45);
     };
     this.room.metaMap.observe(onMeta);
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta));
@@ -45380,81 +45378,83 @@ var GraphIndex = class {
     }
   }
   /** Only visible text or a certified base participates in the graph. */
-  async textFor(path46) {
+  async textFor(path45) {
     const ownFence = this.room.manifestHead.get(this.me)?.fence;
-    const ownEntry = ownFence ? this.room.manifest.get(manifestKey(this.me, ownFence))?.get(path46) : void 0;
+    const ownEntry = ownFence ? this.room.manifest.get(manifestKey(this.me, ownFence))?.get(path45) : void 0;
     if (ownEntry?.change === "D") return void 0;
-    const mine = ownEntry ? this.ownText(path46) : void 0;
+    const mine = ownEntry ? this.ownText(path45) : void 0;
     if (mine !== void 0) return mine;
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
       const participant = snapshot(this.room, person, []);
-      const version2 = await versionOf(participant, path46, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
-      if (!participant?.entries.has(path46) && version2.kind !== "excluded") continue;
+      const version2 = await versionOf(participant, path45, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      if (!participant?.entries.has(path45) && version2.kind !== "excluded") continue;
       if (version2.kind === "text") return version2.text;
       return void 0;
     }
     if (!this.base) return void 0;
-    return (this.opts.read ?? gitShow)(this.dir, this.base, path46);
+    return (this.opts.read ?? gitShow)(this.dir, this.base, path45);
   }
   /** Publication reads an accepted shared version or the certified base, never indexing disk text. */
-  async publicationTextFor(path46) {
+  async publicationTextFor(path45) {
     const mine = snapshot(this.room, this.me, []);
     if (mine) {
+      if (!this.ownTextAuthorized(path45)) return void 0;
       if (!mine.fenceValid || !mine.head.complete || mine.head.coverage.kind !== "all") return void 0;
-      if (!mine.roomSalt || !/^[a-f0-9]{64}$/i.test(mine.roomSalt) || mine.head.excluded.includes(digestPath(mine.roomSalt, path46))) return void 0;
-      const raw = this.room.manifest.get(manifestKey(this.me, mine.head.fence))?.get(path46);
+      if (!mine.roomSalt || !/^[a-f0-9]{64}$/i.test(mine.roomSalt) || mine.head.excluded.includes(digestPath(mine.roomSalt, path45))) return void 0;
+      const raw = this.room.manifest.get(manifestKey(this.me, mine.head.fence))?.get(path45);
       if (raw && raw.fence !== mine.head.fence) return void 0;
     }
-    if (mine?.entries.has(path46)) {
-      if (!this.ownTextAuthorized(path46)) return void 0;
-      const version3 = await versionOf(mine, path46, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+    if (mine?.entries.has(path45)) {
+      if (!this.ownTextAuthorized(path45)) return void 0;
+      const version3 = await versionOf(mine, path45, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
       return version3.kind === "text" && version3.entry.hash ? { text: version3.text, source: { kind: "entry", person: this.me, fence: mine.head.fence, hash: version3.entry.hash } } : void 0;
     }
     for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
       const peer = snapshot(this.room, person, []);
       if (!peer) continue;
-      const raw = this.room.manifest.get(manifestKey(person, peer.head.fence))?.get(path46);
+      const raw = this.room.manifest.get(manifestKey(person, peer.head.fence))?.get(path45);
       if (raw && raw.fence !== peer.head.fence) return void 0;
-      if (!peer.entries.has(path46)) continue;
-      if (!this.entryAuthorized(person, path46, raw)) return void 0;
-      const version3 = await versionOf(peer, path46, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      if (!peer.entries.has(path45)) continue;
+      if (!this.entryAuthorized(person, path45, raw)) return void 0;
+      const version3 = await versionOf(peer, path45, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
       return version3.kind === "text" && version3.entry.hash ? { text: version3.text, source: { kind: "entry", person, fence: peer.head.fence, hash: version3.entry.hash } } : void 0;
     }
     if (!mine) {
-      const text = await (this.opts.read ?? gitShow)(this.dir, this.base, path46);
+      const text = await (this.opts.read ?? gitShow)(this.dir, this.base, path45);
       return text === void 0 ? void 0 : { text, source: { kind: "base", base: this.base } };
     }
-    const version2 = await versionOf(mine, path46, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+    const version2 = await versionOf(mine, path45, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
     return version2.kind === "base" && version2.text !== void 0 ? { text: version2.text, source: { kind: "base", base: mine.head.base } } : void 0;
   }
-  ownTextAuthorized(path46) {
+  ownTextAuthorized(path45) {
     const head = this.room.manifestHead.get(this.me);
-    return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path46)));
+    return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45)));
   }
   /** The baseline read for a deletion may include a worker's carried, untracked blob. */
-  deletionBaseline(path46) {
+  deletionBaseline(path45) {
     const baseline = carriedFrom(this.dir, this.me)?.baseline;
-    return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path46)?.sha, baseline?.carriedCommit ?? false]);
+    return JSON.stringify([baseline?.sha ?? this.base, baseline?.untracked.get(path45)?.sha, baseline?.carriedCommit ?? false]);
   }
-  entryAuthorized(person, path46, entry) {
+  entryAuthorized(person, path45, entry) {
     const head = this.room.manifestHead.get(person);
     const record2 = participantRecord(this.room, person);
-    return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path46))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path46));
+    return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path45));
   }
-  publicationAllowed(path46, source = this.publishedSource.get(path46)) {
+  publicationAllowed(path45, source = this.publishedSource.get(path45)) {
     if (!source) return false;
     const head = this.room.manifestHead.get(this.me);
     if (!head) return source.kind === "base" && source.base === this.base;
+    if (!this.ownTextAuthorized(path45)) return false;
     const record2 = participantRecord(this.room, this.me);
-    if (!head.complete || head.coverage.kind !== "all" || holderFence(record2?.holder) !== head.fence || record2?.git?.base !== head.base || record2.git.fence !== head.fence || !this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, path46))) return false;
-    const ownEntry = this.room.manifest.get(manifestKey(this.me, head.fence))?.get(path46);
-    if (ownEntry) return this.entryAuthorized(this.me, path46, ownEntry) && (ownEntry.change === "D" ? source.kind === "deletion" && source.person === this.me && source.fence === head.fence && source.base === this.base && source.baseline === this.deletionBaseline(path46) : source.kind === "entry" && source.person === this.me && source.fence === head.fence && source.hash === ownEntry.hash);
+    if (!head.complete || head.coverage.kind !== "all" || holderFence(record2?.holder) !== head.fence || record2?.git?.base !== head.base || record2.git.fence !== head.fence || !this.room.roomSalt || !/^[a-f0-9]{64}$/i.test(this.room.roomSalt) || head.excluded.includes(digestPath(this.room.roomSalt, path45))) return false;
+    const ownEntry = this.room.manifest.get(manifestKey(this.me, head.fence))?.get(path45);
+    if (ownEntry) return this.entryAuthorized(this.me, path45, ownEntry) && (ownEntry.change === "D" ? source.kind === "deletion" && source.person === this.me && source.fence === head.fence && source.base === this.base && source.baseline === this.deletionBaseline(path45) : source.kind === "entry" && source.person === this.me && source.fence === head.fence && source.hash === ownEntry.hash);
     if (source.kind === "base") return source.base === head.base && source.base === this.base;
     if (source.person === this.me || source.kind === "deletion") return false;
-    const peerEntry = this.room.manifest.get(manifestKey(source.person, source.fence))?.get(path46);
-    return source.fence === this.room.manifestHead.get(source.person)?.fence && source.hash === peerEntry?.hash && this.entryAuthorized(source.person, path46, peerEntry);
+    const peerEntry = this.room.manifest.get(manifestKey(source.person, source.fence))?.get(path45);
+    return source.fence === this.room.manifestHead.get(source.person)?.fence && source.hash === peerEntry?.hash && this.entryAuthorized(source.person, path45, peerEntry);
   }
   /** A new reader must never receive derived text after its grant is withdrawn. */
   withdrawRestricted() {
@@ -45462,11 +45462,11 @@ var GraphIndex = class {
     const head = this.room.manifestHead.get(this.me);
     if (!head && graph?.sourceFence === void 0) return;
     const allowed = (p) => (graph?.sourceFence === void 0 || graph.sourceFence === head?.fence) && this.publicationAllowed(p);
-    for (const path46 of this.publishedSource.keys()) if (!allowed(path46)) {
-      this.publishedCache.delete(path46);
-      this.publishedSource.delete(path46);
-      this.publishedGraph.remove(path46);
-      this.observedByPath.delete(path46);
+    for (const path45 of this.publishedSource.keys()) if (!allowed(path45)) {
+      this.publishedCache.delete(path45);
+      this.publishedSource.delete(path45);
+      this.publishedGraph.remove(path45);
+      this.observedByPath.delete(path45);
       this.graphRevision++;
       this.observedRevision++;
     }
@@ -45488,10 +45488,10 @@ var GraphIndex = class {
     this.lastPublished.key = "";
     this.lastPublishedRevision = { graph: -1, observed: -1, base: "", provenance: "" };
   }
-  refresh(path46) {
+  refresh(path45) {
     if (this.stopped) return Promise.resolve();
-    this.revisions.set(path46, (this.revisions.get(path46) ?? 0) + 1);
-    const inflight = this.pending.get(path46);
+    this.revisions.set(path45, (this.revisions.get(path45) ?? 0) + 1);
+    const inflight = this.pending.get(path45);
     if (inflight) {
       if (inflight.generation !== this.generation) {
         inflight.resolve();
@@ -45510,18 +45510,18 @@ var GraphIndex = class {
     const idle = new Promise((r) => {
       resolveIdle = r;
     });
-    this.pending.set(path46, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
-    this.refreshQueue.push(path46);
+    this.pending.set(path45, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
+    this.refreshQueue.push(path45);
     this.drainRefreshQueue();
     return promise;
   }
-  removeGraph(path46) {
-    this.graph.remove(path46);
-    this.publishedGraph.remove(path46);
+  removeGraph(path45) {
+    this.graph.remove(path45);
+    this.publishedGraph.remove(path45);
     this.graphRevision++;
   }
-  setGraph(path46, text) {
-    this.graph.set(path46, text);
+  setGraph(path45, text) {
+    this.graph.set(path45, text);
     this.graphRevision++;
   }
   async yieldAfterIndex() {
@@ -45532,20 +45532,20 @@ var GraphIndex = class {
   }
   drainRefreshQueue() {
     while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
-      const path46 = this.refreshQueue.shift();
+      const path45 = this.refreshQueue.shift();
       this.activeRefreshes++;
       const generation = this.generation;
-      void this.runRefresh(path46).catch((e) => {
-        this.log(`graph: ${path46}: ${e instanceof Error ? e.message : e}`);
+      void this.runRefresh(path45).catch((e) => {
+        this.log(`graph: ${path45}: ${e instanceof Error ? e.message : e}`);
         return generation === this.generation;
       }).then((done) => {
         this.activeRefreshes--;
-        const entry = this.pending.get(path46);
+        const entry = this.pending.get(path45);
         if (entry?.generation === generation) entry.resolve();
-        if (!done && !this.stopped) this.refreshQueue.push(path46);
+        if (!done && !this.stopped) this.refreshQueue.push(path45);
         else {
           entry?.resolveIdle();
-          this.pending.delete(path46);
+          this.pending.delete(path45);
         }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing);
@@ -45557,32 +45557,32 @@ var GraphIndex = class {
       });
     }
   }
-  async runRefresh(path46) {
+  async runRefresh(path45) {
     if (!this.stopped) {
-      const revision = this.revisions.get(path46), generation = this.generation;
-      await ensureLanguages([path46]);
-      const text = await this.textFor(path46);
+      const revision = this.revisions.get(path45), generation = this.generation;
+      await ensureLanguages([path45]);
+      const text = await this.textFor(path45);
       const publicationSource = snapshot(this.room, this.me, []);
-      const publication = await this.publicationTextFor(path46);
+      const publication = await this.publicationTextFor(path45);
       const publicText = publication?.text;
-      const heldBy = text === void 0 ? [...this.room.manifestHead.keys()].filter((person) => {
+      const heldBy = text === void 0 && this.ownTextAuthorized(path45) ? [...this.room.manifestHead.keys()].filter((person) => {
         if (person === this.me) return false;
         const fence = this.room.manifestHead.get(person)?.fence;
-        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path46)?.state === "held";
+        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path45)?.state === "held";
       }) : [];
-      const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path46, text);
+      const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path45, text);
       const symbols = parsed ? {
         defs: parsed.defs.map((definition) => definition.name),
         refs: parsed.refs,
         imports: parsed.imports
       } : void 0;
       const myFence = this.room.manifestHead.get(this.me)?.fence;
-      const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path46) : void 0;
-      const mine = myEntry && myEntry.change !== "D" ? this.ownText(path46) : void 0;
+      const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path45) : void 0;
+      const mine = myEntry && myEntry.change !== "D" ? this.ownText(path45) : void 0;
       const mineDeleted = myEntry?.change === "D";
       const own2 = carriedFrom(this.dir, this.me)?.baseline;
       const read2 = (sha, file) => (this.opts.read ?? gitShow)(this.dir, sha, file);
-      const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path46, read2) : await read2(this.base, path46).then(
+      const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path45, read2) : await read2(this.base, path45).then(
         (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
         (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
       ) : void 0;
@@ -45593,60 +45593,60 @@ var GraphIndex = class {
       if (this.stopped) return true;
       if (generation !== this.generation) return false;
       if (!symbols || text === void 0) {
-        this.cache.delete(path46);
-        this.removeGraph(path46);
+        this.cache.delete(path45);
+        this.removeGraph(path45);
       } else {
-        this.cache.set(path46, symbols);
-        this.setGraph(path46, text);
+        this.cache.set(path45, symbols);
+        this.setGraph(path45, text);
       }
       if (publicText === void 0 || publicText.length > MAX_BYTES2) {
-        this.publishedCache.delete(path46);
-        this.publishedSource.delete(path46);
-        this.publishedGraph.remove(path46);
+        this.publishedCache.delete(path45);
+        this.publishedSource.delete(path45);
+        this.publishedGraph.remove(path45);
       } else {
-        const publicParsed = parseFile(path46, publicText);
+        const publicParsed = parseFile(path45, publicText);
         if (!publicParsed) {
-          this.publishedCache.delete(path46);
-          this.publishedSource.delete(path46);
-          this.publishedGraph.remove(path46);
+          this.publishedCache.delete(path45);
+          this.publishedSource.delete(path45);
+          this.publishedGraph.remove(path45);
         } else {
-          this.publishedCache.set(path46, { defs: publicParsed.defs.map((d) => d.name), refs: publicParsed.refs, imports: publicParsed.imports });
-          this.publishedSource.set(path46, publication.source);
-          this.publishedGraph.set(path46, publicText);
+          this.publishedCache.set(path45, { defs: publicParsed.defs.map((d) => d.name), refs: publicParsed.refs, imports: publicParsed.imports });
+          this.publishedSource.set(path45, publication.source);
+          this.publishedGraph.set(path45, publicText);
         }
       }
       this.graphRevision++;
-      if (myEntry?.state === "shared" && this.ownTextAuthorized(path46) && (publicText !== void 0 || mineDeleted)) {
+      if (myEntry?.state === "shared" && this.ownTextAuthorized(path45) && (publicText !== void 0 || mineDeleted)) {
         if (baseRead?.kind === "unavailable") {
-          this.degradedPaths.add(path46);
-          this.observedByPath.delete(path46);
-          this.log(`graph: baseline unavailable for ${path46}; observed contract coverage degraded: ${baseRead.error.message}`);
+          this.degradedPaths.add(path45);
+          this.observedByPath.delete(path45);
+          this.log(`graph: baseline unavailable for ${path45}; observed contract coverage degraded: ${baseRead.error.message}`);
           this.observedRevision++;
           await this.yieldAfterIndex();
-          return revision === this.revisions.get(path46);
+          return revision === this.revisions.get(path45);
         }
-        this.degradedPaths.delete(path46);
-        const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : publicText ?? "", path46, parseFile).map((change) => ({ path: path46, ...change }));
-        if (changes.length && mineDeleted && baseRead?.kind === "available" && this.entryAuthorized(this.me, path46, myEntry) && publicationSource?.fenceValid && snapshotStillCurrent(this.room, publicationSource, []))
-          this.publishedSource.set(path46, {
+        this.degradedPaths.delete(path45);
+        const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : publicText ?? "", path45, parseFile).map((change) => ({ path: path45, ...change }));
+        if (changes.length && mineDeleted && baseRead?.kind === "available" && this.entryAuthorized(this.me, path45, myEntry) && publicationSource?.fenceValid && snapshotStillCurrent(this.room, publicationSource, []))
+          this.publishedSource.set(path45, {
             kind: "deletion",
             person: this.me,
             fence: myEntry.fence,
             base: this.base,
-            baseline: JSON.stringify([own2?.sha ?? this.base, own2?.untracked.get(path46)?.sha, own2?.carriedCommit ?? false])
+            baseline: JSON.stringify([own2?.sha ?? this.base, own2?.untracked.get(path45)?.sha, own2?.carriedCommit ?? false])
           });
-        if (changes.length) this.observedByPath.set(path46, changes);
-        else this.observedByPath.delete(path46);
+        if (changes.length) this.observedByPath.set(path45, changes);
+        else this.observedByPath.delete(path45);
       } else {
-        this.observedByPath.delete(path46);
+        this.observedByPath.delete(path45);
         if (heldBy.length) {
-          this.degradedPaths.add(path46);
-          this.log(`graph: ${path46} changed by ${heldBy.join(", ")}; contract not visible`);
-        } else this.degradedPaths.delete(path46);
+          this.degradedPaths.add(path45);
+          this.log(`graph: ${path45} changed by ${heldBy.join(", ")}; contract not visible`);
+        } else this.degradedPaths.delete(path45);
       }
       this.observedRevision++;
       await this.yieldAfterIndex();
-      return revision === this.revisions.get(path46);
+      return revision === this.revisions.get(path45);
     }
     return true;
   }
@@ -45672,7 +45672,7 @@ var GraphIndex = class {
     const provenance = JSON.stringify([sourceFence, sourceRev]);
     const graphRevision = this.graphRevision, observedRevision = this.observedRevision, base = this.base;
     if (this.lastPublishedRevision.graph === graphRevision && this.lastPublishedRevision.observed === observedRevision && this.lastPublishedRevision.base === base && this.lastPublishedRevision.provenance === provenance && this.lastPublished.status === status) return;
-    const paths = Array.from(this.publishedCache.keys()).filter((path46) => this.publicationAllowed(path46)).sort();
+    const paths = Array.from(this.publishedCache.keys()).filter((path45) => this.publicationAllowed(path45)).sort();
     const allowedPaths = new Set(paths);
     const edges = /* @__PURE__ */ new Map();
     let truncated = this.truncated;
@@ -45728,7 +45728,7 @@ var GraphIndex = class {
       }, minMs - (now - this.lastPublished.at));
       return;
     }
-    if (paths.some((path46) => !this.publicationAllowed(path46))) return;
+    if (paths.some((path45) => !this.publicationAllowed(path45))) return;
     this.lastPublished = { at: now, key: key2, status };
     this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance };
     this.room.graphs.set(this.me, {
@@ -45833,52 +45833,15 @@ function workerText(dir, rel) {
 
 // packages/room-mcp/src/conflict-set.ts
 var hash = (value2) => createHash8("sha256").update(value2).digest("hex");
-var slotKey = (owner, kind, other, path46, subject = "") => [owner, kind, other, path46, subject].join("\0");
+var slotKey = (owner, kind, other, path45, subject = "") => [owner, kind, other, path45, subject].join("\0");
 var noticeId = (key2, epoch) => `cf:${hash(key2)}:${epoch}`;
 var ROOM = { name: "room", kind: "agent" };
 var retryMinutes = [1, 2, 4, 8];
 var StaleConflictInputs = class extends Error {
 };
-var ConsumerEvidence = class _ConsumerEvidence {
-  constructor(file, roomSalt) {
-    this.file = file;
-    this.roomSalt = roomSalt;
-    if (!file) return;
-    try {
-      const stored = JSON.parse(fs20.readFileSync(file, "utf8"));
-      if (stored.v !== 1 || stored.roomSalt !== roomSalt || !stored.slots || typeof stored.slots !== "object") return;
-      for (const [key2, paths] of Object.entries(stored.slots)) {
-        if (Array.isArray(paths) && paths.length && paths.every((p) => typeof p === "string")) this.paths.set(key2, paths);
-      }
-    } catch {
-    }
-  }
-  file;
-  roomSalt;
-  paths = /* @__PURE__ */ new Map();
-  static forSession(dir, room, owner) {
-    const salt = room.roomSalt;
-    if (!salt) return new _ConsumerEvidence();
-    const name2 = hash(`${salt}\0${owner}`);
-    return new _ConsumerEvidence(path18.join(commonGitDirFromDotGit(dir), "room", "contract-consumers", `${name2}.json`), salt);
-  }
-  get(key2) {
-    return this.paths.get(key2);
-  }
-  set(key2, paths) {
-    this.paths.set(key2, [...new Set(paths)].sort());
-    this.save();
-  }
-  delete(key2) {
-    if (this.paths.delete(key2)) this.save();
-  }
-  save() {
-    if (this.file) writeAtomic(this.file, { v: 1, roomSalt: this.roomSalt, slots: Object.fromEntries(this.paths) });
-  }
-};
 var ConflictSlots = class {
   constructor(room, post, fence, now = Date.now, log2 = () => {
-  }, holderPost = post, valid = () => true, evidence = new ConsumerEvidence()) {
+  }, holderPost = post, valid = () => true) {
     this.room = room;
     this.post = post;
     this.fence = fence;
@@ -45886,7 +45849,6 @@ var ConflictSlots = class {
     this.log = log2;
     this.holderPost = holderPost;
     this.valid = valid;
-    this.evidence = evidence;
     this.map = room.doc.getMap("conflicts");
   }
   room;
@@ -45896,7 +45858,6 @@ var ConflictSlots = class {
   log;
   holderPost;
   valid;
-  evidence;
   map;
   get(key2) {
     return this.map.get(key2);
@@ -45906,7 +45867,6 @@ var ConflictSlots = class {
   }
   drop(key2) {
     this.room.doc.transact(() => this.map.delete(key2));
-    this.evidence.delete(key2);
   }
   /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
   markContractsUnknown(owner, other, why, paths) {
@@ -45928,51 +45888,8 @@ var ConflictSlots = class {
       }
     });
   }
-  /** Remove signature detail when the provider's current text is no longer readable. */
-  redactContracts(owner, other, why, paths) {
-    const old = this.owned(owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other && (!paths || paths.has(slot.path)));
-    if (old.every(([key2, slot]) => key2 === slotKey(owner, "contract", other, slot.path, "*") && slot.status === "unknown" && slot.why === why)) return;
-    const byPath = /* @__PURE__ */ new Map();
-    for (const [, slot] of old) byPath.set(slot.path, [...byPath.get(slot.path) ?? [], slot]);
-    for (const [path46] of byPath) {
-      const supporting = new Set(old.filter(([, slot]) => slot.path === path46).flatMap(([key2]) => this.evidence.get(key2) ?? []));
-      if (supporting.size) this.evidence.set(slotKey(owner, "contract", other, path46, "*"), [...supporting].sort());
-    }
-    this.room.doc.transact(() => {
-      for (const [key2] of old) this.map.delete(key2);
-      for (const [path46, slots] of byPath) {
-        const prior = slots.find((slot) => slot.settled === "conflict") ?? slots.find((slot) => slot.settled === "possible") ?? slots[0];
-        const epoch = Math.max(...slots.map((slot) => slot.epoch));
-        this.map.set(slotKey(owner, "contract", other, path46, "*"), {
-          owner,
-          other,
-          kind: "contract",
-          path: path46,
-          subject: "*",
-          status: "unknown",
-          settled: prior.settled,
-          epoch,
-          fence: prior.fence,
-          checkedAt: this.now(),
-          inputs: hash(`${owner}\0${other}\0${path46}\0${why}`),
-          factId: "",
-          why
-        });
-      }
-    });
-    for (const [key2, slot] of old) if (key2 !== slotKey(owner, "contract", other, slot.path, "*")) this.evidence.delete(key2);
-  }
   async settle(key2, result2) {
-    let prev = this.map.get(key2);
-    if (!prev && result2.kind === "contract" && result2.subject !== "*") {
-      const prefix = slotKey(result2.owner, "contract", result2.other, result2.path, "");
-      const siblings = [...this.map.entries()].filter(([siblingKey]) => siblingKey.startsWith(prefix)).map(([, slot2]) => slot2);
-      const history = siblings.filter((slot2) => slot2.subject === "*" || slot2.noticeFloor !== void 0);
-      if (history.length) {
-        const epoch2 = Math.max(...history.map((slot2) => slot2.epoch));
-        prev = { ...history[0], subject: result2.subject, epoch: epoch2, settled: "none", factId: "", inputs: "", noticeFloor: epoch2 };
-      }
-    }
+    const prev = this.map.get(key2);
     const now = this.now();
     const fence = typeof this.fence === "function" ? this.fence() : this.fence;
     if (result2.status === "unknown" && prev?.status === "unknown" && prev.inputs === result2.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev;
@@ -45988,7 +45905,6 @@ var ConflictSlots = class {
       epoch,
       fence,
       checkedAt: now,
-      ...prev?.noticeFloor !== void 0 ? { noticeFloor: prev.noticeFloor } : {},
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
     };
@@ -46000,12 +45916,10 @@ var ConflictSlots = class {
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner) {
     for (const [key2, slot] of this.owned(owner)) {
-      if (slot.kind === "contract" && slot.subject === "*") continue;
       if (slot.settled === "conflict" || slot.settled === "possible" || slot.settled === "clean" && slot.epoch > 0) await this.postNotice(key2, slot);
     }
   }
   async postNotice(key2, slot) {
-    if (slot.kind === "contract" && slot.subject === "*") return;
     const current = () => this.valid() && this.map.get(key2) === slot && (typeof this.fence === "function" ? this.fence() : this.fence) === slot.fence;
     if (!current()) return;
     const id3 = noticeId(key2, slot.epoch) + (slot.settled === "clean" ? ":clean" : "");
@@ -46033,8 +45947,8 @@ var ConflictSlots = class {
 };
 var changedRanges = (base, live) => structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks.map((h) => ({ from: h.newStart, to: h.newStart + Math.max(0, h.newLines - 1) }));
 var asText = (v) => v.kind === "text" ? v.text : v.kind === "base" ? v.text ?? "" : v.kind === "deleted" ? "" : void 0;
-var sideInput = (snap, path46) => {
-  const entry = snap.entries.get(path46);
+var sideInput = (snap, path45) => {
+  const entry = snap.entries.get(path45);
   return entry ? entry.state === "held" && !entry.hash ? { change: entry.change, state: entry.state, held: entry.held } : { hash: entry.hash, state: entry.state, change: entry.change } : { committed: snap.head.base };
 };
 var ConflictSet = class {
@@ -46047,8 +45961,7 @@ var ConflictSet = class {
     this.debounceMs = debounceMs;
     this.carriedFrom = carriedFrom2;
     const fence = () => team.lease?.fence() ?? "";
-    this.consumerEvidence = ConsumerEvidence.forSession(team.dir, team.room, owner);
-    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post, () => this.guard?.() ?? false, this.consumerEvidence);
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2, team.post, () => this.guard?.() ?? false);
   }
   team;
   owner;
@@ -46064,11 +45977,10 @@ var ConflictSet = class {
   rerun = false;
   starts = [];
   contractCache = /* @__PURE__ */ new Map();
-  consumerEvidence;
   guard;
   start() {
     const schedule = () => {
-      this.withdrawContractDetails();
+      this.withdrawUnauthorizedContracts();
       this.schedule();
     };
     for (const map2 of [this.team.room.manifest, this.team.room.manifestHead, this.team.room.participants, this.team.room.claims, this.team.room.graphs]) {
@@ -46082,37 +45994,35 @@ var ConflictSet = class {
     this.tick.unref?.();
     if (this.team.provider.synced) this.schedule(0);
   }
-  /** Strip old derived signatures in the same event turn as a manifest or graph withdrawal. */
-  withdrawContractDetails() {
+  /** Remove every contract whose provider or consumer has left its text grant. */
+  withdrawUnauthorizedContracts() {
     if (!this.team.lease?.fence()) return;
     const room = this.team.room;
-    const others = new Set(this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract").map(([, slot]) => slot.other));
-    for (const other of others) {
-      const head = room.manifestHead.get(other), graph = room.graphs.get(other);
-      const snap = snapshot(room, other, participantsView(room, this.team.awareness, Date.now()));
-      const stale = !head?.complete || head.coverage.kind !== "all" || !snap?.fenceValid || head.base !== snap.record?.git?.base || !graph || graph.status !== "ready" || graph.sourceFence !== head.fence || graph.sourceRev !== head.rev;
-      this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", snap, stale);
+    const views = participantsView(room, this.team.awareness, Date.now());
+    const mine = snapshot(room, this.owner, views);
+    const stale = /* @__PURE__ */ new Set();
+    for (const [key2, slot] of this.slots.owned(this.owner)) {
+      if (slot.kind !== "contract") continue;
+      const theirs = snapshot(room, slot.other, views);
+      if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.length || slot.consumers.some((path45) => !this.contractPathAuthorized(mine, path45))) this.slots.drop(key2);
+      else {
+        const graph = room.graphs.get(slot.other);
+        if (!theirs?.head.complete || theirs.head.coverage.kind !== "all" || !graph || graph.status !== "ready" || graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev) stale.add(slot.other);
+      }
     }
+    for (const other of stale) this.slots.markContractsUnknown(this.owner, other, "provider graph or manifest coverage is updating");
   }
-  contractPathReadable(snap, path46) {
+  contractPathAuthorized(snap, path45) {
     const room = this.team.room;
     const head = snap?.head;
-    if (!snap?.fenceValid || !head?.complete || head.coverage.kind !== "all" || head.base !== snap.record?.git?.base || !room.roomSalt) return false;
-    const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path46));
-    const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path46);
-    return textAllowed && (!entry || entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path46));
+    if (!snap?.fenceValid || !head || !room.roomSalt) return false;
+    const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path45));
+    const entry = room.manifest.get(manifestKey(snap.name, head.fence))?.get(path45);
+    return textAllowed && (!entry || entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path45));
   }
-  /** Only a current text grant permits an old signature identity to remain in replicated slots. */
-  unknownOrRedactContracts(other, why, snap, markReadableUnknown = true) {
-    const slots = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract" && slot.other === other);
-    const readable = /* @__PURE__ */ new Set(), withdrawn = /* @__PURE__ */ new Set();
-    for (const [, slot] of slots) {
-      const path46 = slot.path;
-      if (this.contractPathReadable(snap, path46)) readable.add(path46);
-      else withdrawn.add(path46);
-    }
-    if (markReadableUnknown && readable.size) this.slots.markContractsUnknown(this.owner, other, why, readable);
-    if (withdrawn.size) this.slots.redactContracts(this.owner, other, why, withdrawn);
+  unknownContracts(other, why) {
+    this.withdrawUnauthorizedContracts();
+    this.slots.markContractsUnknown(this.owner, other, why);
   }
   stop() {
     for (const stop2 of this.stops) stop2();
@@ -46170,17 +46080,17 @@ var ConflictSet = class {
     if (this.guard && !this.guard()) throw new StaleConflictInputs();
     this.slots.drop(key2);
   }
-  async read(snap, path46) {
+  async read(snap, path45) {
     const env = {
       gitAt: (sha, p) => gitShow(this.team.dir, sha, p),
       known: async (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0)
     };
     const projected = snap.name === this.owner && snap.head.projectedFrom && this.notices.room !== this.team.room;
-    const projectedEntry = snap.entries.get(path46);
+    const projectedEntry = snap.entries.get(path45);
     if (projected && projectedEntry?.state === "held" && projectedEntry.hash) {
       const source = snapshot(this.notices.room, this.owner, participantsView(this.notices.room, this.notices.awareness, Date.now()));
-      if (source?.fenceValid && source.record?.holder?.workerId === snap.head.projectedFrom && source.entries.get(path46)?.hash === projectedEntry.hash) {
-        const resolved = await versionOf(source, path46, env);
+      if (source?.fenceValid && source.record?.holder?.workerId === snap.head.projectedFrom && source.entries.get(path45)?.hash === projectedEntry.hash) {
+        const resolved = await versionOf(source, path45, env);
         if (resolved.kind === "text") {
           const priorGuard = this.guard;
           this.guard = () => !!priorGuard?.() && snapshotStillCurrent(this.notices.room, source, participantsView(this.notices.room, this.notices.awareness, Date.now()));
@@ -46190,41 +46100,30 @@ var ConflictSet = class {
       const worker = await trustedWorker(this.notices, this.owner).catch(() => void 0);
       if (worker && worker.id === snap.head.projectedFrom) {
         try {
-          const text = workerText(worker.dir, path46);
+          const text = workerText(worker.dir, path45);
           if (text !== null && gitBlobHash(text, projectedEntry.hash.length === 64 ? "sha256" : "sha1") === projectedEntry.hash)
             return { kind: "text", text, entry: projectedEntry };
         } catch {
         }
       }
     }
-    return versionOf(snap, path46, env);
+    return versionOf(snap, path45, env);
   }
   /** A filtered snapshot cannot turn a wrong-fenced raw entry into certified base. */
-  async readableConsumer(snap, path46) {
-    if (!snap.roomSalt || snap.head.excluded.includes(digestPath(snap.roomSalt, path46))) return void 0;
-    const raw = this.team.room.manifest.get(manifestKey(snap.name, snap.head.fence))?.get(path46);
+  async readableConsumer(snap, path45) {
+    if (!this.contractPathAuthorized(snap, path45) || !snap.head.complete || snap.head.coverage.kind !== "all") return void 0;
+    if (!snap.roomSalt || snap.head.excluded.includes(digestPath(snap.roomSalt, path45))) return void 0;
+    const raw = this.team.room.manifest.get(manifestKey(snap.name, snap.head.fence))?.get(path45);
     if (raw && raw.fence !== snap.head.fence) return void 0;
-    const version2 = await this.read(snap, path46);
-    if (raw && !snap.entries.has(path46)) return void 0;
+    const version2 = await this.read(snap, path45);
+    if (raw && !snap.entries.has(path45)) return void 0;
     return asText(version2);
   }
-  /** Existing slots may change only after every path that established them is readable now. */
+  /** Authorized but stale consumer text leaves an existing episode unknown. */
   async priorConsumersReadable(key2, mine) {
     const prior = this.slots.get(key2);
     if (!prior || prior.settled === "none") return true;
-    const paths = this.consumerEvidence.get(key2);
-    if (!paths?.length) return this.canReconstructConsumers(mine);
-    for (const path46 of paths) if (await this.readableConsumer(mine, path46) === void 0) return false;
-    return true;
-  }
-  /** With no history, only a complete full publication can prove absence. */
-  canReconstructConsumers(mine) {
-    const head = mine.head;
-    if (!mine.fenceValid || !head.complete || head.coverage.kind !== "all" || head.level !== "full" || head.base !== mine.record?.git?.base || !mine.roomSalt || head.excluded.length) return false;
-    const raw = this.team.room.manifest.get(manifestKey(mine.name, head.fence));
-    for (const entry of raw?.values() ?? []) {
-      if (entry.fence !== head.fence || entry.state !== "shared" || (entry.change === "D" ? !!entry.hash : !entry.hash)) return false;
-    }
+    for (const path45 of prior.consumers ?? []) if (await this.readableConsumer(mine, path45) === void 0) return false;
     return true;
   }
   async unknownConsumer(key2, slot) {
@@ -46235,6 +46134,7 @@ var ConflictSet = class {
     const room = this.team.room;
     const leaseFence = this.team.lease?.fence();
     if (!leaseFence) return;
+    this.withdrawUnauthorizedContracts();
     const views = participantsView(room, this.team.awareness, Date.now());
     const mine = snapshot(room, this.owner, views);
     if (!mine || mine.head.fence !== leaseFence) return;
@@ -46295,7 +46195,7 @@ var ConflictSet = class {
         const why = `${other}'s manifest or base is updating`;
         await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
         for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.unknownOrRedactContracts(other, why, theirs);
+        this.unknownContracts(other, why);
         continue;
       }
       const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
@@ -46306,7 +46206,7 @@ var ConflictSet = class {
         const key2 = slotKey(this.owner, "merge", other, "*");
         await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
         for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.unknownOrRedactContracts(other, why, theirs);
+        this.unknownContracts(other, why);
         continue;
       }
       await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs);
@@ -46330,21 +46230,21 @@ var ConflictSet = class {
       const unchangedCarried = /* @__PURE__ */ new Set();
       const carried = this.carriedFrom?.(this.owner);
       if (carried?.lead === other && carriesWork(carried.baseline)) {
-        for (const path46 of aPaths) {
-          const baseline = await readBaseline(carried.baseline, path46, (sha, p) => gitShow(this.team.dir, sha, p));
+        for (const path45 of aPaths) {
+          const baseline = await readBaseline(carried.baseline, path45, (sha, p) => gitShow(this.team.dir, sha, p));
           if (baseline.kind === "unavailable") continue;
-          const ownText = asText(await this.read(mine, path46));
+          const ownText = asText(await this.read(mine, path45));
           if (ownText !== void 0 && ownText === (baseline.kind === "absent" ? "" : baseline.text)) {
-            ownMergePaths.delete(path46);
-            unchangedCarried.add(path46);
+            ownMergePaths.delete(path45);
+            unchangedCarried.add(path45);
           }
         }
       }
       const candidates = new Set([...ownMergePaths].filter((p) => bPaths.has(p)));
       for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
-      for (const path46 of [...candidates].sort()) {
-        const key2 = slotKey(this.owner, "merge", other, path46);
-        const bothChanged = ownMergePaths.has(path46) && bPaths.has(path46);
+      for (const path45 of [...candidates].sort()) {
+        const key2 = slotKey(this.owner, "merge", other, path45);
+        const bothChanged = ownMergePaths.has(path45) && bPaths.has(path45);
         const inputs = hash(JSON.stringify([
           ownGit.base,
           theirGit.base,
@@ -46353,17 +46253,17 @@ var ConflictSet = class {
           theirGit.anchored,
           mine.head.semRev,
           theirs.head.semRev,
-          sideInput(mine, path46),
-          sideInput(theirs, path46),
-          carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path46)] : void 0
+          sideInput(mine, path45),
+          sideInput(theirs, path45),
+          carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path45)] : void 0
         ]));
         const previous = this.slots.get(key2);
-        if (unchangedCarried.has(path46)) {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path46, status: "clean", inputs, factId: "" });
+        if (unchangedCarried.has(path45)) {
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path45, status: "clean", inputs, factId: "" });
           continue;
         }
         if (previous?.inputs === inputs && (previous.status !== "unknown" || (previous.retryAt ?? 0) > Date.now())) continue;
-        const read2 = (snap) => this.read(snap, path46);
+        const read2 = (snap) => this.read(snap, path45);
         const [a, b] = await Promise.all([read2(mine), read2(theirs)]);
         if (!bothChanged) {
           const unreadable = [a, b].find((v) => v.kind === "excluded" || v.kind === "unknown" || v.kind === "held");
@@ -46371,7 +46271,7 @@ var ConflictSet = class {
             owner: this.owner,
             other,
             kind: "merge",
-            path: path46,
+            path: path45,
             status: unreadable ? "unknown" : "clean",
             inputs,
             factId: "",
@@ -46381,30 +46281,30 @@ var ConflictSet = class {
         }
         const held = [a, b].some((v) => v.kind === "held" && !v.entry.hash);
         if (held) {
-          const aChange = mine.entries.get(path46)?.change ?? "committed", bChange = theirs.entries.get(path46)?.change ?? "committed";
+          const aChange = mine.entries.get(path45)?.change ?? "committed", bChange = theirs.entries.get(path45)?.change ?? "committed";
           const heldBy = [a.kind === "held" && !a.entry.hash ? this.owner : "", b.kind === "held" && !b.entry.hash ? other : ""].filter(Boolean).join(" and ");
           await this.settle(key2, {
             owner: this.owner,
             other,
             kind: "merge",
-            path: path46,
+            path: path45,
             status: "possible",
             inputs,
-            factId: hash(["possible", path46, mergeBase2, aChange, bChange].join("\0")),
+            factId: hash(["possible", path45, mergeBase2, aChange, bChange].join("\0")),
             why: heldBy
           });
           continue;
         }
         const at = asText(a), bt = asText(b);
         if (at === void 0 || bt === void 0) {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path46, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path45, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
           continue;
         }
         let ancestor;
         try {
-          ancestor = await gitShow(this.team.dir, mergeBase2, path46) ?? "";
+          ancestor = await gitShow(this.team.dir, mergeBase2, path45) ?? "";
         } catch {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path46, status: "unknown", inputs, factId: "", why: "missing merge base" });
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path45, status: "unknown", inputs, factId: "", why: "missing merge base" });
           continue;
         }
         await this.budget();
@@ -46414,7 +46314,7 @@ var ConflictSet = class {
           owner: this.owner,
           other,
           kind: "merge",
-          path: path46,
+          path: path45,
           status: lines.length ? "conflict" : "clean",
           inputs,
           factId: lines.length ? hash(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
@@ -46428,12 +46328,12 @@ var ConflictSet = class {
     this.log(`conflicts ${this.owner}: reconciled ${reason}`);
   }
   async contracts(other, myPaths, mine, theirs) {
-    this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", theirs, false);
+    this.withdrawUnauthorizedContracts();
     const graph = this.team.room.graphs.get(other);
     const carried = this.carriedFrom?.(this.owner);
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline);
     if (!carriedProvider && (!graph || graph.status !== "ready" || graph.base !== theirs.head.base || graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
-      this.unknownOrRedactContracts(other, "provider graph or manifest coverage is updating", theirs);
+      this.unknownContracts(other, "provider graph or manifest coverage is updating");
       return;
     }
     const live = /* @__PURE__ */ new Set();
@@ -46441,18 +46341,19 @@ var ConflictSet = class {
     if (carriedProvider) {
       const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()]);
       const observed = [];
-      for (const path46 of paths) {
-        const before = await readBaseline(carried.baseline, path46, (sha, p) => gitShow(this.team.dir, sha, p));
+      for (const path45 of paths) {
+        if (!this.contractPathAuthorized(theirs, path45)) continue;
+        const before = await readBaseline(carried.baseline, path45, (sha, p) => gitShow(this.team.dir, sha, p));
         if (before.kind === "unavailable") {
-          const key2 = slotKey(this.owner, "contract", other, path46, "*");
+          const key2 = slotKey(this.owner, "contract", other, path45, "*");
           await this.settle(key2, {
             owner: this.owner,
             other,
             kind: "contract",
-            path: path46,
+            path: path45,
             subject: "*",
             status: "unknown",
-            inputs: hash(JSON.stringify([carried.baseline.sha, path46, "unavailable"])),
+            inputs: hash(JSON.stringify([carried.baseline.sha, path45, "unavailable"])),
             factId: "",
             why: before.error.message
           });
@@ -46462,37 +46363,37 @@ var ConflictSet = class {
             type: "note",
             to: this.owner,
             priority: "notify",
-            text: `contract coverage degraded for ${path46}: carried baseline unavailable; changes in this file cannot be checked`
+            text: `contract coverage degraded for ${path45}: carried baseline unavailable; changes in this file cannot be checked`
           }, { id: id3, auto: true });
           if (!notice.ok) this.log(`contract coverage notice ${id3}: ${notice.text}`);
           continue;
         }
-        const version2 = await versionOf(theirs, path46, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) });
+        const version2 = await versionOf(theirs, path45, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) });
         const after = asText(version2);
         if (after === void 0) {
-          this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
+          this.unknownContracts(other, "provider version is not readable");
           return;
         }
         const oldText = before.kind === "absent" ? "" : before.text;
-        const cacheKey = hash(JSON.stringify([carried.baseline.sha, path46, oldText, after]));
+        const cacheKey = hash(JSON.stringify([carried.baseline.sha, path45, oldText, after]));
         let parsed = this.contractCache.get(cacheKey);
         if (!parsed) {
-          await ensureLanguages([path46]);
-          parsed = observedContractChanges(oldText, after, path46, parseFile);
+          await ensureLanguages([path45]);
+          parsed = observedContractChanges(oldText, after, path45, parseFile);
           if (this.contractCache.size >= 1e3) this.contractCache.delete(this.contractCache.keys().next().value);
           this.contractCache.set(cacheKey, parsed);
         }
-        observed.push(...parsed.map((change) => ({ path: path46, ...change })));
+        observed.push(...parsed.map((change) => ({ path: path45, ...change })));
       }
       changes = observed;
     }
     for (const change of changes) {
       if (change.kind === "add") continue;
-      if (!this.contractPathReadable(theirs, change.path)) continue;
+      if (!this.contractPathAuthorized(theirs, change.path)) continue;
       const provider = await this.read(theirs, change.path);
       const deleted = change.kind === "delete" && provider.kind === "deleted";
       if (!deleted && (asText(provider) === void 0 || !carriedProvider && provider.kind === "base")) {
-        this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
+        this.unknownContracts(other, "provider version is not readable");
         return;
       }
       const key2 = slotKey(this.owner, "contract", other, change.path, change.symbol);
@@ -46501,30 +46402,17 @@ var ConflictSet = class {
         await this.unknownConsumer(key2, prior);
         continue;
       }
-      let uses;
-      if (carriedProvider || deleted) {
-        uses = [];
-        for (const path46 of myPaths) {
-          const text = await this.readableConsumer(mine, path46);
-          if (text === void 0) {
-            this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
-            return;
-          }
-          if (text && await consumesSymbol(path46, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path46);
+      const uses = [];
+      for (const path45 of myPaths) {
+        if (!this.contractPathAuthorized(mine, path45)) continue;
+        const text = await this.readableConsumer(mine, path45);
+        if (text === void 0) {
+          this.unknownContracts(other, "consumer version is not readable");
+          return;
         }
-        uses.sort();
-      } else {
-        uses = [];
-        for (const edge of graph.edges.filter((edge2) => edge2.source === change.path && myPaths.has(edge2.target) && edge2.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol)))) {
-          const text = await this.readableConsumer(mine, edge.target);
-          if (text === void 0) {
-            this.unknownOrRedactContracts(other, "consumer version is not readable", theirs);
-            return;
-          }
-          if (await consumesSymbol(edge.target, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(edge.target);
-        }
-        uses.sort();
+        if (text && await consumesSymbol(path45, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path45);
       }
+      uses.sort();
       if (!uses.length) continue;
       live.add(key2);
       const input = hash(JSON.stringify([change, uses]));
@@ -46537,17 +46425,13 @@ var ConflictSet = class {
         status: "conflict",
         inputs: input,
         factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])),
-        why: change.detail
+        why: change.detail,
+        consumers: uses
       });
-      this.consumerEvidence.set(key2, uses);
     }
     for (const [key2, slot] of this.slots.owned(this.owner)) {
       if (slot.kind !== "contract" || slot.other !== other || live.has(key2)) continue;
-      if (!this.contractPathReadable(theirs, slot.path)) {
-        this.slots.redactContracts(this.owner, other, "provider version is not readable", /* @__PURE__ */ new Set([slot.path]));
-        continue;
-      }
-      if (slot.subject === "*" && [...live].some((liveKey) => liveKey.startsWith(slotKey(this.owner, "contract", other, slot.path, "")))) {
+      if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.every((path45) => this.contractPathAuthorized(mine, path45))) {
         this.drop(key2);
         continue;
       }
@@ -46557,7 +46441,7 @@ var ConflictSet = class {
       }
       const provider = await this.read(theirs, slot.path);
       if (asText(provider) === void 0) {
-        this.unknownOrRedactContracts(other, "provider version is not readable", theirs);
+        this.unknownContracts(other, "provider version is not readable");
         return;
       }
       await this.settle(key2, {
@@ -46568,7 +46452,8 @@ var ConflictSet = class {
         subject: slot.subject,
         status: "clean",
         inputs: hash(`clean\0${key2}`),
-        factId: ""
+        factId: "",
+        consumers: slot.consumers
       });
     }
   }
@@ -46577,35 +46462,35 @@ var ConflictSet = class {
     const ownClaims = all2.filter((c) => c.by === this.owner), theirClaims = all2.filter((c) => c.by === other);
     const seen = /* @__PURE__ */ new Set();
     const paths = /* @__PURE__ */ new Set([
-      ...theirClaims.flatMap((c) => c.path.endsWith("/") ? [...changed].filter((path46) => claimsOverlap(c, { path: path46, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),
+      ...theirClaims.flatMap((c) => c.path.endsWith("/") ? [...changed].filter((path45) => claimsOverlap(c, { path: path45, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),
       ...this.slots.owned(this.owner).filter(([, s]) => s.other === other && s.kind === "edit-in-claim").map(([, s]) => s.path)
     ]);
-    const read2 = (snap, path46) => this.read(snap, path46);
-    for (const path46 of paths) {
-      if (path46.endsWith("/")) continue;
-      const [ownV, theirV] = await Promise.all([read2(mine, path46), read2(theirs, path46)]);
+    const read2 = (snap, path45) => this.read(snap, path45);
+    for (const path45 of paths) {
+      if (path45.endsWith("/")) continue;
+      const [ownV, theirV] = await Promise.all([read2(mine, path45), read2(theirs, path45)]);
       const ownText = asText(ownV), theirText = asText(theirV);
       let ancestor;
       try {
-        ancestor = await gitShow(this.team.dir, mergeBase2, path46) ?? "";
+        ancestor = await gitShow(this.team.dir, mergeBase2, path45) ?? "";
       } catch {
       }
-      for (const claim2 of theirClaims.filter((c) => claimsOverlap(c, { path: path46, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
-        const key2 = slotKey(this.owner, "edit-in-claim", other, path46, claim2.id);
+      for (const claim2 of theirClaims.filter((c) => claimsOverlap(c, { path: path45, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
+        const key2 = slotKey(this.owner, "edit-in-claim", other, path45, claim2.id);
         seen.add(key2);
-        const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase2, claim2.id, claim2.from, claim2.to, claim2.claimedHash, sideInput(mine, path46), sideInput(theirs, path46)]));
+        const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase2, claim2.id, claim2.from, claim2.to, claim2.claimedHash, sideInput(mine, path45), sideInput(theirs, path45)]));
         if (ownText === void 0 || ancestor === void 0) {
-          await this.settle(key2, { owner: this.owner, other, kind: "edit-in-claim", path: path46, subject: claim2.id, status: "unknown", inputs, factId: "", why: "cannot map claim" });
+          await this.settle(key2, { owner: this.owner, other, kind: "edit-in-claim", path: path45, subject: claim2.id, status: "unknown", inputs, factId: "", why: "cannot map claim" });
           continue;
         }
         const mapped = claim2.path.endsWith("/") ? { from: 1, to: Math.max(1, ownText.split("\n").length), approximate: false } : claimInMyLines(claim2, theirText, ownText);
-        const ranges = changed.has(path46) ? changedRanges(ancestor, ownText) : [];
-        const hit = ranges.find((r) => claimsOverlap({ path: path46, ...mapped }, { path: path46, ...r }) && !ownClaims.some((c) => claimsOverlap(c, { path: path46, ...r })));
+        const ranges = changed.has(path45) ? changedRanges(ancestor, ownText) : [];
+        const hit = ranges.find((r) => claimsOverlap({ path: path45, ...mapped }, { path: path45, ...r }) && !ownClaims.some((c) => claimsOverlap(c, { path: path45, ...r })));
         await this.settle(key2, {
           owner: this.owner,
           other,
           kind: "edit-in-claim",
-          path: path46,
+          path: path45,
           subject: claim2.id,
           status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
           inputs,
@@ -46617,13 +46502,13 @@ var ConflictSet = class {
     for (const a of ownClaims) for (const b of theirClaims) {
       if (!coversPath(a.path, b.path)) continue;
       if (a.path.endsWith("/") || b.path.endsWith("/")) {
-        const subject2 = `${a.id}\0${b.id}`, path46 = a.path.endsWith("/") ? b.path : a.path, key3 = slotKey(this.owner, "claims", other, path46, subject2);
+        const subject2 = `${a.id}\0${b.id}`, path45 = a.path.endsWith("/") ? b.path : a.path, key3 = slotKey(this.owner, "claims", other, path45, subject2);
         seen.add(key3);
         await this.settle(key3, {
           owner: this.owner,
           other,
           kind: "claims",
-          path: path46,
+          path: path45,
           subject: subject2,
           status: "conflict",
           inputs: hash(JSON.stringify([a.id, a.path, a.from, a.to, b.id, b.path, b.from, b.to])),
@@ -46760,7 +46645,7 @@ function handlers(state) {
       const directory = p.endsWith("/");
       if (directory && a.symbol) return "error: directory claims do not take a symbol";
       if (directory) {
-        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name || !nearby.some((n2) => n2.by === sc.by && n2.reason === "scope") ? [] : sc.paths.filter((path46) => coversPath(p, path46)).map((path46) => `${sc.by}'s scope includes ${path46}`));
+        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name || !nearby.some((n2) => n2.by === sc.by && n2.reason === "scope") ? [] : sc.paths.filter((path45) => coversPath(p, path45)).map((path45) => `${sc.by}'s scope includes ${path45}`));
         const claimHits = s.room.openClaims().flatMap((c) => isMe(s, { name: c.by, kind: c.byKind }) || !nb.has(c.by) || !coversPath(p, c.path) ? [] : [`${c.by}'s claim includes ${c.path}`]);
         const hits = [...scopeHits, ...claimHits];
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join("; ")}). Claim narrower files instead.`;
@@ -46857,7 +46742,7 @@ async function claimRangeInMyText(s, claim2, myText) {
   const raw = snapshot(s.room, claim2.by, view);
   const owner = raw?.head.publisher ? snapshot(s.room, raw.head.publisher, view) : raw;
   const version2 = await versionOf(owner, claim2.path, {
-    gitAt: (sha, path46) => gitShow(s.dir, sha, path46),
+    gitAt: (sha, path45) => gitShow(s.dir, sha, path45),
     known: (blob) => git(s.dir, ["cat-file", "-p", blob]).catch(() => void 0)
   });
   const ownerText = version2.kind === "text" ? version2.text : version2.kind === "base" ? version2.text ?? "" : version2.kind === "deleted" ? "" : void 0;
@@ -46966,15 +46851,15 @@ function createShare() {
 }
 
 // packages/room-mcp/src/tools/workers.ts
-import fs35 from "node:fs";
+import fs34 from "node:fs";
 import { randomUUID as randomUUID6 } from "node:crypto";
 import os6 from "node:os";
-import path35 from "node:path";
+import path34 from "node:path";
 
 // packages/room-mcp/src/registry.ts
-import fs34 from "node:fs";
+import fs33 from "node:fs";
 import { randomUUID as randomUUID5 } from "node:crypto";
-import path34 from "node:path";
+import path33 from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // packages/room-mcp/src/connection.ts
@@ -47016,8 +46901,8 @@ init_yjs();
 
 // packages/relay/src/memory.ts
 init_yjs();
-import fs21 from "node:fs";
-import path19 from "node:path";
+import fs20 from "node:fs";
+import path18 from "node:path";
 import crypto from "node:crypto";
 var stderr = (line) => {
   process.stderr.write(`${line}
@@ -47042,20 +46927,20 @@ function largestRoots(update) {
   }
 }
 function memoryFile(commonDir, room) {
-  return path19.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
+  return path18.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
 }
 function loadMemory(commonDir, room, log2 = stderr) {
   const doc = new Doc2(), file = memoryFile(commonDir, room);
   try {
-    if (fs21.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
-    applyUpdate(doc, fs21.readFileSync(file));
+    if (fs20.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
+    applyUpdate(doc, fs20.readFileSync(file));
     return doc;
   } catch (e) {
     doc.destroy();
     if (e.code !== "ENOENT") {
       log2(`local room memory: cannot load ${file}: ${e}; starting empty`);
       try {
-        fs21.renameSync(file, `${file}.corrupt-${Date.now()}`);
+        fs20.renameSync(file, `${file}.corrupt-${Date.now()}`);
       } catch {
       }
     }
@@ -47074,17 +46959,17 @@ function saveMemory(commonDir, room, doc, log2 = stderr) {
     if (update.byteLength > MAX_MEMORY_BYTES) {
       warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
     }
-    fs21.mkdirSync(path19.dirname(file), { recursive: true, mode: 448 });
-    fs21.chmodSync(path19.dirname(file), 448);
-    fs21.writeFileSync(temp, update, { mode: 384, flag: "wx" });
-    fs21.renameSync(temp, file);
+    fs20.mkdirSync(path18.dirname(file), { recursive: true, mode: 448 });
+    fs20.chmodSync(path18.dirname(file), 448);
+    fs20.writeFileSync(temp, update, { mode: 384, flag: "wx" });
+    fs20.renameSync(temp, file);
     return true;
   } catch (e) {
     log2(`local room memory: cannot save ${file}: ${e}`);
     return false;
   } finally {
     try {
-      fs21.unlinkSync(temp);
+      fs20.unlinkSync(temp);
     } catch {
     }
   }
@@ -47141,7 +47026,7 @@ var RoomMemory = class {
     if (!this.forgotten) saveMemory(this.commonDir, this.room, this.doc, this.log);
   }
   forget() {
-    fs21.rmSync(memoryFile(this.commonDir, this.room), { force: true });
+    fs20.rmSync(memoryFile(this.commonDir, this.room), { force: true });
     this.forgotten = true;
     clearTimeout(this.debounce);
     clearTimeout(this.deadline);
@@ -47164,14 +47049,14 @@ var RoomMemory = class {
 // packages/relay/src/local-migrate.ts
 init_yjs();
 import crypto2 from "node:crypto";
-import fs22 from "node:fs";
-import path20 from "node:path";
+import fs21 from "node:fs";
+import path19 from "node:path";
 var empty = () => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false });
-var ledgerFile = (common, room) => path20.join(common, "room", "relay", `migrated-${crypto2.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
-var legacyDir = (common) => path20.join(common, "room-local");
+var ledgerFile = (common, room) => path19.join(common, "room", "relay", `migrated-${crypto2.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
+var legacyDir = (common) => path19.join(common, "room-local");
 function oldRunning(common, probe) {
   try {
-    const info2 = JSON.parse(fs22.readFileSync(path20.join(common, "room-local.json"), "utf8"));
+    const info2 = JSON.parse(fs21.readFileSync(path19.join(common, "room-local.json"), "utf8"));
     const observed = probe(Number(info2.pid));
     if (!observed) return false;
     if (info2.startTime && observed.startTime && info2.startTime !== observed.startTime) return false;
@@ -47184,10 +47069,10 @@ function oldRunning(common, probe) {
 function readLedger(common, room) {
   const scoped = ledgerFile(common, room);
   let file = scoped;
-  if (!fs22.existsSync(scoped)) {
-    const old = path20.join(common, "room", "relay", "migrated.json");
+  if (!fs21.existsSync(scoped)) {
+    const old = path19.join(common, "room", "relay", "migrated.json");
     try {
-      const candidate = JSON.parse(fs22.readFileSync(old, "utf8"));
+      const candidate = JSON.parse(fs21.readFileSync(old, "utf8"));
       const names = Object.keys(candidate.sources ?? {});
       if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) file = old;
     } catch {
@@ -47195,7 +47080,7 @@ function readLedger(common, room) {
   }
   let value2;
   try {
-    value2 = JSON.parse(fs22.readFileSync(file, "utf8"));
+    value2 = JSON.parse(fs21.readFileSync(file, "utf8"));
   } catch {
     return empty();
   }
@@ -47205,17 +47090,17 @@ function readLedger(common, room) {
 }
 function writeLedger(common, room, ledger2) {
   const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto2.randomBytes(4).toString("hex")}.tmp`;
-  fs22.mkdirSync(path20.dirname(file), { recursive: true, mode: 448 });
+  fs21.mkdirSync(path19.dirname(file), { recursive: true, mode: 448 });
   try {
-    fs22.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
-    fs22.renameSync(temp, file);
+    fs21.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
+    fs21.renameSync(temp, file);
   } finally {
-    fs22.rmSync(temp, { force: true });
+    fs21.rmSync(temp, { force: true });
   }
 }
 function sources(common, room) {
   try {
-    return fs22.readdirSync(legacyDir(common)).filter((file) => file.endsWith(".ydoc")).flatMap((file) => {
+    return fs21.readdirSync(legacyDir(common)).filter((file) => file.endsWith(".ydoc")).flatMap((file) => {
       let name2;
       try {
         name2 = decodeURIComponent(file.slice(0, -5));
@@ -47223,8 +47108,8 @@ function sources(common, room) {
         throw new Error(`invalid legacy snapshot name: ${file}`);
       }
       if (name2 !== room && !name2.startsWith(`${room}/`)) return [];
-      const full = path20.join(legacyDir(common), file);
-      return [{ file: full, name: name2, mtime: fs22.statSync(full).mtimeMs }];
+      const full = path19.join(legacyDir(common), file);
+      return [{ file: full, name: name2, mtime: fs21.statSync(full).mtimeMs }];
     });
   } catch (error2) {
     if (error2.code === "ENOENT") return [];
@@ -47253,7 +47138,7 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
   for (const { file, name: name2, mtime } of files2) {
     const doc = new Doc2();
     try {
-      applyUpdate(doc, fs22.readFileSync(file));
+      applyUpdate(doc, fs21.readFileSync(file));
       loaded.push({ name: name2, mtime, source: new RoomDoc(doc), doc });
     } catch (error2) {
       log2(`local migration: cannot read ${file}: ${String(error2)}`);
@@ -47428,25 +47313,25 @@ function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = pro
   return pending;
 }
 function forgetLegacyLocal(common, room) {
-  for (const { file } of sources(common, room)) fs22.rmSync(file, { force: true });
-  fs22.rmSync(ledgerFile(common, room), { force: true });
-  const old = path20.join(common, "room", "relay", "migrated.json");
+  for (const { file } of sources(common, room)) fs21.rmSync(file, { force: true });
+  fs21.rmSync(ledgerFile(common, room), { force: true });
+  const old = path19.join(common, "room", "relay", "migrated.json");
   try {
-    const ledger2 = JSON.parse(fs22.readFileSync(old, "utf8"));
+    const ledger2 = JSON.parse(fs21.readFileSync(old, "utf8"));
     const names = Object.keys(ledger2.sources ?? {});
-    if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) fs22.rmSync(old, { force: true });
+    if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) fs21.rmSync(old, { force: true });
   } catch {
   }
 }
 
 // packages/relay/src/hub.ts
-import fs23 from "node:fs";
-import path21 from "node:path";
+import fs22 from "node:fs";
+import path20 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
-var hubDir = (commonDir) => path21.join(commonDir, "room", "hub");
+var hubDir = (commonDir) => path20.join(commonDir, "room", "hub");
 function readJson2(file) {
   try {
-    return JSON.parse(fs23.readFileSync(file, "utf8"));
+    return JSON.parse(fs22.readFileSync(file, "utf8"));
   } catch (e) {
     if (e.code === "ENOENT") return void 0;
     throw e;
@@ -47461,7 +47346,7 @@ var AuthorityLock = class _AuthorityLock {
   token;
   /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
   static take(commonDir) {
-    const file = path21.join(hubDir(commonDir), "authority.lock");
+    const file = path20.join(hubDir(commonDir), "authority.lock");
     const own2 = probeProcess(process.pid);
     const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
     if (createExclusive(file, token)) return new _AuthorityLock(file, token);
@@ -47487,7 +47372,7 @@ var AuthorityLock = class _AuthorityLock {
   }
 };
 function incarnationFile(commonDir) {
-  const file = path21.join(hubDir(commonDir), "incarnation.json");
+  const file = path20.join(hubDir(commonDir), "incarnation.json");
   return serializedStore({
     read: async () => {
       const max2 = readJson2(file)?.max;
@@ -47517,9 +47402,9 @@ function holderDeadCheck(now = Date.now) {
 
 // packages/relay/src/index.ts
 import crypto3 from "node:crypto";
-import fs24 from "node:fs";
+import fs23 from "node:fs";
 import http from "node:http";
-import path22 from "node:path";
+import path21 from "node:path";
 init_yjs();
 init_encoding();
 init_decoding();
@@ -47657,13 +47542,13 @@ function attach(docs, conn, req, opts) {
     send(conn, toUint8Array(aenc));
   }
 }
-var LOCAL_FILE = path22.join("room", "relay.json");
+var LOCAL_FILE = path21.join("room", "relay.json");
 function relayFile(commonDir) {
-  return path22.join(commonDir, LOCAL_FILE);
+  return path21.join(commonDir, LOCAL_FILE);
 }
 function readRelayInfo(commonDir) {
   try {
-    const v = JSON.parse(fs24.readFileSync(relayFile(commonDir), "utf8"));
+    const v = JSON.parse(fs23.readFileSync(relayFile(commonDir), "utf8"));
     return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
   } catch {
     return void 0;
@@ -47672,7 +47557,7 @@ function readRelayInfo(commonDir) {
 function deterministicPort(commonDir) {
   let real = commonDir;
   try {
-    real = fs24.realpathSync.native(commonDir);
+    real = fs23.realpathSync.native(commonDir);
   } catch {
   }
   const h = crypto3.createHash("sha1").update("schema-2\0").update(real).digest();
@@ -47681,7 +47566,7 @@ function deterministicPort(commonDir) {
 function cloneId(commonDir) {
   let real = commonDir;
   try {
-    real = fs24.realpathSync.native(commonDir);
+    real = fs23.realpathSync.native(commonDir);
   } catch {
   }
   return crypto3.createHash("sha256").update(real).digest("hex");
@@ -47715,16 +47600,16 @@ function health(port, key2, timeoutMs2) {
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
 function findWebDist() {
-  const here = path22.dirname(new URL(import.meta.url).pathname);
+  const here = path21.dirname(new URL(import.meta.url).pathname);
   const candidates = [
     process.env.ROOM_WEB_DIST,
-    path22.resolve(here, "..", "web"),
+    path21.resolve(here, "..", "web"),
     // plugins/room/server/room-mcp.mjs -> plugins/room/web
-    path22.resolve(here, "..", "..", "web", "dist"),
+    path21.resolve(here, "..", "..", "web", "dist"),
     // packages/relay/src -> packages/web/dist
-    path22.resolve(here, "..", "..", "..", "web", "dist")
+    path21.resolve(here, "..", "..", "..", "web", "dist")
   ];
-  for (const c of candidates) if (c && fs24.existsSync(path22.join(c, "index.html"))) return c;
+  for (const c of candidates) if (c && fs23.existsSync(path21.join(c, "index.html"))) return c;
   return void 0;
 }
 var LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
@@ -47740,7 +47625,7 @@ function startRelay(port, opts = {}) {
       seed: opts.seed,
       ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
     };
-    const staticDir = opts.staticDir ? path22.resolve(opts.staticDir) : findWebDist();
+    const staticDir = opts.staticDir ? path21.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
       if (url.pathname === "/health") {
@@ -47759,7 +47644,7 @@ function startRelay(port, opts = {}) {
           const room = url.searchParams.get("room") ?? "";
           const d = docs.get(encodeURIComponent(room));
           if (d?.memory) d.memory.forget();
-          else if (opts.commonDir) fs24.rmSync(memoryFile(opts.commonDir, room), { force: true });
+          else if (opts.commonDir) fs23.rmSync(memoryFile(opts.commonDir, room), { force: true });
           if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
           res.writeHead(204);
           res.end();
@@ -47771,10 +47656,10 @@ function startRelay(port, opts = {}) {
       }
       if (staticDir) {
         const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-        const file = path22.resolve(staticDir, rel);
-        if (file.startsWith(staticDir + path22.sep) && fs24.existsSync(file) && fs24.statSync(file).isFile()) {
-          res.writeHead(200, { "content-type": MIME[path22.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
-          fs24.createReadStream(file).pipe(res);
+        const file = path21.resolve(staticDir, rel);
+        if (file.startsWith(staticDir + path21.sep) && fs23.existsSync(file) && fs23.statSync(file).isFile()) {
+          res.writeHead(200, { "content-type": MIME[path21.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
+          fs23.createReadStream(file).pipe(res);
           return;
         }
       }
@@ -47870,13 +47755,13 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   const write2 = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`;
     try {
-      fs24.mkdirSync(path22.dirname(file), { recursive: true, mode: 448 });
-      fs24.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
-      fs24.chmodSync(tmp, 384);
-      fs24.renameSync(tmp, file);
+      fs23.mkdirSync(path21.dirname(file), { recursive: true, mode: 448 });
+      fs23.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
+      fs23.chmodSync(tmp, 384);
+      fs23.renameSync(tmp, file);
     } catch (e) {
       try {
-        fs24.rmSync(tmp, { force: true });
+        fs23.rmSync(tmp, { force: true });
       } catch {
       }
       log2(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`);
@@ -47911,7 +47796,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     const lock = AuthorityLock.take(commonDir);
     if (!lock) {
       const winner = await awaitWinner();
-      if (!winner) throw new Error(`local room ${room}: another process holds ${path22.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
+      if (!winner) throw new Error(`local room ${room}: another process holds ${path21.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
       adopt(winner, "another process holds the relay authority; joined");
     } else {
       try {
@@ -48001,19 +47886,19 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
 }
 
 // packages/roomd/src/local.ts
-import path23 from "node:path";
+import path22 from "node:path";
 async function mainWorktree(dir) {
   const common = await gitCommonDir(dir);
-  return path23.basename(common) === ".git" ? path23.dirname(common) : path23.resolve(dir);
+  return path22.basename(common) === ".git" ? path22.dirname(common) : path22.resolve(dir);
 }
 async function localRoomName(dir) {
   const main2 = await mainWorktree(dir);
-  return `local/${path23.basename(main2)}`;
+  return `local/${path22.basename(main2)}`;
 }
 
 // packages/room-mcp/src/credentials.ts
-import fs25 from "node:fs";
-import path24 from "node:path";
+import fs24 from "node:fs";
+import path23 from "node:path";
 var configuredPath;
 function configureCredentials(file) {
   configuredPath = file;
@@ -48041,17 +47926,17 @@ function serverKey(server) {
 }
 function loadCredentials() {
   try {
-    return JSON.parse(fs25.readFileSync(credentialsPath(), "utf8"));
+    return JSON.parse(fs24.readFileSync(credentialsPath(), "utf8"));
   } catch {
     return {};
   }
 }
 function save(all2) {
   const file = credentialsPath();
-  fs25.mkdirSync(path24.dirname(file), { recursive: true, mode: 448 });
-  fs25.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
+  fs24.mkdirSync(path23.dirname(file), { recursive: true, mode: 448 });
+  fs24.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
   try {
-    fs25.chmodSync(file, 384);
+    fs24.chmodSync(file, 384);
   } catch {
   }
 }
@@ -48074,39 +47959,39 @@ function removeCredential(server) {
 
 // packages/room-mcp/src/binding.ts
 import { execFileSync as execFileSync7 } from "node:child_process";
-import path26 from "node:path";
+import path25 from "node:path";
 
 // packages/room-mcp/src/local-migration.ts
-import fs26 from "node:fs";
-import path25 from "node:path";
+import fs25 from "node:fs";
+import path24 from "node:path";
 var legacyName = (name2) => ["room-hook-seen.json", "room-state.json", "room-session.json", "room-hook-activity.json"].includes(name2) || /^room-write-intents-.*\.json$/.test(name2) || name2.endsWith(".notice-lock");
 function readObject(file) {
   try {
-    const value2 = JSON.parse(fs26.readFileSync(file, "utf8"));
+    const value2 = JSON.parse(fs25.readFileSync(file, "utf8"));
     return value2 && typeof value2 === "object" && !Array.isArray(value2) ? value2 : void 0;
   } catch {
     return void 0;
   }
 }
 function migrateLocalState(legacyDir2, sessionDir, sessionId, registryDir) {
-  const record2 = readObject(path25.join(legacyDir2, "room-session.json"));
+  const record2 = readObject(path24.join(legacyDir2, "room-session.json"));
   if (record2?.session_id !== sessionId) return true;
-  if (record2.worker_id && registryDir && readObject(path25.join(registryDir, "migration.json"))?.done !== true) return false;
-  const oldHook = readObject(path25.join(legacyDir2, "room-hook-seen.json"));
+  if (record2.worker_id && registryDir && readObject(path24.join(registryDir, "migration.json"))?.done !== true) return false;
+  const oldHook = readObject(path24.join(legacyDir2, "room-hook-seen.json"));
   if (oldHook) {
-    const file = path25.join(sessionDir, "hook.json");
+    const file = path24.join(sessionDir, "hook.json");
     const existing = readObject(file) ?? {};
     const imported = {};
     for (const field of ["companyTold", "near", "claims"]) {
       const value2 = oldHook[field];
       if (field === "companyTold" ? typeof value2 === "boolean" : value2 && typeof value2 === "object" && !Array.isArray(value2)) imported[field] = value2;
     }
-    fs26.mkdirSync(sessionDir, { recursive: true, mode: 448 });
+    fs25.mkdirSync(sessionDir, { recursive: true, mode: 448 });
     writeAtomic(file, { ...imported, ...existing });
   }
-  for (const name2 of fs26.readdirSync(legacyDir2)) {
+  for (const name2 of fs25.readdirSync(legacyDir2)) {
     if (!legacyName(name2)) continue;
-    fs26.renameSync(path25.join(legacyDir2, name2), path25.join(legacyDir2, `${name2}.migrated`));
+    fs25.renameSync(path24.join(legacyDir2, name2), path24.join(legacyDir2, `${name2}.migrated`));
   }
   return true;
 }
@@ -48123,7 +48008,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
   const common = () => {
     if (commonDir === void 0) {
       try {
-        commonDir = path26.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        commonDir = path25.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
       } catch {
         commonDir = null;
       }
@@ -48160,7 +48045,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
             ["-C", cwd, "rev-parse", "--absolute-git-dir"],
             { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }
           ).trim();
-          if (migrateLocalState(ownGitDir, target, b.id, path26.join(dir, "room", "registry"))) migrated.add(b.id);
+          if (migrateLocalState(ownGitDir, target, b.id, path25.join(dir, "room", "registry"))) migrated.add(b.id);
         } catch {
         }
       }
@@ -48175,15 +48060,15 @@ function identity(pid) {
 }
 
 // packages/room-mcp/src/choice.ts
-import fs28 from "node:fs";
-import path27 from "node:path";
+import fs27 from "node:fs";
+import path26 from "node:path";
 
 // packages/room-mcp/src/owned-file.ts
-import fs27 from "node:fs";
+import fs26 from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function ownerPid(file) {
   try {
-    const raw = fs27.readFileSync(file, "utf8");
+    const raw = fs26.readFileSync(file, "utf8");
     const plainPid = /^\d+$/.test(raw.trim());
     const value2 = plainPid ? Number(raw.trim()) : JSON.parse(raw);
     const pid = plainPid ? value2 : value2 && typeof value2 === "object" && "pid" in value2 ? value2.pid : void 0;
@@ -48197,25 +48082,25 @@ function acquireOwnedFile(file, record2) {
   const create6 = () => {
     let fd;
     try {
-      fd = fs27.openSync(file, "wx", 384);
+      fd = fs26.openSync(file, "wx", 384);
     } catch (e) {
       if (e.code === "EEXIST") return void 0;
       throw e;
     }
     try {
-      fs27.writeFileSync(fd, token);
+      fs26.writeFileSync(fd, token);
     } catch (e) {
       try {
-        fs27.unlinkSync(file);
+        fs26.unlinkSync(file);
       } catch {
       }
       throw e;
     } finally {
-      fs27.closeSync(fd);
+      fs26.closeSync(fd);
     }
     return () => {
       try {
-        if (fs27.readFileSync(file, "utf8") === token) fs27.unlinkSync(file);
+        if (fs26.readFileSync(file, "utf8") === token) fs26.unlinkSync(file);
       } catch {
       }
     };
@@ -48230,7 +48115,7 @@ function acquireOwnedFile(file, record2) {
     const current = ownerPid(file);
     if (current === void 0 || pidAlive(current)) return void 0;
     try {
-      fs27.unlinkSync(file);
+      fs26.unlinkSync(file);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -48243,19 +48128,19 @@ function acquireOwnedFile(file, record2) {
 // packages/room-mcp/src/choice.ts
 var CHOICE_FILE = "room-choice.json";
 async function choiceFile(dir) {
-  return path27.join(await gitCommonDir(dir), CHOICE_FILE);
+  return path26.join(await gitCommonDir(dir), CHOICE_FILE);
 }
 async function worktreePath(dir) {
-  return fs28.realpathSync((await git(dir, ["rev-parse", "--show-toplevel"])).trim());
+  return fs27.realpathSync((await git(dir, ["rev-parse", "--show-toplevel"])).trim());
 }
 async function readChoice(dir) {
   try {
     const file = await choiceFile(dir);
-    const c = JSON.parse(fs28.readFileSync(file, "utf8"));
+    const c = JSON.parse(fs27.readFileSync(file, "utf8"));
     if (!c || typeof c.where !== "string") return void 0;
     const { tag, share: _share, warned: _warned, warnedLevels: _warnedLevels, ...choice } = c;
     if (typeof tag === "string") {
-      const main2 = fs28.realpathSync(path27.dirname(path27.dirname(file)));
+      const main2 = fs27.realpathSync(path26.dirname(path26.dirname(file)));
       choice.tags = { [main2]: tag, ...choice.tags };
     }
     return choice;
@@ -48269,10 +48154,10 @@ async function writeChoice(dir, where, by, room) {
   return withGuard(`${file}.lock`, () => {
     let prev;
     try {
-      prev = JSON.parse(fs28.readFileSync(file, "utf8"));
+      prev = JSON.parse(fs27.readFileSync(file, "utf8"));
     } catch {
     }
-    const tags = typeof prev?.tag === "string" ? { [fs28.realpathSync(path27.dirname(path27.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags;
+    const tags = typeof prev?.tag === "string" ? { [fs27.realpathSync(path26.dirname(path26.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags;
     const c = { where, at: Date.now(), ...by ? { by } : {}, ...where === LOCAL && room ? { room } : {}, ...tags ? { tags } : {} };
     writeAtomic(file, c);
     return c;
@@ -48295,10 +48180,10 @@ async function rememberTag(dir, tag) {
     const c = { ...prev ?? { where: LOCAL, at: Date.now() }, tags: { ...prev?.tags, [key2]: tag } };
     const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     try {
-      fs28.writeFileSync(temp, JSON.stringify(c) + "\n", { mode: 384 });
-      fs28.renameSync(temp, file);
+      fs27.writeFileSync(temp, JSON.stringify(c) + "\n", { mode: 384 });
+      fs27.renameSync(temp, file);
     } finally {
-      fs28.rmSync(temp, { force: true });
+      fs27.rmSync(temp, { force: true });
     }
     return c;
   } finally {
@@ -48310,7 +48195,7 @@ async function removeSharingChoice(dir) {
   withGuard(`${file}.lock`, () => {
     let raw;
     try {
-      raw = JSON.parse(fs28.readFileSync(file, "utf8"));
+      raw = JSON.parse(fs27.readFileSync(file, "utf8"));
     } catch (error2) {
       if (error2.code === "ENOENT") return;
       throw error2;
@@ -48323,7 +48208,7 @@ async function removeSharingChoice(dir) {
 }
 async function clearChoice(dir) {
   try {
-    fs28.rmSync(await choiceFile(dir));
+    fs27.rmSync(await choiceFile(dir));
     return true;
   } catch {
     return false;
@@ -48336,8 +48221,8 @@ function describeWhere(server) {
 }
 
 // packages/room-mcp/src/policy-store.ts
-import fs29 from "node:fs";
-import path28 from "node:path";
+import fs28 from "node:fs";
+import path27 from "node:path";
 import { createHash as createHash9 } from "node:crypto";
 var emptyGrant = () => ({ active: [], ending: [], retained: [] });
 var sorted = (items) => [...new Set(items)].sort();
@@ -48347,7 +48232,7 @@ var clean = (items) => sorted(items.map((p) => {
 }).filter((p) => p !== "" && p !== ".."));
 async function sharingFile(dir, room, participant) {
   const hash2 = createHash9("sha256").update(room).update("\0").update(participant).digest("hex");
-  return path28.join(await gitCommonDir(dir), "room", "sharing", `${hash2}.json`);
+  return path27.join(await gitCommonDir(dir), "room", "sharing", `${hash2}.json`);
 }
 var PolicyStore = class _PolicyStore {
   constructor(file, record2) {
@@ -48363,11 +48248,11 @@ var PolicyStore = class _PolicyStore {
   onChange;
   currentPolicy;
   static async open({ dir, room, participant, server, requested = "full", ceiling = "full", publisher = true, onChange: onChange2 }) {
-    const worktree = fs29.realpathSync(dir);
+    const worktree = fs28.realpathSync(dir);
     const file = await sharingFile(dir, room, participant);
     let record2;
     try {
-      record2 = JSON.parse(fs29.readFileSync(file, "utf8"));
+      record2 = JSON.parse(fs28.readFileSync(file, "utf8"));
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
@@ -48375,7 +48260,7 @@ var PolicyStore = class _PolicyStore {
     if (!record2) {
       let legacy = {};
       try {
-        legacy = JSON.parse(fs29.readFileSync(await choiceFile(dir), "utf8"));
+        legacy = JSON.parse(fs28.readFileSync(await choiceFile(dir), "utf8"));
       } catch {
       }
       const priorLevel = legacy.share === "full" || legacy.share === "declared" || legacy.share === "intent" ? legacy.share : void 0;
@@ -48397,11 +48282,11 @@ var PolicyStore = class _PolicyStore {
       writeAtomic(file, record2);
     }
     const privateGit = worktreeGitDirFromDotGit(dir);
-    for (const name2 of fs29.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const oldFile = path28.join(privateGit, name2);
+    for (const name2 of fs28.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
+      const oldFile = path27.join(privateGit, name2);
       let legacy;
       try {
-        legacy = JSON.parse(fs29.readFileSync(oldFile, "utf8"));
+        legacy = JSON.parse(fs28.readFileSync(oldFile, "utf8"));
       } catch {
         continue;
       }
@@ -48410,7 +48295,7 @@ var PolicyStore = class _PolicyStore {
       const retained = clean([...record2.declared.retained, ...legacy.paths.filter((p) => typeof p === "string")]);
       record2 = { ...record2, declared: { ...record2.declared, retained }, updatedAt: Date.now() };
       writeAtomic(file, record2);
-      fs29.rmSync(oldFile, { force: true });
+      fs28.rmSync(oldFile, { force: true });
     }
     const store = new _PolicyStore(file, record2);
     store.ceiling = ceiling;
@@ -48498,19 +48383,19 @@ var PolicyStore = class _PolicyStore {
   }
   static retire(dir, room, participant, server) {
     const hash2 = createHash9("sha256").update(room).update("\0").update(participant).digest("hex");
-    const file = path28.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash2}.json`);
-    fs29.rmSync(file, { force: true });
+    const file = path27.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash2}.json`);
+    fs28.rmSync(file, { force: true });
     const privateGit = worktreeGitDirFromDotGit(dir);
-    for (const name2 of fs29.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const legacyFile = path28.join(privateGit, name2);
+    for (const name2 of fs28.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
+      const legacyFile = path27.join(privateGit, name2);
       let legacy;
       try {
-        legacy = JSON.parse(fs29.readFileSync(legacyFile, "utf8"));
+        legacy = JSON.parse(fs28.readFileSync(legacyFile, "utf8"));
       } catch {
         continue;
       }
       const sameRoom = legacy.room === room || repoRoomOf(legacy.room ?? "", (candidate) => candidate === room) === room;
-      if (sameRoom && legacy.participant === participant && (!server || legacy.server === server)) fs29.rmSync(legacyFile, { force: true });
+      if (sameRoom && legacy.participant === participant && (!server || legacy.server === server)) fs28.rmSync(legacyFile, { force: true });
     }
   }
 };
@@ -48547,11 +48432,11 @@ var CeilingSource = class {
 };
 
 // packages/room-mcp/src/publisher-lease.ts
-import fs30 from "node:fs";
-import path29 from "node:path";
+import fs29 from "node:fs";
+import path28 from "node:path";
 import { createHash as createHash10 } from "node:crypto";
 function publisherLeaseFile(commonDir, worktree) {
-  return path29.join(commonDir, "room", "publishers", `${createHash10("sha256").update(worktree).digest("hex")}.json`);
+  return path28.join(commonDir, "room", "publishers", `${createHash10("sha256").update(worktree).digest("hex")}.json`);
 }
 var GUARD_WAIT_MS2 = 3e4;
 async function guarded2(fn) {
@@ -48584,7 +48469,7 @@ var PublisherLease = class {
   work = Promise.resolve();
   read() {
     try {
-      return JSON.parse(fs30.readFileSync(this.file, "utf8"));
+      return JSON.parse(fs29.readFileSync(this.file, "utf8"));
     } catch (e) {
       if (e.code === "ENOENT" || e instanceof SyntaxError) return void 0;
       throw e;
@@ -48661,7 +48546,7 @@ var PublisherLease = class {
       const nonce = current.holder.nonce;
       await guarded2(() => recover(this.file, (c) => c.holder?.nonce === nonce, this.probe));
     }
-    if (!fs30.existsSync(this.file)) createExclusive(this.file, this.content());
+    if (!fs29.existsSync(this.file)) createExclusive(this.file, this.content());
     return this.holds();
   }
 };
@@ -48702,15 +48587,15 @@ async function attachPublisher(o) {
 }
 
 // packages/room-mcp/src/names.ts
-import fs31 from "node:fs";
-import path30 from "node:path";
+import fs30 from "node:fs";
+import path29 from "node:path";
 import { createHash as createHash11, randomUUID as randomUUID4 } from "node:crypto";
 function nameLeaseFile(commonDir, roomKey2, name2) {
-  return path30.join(commonDir, "room", "names", `${createHash11("sha256").update(`${roomKey2}\0${name2}`).digest("hex")}.json`);
+  return path29.join(commonDir, "room", "names", `${createHash11("sha256").update(`${roomKey2}\0${name2}`).digest("hex")}.json`);
 }
 function readLease(file) {
   try {
-    return JSON.parse(fs31.readFileSync(file, "utf8"));
+    return JSON.parse(fs30.readFileSync(file, "utf8"));
   } catch (e) {
     if (e.code === "ENOENT") return void 0;
     throw e;
@@ -49863,21 +49748,21 @@ async function leaveSession(s) {
 }
 
 // packages/room-mcp/src/worker-launch.ts
-import path32 from "node:path";
+import path31 from "node:path";
 
 // packages/room-mcp/src/port-reservations.ts
-import fs32 from "node:fs";
+import fs31 from "node:fs";
 import os5 from "node:os";
-import path31 from "node:path";
-function reserveWorkerPort(workerId, used = [], configHome = process.env.XDG_CONFIG_HOME || path31.join(os5.homedir(), ".config"), preferredPort) {
-  const directory = path31.join(configHome, "room", "ports");
-  fs32.mkdirSync(directory, { recursive: true, mode: 448 });
+import path30 from "node:path";
+function reserveWorkerPort(workerId, used = [], configHome = process.env.XDG_CONFIG_HOME || path30.join(os5.homedir(), ".config"), preferredPort) {
+  const directory = path30.join(configHome, "room", "ports");
+  fs31.mkdirSync(directory, { recursive: true, mode: 448 });
   const occupied = new Set(used);
   const preferred = preferredPort !== void 0 && Number.isInteger(preferredPort) && preferredPort >= WORKER_PORT_START && preferredPort <= WORKER_PORT_END && !occupied.has(preferredPort) ? preferredPort : void 0;
   while (true) {
     const port = preferred !== void 0 && !occupied.has(preferred) ? preferred : allocateWorkerPort(occupied);
     occupied.add(port);
-    const release = acquireOwnedFile(path31.join(directory, String(port)), { pid: process.pid, workerId, startedAt: Date.now() });
+    const release = acquireOwnedFile(path30.join(directory, String(port)), { pid: process.pid, workerId, startedAt: Date.now() });
     if (release) return { port, release };
   }
 }
@@ -50001,7 +49886,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       }
     );
     const priority2 = workerPriority(built, niceEnv);
-    const logFile = path32.join(s.dir, ".room", "workers", `${tag}.log`);
+    const logFile = path31.join(s.dir, ".room", "workers", `${tag}.log`);
     if (host.aborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled");
     try {
       proc = (policy.spawner ?? defaultSpawner)({
@@ -50077,13 +49962,13 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
 }
 
 // packages/room-mcp/src/retire.ts
-import fs33 from "node:fs";
-import path33 from "node:path";
+import fs32 from "node:fs";
+import path32 from "node:path";
 async function retireWorker(rooms, s, id3, archive, extra = {}) {
   const registry2 = await registryForDir(s.dir);
   const record2 = registry2.read(id3);
   if (!record2) return;
-  if (fs33.existsSync(path33.join(record2.dir, ".git"))) PolicyStore.retire(record2.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
+  if (fs32.existsSync(path32.join(record2.dir, ".git"))) PolicyStore.retire(record2.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
   await registry2.beginRetirement(id3, archive, extra);
   await rooms.project();
 }
@@ -50387,7 +50272,7 @@ var Rooms = class _Rooms {
     const registry2 = await registryForDir(s.dir);
     const known = registry2.reserved(w.tag);
     if (known && ["retiring", "retired"].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume`;
-    if (known && !fs34.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`;
+    if (known && !fs33.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`;
     const trusted = await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag);
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`;
     const record2 = trusted.record;
@@ -50403,10 +50288,10 @@ var Rooms = class _Rooms {
     }
     if (toolCallAborted()) return "error: tool call cancelled";
     const config2 = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers } });
-    const logFile = path34.join(s.dir, ".room", "workers", `${w.tag}.log`);
+    const logFile = path33.join(s.dir, ".room", "workers", `${w.tag}.log`);
     let logStart = 0;
     try {
-      logStart = fs34.statSync(logFile).size;
+      logStart = fs33.statSync(logFile).size;
     } catch {
     }
     let run2;
@@ -50549,8 +50434,8 @@ function missingBriefPaths(task, leadDir, workerDir) {
   for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
     const rel = match[0].replace(/^\.\//, "");
     if (rel.split("/").some((part) => part === ".." || part === ".")) continue;
-    const source = path35.join(leadDir, rel), target = path35.join(workerDir, rel);
-    if (fs35.existsSync(source) && !fs35.existsSync(target)) paths.add(rel);
+    const source = path34.join(leadDir, rel), target = path34.join(workerDir, rel);
+    if (fs34.existsSync(source) && !fs34.existsSync(target)) paths.add(rel);
   }
   return [...paths].sort();
 }
@@ -50687,15 +50572,15 @@ function handlers3(state) {
       } catch (e) {
         return `error: could not link inputs: ${e instanceof Error ? e.message : String(e)}`;
       }
-      const suppliedDir = typeof a.dir === "string" && a.dir ? path35.resolve(a.dir) : void 0;
-      const dir = suppliedDir ?? path35.join(s.dir, ".room", "workers", tag);
-      if (suppliedDir && !fs35.existsSync(dir)) return `error: ${dir} does not exist`;
-      const relative3 = path35.relative(s.dir, dir);
-      const outside = relative3 === ".." || relative3.startsWith(`..${path35.sep}`) || path35.isAbsolute(relative3);
+      const suppliedDir = typeof a.dir === "string" && a.dir ? path34.resolve(a.dir) : void 0;
+      const dir = suppliedDir ?? path34.join(s.dir, ".room", "workers", tag);
+      if (suppliedDir && !fs34.existsSync(dir)) return `error: ${dir} does not exist`;
+      const relative3 = path34.relative(s.dir, dir);
+      const outside = relative3 === ".." || relative3.startsWith(`..${path34.sep}`) || path34.isAbsolute(relative3);
       if (outside) return `error: ${dir} is outside this repo; a worker's directory must be in this repo`;
       if (suppliedDir) {
-        const canonical = path35.relative(fs35.realpathSync(s.dir), fs35.realpathSync(dir));
-        if (canonical === ".." || canonical.startsWith(`..${path35.sep}`) || path35.isAbsolute(canonical)) {
+        const canonical = path34.relative(fs34.realpathSync(s.dir), fs34.realpathSync(dir));
+        if (canonical === ".." || canonical.startsWith(`..${path34.sep}`) || path34.isAbsolute(canonical)) {
           return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`;
         }
       }
@@ -50709,7 +50594,7 @@ function handlers3(state) {
       }
       const hostSessionId = host === "claude" ? randomUUID6() : void 0;
       const usedPorts = registry2.list().flatMap((record3) => typeof record3.port === "number" ? [record3.port] : []);
-      const prep = { step: "plan", worktreeExisted: fs35.existsSync(dir), created: !suppliedDir && !fs35.existsSync(dir) };
+      const prep = { step: "plan", worktreeExisted: fs34.existsSync(dir), created: !suppliedDir && !fs34.existsSync(dir) };
       const record2 = {
         v: 1,
         id: id3,
@@ -51034,8 +50919,8 @@ import { resolve as resolve4 } from "node:path";
 
 // packages/room-mcp/src/prs.ts
 init_yjs();
-import fs36 from "node:fs";
-import path36 from "node:path";
+import fs35 from "node:fs";
+import path35 from "node:path";
 var PR_PREFIX = "pr#";
 var isPrName = (name2) => name2.startsWith(PR_PREFIX);
 var prName = (number3) => `${PR_PREFIX}${number3}`;
@@ -51111,11 +50996,11 @@ function exportRoomLedger(s, opts = {}) {
   const timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
   const accepted = acceptedPrBranch(s);
   const branch = accepted && accepted !== "updating" ? accepted : "detached";
-  const defaultPath = path36.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}_${branch.replaceAll("/", "_")}-${timestamp}.md`);
-  const outputPath = opts.path ? path36.resolve(s.dir, opts.path) : defaultPath;
+  const defaultPath = path35.join(s.dir, ".room", "ledger", `${s.roomName.replaceAll("/", "_")}_${branch.replaceAll("/", "_")}-${timestamp}.md`);
+  const outputPath = opts.path ? path35.resolve(s.dir, opts.path) : defaultPath;
   const markdown = renderPrNote(s.room, { roomName: s.roomName, branch, now, history: true });
-  fs36.mkdirSync(path36.dirname(outputPath), { recursive: true });
-  fs36.writeFileSync(outputPath, markdown);
+  fs35.mkdirSync(path35.dirname(outputPath), { recursive: true });
+  fs35.writeFileSync(outputPath, markdown);
   return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
 }
 async function exportArchiveLedger(s, legacyRoom, opts = {}) {
@@ -51132,10 +51017,10 @@ async function exportArchiveLedger(s, legacyRoom, opts = {}) {
   try {
     applyUpdate(doc, new Uint8Array(await res.arrayBuffer()));
     const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
-    const outputPath = opts.path ? path36.resolve(s.dir, opts.path) : path36.join(s.dir, ".room", "ledger", `${legacyRoom.replaceAll("/", "_")}-${timestamp}.md`);
+    const outputPath = opts.path ? path35.resolve(s.dir, opts.path) : path35.join(s.dir, ".room", "ledger", `${legacyRoom.replaceAll("/", "_")}-${timestamp}.md`);
     const markdown = renderPrNote(new RoomDoc(doc), { roomName: legacyRoom, now, history: true });
-    fs36.mkdirSync(path36.dirname(outputPath), { recursive: true });
-    fs36.writeFileSync(outputPath, markdown);
+    fs35.mkdirSync(path35.dirname(outputPath), { recursive: true });
+    fs35.writeFileSync(outputPath, markdown);
     return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
   } finally {
     doc.destroy();
@@ -52507,8 +52392,8 @@ ${fresh.map(line).join("\n")}${more ? `
 }
 
 // packages/room-mcp/src/hooks-bridge.ts
-import fs37 from "node:fs";
-import path37 from "node:path";
+import fs36 from "node:fs";
+import path36 from "node:path";
 import { execFileSync as execFileSync9 } from "node:child_process";
 import { randomUUID as randomUUID7 } from "node:crypto";
 var HooksBridge = class {
@@ -52542,7 +52427,7 @@ var HooksBridge = class {
     if (this.timer) clearTimeout(this.timer);
     if (this.written) {
       try {
-        if (JSON.parse(fs37.readFileSync(this.written, "utf8")).writer === this.writer) fs37.rmSync(this.written, { force: true });
+        if (JSON.parse(fs36.readFileSync(this.written, "utf8")).writer === this.writer) fs36.rmSync(this.written, { force: true });
       } catch {
       }
     }
@@ -52566,12 +52451,12 @@ var HooksBridge = class {
     if (this.stopped) return;
     const dir = this.o.sessionDir();
     if (!dir) return;
-    const file = path37.join(dir, "state.json");
+    const file = path36.join(dir, "state.json");
     if (!this.o.fenced()) {
       const paused2 = this.o.paused?.();
       if (!paused2 || this.written !== file) return;
       try {
-        if (JSON.parse(fs37.readFileSync(file, "utf8")).writer !== this.writer) return;
+        if (JSON.parse(fs36.readFileSync(file, "utf8")).writer !== this.writer) return;
       } catch {
         return;
       }
@@ -52616,7 +52501,7 @@ var HooksBridge = class {
     const presences = [...this.s.awareness.getStates().values()];
     const others = company.others.map((name2) => displayName({ name: name2, kind: (presences.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? presences.find((p) => p.user?.name === name2))?.user?.kind ?? this.s.room.scope(name2)?.byKind ?? "agent" }));
     const paused = this.o.paused?.();
-    fs37.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs36.mkdirSync(dir, { recursive: true, mode: 448 });
     writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...paused ? { paused } : {}, writer: this.writer });
     this.written = file;
   }
@@ -52643,12 +52528,12 @@ function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = 
   let sessionStartedAt = health2.since;
   if (sessionDir) {
     try {
-      const session = JSON.parse(fs37.readFileSync(path37.join(sessionDir, "session.json"), "utf8"));
+      const session = JSON.parse(fs36.readFileSync(path36.join(sessionDir, "session.json"), "utf8"));
       if (typeof session.at === "number" && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at;
     } catch {
     }
     try {
-      const activity = JSON.parse(fs37.readFileSync(path37.join(sessionDir, "hook-activity.json"), "utf8"));
+      const activity = JSON.parse(fs36.readFileSync(path36.join(sessionDir, "hook-activity.json"), "utf8"));
       if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && (resolveSessionHost() !== "claude" || activity.at >= sessionStartedAt)) health2.observed = true;
     } catch {
     }
@@ -52673,8 +52558,8 @@ function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = 
 }
 
 // packages/room-mcp/src/wake-reconciler.ts
-import fs38 from "node:fs";
-import path38 from "node:path";
+import fs37 from "node:fs";
+import path37 from "node:path";
 var BACKOFF_MS = [1e3, 3e3, 8e3, 3e4];
 var WINDOW_MS = 5e3;
 var POLL_MS = 5e3;
@@ -52811,7 +52696,7 @@ var WakeReconciler = class {
     let wakes = {};
     if (dir) {
       try {
-        wakes = JSON.parse(fs38.readFileSync(path38.join(dir, "wakes.json"), "utf8"));
+        wakes = JSON.parse(fs37.readFileSync(path37.join(dir, "wakes.json"), "utf8"));
       } catch {
       }
     }
@@ -52829,8 +52714,8 @@ var WakeReconciler = class {
     }
     if (!record2.dir) return;
     try {
-      fs38.mkdirSync(record2.dir, { recursive: true, mode: 448 });
-      writeAtomic(path38.join(record2.dir, "wakes.json"), record2.wakes);
+      fs37.mkdirSync(record2.dir, { recursive: true, mode: 448 });
+      writeAtomic(path37.join(record2.dir, "wakes.json"), record2.wakes);
     } catch (e) {
       this.o.log?.(`wake: could not write wakes.json: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -52872,8 +52757,8 @@ function kindPhrase(type) {
 }
 
 // packages/room-mcp/src/ledger.ts
-import fs39 from "node:fs";
-import path39 from "node:path";
+import fs38 from "node:fs";
+import path38 from "node:path";
 import { createHash as createHash13, randomUUID as randomUUID8 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
@@ -53124,13 +53009,13 @@ var Ledger = class {
   }
   file(name2) {
     const dir = this.o.sessionDir?.();
-    return dir ? path39.join(dir, name2) : void 0;
+    return dir ? path38.join(dir, name2) : void 0;
   }
   readCursors() {
     const file = this.file("cursor.json");
     if (!file) return {};
     try {
-      return JSON.parse(fs39.readFileSync(file, "utf8"));
+      return JSON.parse(fs38.readFileSync(file, "utf8"));
     } catch {
       return {};
     }
@@ -53141,7 +53026,7 @@ var Ledger = class {
     try {
       const all2 = this.readCursors();
       all2[s.roomName] = { participant: cursor.participant, frontier: cursor.frontier, routed: [...cursor.routed] };
-      fs39.mkdirSync(path39.dirname(file), { recursive: true, mode: 448 });
+      fs38.mkdirSync(path38.dirname(file), { recursive: true, mode: 448 });
       writeAtomic(file, all2);
     } catch (e) {
       this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`);
@@ -53151,7 +53036,7 @@ var Ledger = class {
     if (!this.delivered) {
       const file = this.file("notices.json");
       try {
-        this.delivered = file ? JSON.parse(fs39.readFileSync(file, "utf8")) : {};
+        this.delivered = file ? JSON.parse(fs38.readFileSync(file, "utf8")) : {};
       } catch {
         this.delivered = {};
       }
@@ -53162,7 +53047,7 @@ var Ledger = class {
     const file = this.file("notices.json");
     if (!file) return;
     try {
-      fs39.mkdirSync(path39.dirname(file), { recursive: true, mode: 448 });
+      fs38.mkdirSync(path38.dirname(file), { recursive: true, mode: 448 });
       writeAtomic(file, this.deliveredNotices());
     } catch (e) {
       this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`);
@@ -53287,12 +53172,12 @@ function createHandlerState(ctx) {
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
   };
   const baseFor = (s, person) => s.room.manifestHead.get(person)?.base ?? participantRecord(s.room, person)?.git?.base ?? "HEAD";
-  const baseText = async (s, path46, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path46);
-  const readVersion = async (s, path46, person) => {
+  const baseText = async (s, path45, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path45);
+  const readVersion = async (s, path45, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const view = participantsView(s.room, s.awareness, now());
       const snap = snapshot(s.room, person, view);
-      const result2 = await versionOf(snap, path46, {
+      const result2 = await versionOf(snap, path45, {
         gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
         known: (hash2) => git(s.dir, ["cat-file", "blob", hash2]).catch(() => void 0)
       });
@@ -53300,15 +53185,15 @@ function createHandlerState(ctx) {
     }
     return { kind: "unknown", why: "updating", detail: `${person}'s changes moved during the read; re-run` };
   };
-  const readText = async (s, path46, person) => {
-    if (person === s.me.name) return workerText(s.dir, path46);
+  const readText = async (s, path45, person) => {
+    if (person === s.me.name) return workerText(s.dir, path45);
     const worker = await trustedWorker(s, person);
-    if (worker) return workerText(worker.dir, path46);
-    const version2 = await readVersion(s, path46, person);
+    if (worker) return workerText(worker.dir, path45);
+    const version2 = await readVersion(s, path45, person);
     if (version2.kind === "text") return version2.text;
     if (version2.kind === "deleted") return null;
     if (version2.kind === "base") return version2.text;
-    throw new Error(`${path46}: ${person}'s version is ${version2.kind}${"detail" in version2 ? ` (${version2.detail})` : ""}`);
+    throw new Error(`${path45}: ${person}'s version is ${version2.kind}${"detail" in version2 ? ` (${version2.detail})` : ""}`);
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
   const areas = createAreas({ ctx, log: log2, presences, others, shareOf, now, isMe });
@@ -53435,12 +53320,12 @@ function createHandlerState(ctx) {
 }
 
 // packages/room-mcp/src/tools/collect.ts
-import fs42 from "node:fs";
-import path42 from "node:path";
+import fs41 from "node:fs";
+import path41 from "node:path";
 
 // packages/room-mcp/src/tools/combined-tree.ts
-import fs40 from "node:fs";
-import path40 from "node:path";
+import fs39 from "node:fs";
+import path39 from "node:path";
 async function buildCombinedTree(state, caller, participants, options = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const result2 = await buildCombinedTreeOnce(state, caller, participants, options);
@@ -53487,8 +53372,8 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     }
     const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1e3));
     coverageLines.push(`${person} (${snap.head.level}, scanned ${age}s ago, rev ${snap.head.rev}):`);
-    const shared = [...snap.entries].filter(([, entry]) => entry.state === "shared").map(([path46]) => path46);
-    const held = [...snap.entries].filter(([, entry]) => entry.state === "held").map(([path46, entry]) => `${path46} (${entry.held ?? "not shared"})`);
+    const shared = [...snap.entries].filter(([, entry]) => entry.state === "shared").map(([path45]) => path45);
+    const held = [...snap.entries].filter(([, entry]) => entry.state === "held").map(([path45, entry]) => `${path45} (${entry.held ?? "not shared"})`);
     coverageLines.push(`  shared: ${shared.length ? shared.join(", ") : "none"}`);
     coverageLines.push(`  changed, text not shared: ${held.length ? held.join(", ") : "none"}`);
     if (snap.head.excluded.length) coverageLines.push(`  ${snap.head.excluded.length} changed path(s) excluded by ${person}'s rules (names not shared)`);
@@ -53509,12 +53394,12 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (worker) previewDirs.add(worker.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
-    if (fs40.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
-    return [path40.resolve(dir), fs40.realpathSync(dir)];
+    if (fs39.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path39.resolve(dir), fs39.realpathSync(dir)];
   }));
   const rootOf = (dir) => {
-    const canonical = fs40.realpathSync(dir);
-    const root = roots.get(path40.resolve(dir)) ?? [...roots.values()].find((value2) => value2 === canonical);
+    const canonical = fs39.realpathSync(dir);
+    const root = roots.get(path39.resolve(dir)) ?? [...roots.values()].find((value2) => value2 === canonical);
     if (!root) throw new Error("uncaptured preview root: " + dir);
     return root;
   };
@@ -53546,10 +53431,10 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: "allow" })) throw new Error("unsafe preview path: " + p);
     const root = rootOf(dir);
     try {
-      const result2 = containedRepoPath(root, path40.join(root, p), { leaf: "read-contained-link" });
+      const result2 = containedRepoPath(root, path39.join(root, p), { leaf: "read-contained-link" });
       if (!result2.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result2.path;
-      return fs40.readFileSync(file, options.encoding ?? "utf8");
+      return fs39.readFileSync(file, options.encoding ?? "utf8");
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -53620,11 +53505,11 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       if (!reason && dir) {
         const root = rootOf(dir);
         try {
-          if (!containedRepoPath(root, path40.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
+          if (!containedRepoPath(root, path39.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
           try {
-            if (fs40.lstatSync(path40.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+            if (fs39.lstatSync(path39.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
           } catch {
           }
         }
@@ -53642,7 +53527,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
     if (dirs.some((dir) => {
       try {
-        return fs40.lstatSync(path40.join(dir, p)).isDirectory();
+        return fs39.lstatSync(path39.join(dir, p)).isDirectory();
       } catch {
         return false;
       }
@@ -53824,9 +53709,9 @@ function supersetSide(a, b) {
 
 // packages/room-mcp/src/tools/files.ts
 import { execFile as execFile6, spawn as spawn4 } from "node:child_process";
-import fs41 from "node:fs";
+import fs40 from "node:fs";
 import os7 from "node:os";
-import path41 from "node:path";
+import path40 from "node:path";
 import { stripVTControlCharacters as stripVTControlCharacters2 } from "node:util";
 var defs8 = [
   {
@@ -53861,7 +53746,7 @@ function testCommandFor(dir) {
   const files2 = {};
   for (const file of ["package.json", "pyproject.toml", "uv.lock", "Makefile"]) {
     try {
-      files2[file] = fs41.readFileSync(path41.join(dir, file), "utf8");
+      files2[file] = fs40.readFileSync(path40.join(dir, file), "utf8");
     } catch {
       files2[file] = void 0;
     }
@@ -53870,15 +53755,15 @@ function testCommandFor(dir) {
 }
 function ownDiskText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe room path: " + rel);
-  const root = fs41.realpathSync(dir);
-  const candidate = path41.resolve(root, rel);
+  const root = fs40.realpathSync(dir);
+  const candidate = path40.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe room path: " + rel);
   try {
     const result2 = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
     if (!result2.ok) throw new Error("unsafe room symlink: " + rel);
     const real = result2.path;
-    if (!fs41.statSync(real).isFile()) throw new Error("not a file: " + rel);
-    return fs41.readFileSync(real, "utf8");
+    if (!fs40.statSync(real).isFile()) throw new Error("not a file: " + rel);
+    return fs40.readFileSync(real, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
@@ -54003,7 +53888,7 @@ ${text}` : text;
           if (overBound) unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`);
           const mine = [.../* @__PURE__ */ new Set([...myPaths, ...!overBound ? mineCommitted : []])];
           const peer = [.../* @__PURE__ */ new Set([...theirs, ...!overBound ? theirCommitted : []])];
-          return peer.some((p) => mine.some((path46) => coversPath(p, path46)));
+          return peer.some((p) => mine.some((path45) => coversPath(p, path45)));
         } catch (error2) {
           unavailable.push(`${person}: committed changes unavailable (${error2 instanceof Error ? error2.message : String(error2)})`);
           return false;
@@ -54073,7 +53958,7 @@ ${text}--- end ${p} ---`);
             const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
               const w = result2.diskWorkers.get(person);
               if (!w) return void 0;
-              const dir = result2.roots.get(path41.resolve(w.dir));
+              const dir = result2.roots.get(path40.resolve(w.dir));
               if (!dir) throw new Error("uncaptured preview root: " + w.dir);
               return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result2.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
             }))).filter((x) => !!x);
@@ -54081,7 +53966,7 @@ ${text}--- end ${p} ---`);
             for (const p of merged.keys()) {
               let leadMode = 420;
               try {
-                const stat4 = fs41.lstatSync(path41.join(caller.dir, p));
+                const stat4 = fs40.lstatSync(path40.join(caller.dir, p));
                 if (stat4.isFile()) leadMode = stat4.mode & 511;
               } catch (e) {
                 if (e.code !== "ENOENT") throw e;
@@ -54118,52 +54003,52 @@ ${text}--- end ${p} ---`);
   return handlers10;
 }
 function linkSharedDirs(cloneDir, scratchDir) {
-  const venv = path41.join(cloneDir, ".venv");
-  if (fs41.existsSync(venv) && !fs41.existsSync(path41.join(scratchDir, ".venv"))) fs41.symlinkSync(venv, path41.join(scratchDir, ".venv"));
+  const venv = path40.join(cloneDir, ".venv");
+  if (fs40.existsSync(venv) && !fs40.existsSync(path40.join(scratchDir, ".venv"))) fs40.symlinkSync(venv, path40.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
-    const d = path41.join(cloneDir, top);
-    if (!fs41.existsSync(d)) continue;
-    for (const e of fs41.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path41.join(top, e.name, "node_modules"));
+    const d = path40.join(cloneDir, top);
+    if (!fs40.existsSync(d)) continue;
+    for (const e of fs40.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path40.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
-    const src = path41.join(cloneDir, rel), dst = path41.join(scratchDir, rel);
-    if (!fs41.existsSync(src) || fs41.existsSync(dst)) continue;
+    const src = path40.join(cloneDir, rel), dst = path40.join(scratchDir, rel);
+    if (!fs40.existsSync(src) || fs40.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
-  ensureMergedDirectory(scratchDir, path41.relative(scratchDir, dst));
-  for (const e of fs41.readdirSync(src, { withFileTypes: true })) {
-    const from2 = path41.join(src, e.name), to2 = path41.join(dst, e.name);
+  ensureMergedDirectory(scratchDir, path40.relative(scratchDir, dst));
+  for (const e of fs40.readdirSync(src, { withFileTypes: true })) {
+    const from2 = path40.join(src, e.name), to2 = path40.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path41.resolve(src, fs41.readlinkSync(from2));
-      const inside = path41.relative(cloneDir, target);
-      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path41.sep).includes("node_modules");
-      fs41.symlinkSync(isWorkspace ? path41.join(scratchDir, inside) : target, to2);
+      const target = path40.resolve(src, fs40.readlinkSync(from2));
+      const inside = path40.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path40.sep).includes("node_modules");
+      fs40.symlinkSync(isWorkspace ? path40.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
-      fs41.symlinkSync(from2, to2);
+      fs40.symlinkSync(from2, to2);
     }
   }
 }
 function ensureMergedDirectory(root, rel) {
-  const canonicalRoot = path41.resolve(root);
+  const canonicalRoot = path40.resolve(root);
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   if (!rel) return canonicalRoot;
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
   let at = canonicalRoot;
   for (const part of rel.split("/")) {
-    at = path41.join(at, part);
+    at = path40.join(at, part);
     let stat4;
     try {
-      stat4 = fs41.lstatSync(at);
+      stat4 = fs40.lstatSync(at);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
     if (stat4?.isSymbolicLink() || stat4 && !stat4.isDirectory()) throw new Error("unsafe merged ancestor: " + rel);
-    if (!stat4) fs41.mkdirSync(at);
+    if (!stat4) fs40.mkdirSync(at);
     if (!containedRepoPath(canonicalRoot, at, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged path escapes scratch tree: " + rel);
   }
   return at;
@@ -54184,12 +54069,12 @@ function mergedFileMode(rel, initialMode, participants) {
   let mode2 = initialMode;
   for (const participant of participants) {
     if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue;
-    const src = path41.join(participant.dir, rel);
+    const src = path40.join(participant.dir, rel);
     let stat4;
     try {
-      const root = path41.resolve(participant.dir);
-      if (!containedRepoPath(root, path41.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
-      stat4 = fs41.lstatSync(src);
+      const root = path40.resolve(participant.dir);
+      if (!containedRepoPath(root, path40.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
+      stat4 = fs40.lstatSync(src);
     } catch (e) {
       if (e.code === "ENOENT") continue;
       throw e;
@@ -54206,29 +54091,29 @@ function mergedFileMode(rel, initialMode, participants) {
 }
 function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
-  const canonicalRoot = path41.resolve(root);
+  const canonicalRoot = path40.resolve(root);
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   const parts2 = rel.split("/");
   const parent = ensureMergedDirectory(canonicalRoot, parts2.slice(0, -1).join("/"));
-  const file = path41.join(parent, parts2.at(-1));
+  const file = path40.join(parent, parts2.at(-1));
   let stat4;
   try {
-    stat4 = fs41.lstatSync(file);
+    stat4 = fs40.lstatSync(file);
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  if (stat4?.isSymbolicLink()) fs41.unlinkSync(file);
+  if (stat4?.isSymbolicLink()) fs40.unlinkSync(file);
   else if (stat4 && !stat4.isFile()) throw new Error("merged path is not a regular file: " + rel);
   if (bytes === null) {
-    if (stat4 && !stat4.isSymbolicLink()) fs41.rmSync(file);
+    if (stat4 && !stat4.isSymbolicLink()) fs40.rmSync(file);
     return;
   }
-  const fd = fs41.openSync(file, fs41.constants.O_WRONLY | fs41.constants.O_CREAT | fs41.constants.O_TRUNC | (fs41.constants.O_NOFOLLOW ?? 0), mode2);
+  const fd = fs40.openSync(file, fs40.constants.O_WRONLY | fs40.constants.O_CREAT | fs40.constants.O_TRUNC | (fs40.constants.O_NOFOLLOW ?? 0), mode2);
   try {
-    fs41.writeFileSync(fd, bytes);
-    fs41.fchmodSync(fd, mode2);
+    fs40.writeFileSync(fd, bytes);
+    fs40.fchmodSync(fd, mode2);
   } finally {
-    fs41.closeSync(fd);
+    fs40.closeSync(fd);
   }
 }
 function testVerdict(output, code) {
@@ -54241,12 +54126,12 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs41.realpathSync(fs41.mkdtempSync(path41.join(os7.tmpdir(), "room-merge-")));
+  const dir = fs40.realpathSync(fs40.mkdtempSync(path40.join(os7.tmpdir(), "room-merge-")));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
     linkSharedDirs(s.dir, dir);
-    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs41.existsSync(candidate));
+    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs40.existsSync(candidate));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
     const result2 = await new Promise((resolve5) => {
@@ -54264,7 +54149,7 @@ ${verdict.text}` };
     if (isGitTimeout(e)) throw e;
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
-    fs41.rmSync(dir, { recursive: true, force: true });
+    fs40.rmSync(dir, { recursive: true, force: true });
   }
 }
 var CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
@@ -54364,15 +54249,15 @@ async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors,
 var failureReason = (w) => w.exitCode !== void 0 && w.exitCode !== 0 ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, " ").slice(0, 180)}` : ""}` : w.stopReason ?? w.summary?.replace(/\s+/g, " ").slice(0, 180) ?? "worker reported failure";
 function safePath(root, rel) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe collection path: " + rel);
-  const result2 = containedRepoPath(root, path42.join(root, rel), { leaf: "reject-link", allowMissing: true });
+  const result2 = containedRepoPath(root, path41.join(root, rel), { leaf: "reject-link", allowMissing: true });
   if (!result2.ok) throw new Error(result2.reason === "link" ? "symlink collection path refused: " + rel : "unsafe collection path: " + rel);
   return result2.path;
 }
 function copyFiles(root, paths) {
   const files2 = /* @__PURE__ */ new Set();
   const visit = (rel) => {
-    const file = safePath(root, rel), stat4 = fs42.statSync(file);
-    if (stat4.isDirectory()) for (const name2 of fs42.readdirSync(file)) visit(rel + "/" + name2);
+    const file = safePath(root, rel), stat4 = fs41.statSync(file);
+    if (stat4.isDirectory()) for (const name2 of fs41.readdirSync(file)) visit(rel + "/" + name2);
     else if (stat4.isFile()) files2.add(rel);
     else throw new Error("not a regular file: " + rel);
   };
@@ -54382,7 +54267,7 @@ function copyFiles(root, paths) {
 async function assertNoOperation(dir) {
   for (const name2 of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]) {
     const file = (await git(dir, ["rev-parse", "--git-path", name2])).trim();
-    if (fs42.existsSync(path42.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
+    if (fs41.existsSync(path41.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
   }
 }
 function handlers9(state) {
@@ -54567,7 +54452,7 @@ repeat with force=true to delete them`;
           try {
             missingDetail = await pruneMissingWorkerWorktree(s.dir, w);
           } catch (error2) {
-            const recordedPath = path42.basename(w.dir) === w.tag && path42.basename(path42.dirname(w.dir)) === "workers" && path42.basename(path42.dirname(path42.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
+            const recordedPath = path41.basename(w.dir) === w.tag && path41.basename(path41.dirname(w.dir)) === "workers" && path41.basename(path41.dirname(path41.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
             if (!verifiedProcess || !recordedPath || !(error2 instanceof Error) || !error2.message.includes("is not an owned Room worktree")) throw error2;
           }
           cleanupWorkerLogs(s.dir, w);
@@ -54578,7 +54463,7 @@ repeat with force=true to delete them`;
           await registry2.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(", ")}`);
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
-            ...ignored.map((p) => `kept ${p} at ${path42.join(w.dir, p)}`),
+            ...ignored.map((p) => `kept ${p} at ${path41.join(w.dir, p)}`),
             `retained worktree: ${w.dir}`,
             ...terminated.length ? ["stopped processes: " + terminated.join(", ")] : [],
             ...cleanupErrors,
@@ -54631,7 +54516,7 @@ repeat with force=true to delete them`;
     }
     const out2 = [];
     const selected = [];
-    const leadRoot = fs42.realpathSync(lead.dir);
+    const leadRoot = fs41.realpathSync(lead.dir);
     const workerRoots = /* @__PURE__ */ new Map();
     const workerLocks = [];
     const collectStarted = /* @__PURE__ */ new Set();
@@ -54676,7 +54561,7 @@ repeat with force=true to delete them`;
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
             continue;
           }
-          const workerRoot = fs42.realpathSync(w.dir);
+          const workerRoot = fs41.realpathSync(w.dir);
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
@@ -54729,17 +54614,17 @@ repeat with force=true to delete them`;
         const tracked = new Set(split(await gitWholeTree(lead.dir, ["ls-files", "-z"])));
         for (const p of files2) {
           const dst = safePath(leadRoot, p);
-          if (fs42.existsSync(dst) && !fs42.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
-          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs42.existsSync(dst))) {
-            if (!fs42.existsSync(dst) || !fs42.readFileSync(dst).equals(fs42.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
+          if (fs41.existsSync(dst) && !fs41.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
+          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs41.existsSync(dst))) {
+            if (!fs41.existsSync(dst) || !fs41.readFileSync(dst).equals(fs41.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
           }
         }
         releasePaths(files2);
         for (const p of files2) {
           const dst = safePath(leadRoot, p);
-          fs42.mkdirSync(path42.dirname(dst), { recursive: true });
-          fs42.copyFileSync(safePath(workerRoot, p), dst);
-          fs42.chmodSync(dst, fs42.statSync(safePath(workerRoot, p)).mode & 511);
+          fs41.mkdirSync(path41.dirname(dst), { recursive: true });
+          fs41.copyFileSync(safePath(workerRoot, p), dst);
+          fs41.chmodSync(dst, fs41.statSync(safePath(workerRoot, p)).mode & 511);
           out2.push("copied " + p);
         }
         if (!files2.length) out2.push("nothing copied (empty directories)");
@@ -54757,7 +54642,7 @@ repeat with force=true to delete them`;
           diskWorkers: new Set(selected.map(({ w }) => w.name)),
           encoding: "latin1",
           skipCallerOnly: true,
-          roots: new Map([[path42.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path42.resolve(w.dir), workerRoots.get(w)])])
+          roots: new Map([[path41.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path41.resolve(w.dir), workerRoots.get(w)])])
         }
       );
       const unsupported = result2.ignoredNotes.filter((note) => !note.includes("gitignored") && !note.includes("linked input"));
@@ -54774,9 +54659,9 @@ repeat with force=true to delete them`;
       }
       for (const [p, text] of result2.merged) {
         const file = safePath(leadRoot, p);
-        const before = fs42.existsSync(file) ? fs42.readFileSync(file) : null;
+        const before = fs41.existsSync(file) ? fs41.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result2.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
-        const oldMode = before !== null ? fs42.statSync(file).mode & 511 : 420;
+        const oldMode = before !== null ? fs41.statSync(file).mode & 511 : 420;
         const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
         if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
@@ -54851,7 +54736,7 @@ repeat with force=true to delete them`;
           const ignored = await ignoredWorkerArtifacts(w);
           if (ignored.length) {
             out2.push("kept " + w.tag + ": uncopied ignored artifacts");
-            out2.push(...ignored.map((p) => `kept ${p} at ${path42.join(w.dir, p)}`));
+            out2.push(...ignored.map((p) => `kept ${p} at ${path41.join(w.dir, p)}`));
             out2.push(`retained worktree: ${w.dir}`);
             retire(`kept for ignored output at ${w.dir}`, w.dir, "uncopied ignored artifacts");
             await finishOne();
@@ -55325,9 +55210,9 @@ function carries(message2, text) {
 }
 
 // packages/room-mcp/src/arbitration.ts
-import fs43 from "node:fs";
+import fs42 from "node:fs";
 import net2 from "node:net";
-import path43 from "node:path";
+import path42 from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 async function startArbitration(o) {
   const key2 = randomBytes4(24).toString("hex");
@@ -55400,15 +55285,15 @@ async function startArbitration(o) {
   let written;
   const publish2 = () => {
     const dir = o.binding.dir();
-    if (dir === (written && path43.dirname(written))) return;
+    if (dir === (written && path42.dirname(written))) return;
     if (written) removeOwn(written, key2);
     written = void 0;
     if (!dir) return;
     try {
-      fs43.mkdirSync(dir, { recursive: true, mode: 448 });
-      const file = path43.join(dir, "mcp.json");
+      fs42.mkdirSync(dir, { recursive: true, mode: 448 });
+      const file = path42.join(dir, "mcp.json");
       writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self2?.startTime ?? "" });
-      fs43.chmodSync(file, 384);
+      fs42.chmodSync(file, 384);
       written = file;
     } catch (e) {
       o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`);
@@ -55429,13 +55314,13 @@ async function startArbitration(o) {
 }
 function removeOwn(file, key2) {
   try {
-    if (JSON.parse(fs43.readFileSync(file, "utf8")).key === key2) fs43.rmSync(file, { force: true });
+    if (JSON.parse(fs42.readFileSync(file, "utf8")).key === key2) fs42.rmSync(file, { force: true });
   } catch {
   }
 }
 
 // packages/room-mcp/src/workspace.ts
-import fs44 from "node:fs";
+import fs43 from "node:fs";
 import { execFileSync as execFileSync11 } from "node:child_process";
 function fallbackWorkspace(env, processDir) {
   const value2 = (key2) => env[key2]?.trim() || void 0;
@@ -55473,9 +55358,9 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
   const roots = /* @__PURE__ */ new Set();
   for (const key2 of Object.keys(workspaces)) {
     try {
-      const real = fs44.realpathSync(key2);
+      const real = fs43.realpathSync(key2);
       const root = rootOf(real);
-      if (root) roots.add(fs44.realpathSync(root));
+      if (root) roots.add(fs43.realpathSync(root));
     } catch {
     }
   }
@@ -55483,11 +55368,11 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
 }
 async function sameWorkspace(a, b) {
   try {
-    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs44.realpathSync(dir));
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs43.realpathSync(dir));
     if (rootA !== rootB) return false;
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
     if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
-    return fs44.realpathSync(gitA.value) === fs44.realpathSync(gitB.value);
+    return fs43.realpathSync(gitA.value) === fs43.realpathSync(gitB.value);
   } catch {
     return false;
   }
@@ -55563,17 +55448,17 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 }
 
 // packages/room-mcp/src/presence-end.ts
-import fs45 from "node:fs";
-import path44 from "node:path";
+import fs44 from "node:fs";
+import path43 from "node:path";
 async function nextIdleEpisode(commonDir) {
-  const file = path44.join(commonDir, "room", "sessions", "idle-episode.json");
+  const file = path43.join(commonDir, "room", "sessions", "idle-episode.json");
   const deadline = performance.now() + 5e3;
   for (; ; ) {
     try {
       return withGuard(file, () => {
         let current = 0;
         try {
-          const value2 = JSON.parse(fs45.readFileSync(file, "utf8"));
+          const value2 = JSON.parse(fs44.readFileSync(file, "utf8"));
           if (!value2 || typeof value2 !== "object" || !Number.isSafeInteger(value2.max) || Number(value2.max) < 0) throw new Error("invalid idle-episode counter");
           current = value2.max;
         } catch (error2) {
@@ -55795,10 +55680,10 @@ var ROOM_LOG_MAX_BYTES = 1024 * 1024;
 function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   try {
     try {
-      if (fs46.statSync(file).size >= maxBytes) fs46.renameSync(file, `${file}.1`);
+      if (fs45.statSync(file).size >= maxBytes) fs45.renameSync(file, `${file}.1`);
     } catch {
     }
-    fs46.appendFileSync(file, `${line}
+    fs45.appendFileSync(file, `${line}
 `, { mode: 384 });
   } catch {
   }
@@ -55807,14 +55692,14 @@ var LOG_FILE = process.env.ROOM_LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
-    fs46.writeSync(2, `room-mcp: ${s}
+    fs45.writeSync(2, `room-mcp: ${s}
 `);
   } catch {
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
   if (LOG_FILE) {
     try {
-      fs46.appendFileSync(LOG_FILE, `${at} ${s}
+      fs45.appendFileSync(LOG_FILE, `${at} ${s}
 `);
     } catch {
     }
@@ -55824,7 +55709,7 @@ var log = (s) => {
 function createBundleUpdateNotice(file) {
   let startupMtime;
   try {
-    startupMtime = fs46.statSync(file).mtimeMs;
+    startupMtime = fs45.statSync(file).mtimeMs;
   } catch {
     return () => "";
   }
@@ -55832,7 +55717,7 @@ function createBundleUpdateNotice(file) {
   return () => {
     if (warned2) return "";
     try {
-      if (fs46.statSync(file).mtimeMs <= startupMtime) return "";
+      if (fs45.statSync(file).mtimeMs <= startupMtime) return "";
     } catch {
       return "";
     }
@@ -55857,7 +55742,7 @@ async function main() {
       const startup = await resolveConfig({ dir, env: process.env });
       if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
-      ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path45.join(common, ROOM_LOG), () => void 0);
+      ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path44.join(common, ROOM_LOG), () => void 0);
       if (signal.aborted) throw new Error("Room is shutting down");
       const sessionBinding = createSessionBinding(dir);
       let rebinding;
