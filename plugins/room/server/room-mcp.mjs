@@ -1068,10 +1068,10 @@ var require_util = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports2.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -3269,8 +3269,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path37) {
-      let input = path37;
+    function removeDotSegments(path39) {
+      let input = path39;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3679,8 +3679,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path37 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path37 && path37 !== "/" ? path37 : void 0;
+        const path39 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path39 && path39 !== "/" ? path39 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7192,12 +7192,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name2}"`);
       return f;
     };
-    function addFormats(ajv, list, fs39, exportName) {
+    function addFormats(ajv, list, fs41, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs39[f]);
+        ajv.addFormat(f, fs41[f]);
     }
     module2.exports = exports2 = formatsPlugin;
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -11677,11 +11677,11 @@ var require_tree_sitter = __commonJS({
               throw toThrow;
             };
             var scriptDirectory = "";
-            function locateFile(path37) {
+            function locateFile(path39) {
               if (Module["locateFile"]) {
-                return Module["locateFile"](path37, scriptDirectory);
+                return Module["locateFile"](path39, scriptDirectory);
               }
-              return scriptDirectory + path37;
+              return scriptDirectory + path39;
             }
             var readAsync, readBinary;
             if (ENVIRONMENT_IS_NODE) {
@@ -14202,8 +14202,8 @@ var require_tree_sitter = __commonJS({
                 } else {
                   const url = input;
                   if (typeof process !== "undefined" && process.versions && process.versions.node) {
-                    const fs39 = __require("fs");
-                    bytes = Promise.resolve(fs39.readFileSync(url));
+                    const fs41 = __require("fs");
+                    bytes = Promise.resolve(fs41.readFileSync(url));
                   } else {
                     bytes = fetch(url).then((response) => response.arrayBuffer().then((buffer) => {
                       if (response.ok) {
@@ -14532,8 +14532,8 @@ ${JSON.stringify(symbolNames, null, 2)}`);
 });
 
 // packages/room-mcp/src/index.ts
-import fs38 from "node:fs";
-import path36 from "node:path";
+import fs40 from "node:fs";
+import path38 from "node:path";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -14715,10 +14715,10 @@ function mergeDefs(...defs10) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path37) {
-  if (!path37)
+function getElementAtPath(obj, path39) {
+  if (!path39)
     return obj;
-  return path37.reduce((acc, key2) => acc?.[key2], obj);
+  return path39.reduce((acc, key2) => acc?.[key2], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -15130,11 +15130,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path37, issues) {
+function prefixIssues(path39, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path37);
+    iss.path.unshift(path39);
     return iss;
   });
 }
@@ -15563,16 +15563,16 @@ function flattenError(error2, mapper = (issue2) => issue2.message) {
 }
 function formatError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error3, path37 = []) => {
+  const processError = (error3, path39 = []) => {
     for (const issue2 of error3.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path37, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path39, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path39, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path39, ...issue2.path]);
       } else {
-        const fullpath = [...path37, ...issue2.path];
+        const fullpath = [...path39, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -23967,6 +23967,10 @@ var Server = class extends Protocol {
   }
 };
 
+// packages/shared/src/types.ts
+var LIVE_WORKER_STATUSES = ["starting", "running", "unknown", "ambiguous"];
+var workerLive = (status) => LIVE_WORKER_STATUSES.includes(status);
+
 // packages/shared/src/identity.ts
 function validParticipantName(name2) {
   return name2.length > 0 && !/[\x00-\x1f\x7f-\x9f]/u.test(name2);
@@ -24016,127 +24020,8 @@ function newId(prefix = "") {
   return `${prefix}${Date.now().toString(36)}${r}`;
 }
 
-// packages/shared/src/near.ts
-function coordinationPaths(room, excludingParticipant, options = {}) {
-  return [
-    ...room.allScopes().filter((scope) => scope.by !== excludingParticipant).flatMap((scope) => scope.paths.map((path37) => ({ by: scope.by, path: path37, reason: "scope" }))),
-    ...room.openClaims().filter((claim2) => claim2.by !== excludingParticipant || options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
-    ...[.../* @__PURE__ */ new Set([...room.overlays.keys(), ...room.deleted.keys()])].filter((by) => by !== excludingParticipant).flatMap((by) => room.changedPaths(by).map((path37) => ({ by, path: path37, reason: "changed" })))
-  ];
-}
-function normalizeCoordinationPath(p) {
-  const parts2 = [];
-  for (const part of p.replaceAll("\\", "/").split("/")) {
-    if (!part || part === ".") continue;
-    if (part === ".." && parts2.length && parts2.at(-1) !== "..") parts2.pop();
-    else parts2.push(part);
-  }
-  return parts2.join("/") || ".";
-}
-function containsPath(parent, child) {
-  const valid = (p) => p.trim().length > 0 && !/^(?:[\\/]|[a-z]:)/i.test(p) && (normalizeCoordinationPath(p) !== "." || p === "." || p === "./");
-  if (!valid(parent) || !valid(child)) return false;
-  const a = normalizeCoordinationPath(parent), b = normalizeCoordinationPath(child);
-  return a === "." || a === b || b.startsWith(a + "/");
-}
-function coversPath(a, b) {
-  return containsPath(a, b) || containsPath(b, a);
-}
-function nearPath(path37, others) {
-  return others.filter((other) => coversPath(path37, other.path));
-}
-
-// packages/shared/src/messages.ts
-var who = (m) => displayName({ name: m.from, kind: m.fromKind });
-var to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
-var priority = (m) => `[${m.priority}] `;
-var scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
-var BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
-var builtins = {
-  claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m, context) => context?.claims && !context.claims.some((c) => c.id === m.claimId) ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) \u2014 ${m.intent}` : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
-  release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
-  changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
-  question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
-  answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
-  conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
-  contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
-  note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
-  done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
-  base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
-  pushed: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${m.from}'s local commits ${m.fromSha.slice(0, 7)}..${m.toSha.slice(0, 7)} are now on ${m.upstream} (${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 if you work on ${m.upstream}: ${BASE_CATCH_UP}` },
-  plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
-  scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m, context) => {
-    const current = context?.scopes.some((s) => s.by === m.from && s.area === m.area && s.summary === m.summary && scopePaths(s.paths) === scopePaths(m.paths)) && context.messages.filter((x) => x.type === "scope" && x.from === m.from && x.area === m.area && x.summary === m.summary && scopePaths(x.paths) === scopePaths(m.paths)).at(-1)?.id === m.id;
-    return current ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(", ")})`;
-  } }
-};
-var MessageKinds = builtins;
-function messageKind(m) {
-  const kind = MessageKinds[m.type];
-  if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
-  return kind;
-}
-function holdsClaim(me, m, claims) {
-  const ids = "claimId" in m ? [m.claimId, ..."otherClaimId" in m ? [m.otherClaimId] : []] : [];
-  if (claims.some((c) => c.by === me && ids.includes(c.id))) return true;
-  return "path" in m && claims.some((c) => c.by === me && isAgentic(c.byKind) && claimsOverlap(c, { path: m.path, from: 1, to: Number.MAX_SAFE_INTEGER }));
-}
-function messageForMe(me, m, context = {}) {
-  if (m.type === "note" && !m.to && (m.from === me.name || m.priority === "fyi")) return false;
-  if (m.from === me.name && m.fromKind !== "human") return false;
-  if (m.type === "plan" && m.priority === "fyi") return false;
-  if (m.to === me.name) return true;
-  if (m.to) return false;
-  const kind = messageKind(m);
-  if (m.priority === "interrupt") return true;
-  if (kind.inbox === false) return false;
-  if (kind.audience === "everyone") return true;
-  if (kind.audience === "addressed") return false;
-  if (kind.audience === "claim-holders" && !holdsClaim(me.name, m, context.claims ?? [])) return false;
-  if (m.priority === "notify") return context.inMyAreas?.(m) ?? false;
-  return false;
-}
-function messageEndsWait(m, waiting) {
-  return messageKind(m).endsWait?.(m, waiting) ?? false;
-}
-function formatMsg(m, context) {
-  return messageKind(m).format(m, context);
-}
-function formatPlans(plans) {
-  return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
-}
-
-// packages/shared/src/format.ts
-function withLineNumbers(text) {
-  const lines = text.split("\n");
-  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  const w = String(lines.length).length;
-  return lines.map((l, i2) => `${String(i2 + 1).padStart(w)}| ${l}`).join("\n");
-}
-
-// packages/shared/src/claims.ts
-function rangesOverlap(aFrom, aTo, bFrom, bTo) {
-  return aFrom <= bTo && bFrom <= aTo;
-}
-function claimsOverlap(a, b) {
-  if (/[\\/]$/.test(a.path) && containsPath(a.path, b.path)) return true;
-  if (/[\\/]$/.test(b.path) && containsPath(b.path, a.path)) return true;
-  return normalizeCoordinationPath(a.path) === normalizeCoordinationPath(b.path) && rangesOverlap(a.from, a.to, b.from, b.to);
-}
-function cursorInClaim(c, claim2) {
-  return claimsOverlap(c, claim2);
-}
-function clampRange(from2, to2, lineCount) {
-  const max2 = Math.max(1, lineCount);
-  const f = Math.min(Math.max(1, Math.floor(from2)), max2);
-  const t = Math.min(Math.max(f, Math.floor(to2)), max2);
-  return { from: f, to: t };
-}
-function describeClaim(c) {
-  const who2 = displayName({ name: c.by, kind: c.byKind });
-  return `${who2} \xB7 ${c.path}${c.path.endsWith("/") ? "" : `:${c.from}-${c.to}`} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
-}
+// packages/shared/src/manifest.ts
+import { createHash } from "node:crypto";
 
 // packages/shared/src/doc.ts
 var import_fast_diff = __toESM(require_diff(), 1);
@@ -25070,14 +24955,14 @@ var deepFreeze = (o) => {
 };
 
 // node_modules/lib0/function.js
-var callAll = (fs39, args3, i2 = 0) => {
+var callAll = (fs41, args3, i2 = 0) => {
   try {
-    for (; i2 < fs39.length; i2++) {
-      fs39[i2](...args3);
+    for (; i2 < fs41.length; i2++) {
+      fs41[i2](...args3);
     }
   } finally {
-    if (i2 < fs39.length) {
-      callAll(fs39, args3, i2 + 1);
+    if (i2 < fs41.length) {
+      callAll(fs41, args3, i2 + 1);
     }
   }
 };
@@ -26820,19 +26705,19 @@ var Snapshot = class {
 };
 var createSnapshot = (ds, sm) => new Snapshot(ds, sm);
 var emptySnapshot = createSnapshot(createDeleteSet(), /* @__PURE__ */ new Map());
-var isVisible = (item, snapshot) => snapshot === void 0 ? !item.deleted : snapshot.sv.has(item.id.client) && (snapshot.sv.get(item.id.client) || 0) > item.id.clock && !isDeleted(snapshot.ds, item.id);
-var splitSnapshotAffectedStructs = (transaction, snapshot) => {
+var isVisible = (item, snapshot2) => snapshot2 === void 0 ? !item.deleted : snapshot2.sv.has(item.id.client) && (snapshot2.sv.get(item.id.client) || 0) > item.id.clock && !isDeleted(snapshot2.ds, item.id);
+var splitSnapshotAffectedStructs = (transaction, snapshot2) => {
   const meta2 = setIfUndefined(transaction.meta, splitSnapshotAffectedStructs, create2);
   const store = transaction.doc.store;
-  if (!meta2.has(snapshot)) {
-    snapshot.sv.forEach((clock, client) => {
+  if (!meta2.has(snapshot2)) {
+    snapshot2.sv.forEach((clock, client) => {
       if (clock < getState(store, client)) {
         getItemCleanStart(transaction, createID(client, clock));
       }
     });
-    iterateDeletedStructs(transaction, snapshot.ds, (_item) => {
+    iterateDeletedStructs(transaction, snapshot2.ds, (_item) => {
     });
-    meta2.add(snapshot);
+    meta2.add(snapshot2);
   }
 };
 var StructStore = class {
@@ -27061,15 +26946,15 @@ var cleanupTransactions = (transactionCleanups, i2) => {
       sortAndMergeDeleteSet(ds);
       transaction.afterState = getStateVector(transaction.doc.store);
       doc.emit("beforeObserverCalls", [transaction, doc]);
-      const fs39 = [];
+      const fs41 = [];
       transaction.changed.forEach(
-        (subs, itemtype) => fs39.push(() => {
+        (subs, itemtype) => fs41.push(() => {
           if (itemtype._item === null || !itemtype._item.deleted) {
             itemtype._callObserver(transaction, subs);
           }
         })
       );
-      fs39.push(() => {
+      fs41.push(() => {
         transaction.changedParentTypes.forEach((events, type) => {
           if (type._dEH.l.length > 0 && (type._item === null || !type._item.deleted)) {
             events = events.filter(
@@ -27080,19 +26965,19 @@ var cleanupTransactions = (transactionCleanups, i2) => {
               event._path = null;
             });
             events.sort((event1, event2) => event1.path.length - event2.path.length);
-            fs39.push(() => {
+            fs41.push(() => {
               callEventHandlerListeners(type._dEH, events, transaction);
             });
           }
         });
-        fs39.push(() => doc.emit("afterTransaction", [transaction, doc]));
-        fs39.push(() => {
+        fs41.push(() => doc.emit("afterTransaction", [transaction, doc]));
+        fs41.push(() => {
           if (transaction._needFormattingCleanup) {
             cleanupYTextAfterTransaction(transaction);
           }
         });
       });
-      callAll(fs39, []);
+      callAll(fs41, []);
     } finally {
       if (doc.gc) {
         tryGcDeleteSet(ds, store, doc.gcFilter);
@@ -27675,10 +27560,10 @@ var YEvent = class {
   }
 };
 var getPathTo = (parent, child) => {
-  const path37 = [];
+  const path39 = [];
   while (child._item !== null && child !== parent) {
     if (child._item.parentSub !== null) {
-      path37.unshift(child._item.parentSub);
+      path39.unshift(child._item.parentSub);
     } else {
       let i2 = 0;
       let c = (
@@ -27691,12 +27576,12 @@ var getPathTo = (parent, child) => {
         }
         c = c.right;
       }
-      path37.unshift(i2);
+      path39.unshift(i2);
     }
     child = /** @type {AbstractType<any>} */
     child._item.parent;
   }
-  return path37;
+  return path39;
 };
 var warnPrematureAccess = () => {
   warn("Invalid access: Add Yjs type to a document before reading data.");
@@ -28258,14 +28143,14 @@ var typeMapHas = (parent, key2) => {
   const val = parent._map.get(key2);
   return val !== void 0 && !val.deleted;
 };
-var typeMapGetAllSnapshot = (parent, snapshot) => {
+var typeMapGetAllSnapshot = (parent, snapshot2) => {
   const res = {};
   parent._map.forEach((value2, key2) => {
     let v = value2;
-    while (v !== null && (!snapshot.sv.has(v.id.client) || v.id.clock >= (snapshot.sv.get(v.id.client) || 0))) {
+    while (v !== null && (!snapshot2.sv.has(v.id.client) || v.id.clock >= (snapshot2.sv.get(v.id.client) || 0))) {
       v = v.left;
     }
-    if (v !== null && isVisible(v, snapshot)) {
+    if (v !== null && isVisible(v, snapshot2)) {
       res[key2] = v.content.getContent()[v.length - 1];
     }
   });
@@ -29518,7 +29403,7 @@ var YText = class _YText extends AbstractType {
    *
    * @public
    */
-  toDelta(snapshot, prevSnapshot, computeYChange) {
+  toDelta(snapshot2, prevSnapshot, computeYChange) {
     this.doc ?? warnPrematureAccess();
     const ops = [];
     const currentAttributes = /* @__PURE__ */ new Map();
@@ -29546,11 +29431,11 @@ var YText = class _YText extends AbstractType {
     }
     const computeDelta = () => {
       while (n !== null) {
-        if (isVisible(n, snapshot) || prevSnapshot !== void 0 && isVisible(n, prevSnapshot)) {
+        if (isVisible(n, snapshot2) || prevSnapshot !== void 0 && isVisible(n, prevSnapshot)) {
           switch (n.content.constructor) {
             case ContentString: {
               const cur = currentAttributes.get("ychange");
-              if (snapshot !== void 0 && !isVisible(n, snapshot)) {
+              if (snapshot2 !== void 0 && !isVisible(n, snapshot2)) {
                 if (cur === void 0 || cur.user !== n.id.client || cur.type !== "removed") {
                   packStr();
                   currentAttributes.set("ychange", computeYChange ? computeYChange("removed", n.id) : { type: "removed" });
@@ -29588,7 +29473,7 @@ var YText = class _YText extends AbstractType {
               break;
             }
             case ContentFormat:
-              if (isVisible(n, snapshot)) {
+              if (isVisible(n, snapshot2)) {
                 packStr();
                 updateCurrentAttributes(
                   currentAttributes,
@@ -29603,10 +29488,10 @@ var YText = class _YText extends AbstractType {
       }
       packStr();
     };
-    if (snapshot || prevSnapshot) {
+    if (snapshot2 || prevSnapshot) {
       transact(doc, (transaction) => {
-        if (snapshot) {
-          splitSnapshotAffectedStructs(transaction, snapshot);
+        if (snapshot2) {
+          splitSnapshotAffectedStructs(transaction, snapshot2);
         }
         if (prevSnapshot) {
           splitSnapshotAffectedStructs(transaction, prevSnapshot);
@@ -30313,10 +30198,10 @@ var YXmlElement = class _YXmlElement extends YXmlFragment {
    *
    * @public
    */
-  getAttributes(snapshot) {
+  getAttributes(snapshot2) {
     return (
       /** @type {any} */
-      snapshot ? typeMapGetAllSnapshot(this, snapshot) : typeMapGetAll(this)
+      snapshot2 ? typeMapGetAllSnapshot(this, snapshot2) : typeMapGetAll(this)
     );
   }
   /**
@@ -31978,13 +31863,13 @@ function msgPaths(m) {
   if ("path" in m) return [m.path];
   return [];
 }
-function scopeCovers(scope, path37) {
-  return scope.paths.some((p) => containsPath(p, path37));
+function scopeCovers(scope, path39) {
+  return scope.paths.some((p) => containsPath(p, path39));
 }
 function messageAreas(m, scopes) {
   const out2 = /* @__PURE__ */ new Set();
   if (m.type === "scope") out2.add(m.area);
-  for (const path37 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path37)) out2.add(scope.area);
+  for (const path39 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path39)) out2.add(scope.area);
   return Array.from(out2).sort();
 }
 function ledger(messages, scopes, q = {}) {
@@ -32127,7 +32012,6 @@ var RoomDoc = class {
       this.deleted.delete(person);
       this.overlayAt.delete(person);
       this.clearPersonBaseTexts(person);
-      this.sweepOrphanedBaseTexts();
     }, origin);
     return n;
   }
@@ -32143,51 +32027,20 @@ var RoomDoc = class {
   get bus() {
     return this.doc.getArray("bus");
   }
-  /** Workers dispatched into this room by leads (room_spawn), keyed by tag. */
-  get workers() {
-    return this.doc.getMap("workers");
+  /** Leads' workers as the room shows them, keyed by worker ID (registry §14). Display only; written by each lead's projector. */
+  get workerViews() {
+    return this.doc.getMap("workerViews");
   }
-  /** A replaced generation's claims are released; only the hub appends to the bus, so `post` sends their notices. */
-  setWorker(w, post) {
-    this.doc.transact(() => {
-      const prior = this.workers.get(w.tag);
-      if (prior && (prior.id !== w.id || prior.startedAt !== w.startedAt)) this.clearWorkerCoordination(prior.name, "worker stopped", post);
-      this.workers.set(w.tag, w);
-    });
-  }
-  /** Patch the record under `tag`; with `id`, only if that is still the record's identity (an older spawn must not touch a newer one). */
-  updateWorker(tag, patch, id3) {
-    const w = this.workers.get(tag);
-    if (!w || id3 !== void 0 && w.id !== id3) return void 0;
-    const next = { ...w, ...patch };
-    this.workers.set(tag, next);
-    return next;
-  }
-  workerOf(name2) {
-    for (const w of this.workers.values()) if (w.name === name2) return w;
-    return void 0;
-  }
-  workerById(id3) {
-    for (const w of this.workers.values()) if (w.id === id3) return w;
-    return void 0;
+  /** The newest view under a participant name, for display and remote classification. */
+  workerViewOf(name2) {
+    let found;
+    for (const view of this.workerViews.values()) if (view.name === name2 && (!found || view.startedAt > found.startedAt)) found = view;
+    return found;
   }
   retiredWorkers() {
     return this.doc.getArray("retiredWorkers").toArray();
   }
-  /** Identify older archives that left live records behind. The caller performs retirement and checkout cleanup. */
-  legacyRetirements(present = /* @__PURE__ */ new Set()) {
-    const repairs = [];
-    for (const retired of this.retiredWorkers()) {
-      if (present.has(retired.name)) continue;
-      const currentWorkers = [...this.workers.values()].filter((w) => w.name === retired.name);
-      if (currentWorkers.length !== 1) continue;
-      const current = currentWorkers[0];
-      if (current.startedAt !== retired.startedAt || current.lead !== retired.lead || current.tag !== retired.tag) continue;
-      repairs.push({ worker: current, record: retired });
-    }
-    return repairs;
-  }
-  /** Remove coordination from a worker that can no longer act, including records from older releases; `post` sends the release notices. */
+  /** Remove coordination from a participant that can no longer act; `post` sends the release notices. */
   clearWorkerCoordination(name2, reason, post) {
     this.doc.transact(() => {
       for (const claim2 of this.claims.values()) if (claim2.by === name2) {
@@ -32199,22 +32052,38 @@ var RoomDoc = class {
       this.graphs.delete(name2);
     });
   }
-  /** Atomically replace live worker state with a bounded archive entry; `post` sends the release notices. */
-  retireParticipant(name2, record2, post) {
-    if (record2.name !== name2) throw new Error("retirement name does not match record");
-    const current = this.workerOf(name2);
-    if (current && (current.startedAt !== record2.startedAt || current.lead !== record2.lead)) return;
+  /**
+   * Whether the live state under `name` is worker `id`'s: its holder names `id`, a team projection's
+   * `projectedFrom` does, or, with neither, no other worker's view holds the name. A newer worker or a
+   * standalone participant under the same name never is.
+   */
+  workerOwnsName(id3, name2) {
+    const record2 = participantRecord(this, name2);
+    return record2?.holder ? record2.holder.workerId === id3 : record2?.proj ? record2.proj.projectedFrom === id3 : ![...this.workerViews.values()].some((view) => view.name === name2 && view.id !== id3);
+  }
+  /**
+   * Retirement keyed by worker ID (registry §12), one compare-and-delete transaction run by the projector of
+   * this room. The live state under the worker's name (claims, scope, manifest and text, graph, colour,
+   * receipts, participant keys) goes only while `workerOwnsName`. The view goes and the archive gains one entry per ID.
+   */
+  retireWorker(id3, archived, post) {
+    if (archived.id !== id3) throw new Error("retirement id does not match record");
+    const name2 = archived.name;
     this.doc.transact(() => {
+      if (this.workerOwnsName(id3, name2)) {
+        this.clearWorkerCoordination(name2, "retired", post);
+        this.manifestHead.delete(name2);
+        for (const key2 of [...this.manifest.keys()]) if (key2.startsWith(`${name2}\0`)) this.manifest.delete(key2);
+        for (const key2 of [...this.overlays.keys()]) if (key2.startsWith(`${name2}\0`)) this.overlays.delete(key2);
+        for (const key2 of [...this.participants.keys()]) if (key2.startsWith(`${name2}\0`)) this.participants.delete(key2);
+        this.colors.delete(name2);
+        this.bases.delete(name2);
+        this.seen(name2).clear();
+      }
+      this.workerViews.delete(id3);
       const archive = this.doc.getArray("retiredWorkers");
-      this.clearWorkerCoordination(name2, "retired", post);
-      const archived = archive.toArray().some((r) => r.name === name2 && r.startedAt === record2.startedAt && r.lead === record2.lead);
-      this.colors.delete(name2);
-      this.bases.delete(name2);
-      this.seen(name2).clear();
-      const worker = this.workers.get(record2.tag);
-      if (worker?.name === name2 && worker.startedAt === record2.startedAt) this.workers.delete(record2.tag);
-      if (!archived) {
-        archive.push([compactRetiredWorker(record2)]);
+      if (!archive.toArray().some((r) => r.id === id3)) {
+        archive.push([compactRetiredWorker(archived)]);
         if (archive.length > MAX_RETIRED_WORKERS) archive.delete(0, archive.length - MAX_RETIRED_WORKERS);
       }
     });
@@ -32240,17 +32109,6 @@ var RoomDoc = class {
   isPersonBaseTextKey(key2, person) {
     return key2.startsWith(this.baseTextPrefix(person)) && !key2.slice(person.length + 1).includes("\0");
   }
-  /** Remove flat entries whose owners have no published overlay or deletion mark. */
-  sweepOrphanedBaseTexts(origin) {
-    this.doc.transact(() => {
-      for (const key2 of this.ownedBaseTexts.keys()) {
-        const split2 = key2.lastIndexOf("\0");
-        if (split2 < 0) continue;
-        const person = key2.slice(0, split2);
-        if (!this.overlays.get(person)?.size && !this.deleted.get(person)?.size) this.ownedBaseTexts.delete(key2);
-      }
-    }, origin);
-  }
   oldOwnedBaseTexts(person) {
     return this.doc.getMap("basetextByPerson").get(person);
   }
@@ -32260,13 +32118,14 @@ var RoomDoc = class {
   }
   /** Remove only this participant's entries that no longer back their live work. */
   reconcileBaseTexts(person, origin) {
-    const wanted = new Set(this.changedPaths(person).map((path37) => `${this.baseOf(person)}:${path37}`));
+    const head = this.manifestHead.get(person);
+    const current = head ? this.manifest.get(manifestKey(person, head.fence)) : void 0;
+    const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path39]) => `${this.baseOf(person)}:${path39}`));
     this.doc.transact(() => {
       const prefix = this.baseTextPrefix(person);
       for (const key2 of this.ownedBaseTexts.keys()) {
         if (this.isPersonBaseTextKey(key2, person) && !wanted.has(key2.slice(prefix.length))) this.ownedBaseTexts.delete(key2);
       }
-      this.sweepOrphanedBaseTexts(origin);
       const oldOwned = this.oldOwnedBaseTexts(person);
       if (oldOwned) {
         for (const key2 of oldOwned.keys()) if (!wanted.has(key2)) oldOwned.delete(key2);
@@ -32588,11 +32447,48 @@ function makeAnchor(text, from2, to2) {
   };
 }
 
-// packages/shared/src/manifest.ts
-import { createHash } from "node:crypto";
-
 // packages/shared/src/views.ts
 var ROOM_STALE_MS = 7 * 24 * 60 * 60 * 1e3;
+var AWARENESS_FRESH_MS = 3e4;
+function participantsView(doc, awareness, now) {
+  const names = /* @__PURE__ */ new Set();
+  for (const key2 of doc.participants.keys()) {
+    const split2 = key2.lastIndexOf("\0");
+    if (split2 > 0) names.add(key2.slice(0, split2));
+  }
+  const current = /* @__PURE__ */ new Map();
+  for (const [clientId, value2] of awareness.getStates()) {
+    const state = value2;
+    const name2 = state?.user?.name;
+    if (!name2) continue;
+    names.add(name2);
+    const updated = awareness.meta?.get(clientId)?.lastUpdated;
+    if (updated !== void 0 && (now - updated > AWARENESS_FRESH_MS || updated > now)) continue;
+    current.set(name2, [...current.get(name2) ?? [], state]);
+  }
+  return [...names].sort().map((name2) => {
+    const record2 = participantRecord(doc, name2);
+    const presences = current.get(name2) ?? [];
+    const fresh = !!record2?.holder && presences.some((state) => state.sessionId === record2.holder?.sessionId);
+    const observedMs = doc.expiry.get(name2)?.observedMs ?? 0;
+    return {
+      name: name2,
+      ...record2?.id?.kind ? { kind: record2.id.kind } : presences[0]?.user?.kind ? { kind: presences[0].user.kind } : {},
+      fresh,
+      visible: fresh || !!record2 && observedMs < ROOM_STALE_MS,
+      ...record2?.holder ? { holder: record2.holder } : {},
+      ...record2?.proj ? { projectedBy: record2.proj.projectedBy } : {}
+    };
+  });
+}
+function liveHolder(view, name2) {
+  const participant = view.find((p) => p.name === name2);
+  return participant?.fresh ? participant.holder?.sessionId : void 0;
+}
+function acceptedGit(record2, view) {
+  const expected = record2?.proj ? liveHolder(view, record2.proj.projectedBy) : record2?.holder?.sessionId;
+  return expected && record2?.git?.fence === expected ? record2.git : "updating";
+}
 function roomNameParts(roomName) {
   const parts2 = roomName.split("/");
   if (parts2[0] === "local" && parts2.length >= 3) {
@@ -32612,10 +32508,10 @@ function summarizeFiles(paths, options = {}) {
   const sorted2 = [...paths].sort(byPath);
   const folders = /* @__PURE__ */ new Map();
   const immediate = /* @__PURE__ */ new Map();
-  for (const path37 of sorted2) {
-    const parts2 = path37.split("/");
+  for (const path39 of sorted2) {
+    const parts2 = path39.split("/");
     const folder = parts2.length > 1 ? parts2.slice(0, -1).join("/") + "/" : "./";
-    immediate.set(folder, [...immediate.get(folder) ?? [], path37]);
+    immediate.set(folder, [...immediate.get(folder) ?? [], path39]);
     for (let i2 = 1; i2 < parts2.length; i2++) {
       const prefix = parts2.slice(0, i2).join("/") + "/";
       folders.set(prefix, (folders.get(prefix) ?? 0) + 1);
@@ -32626,13 +32522,13 @@ function summarizeFiles(paths, options = {}) {
   const dominant = winner ? { folder: winner[0], count: winner[1] } : void 0;
   const ordered = [...sorted2].sort((a, b) => Number(!!dominant && a.startsWith(dominant.folder)) - Number(!!dominant && b.startsWith(dominant.folder)) || byPath(a, b));
   const selected = ordered.slice(0, options.namedLimit ?? 3);
-  const basename4 = (path37) => path37.slice(path37.lastIndexOf("/") + 1);
+  const basename4 = (path39) => path39.slice(path39.lastIndexOf("/") + 1);
   const counts = /* @__PURE__ */ new Map();
-  for (const path37 of selected) counts.set(basename4(path37), (counts.get(basename4(path37)) ?? 0) + 1);
+  for (const path39 of selected) counts.set(basename4(path39), (counts.get(basename4(path39)) ?? 0) + 1);
   return {
     count: sorted2.length,
     dominant,
-    named: selected.map((path37) => ({ path: path37, label: counts.get(basename4(path37)) > 1 ? path37 : basename4(path37) })),
+    named: selected.map((path39) => ({ path: path39, label: counts.get(basename4(path39)) > 1 ? path39 : basename4(path39) })),
     groups: [...immediate].sort(([a], [b]) => a.localeCompare(b)).map(([folder, groupPaths]) => ({ folder, paths: groupPaths }))
   };
 }
@@ -32642,9 +32538,9 @@ var stoppedWithSession = (w) => w.stopReason === "lead-session-ended";
 var stoppedAfterMessage = (w) => w.stopReason?.startsWith("message-delivered-") ? `stopped after receiving your message: ${w.stopReason === "message-delivered-cancelled" ? "cancelled" : "launch failed"}` : void 0;
 function activityLabel(lastActive, now = Date.now(), options = {}) {
   if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION;
-  if (options.worker?.status === "running" && options.processGone) return STOPPED_UNWITNESSED;
-  const finished = options.worker !== void 0 && options.worker.status !== "running";
-  const running = options.worker ? options.worker.status === "running" : options.running;
+  if (options.worker && workerLive(options.worker.status) && options.processGone) return STOPPED_UNWITNESSED;
+  const finished = options.worker !== void 0 && !workerLive(options.worker.status);
+  const running = options.worker ? workerLive(options.worker.status) : options.running;
   if (finished) lastActive = options.worker.finishedAt ?? lastActive;
   if (lastActive === void 0 || !Number.isFinite(lastActive)) return finished ? "finished (time unknown)" : running ? "running" : "activity unknown";
   const seconds = Math.max(0, Math.floor((now - lastActive) / 1e3));
@@ -32709,7 +32605,7 @@ function splitParticipants(input) {
   const retiredWorkers = [...input.retiredWorkers].sort((a, b) => b.retiredAt - a.retiredAt || a.name.localeCompare(b.name));
   const retiredNames = new Set(retiredWorkers.map((w) => w.name));
   const participants = deriveParticipants(input).filter((p) => !retiredNames.has(p.name) || workers.has(p.name));
-  const active = participants.filter((p) => p.online || ["running", "failed"].includes(workers.get(p.name)?.status ?? ""));
+  const active = participants.filter((p) => p.online || !!workers.get(p.name) && (workerLive(workers.get(p.name).status) || workers.get(p.name).status === "failed"));
   const offlineTeammates = participants.filter((p) => !p.online && !workers.has(p.name));
   const leads = new Set([...workers.values()].map((w) => w.lead));
   for (const w of retiredWorkers) leads.add(w.lead);
@@ -32717,7 +32613,7 @@ function splitParticipants(input) {
     lead,
     active: active.filter((p) => workers.get(p.name)?.lead === lead),
     retiredWorkers: retiredWorkers.filter((w) => w.lead === lead),
-    running: [...workers.values()].filter((w) => w.lead === lead && w.status === "running").length,
+    running: [...workers.values()].filter((w) => w.lead === lead && workerLive(w.status)).length,
     nested: []
   }));
   const byLead = new Map(allGroups.map((group) => [group.lead, group]));
@@ -32739,10 +32635,10 @@ function personLine(input) {
   else if (p?.status?.startsWith("done")) what = p.status;
   else if (lastDone && (!p || p.status === "idle" || p.status === "synced")) what = `${lastDone.text} (${new Date(lastDone.at).toISOString().slice(11, 16)})`;
   else what = p ? `${p.status && !["idle", "synced"].includes(p.status) ? p.status + ", " : ""}no task declared` : "offline";
-  const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only under their scope paths)"}`;
+  const share = input.share === "full" ? "" : `; shares ${input.share}${input.share === "intent" ? " (no file text)" : " (file text only in their declared area)"}`;
   const files2 = summarizeFiles(input.changedPaths);
   const changed = files2.count > 5 ? `${files2.count} files${files2.dominant ? `, mostly ${files2.dominant.folder} (${files2.dominant.count})` : ""}: ${files2.named.map((file) => file.label).join(", ")} ...` : input.changedPaths.join(", ");
-  return `${what}${share}${files2.count ? `; uncommitted, not yet pushed: ${changed}` : ""}`;
+  return `${what}${share}${files2.count ? `; uncommitted, not yet pushed: ${changed}` : ""}${input.heldCount ? `; ${input.heldCount} changed path(s) without text` : ""}${input.excludedCount ? `; ${input.excludedCount} changed path(s) excluded (names not shared)` : ""}`;
 }
 function claimLine(claim2, options = {}) {
   return `  - ${claim2.id}: ${describeClaim(claim2)}${options.yours ? " (yours)" : ""}${options.stale ? " [stale: owner offline]" : ""}`;
@@ -32750,13 +32646,13 @@ function claimLine(claim2, options = {}) {
 function areaMembershipSummary(areas) {
   return areas.length ? `areas ${Array.from(new Set(areas)).sort().join(", ")}` : "";
 }
-function workerLine({ worker: w, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
+function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last: last2, now = Date.now() }) {
   const age = Math.max(0, Math.round((now - w.startedAt) / 6e4));
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120);
-  const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason ? `stopped (${w.stopReason})` : w.dismissedAt !== void 0 || w.status === "dismissed" ? `discard pending (${w.status})` : w.status === "running" && processGone ? STOPPED_UNWITNESSED : w.status === "running" ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status);
+  const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION : w.stopReason === "discarded" ? `discard pending (${w.status})` : w.stopReason ? `stopped (${w.stopReason})` : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED : workerLive(w.status) ? activityLabel(lastActive ?? w.startedAt, now, { running: true }) : w.status);
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ""}${w.effort ? ` \xB7 ${w.effort}` : ""}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? "\u2026" : ""}`,
-    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${w.status === "running" && processGone && !stoppedWithSession(w) ? ` \xB7 worktree ${w.dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
+    `      ${formatCount(changedCount, "changed file")} \xB7 branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` \xB7 worktree ${dir}` : ""}${summary ? ` \xB7 ${summary}` : ""}${last2 ? ` \xB7 last: ${last2.slice(0, 100)}` : ""}`
   ];
 }
 function workerLines(inputs, options = {}) {
@@ -32778,9 +32674,225 @@ function workerLines(inputs, options = {}) {
 function manifestKey(name2, fence) {
   return `${name2}\0${fence}`;
 }
-function digestPath(roomSalt, path37) {
+function manifestPaths(room, name2) {
+  const fence = room.manifestHead.get(name2)?.fence;
+  if (!fence) return [];
+  return [...room.manifest.get(manifestKey(name2, fence))?.entries() ?? []].filter(([, entry]) => entry.fence === fence).map(([path39]) => path39).sort();
+}
+function manifestChangers(room, path39) {
+  return [...room.manifestHead.keys()].filter((name2) => manifestPaths(room, name2).includes(path39)).sort();
+}
+function digestPath(roomSalt, path39) {
   if (!/^[a-f0-9]{64}$/i.test(roomSalt)) throw new Error("invalid roomSalt");
-  return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path37), "utf8").digest("hex");
+  return createHash("sha256").update(Buffer.from(roomSalt, "hex")).update(normalizeCoordinationPath(path39), "utf8").digest("hex");
+}
+function gitBlobHash(text, format = "sha1") {
+  const bytes = Buffer.from(text);
+  return createHash(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+}
+function fenceValid(head, record2, view) {
+  const expected = head.projectedFrom ? liveHolder(view, head.projectedBy ?? "") : record2?.holder?.sessionId;
+  return !!expected && head.fence === expected;
+}
+function snapshot(room, name2, view) {
+  const head = room.manifestHead.get(name2);
+  if (!head) return void 0;
+  const record2 = participantRecord(room, name2);
+  const entries = /* @__PURE__ */ new Map();
+  for (const [path39, entry] of room.manifest.get(manifestKey(name2, head.fence))?.entries() ?? []) {
+    if (entry.fence === head.fence) entries.set(path39, { ...entry });
+  }
+  const texts = /* @__PURE__ */ new Map();
+  const overlay = room.overlays.get(manifestKey(name2, head.fence));
+  for (const [path39, text] of overlay?.entries() ?? []) texts.set(path39, text.toString());
+  return { name: name2, head: { ...head, excluded: [...head.excluded] }, record: record2, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record2, view) };
+}
+function snapshotStillCurrent(room, snap, view) {
+  const head = room.manifestHead.get(snap.name);
+  const record2 = participantRecord(room, snap.name);
+  if (!head || !snap.fenceValid || !fenceValid(snap.head, record2, view) || !fenceValid(head, record2, view)) return false;
+  const a = snap.head, b = head;
+  return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base && a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy && a.projectedFrom === b.projectedFrom && a.publisher === b.publisher && JSON.stringify(a.coverage) === JSON.stringify(b.coverage) && JSON.stringify(a.excluded) === JSON.stringify(b.excluded) && JSON.stringify(a.textPrefixes) === JSON.stringify(b.textPrefixes) && snap.roomSalt === room.roomSalt && snap.record?.git?.head === record2?.git?.head && snap.record?.git?.base === record2?.git?.base && snap.record?.git?.fence === record2?.git?.fence && snap.record?.git?.rev === record2?.git?.rev;
+}
+async function versionOf(snap, path39, env = {}) {
+  if (!snap) return { kind: "unknown", why: "no-record", detail: "no manifest record" };
+  const { head } = snap;
+  if (!head.complete || !snap.fenceValid || head.base !== snap.record?.git?.base || snap.record.git.fence !== head.fence) {
+    return { kind: "unknown", why: "updating", detail: "manifest is updating" };
+  }
+  if (head.coverage.kind === "none") return { kind: "unknown", why: head.coverage.reason === "not-publisher" ? "not-publisher" : "intent", detail: head.coverage.reason };
+  const entry = snap.entries.get(path39);
+  if (entry) {
+    if (entry.change === "D") return { kind: "deleted", entry };
+    const text = entry.state === "shared" ? snap.texts.get(path39) : entry.hash ? await env.known?.(entry.hash) : void 0;
+    if (text !== void 0 && entry.hash && gitBlobHash(text, entry.hash.length === 64 ? "sha256" : "sha1") === entry.hash) return { kind: "text", text, entry };
+    if (entry.state === "held") return { kind: "held", entry, why: entry.held ?? "text not shared" };
+    return { kind: "unknown", why: "updating", detail: "shared text is missing or does not match its hash" };
+  }
+  if (snap.roomSalt && head.excluded.includes(digestPath(snap.roomSalt, path39))) return { kind: "excluded" };
+  if (!env.gitAt) return { kind: "unknown", why: "no-base-text", detail: "base text not in the room" };
+  try {
+    return { kind: "base", text: await env.gitAt(head.base, path39) };
+  } catch {
+    return { kind: "unknown", why: "fetch", detail: "base commit is unavailable" };
+  }
+}
+
+// packages/shared/src/near.ts
+function coordinationPaths(room, excludingParticipant, options = {}) {
+  return [
+    ...room.allScopes().filter((scope) => scope.by !== excludingParticipant).flatMap((scope) => scope.paths.map((path39) => ({ by: scope.by, path: path39, reason: "scope" }))),
+    ...[...room.coordination].filter(([by]) => by !== excludingParticipant).flatMap(([by, record2]) => record2.paths.map((path39) => ({ by, path: path39, reason: "scope" }))),
+    ...room.openClaims().filter((claim2) => claim2.by !== excludingParticipant || options.includeOwnNonAgentClaims && !isAgentic(claim2.byKind)).map((claim2) => ({ by: claim2.by, path: claim2.path, reason: "claim" })),
+    ...[...room.manifestHead.keys()].filter((by) => by !== excludingParticipant).flatMap((by) => manifestPaths(room, by).map((path39) => ({ by, path: path39, reason: "changed" })))
+  ];
+}
+function normalizeCoordinationPath(p) {
+  const parts2 = [];
+  for (const part of p.replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === ".." && parts2.length && parts2.at(-1) !== "..") parts2.pop();
+    else parts2.push(part);
+  }
+  return parts2.join("/") || ".";
+}
+function containsPath(parent, child) {
+  const valid = (p) => p.trim().length > 0 && !/^(?:[\\/]|[a-z]:)/i.test(p) && (normalizeCoordinationPath(p) !== "." || p === "." || p === "./");
+  if (!valid(parent) || !valid(child)) return false;
+  const a = normalizeCoordinationPath(parent), b = normalizeCoordinationPath(child);
+  return a === "." || a === b || b.startsWith(a + "/");
+}
+function coversPath(a, b) {
+  return containsPath(a, b) || containsPath(b, a);
+}
+function nearPath(path39, others) {
+  return others.filter((other) => coversPath(path39, other.path));
+}
+
+// packages/shared/src/messages.ts
+var who = (m) => displayName({ name: m.from, kind: m.fromKind });
+var to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
+var priority = (m) => `[${m.priority}] `;
+var scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
+var BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
+var builtins = {
+  claim: { priority: "fyi", audience: "claim-holders", inbox: false, wakes: "never", format: (m, context) => context?.claims && !context.claims.some((c) => c.id === m.claimId) ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) \u2014 ${m.intent}` : `${priority(m)}${who(m)} claims ${m.path}:${m.from_line}-${m.to_line} \u2014 ${m.intent}${m.plans?.length ? ` (plans: ${formatPlans(m.plans)})` : ""}` },
+  release: { priority: "fyi", audience: "everyone", inbox: false, wakes: "never", format: (m) => `${priority(m)}${who(m)} released ${m.path}${m.summary ? ` \u2014 ${m.summary}` : ""}${m.unfulfilled?.length ? ` (not done: ${formatPlans(m.unfulfilled)})` : ""}` },
+  changed: { priority: (m) => m.symbols?.length ? "notify" : "fyi", audience: "everyone", inbox: false, wakes: "addressed", format: (m) => `${priority(m)}${who(m)} changed ${m.paths.join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}` },
+  question: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me && (w.workersRoom || !w.claimId && !w.questionId), format: (m) => `${priority(m)}${who(m)}${to(m)} asks: ${m.text}` },
+  answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.to === w.me, format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
+  conflict: { priority: "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}CONFLICT on ${m.path}: ${m.text}` },
+  contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
+  note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
+  done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
+  base: { priority: "notify", audience: "everyone", wakes: (m, ctx) => (m.fromKind === "human" || m.from !== ctx.me.name) && ctx.hasUncommitted, format: (m) => `${priority(m)}${who(m)} moved the base to ${m.base.slice(0, 10)} (+${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 ${BASE_CATCH_UP}` },
+  pushed: { priority: "notify", audience: "everyone", wakes: (m, ctx) => m.from !== ctx.me.name && ctx.hasUncommitted, format: (m) => `${priority(m)}${m.from}'s local commits ${m.fromSha.slice(0, 7)}..${m.toSha.slice(0, 7)} are now on ${m.upstream} (${m.commits} commit${m.commits === 1 ? "" : "s"}: ${m.summary}) \u2014 if you work on ${m.upstream}: ${BASE_CATCH_UP}` },
+  plan: { priority: "fyi", audience: "broadcast", wakes: "interrupt", format: (m) => `${priority(m)}${who(m)} ${m.status} plan ${formatPlans([m.plan])} in ${m.path}${m.replacedBy ? ` \u2192 now ${formatPlans([m.replacedBy])}` : ""}${m.text ? ` \u2014 ${m.text}` : ""}` },
+  scope: { priority: "notify", audience: "everyone", inbox: false, wakes: "never", format: (m, context) => {
+    const current = context?.scopes.some((s) => s.by === m.from && s.area === m.area && s.summary === m.summary && scopePaths(s.paths) === scopePaths(m.paths)) && context.messages.filter((x) => x.type === "scope" && x.from === m.from && x.area === m.area && x.summary === m.summary && scopePaths(x.paths) === scopePaths(m.paths)).at(-1)?.id === m.id;
+    return current ? `${priority(m)}${who(m)} is on ${m.area}: ${m.summary} (${m.paths.join(", ")})` : `${priority(m)}earlier: ${who(m)} was on ${m.area} (${new Date(m.at).toISOString().slice(11, 19)}): ${m.summary} (${m.paths.join(", ")})`;
+  } }
+};
+var MessageKinds = builtins;
+function messageKind(m) {
+  const kind = MessageKinds[m.type];
+  if (!kind) throw new Error(`unregistered message kind: ${m.type}`);
+  return kind;
+}
+function holdsClaim(me, m, claims) {
+  const ids = "claimId" in m ? [m.claimId, ..."otherClaimId" in m ? [m.otherClaimId] : []] : [];
+  if (claims.some((c) => c.by === me && ids.includes(c.id))) return true;
+  return "path" in m && claims.some((c) => c.by === me && isAgentic(c.byKind) && claimsOverlap(c, { path: m.path, from: 1, to: Number.MAX_SAFE_INTEGER }));
+}
+function messageForMe(me, m, context = {}) {
+  if (m.type === "note" && !m.to && (m.from === me.name || m.priority === "fyi")) return false;
+  if (m.from === me.name && m.fromKind !== "human") return false;
+  if (m.type === "plan" && m.priority === "fyi") return false;
+  if (m.to === me.name) return true;
+  if (m.to) return false;
+  const kind = messageKind(m);
+  if (m.priority === "interrupt") return true;
+  if (kind.inbox === false) return false;
+  if (kind.audience === "everyone") return true;
+  if (kind.audience === "addressed") return false;
+  if (kind.audience === "claim-holders" && !holdsClaim(me.name, m, context.claims ?? [])) return false;
+  if (m.priority === "notify") return context.inMyAreas?.(m) ?? false;
+  return false;
+}
+function messageEndsWait(m, waiting) {
+  return messageKind(m).endsWait?.(m, waiting) ?? false;
+}
+function formatMsg(m, context) {
+  return messageKind(m).format(m, context);
+}
+function formatPlans(plans) {
+  return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
+}
+
+// packages/shared/src/format.ts
+function withLineNumbers(text) {
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const w = String(lines.length).length;
+  return lines.map((l, i2) => `${String(i2 + 1).padStart(w)}| ${l}`).join("\n");
+}
+
+// packages/shared/src/claims.ts
+function rangesOverlap(aFrom, aTo, bFrom, bTo) {
+  return aFrom <= bTo && bFrom <= aTo;
+}
+function claimsOverlap(a, b) {
+  if (/[\\/]$/.test(a.path) && containsPath(a.path, b.path)) return true;
+  if (/[\\/]$/.test(b.path) && containsPath(b.path, a.path)) return true;
+  return normalizeCoordinationPath(a.path) === normalizeCoordinationPath(b.path) && rangesOverlap(a.from, a.to, b.from, b.to);
+}
+function clampRange(from2, to2, lineCount) {
+  const max2 = Math.max(1, lineCount);
+  const f = Math.min(Math.max(1, Math.floor(from2)), max2);
+  const t = Math.min(Math.max(f, Math.floor(to2)), max2);
+  return { from: f, to: t };
+}
+var linesOf = (text) => text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+function mapRange(fromText, toText, range) {
+  if (fromText === toText) return range;
+  const old = linesOf(fromText), next = linesOf(toText);
+  if (old.length * next.length > 1e6) return { from: 1, to: Math.max(1, next.length) };
+  const dp = Array.from({ length: old.length + 1 }, () => new Uint32Array(next.length + 1));
+  for (let i3 = old.length - 1; i3 >= 0; i3--) for (let j2 = next.length - 1; j2 >= 0; j2--)
+    dp[i3][j2] = old[i3] === next[j2] ? dp[i3 + 1][j2 + 1] + 1 : Math.max(dp[i3 + 1][j2], dp[i3][j2 + 1]);
+  let i2 = 0, j = 0, start2 = Number.POSITIVE_INFINITY, end = 0;
+  while (i2 < old.length || j < next.length) {
+    if (i2 < old.length && j < next.length && old[i2] === next[j]) {
+      if (i2 + 1 >= range.from && i2 + 1 <= range.to) {
+        start2 = Math.min(start2, j + 1);
+        end = Math.max(end, j + 1);
+      }
+      i2++;
+      j++;
+      continue;
+    }
+    const oldStart = i2, newStart = j;
+    while (i2 < old.length || j < next.length) {
+      if (i2 < old.length && j < next.length && old[i2] === next[j]) break;
+      if (j < next.length && (i2 === old.length || dp[i2][j + 1] >= dp[i2 + 1][j])) j++;
+      else i2++;
+    }
+    if (oldStart + 1 <= range.to && Math.max(oldStart + 1, i2) >= range.from) {
+      start2 = Math.min(start2, newStart + 1);
+      end = Math.max(end, Math.max(newStart + 1, j));
+    }
+  }
+  if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, next.length));
+  return clampRange(start2, Math.max(start2, end), next.length);
+}
+function claimInMyLines(claim2, ownerVersion, myText) {
+  if (ownerVersion === void 0) return { from: 1, to: Math.max(1, linesOf(myText).length), approximate: true };
+  return { ...mapRange(ownerVersion, myText, claim2), approximate: false };
+}
+function describeClaim(c) {
+  const who2 = displayName({ name: c.by, kind: c.byKind });
+  return `${who2} \xB7 ${c.path}${c.path.endsWith("/") ? "" : `:${c.from}-${c.to}`} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
 }
 
 // packages/shared/src/worker-messages.ts
@@ -32827,17 +32939,11 @@ function shouldWakeOnMsg(me, m, myClaims = [], hasUncommitted = false, ownWorker
   if (kind.wakes === "interrupt" || typeof kind.wakes === "function") return { wake: false, mustAnswer: false, reason: `type ${m.type} does not wake` };
   if (kind.wakes === "addressed" && !addressed) return { wake: false, mustAnswer: false, reason: "not addressed to me" };
   if (kind.audience === "claim-holders" && !addressed && !(m.from === me.name && m.fromKind === "human")) {
-    const path37 = "path" in m && typeof m.path === "string" ? m.path : "";
-    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === path37);
-    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path37}, not near my claims` };
+    const path39 = "path" in m && typeof m.path === "string" ? m.path : "";
+    const near = myClaims.some((c) => c.by === me.name && isAgentic(c.byKind) && c.path === path39);
+    if (!near) return { wake: false, mustAnswer: false, reason: `${m.type} in ${path39}, not near my claims` };
   }
   return { wake: true, mustAnswer: addressed, reason: addressed ? "addressed to me" : "broadcast" };
-}
-function shouldWakeOnClaim(me, claim2, myClaims) {
-  if (claim2.by === me.name && isAgentic(claim2.byKind)) return { wake: false, mustAnswer: false, reason: "own agent" };
-  const hit = myClaims.find((c) => c.by === me.name && isAgentic(c.byKind) && c.id !== claim2.id && claimsOverlap(c, claim2));
-  if (!hit) return { wake: false, mustAnswer: false, reason: "no overlap with my claims" };
-  return { wake: true, mustAnswer: false, reason: `overlaps my claim ${hit.id}` };
 }
 
 // packages/shared/src/delivery.ts
@@ -32879,6 +32985,11 @@ function answeredIds(messages) {
 function replyEligible(m, answered, now) {
   return !!m.to && (m.type === "question" || m.type === "note") && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS;
 }
+function highestSeq(doc) {
+  let high = 0;
+  for (const m of doc.messages()) if (typeof m.seq === "number" && m.seq > high) high = m.seq;
+  return high;
+}
 function owed(doc, me, cursor, route, relevant = () => true) {
   const out2 = /* @__PURE__ */ new Map();
   const offer = (m) => {
@@ -32888,7 +32999,7 @@ function owed(doc, me, cursor, route, relevant = () => true) {
   for (const m of doc.messages()) {
     if (m.to) {
       if (addressedTo(m, me.name)) offer(m);
-    } else if (!cursor.frontier.has(m.id) && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m);
+    } else if ((m.seq ?? 0) > cursor.frontier && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m);
   }
   return [...out2.values()];
 }
@@ -33041,8 +33152,8 @@ var PY_DEF = /^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/gm;
 var PY_ASSIGN = /^([A-Z_][A-Z0-9_]*)\s*(?::[^=]+)?=/gm;
 var JS_DEF = /\b(?:function\*?|class|interface|type|enum)\s+([A-Za-z_$][A-Za-z0-9_$]*)|\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
 var KEYWORDS = new Set("def class return if else elif for while in not and or import from as with try except finally raise pass break continue lambda yield await async None True False self cls function const let var new this export default import from return if else for while do switch case break continue typeof instanceof void null undefined true false async await class extends super interface type enum implements".split(" "));
-var regexExtractor = (path37, text) => {
-  const ext = path37.slice(path37.lastIndexOf(".") + 1);
+var regexExtractor = (path39, text) => {
+  const ext = path39.slice(path39.lastIndexOf(".") + 1);
   const defs10 = /* @__PURE__ */ new Set();
   if (ext === "py") {
     for (const m of text.matchAll(PY_DEF)) defs10.add(m[1]);
@@ -33109,8 +33220,8 @@ function pythonHeader(line) {
   return line;
 }
 var definitionName = (definition) => definition.container ? `${definition.container}.${definition.name}` : definition.name;
-function definitionLines(path37, text, parse3) {
-  const parsed = parse3?.(path37, text);
+function definitionLines(path39, text, parse3) {
+  const parsed = parse3?.(path39, text);
   if (parsed) {
     const out3 = /* @__PURE__ */ new Map();
     for (const definition of parsed.defs) {
@@ -33123,7 +33234,7 @@ function definitionLines(path37, text, parse3) {
     }
     return out3;
   }
-  const ext = path37.slice(path37.lastIndexOf(".") + 1);
+  const ext = path39.slice(path39.lastIndexOf(".") + 1);
   const out2 = /* @__PURE__ */ new Map();
   const add2 = (name2, raw, signature = raw) => {
     const display = normalized(raw);
@@ -33160,8 +33271,8 @@ function definitionLines(path37, text, parse3) {
   } else return void 0;
   return out2;
 }
-function observedContractChanges(baseText, overlayText, path37, parse3) {
-  const before = definitionLines(path37, baseText, parse3), after = definitionLines(path37, overlayText, parse3);
+function observedContractChanges(baseText, overlayText, path39, parse3) {
+  const before = definitionLines(path39, baseText, parse3), after = definitionLines(path39, overlayText, parse3);
   if (!before || !after) return [];
   const changes = [];
   const signatureSet = (lines) => lines.map((line) => line.canonical).sort().join("\0");
@@ -33186,28 +33297,28 @@ var SymbolGraph = class {
   get size() {
     return this.files.size;
   }
-  has(path37) {
-    return this.files.has(path37);
+  has(path39) {
+    return this.files.has(path39);
   }
   /** Index or re-index one file. Returns false when the extractor does not handle it. */
-  set(path37, text) {
-    this.remove(path37);
-    const syms = this.extract(path37, text);
+  set(path39, text) {
+    this.remove(path39);
+    const syms = this.extract(path39, text);
     if (!syms) return false;
-    this.files.set(path37, syms);
-    for (const d of syms.defs) add(this.definers, d, path37);
-    for (const r of syms.refs) add(this.users, r, path37);
+    this.files.set(path39, syms);
+    for (const d of syms.defs) add(this.definers, d, path39);
+    for (const r of syms.refs) add(this.users, r, path39);
     return true;
   }
-  remove(path37) {
-    const prev = this.files.get(path37);
+  remove(path39) {
+    const prev = this.files.get(path39);
     if (!prev) return;
-    for (const d of prev.defs) del(this.definers, d, path37);
-    for (const r of prev.refs) del(this.users, r, path37);
-    this.files.delete(path37);
+    for (const d of prev.defs) del(this.definers, d, path39);
+    for (const r of prev.refs) del(this.users, r, path39);
+    this.files.delete(path39);
   }
-  symbolsOf(path37) {
-    return this.files.get(path37);
+  symbolsOf(path39) {
+    return this.files.get(path39);
   }
   definersOf(symbol) {
     return Array.from(this.definers.get(symbol) ?? []).sort();
@@ -33215,27 +33326,27 @@ var SymbolGraph = class {
   /** Files that reference a symbol defined elsewhere (a definer that also references itself is excluded). */
   usersOf(symbol) {
     const defs10 = this.definers.get(symbol) ?? /* @__PURE__ */ new Set();
-    return Array.from(this.users.get(symbol) ?? []).filter((path37) => !defs10.has(path37) && (defs10.size === 0 || this.resolvedDefiners(symbol, path37).length > 0)).sort();
+    return Array.from(this.users.get(symbol) ?? []).filter((path39) => !defs10.has(path39) && (defs10.size === 0 || this.resolvedDefiners(symbol, path39).length > 0)).sort();
   }
   /** Symbols a file uses that some other file defines. */
-  dependenciesOf(path37) {
-    const syms = this.files.get(path37);
+  dependenciesOf(path39) {
+    const syms = this.files.get(path39);
     if (!syms) return [];
     const out2 = [];
     for (const r of syms.refs) {
-      const definedIn = this.resolvedDefiners(r, path37);
-      if (definedIn.length) out2.push({ symbol: r, definedIn, usedIn: [path37] });
+      const definedIn = this.resolvedDefiners(r, path39);
+      if (definedIn.length) out2.push({ symbol: r, definedIn, usedIn: [path39] });
     }
     return out2.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
   /** Symbols a file defines and the other files that use them. */
-  dependentsOf(path37) {
-    const syms = this.files.get(path37);
+  dependentsOf(path39) {
+    const syms = this.files.get(path39);
     if (!syms) return [];
     const out2 = [];
     for (const d of syms.defs) {
-      const usedIn = Array.from(this.users.get(d) ?? []).filter((consumer) => consumer !== path37 && this.resolvedDefiners(d, consumer).includes(path37)).sort();
-      if (usedIn.length) out2.push({ symbol: d, definedIn: [path37], usedIn });
+      const usedIn = Array.from(this.users.get(d) ?? []).filter((consumer) => consumer !== path39 && this.resolvedDefiners(d, consumer).includes(path39)).sort();
+      if (usedIn.length) out2.push({ symbol: d, definedIn: [path39], usedIn });
     }
     return out2.sort((a, b) => b.usedIn.length - a.usedIn.length || a.symbol.localeCompare(b.symbol));
   }
@@ -33243,10 +33354,10 @@ var SymbolGraph = class {
     return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) };
   }
   resolvedDefiners(symbol, consumer) {
-    const candidates = this.definersOf(symbol).filter((path37) => path37 !== consumer);
+    const candidates = this.definersOf(symbol).filter((path39) => path39 !== consumer);
     const imports = importsOf(this.files.get(consumer));
     if (imports === void 0) return candidates;
-    const scored = candidates.map((path37) => ({ path: path37, score: Math.max(0, ...imports.map((value2) => importMatchScore(value2, path37, consumer, symbol))) }));
+    const scored = candidates.map((path39) => ({ path: path39, score: Math.max(0, ...imports.map((value2) => importMatchScore(value2, path39, consumer, symbol))) }));
     const best = Math.max(0, ...scored.map((candidate) => candidate.score));
     if (best) return scored.filter((candidate) => candidate.score === best).map((candidate) => candidate.path);
     return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates;
@@ -33305,14 +33416,14 @@ function del(m, k, v) {
   s.delete(v);
   if (!s.size) m.delete(k);
 }
-function symbolRange(path37, text, symbol, parse3) {
-  const parsed = parse3?.(path37, text);
+function symbolRange(path39, text, symbol, parse3) {
+  const parsed = parse3?.(path39, text);
   if (parsed) {
     const definition = parsed.defs.find((candidate) => candidate.name === symbol || definitionName(candidate) === symbol);
     return definition ? { from: definition.from, to: definition.to } : void 0;
   }
   const lines = text.split("\n");
-  const ext = path37.slice(path37.lastIndexOf(".") + 1);
+  const ext = path39.slice(path39.lastIndexOf(".") + 1);
   const esc2 = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (ext === "py") {
     const re2 = new RegExp(`^(\\s*)(?:async\\s+)?(?:def|class)\\s+${esc2}\\b`);
@@ -33446,8 +33557,8 @@ var Areas = class _Areas {
     return Array.from(new Set(this.rules.map((r) => r.area))).sort();
   }
   /** The area a path belongs to: the longest matching pattern (later wins on ties); top-level dir without CODEOWNERS. */
-  areaOf(path37) {
-    const p = path37.replace(/^\.?\//, "");
+  areaOf(path39) {
+    const p = path39.replace(/^\.?\//, "");
     if (this.source === "codeowners") {
       let best;
       for (let i2 = 0; i2 < this.rules.length; i2++) {
@@ -33474,9 +33585,9 @@ var Areas = class _Areas {
     return this.ownersOf(area).some((o) => o.toLowerCase() === me);
   }
 };
-function topLevelArea(path37) {
-  const i2 = path37.indexOf("/");
-  return i2 < 0 ? "/" : `${path37.slice(0, i2)}/`;
+function topLevelArea(path39) {
+  const i2 = path39.indexOf("/");
+  return i2 < 0 ? "/" : `${path39.slice(0, i2)}/`;
 }
 function sharesArea(a, b) {
   if (!a?.length || !b?.length) return true;
@@ -33633,7 +33744,7 @@ var ExpiryTenure = class {
       for (const participant of view) {
         const { name: name2 } = participant;
         const holder = participantRecord(room, name2)?.holder;
-        if (!holder || holder.workerId || room.workerOf(name2)) continue;
+        if (!holder || holder.workerId || room.workerViewOf(name2)) continue;
         measured.add(name2);
         const current = room.expiry.get(name2);
         if (participant.fresh) {
@@ -33949,8 +34060,8 @@ async function gitBlobInfoMany(dir, base, relpaths, configuredTimeoutMs) {
   const headers = raw.split("\0");
   if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`);
   for (const [i2, p] of paths.entries()) {
-    const [hash, type, size2] = headers[i2].split(" ");
-    out2.set(p, type === "blob" ? { hash, size: Number(size2) } : void 0);
+    const [hash2, type, size2] = headers[i2].split(" ");
+    out2.set(p, type === "blob" ? { hash: hash2, size: Number(size2) } : void 0);
   }
   return out2;
 }
@@ -34014,7 +34125,7 @@ async function carriedPaths(baseline) {
   return [...await tracked, ...baseline.untracked.keys()];
 }
 async function pairBaseline(me, other, ancestor, descends) {
-  for (const baseline of [workerBaseline(other), workerBaseline(me)]) {
+  for (const baseline of [other, me]) {
     if (baseline && (baseline.sha === ancestor || await descends(ancestor, baseline.sha))) return baseline;
   }
   return void 0;
@@ -34036,61 +34147,61 @@ function boundedGit(dir, args3, wholeTreePaths, env) {
     });
   });
 }
-async function checkoutText(dir, object4, path37, encoding = "utf8") {
+async function checkoutText(dir, object4, path39, encoding = "utf8") {
   try {
-    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path37}`, object4])).toString(encoding);
+    return (await boundedGit(dir, ["cat-file", "--filters", `--path=${path39}`, object4])).toString(encoding);
   } catch (error2) {
     if (/does not exist|exists on disk, but not in|path .* not in/i.test(String(error2.stderr))) return void 0;
     throw error2;
   }
 }
 var MissingBaseBlob = class extends Error {
-  constructor(path37) {
-    super(`missing private base blob: ${path37}`);
-    this.path = path37;
+  constructor(path39) {
+    super(`missing private base blob: ${path39}`);
+    this.path = path39;
   }
   path;
 };
-async function baselineText(baseline, path37, read2, encoding = "utf8") {
-  const carried = baseline.untracked.get(path37);
-  if (carried === void 0) return read2(baseline.sha, path37);
+async function baselineText(baseline, path39, read2, encoding = "utf8") {
+  const carried = baseline.untracked.get(path39);
+  if (carried === void 0) return read2(baseline.sha, path39);
   try {
-    return await checkoutText(baseline.dir, carried.sha, path37, encoding);
+    return await checkoutText(baseline.dir, carried.sha, path39, encoding);
   } catch {
-    throw new MissingBaseBlob(path37);
+    throw new MissingBaseBlob(path39);
   }
 }
-async function readBaseline(baseline, path37, read2, encoding = "utf8") {
+async function readBaseline(baseline, path39, read2, encoding = "utf8") {
   try {
-    const text = await baselineText(baseline, path37, read2, encoding);
+    const text = await baselineText(baseline, path39, read2, encoding);
     return text == null ? { kind: "absent" } : { kind: "available", text };
   } catch (error2) {
     return { kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) };
   }
 }
-function carriedContentHash(dir, path37, write2 = false) {
-  const source = nodePath2.join(dir, path37), stat4 = fs3.lstatSync(source);
-  const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path37];
-  const out2 = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args3, "--stdin"], { input: Buffer.from(fs3.readlinkSync(source)) }) : boundedGitSync(dir, [...args3, "--", path37]);
+function carriedContentHash(dir, path39, write2 = false) {
+  const source = nodePath2.join(dir, path39), stat4 = fs3.lstatSync(source);
+  const args3 = ["hash-object", ...write2 ? ["-w"] : [], "--path=" + path39];
+  const out2 = stat4.isSymbolicLink() ? boundedGitSync(dir, [...args3, "--stdin"], { input: Buffer.from(fs3.readlinkSync(source)) }) : boundedGitSync(dir, [...args3, "--", path39]);
   return out2.toString().trim();
 }
-function carriedUnchanged(baseline, path37) {
-  const carried = baseline.untracked.get(path37);
-  if (!carried || !validRepoPath(path37, CARRIED_PATH)) return false;
+function carriedUnchanged(baseline, path39) {
+  const carried = baseline.untracked.get(path39);
+  if (!carried || !validRepoPath(path39, CARRIED_PATH)) return false;
   try {
     const root = fs3.realpathSync(baseline.dir);
-    if (!containedRepoPath(root, nodePath2.join(root, path37), { leaf: "replace-link" }).ok) return false;
-    const stat4 = fs3.lstatSync(nodePath2.join(root, path37));
+    if (!containedRepoPath(root, nodePath2.join(root, path39), { leaf: "replace-link" }).ok) return false;
+    const stat4 = fs3.lstatSync(nodePath2.join(root, path39));
     if (!stat4.isFile() && !stat4.isSymbolicLink()) return false;
     if (stat4.isFile() && carried.mode !== void 0 && (stat4.mode & 511) !== carried.mode) return false;
-    return carriedContentHash(root, path37) === carried.sha;
+    return carriedContentHash(root, path39) === carried.sha;
   } catch (e) {
     if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return false;
     throw e;
   }
 }
 function carriedUnchangedPaths(baseline) {
-  return new Set([...baseline?.untracked.keys() ?? []].filter((path37) => carriedUnchanged(baseline, path37)));
+  return new Set([...baseline?.untracked.keys() ?? []].filter((path39) => carriedUnchanged(baseline, path39)));
 }
 async function workerChangedPaths(worker) {
   const baseline = workerBaseline(worker);
@@ -34193,30 +34304,30 @@ var DiskBatch = class {
   knownPaths() {
     return [.../* @__PURE__ */ new Set([...this.pending.keys(), ...this.active.keys()])];
   }
-  published(path37) {
+  published(path39) {
     const now = this.now();
-    const times = (this.publications.get(path37) ?? []).filter((at) => now - at < 12e4);
+    const times = (this.publications.get(path39) ?? []).filter((at) => now - at < 12e4);
     times.push(now);
-    this.publications.set(path37, times);
-    if (times.length > 5) this.hot.add(path37);
+    this.publications.set(path39, times);
+    if (times.length > 5) this.hot.add(path39);
   }
-  add(path37, isNew) {
+  add(path39, isNew) {
     if (this.stopped) return;
     const now = this.now();
-    this.pending.set(path37, isNew || this.pending.get(path37) === true);
-    this.arrivals.set(path37, now);
+    this.pending.set(path39, isNew || this.pending.get(path39) === true);
+    this.arrivals.set(path39, now);
     for (const [p, at] of this.arrivals) if (now - at >= 1e3) this.arrivals.delete(p);
     this.settleAt = Math.max(this.settleAt, now + (this.arrivals.size > 20 ? 2e3 : this.debounceMs));
     this.arm();
   }
   /** Recheck when queued work executes: another publish may have made the path hot. */
-  deferHot(path37) {
-    if (!this.hot.has(path37) || this.due(path37) <= this.now()) return false;
-    this.add(path37, true);
+  deferHot(path39) {
+    if (!this.hot.has(path39) || this.due(path39) <= this.now()) return false;
+    this.add(path39, true);
     return true;
   }
-  due(path37) {
-    return this.hot.has(path37) ? (this.publications.get(path37)?.at(-1) ?? 0) + this.hotThrottleMs : 0;
+  due(path39) {
+    return this.hot.has(path39) ? (this.publications.get(path39)?.at(-1) ?? 0) + this.hotThrottleMs : 0;
   }
   arm() {
     clearTimeout(this.timer);
@@ -34259,7 +34370,157 @@ import fs7 from "node:fs";
 // packages/roomd/src/disk-scan.ts
 import fs6 from "node:fs";
 import path4 from "node:path";
+import { createHash as createHash3 } from "node:crypto";
+import { spawn as spawn2 } from "node:child_process";
+
+// packages/roomd/src/policy.ts
 import { createHash as createHash2 } from "node:crypto";
+
+// packages/roomd/src/share-level.ts
+var SHARE_LEVELS = ["intent", "declared", "full"];
+var SHARE_RANK = { intent: 0, declared: 1, full: 2 };
+function parseShare(v) {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return SHARE_LEVELS.includes(s) ? s : void 0;
+}
+function clampShare(level, max2) {
+  return SHARE_RANK[level] > SHARE_RANK[max2] ? max2 : level;
+}
+
+// packages/roomd/src/roomignore.ts
+function parseRoomIgnore(text) {
+  const rules = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line || line.startsWith("#")) continue;
+    const negate = line.startsWith("!");
+    let pat = negate ? line.slice(1) : line;
+    const dirOnly = pat.endsWith("/");
+    if (dirOnly) pat = pat.slice(0, -1);
+    const anchored = pat.startsWith("/") || pat.slice(0, -1).includes("/");
+    if (pat.startsWith("/")) pat = pat.slice(1);
+    let re = "";
+    for (let i2 = 0; i2 < pat.length; i2++) {
+      const c = pat[i2];
+      if (c === "*" && pat[i2 + 1] === "*") {
+        const slash = pat[i2 + 2] === "/";
+        re += slash ? "(?:.*/)?" : ".*";
+        i2 += slash ? 2 : 1;
+      } else if (c === "*") re += "[^/]*";
+      else if (c === "?") re += "[^/]";
+      else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+    const prefix = anchored ? "^" : "^(?:.*/)?";
+    rules.push({ re: new RegExp(`${prefix}${re}${dirOnly ? "/.+" : "(?:/.*)?"}$`), negate });
+  }
+  return {
+    patterns: rules.length,
+    ignores(relpath) {
+      let ignored = false;
+      for (const r of rules) if (r.re.test(relpath)) ignored = !r.negate;
+      return ignored;
+    }
+  };
+}
+
+// packages/roomd/src/policy.ts
+function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
+  return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
+}
+function authorizesText(policy, relpath) {
+  return policy.publisher && (policy.level === "full" || policy.level === "declared" && policy.textPrefixes.some((prefix) => containsPath(prefix, relpath)));
+}
+function defaultExcludedPath(relpath) {
+  return relpath.split("/").some((part) => part === ".env" || part.startsWith(".env.") && part !== ".env.example");
+}
+function rulesFromText(text, sizeCap, budget) {
+  return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash2("sha256").update(JSON.stringify([text, sizeCap, budget])).digest("hex") });
+}
+function plan(inputs, disk, salt) {
+  const entries = /* @__PURE__ */ new Map();
+  const excluded = [];
+  const excludedPaths = [];
+  const unsettled = [];
+  const textPaths = [];
+  const excludedReasons = /* @__PURE__ */ new Map();
+  const policy = inputs.policy;
+  if (policy.level === "intent" || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons };
+  let used = 0;
+  for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
+    const p = normalizeCoordinationPath(fact.path);
+    const changed = fact.changed ?? (fact.kind === "absent" ? !!fact.baseHash : fact.kind === "unsafe" || fact.hash !== fact.baseHash);
+    const hide2 = (reason) => {
+      excludedPaths.push(p);
+      excludedReasons.set(p, reason);
+      excluded.push(createHash2("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
+    };
+    if (fact.excluded || fact.ignored || defaultExcludedPath(p) || inputs.rules.roomIgnore.ignores(p)) {
+      if (changed) hide2("ignore");
+      continue;
+    }
+    if (fact.kind === "error") {
+      unsettled.push(p);
+      continue;
+    }
+    if (!changed) continue;
+    if (fact.kind === "absent") {
+      const entry = { change: "D", state: "shared" };
+      if (authorizesText(policy, p) && fact.baseHash) entry.baseHash = fact.baseHash;
+      entries.set(p, entry);
+      continue;
+    }
+    if (fact.kind === "unsafe" || fact.size === void 0 || fact.size > inputs.rules.sizeCap || !fact.hash) {
+      hide2(fact.size !== void 0 && fact.size > inputs.rules.sizeCap ? "size" : "unsafe");
+      continue;
+    }
+    const change = fact.baseHash ? "M" : "A";
+    if (!authorizesText(policy, p)) {
+      entries.set(p, { change, state: "held", held: "scope", at: fact.at });
+      continue;
+    }
+    const values = { change, hash: fact.hash, size: fact.size, ...fact.baseHash ? { baseHash: fact.baseHash } : {}, at: fact.at };
+    if (fact.binary || fact.text === void 0) {
+      entries.set(p, { ...values, state: "held", held: "binary" });
+      continue;
+    }
+    if (used + fact.size > inputs.rules.budget) {
+      hide2("budget");
+      continue;
+    }
+    used += fact.size;
+    entries.set(p, { ...values, state: "shared", text: fact.text });
+    textPaths.push(p);
+  }
+  return { entries, excluded: excluded.sort(), excludedPaths, unsettled, textPaths, excludedReasons };
+}
+
+// packages/roomd/src/disk-scan.ts
+async function ignoredTrackedPaths(dir, paths) {
+  if (!paths.length) return /* @__PURE__ */ new Set();
+  return new Promise((resolve5, reject) => {
+    const child = spawn2("git", ["check-ignore", "--no-index", "-z", "--stdin"], { cwd: dir, stdio: ["pipe", "pipe", "pipe"] });
+    const timeout = wholeTreeTimeoutMs(paths.length);
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`git check-ignore timed out after ${timeout}ms`));
+    }, timeout);
+    const output = [];
+    let error2 = "";
+    child.stdout.on("data", (chunk) => output.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      error2 += chunk;
+    });
+    child.on("error", (error3) => {
+      clearTimeout(timer);
+      reject(error3);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      code === 0 || code === 1 ? resolve5(new Set(Buffer.concat(output).toString().split("\0").filter(Boolean))) : reject(new Error(`git check-ignore failed: ${error2.trim() || `exit ${code}`}`));
+    });
+    child.stdin.end(paths.join("\0") + "\0");
+  });
+}
 var formats = /* @__PURE__ */ new Map();
 async function objectFormat(dir) {
   const known = formats.get(dir);
@@ -34280,16 +34541,20 @@ async function changedSince(dir, base, previous = []) {
 async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE__ */ new Map(), carried = /* @__PURE__ */ new Map()) {
   if (inputs.policy.level === "intent" || !inputs.policy.publisher) return [];
   const { paths, changed } = await changedSince(dir, inputs.head, previous);
-  const [blobs, format] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir)]);
+  const [blobs, format, gitIgnored2] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)]);
   const facts = [];
   for (const p of paths) {
     const baseHash = blobs.get(p)?.hash ?? carried.get(p)?.sha;
+    if (gitIgnored2.has(p) || defaultExcludedPath(p) || inputs.rules.roomIgnore.ignores(p) || !safe(p)) {
+      facts.push({ path: p, kind: "unsafe", excluded: true, baseHash, changed: changed.has(p) });
+      continue;
+    }
     let stat4;
     try {
       stat4 = fs6.lstatSync(path4.join(dir, p));
     } catch (error2) {
       if (error2.code !== "ENOENT") {
-        facts.push({ path: p, kind: "error", baseHash });
+        facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
         continue;
       }
     }
@@ -34297,7 +34562,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       facts.push({ path: p, kind: "absent", baseHash });
       continue;
     }
-    if (!safe(p) || !stat4.isFile()) {
+    if (!stat4.isFile()) {
       facts.push({ path: p, kind: "unsafe", baseHash, changed: changed.has(p) });
       continue;
     }
@@ -34308,19 +34573,19 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
         continue;
       }
       const cached2 = oversizedCache.get(p);
-      const hash2 = cached2?.base === inputs.head && cached2.size === stat4.size && cached2.mtimeMs === stat4.mtimeMs ? cached2.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
-      oversizedCache.set(p, { base: inputs.head, size: stat4.size, mtimeMs: stat4.mtimeMs, hash: hash2 });
-      facts.push({ path: p, kind: "file", baseHash, hash: hash2, size: stat4.size });
+      const hash3 = cached2?.base === inputs.head && cached2.size === stat4.size && cached2.mtimeMs === stat4.mtimeMs ? cached2.hash : (await git(dir, ["hash-object", "--no-filters", "--", p])).trim();
+      oversizedCache.set(p, { base: inputs.head, size: stat4.size, mtimeMs: stat4.mtimeMs, hash: hash3 });
+      facts.push({ path: p, kind: "file", baseHash, hash: hash3, size: stat4.size });
       continue;
     }
     let bytes;
     try {
       bytes = fs6.readFileSync(path4.join(dir, p));
     } catch {
-      facts.push({ path: p, kind: "error", baseHash });
+      facts.push({ path: p, kind: "error", baseHash, changed: changed.has(p) });
       continue;
     }
-    const hash = createHash2(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const hash2 = createHash3(format).update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     let text;
     let binary2 = false;
     try {
@@ -34331,7 +34596,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
     facts.push({
       path: p,
       kind: "file",
-      hash,
+      hash: hash2,
       baseHash,
       size: bytes.length,
       text,
@@ -34413,126 +34678,21 @@ function markManifestIncomplete(room, name2, fence) {
   });
 }
 
-// packages/roomd/src/policy.ts
-import { createHash as createHash3 } from "node:crypto";
-
-// packages/roomd/src/share-level.ts
-var SHARE_LEVELS = ["intent", "declared", "full"];
-var SHARE_RANK = { intent: 0, declared: 1, full: 2 };
-function parseShare(v) {
-  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
-  return SHARE_LEVELS.includes(s) ? s : void 0;
-}
-function clampShare(level, max2) {
-  return SHARE_RANK[level] > SHARE_RANK[max2] ? max2 : level;
-}
-
-// packages/roomd/src/roomignore.ts
-function parseRoomIgnore(text) {
-  const rules = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/\s+$/, "");
-    if (!line || line.startsWith("#")) continue;
-    const negate = line.startsWith("!");
-    let pat = negate ? line.slice(1) : line;
-    const dirOnly = pat.endsWith("/");
-    if (dirOnly) pat = pat.slice(0, -1);
-    const anchored = pat.startsWith("/") || pat.slice(0, -1).includes("/");
-    if (pat.startsWith("/")) pat = pat.slice(1);
-    let re = "";
-    for (let i2 = 0; i2 < pat.length; i2++) {
-      const c = pat[i2];
-      if (c === "*" && pat[i2 + 1] === "*") {
-        const slash = pat[i2 + 2] === "/";
-        re += slash ? "(?:.*/)?" : ".*";
-        i2 += slash ? 2 : 1;
-      } else if (c === "*") re += "[^/]*";
-      else if (c === "?") re += "[^/]";
-      else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-    const prefix = anchored ? "^" : "^(?:.*/)?";
-    rules.push({ re: new RegExp(`${prefix}${re}${dirOnly ? "/.+" : "(?:/.*)?"}$`), negate });
-  }
-  return {
-    patterns: rules.length,
-    ignores(relpath) {
-      let ignored = false;
-      for (const r of rules) if (r.re.test(relpath)) ignored = !r.negate;
-      return ignored;
-    }
-  };
-}
-
-// packages/roomd/src/policy.ts
-function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher = true) {
-  return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
-}
-function authorizesText(policy, relpath) {
-  return policy.publisher && (policy.level === "full" || policy.level === "declared" && policy.textPrefixes.some((prefix) => containsPath(prefix, relpath)));
-}
-function rulesFromText(text, sizeCap, budget) {
-  return Object.freeze({ roomIgnore: parseRoomIgnore(text), sizeCap, budget, id: createHash3("sha256").update(JSON.stringify([text, sizeCap, budget])).digest("hex") });
-}
-function plan(inputs, disk, salt) {
-  const entries = /* @__PURE__ */ new Map();
-  const excluded = [];
-  const excludedPaths = [];
-  const unsettled = [];
-  const textPaths = [];
-  const excludedReasons = /* @__PURE__ */ new Map();
-  const policy = inputs.policy;
-  if (policy.level === "intent" || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons };
-  let used = 0;
-  for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
-    const p = normalizeCoordinationPath(fact.path);
-    if (fact.kind === "error") {
-      unsettled.push(p);
-      continue;
-    }
-    const changed = fact.changed ?? (fact.kind === "absent" ? !!fact.baseHash : fact.kind === "unsafe" || fact.hash !== fact.baseHash);
-    if (!changed) continue;
-    const hide2 = (reason) => {
-      excludedPaths.push(p);
-      excludedReasons.set(p, reason);
-      excluded.push(createHash3("sha256").update(Buffer.from(salt, "hex")).update(p, "utf8").digest("hex"));
-    };
-    if (fact.excluded || fact.ignored || inputs.rules.roomIgnore.ignores(p)) {
-      hide2("ignore");
-      continue;
-    }
-    if (fact.kind === "absent") {
-      const entry = { change: "D", state: "shared" };
-      if (authorizesText(policy, p) && fact.baseHash) entry.baseHash = fact.baseHash;
-      entries.set(p, entry);
-      continue;
-    }
-    if (fact.kind === "unsafe" || fact.size === void 0 || fact.size > inputs.rules.sizeCap || !fact.hash) {
-      hide2(fact.size !== void 0 && fact.size > inputs.rules.sizeCap ? "size" : "unsafe");
-      continue;
-    }
-    const change = fact.baseHash ? "M" : "A";
-    if (!authorizesText(policy, p)) {
-      entries.set(p, { change, state: "held", held: "scope", at: fact.at });
-      continue;
-    }
-    const values = { change, hash: fact.hash, size: fact.size, ...fact.baseHash ? { baseHash: fact.baseHash } : {}, at: fact.at };
-    if (fact.binary || fact.text === void 0) {
-      entries.set(p, { ...values, state: "held", held: "binary" });
-      continue;
-    }
-    if (used + fact.size > inputs.rules.budget) {
-      hide2("budget");
-      continue;
-    }
-    used += fact.size;
-    entries.set(p, { ...values, state: "shared", text: fact.text });
-    textPaths.push(p);
-  }
-  return { entries, excluded: excluded.sort(), excludedPaths, unsettled, textPaths, excludedReasons };
-}
-
 // packages/roomd/src/publisher.ts
 var message = (error2) => error2 instanceof Error ? error2.message : String(error2);
+function withdrawBaseTexts(host, authorized2) {
+  const prefix = `${host.name}\0`;
+  for (const key2 of host.roomDoc.ownedBaseTexts.keys()) {
+    if (!key2.startsWith(prefix)) continue;
+    const separator = key2.indexOf(":", prefix.length);
+    if (separator >= 0 && !authorized2.has(key2.slice(separator + 1))) host.roomDoc.ownedBaseTexts.delete(key2);
+  }
+  const oldOwned = host.roomDoc.doc.getMap("basetextByPerson").get(host.name);
+  if (oldOwned) for (const key2 of oldOwned.keys()) {
+    const separator = key2.indexOf(":");
+    if (separator >= 0 && !authorized2.has(key2.slice(separator + 1))) oldOwned.delete(key2);
+  }
+}
 var Publisher = class {
   constructor(host) {
     this.host = host;
@@ -34552,26 +34712,27 @@ var Publisher = class {
   /** Synchronous narrowing from the currently published snapshot; widening waits for readDisk. */
   applyInputs(next) {
     const { host } = this;
-    const current = host.roomDoc.manifest.get(manifestKey(host.name, host.fence));
+    const incarnation = manifestKey(host.name, host.fence);
+    const current = host.roomDoc.manifest.get(incarnation);
     const facts = [];
     let budget = 0;
     if (next.policy.level !== "intent" && next.policy.publisher) {
-      for (const [path37, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
-        if (next.rules.roomIgnore.ignores(path37) || entry.size !== void 0 && entry.size > next.rules.sizeCap) {
-          facts.push({ path: path37, change: entry.change, excluded: true });
-          this.excludedPaths.add(path37);
+      for (const [path39, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
+        if (defaultExcludedPath(path39) || next.rules.roomIgnore.ignores(path39) || entry.size !== void 0 && entry.size > next.rules.sizeCap) {
+          facts.push({ path: path39, change: entry.change, excluded: true });
+          this.excludedPaths.add(path39);
           continue;
         }
-        const permit = authorizesText(next.policy, path37);
-        const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(host.name, path37)?.toString() : void 0;
+        const permit = authorizesText(next.policy, path39);
+        const text = permit && entry.change !== "D" && entry.state === "shared" ? host.roomDoc.overlayText(incarnation, path39)?.toString() : void 0;
         if (text !== void 0 && budget + Buffer.byteLength(text) > next.rules.budget) {
-          facts.push({ path: path37, change: entry.change, excluded: true });
-          this.excludedPaths.add(path37);
+          facts.push({ path: path39, change: entry.change, excluded: true });
+          this.excludedPaths.add(path39);
           continue;
         }
         if (text !== void 0) budget += Buffer.byteLength(text);
         facts.push({
-          path: path37,
+          path: path39,
           change: entry.change,
           ...permit ? { hash: entry.hash, size: entry.size, baseHash: entry.baseHash } : {},
           ...text !== void 0 ? { text } : {},
@@ -34579,7 +34740,7 @@ var Publisher = class {
           at: entry.at
         });
       }
-      for (const path37 of this.excludedPaths) if (!facts.some((f) => f.path === path37)) facts.push({ path: path37, change: "M", excluded: true });
+      for (const path39 of this.excludedPaths) if (!facts.some((f) => f.path === path39)) facts.push({ path: path39, change: "M", excluded: true });
     }
     host.roomDoc.doc.transact(() => {
       publishManifest({
@@ -34592,12 +34753,12 @@ var Publisher = class {
         complete: host.roomDoc.manifestHead.get(host.name)?.complete ?? false,
         ...next.policy.publisher ? {} : { publisher: next.policy.publisherName ?? "another session" }
       }, facts);
-      for (const path37 of host.roomDoc.changedPaths(host.name)) {
-        if (facts.some((f) => f.path === path37 && f.text !== void 0 || f.path === path37 && f.change === "D" && !f.excluded)) continue;
-        host.roomDoc.clearOverlay(host.name, path37, host);
-        host.roomDoc.unmarkDeleted(host.name, path37, host);
+      for (const path39 of host.roomDoc.changedPaths(incarnation)) {
+        if (facts.some((f) => f.path === path39 && f.text !== void 0 || f.path === path39 && f.change === "D" && !f.excluded)) continue;
+        host.roomDoc.clearOverlay(incarnation, path39, host);
       }
       host.roomDoc.reconcileBaseTexts(host.name, host);
+      withdrawBaseTexts(host, new Set(facts.filter((f) => !f.excluded && authorizesText(next.policy, f.path)).map((f) => f.path)));
     }, host);
     this.markDirty();
   }
@@ -34623,6 +34784,10 @@ var Publisher = class {
     const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(), (p) => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked);
     for (const item of disk) await this.host.beforeBaseRead?.(item.path);
     const desired = plan(inputs, disk, this.host.roomDoc.ensureRoomSalt());
+    if (desired.unsettled.length) {
+      if (this.host.fence !== void 0) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence);
+      this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`));
+    }
     const textPaths = [...desired.entries].filter(([p, entry]) => entry.state === "shared" && authorizesText(inputs.policy, p)).map(([p]) => p);
     const baseTexts = await gitShowMany(this.host.dir, this.host.shared || inputs.head, textPaths);
     for (const p of textPaths) {
@@ -34630,12 +34795,13 @@ var Publisher = class {
       if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p));
     }
     const facts = [];
-    for (const [path37, entry] of desired.entries) facts.push({ path: path37, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === "binary", at: entry.at });
-    for (const path37 of desired.excludedPaths) facts.push({ path: path37, change: "M", excluded: true });
+    for (const [path39, entry] of desired.entries) facts.push({ path: path39, change: entry.change, hash: entry.hash, size: entry.size, baseHash: entry.baseHash, text: entry.text, binary: entry.held === "binary", at: entry.at });
+    for (const path39 of desired.excludedPaths) facts.push({ path: path39, change: "M", excluded: true });
     return { inputs, desired, baseTexts, facts };
   }
   /** Final synchronous gate; called immediately before the Y transaction. */
   valid(prepared) {
+    if (prepared.desired.unsettled.length) return false;
     const { host } = this;
     if (host.stopped || host.inputs !== prepared.inputs) return false;
     const holder = participantRecord(host.roomDoc, host.name)?.holder;
@@ -34660,6 +34826,7 @@ var Publisher = class {
     }
     const { host } = this;
     const { desired, inputs } = prepared;
+    const incarnation = manifestKey(host.name, host.fence);
     host.roomDoc.doc.transact(() => {
       publishManifest({
         room: host.roomDoc,
@@ -34671,25 +34838,23 @@ var Publisher = class {
         complete,
         ...inputs.policy.publisher ? {} : { publisher: inputs.policy.publisherName ?? "another session" }
       }, prepared.facts);
-      const old = new Set(host.roomDoc.changedPaths(host.name));
+      const old = new Set(host.roomDoc.changedPaths(incarnation));
       for (const p of old) {
         if (desired.entries.get(p)?.state === "shared") continue;
-        host.roomDoc.clearOverlay(host.name, p, host);
-        host.roomDoc.unmarkDeleted(host.name, p, host);
+        host.roomDoc.clearOverlay(incarnation, p, host);
       }
       for (const [p, entry] of desired.entries) {
         if (entry.state !== "shared") continue;
         if (entry.change === "D") {
-          host.roomDoc.markDeleted(host.name, p, host);
-          host.roomDoc.clearOverlay(host.name, p, host);
+          host.roomDoc.clearOverlay(incarnation, p, host);
         } else if (entry.text !== void 0) {
-          host.roomDoc.unmarkDeleted(host.name, p, host);
-          host.roomDoc.setOverlay(host.name, p, entry.text, host);
+          host.roomDoc.setOverlay(incarnation, p, entry.text, host);
         }
         const base = prepared.baseTexts.get(p);
         if (base !== void 0) host.roomDoc.setBaseText(host.name, host.shared || inputs.head, p, base, host);
       }
       host.roomDoc.reconcileBaseTexts(host.name, host);
+      withdrawBaseTexts(host, new Set([...desired.entries].filter(([p, entry]) => entry.state === "shared" && authorizesText(inputs.policy, p)).map(([p]) => p)));
     }, host);
     this.excludedPaths.clear();
     for (const p of desired.excludedPaths) this.excludedPaths.add(p);
@@ -35458,8 +35623,8 @@ function reanchorClaims(owner, claims, texts) {
     let at = -1;
     if (lines && claim2.claimedHash && Number.isSafeInteger(width) && width > 0) {
       for (let i2 = 0; i2 <= lines.length - width; i2++) {
-        const hash = digestLines(lines.slice(i2, i2 + width));
-        if (hash === claim2.claimedHash) {
+        const hash2 = digestLines(lines.slice(i2, i2 + width));
+        if (hash2 === claim2.claimedHash) {
           found++;
           at = i2;
         }
@@ -35548,7 +35713,7 @@ var ReaddirpStream = class extends Readable {
     this._directoryFilter = normalizeFilter(opts.directoryFilter);
     const statMethod = opts.lstat ? lstat : stat;
     if (wantBigintFsStats) {
-      this._stat = (path37) => statMethod(path37, { bigint: true });
+      this._stat = (path39) => statMethod(path39, { bigint: true });
     } else {
       this._stat = statMethod;
     }
@@ -35573,8 +35738,8 @@ var ReaddirpStream = class extends Readable {
         const par = this.parent;
         const fil = par && par.files;
         if (fil && fil.length > 0) {
-          const { path: path37, depth } = par;
-          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path37));
+          const { path: path39, depth } = par;
+          const slice = fil.splice(0, batch).map((dirent) => this._formatEntry(dirent, path39));
           const awaited = await Promise.all(slice);
           for (const entry of awaited) {
             if (!entry)
@@ -35614,20 +35779,20 @@ var ReaddirpStream = class extends Readable {
       this.reading = false;
     }
   }
-  async _exploreDir(path37, depth) {
+  async _exploreDir(path39, depth) {
     let files2;
     try {
-      files2 = await readdir(path37, this._rdOptions);
+      files2 = await readdir(path39, this._rdOptions);
     } catch (error2) {
       this._onError(error2);
     }
-    return { files: files2, depth, path: path37 };
+    return { files: files2, depth, path: path39 };
   }
-  async _formatEntry(dirent, path37) {
+  async _formatEntry(dirent, path39) {
     let entry;
     const basename4 = this._isDirent ? dirent.name : dirent;
     try {
-      const fullPath = presolve(pjoin(path37, basename4));
+      const fullPath = presolve(pjoin(path39, basename4));
       entry = { path: prelative(this._root, fullPath), fullPath, basename: basename4 };
       entry[this._statsProp] = this._isDirent ? dirent : await this._stat(fullPath);
     } catch (err2) {
@@ -36027,16 +36192,16 @@ var delFromSet = (main2, prop, item) => {
 };
 var isEmptySet = (val) => val instanceof Set ? val.size === 0 : !val;
 var FsWatchInstances = /* @__PURE__ */ new Map();
-function createFsWatchInstance(path37, options, listener, errHandler, emitRaw) {
+function createFsWatchInstance(path39, options, listener, errHandler, emitRaw) {
   const handleEvent = (rawEvent, evPath) => {
-    listener(path37);
-    emitRaw(rawEvent, evPath, { watchedPath: path37 });
-    if (evPath && path37 !== evPath) {
-      fsWatchBroadcast(sysPath.resolve(path37, evPath), KEY_LISTENERS, sysPath.join(path37, evPath));
+    listener(path39);
+    emitRaw(rawEvent, evPath, { watchedPath: path39 });
+    if (evPath && path39 !== evPath) {
+      fsWatchBroadcast(sysPath.resolve(path39, evPath), KEY_LISTENERS, sysPath.join(path39, evPath));
     }
   };
   try {
-    return fs_watch(path37, {
+    return fs_watch(path39, {
       persistent: options.persistent
     }, handleEvent);
   } catch (error2) {
@@ -36052,12 +36217,12 @@ var fsWatchBroadcast = (fullPath, listenerType, val1, val2, val3) => {
     listener(val1, val2, val3);
   });
 };
-var setFsWatchListener = (path37, fullPath, options, handlers10) => {
+var setFsWatchListener = (path39, fullPath, options, handlers10) => {
   const { listener, errHandler, rawEmitter } = handlers10;
   let cont = FsWatchInstances.get(fullPath);
   let watcher;
   if (!options.persistent) {
-    watcher = createFsWatchInstance(path37, options, listener, errHandler, rawEmitter);
+    watcher = createFsWatchInstance(path39, options, listener, errHandler, rawEmitter);
     if (!watcher)
       return;
     return watcher.close.bind(watcher);
@@ -36068,7 +36233,7 @@ var setFsWatchListener = (path37, fullPath, options, handlers10) => {
     addAndConvert(cont, KEY_RAW, rawEmitter);
   } else {
     watcher = createFsWatchInstance(
-      path37,
+      path39,
       options,
       fsWatchBroadcast.bind(null, fullPath, KEY_LISTENERS),
       errHandler,
@@ -36083,7 +36248,7 @@ var setFsWatchListener = (path37, fullPath, options, handlers10) => {
         cont.watcherUnusable = true;
       if (isWindows && error2.code === "EPERM") {
         try {
-          const fd = await open2(path37, "r");
+          const fd = await open2(path39, "r");
           await fd.close();
           broadcastErr(error2);
         } catch (err2) {
@@ -36114,7 +36279,7 @@ var setFsWatchListener = (path37, fullPath, options, handlers10) => {
   };
 };
 var FsWatchFileInstances = /* @__PURE__ */ new Map();
-var setFsWatchFileListener = (path37, fullPath, options, handlers10) => {
+var setFsWatchFileListener = (path39, fullPath, options, handlers10) => {
   const { listener, rawEmitter } = handlers10;
   let cont = FsWatchFileInstances.get(fullPath);
   const copts = cont && cont.options;
@@ -36136,7 +36301,7 @@ var setFsWatchFileListener = (path37, fullPath, options, handlers10) => {
         });
         const currmtime = curr.mtimeMs;
         if (curr.size !== prev.size || currmtime > prev.mtimeMs || currmtime === 0) {
-          foreach(cont.listeners, (listener2) => listener2(path37, curr));
+          foreach(cont.listeners, (listener2) => listener2(path39, curr));
         }
       })
     };
@@ -36164,13 +36329,13 @@ var NodeFsHandler = class {
    * @param listener on fs change
    * @returns closer for the watcher instance
    */
-  _watchWithNodeFs(path37, listener) {
+  _watchWithNodeFs(path39, listener) {
     const opts = this.fsw.options;
-    const directory = sysPath.dirname(path37);
-    const basename4 = sysPath.basename(path37);
+    const directory = sysPath.dirname(path39);
+    const basename4 = sysPath.basename(path39);
     const parent = this.fsw._getWatchedDir(directory);
     parent.add(basename4);
-    const absolutePath = sysPath.resolve(path37);
+    const absolutePath = sysPath.resolve(path39);
     const options = {
       persistent: opts.persistent
     };
@@ -36180,12 +36345,12 @@ var NodeFsHandler = class {
     if (opts.usePolling) {
       const enableBin = opts.interval !== opts.binaryInterval;
       options.interval = enableBin && isBinaryPath(basename4) ? opts.binaryInterval : opts.interval;
-      closer = setFsWatchFileListener(path37, absolutePath, options, {
+      closer = setFsWatchFileListener(path39, absolutePath, options, {
         listener,
         rawEmitter: this.fsw._emitRaw
       });
     } else {
-      closer = setFsWatchListener(path37, absolutePath, options, {
+      closer = setFsWatchListener(path39, absolutePath, options, {
         listener,
         errHandler: this._boundHandleError,
         rawEmitter: this.fsw._emitRaw
@@ -36207,7 +36372,7 @@ var NodeFsHandler = class {
     let prevStats = stats;
     if (parent.has(basename4))
       return;
-    const listener = async (path37, newStats) => {
+    const listener = async (path39, newStats) => {
       if (!this.fsw._throttle(THROTTLE_MODE_WATCH, file, 5))
         return;
       if (!newStats || newStats.mtimeMs === 0) {
@@ -36221,11 +36386,11 @@ var NodeFsHandler = class {
             this.fsw._emit(EV.CHANGE, file, newStats2);
           }
           if ((isMacos || isLinux || isFreeBSD) && prevStats.ino !== newStats2.ino) {
-            this.fsw._closeFile(path37);
+            this.fsw._closeFile(path39);
             prevStats = newStats2;
             const closer2 = this._watchWithNodeFs(file, listener);
             if (closer2)
-              this.fsw._addPathCloser(path37, closer2);
+              this.fsw._addPathCloser(path39, closer2);
           } else {
             prevStats = newStats2;
           }
@@ -36257,7 +36422,7 @@ var NodeFsHandler = class {
    * @param item basename of this item
    * @returns true if no more processing is needed for this entry.
    */
-  async _handleSymlink(entry, directory, path37, item) {
+  async _handleSymlink(entry, directory, path39, item) {
     if (this.fsw.closed) {
       return;
     }
@@ -36267,7 +36432,7 @@ var NodeFsHandler = class {
       this.fsw._incrReadyCount();
       let linkPath;
       try {
-        linkPath = await fsrealpath(path37);
+        linkPath = await fsrealpath(path39);
       } catch (e) {
         this.fsw._emitReady();
         return true;
@@ -36277,12 +36442,12 @@ var NodeFsHandler = class {
       if (dir.has(item)) {
         if (this.fsw._symlinkPaths.get(full) !== linkPath) {
           this.fsw._symlinkPaths.set(full, linkPath);
-          this.fsw._emit(EV.CHANGE, path37, entry.stats);
+          this.fsw._emit(EV.CHANGE, path39, entry.stats);
         }
       } else {
         dir.add(item);
         this.fsw._symlinkPaths.set(full, linkPath);
-        this.fsw._emit(EV.ADD, path37, entry.stats);
+        this.fsw._emit(EV.ADD, path39, entry.stats);
       }
       this.fsw._emitReady();
       return true;
@@ -36311,9 +36476,9 @@ var NodeFsHandler = class {
         return;
       }
       const item = entry.path;
-      let path37 = sysPath.join(directory, item);
+      let path39 = sysPath.join(directory, item);
       current.add(item);
-      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path37, item)) {
+      if (entry.stats.isSymbolicLink() && await this._handleSymlink(entry, directory, path39, item)) {
         return;
       }
       if (this.fsw.closed) {
@@ -36322,8 +36487,8 @@ var NodeFsHandler = class {
       }
       if (item === target || !target && !previous.has(item)) {
         this.fsw._incrReadyCount();
-        path37 = sysPath.join(dir, sysPath.relative(dir, path37));
-        this._addToNodeFs(path37, initialAdd, wh, depth + 1);
+        path39 = sysPath.join(dir, sysPath.relative(dir, path39));
+        this._addToNodeFs(path39, initialAdd, wh, depth + 1);
       }
     }).on(EV.ERROR, this._boundHandleError);
     return new Promise((resolve5, reject) => {
@@ -36392,13 +36557,13 @@ var NodeFsHandler = class {
    * @param depth Child path actually targeted for watch
    * @param target Child path actually targeted for watch
    */
-  async _addToNodeFs(path37, initialAdd, priorWh, depth, target) {
+  async _addToNodeFs(path39, initialAdd, priorWh, depth, target) {
     const ready = this.fsw._emitReady;
-    if (this.fsw._isIgnored(path37) || this.fsw.closed) {
+    if (this.fsw._isIgnored(path39) || this.fsw.closed) {
       ready();
       return false;
     }
-    const wh = this.fsw._getWatchHelpers(path37);
+    const wh = this.fsw._getWatchHelpers(path39);
     if (priorWh) {
       wh.filterPath = (entry) => priorWh.filterPath(entry);
       wh.filterDir = (entry) => priorWh.filterDir(entry);
@@ -36414,8 +36579,8 @@ var NodeFsHandler = class {
       const follow = this.fsw.options.followSymlinks;
       let closer;
       if (stats.isDirectory()) {
-        const absPath = sysPath.resolve(path37);
-        const targetPath = follow ? await fsrealpath(path37) : path37;
+        const absPath = sysPath.resolve(path39);
+        const targetPath = follow ? await fsrealpath(path39) : path39;
         if (this.fsw.closed)
           return;
         closer = await this._handleDir(wh.watchPath, stats, initialAdd, depth, target, wh, targetPath);
@@ -36425,29 +36590,29 @@ var NodeFsHandler = class {
           this.fsw._symlinkPaths.set(absPath, targetPath);
         }
       } else if (stats.isSymbolicLink()) {
-        const targetPath = follow ? await fsrealpath(path37) : path37;
+        const targetPath = follow ? await fsrealpath(path39) : path39;
         if (this.fsw.closed)
           return;
         const parent = sysPath.dirname(wh.watchPath);
         this.fsw._getWatchedDir(parent).add(wh.watchPath);
         this.fsw._emit(EV.ADD, wh.watchPath, stats);
-        closer = await this._handleDir(parent, stats, initialAdd, depth, path37, wh, targetPath);
+        closer = await this._handleDir(parent, stats, initialAdd, depth, path39, wh, targetPath);
         if (this.fsw.closed)
           return;
         if (targetPath !== void 0) {
-          this.fsw._symlinkPaths.set(sysPath.resolve(path37), targetPath);
+          this.fsw._symlinkPaths.set(sysPath.resolve(path39), targetPath);
         }
       } else {
         closer = this._handleFile(wh.watchPath, stats, initialAdd);
       }
       ready();
       if (closer)
-        this.fsw._addPathCloser(path37, closer);
+        this.fsw._addPathCloser(path39, closer);
       return false;
     } catch (error2) {
       if (this.fsw._handleError(error2)) {
         ready();
-        return path37;
+        return path39;
       }
     }
   }
@@ -36490,26 +36655,26 @@ function createPattern(matcher) {
   }
   return () => false;
 }
-function normalizePath(path37) {
-  if (typeof path37 !== "string")
+function normalizePath(path39) {
+  if (typeof path39 !== "string")
     throw new Error("string expected");
-  path37 = sysPath2.normalize(path37);
-  path37 = path37.replace(/\\/g, "/");
+  path39 = sysPath2.normalize(path39);
+  path39 = path39.replace(/\\/g, "/");
   let prepend = false;
-  if (path37.startsWith("//"))
+  if (path39.startsWith("//"))
     prepend = true;
   const DOUBLE_SLASH_RE2 = /\/\//;
-  while (path37.match(DOUBLE_SLASH_RE2))
-    path37 = path37.replace(DOUBLE_SLASH_RE2, "/");
+  while (path39.match(DOUBLE_SLASH_RE2))
+    path39 = path39.replace(DOUBLE_SLASH_RE2, "/");
   if (prepend)
-    path37 = "/" + path37;
-  return path37;
+    path39 = "/" + path39;
+  return path39;
 }
 function matchPatterns(patterns, testString, stats) {
-  const path37 = normalizePath(testString);
+  const path39 = normalizePath(testString);
   for (let index = 0; index < patterns.length; index++) {
     const pattern = patterns[index];
-    if (pattern(path37, stats)) {
+    if (pattern(path39, stats)) {
       return true;
     }
   }
@@ -36549,19 +36714,19 @@ var toUnix = (string3) => {
   }
   return str3;
 };
-var normalizePathToUnix = (path37) => toUnix(sysPath2.normalize(toUnix(path37)));
-var normalizeIgnored = (cwd = "") => (path37) => {
-  if (typeof path37 === "string") {
-    return normalizePathToUnix(sysPath2.isAbsolute(path37) ? path37 : sysPath2.join(cwd, path37));
+var normalizePathToUnix = (path39) => toUnix(sysPath2.normalize(toUnix(path39)));
+var normalizeIgnored = (cwd = "") => (path39) => {
+  if (typeof path39 === "string") {
+    return normalizePathToUnix(sysPath2.isAbsolute(path39) ? path39 : sysPath2.join(cwd, path39));
   } else {
-    return path37;
+    return path39;
   }
 };
-var getAbsolutePath = (path37, cwd) => {
-  if (sysPath2.isAbsolute(path37)) {
-    return path37;
+var getAbsolutePath = (path39, cwd) => {
+  if (sysPath2.isAbsolute(path39)) {
+    return path39;
   }
-  return sysPath2.join(cwd, path37);
+  return sysPath2.join(cwd, path39);
 };
 var EMPTY_SET = Object.freeze(/* @__PURE__ */ new Set());
 var DirEntry = class {
@@ -36616,10 +36781,10 @@ var DirEntry = class {
 var STAT_METHOD_F = "stat";
 var STAT_METHOD_L = "lstat";
 var WatchHelper = class {
-  constructor(path37, follow, fsw) {
+  constructor(path39, follow, fsw) {
     this.fsw = fsw;
-    const watchPath = path37;
-    this.path = path37 = path37.replace(REPLACER_RE, "");
+    const watchPath = path39;
+    this.path = path39 = path39.replace(REPLACER_RE, "");
     this.watchPath = watchPath;
     this.fullWatchPath = sysPath2.resolve(watchPath);
     this.dirParts = [];
@@ -36741,20 +36906,20 @@ var FSWatcher = class extends EventEmitter {
     this._closePromise = void 0;
     let paths = unifyPaths(paths_);
     if (cwd) {
-      paths = paths.map((path37) => {
-        const absPath = getAbsolutePath(path37, cwd);
+      paths = paths.map((path39) => {
+        const absPath = getAbsolutePath(path39, cwd);
         return absPath;
       });
     }
-    paths.forEach((path37) => {
-      this._removeIgnoredPath(path37);
+    paths.forEach((path39) => {
+      this._removeIgnoredPath(path39);
     });
     this._userIgnored = void 0;
     if (!this._readyCount)
       this._readyCount = 0;
     this._readyCount += paths.length;
-    Promise.all(paths.map(async (path37) => {
-      const res = await this._nodeFsHandler._addToNodeFs(path37, !_internal, void 0, 0, _origAdd);
+    Promise.all(paths.map(async (path39) => {
+      const res = await this._nodeFsHandler._addToNodeFs(path39, !_internal, void 0, 0, _origAdd);
       if (res)
         this._emitReady();
       return res;
@@ -36776,17 +36941,17 @@ var FSWatcher = class extends EventEmitter {
       return this;
     const paths = unifyPaths(paths_);
     const { cwd } = this.options;
-    paths.forEach((path37) => {
-      if (!sysPath2.isAbsolute(path37) && !this._closers.has(path37)) {
+    paths.forEach((path39) => {
+      if (!sysPath2.isAbsolute(path39) && !this._closers.has(path39)) {
         if (cwd)
-          path37 = sysPath2.join(cwd, path37);
-        path37 = sysPath2.resolve(path37);
+          path39 = sysPath2.join(cwd, path39);
+        path39 = sysPath2.resolve(path39);
       }
-      this._closePath(path37);
-      this._addIgnoredPath(path37);
-      if (this._watched.has(path37)) {
+      this._closePath(path39);
+      this._addIgnoredPath(path39);
+      if (this._watched.has(path39)) {
         this._addIgnoredPath({
-          path: path37,
+          path: path39,
           recursive: true
         });
       }
@@ -36850,38 +37015,38 @@ var FSWatcher = class extends EventEmitter {
    * @param stats arguments to be passed with event
    * @returns the error if defined, otherwise the value of the FSWatcher instance's `closed` flag
    */
-  async _emit(event, path37, stats) {
+  async _emit(event, path39, stats) {
     if (this.closed)
       return;
     const opts = this.options;
     if (isWindows)
-      path37 = sysPath2.normalize(path37);
+      path39 = sysPath2.normalize(path39);
     if (opts.cwd)
-      path37 = sysPath2.relative(opts.cwd, path37);
-    const args3 = [path37];
+      path39 = sysPath2.relative(opts.cwd, path39);
+    const args3 = [path39];
     if (stats != null)
       args3.push(stats);
     const awf = opts.awaitWriteFinish;
     let pw;
-    if (awf && (pw = this._pendingWrites.get(path37))) {
+    if (awf && (pw = this._pendingWrites.get(path39))) {
       pw.lastChange = /* @__PURE__ */ new Date();
       return this;
     }
     if (opts.atomic) {
       if (event === EVENTS.UNLINK) {
-        this._pendingUnlinks.set(path37, [event, ...args3]);
+        this._pendingUnlinks.set(path39, [event, ...args3]);
         setTimeout(() => {
-          this._pendingUnlinks.forEach((entry, path38) => {
+          this._pendingUnlinks.forEach((entry, path40) => {
             this.emit(...entry);
             this.emit(EVENTS.ALL, ...entry);
-            this._pendingUnlinks.delete(path38);
+            this._pendingUnlinks.delete(path40);
           });
         }, typeof opts.atomic === "number" ? opts.atomic : 100);
         return this;
       }
-      if (event === EVENTS.ADD && this._pendingUnlinks.has(path37)) {
+      if (event === EVENTS.ADD && this._pendingUnlinks.has(path39)) {
         event = EVENTS.CHANGE;
-        this._pendingUnlinks.delete(path37);
+        this._pendingUnlinks.delete(path39);
       }
     }
     if (awf && (event === EVENTS.ADD || event === EVENTS.CHANGE) && this._readyEmitted) {
@@ -36899,16 +37064,16 @@ var FSWatcher = class extends EventEmitter {
           this.emitWithAll(event, args3);
         }
       };
-      this._awaitWriteFinish(path37, awf.stabilityThreshold, event, awfEmit);
+      this._awaitWriteFinish(path39, awf.stabilityThreshold, event, awfEmit);
       return this;
     }
     if (event === EVENTS.CHANGE) {
-      const isThrottled = !this._throttle(EVENTS.CHANGE, path37, 50);
+      const isThrottled = !this._throttle(EVENTS.CHANGE, path39, 50);
       if (isThrottled)
         return this;
     }
     if (opts.alwaysStat && stats === void 0 && (event === EVENTS.ADD || event === EVENTS.ADD_DIR || event === EVENTS.CHANGE)) {
-      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path37) : path37;
+      const fullPath = opts.cwd ? sysPath2.join(opts.cwd, path39) : path39;
       let stats2;
       try {
         stats2 = await stat3(fullPath);
@@ -36939,23 +37104,23 @@ var FSWatcher = class extends EventEmitter {
    * @param timeout duration of time to suppress duplicate actions
    * @returns tracking object or false if action should be suppressed
    */
-  _throttle(actionType, path37, timeout) {
+  _throttle(actionType, path39, timeout) {
     if (!this._throttled.has(actionType)) {
       this._throttled.set(actionType, /* @__PURE__ */ new Map());
     }
     const action = this._throttled.get(actionType);
     if (!action)
       throw new Error("invalid throttle");
-    const actionPath = action.get(path37);
+    const actionPath = action.get(path39);
     if (actionPath) {
       actionPath.count++;
       return false;
     }
     let timeoutObject;
     const clear = () => {
-      const item = action.get(path37);
+      const item = action.get(path39);
       const count = item ? item.count : 0;
-      action.delete(path37);
+      action.delete(path39);
       clearTimeout(timeoutObject);
       if (item)
         clearTimeout(item.timeoutObject);
@@ -36963,7 +37128,7 @@ var FSWatcher = class extends EventEmitter {
     };
     timeoutObject = setTimeout(clear, timeout);
     const thr = { timeoutObject, clear, count: 0 };
-    action.set(path37, thr);
+    action.set(path39, thr);
     return thr;
   }
   _incrReadyCount() {
@@ -36977,44 +37142,44 @@ var FSWatcher = class extends EventEmitter {
    * @param event
    * @param awfEmit Callback to be called when ready for event to be emitted.
    */
-  _awaitWriteFinish(path37, threshold, event, awfEmit) {
+  _awaitWriteFinish(path39, threshold, event, awfEmit) {
     const awf = this.options.awaitWriteFinish;
     if (typeof awf !== "object")
       return;
     const pollInterval = awf.pollInterval;
     let timeoutHandler;
-    let fullPath = path37;
-    if (this.options.cwd && !sysPath2.isAbsolute(path37)) {
-      fullPath = sysPath2.join(this.options.cwd, path37);
+    let fullPath = path39;
+    if (this.options.cwd && !sysPath2.isAbsolute(path39)) {
+      fullPath = sysPath2.join(this.options.cwd, path39);
     }
     const now = /* @__PURE__ */ new Date();
     const writes = this._pendingWrites;
     function awaitWriteFinishFn(prevStat) {
       statcb(fullPath, (err2, curStat) => {
-        if (err2 || !writes.has(path37)) {
+        if (err2 || !writes.has(path39)) {
           if (err2 && err2.code !== "ENOENT")
             awfEmit(err2);
           return;
         }
         const now2 = Number(/* @__PURE__ */ new Date());
         if (prevStat && curStat.size !== prevStat.size) {
-          writes.get(path37).lastChange = now2;
+          writes.get(path39).lastChange = now2;
         }
-        const pw = writes.get(path37);
+        const pw = writes.get(path39);
         const df = now2 - pw.lastChange;
         if (df >= threshold) {
-          writes.delete(path37);
+          writes.delete(path39);
           awfEmit(void 0, curStat);
         } else {
           timeoutHandler = setTimeout(awaitWriteFinishFn, pollInterval, curStat);
         }
       });
     }
-    if (!writes.has(path37)) {
-      writes.set(path37, {
+    if (!writes.has(path39)) {
+      writes.set(path39, {
         lastChange: now,
         cancelWait: () => {
-          writes.delete(path37);
+          writes.delete(path39);
           clearTimeout(timeoutHandler);
           return event;
         }
@@ -37025,8 +37190,8 @@ var FSWatcher = class extends EventEmitter {
   /**
    * Determines whether user has asked to ignore this path.
    */
-  _isIgnored(path37, stats) {
-    if (this.options.atomic && DOT_RE.test(path37))
+  _isIgnored(path39, stats) {
+    if (this.options.atomic && DOT_RE.test(path39))
       return true;
     if (!this._userIgnored) {
       const { cwd } = this.options;
@@ -37036,17 +37201,17 @@ var FSWatcher = class extends EventEmitter {
       const list = [...ignoredPaths.map(normalizeIgnored(cwd)), ...ignored];
       this._userIgnored = anymatch(list, void 0);
     }
-    return this._userIgnored(path37, stats);
+    return this._userIgnored(path39, stats);
   }
-  _isntIgnored(path37, stat4) {
-    return !this._isIgnored(path37, stat4);
+  _isntIgnored(path39, stat4) {
+    return !this._isIgnored(path39, stat4);
   }
   /**
    * Provides a set of common helpers and properties relating to symlink handling.
    * @param path file or directory pattern being watched
    */
-  _getWatchHelpers(path37) {
-    return new WatchHelper(path37, this.options.followSymlinks, this);
+  _getWatchHelpers(path39) {
+    return new WatchHelper(path39, this.options.followSymlinks, this);
   }
   // Directory helpers
   // -----------------
@@ -37078,63 +37243,63 @@ var FSWatcher = class extends EventEmitter {
    * @param item      base path of item/directory
    */
   _remove(directory, item, isDirectory) {
-    const path37 = sysPath2.join(directory, item);
-    const fullPath = sysPath2.resolve(path37);
-    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path37) || this._watched.has(fullPath);
-    if (!this._throttle("remove", path37, 100))
+    const path39 = sysPath2.join(directory, item);
+    const fullPath = sysPath2.resolve(path39);
+    isDirectory = isDirectory != null ? isDirectory : this._watched.has(path39) || this._watched.has(fullPath);
+    if (!this._throttle("remove", path39, 100))
       return;
     if (!isDirectory && this._watched.size === 1) {
       this.add(directory, item, true);
     }
-    const wp = this._getWatchedDir(path37);
+    const wp = this._getWatchedDir(path39);
     const nestedDirectoryChildren = wp.getChildren();
-    nestedDirectoryChildren.forEach((nested) => this._remove(path37, nested));
+    nestedDirectoryChildren.forEach((nested) => this._remove(path39, nested));
     const parent = this._getWatchedDir(directory);
     const wasTracked = parent.has(item);
     parent.remove(item);
     if (this._symlinkPaths.has(fullPath)) {
       this._symlinkPaths.delete(fullPath);
     }
-    let relPath = path37;
+    let relPath = path39;
     if (this.options.cwd)
-      relPath = sysPath2.relative(this.options.cwd, path37);
+      relPath = sysPath2.relative(this.options.cwd, path39);
     if (this.options.awaitWriteFinish && this._pendingWrites.has(relPath)) {
       const event = this._pendingWrites.get(relPath).cancelWait();
       if (event === EVENTS.ADD)
         return;
     }
-    this._watched.delete(path37);
+    this._watched.delete(path39);
     this._watched.delete(fullPath);
     const eventName = isDirectory ? EVENTS.UNLINK_DIR : EVENTS.UNLINK;
-    if (wasTracked && !this._isIgnored(path37))
-      this._emit(eventName, path37);
-    this._closePath(path37);
+    if (wasTracked && !this._isIgnored(path39))
+      this._emit(eventName, path39);
+    this._closePath(path39);
   }
   /**
    * Closes all watchers for a path
    */
-  _closePath(path37) {
-    this._closeFile(path37);
-    const dir = sysPath2.dirname(path37);
-    this._getWatchedDir(dir).remove(sysPath2.basename(path37));
+  _closePath(path39) {
+    this._closeFile(path39);
+    const dir = sysPath2.dirname(path39);
+    this._getWatchedDir(dir).remove(sysPath2.basename(path39));
   }
   /**
    * Closes only file-specific watchers
    */
-  _closeFile(path37) {
-    const closers = this._closers.get(path37);
+  _closeFile(path39) {
+    const closers = this._closers.get(path39);
     if (!closers)
       return;
     closers.forEach((closer) => closer());
-    this._closers.delete(path37);
+    this._closers.delete(path39);
   }
-  _addPathCloser(path37, closer) {
+  _addPathCloser(path39, closer) {
     if (!closer)
       return;
-    let list = this._closers.get(path37);
+    let list = this._closers.get(path39);
     if (!list) {
       list = [];
-      this._closers.set(path37, list);
+      this._closers.set(path39, list);
     }
     list.push(closer);
   }
@@ -37164,6 +37329,7 @@ function watch(paths, options = {}) {
 var esm_default = { watch, FSWatcher };
 
 // packages/roomd/src/base.ts
+import { execFile as execFile3 } from "node:child_process";
 async function isAncestor(dir, ancestor, descendant) {
   try {
     await git(dir, ["merge-base", "--is-ancestor", ancestor, descendant]);
@@ -37280,7 +37446,40 @@ async function pushedFacts(dir, fromSha, toSha) {
   const [commits, paths, summary] = await Promise.all([gitCountBetween(dir, fromSha, toSha), gitPathsBetween(dir, fromSha, toSha), gitSubject(dir, toSha)]);
   return { commits, paths, summary };
 }
+var FETCH_TIMEOUT_MS = 2e4;
 var FETCH_RETRY_MS = 5 * 6e4;
+var fetchAttempts = /* @__PURE__ */ new Map();
+var hasCommit = async (dir, sha) => {
+  try {
+    await git(dir, ["cat-file", "-e", `${sha}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+};
+async function ensureCommit(dir, remote, sha) {
+  if (await hasCommit(dir, sha)) return true;
+  if (!remote || process.env.ROOM_AUTO_FETCH === "0" || !/^[0-9a-f]{40,64}$/.test(sha)) return false;
+  const key2 = `${dir}\0${sha}`;
+  const last2 = fetchAttempts.get(key2);
+  if (last2 !== void 0 && Date.now() - last2 < FETCH_RETRY_MS) return false;
+  fetchAttempts.set(key2, Date.now());
+  await new Promise((resolve5) => {
+    execFile3(
+      "git",
+      ["-c", "credential.interactive=never", "fetch", "--no-tags", "--no-write-fetch-head", remote, sha],
+      { cwd: dir, timeout: FETCH_TIMEOUT_MS, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      () => resolve5()
+    );
+  });
+  return hasCommit(dir, sha);
+}
+async function comparePair(dir, remote, a, b) {
+  if (!a.anchored || !b.anchored) return { cannotCompare: "unknown: no anchor" };
+  for (const sha of [a.base, b.base]) if (!await ensureCommit(dir, remote, sha)) return { cannotCompare: `unknown: missing ${sha}` };
+  const base = await mergeBase(dir, a.base, b.base);
+  return base ? { mergeBase: base } : { cannotCompare: "unknown: unrelated histories" };
+}
 
 // packages/roomd/src/index.ts
 function observeCallback(fn, report) {
@@ -37416,6 +37615,7 @@ var Daemon = class {
   kind;
   owner;
   label;
+  carriedFrom;
   log;
   debounceMs;
   trackedRefreshMs;
@@ -37427,6 +37627,7 @@ var Daemon = class {
   beforeWatcherReady;
   onFullScan;
   poster;
+  pushedInFlight = false;
   sizeCap;
   totalBudget;
   connectTimeoutMs;
@@ -37476,6 +37677,7 @@ var Daemon = class {
     this.kind = options.kind ?? "human";
     this.owner = options.owner ?? options.name;
     this.label = options.label;
+    this.carriedFrom = options.carried;
     this.roomUrl = options.room;
     this.localRoom = !!options.localKey;
     this.sessionId = options.sessionId;
@@ -37593,7 +37795,7 @@ var Daemon = class {
     }));
     this.pendingSkips.clear();
     this.started = true;
-    this.log(`synced ${this.roomDoc.changedPaths(this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`);
+    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`);
   }
   step(phase, work) {
     this.phase = phase;
@@ -37798,7 +38000,7 @@ var Daemon = class {
     if (this.remoteRepairTimer) return;
     this.remoteRepairTimer = this.remoteRepairSchedule(async () => {
       this.remoteRepairTimer = void 0;
-      this.roomDoc.sweepOrphanedBaseTexts(this);
+      this.roomDoc.reconcileBaseTexts(this.name, this);
       await this.enqueue(async () => {
         await this.publisher.reconcile("all", this.anchor.anchored && !this.transitionPending);
       });
@@ -37815,6 +38017,7 @@ var Daemon = class {
   async pollHead() {
     if (this.stopped) return;
     this.choosePublisher();
+    await this.postPushedPending();
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)]);
     const branch = branchName(rawBranch);
     const inputs = { head, branch, refs: await readBaseRefs(this.dir, this.remote, branch) };
@@ -37856,6 +38059,7 @@ var Daemon = class {
     this.appliedRefs = refsKey(inputs);
     this.appliedAsPublisher = publishing;
     if (prev !== head) this.log(`HEAD moved ${prev.slice(0, 10)} -> ${head.slice(0, 10)}`);
+    await this.postPushedPending();
   }
   /** The awaited half of §B2 step 5: the next `git` record and whether it yields `pushed` (§B4). */
   async transitionFacts({ head, branch }, resolved, promoted) {
@@ -37871,23 +38075,74 @@ var Daemon = class {
       ...resolved.ahead !== void 0 ? { ahead: resolved.ahead, behind: resolved.behind } : {},
       fence: this.fence
     };
-    const { rev: _rev, ...recorded } = prev ?? { rev: 0 };
+    const { rev: _rev, pushedPending: _owed, ...recorded } = prev ?? { rev: 0 };
     if (JSON.stringify(recorded) === JSON.stringify(fields)) return {};
     const next = { ...fields, rev: (prev?.rev ?? 0) + 1 };
-    if (!prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next };
-    return { next, pushed: { type: "pushed", branch, upstream: resolved.upstream, fromSha: prev.base, toSha: next.base, ...await pushedFacts(this.dir, prev.base, next.base) } };
+    if (!this.poster || !prev || promoted || !resolved.upstream || !await pushedRange(this.dir, prev, next)) return { next };
+    return { next, pushed: { fromSha: prev.base, toSha: next.base, branch, upstream: resolved.upstream } };
   }
   /**
-   * §B2 step 5, one synchronous transaction: the publication, the `git` record (rev + 1), this participant's
-   * claim moves and releases, and `pushed` when §B4 applies. A session publishing under another writes only
-   * its claim part. False, with nothing written, when the publication went stale.
+   * The record's owed `pushed` after this transition: the new range, joined to an older unposted one it
+   * continues. An older one it does not continue is replaced (delivery is at most once, §B4); an older one
+   * with no new range is kept.
+   */
+  owedPushed(pushed) {
+    const owed2 = participantRecord(this.roomDoc, this.name)?.git?.pushedPending;
+    if (!pushed) return owed2;
+    if (!owed2) return pushed;
+    if (owed2.toSha === pushed.fromSha && owed2.branch === pushed.branch && owed2.upstream === pushed.upstream) return { ...pushed, fromSha: owed2.fromSha };
+    this.log(`replacing an unposted pushed ${owed2.fromSha.slice(0, 10)}..${owed2.toSha.slice(0, 10)}: the upstream moved since`);
+    return pushed;
+  }
+  /**
+   * §B2 step 6: post the record's `pushedPending` by its deterministic id (the hub dedupes a repeat). It
+   * clears only once the hub accepted it, and then only the part the post covered: a transition committed
+   * meanwhile keeps its newer range. One post at a time; a refusal waits for the next poll. Resolves once
+   * the post is sent; the hub's answer is handled when it comes.
+   */
+  async postPushedPending() {
+    const owed2 = this.publishesBaseFacts() ? participantRecord(this.roomDoc, this.name)?.git?.pushedPending : void 0;
+    if (!owed2 || !this.poster || this.pushedInFlight || this.stopped) return;
+    this.pushedInFlight = true;
+    const from2 = { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} };
+    let answer;
+    let commits = 0;
+    try {
+      const facts = await pushedFacts(this.dir, owed2.fromSha, owed2.toSha);
+      commits = facts.commits;
+      answer = this.poster(from2, { type: "pushed", ...owed2, ...facts }, { id: `pushed:${this.name}:${owed2.fromSha}:${owed2.toSha}`, auto: true });
+    } catch (error2) {
+      this.pushedInFlight = false;
+      this.log(`pushed not posted yet: ${errMsg(error2)}`);
+      return;
+    }
+    void Promise.resolve(answer).then((result2) => {
+      if (!hubAccepted(result2) || this.stopped) return;
+      this.log(`${owed2.upstream} now has ${owed2.fromSha.slice(0, 10)}..${owed2.toSha.slice(0, 10)} (+${commits})`);
+      const record2 = participantRecord(this.roomDoc, this.name)?.git;
+      const current = record2?.pushedPending;
+      if (!record2 || current?.fromSha !== owed2.fromSha) return;
+      const { pushedPending: _done, ...rest } = record2;
+      const next = current.toSha === owed2.toSha ? rest : { ...rest, pushedPending: { ...current, fromSha: owed2.toSha } };
+      this.roomDoc.doc.transact(() => this.roomDoc.participants.set(`${this.name}\0git`, next), this);
+    }).catch((error2) => this.log(`pushed not posted yet: ${errMsg(error2)}`)).finally(() => {
+      this.pushedInFlight = false;
+    });
+  }
+  /**
+   * §B2 step 5, one synchronous transaction: the publication, the `git` record (rev + 1) with `pushedPending`
+   * when §B4 applies, and this participant's claim moves and releases. A session publishing under another
+   * writes only its claim part. False, with nothing written, when the publication went stale.
    */
   commitTransition({ head }, claims, { next, pushed }, publication, anchored) {
     if (!this.publisher.valid(publication)) return false;
     const notices = [];
     this.roomDoc.doc.transact(() => {
       this.publisher.apply(publication, anchored);
-      if (next) this.roomDoc.participants.set(`${this.name}\0git`, next);
+      if (next) {
+        const owed2 = this.owedPushed(pushed);
+        this.roomDoc.participants.set(`${this.name}\0git`, owed2 ? { ...next, pushedPending: owed2 } : next);
+      }
       for (const move of claims.moves) {
         const current = this.roomDoc.claims.get(move.id);
         if (current?.by === this.name && !current.mirrorOf) this.roomDoc.moveClaim(move.id, move.from, move.to, this, claims.hashById.get(move.id));
@@ -37902,9 +38157,7 @@ var Daemon = class {
         this.log(text);
       }
     }, this);
-    if (pushed) notices.push({ from: { name: this.name, kind: this.kind, owner: this.owner, ...this.label ? { label: this.label } : {} }, body: pushed, id: `pushed:${this.name}:${pushed.fromSha}:${pushed.toSha}` });
     for (const n of notices) this.post(n.from, n.body, n.id);
-    if (pushed) this.log(`${pushed.upstream} now has ${pushed.fromSha.slice(0, 10)}..${pushed.toSha.slice(0, 10)} (+${pushed.commits})`);
     return true;
   }
   /** An automatic post through the hub; without a poster (the CLI) the notice is only logged. */
@@ -37918,12 +38171,12 @@ var Daemon = class {
   /** The lead's work carried into this worker, while HEAD is still the worker's recorded base (baseline.ts). */
   carried() {
     if (!this.isWorkerWorktree()) return void 0;
-    const baseline = workerBaseline(this.roomDoc.workerOf(this.name));
+    const baseline = workerBaseline(this.carriedFrom);
     return baseline?.sha === this.base && carriesWork(baseline) ? baseline : void 0;
   }
   /** A local-room worker's base is the commit its lead carried it from (registry pins it). */
   localCarriedBase() {
-    return this.isWorkerWorktree() ? workerBaseline(this.roomDoc.workerOf(this.name))?.sha : void 0;
+    return this.isWorkerWorktree() ? workerBaseline(this.carriedFrom)?.sha : void 0;
   }
   async refreshShared() {
     this.shared = !this.localRoom && this.carried()?.carriedCommit ? (await git(this.dir, ["rev-parse", `${this.base}^`])).trim() : this.base;
@@ -37931,10 +38184,11 @@ var Daemon = class {
   /** Capture the claimed code before a commit can clear its overlay. */
   async snapshotOwnClaims(prev) {
     const owned = [...this.roomDoc.claims.values()].filter((c) => c.by === this.name && !c.mirrorOf && !c.path.endsWith("/"));
-    const oldPaths = [...new Set(owned.filter((c) => !this.roomDoc.overlayText(this.name, c.path) && !c.claimedHash).map((c) => c.path))];
+    const incarnation = manifestKey(this.name, this.fence);
+    const oldPaths = [...new Set(owned.filter((c) => !this.roomDoc.overlayText(incarnation, c.path) && !c.claimedHash).map((c) => c.path))];
     const oldTexts = oldPaths.length ? await gitShowMany(this.dir, prev, oldPaths) : /* @__PURE__ */ new Map();
     return owned.map((c) => {
-      const overlay = this.roomDoc.text(c.path, this.name);
+      const overlay = this.roomDoc.text(c.path, incarnation);
       if (c.claimedHash) return c;
       if (overlay !== void 0) {
         const range = this.roomDoc.claimRange(c);
@@ -37945,12 +38199,12 @@ var Daemon = class {
     });
   }
   /** §B2 step 4: where this daemon's claims moved, over the current texts; applied in commitTransition. */
-  async reanchorOwnClaims(head, snapshot) {
-    if (!snapshot.length) return NO_CLAIM_CHANGES;
-    const paths = [...new Set(snapshot.map((c) => c.path))];
+  async reanchorOwnClaims(head, snapshot2) {
+    if (!snapshot2.length) return NO_CLAIM_CHANGES;
+    const paths = [...new Set(snapshot2.map((c) => c.path))];
     const headTexts = await gitShowMany(this.dir, head, paths);
-    const currentTexts = new Map(paths.map((p) => [p, this.roomDoc.text(p, this.name) ?? headTexts.get(p)]));
-    return { ...reanchorClaims(this.name, snapshot, currentTexts), hashById: new Map(snapshot.map((c) => [c.id, c.claimedHash])) };
+    const currentTexts = new Map(paths.map((p) => [p, this.roomDoc.text(p, manifestKey(this.name, this.fence)) ?? headTexts.get(p)]));
+    return { ...reanchorClaims(this.name, snapshot2, currentTexts), hashById: new Map(snapshot2.map((c) => [c.id, c.claimedHash])) };
   }
   /** Publish what differs from HEAD: git's changed paths plus what this person already published, never every tracked file. */
   async seedLocalOverlay() {
@@ -38111,7 +38365,7 @@ var Daemon = class {
       await this.publisher.reconcile("all");
       return;
     }
-    if (!this.tracked.has(relpath) && !this.roomDoc.changedPaths(this.name).includes(relpath)) {
+    if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
       if (!isNew || !fs8.existsSync(this.abs(relpath))) return;
       this.tracked.add(relpath);
     }
@@ -38128,7 +38382,7 @@ var Daemon = class {
     try {
       const next = await gitTracked(this.dir);
       const added = Array.from(next).filter((relpath) => !this.tracked.has(relpath));
-      const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...this.roomDoc.changedPaths(this.name)])).filter((relpath) => !next.has(relpath));
+      const removed = Array.from(/* @__PURE__ */ new Set([...this.tracked, ...manifestPaths(this.roomDoc, this.name)])).filter((relpath) => !next.has(relpath));
       this.tracked = next;
       for (const relpath of added) {
         if (!this.isIgnoredPath(relpath) && fs8.existsSync(this.abs(relpath))) {
@@ -38139,7 +38393,7 @@ var Daemon = class {
       for (const relpath of removed) {
         if (fs8.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
           this.scheduleDisk(relpath, false);
-        } else if (this.roomDoc.overlayText(this.name, relpath) && !fs8.existsSync(this.abs(relpath))) {
+        } else if (this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs8.existsSync(this.abs(relpath))) {
           this.scheduleDisk(relpath, false);
         }
       }
@@ -38148,6 +38402,7 @@ var Daemon = class {
     }
   }
 };
+var hubAccepted = (result2) => result2 != null && !(typeof result2 === "object" && "ok" in result2 && result2.ok === false);
 var TRANSITION_ATTEMPTS = 5;
 var NO_CLAIM_CHANGES = { moves: [], releases: [], hashById: /* @__PURE__ */ new Map() };
 var branchName = (abbrev) => abbrev === "HEAD" ? "" : abbrev;
@@ -38283,18 +38538,14 @@ function resolveSessionRuntime(sessionDir, env = process.env) {
 
 // packages/room-mcp/src/wake-path.ts
 import net from "node:net";
-import { execFileSync as execFileSync3 } from "node:child_process";
+import { execFile as execFile4, execFileSync as execFileSync3 } from "node:child_process";
 
 // packages/room-mcp/src/channel.ts
-async function sendChannelNotification(wake, notify) {
-  try {
-    await notify({ method: "notifications/claude/channel", params: { content: wake.content, meta: wake.meta } });
-  } catch {
-  }
+async function sendChannelNotification(content, notify) {
+  await notify({ method: "notifications/claude/channel", params: { content, meta: { type: "room_wake" } } });
 }
 
 // packages/room-mcp/src/wake-path.ts
-var SOCKET_WAKE_WINDOW_MS = 5e3;
 var SOCKET_POST_TIMEOUT_MS = 1500;
 var parentArgsCache;
 function claudeParentArgs() {
@@ -38352,103 +38603,36 @@ function postSocketWake(socketPath, token, content, timeoutMs2 = SOCKET_POST_TIM
     });
   });
 }
-var SocketWakeRouter = class {
-  constructor(o) {
-    this.o = o;
-  }
-  o;
-  pending = [];
-  timer;
-  sequence = 0;
-  lastSentAt;
-  loggedError = false;
-  loggedFlushError = false;
-  closed = false;
-  push(wake) {
-    if (!wake || this.closed || this.o.host !== "claude") return;
-    if (this.o.isPendingWait?.(wake)) return;
-    const env = this.o.env ?? process.env;
+function codexQueue(threadId, text) {
+  return new Promise((resolve5, reject) => {
+    execFile4("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err2, _out, stderr2) => err2 ? reject(new Error(String(stderr2 || err2.message).trim())) : resolve5());
+  });
+}
+function createWakeSender(o) {
+  return async (target, text) => {
+    if (target.host === "codex") {
+      await (o.queue ?? codexQueue)(target.id, text);
+      return "queue";
+    }
+    const env = o.env ?? process.env;
     const selected = mode(env);
-    if (selected === "off") return;
-    if (selected === "channels") {
-      if (this.unread(wake)) void this.channel(wake);
-      return;
-    }
-    if (!env.CLAUDE_CODE_MESSAGING_SOCKET) {
-      if (selected === "auto" && this.channelAdmitted() && this.unread(wake)) void this.channel(wake);
-      return;
-    }
-    this.pending.push(wake);
-    if (this.timer) return;
-    const windowMs = this.o.windowMs ?? SOCKET_WAKE_WINDOW_MS;
-    const elapsed = this.lastSentAt === void 0 ? windowMs : Date.now() - this.lastSentAt;
-    this.timer = setTimeout(() => {
-      this.timer = void 0;
-      this.flushSafely();
-    }, elapsed < windowMs ? windowMs - elapsed : windowMs);
-    if (elapsed >= windowMs) this.flushSafely();
-  }
-  close() {
-    this.closed = true;
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = void 0;
-    this.pending = [];
-  }
-  async channel(wake) {
-    if (this.o.channel === "") return;
-    await sendChannelNotification(wake, this.o.notify);
-  }
-  channelAdmitted() {
-    const env = this.o.env ?? process.env;
-    return channelAdmitted(env, this.o.parentArgs ?? claudeParentArgs(), this.o.channel);
-  }
-  unread(wake) {
-    return this.o.isUnread?.(wake) ?? true;
-  }
-  flushSafely() {
-    void this.flush().catch((error2) => {
-      if (this.loggedFlushError) return;
-      this.loggedFlushError = true;
-      this.o.log?.(`Claude wake fallback failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
-    });
-  }
-  async flush() {
-    const items = this.pending.splice(0).filter((w) => !this.o.isPendingWait?.(w) && this.unread(w));
-    if (!items.length || this.closed) return;
-    this.lastSentAt = Date.now();
-    const count = items.length;
-    const shown = count > 5 ? 4 : 5;
-    const phrases = items.slice(0, shown).map((w) => `${(w.meta.from ?? "someone").replace(/\s+/g, " ").trim().slice(0, 40) || "someone"} ${kindPhrase(w.meta.type)}`);
-    if (count > shown) phrases.push(`${count - shown} more`);
-    const collectHint = items.some((w) => w.meta.type === "done") ? " (room_collect brings in finished workers)" : "";
-    const content = `[room] ${count} ${count === 1 ? "thing needs" : "things need"} you: ${phrases.join("; ")}. Use the room_state tool to read them${collectHint}. (#${++this.sequence})`;
-    const env = this.o.env ?? process.env;
+    if (selected === "off") return void 0;
+    const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
+    const channel = async () => {
+      await sendChannelNotification(text, o.notify);
+      return "channel";
+    };
+    if (selected === "channels") return o.channel === "" ? void 0 : channel();
+    const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
+    if (!socket) return selected === "auto" && admitted() ? channel() : void 0;
     try {
-      await (this.o.post ?? postSocketWake)(env.CLAUDE_CODE_MESSAGING_SOCKET, env.CLAUDE_CODE_MESSAGING_TOKEN, content);
+      await (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text);
+      return "socket";
     } catch (error2) {
-      if (!this.loggedError) {
-        this.loggedError = true;
-        this.o.log?.(`Claude socket wake failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
-      }
-      if (mode(env) === "auto" && this.channelAdmitted()) await this.channel({ content, meta: { type: "room_wake", count: String(count) } });
+      if (selected === "auto" && admitted()) return channel();
+      throw error2;
     }
-  }
-};
-function kindPhrase(type) {
-  switch (type) {
-    case "question":
-      return "asked a question";
-    case "answer":
-      return "answered";
-    case "changed":
-      return "reported a change";
-    case "note":
-      return "sent a note";
-    case "done":
-      return "finished";
-    default:
-      return "has an update";
-  }
+  };
 }
 
 // packages/room-mcp/src/prompt.ts
@@ -38492,17 +38676,3491 @@ var AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one perso
 
 Load room-etiquette for coordination details.`;
 
+// packages/room-mcp/src/worker-registry.ts
+import fs16 from "node:fs";
+import path13 from "node:path";
+import { createHash as createHash7, randomBytes as randomBytes3 } from "node:crypto";
+import { execFileSync as execFileSync6 } from "node:child_process";
+import { performance as performance2 } from "node:perf_hooks";
+
+// packages/relay/src/leases.ts
+import fs11 from "node:fs";
+import path8 from "node:path";
+import { createHash as createHash6, randomUUID } from "node:crypto";
+
+// packages/relay/src/process.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
+import fs10 from "node:fs";
+import path7 from "node:path";
+function pidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+var systemProcessReaders = {
+  platform: process.platform,
+  readFile: (file) => fs10.readFileSync(file, "utf8"),
+  readLink: (file) => fs10.readlinkSync(file),
+  exec: (file, args3) => execFileSync4(file, args3, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 3e3,
+    ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
+  })
+};
+function parsePsLstartUtc(line) {
+  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
+  if (!match) return void 0;
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
+  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1e3;
+  return Number.isInteger(seconds) ? seconds : void 0;
+}
+function probeProcess(pid, readers = systemProcessReaders) {
+  if (!pid || pid <= 0) return void 0;
+  const unreadable = () => pidAlive(pid) ? {} : void 0;
+  try {
+    if (readers.platform === "linux") {
+      const stat4 = readers.readFile(`/proc/${pid}/stat`);
+      const close = stat4.lastIndexOf(")");
+      if (close < 0) return unreadable();
+      const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
+      if (!/^\d+$/.test(startTicks ?? "")) return unreadable();
+      const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
+      if (!bootId) return unreadable();
+      let executable;
+      try {
+        executable = path7.basename(readers.readLink(`/proc/${pid}/exe`));
+      } catch {
+      }
+      return { startTime: `linux:${bootId}:${startTicks}`, executable };
+    }
+    if (readers.platform === "darwin") {
+      const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
+      const startSeconds = parsePsLstartUtc(lstart);
+      if (startSeconds === void 0) return unreadable();
+      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
+      if (!boot) return unreadable();
+      let executable;
+      try {
+        executable = path7.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
+      } catch {
+      }
+      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
+    }
+  } catch {
+  }
+  return unreadable();
+}
+
+// packages/relay/src/leases.ts
+function liveness(identity2, probe = probeProcess) {
+  const observed = probe(identity2.pid);
+  if (!observed) return "dead";
+  if (observed.startTime && identity2.startTime && observed.startTime !== identity2.startTime) return "dead";
+  if (observed.executable && identity2.executable && observed.executable !== identity2.executable) return "dead";
+  if (!observed.startTime || !observed.executable || !identity2.startTime || !identity2.executable) return "unknown";
+  return "alive";
+}
+function syncDirectory(dir) {
+  let fd;
+  try {
+    fd = fs11.openSync(dir, "r");
+    fs11.fsyncSync(fd);
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    if (fd !== void 0) fs11.closeSync(fd);
+  }
+}
+function ensureDurableDirectory(dir) {
+  const parent = path8.dirname(dir);
+  if (parent !== dir) ensureDurableDirectory(parent);
+  try {
+    fs11.mkdirSync(dir, { mode: 448 });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+  }
+  if (parent !== dir) syncDirectory(parent);
+}
+var startMarker = (startTime) => createHash6("sha256").update(startTime).digest("hex").slice(0, 24);
+var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
+function cleanupOrphanTemps(dir, probe = probeProcess) {
+  let removed = 0;
+  for (const name2 of fs11.readdirSync(dir)) {
+    const match = tempPattern.exec(name2);
+    if (!match) continue;
+    const observed = probe(Number(match[1]));
+    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    try {
+      fs11.unlinkSync(path8.join(dir, name2));
+      removed++;
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  if (removed) syncDirectory(dir);
+  return removed;
+}
+function writeTemp(file, content) {
+  const dir = path8.dirname(file);
+  ensureDurableDirectory(dir);
+  cleanupOrphanTemps(dir);
+  const start2 = probeProcess(process.pid)?.startTime;
+  const temp = `${file}.roomtmp-p${process.pid}-s${start2 ? startMarker(start2) : "u"}-n${randomUUID()}.tmp`;
+  const fd = fs11.openSync(temp, "wx", 384);
+  try {
+    fs11.writeFileSync(fd, JSON.stringify(content) + "\n");
+    fs11.fsyncSync(fd);
+  } catch (e) {
+    fs11.closeSync(fd);
+    fs11.rmSync(temp, { force: true });
+    syncDirectory(dir);
+    throw e;
+  }
+  fs11.closeSync(fd);
+  return temp;
+}
+function createExclusive(file, content) {
+  const temp = writeTemp(file, content);
+  try {
+    try {
+      fs11.linkSync(temp, file);
+    } catch (e) {
+      if (e.code === "EEXIST") return false;
+      throw e;
+    }
+    syncDirectory(path8.dirname(file));
+    return true;
+  } finally {
+    fs11.rmSync(temp, { force: true });
+    syncDirectory(path8.dirname(file));
+  }
+}
+function writeAtomic(file, content) {
+  const temp = writeTemp(file, content);
+  try {
+    fs11.renameSync(temp, file);
+    syncDirectory(path8.dirname(file));
+  } finally {
+    fs11.rmSync(temp, { force: true });
+    syncDirectory(path8.dirname(file));
+  }
+}
+function read(file) {
+  try {
+    return JSON.parse(fs11.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+function leaseToken(value2) {
+  const candidate = value2.holder ?? value2;
+  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
+}
+function ownToken() {
+  const current = probeProcess(process.pid);
+  return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
+}
+function acquireGuard(file, probe, depth = 0) {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
+  const token = ownToken();
+  if (createExclusive(file, token)) return token;
+  const previous = read(file);
+  const previousHolder = previous && leaseToken(previous);
+  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
+  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
+  try {
+    const latest = read(file);
+    const latestHolder = latest && leaseToken(latest);
+    if (latestHolder && liveness(latestHolder, probe) === "dead") {
+      fs11.unlinkSync(file);
+      syncDirectory(path8.dirname(file));
+    }
+  } finally {
+    releaseGuard(`${file}.guard`, outer);
+  }
+  if (createExclusive(file, token)) return token;
+  throw new Error(`lease guard busy: ${file}`);
+}
+function releaseGuard(file, token) {
+  const current = read(file);
+  if (current && leaseToken(current)?.nonce === token.nonce) {
+    fs11.unlinkSync(file);
+    syncDirectory(path8.dirname(file));
+  }
+}
+function withGuard(file, fn, probe = probeProcess) {
+  const guard = `${file}.guard`;
+  const token = acquireGuard(guard, probe);
+  try {
+    const result2 = fn();
+    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
+    return result2;
+  } finally {
+    releaseGuard(guard, token);
+  }
+}
+function replace(file, expect, next) {
+  return withGuard(file, () => {
+    const current = read(file);
+    if (!current || !expect(current)) return false;
+    writeAtomic(file, next);
+    return true;
+  });
+}
+function compareAndRelease(file, token) {
+  return withGuard(file, () => {
+    const current = read(file);
+    if (!current || leaseToken(current)?.nonce !== token.nonce) return false;
+    fs11.unlinkSync(file);
+    syncDirectory(path8.dirname(file));
+    return true;
+  });
+}
+function recover(file, orphan, probe = probeProcess) {
+  return withGuard(file, () => {
+    const current = read(file);
+    const owner = current && leaseToken(current);
+    if (!current || !owner || liveness(owner, probe) !== "dead" || !orphan(current)) return false;
+    fs11.unlinkSync(file);
+    syncDirectory(path8.dirname(file));
+    return true;
+  });
+}
+
+// packages/room-mcp/src/worker-process.ts
+import { execFileSync as execFileSync5, spawn as spawn3 } from "node:child_process";
+import fs13 from "node:fs";
+import path10 from "node:path";
+
+// packages/room-mcp/src/worker-config.ts
+import fs12 from "node:fs";
+import path9 from "node:path";
+var WORKER_PORT_START = 4400;
+var WORKER_PORT_END = 4499;
+function allocateWorkerPort(used) {
+  const occupied = new Set(used);
+  for (let port = WORKER_PORT_START; port <= WORKER_PORT_END; port++) if (!occupied.has(port)) return port;
+  throw new Error(`all worker dev-server ports (${WORKER_PORT_START}-${WORKER_PORT_END}) are in use`);
+}
+var warnedMissingNice = false;
+function workerPriority(command, env = process.env, platform = process.platform) {
+  const raw = env.ROOM_WORKER_NICE?.trim();
+  const value2 = raw ? Number(raw) : 10;
+  const nice = Number.isFinite(value2) ? Math.max(0, Math.min(19, Math.trunc(value2))) : 10;
+  if (platform === "win32" || nice === 0) return { ...command, nice: 0 };
+  for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path9.delimiter)) {
+    const executable = path9.resolve(dir, "nice");
+    try {
+      fs12.accessSync(executable, fs12.constants.X_OK);
+      if (fs12.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command.cmd, ...command.args], nice };
+    } catch {
+    }
+  }
+  if (!warnedMissingNice) {
+    warnedMissingNice = true;
+    process.stderr.write("room workers: nice is unavailable; starting workers at normal priority\n");
+  }
+  return { ...command, nice: 0 };
+}
+function workerBudget({ cores, memBytes, maxWorkers, running }) {
+  const workers = running + 1;
+  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
+  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
+}
+var WORKER_THREAD_CAPS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"];
+function workerProcessEnv(options, inherited = process.env) {
+  const caps = {};
+  for (const key2 of WORKER_THREAD_CAPS) {
+    const cap = Number(inherited[key2]);
+    caps[key2] = options.isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, options.threads) : options.threads) : inherited[key2] ?? String(options.threads);
+  }
+  return {
+    ...caps,
+    ROOM_WORKER_THREADS: String(options.threads),
+    ROOM_WORKER_MEM_GB: String(options.memGb),
+    ROOM_WORKER_HOST: options.host,
+    ...options.model ? { ROOM_WORKER_MODEL: options.model } : {},
+    ...options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {},
+    ROOM_SERVER: options.server,
+    ROOM_ROOM: options.room,
+    ROOM_DIR: options.dir,
+    PWD: options.dir,
+    ...options.port ? { PORT: String(options.port) } : {},
+    ROOM_TAG: options.tag,
+    ROOM_LEAD: options.lead,
+    ROOM_OWNER: options.owner,
+    ROOM_SHARE: options.share,
+    ROOM_WORKER_ID: options.id,
+    ROOM_WORKER_RUN: String(options.run),
+    ROOM_LAUNCH_NONCE: options.nonce,
+    ROOM_REGISTRY: options.registry,
+    ...options.token ? { ROOM_TOKEN: options.token } : {},
+    ROOM_LOG_FILE: path9.join(options.logDir, ".room", "workers", `${options.tag}.mcp.log`)
+  };
+}
+function validTag(tag) {
+  if (typeof tag !== "string") return void 0;
+  const t = tag.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(t) ? t : void 0;
+}
+function workerPrompt(lead, tag, task, context) {
+  return [
+    `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
+    `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
+    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
+    `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
+    `If you spawn workers, collect them before your own room_done.`,
+    `Report progress in room_done; send notes only when the lead must know before you finish.`,
+    ...context ? [
+      `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : "normal"}; reasoning effort: ${context.effort ?? "host default"}. Stay within this budget and stagger heavy jobs.`,
+      ...context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : [],
+      ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : [],
+      ...context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(", ")}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ""}.`] : []
+    ] : [],
+    "",
+    `TASK: ${task}`
+  ].join("\n");
+}
+var WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
+function hostWorkerEffort(host, effort) {
+  return host === "claude" && effort === "minimal" ? "low" : effort;
+}
+function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort, options = {}) {
+  if (effort !== void 0 && !WORKER_EFFORTS.includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join("|")}`);
+  effort = hostWorkerEffort(host, effort);
+  if (options.resume && !options.sessionId) throw new Error("resuming a worker requires its host session id");
+  if (host === "codex") return { cmd: "codex", args: options.resume ? ["exec", "resume", options.sessionId, "-c", 'sandbox_mode="workspace-write"', ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] : ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] };
+  return {
+    cmd: "claude",
+    args: [...options.wakeChannels && claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
+  };
+}
+function workerMaxBudget(env = process.env) {
+  const value2 = env.ROOM_WORKER_MAX_BUDGET_USD?.trim();
+  if (!value2) return void 0;
+  if (!/^\d+(?:\.\d+)?$/.test(value2) || Number(value2) <= 0) throw new Error("ROOM_WORKER_MAX_BUDGET_USD must be a positive dollar amount");
+  return value2;
+}
+var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_WORKER_ID", "ROOM_WORKER_RUN", "ROOM_LAUNCH_NONCE", "ROOM_REGISTRY", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND", "PORT"];
+function workerEnv(base, extra) {
+  const out2 = {};
+  for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out2[k] = v;
+  return { ...out2, ...extra };
+}
+
+// packages/room-mcp/src/worker-process.ts
+function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
+  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
+  if (worker && !pidIsOurWorker(pid, worker, probe)) return false;
+  if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var defaultSpawner = (spec16) => {
+  fs13.mkdirSync(path10.dirname(spec16.logFile), { recursive: true });
+  const fd = fs13.openSync(spec16.logFile, "a");
+  let child;
+  try {
+    child = spawn3(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", fd, fd] });
+  } catch (error2) {
+    fs13.closeSync(fd);
+    throw error2;
+  }
+  const closeLog = () => {
+    try {
+      fs13.closeSync(fd);
+    } catch {
+    }
+  };
+  child.once("close", closeLog);
+  child.once("error", closeLog);
+  const started = new Promise((resolve5, reject) => {
+    const done = (error2) => {
+      child.off("spawn", onSpawn);
+      child.off("error", onError);
+      if (error2) reject(error2);
+      else resolve5();
+    };
+    const onSpawn = () => done();
+    const onError = (error2) => done(error2);
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+  });
+  child.unref();
+  return {
+    pid: child.pid ?? -1,
+    started,
+    onExit: (cb) => {
+      child.once("close", cb);
+    },
+    onError: (cb) => {
+      child.once("error", cb);
+    },
+    kill: () => {
+      try {
+        return child.kill("SIGTERM");
+      } catch {
+        return false;
+      }
+    },
+    killForce: () => {
+      try {
+        return child.kill("SIGKILL");
+      } catch {
+        return false;
+      }
+    }
+  };
+};
+async function stopWorkerWithEscalation(options) {
+  if (!await options.terminate()) return false;
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+  const now = options.now ?? Date.now;
+  const wait = async () => {
+    const deadline = now() + 5e3;
+    while (!options.exited() && now() < deadline) await sleep(50);
+    return options.exited();
+  };
+  if (await wait()) return true;
+  await options.force();
+  return wait();
+}
+function pidPresent(pid, probe = probeProcess) {
+  return pid > 0 && probe(pid) !== void 0;
+}
+function workerProcessOwnership(pid, w, probe = probeProcess) {
+  if (!pid || pid <= 0) return "not-ours";
+  const info2 = probe(pid);
+  if (!info2) return "not-ours";
+  if (!w.processStartTime) return "unknown";
+  if (!info2?.startTime || !info2.executable) return "unknown";
+  if (info2.startTime !== w.processStartTime) return "not-ours";
+  const executable = path10.basename(info2.executable);
+  return executable === w.host || executable === "node" ? "ours" : "not-ours";
+}
+function pidIsOurWorker(pid, w, probe = probeProcess) {
+  return workerProcessOwnership(pid, w, probe) === "ours";
+}
+function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
+  const resolved = (p) => {
+    try {
+      return fs13.realpathSync(p);
+    } catch {
+      return path10.resolve(p);
+    }
+  };
+  const root = resolved(dir);
+  return list().some((p) => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path10.sep)));
+}
+function processName(pid) {
+  try {
+    return path10.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 3e3,
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
+    }).trim()) || "process";
+  } catch {
+    return "process";
+  }
+}
+function listCwdProcesses(platform = process.platform) {
+  const result2 = [];
+  if (platform === "linux") {
+    for (const entry of fs13.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      const pid = Number(entry);
+      try {
+        const cwd = fs13.realpathSync(`/proc/${pid}/cwd`);
+        result2.push({ pid, cwd, command: "" });
+      } catch {
+      }
+    }
+  } else if (platform === "darwin") {
+    const output = execFileSync5("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
+    let pid = 0;
+    for (const line of output.split("\n")) {
+      if (line.startsWith("p")) pid = Number(line.slice(1));
+      else if (line.startsWith("n") && pid > 0) result2.push({ pid, cwd: line.slice(1), command: "" });
+    }
+  }
+  return result2;
+}
+async function terminateWorktreeProcesses(dir, options = {}) {
+  const root = fs13.existsSync(dir) ? fs13.realpathSync(dir) : path10.resolve(dir);
+  const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
+  const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+  const resolved = (cwd) => {
+    try {
+      return fs13.realpathSync(cwd);
+    } catch {
+      return path10.resolve(cwd);
+    }
+  };
+  const list = options.list ?? listCwdProcesses;
+  const insideWorktree = (p) => {
+    const cwd = resolved(p.cwd);
+    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path10.sep));
+  };
+  const targets = list().filter(insideWorktree);
+  if (!targets.length) return [];
+  const beforeTerm = new Set(list().filter(insideWorktree).map((p) => p.pid));
+  const named = [];
+  for (const p of targets) {
+    if (!beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue;
+    const name2 = p.command || processName(p.pid);
+    try {
+      signal(p.pid, "SIGTERM");
+      named.push(`${name2} (pid ${p.pid})`);
+    } catch (error2) {
+      if (error2.code !== "ESRCH") throw error2;
+    }
+  }
+  if (!named.length) return [];
+  await sleep(300);
+  const stillInside = new Set(list().filter(insideWorktree).map((p) => p.pid));
+  for (const p of targets) if (stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
+    try {
+      signal(p.pid, "SIGKILL");
+    } catch (error2) {
+      if (error2.code !== "ESRCH") throw error2;
+    }
+  }
+  return named;
+}
+async function quiesceWorktreeProcesses(dir) {
+  try {
+    await terminateWorktreeProcesses(dir);
+    const root = fs13.realpathSync(dir);
+    const inside = () => listCwdProcesses().some((p) => {
+      if (p.pid === process.pid || p.pid === process.ppid) return false;
+      let cwd;
+      try {
+        cwd = fs13.realpathSync(p.cwd);
+      } catch {
+        cwd = path10.resolve(p.cwd);
+      }
+      return cwd === root || cwd.startsWith(root + path10.sep);
+    });
+    const deadline = Date.now() + 5e3;
+    let quietSince;
+    while (Date.now() < deadline) {
+      if (inside()) quietSince = void 0;
+      else if (quietSince === void 0) quietSince = Date.now();
+      else if (Date.now() - quietSince >= 100) return true;
+      await new Promise((resolve5) => setTimeout(resolve5, 50));
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// packages/room-mcp/src/worker-status.ts
+var IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1e3;
+function idleClaimsDue(input) {
+  return input.host === "shared-app-server" && (input.heldClaims > 0 || input.hasScope === true) && Number.isFinite(input.lastActivityMs) && Number.isFinite(input.nowMs) && input.nowMs - input.lastActivityMs >= IDLE_CLAIM_RELEASE_MS;
+}
+var result = (status, run2, note, extra = {}) => ({ status, run: run2, ...note ? { note } : {}, ...extra });
+function statusOf(record2, runs = record2.runs, reports = [], exits = [], liveness2, nowMs = Date.now()) {
+  if (record2.phase === "retired") return result("retired");
+  if (record2.phase === "abandoned") return result("abandoned");
+  if (["collecting", "discarding", "retiring"].includes(record2.phase)) return result("collecting", void 0, record2.interrupted?.detail);
+  const ordered = [...runs].sort((a, b) => a.n - b.n);
+  let index = ordered.length - 1;
+  let current = ordered[index];
+  let neverResume = false;
+  while (current?.mode === "resume" && current.launch?.outcome === "never") {
+    neverResume = true;
+    current = ordered[--index];
+  }
+  if (!current) return result("starting", void 0, neverResume ? "follow-up not delivered" : void 0);
+  const note = neverResume ? "follow-up not delivered" : void 0;
+  const launch = current.launch;
+  if (launch?.outcome === "ambiguous") return result("ambiguous", current, "launch may or may not have started; resume or discard");
+  if (launch?.outcome === "never") return result("failed", current, `never started: ${launch.error}`);
+  if (launch?.outcome === "imported") return result("imported", current, "a 0.16 worker; Room cannot check whether its process still runs");
+  if (!launch) return result(liveness2(current.launcher) === "dead" ? "ambiguous" : "starting", current, note);
+  const report = reports.find((r) => r.run === current.n && r.nonce === current.nonce);
+  const exit = exits.find((e) => e.run === current.n);
+  const live = launch.process ? liveness2(launch.process) : void 0;
+  const waitingForJoin = !report && nowMs - current.intentAt >= 6e4 ? `has not joined the room: its host's Room plugin may be older than 0.17 (host ${record2.host})` : note;
+  const reported = report?.done ? { summary: report.done.summary } : {};
+  if (launch.process && live === "alive") return result("running", current, record2.stop?.run === current.n ? "stopping" : waitingForJoin, reported);
+  if (!exit && liveness2(current.launcher) === "alive") return result("running", current, record2.stop?.run === current.n ? "stopping" : waitingForJoin, reported);
+  if (launch.process && live === "unknown" && !exit) return result("unknown", current, `cannot verify pid ${launch.pid}`);
+  if (report?.done) return result(
+    "done",
+    current,
+    exit?.code && exit.code !== 0 ? `exited ${exit.code} after reporting` : note,
+    { summary: report.done.summary, finishedAt: report.done.at, ...exit?.code != null ? { exitCode: exit.code } : {} }
+  );
+  if (record2.stop?.run === current.n) return result("stopped", current, record2.stop.reason, { finishedAt: record2.stop.at });
+  const earlierDone = ordered.some((r) => r.n < current.n && reports.some((p) => p.run === r.n && p.nonce === r.nonce && p.done));
+  if (exit?.witnessed && exit.code === 0 && earlierDone) return result("done", current, note, { finishedAt: exit.at, exitCode: 0 });
+  if (exit?.witnessed && exit.code === 0) return result("failed", current, "exited without room_done", { finishedAt: exit.at, exitCode: 0 });
+  if (exit?.witnessed) return result("failed", current, exit.signal ?? `exit ${exit.code ?? "unknown"}`, { finishedAt: exit.at, ...exit.code != null ? { exitCode: exit.code } : {} });
+  if (exit && current.mode === "resume" && earlierDone) return result("done", current, "follow-up outcome unknown: ended while no session of yours was running", { finishedAt: exit.at });
+  if (exit) return result("failed", current, "stopped while no session of yours was running", { finishedAt: exit.at });
+  return result("running", current, "exit being recorded");
+}
+function realStateInput(record2, status) {
+  const map2 = {
+    starting: "running",
+    running: "running",
+    unknown: "running",
+    ambiguous: "running",
+    done: "done",
+    failed: "failed",
+    stopped: "dismissed",
+    imported: "dismissed",
+    collecting: "dismissed",
+    retired: "dismissed",
+    abandoned: "dismissed"
+  };
+  const launch = status.run?.launch;
+  const signal = record2.capabilities.signal && launch?.outcome === "launched" && !!launch.process;
+  return {
+    id: record2.id,
+    tag: record2.tag,
+    name: record2.name,
+    lead: record2.lead.participant,
+    host: record2.host,
+    model: record2.model,
+    effort: record2.effort,
+    budget: record2.budget,
+    share: record2.share,
+    link: record2.link,
+    task: record2.task,
+    dir: record2.dir,
+    branch: record2.branch,
+    base: record2.base,
+    carriedBase: record2.carriedBase,
+    carriedUntracked: record2.carriedUntracked,
+    port: record2.port,
+    startedAt: record2.createdAt,
+    pid: signal ? launch.pid : 0,
+    processStartTime: signal ? launch.process.startTime : void 0,
+    hostSessionId: record2.capabilities.resume ? record2.hostSessionId : void 0,
+    status: map2[status.status],
+    summary: status.summary ?? record2.legacy?.said,
+    exitCode: status.exitCode,
+    finishedAt: status.finishedAt,
+    stopReason: record2.stop?.reason === "discarded" ? void 0 : record2.stop?.reason
+  };
+}
+function workerView(record2, status, fence) {
+  return {
+    id: record2.id,
+    tag: record2.tag,
+    name: record2.name,
+    lead: record2.lead.participant,
+    mode: record2.mode,
+    host: record2.host,
+    ...record2.model ? { model: record2.model } : {},
+    ...record2.effort ? { effort: record2.effort } : {},
+    task: record2.task.slice(0, 200),
+    branch: record2.branch,
+    status: status.status,
+    ...status.summary ?? record2.legacy?.said ? { summary: status.summary ?? record2.legacy?.said } : {},
+    ...status.note ? { note: status.note } : {},
+    run: status.run?.n ?? record2.runs.at(-1)?.n ?? 0,
+    startedAt: record2.createdAt,
+    ...status.finishedAt !== void 0 ? { finishedAt: status.finishedAt } : {},
+    ...status.exitCode !== void 0 ? { exitCode: status.exitCode } : {},
+    ...record2.stop ? { stopReason: record2.stop.reason } : {},
+    fence
+  };
+}
+
+// packages/room-mcp/src/worker-state.ts
+import fs14 from "node:fs";
+import path11 from "node:path";
+function roomWorkerPathMatchesBranch(leadDir, workerDir, branch, nested = false) {
+  const relative3 = path11.relative(path11.resolve(leadDir), path11.resolve(workerDir)).split(path11.sep);
+  if (relative3.length < 3 || relative3.length % 3 !== 0 || !nested && relative3.length !== 3) return false;
+  return relative3.every((part, i2) => i2 % 3 === 0 ? part === ".room" : i2 % 3 === 1 ? part === "workers" : validRepoPath(part, RECORDED_PATH)) && branch === `room/${relative3.at(-1)}`;
+}
+async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
+  const byName = new Map([...workers].map((record2) => [record2.name, record2]));
+  const chain = [w];
+  const seen = /* @__PURE__ */ new Set([w.name]);
+  let owner = w.lead;
+  while (leadName && owner !== leadName) {
+    const record2 = byName.get(owner);
+    if (!record2 || seen.has(record2.name)) return false;
+    const parent = {
+      name: record2.name,
+      tag: record2.tag,
+      lead: record2.lead,
+      dir: "dir" in record2 ? record2.dir : record2.keptWorktree ?? path11.dirname(path11.dirname(path11.dirname(chain[0].dir))),
+      branch: "branch" in record2 ? record2.branch : `room/${record2.tag}`
+    };
+    chain.unshift(parent);
+    seen.add(parent.name);
+    owner = parent.lead;
+  }
+  try {
+    let parentDir = leadDir, parentName = leadName;
+    for (const record2 of chain) {
+      if (parentName && record2.lead !== parentName) return false;
+      if (!fs14.existsSync(record2.dir)) return false;
+      const parentRoot = fs14.realpathSync(parentDir), workerRoot = fs14.realpathSync(record2.dir);
+      if (workerRoot === parentRoot) return false;
+      if (!roomWorkerPathMatchesBranch(parentDir, record2.dir, record2.branch)) return false;
+      const expected = path11.join(parentRoot, ".room", "workers", path11.basename(record2.dir));
+      if (workerRoot !== fs14.realpathSync(expected)) return false;
+      if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record2.dir)) return false;
+      if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
+      parentDir = record2.dir;
+      parentName = record2.name;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+var ROOM_CARRY_IDENTITY = {
+  authorName: "Room",
+  authorEmail: "room@localhost",
+  subjectPrefix: "room: carried-in uncommitted work from ",
+  isRoomCarryCommit(name2, email2, subject) {
+    return name2 === ROOM_CARRY_IDENTITY.authorName && email2 === ROOM_CARRY_IDENTITY.authorEmail && subject.startsWith(ROOM_CARRY_IDENTITY.subjectPrefix) && /^.+$/.test(subject.slice(ROOM_CARRY_IDENTITY.subjectPrefix.length));
+  }
+};
+async function workerCommitCount(runGit, dir, ref, leadHead, w) {
+  const commits = (await runGit(dir, ["rev-list", ref, `^${leadHead}`])).trim().split("\n").filter(Boolean);
+  if (!commits.length) return 0;
+  const recorded = /* @__PURE__ */ new Set();
+  if (w.carriedBase) recorded.add(w.carriedBase);
+  try {
+    recorded.add((await runGit(dir, ["rev-parse", "--verify", `refs/room/carry/${w.tag}`])).trim());
+  } catch {
+  }
+  const present = new Set(commits);
+  for (const commit of recorded) {
+    if (!/^[0-9a-f]{40,64}$/.test(commit) || !present.has(commit)) continue;
+    try {
+      const identity2 = (await runGit(dir, ["show", "-s", "--format=%an%x00%ae%x00%s", commit])).trim();
+      const [name2, email2, subject] = identity2.split("\0");
+      if (ROOM_CARRY_IDENTITY.isRoomCarryCommit(name2, email2, subject)) present.delete(commit);
+    } catch {
+    }
+  }
+  return present.size;
+}
+async function workerRealState(leadDir, w, options = {}) {
+  const deps = options.probes ?? {};
+  const exists = deps.exists ?? fs14.existsSync;
+  const runGit = deps.git ?? git;
+  const present = exists(w.dir);
+  const state = {
+    worktree: present ? "present" : "vanished",
+    hostSession: !!w.hostSessionId,
+    finished: w.exitCode !== void 0 || w.finishedAt !== void 0 || w.status !== "running",
+    status: w.status,
+    exitCode: w.exitCode,
+    dismissed: w.status === "dismissed"
+  };
+  if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker) => workerProcessOwnership(worker.pid, worker, options.probe)))(w);
+  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers);
+  if (options.branch) {
+    const ref = `refs/heads/${w.branch}`;
+    state.branch = (await runGit(leadDir, ["for-each-ref", "--format=%(refname)", ref])).split("\n").includes(ref) ? "present" : "absent";
+    if (state.branch === "present") {
+      const count = await workerCommitCount(runGit, leadDir, ref, "HEAD", w);
+      if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`);
+      state.branchAhead = count;
+    }
+  }
+  if (options.git && state.owned) {
+    state.merged = false;
+    state.clean = false;
+    try {
+      const owned = new Set(await (deps.changedPaths ?? workerChangedPaths)(w));
+      const status = await runGit(w.dir, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", "."]);
+      const uncommitted = new Set(status.split("\0").filter(Boolean).map((entry) => entry.slice(3)).filter((p) => owned.has(p)));
+      for (const p of w.carriedUntracked ?? []) if (owned.has(p.path) && !exists(path11.join(w.dir, p.path))) uncommitted.add(p.path);
+      state.uncommitted = uncommitted.size;
+      state.clean = state.uncommitted === 0;
+      const head = (await runGit(leadDir, ["rev-parse", "HEAD"])).trim();
+      const branch = `refs/heads/${w.branch}`;
+      state.ahead = Math.max(
+        await workerCommitCount(runGit, w.dir, branch, head, w),
+        await workerCommitCount(runGit, w.dir, "HEAD", head, w)
+      );
+      if (w.base && state.ahead === 0) {
+        const own2 = (await runGit(w.dir, ["rev-list", "--count", `${w.base}..${branch}`])).trim();
+        state.merged = /^\d+$/.test(own2) && Number(own2) > 0;
+      }
+    } catch {
+      state.ahead = void 0;
+    }
+  }
+  return state;
+}
+function decideCollect(s, explicit, stopped) {
+  if (s.status !== "done" && !(stopped && (s.status === "running" || s.status === "dismissed"))) return "skip-status";
+  if (!explicit && stopped && s.status !== "done") return "skip-partial";
+  return s.worktree === "vanished" ? "missing" : "inspect";
+}
+function decideDiscard(s) {
+  return s.worktree === "vanished" ? "prune" : s.owned ? "cleanup" : "retain-directory";
+}
+function decideStop(s) {
+  return { cwd: s.owned === true, host: s.process === "ours" ? "signal" : s.process === "unknown" ? "unknown" : "not-ours" };
+}
+function processExited(s) {
+  return s.process === "not-ours";
+}
+function decideRetire(s) {
+  if (!processExited(s) || !s.finished) return void 0;
+  if (s.dismissed) return "dismissed";
+  if (s.status !== "done") return void 0;
+  if (s.clean === true && s.ahead === 0) return s.merged ? "merged" : "clean";
+  return void 0;
+}
+function decideLeave(s) {
+  return s.status !== "done" && s.status !== "failed" && s.status !== "dismissed" || s.process === "ours" || s.process === "unknown" ? "stop" : "leave";
+}
+function decideShutdown(s) {
+  return decideLeave(s);
+}
+function decidePreview(s, diskEligible) {
+  return diskEligible && s.worktree === "present" ? "disk" : "shared";
+}
+function decideResume(s) {
+  if (s.worktree === "vanished") return "missing";
+  if (!s.hostSession) return "no-session";
+  return s.process === "ours" ? "wait-exit" : s.process === "unknown" ? "unknown" : "ready";
+}
+
+// packages/room-mcp/src/worker-git.ts
+import fs15 from "node:fs";
+import os3 from "node:os";
+import path12 from "node:path";
+var WORKERS_DIR = path12.join(".room", "workers");
+function workerOwnedPaths(w) {
+  const paths = w?.link ?? [];
+  return {
+    includes: (p) => paths.some((l) => p === l || p.startsWith(l + "/")),
+    exclusions: paths.map((l) => ":(exclude,literal)" + l)
+  };
+}
+async function ignoredWorkerArtifacts(w) {
+  const raw = await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", ".", ...workerOwnedPaths(w).exclusions]);
+  return raw.split("\0").filter(Boolean).filter((p) => p !== ".room" && p !== ".room/" && !p.startsWith(".room/")).filter((p) => !isRegenerableBuildPath(p)).sort();
+}
+async function pruneMissingWorkerWorktree(leadDir, w, manageBranch = true) {
+  if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
+    throw new Error(`worker ${w.dir} is not an owned Room worktree`);
+  }
+  try {
+    fs15.lstatSync(w.dir);
+    throw new Error(`worktree ${w.dir} still exists`);
+  } catch (error2) {
+    if (error2.code !== "ENOENT") throw error2;
+  }
+  await git(leadDir, ["worktree", "prune"]);
+  if (!manageBranch) return void 0;
+  const state = await workerRealState(leadDir, w, { branch: true });
+  if (state.branch === "absent") return `branch ${w.branch} was already absent`;
+  const count = state.branchAhead;
+  if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? "" : "s"} not in your HEAD`;
+  await git(leadDir, ["branch", "-D", w.branch]);
+  return `branch ${w.branch} deleted (it has no commits of its own beyond your HEAD)`;
+}
+async function uncommittedCount(dir) {
+  const out2 = await git(dir, ["status", "--porcelain", "--untracked-files=normal"]);
+  return out2.split("\n").filter((line) => line.trim() && !/^..\s+"?\.room\//.test(line)).length;
+}
+function resolveWorkerLinks(repoDir, requested) {
+  let input = requested;
+  if (input === void 0) {
+    try {
+      input = fs15.readFileSync(path12.join(repoDir, ".roomlinks"), "utf8").split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).filter(Boolean);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+      input = [];
+    }
+  }
+  if (!Array.isArray(input) || input.some((p) => typeof p !== "string")) throw new Error("link must be an array of repo-relative paths");
+  if (!input.length) return [];
+  const root = fs15.realpathSync(repoDir);
+  const paths = input.map((raw) => {
+    const p = raw.trim();
+    if (!validRepoPath(p, LINK_INPUT_PATH)) throw new Error(`invalid link path: ${raw}`);
+    const source = fs15.realpathSync(path12.join(root, p));
+    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`);
+    const stat4 = fs15.statSync(source);
+    if (!stat4.isFile() && !stat4.isDirectory()) throw new Error(`link source must be a file or directory: ${p}`);
+    return p;
+  });
+  for (const [i2, a] of paths.entries()) for (const b of paths.slice(i2 + 1)) {
+    if (a === b || b.startsWith(a + "/") || a.startsWith(b + "/")) throw new Error(`overlapping link paths: ${a}, ${b}`);
+  }
+  return paths;
+}
+function prepareWorkerLinks(repoDir, workerDir, requested) {
+  const input = resolveWorkerLinks(repoDir, requested);
+  if (!input.length) return [];
+  const root = fs15.realpathSync(repoDir), destRoot = fs15.realpathSync(workerDir);
+  const links = input.map((p) => {
+    const source = fs15.realpathSync(path12.join(root, p));
+    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`);
+    const stat4 = fs15.statSync(source);
+    const target = path12.join(destRoot, p);
+    for (let at = target; at !== destRoot; at = path12.dirname(at)) {
+      let entry;
+      try {
+        entry = fs15.lstatSync(at);
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+      if (entry && (at === target || entry.isSymbolicLink() || !entry.isDirectory())) throw new Error(`link destination already present or traverses a non-directory: ${p}`);
+    }
+    return { p, source, target, directory: stat4.isDirectory() };
+  });
+  const made = [];
+  try {
+    for (const link of links) {
+      fs15.mkdirSync(path12.dirname(link.target), { recursive: true });
+      fs15.symlinkSync(link.source, link.target, link.directory ? "dir" : "file");
+      made.push(link.target);
+    }
+  } catch (e) {
+    for (const target of made.reverse()) fs15.unlinkSync(target);
+    throw e;
+  }
+  return links.map((l) => l.p);
+}
+var carriedSubject = (leadName) => `${ROOM_CARRY_IDENTITY.subjectPrefix}${leadName}`;
+var internalGit = (dir, args3) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args3]);
+var carryRef = (tag) => `refs/room/carry/${tag}`;
+var carriedUntrackedRef = (tag) => `refs/room/carry-untracked/${tag}`;
+var pathExcluded = (rel, exclusions) => exclusions.some((p) => rel === p || rel.startsWith(p.replace(/\/$/, "") + "/"));
+function patchArgs(base, exclusions, staged = false) {
+  return ["diff", ...staged ? ["--cached"] : [], "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base, "--", ".", ...exclusions];
+}
+function retainUntrackedTree(dir, tag, paths) {
+  if (!paths.length) return void 0;
+  const scratch = fs15.mkdtempSync(path12.join(os3.tmpdir(), "room-carry-index-"));
+  const env = { ...process.env, GIT_INDEX_FILE: path12.join(scratch, "index") };
+  const run2 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
+  try {
+    for (const entry of paths) {
+      const stat4 = fs15.lstatSync(path12.join(dir, entry.path));
+      const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
+      run2(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
+    }
+    const tree = run2(["write-tree"], paths.length);
+    run2(["update-ref", carriedUntrackedRef(tag), tree]);
+    return tree;
+  } finally {
+    fs15.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+async function cleanupPreparedWorktree(repoDir, prepared) {
+  if (!prepared.created) return;
+  await internalGit(repoDir, ["worktree", "remove", "--force", prepared.dir]);
+  if (!prepared.branchCreated) return;
+  await internalGit(repoDir, ["branch", "-D", prepared.branch]);
+  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))]) {
+    const previous = prepared.previousCarryRefs?.[ref];
+    if (previous) await internalGit(repoDir, ["update-ref", ref, previous]);
+    else try {
+      await internalGit(repoDir, ["update-ref", "-d", ref]);
+    } catch {
+    }
+  }
+}
+async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, onStep, retry = 0, carry = true) {
+  const dir = path12.join(repoDir, WORKERS_DIR, tag);
+  const branch = `room/${tag}`;
+  const gitDir = (await git(repoDir, ["rev-parse", "--absolute-git-dir"])).trim();
+  if (["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].some((p) => fs15.existsSync(path12.join(gitDir, p)))) throw new Error("finish the merge or rebase before spawning workers");
+  if (fs15.existsSync(path12.join(dir, ".git"))) {
+    throw new Error(`worktree ${tag} is unmanaged; discard it by tag first`);
+  }
+  fs15.mkdirSync(path12.dirname(dir), { recursive: true });
+  await internalGit(repoDir, ["worktree", "prune"]);
+  let hasBranch = false;
+  try {
+    await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    hasBranch = true;
+  } catch {
+  }
+  if (hasBranch) throw new Error(`branch ${branch} is unmanaged; discard it by tag first`);
+  const previousCarryRefs = {};
+  if (!hasBranch) for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
+    try {
+      previousCarryRefs[ref] = (await git(repoDir, ["rev-parse", "--verify", ref])).trim();
+    } catch {
+    }
+  }
+  let base;
+  if (!hasBranch) {
+    try {
+      base = (await git(repoDir, ["rev-parse", "--verify", "HEAD"])).trim();
+    } catch {
+      throw new Error("make a first commit before spawning workers");
+    }
+  }
+  await onStep?.("plan", {
+    worktreeExisted: false,
+    branchExisted: false,
+    previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map((ref) => [ref, previousCarryRefs[ref] ?? null]))
+  });
+  await onStep?.("worktree", { created: true, branchCreated: true });
+  await internalGit(repoDir, ["worktree", "add", "-q", "-b", branch, dir, base]);
+  if (!base) return { dir, branch, created: true, branchCreated: false };
+  if (!carry) {
+    const result2 = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base };
+    await onStep?.("prepared", { created: true, branchCreated: true });
+    return result2;
+  }
+  try {
+    const exclusions = [...linkExclusions ?? []];
+    if (linkExclusions === void 0) {
+      try {
+        exclusions.push(...fs15.readFileSync(path12.join(repoDir, ".roomlinks"), "utf8").split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).filter(Boolean));
+      } catch (e) {
+        if (e.code !== "ENOENT") throw e;
+      }
+    }
+    const excluded = [".room", ...exclusions].map((p) => `:(exclude,literal)${p.replace(/\/$/, "")}`);
+    const patch = await internalGit(repoDir, patchArgs(base, excluded));
+    if (patch) {
+      const scratch = fs15.mkdtempSync(path12.join(os3.tmpdir(), "room-carry-patch-"));
+      try {
+        const file = path12.join(scratch, "carry.patch");
+        fs15.writeFileSync(file, patch, { mode: 384 });
+        boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "apply", "--index", "--binary", file]);
+      } finally {
+        fs15.rmSync(scratch, { recursive: true, force: true });
+      }
+    }
+    const untracked = (await git(repoDir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).room"])).split("\0").filter(Boolean);
+    const carriedUntracked = [];
+    const skippedCarry = [];
+    let totalBytes = 0;
+    const carryRoot = fs15.realpathSync(repoDir);
+    for (const rel of untracked) {
+      if (pathExcluded(rel, exclusions)) {
+        skippedCarry.push({ path: rel, reason: "linked input" });
+        continue;
+      }
+      const source = path12.join(repoDir, rel), target = path12.join(dir, rel);
+      const stat4 = fs15.lstatSync(source);
+      if (stat4.isDirectory()) {
+        skippedCarry.push({ path: rel, reason: "nested repository or directory" });
+        continue;
+      }
+      if (!stat4.isFile() && !stat4.isSymbolicLink()) {
+        skippedCarry.push({ path: rel, reason: "special file" });
+        continue;
+      }
+      let containment;
+      try {
+        containment = containedRepoPath(carryRoot, path12.join(carryRoot, rel), { leaf: "read-contained-link" });
+      } catch {
+        skippedCarry.push({ path: rel, reason: "unresolvable path" });
+        continue;
+      }
+      if (!containment.ok) {
+        skippedCarry.push({ path: rel, reason: "path leaves repository" });
+        continue;
+      }
+      if (stat4.isSymbolicLink()) {
+        const link = fs15.readlinkSync(source);
+        if (path12.isAbsolute(link)) {
+          skippedCarry.push({ path: rel, reason: "absolute link" });
+          continue;
+        }
+      }
+      if (stat4.isFile() && (stat4.size > 5 * 1024 * 1024 || totalBytes + stat4.size > 50 * 1024 * 1024)) {
+        skippedCarry.push({ path: rel, reason: "size budget" });
+        continue;
+      }
+      fs15.mkdirSync(path12.dirname(target), { recursive: true });
+      if (stat4.isSymbolicLink()) fs15.symlinkSync(fs15.readlinkSync(source), target);
+      else {
+        await fs15.promises.copyFile(source, target);
+        fs15.chmodSync(target, stat4.mode);
+        totalBytes += stat4.size;
+      }
+      const sha = carriedContentHash(dir, rel, true);
+      carriedUntracked.push({ path: rel, sha, mode: stat4.mode & 511 });
+    }
+    const snapshotStable = async () => {
+      const latestPatch = await internalGit(repoDir, patchArgs(base, excluded));
+      const latestUntracked = (await git(repoDir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).room"])).split("\0").filter(Boolean);
+      const copiedStable = carriedUntracked.every(({ path: rel, sha }) => {
+        try {
+          return carriedContentHash(repoDir, rel) === sha;
+        } catch (error2) {
+          if (error2 instanceof Error && error2.message.includes("timed out")) throw error2;
+          return false;
+        }
+      });
+      return (await git(repoDir, ["rev-parse", "HEAD"])).trim() === base && latestPatch === patch && latestUntracked.join("\0") === untracked.join("\0") && copiedStable;
+    };
+    if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
+    const staged = (await internalGit(dir, ["diff", "--cached", "--name-only", "-z"])).split("\0").filter(Boolean);
+    if (staged.length) {
+      await onStep?.("carry-commit", {});
+      await git(dir, ["-c", "core.hooksPath=/dev/null", "-c", `user.name=${ROOM_CARRY_IDENTITY.authorName}`, "-c", `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", carriedSubject(leadName)]);
+    }
+    const commit = (await git(dir, ["rev-parse", "HEAD"])).trim();
+    const paths = [.../* @__PURE__ */ new Set([...staged, ...carriedUntracked.map((x) => x.path)])].sort();
+    if (paths.length) await onStep?.("carry-refs", {});
+    if (paths.length) await internalGit(repoDir, ["update-ref", carryRef(tag), commit]);
+    retainUntrackedTree(repoDir, tag, carriedUntracked);
+    if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
+    const result2 = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : void 0, carried: paths.length ? { count: paths.length, commit, paths } : void 0, carriedUntracked, skippedCarry };
+    await onStep?.("prepared", { created: true, branchCreated: true });
+    return result2;
+  } catch (e) {
+    if (e.message === "lead changed during carry; retrying snapshot") {
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
+      if (retry >= 2) throw new Error("lead changed repeatedly during carry; try spawning again when HEAD is stable");
+      return prepareWorktree(repoDir, tag, leadName, linkExclusions, onStep, retry + 1, carry);
+    }
+    try {
+      await internalGit(dir, ["reset", "--hard", base]);
+      await internalGit(dir, ["clean", "-fdx"]);
+      for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
+        if (previousCarryRefs[ref]) await internalGit(repoDir, ["update-ref", ref, previousCarryRefs[ref]]);
+        else try {
+          await internalGit(repoDir, ["update-ref", "-d", ref]);
+        } catch {
+        }
+      }
+    } catch {
+      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
+      await internalGit(repoDir, ["worktree", "add", "-q", "-b", branch, dir, base]);
+    }
+    return { dir, branch, created: true, branchCreated: true, previousCarryRefs, base, carryFailed: true, carryError: e.message };
+  }
+}
+async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = []) {
+  if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
+  if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== "cleanup") return false;
+  const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && isInsideRoot(fs15.realpathSync(w.dir), dir));
+  if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
+  const head = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
+  const refs = /* @__PURE__ */ new Map();
+  for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
+    try {
+      refs.set(ref, (await git(leadDir, ["rev-parse", "--verify", ref])).trim());
+    } catch {
+    }
+  }
+  terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions));
+  try {
+    await internalGit(leadDir, ["worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
+    await internalGit(leadDir, ["branch", "-D", w.branch]);
+    for (const ref of refs.keys()) await internalGit(leadDir, ["update-ref", "-d", ref]);
+  } catch (error2) {
+    const recovery = w.id ? path12.join(await realGitCommonDir(leadDir), "room", "registry", "patches", `${w.id}.patch`) : void 0;
+    const recoveryNote = recovery && fs15.existsSync(recovery) ? `actual worker edits are in ${recovery}` : `collected edits are in ${leadDir}`;
+    try {
+      let branchExists = true;
+      try {
+        await git(leadDir, ["rev-parse", "--verify", `refs/heads/${w.branch}`]);
+      } catch {
+        branchExists = false;
+      }
+      if (!branchExists) await internalGit(leadDir, ["branch", w.branch, head]);
+      if (!fs15.existsSync(path12.join(w.dir, ".git"))) await internalGit(leadDir, ["worktree", "add", "-q", w.dir, w.branch]);
+      for (const [ref, sha] of refs) await internalGit(leadDir, ["update-ref", ref, sha]);
+      for (const entry of w.carriedUntracked ?? []) {
+        if (!validRepoPath(entry.path, RECORDED_PATH)) continue;
+        const file = path12.join(w.dir, entry.path);
+        if (fs15.existsSync(file)) continue;
+        fs15.mkdirSync(path12.dirname(file), { recursive: true });
+        const mode2 = (await git(leadDir, ["ls-tree", carriedUntrackedRef(w.tag), "--", entry.path])).split(" ")[0];
+        if (mode2 === "120000") fs15.symlinkSync(boundedGitSync(leadDir, ["cat-file", "blob", entry.sha]).toString(), file);
+        else {
+          const bytes = boundedGitSync(leadDir, ["cat-file", "--filters", "--path=" + entry.path, entry.sha]);
+          fs15.writeFileSync(file, bytes, { mode: entry.mode ?? 420 });
+          fs15.chmodSync(file, entry.mode ?? 420);
+        }
+      }
+    } catch (restore) {
+      throw new Error(`cleanup failed: ${error2.message}; could not restore ${w.dir}: ${restore.message}; ${recoveryNote}`);
+    }
+    throw new Error(`cleanup failed: ${error2.message}; reconstructed base at ${w.dir}; ${recoveryNote}`);
+  }
+  cleanupWorkerLogs(leadDir, w);
+  return true;
+}
+function cleanupWorkerLogs(leadDir, w) {
+  const parent = path12.basename(path12.dirname(w.dir)) === "workers" && path12.basename(path12.dirname(path12.dirname(w.dir))) === ".room" ? path12.resolve(w.dir, "../../..") : leadDir;
+  for (const suffix of [".log", ".mcp.log"]) {
+    try {
+      fs15.rmSync(path12.join(parent, WORKERS_DIR, w.tag + suffix), { force: true });
+    } catch {
+    }
+  }
+  for (const dir of [path12.join(parent, WORKERS_DIR), path12.join(parent, ".room")]) {
+    try {
+      fs15.rmdirSync(dir);
+    } catch {
+    }
+  }
+}
+async function saveDiscardPatch(leadDir, w, publish2) {
+  const scratch = fs15.mkdtempSync(path12.join(os3.tmpdir(), "room-discard-"));
+  try {
+    const run2 = (args3, wholeTreePaths) => boundedGit(w.dir, args3, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path12.join(scratch, "index") });
+    const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
+    await run2(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
+    const unchanged = carriedUnchangedPaths(workerBaseline(w));
+    const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
+    await run2(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
+    const patch = await run2(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
+    if (!patch.length) return void 0;
+    const verifyDir = path12.join(scratch, "verify");
+    const verifyPatch = path12.join(scratch, "verify.patch");
+    fs15.writeFileSync(verifyPatch, patch, { mode: 384 });
+    await internalGit(leadDir, ["worktree", "add", "-q", "--detach", verifyDir, base]);
+    try {
+      boundedGitSync(verifyDir, ["apply", "--binary", verifyPatch]);
+    } finally {
+      await internalGit(leadDir, ["worktree", "remove", "--force", verifyDir]);
+    }
+    return publish2(patch);
+  } finally {
+    fs15.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+// packages/room-mcp/src/worker-registry.ts
+var readJson = (file) => {
+  try {
+    return JSON.parse(fs16.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return void 0;
+    throw e;
+  }
+};
+var files = (dir, suffix) => {
+  try {
+    return fs16.readdirSync(dir).filter((n) => n.endsWith(suffix)).map((n) => path13.join(dir, n));
+  } catch (e) {
+    if (e.code === "ENOENT") return [];
+    throw e;
+  }
+};
+var crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+function base32(value2, length2) {
+  let out2 = "";
+  for (let n = 0; n < length2; n++) {
+    out2 = crockford[Number(value2 & 31n)] + out2;
+    value2 >>= 5n;
+  }
+  return out2;
+}
+var id2 = () => `w_${base32(BigInt(Date.now()), 10)}${base32(BigInt(`0x${randomBytes3(10).toString("hex")}`), 16)}`;
+var synthetic = () => ({ pid: process.pid, startTime: "", executable: "", sessionId: `mcp:${process.pid}`, nonce: randomBytes3(16).toString("hex") });
+var registries = /* @__PURE__ */ new Map();
+var MAX_PROCESS_REGISTRIES = 24;
+function registrySnapshotForDir(dir) {
+  return WorkerRegistry.snapshot(commonGitDirFromDotGit(dir));
+}
+async function registryForDir(dir, sessionId) {
+  const common = await gitCommonDir(dir);
+  let pending = registries.get(common);
+  if (!pending) {
+    if (registries.size >= MAX_PROCESS_REGISTRIES) {
+      const oldest = registries.keys().next().value;
+      if (oldest) {
+        const previous = registries.get(oldest);
+        registries.delete(oldest);
+        void previous?.then((registry2) => registry2.close()).catch(() => {
+        });
+      }
+    }
+    const processInfo = probeProcess(process.pid);
+    const identity2 = {
+      pid: process.pid,
+      startTime: processInfo?.startTime ?? "",
+      executable: processInfo?.executable ?? "",
+      sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? "unknown"}`,
+      nonce: randomBytes3(16).toString("hex")
+    };
+    pending = WorkerRegistry.open(common, { identity: identity2, watch: !process.env.VITEST });
+    registries.set(common, pending);
+    void pending.catch(() => {
+      if (registries.get(common) === pending) registries.delete(common);
+    });
+  } else {
+    registries.delete(common);
+    registries.set(common, pending);
+  }
+  return pending;
+}
+async function admitWorkerEnvironment(dir, env = process.env) {
+  const id3 = env.ROOM_WORKER_ID;
+  if (!id3) return;
+  const run2 = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE;
+  if (!Number.isSafeInteger(run2) || run2 < 1 || !nonce) throw new Error("this worker run was collected, discarded or superseded");
+  const registry2 = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID);
+  if (env.ROOM_REGISTRY && path13.resolve(env.ROOM_REGISTRY) !== registry2.root) throw new Error("this worker run was collected, discarded or superseded");
+  const processInfo = probeProcess(process.pid);
+  const parentInfo = probeProcess(process.ppid);
+  const chain = [
+    { pid: process.pid, startTime: processInfo?.startTime ?? "", executable: processInfo?.executable ?? "" },
+    ...parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? "", executable: parentInfo.executable ?? "" }] : []
+  ];
+  try {
+    await registry2.admit({
+      id: id3,
+      run: run2,
+      nonce,
+      dir,
+      chain,
+      hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID
+    });
+  } catch {
+    throw new Error("this worker run was collected, discarded or superseded");
+  }
+}
+function localWorkerBaseline(dir, participant) {
+  let record2;
+  try {
+    record2 = registrySnapshotForDir(dir).list().find((r) => r.name === participant && !["retired", "abandoned"].includes(r.phase));
+  } catch {
+    return void 0;
+  }
+  return record2 && {
+    name: record2.name,
+    dir: record2.dir,
+    base: record2.base,
+    carriedBase: record2.carriedBase,
+    carriedUntracked: record2.carriedUntracked,
+    link: record2.link,
+    lead: record2.lead.participant
+  };
+}
+function localWorkers(dir, keep = () => true) {
+  const registry2 = registrySnapshotForDir(dir);
+  return registry2.list().flatMap((record2) => {
+    if (["retiring", "retired", "abandoned"].includes(record2.phase) || !keep(record2)) return [];
+    const status = registry2.status(record2.id);
+    return status ? [realStateInput(record2, status)] : [];
+  });
+}
+function carriedFrom(dir, participant) {
+  const source = localWorkerBaseline(dir, participant);
+  const baseline = workerBaseline(source);
+  return source && baseline ? { baseline, lead: source.lead } : void 0;
+}
+function workerCarried(dir, env = process.env) {
+  const id3 = env.ROOM_WORKER_ID;
+  if (!id3 || !safeId(id3)) return void 0;
+  try {
+    return registrySnapshotForDir(dir).read(id3);
+  } catch {
+    return void 0;
+  }
+}
+var missing = (file) => !fs16.existsSync(file);
+var safeId = (value2) => /^w_[A-Za-z0-9_-]{1,64}$/.test(value2);
+var safeTag = (value2) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value2) && value2 !== "..";
+var GUARD_WAIT_MS = 3e4;
+var GUARD_POLL_MS = 25;
+var guardBusy = (error2) => error2 instanceof Error && error2.message.startsWith("lease guard busy: ");
+var pauseForGuard = async (deadline, error2) => {
+  if (!guardBusy(error2)) throw error2;
+  const remaining = deadline - performance2.now();
+  if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS} ms: ${error2.message}`);
+  await new Promise((resolve5) => setTimeout(resolve5, Math.min(GUARD_POLL_MS, remaining)));
+};
+async function guarded(file, fn, deadline = performance2.now() + GUARD_WAIT_MS) {
+  for (; ; ) {
+    let entered = false;
+    try {
+      return withGuard(file, (() => {
+        entered = true;
+        return fn();
+      }));
+    } catch (error2) {
+      if (entered) throw error2;
+      await pauseForGuard(deadline, error2);
+    }
+  }
+}
+async function leaseRetry(fn, deadline = performance2.now() + GUARD_WAIT_MS) {
+  for (; ; ) {
+    try {
+      return fn();
+    } catch (error2) {
+      await pauseForGuard(deadline, error2);
+    }
+  }
+}
+var object3 = (value2) => !!value2 && typeof value2 === "object" && !Array.isArray(value2);
+var tokenShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string" && typeof value2.sessionId === "string" && typeof value2.nonce === "string";
+var processShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string";
+var runShape = (value2) => {
+  if (!object3(value2) || !Number.isSafeInteger(value2.n) || value2.n < 1 || !["fresh", "resume"].includes(value2.mode) || typeof value2.intentAt !== "number" || typeof value2.nonce !== "string" || !Number.isSafeInteger(value2.busFrontier) || !Array.isArray(value2.promptMsgIds) || !tokenShape(value2.launcher) || typeof value2.logStart !== "number") return false;
+  if (value2.launch === void 0) return true;
+  if (!object3(value2.launch)) return false;
+  switch (value2.launch.outcome) {
+    case "launched":
+      return Number.isSafeInteger(value2.launch.pid) && (value2.launch.process === void 0 || processShape(value2.launch.process));
+    case "never":
+      return typeof value2.launch.error === "string";
+    case "ambiguous":
+      return typeof value2.launch.at === "number";
+    case "imported":
+      return true;
+    default:
+      return false;
+  }
+};
+var recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && object3(value2.prep) && typeof value2.prep.step === "string" && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
+var reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed));
+var exitShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
+function commitExists(commonDir, oid) {
+  if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
+  try {
+    execFileSync6("git", ["--git-dir", commonDir, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function legacySession(dir, oldId, host) {
+  if (!oldId) return void 0;
+  try {
+    const gitDir = execFileSync6("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    const local = readJson(path13.join(gitDir, "room-session.json"));
+    return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var LegacySnapshotUnavailable = class extends Error {
+};
+function legacyDisplay(commonDir) {
+  const found = /* @__PURE__ */ new Map();
+  const canonical = (dir) => {
+    try {
+      return fs16.realpathSync(dir);
+    } catch {
+      return path13.resolve(dir);
+    }
+  };
+  for (const file of files(path13.join(commonDir, "room-local"), ".ydoc")) {
+    const doc = new Doc2();
+    try {
+      if (fs16.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`);
+      applyUpdate(doc, fs16.readFileSync(file));
+      const room = new RoomDoc(doc);
+      for (const worker of doc.getMap("workers").values()) {
+        if (!worker.dir || !worker.id) continue;
+        found.set(canonical(worker.dir), {
+          oldId: worker.id,
+          host: worker.host,
+          model: worker.model,
+          task: worker.task,
+          said: worker.summary
+        });
+      }
+      for (const retired of room.retiredWorkers()) {
+        if (!retired.keptWorktree) continue;
+        const prior = found.get(canonical(retired.keptWorktree));
+        found.set(canonical(retired.keptWorktree), {
+          ...prior,
+          host: retired.host,
+          model: retired.model,
+          task: retired.task,
+          said: retired.summary,
+          keptWorktree: retired.keptWorktree
+        });
+      }
+    } catch (error2) {
+      process.stderr.write(`[room] cannot import legacy worktrees while ${file} is unreadable: ${error2}
+`);
+      throw new LegacySnapshotUnavailable(`unreadable legacy snapshot: ${file}`);
+    } finally {
+      doc.destroy();
+    }
+  }
+  return found;
+}
+function discoverLegacyWorktrees(commonDir) {
+  let output;
+  try {
+    output = execFileSync6("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+  } catch {
+    return [];
+  }
+  const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map((match) => {
+    try {
+      return fs16.realpathSync(match[1]);
+    } catch {
+      return path13.resolve(match[1]);
+    }
+  }));
+  const display = legacyDisplay(commonDir);
+  const out2 = [];
+  for (const block of output.split(/\n\s*\n/)) {
+    const dir = /^worktree (.+)$/m.exec(block)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    if (!dir || !branch?.startsWith("room/")) continue;
+    const tag = branch.slice(5);
+    if (path13.basename(dir) !== tag || !dir.includes(`${path13.sep}.room${path13.sep}workers${path13.sep}`)) continue;
+    let canonical;
+    try {
+      canonical = fs16.realpathSync(dir);
+    } catch {
+      continue;
+    }
+    const ownerCheckout = path13.dirname(path13.dirname(path13.dirname(canonical)));
+    if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue;
+    const prior = display.get(canonical);
+    out2.push({
+      key: `worktree:${canonical}`,
+      tag,
+      dir: canonical,
+      branch,
+      host: prior?.host ?? "codex",
+      ...prior ?? {}
+    });
+  }
+  return out2;
+}
+var WorkerRegistry = class _WorkerRegistry {
+  constructor(commonDir, options) {
+    this.commonDir = commonDir;
+    this.options = options;
+    this.root = path13.join(commonDir, "room", "registry");
+    this.alive = options.liveness ?? liveness;
+    this.now = options.now ?? Date.now;
+    this.identity = options.identity ?? synthetic();
+  }
+  commonDir;
+  options;
+  root;
+  alive;
+  now;
+  identity;
+  listeners = /* @__PURE__ */ new Set();
+  observed = /* @__PURE__ */ new Map();
+  watchers = [];
+  heldOperations = /* @__PURE__ */ new Map();
+  timer;
+  watchQueued = false;
+  static async open(commonDir, options = {}) {
+    const registry2 = new _WorkerRegistry(commonDir, options);
+    if (options.migrate !== false) await registry2.migrate();
+    await registry2.reconcile();
+    if (options.watch !== false) registry2.watch();
+    return registry2;
+  }
+  static snapshot(commonDir) {
+    return new _WorkerRegistry(commonDir, { migrate: false, watch: false });
+  }
+  close() {
+    clearInterval(this.timer);
+    this.timer = void 0;
+    for (const watcher of this.watchers.splice(0)) watcher.close();
+  }
+  watch() {
+    for (const dir of [this.root, path13.join(this.root, "runs")]) {
+      fs16.mkdirSync(dir, { recursive: true, mode: 448 });
+      try {
+        const watcher = fs16.watch(dir, { persistent: false }, () => {
+          if (this.watchQueued) return;
+          this.watchQueued = true;
+          queueMicrotask(() => {
+            this.watchQueued = false;
+            void this.reconcile().catch((e) => {
+              process.stderr.write(`[room] registry reconcile: ${e}
+`);
+            });
+          });
+        });
+        watcher.on("error", (e) => {
+          watcher.close();
+          process.stderr.write(`[room] registry watch: ${e}; polling remains active
+`);
+        });
+        watcher.unref();
+        this.watchers.push(watcher);
+      } catch (e) {
+        process.stderr.write(`[room] registry watch: ${e}; polling remains active
+`);
+      }
+    }
+    this.timer = setInterval(() => {
+      void this.reconcile().catch((e) => {
+        process.stderr.write(`[room] registry reconcile: ${e}
+`);
+      });
+    }, 3e4);
+    this.timer.unref();
+  }
+  workerFile(id3) {
+    if (!safeId(id3)) throw new Error("invalid worker id");
+    return path13.join(this.root, "workers", `${id3}.json`);
+  }
+  opFile(id3) {
+    if (!safeId(id3)) throw new Error("invalid worker id");
+    return path13.join(this.root, "workers", `${id3}.op`);
+  }
+  tagFile(tag) {
+    if (!safeTag(tag)) throw new Error("invalid worker tag");
+    return path13.join(this.root, "tags", `${tag}.json`);
+  }
+  adoptionFile(id3) {
+    if (!safeId(id3)) throw new Error("invalid worker id");
+    return path13.join(this.root, "adoptions", `${id3}.json`);
+  }
+  runDir(id3, n) {
+    if (!safeId(id3) || !Number.isSafeInteger(n) || n < 1) throw new Error("invalid worker run");
+    return path13.join(this.root, "runs", id3);
+  }
+  reportFile(id3, n) {
+    return path13.join(this.runDir(id3, n), `${n}.report.json`);
+  }
+  exitFile(id3, n) {
+    return path13.join(this.runDir(id3, n), `${n}.exit.json`);
+  }
+  writerFile(id3, n) {
+    return path13.join(this.runDir(id3, n), `${n}.writer`);
+  }
+  get instance() {
+    return this.identity;
+  }
+  newId() {
+    return id2();
+  }
+  quarantine(file, why) {
+    const dir = path13.join(this.root, "quarantine");
+    fs16.mkdirSync(dir, { recursive: true, mode: 448 });
+    const dest = path13.join(dir, `${path13.basename(file)}.bad-${Date.now()}-${randomBytes3(4).toString("hex")}`);
+    try {
+      fs16.renameSync(file, dest);
+      process.stderr.write(`[room] quarantined ${file}: ${why}
+`);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  hasQuarantinedRecord(id3) {
+    try {
+      return fs16.readdirSync(path13.join(this.root, "quarantine")).some((name2) => name2.startsWith(`${id3}.json.bad-`));
+    } catch (e) {
+      if (e.code === "ENOENT") return false;
+      throw e;
+    }
+  }
+  readFact(file, valid) {
+    try {
+      const value2 = readJson(file);
+      if (value2 === void 0) return void 0;
+      if (valid(value2)) return value2;
+      this.quarantine(file, "invalid registry fact");
+    } catch (e) {
+      this.quarantine(file, e);
+    }
+    return void 0;
+  }
+  /** `id` names the one worker that changed; none means any may have (another instance's writes). */
+  changed(id3) {
+    for (const listener of this.listeners) listener(id3);
+  }
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  /** Callable by the wave-4 presence loop; its durable journal makes crash replay idempotent. */
+  async reconcileIdleClaims(action) {
+    const { doc, participant } = action;
+    const ownsNow = () => {
+      const holder = participantRecord(doc, participant)?.holder;
+      return holder ? holder.sessionId === action.sessionId : action.ownsParticipant?.() === true;
+    };
+    if (!ownsNow()) return false;
+    const claims = [...doc.claims.values()].filter((c) => c.by === participant && c.byKind !== "human");
+    const hasScope = doc.scopes.has(participant);
+    const key2 = createHash7("sha256").update(`${action.roomKey}\0${action.sessionId}\0${action.idleEpoch}`).digest("hex");
+    const file = path13.join(this.commonDir, "room", "sessions", action.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims", `${key2}.json`);
+    if (!fs16.existsSync(file) && !idleClaimsDue({
+      host: action.host,
+      lastActivityMs: action.lastActivityMs,
+      nowMs: action.monotonicMs(),
+      heldClaims: claims.length,
+      hasScope
+    })) return false;
+    return guarded(file, () => {
+      if (!ownsNow()) return false;
+      let journal = readJson(file);
+      if (journal?.state === "done") return false;
+      if (!journal) {
+        journal = {
+          state: "pending",
+          claimIds: claims.map((c) => c.id),
+          claimNames: claims.map((c) => c.path.endsWith("/") ? c.path : `${c.path}:${c.from}-${c.to}`),
+          hadScope: hasScope
+        };
+        writeAtomic(file, journal);
+      }
+      const pending = journal;
+      doc.doc.transact(() => {
+        for (const claimId of pending.claimIds) {
+          const current = doc.claims.get(claimId);
+          if (current?.by === participant && current.byKind !== "human") doc.removeClaim(claimId);
+        }
+        if (pending.hadScope) doc.clearScope(participant);
+      });
+      const noticeId3 = `idle-claims:${action.sessionId}:${action.idleEpoch}`;
+      const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(", ")}` : "released no claims";
+      action.postNotice(noticeId3, `${participant} ${names}${pending.hadScope ? " and cleared its scope" : ""} after 8 h idle`);
+      writeAtomic(file, { ...pending, state: "done" });
+      return true;
+    });
+  }
+  read(id3) {
+    const file = this.workerFile(id3);
+    try {
+      const record2 = readJson(file);
+      if (record2 && !recordShape(record2, id3)) {
+        this.quarantine(file, "invalid worker record");
+        return void 0;
+      }
+      return record2;
+    } catch (e) {
+      this.quarantine(file, e);
+      return void 0;
+    }
+  }
+  list() {
+    return files(path13.join(this.root, "workers"), ".json").flatMap((file) => {
+      const id3 = path13.basename(file, ".json");
+      if (!safeId(id3)) {
+        this.quarantine(file, "invalid worker filename");
+        return [];
+      }
+      const record2 = this.read(id3);
+      return record2 ? [record2] : [];
+    });
+  }
+  /** The reservation, rather than record ordering, selects the current incarnation of a tag. */
+  reserved(tag) {
+    if (!safeTag(tag)) return void 0;
+    const reservation = readJson(this.tagFile(tag));
+    const record2 = reservation?.id ? this.read(reservation.id) : void 0;
+    return record2?.tag === tag ? record2 : void 0;
+  }
+  reservedByTagOrName(tagOrName) {
+    const direct = this.reserved(tagOrName);
+    if (direct) return direct;
+    return this.list().find((record2) => record2.name === tagOrName && this.reserved(record2.tag)?.id === record2.id);
+  }
+  status(id3) {
+    const record2 = this.read(id3);
+    if (!record2) return void 0;
+    return statusOf(record2, record2.runs, this.reports(id3), this.exits(id3), this.alive, this.now());
+  }
+  /** No room view or remote presence can turn into a local worktree capability. */
+  async trusted(lead, tagOrName) {
+    let candidate = this.reservedByTagOrName(tagOrName);
+    if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead);
+    if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room || ["retiring", "retired", "abandoned"].includes(candidate.phase)) return void 0;
+    const reservation = readJson(this.tagFile(candidate.tag));
+    if (reservation?.id !== candidate.id) return void 0;
+    const status = this.status(candidate.id);
+    if (!status) return void 0;
+    const workers = this.list().flatMap((record2) => {
+      const state = this.status(record2.id);
+      if (!state) return [];
+      const worker = realStateInput(record2, state);
+      try {
+        return [{ ...worker, dir: fs16.realpathSync(worker.dir) }];
+      } catch {
+        return [worker];
+      }
+    });
+    let leadDir;
+    try {
+      leadDir = fs16.realpathSync(lead.dir);
+    } catch {
+      return void 0;
+    }
+    let workerDir;
+    try {
+      workerDir = fs16.realpathSync(candidate.dir);
+    } catch {
+      return void 0;
+    }
+    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(candidate, status), dir: workerDir }, lead.participant, workers)) return void 0;
+    return { record: candidate, status };
+  }
+  async adoptLegacy(record2, lead) {
+    if (!lead.participant || !lead.room || record2.phase !== "active") return void 0;
+    let leadDir;
+    try {
+      leadDir = fs16.realpathSync(lead.dir);
+    } catch {
+      return void 0;
+    }
+    const status = this.status(record2.id);
+    if (!status) return void 0;
+    const worker = { ...realStateInput(record2, status), name: `${lead.participant}+${record2.tag}`, lead: lead.participant };
+    if (!await isOwnedWorkerWorktree(leadDir, worker, lead.participant)) return void 0;
+    const file = this.adoptionFile(record2.id);
+    createExclusive(file, { participant: lead.participant, room: lead.room, name: worker.name });
+    let adopted;
+    try {
+      adopted = readJson(file);
+    } catch {
+      return void 0;
+    }
+    if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker.name) return void 0;
+    return guarded(this.workerFile(record2.id), () => {
+      const current = this.read(record2.id);
+      if (!current) return void 0;
+      if (!current.legacy?.unowned) return current;
+      const next = {
+        ...current,
+        name: worker.name,
+        room: lead.room,
+        lead: { ...current.lead, participant: lead.participant, room: lead.room },
+        legacy: { ...current.legacy, unowned: false },
+        seq: current.seq + 1
+      };
+      writeAtomic(this.workerFile(record2.id), next);
+      this.changed(record2.id);
+      return next;
+    });
+  }
+  occupancy() {
+    return this.list().filter((r) => ["starting", "running", "unknown", "ambiguous"].includes(this.status(r.id)?.status ?? "")).length;
+  }
+  reports(id3) {
+    if (!safeId(id3)) throw new Error("invalid worker id");
+    return files(path13.join(this.root, "runs", id3), ".report.json").flatMap((f) => {
+      const report = this.readFact(f, reportShape);
+      if (report && path13.basename(f) !== `${report.run}.report.json`) {
+        this.quarantine(f, "run report filename mismatch");
+        return [];
+      }
+      return report ? [report] : [];
+    });
+  }
+  exits(id3) {
+    if (!safeId(id3)) throw new Error("invalid worker id");
+    return files(path13.join(this.root, "runs", id3), ".exit.json").flatMap((f) => {
+      const observation = this.readFact(f, exitShape);
+      if (observation && path13.basename(f) !== `${observation.run}.exit.json`) {
+        this.quarantine(f, "exit filename mismatch");
+        return [];
+      }
+      return observation ? [observation] : [];
+    });
+  }
+  /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
+  async writeIntent(record2, capacity = Number.POSITIVE_INFINITY) {
+    if (!safeId(record2.id) || !recordShape(record2, record2.id) || record2.runs[0].launch) throw new Error("invalid worker intent");
+    const deadline = performance2.now() + GUARD_WAIT_MS;
+    for (; ; ) {
+      try {
+        await guarded(path13.join(this.root, "capacity"), () => {
+          if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
+          const tagFile = this.tagFile(record2.tag);
+          if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) {
+            const reservation = readJson(tagFile);
+            if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
+              const bound = this.read(reservation.id);
+              const reusable = bound && (bound.phase === "abandoned" || bound.phase === "retired" && !bound.keptWorktree && !!bound.cleanup && Object.values(bound.cleanup).every((state) => state === "done"));
+              if (reusable) compareAndRelease(tagFile, reservation.holder);
+              else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, (current) => current.id === reservation.id);
+            }
+            if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record2.tag}`);
+          }
+          if (!createExclusive(this.opFile(record2.id), { op: "spawn", holder: record2.runs[0].launcher, at: this.now() })) throw new Error("worker operation lease busy");
+          if (!createExclusive(this.workerFile(record2.id), record2)) throw new Error(`worker already exists: ${record2.id}`);
+        }, deadline);
+        break;
+      } catch (error2) {
+        await pauseForGuard(deadline, error2);
+      }
+    }
+    this.heldOperations.set(record2.id, "spawn");
+    this.changed(record2.id);
+  }
+  /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
+  async update(id3, edit) {
+    const priorOp = readJson(this.opFile(id3));
+    if (priorOp && priorOp.holder.nonce !== this.identity.nonce && this.alive(priorOp.holder) === "dead") await leaseRetry(() => recover(this.opFile(id3), () => true));
+    const value2 = await guarded(this.opFile(id3), () => {
+      const op = readJson(this.opFile(id3));
+      if (op && op.holder.nonce !== this.identity.nonce) throw new Error(`worker operation lease held by another instance: ${id3}`);
+      const old = this.read(id3);
+      if (!old) throw new Error(`unknown worker ${id3}`);
+      const next = edit(old);
+      if (next.id !== old.id || next.seq !== old.seq + 1 || !recordShape(next, id3)) throw new Error("worker update must retain id, advance seq and remain valid");
+      writeAtomic(this.workerFile(id3), next);
+      return next;
+    });
+    this.changed(id3);
+    return value2;
+  }
+  async finishOperation(id3) {
+    const released = await leaseRetry(() => compareAndRelease(this.opFile(id3), this.identity));
+    if (released) this.heldOperations.delete(id3);
+    return released;
+  }
+  async beginOperation(id3, op) {
+    const file = this.opFile(id3);
+    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) {
+      this.heldOperations.set(id3, op);
+      return true;
+    }
+    const existing = this.readFact(file, (value2) => object3(value2) && typeof value2.op === "string" && tokenShape(value2.holder) && typeof value2.at === "number");
+    if (existing?.holder.nonce === this.identity.nonce) {
+      if (existing.op === "discard" && op === "stop" && this.heldOperations.get(id3) === "discard") return false;
+      throw new Error(`worker operation lease held by another call: ${id3}`);
+    }
+    if (existing && this.alive(existing.holder) === "dead") {
+      await leaseRetry(() => recover(file, () => true));
+      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) {
+        this.heldOperations.set(id3, op);
+        return true;
+      }
+    }
+    throw new Error(`worker operation lease held by another instance: ${id3}`);
+  }
+  async withCollectLease(worktree, work) {
+    const canonical = fs16.realpathSync(worktree);
+    const key2 = createHash7("sha256").update(canonical).digest("hex");
+    const file = path13.join(this.root, "collect", `${key2}.json`);
+    const deadline = performance2.now() + GUARD_WAIT_MS;
+    for (; ; ) {
+      if (createExclusive(file, { holder: this.identity, worktree: canonical, at: this.now() })) break;
+      if (await leaseRetry(() => recover(file, () => true), deadline)) continue;
+      if (performance2.now() >= deadline) throw new Error("another collection is in progress");
+      await new Promise((resolve5) => setTimeout(resolve5, GUARD_POLL_MS));
+    }
+    try {
+      return await work();
+    } finally {
+      await leaseRetry(() => compareAndRelease(file, this.identity));
+    }
+  }
+  /** Append the next run while the same capacity guard used by fresh spawn is held. */
+  async resume(id3, capacity, input) {
+    await this.beginOperation(id3, "resume");
+    try {
+      const next = await guarded(path13.join(this.root, "capacity"), () => {
+        const old = this.read(id3);
+        if (!old || !old.capabilities.resume || !old.hostSessionId) throw new Error("worker has no resumable host session");
+        const status = this.status(id3)?.status;
+        if (!status || !["done", "failed", "ambiguous", "imported", "stopped"].includes(status)) throw new Error(`worker is ${status ?? "missing"}; cannot resume`);
+        if (status === "stopped" && !["lead-session-ended", "message-delivered-cancelled", "message-delivered-failed"].includes(old.stop?.reason ?? "")) throw new Error("discarded worker cannot resume");
+        if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
+        const run2 = {
+          n: old.runs.at(-1).n + 1,
+          mode: "resume",
+          intentAt: this.now(),
+          nonce: input.nonce,
+          busFrontier: input.busFrontier,
+          promptMsgIds: input.promptMsgIds ?? [],
+          launcher: this.identity,
+          logStart: input.logStart
+        };
+        const record2 = { ...old, phase: "prepared", stop: void 0, runs: [...old.runs, run2], seq: old.seq + 1 };
+        writeAtomic(this.workerFile(id3), record2);
+        return record2;
+      });
+      this.changed(id3);
+      return next;
+    } catch (error2) {
+      await this.finishOperation(id3);
+      throw error2;
+    }
+  }
+  /** The child proves the launch nonce and its checkout before it receives report authority. */
+  async admit(input) {
+    const record2 = this.read(input.id);
+    const run2 = record2?.runs.at(-1);
+    let actual, expected;
+    try {
+      actual = fs16.realpathSync(input.dir);
+      expected = fs16.realpathSync(record2?.dir ?? "");
+    } catch {
+      throw new Error("worker run not admitted: checkout missing");
+    }
+    if (!run2 || run2.n !== input.run || run2.nonce !== input.nonce || actual !== expected || !["prepared", "active"].includes(record2.phase)) throw new Error("worker run not admitted");
+    const report = {
+      run: run2.n,
+      nonce: run2.nonce,
+      chain: input.chain,
+      joinedAt: this.now(),
+      ...input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}
+    };
+    await this.writeReport(input.id, report);
+    if (input.hostSessionId && !record2.hostSessionId && !fs16.existsSync(this.opFile(input.id))) await this.update(input.id, (old) => ({
+      ...old,
+      hostSessionId: old.hostSessionId ?? input.hostSessionId,
+      seq: old.seq + 1
+    }));
+    return this.reports(input.id).find((value2) => value2.run === run2.n);
+  }
+  async reportDone(id3, n, summary, changed) {
+    const record2 = this.read(id3), run2 = record2?.runs.at(-1);
+    const prior = this.reports(id3).find((report) => report.run === n);
+    if (!run2 || run2.n !== n || !prior) throw new Error("worker run not admitted");
+    await this.writeReport(id3, { ...prior, done: { at: this.now(), summary, changed } });
+    return this.reports(id3).find((report) => report.run === n);
+  }
+  /** The post callback must use the deterministic id with RoomDoc.post. */
+  /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
+  async postCompletion(id3, n, post) {
+    const record2 = this.read(id3), run2 = record2?.runs.find((value2) => value2.n === n);
+    const report = this.reports(id3).find((value2) => value2.run === n);
+    if (!record2 || !run2 || !report?.done) throw new Error("worker completion not reported");
+    if (report.posted || run2.posted) return false;
+    const messageId = `wk:${id3}:${n}`;
+    await post(messageId, record2, report);
+    await this.writeReport(id3, { ...report, posted: messageId });
+    return true;
+  }
+  async postObservedFailure(id3, n, post) {
+    const record2 = this.read(id3), run2 = record2?.runs.find((value2) => value2.n === n);
+    const exit = this.exits(id3).find((value2) => value2.run === n);
+    const report = this.reports(id3).find((value2) => value2.run === n);
+    const status = this.status(id3);
+    if (!record2 || !run2 || !status || !exit?.witnessed || run2.posted || report?.posted || status.status !== "failed" && !report?.done) return false;
+    const message2 = completionMessage(record2, run2, status, report);
+    if (!message2) return false;
+    await post(message2);
+    await this.update(id3, (old) => ({ ...old, runs: old.runs.map((value2) => value2.n === n ? { ...value2, posted: message2.id } : value2), seq: old.seq + 1 }));
+    return true;
+  }
+  async beginStop(id3, reason) {
+    return this.update(id3, (old) => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1).n }, seq: old.seq + 1 }));
+  }
+  async beginCollect(id3) {
+    return this.update(id3, (old) => ({ ...old, phase: "collecting", interrupted: void 0, seq: old.seq + 1 }));
+  }
+  /** A collection that did not finish returns the worker to `active`; a finished one retires it (beginRetirement). */
+  async abortCollect(id3) {
+    return this.update(id3, (old) => ({ ...old, phase: "active", seq: old.seq + 1 }));
+  }
+  /**
+   * Retirement step 1 (§12): `retiring`, with cleanup pending in every room the worker joined or was projected
+   * into, and the archive entry each room's projector appends. From here no projector writes the worker.
+   */
+  async beginRetirement(id3, archive, extra = {}) {
+    return this.update(id3, (old) => ({
+      ...old,
+      ...extra,
+      phase: "retiring",
+      archive: { ...archive, id: id3 },
+      cleanup: Object.fromEntries([old.room, ...old.projectedInto ? [old.projectedInto] : []].map((room) => [room, "pending"])),
+      seq: old.seq + 1
+    }));
+  }
+  /** An archive entry from local facts, for retirements whose caller has nothing more specific. */
+  archiveOf(record2, facts) {
+    const status = this.status(record2.id), at = this.now();
+    return {
+      id: record2.id,
+      name: record2.name,
+      tag: record2.tag,
+      lead: record2.lead.participant,
+      host: record2.host,
+      ...record2.model ? { model: record2.model } : {},
+      task: record2.task,
+      files: [],
+      fileCount: 0,
+      startedAt: record2.createdAt,
+      finishedAt: status?.finishedAt ?? at,
+      retiredAt: at,
+      outcome: "dismissed",
+      ...record2.stop && record2.stop.reason !== "discarded" ? { stopReason: record2.stop.reason } : {},
+      ...facts
+    };
+  }
+  /** Retirement step 4: a room's projector finished its cleanup; the last room makes the record `retired`. */
+  async finishCleanup(id3, roomKey2) {
+    const current = this.read(id3);
+    if (current?.phase !== "retiring" || current.cleanup?.[roomKey2] !== "pending") return current;
+    return this.update(id3, (old) => {
+      const cleanup = { ...old.cleanup, [roomKey2]: "done" };
+      return { ...old, cleanup, ...Object.values(cleanup).every((state) => state === "done") ? { phase: "retired" } : {}, seq: old.seq + 1 };
+    });
+  }
+  /**
+   * The level-triggered input of the lead-side writers in one room (registry §13): `write` holds this lead's
+   * workers that join the room or are projected into it and are not retiring; `retire` holds retiring ones
+   * whose cleanup in this room is still pending.
+   */
+  projectable(lead, roomKey2) {
+    const write2 = [], retire = [];
+    for (const record2 of this.list()) {
+      if (record2.lead.participant !== lead || record2.room !== roomKey2 && record2.projectedInto !== roomKey2) continue;
+      if (record2.phase === "retiring") {
+        if (record2.cleanup?.[roomKey2] === "pending") retire.push(record2);
+        continue;
+      }
+      if (record2.phase === "retired" || record2.phase === "abandoned") continue;
+      const status = this.status(record2.id);
+      if (status) write2.push({ record: record2, status });
+    }
+    return { write: write2, retire };
+  }
+  async beginDiscard(id3, force, children) {
+    return this.update(id3, (old) => ({
+      ...old,
+      phase: "discarding",
+      discard: { force, children, steps: {} },
+      interrupted: void 0,
+      seq: old.seq + 1
+    }));
+  }
+  async markDiscardStep(id3, step) {
+    return this.update(id3, (old) => {
+      if (!old.discard) throw new Error("discard plan missing");
+      return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 };
+    });
+  }
+  async interruptDiscard(id3, detail) {
+    return this.update(id3, (old) => ({
+      ...old,
+      phase: "active",
+      interrupted: { op: "discard", at: this.now(), detail },
+      seq: old.seq + 1
+    }));
+  }
+  /** Store the hash before linking a stable patch; replay validates the published bytes. */
+  async recordDiscardPatch(id3, bytes) {
+    const file = path13.join(this.root, "patches", `${id3}.patch`);
+    const sha256 = createHash7("sha256").update(bytes).digest("hex");
+    const record2 = this.read(id3);
+    if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
+    if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
+    if (record2.discard.patch && record2.discard.patch.sha256 !== sha256) throw new Error("discard patch changed after identity was recorded");
+    if (!record2.discard.patch) await this.update(id3, (old) => ({
+      ...old,
+      discard: { ...old.discard, patch: { path: file, sha256 } },
+      seq: old.seq + 1
+    }));
+    fs16.mkdirSync(path13.dirname(file), { recursive: true, mode: 448 });
+    let existing;
+    try {
+      existing = fs16.lstatSync(file);
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+    if (existing) {
+      if (existing.isFile() && createHash7("sha256").update(fs16.readFileSync(file)).digest("hex") === sha256) return file;
+      this.quarantine(file, "discard patch hash mismatch");
+    }
+    const scratch = path13.join(this.root, "patches", `${id3}.${randomBytes3(8).toString("hex")}.tmp`);
+    try {
+      const fd = fs16.openSync(scratch, "wx", 384);
+      try {
+        fs16.writeFileSync(fd, bytes);
+        fs16.fsyncSync(fd);
+      } finally {
+        fs16.closeSync(fd);
+      }
+      fs16.linkSync(scratch, file);
+      const dir = fs16.openSync(path13.dirname(file), "r");
+      try {
+        fs16.fsyncSync(dir);
+      } finally {
+        fs16.closeSync(dir);
+      }
+      return file;
+    } finally {
+      fs16.rmSync(scratch, { force: true });
+    }
+  }
+  /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
+  async replayDiscard(id3) {
+    let record2 = this.read(id3);
+    if (record2?.phase !== "discarding" || !record2.discard) return;
+    for (const scratch of files(path13.join(this.root, "patches"), ".tmp")) {
+      const suffix = path13.basename(scratch).slice(id3.length + 1);
+      if (!path13.basename(scratch).startsWith(`${id3}.`) || !/^[0-9a-f]{16}\.tmp$/.test(suffix)) continue;
+      if (fs16.lstatSync(scratch).isFile()) fs16.rmSync(scratch);
+    }
+    const leadDir = path13.dirname(path13.dirname(path13.dirname(record2.dir)));
+    const status = this.status(id3);
+    if (!status) return;
+    const own2 = realStateInput(record2, status);
+    const workers = this.list().flatMap((value2) => {
+      const current = this.status(value2.id);
+      return current ? [realStateInput(value2, current)] : [];
+    });
+    const owned = await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
+    if (!owned && fs16.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
+    if (!record2.discard.steps.children) {
+      for (const childId of record2.discard.children) {
+        const child = this.read(childId);
+        if (!child || ["retiring", "retired"].includes(child.phase)) continue;
+        if (child.phase !== "discarding") await this.beginDiscard(childId, true, []);
+        await this.replayDiscard(childId);
+        if (!["retiring", "retired"].includes(this.read(childId)?.phase ?? "")) return;
+      }
+      await this.markDiscardStep(id3, "children");
+      record2 = this.read(id3);
+    }
+    const run2 = record2.runs.at(-1);
+    const launch = run2.launch;
+    const report = this.reports(id3).find((value2) => value2.run === run2.n && value2.nonce === run2.nonce);
+    const chain = report?.chain ?? [];
+    const reportedHost = launch?.outcome === "launched" ? chain.find((value2) => value2.pid === launch.pid) : void 0;
+    if (launch?.outcome === "launched" && launch.process && reportedHost && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return;
+    const host = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
+    const identities = [host, ...chain.filter((value2) => value2.pid !== host?.pid)].filter((value2) => !!value2);
+    if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
+    if (launch?.outcome === "launched" && !host && !this.exits(id3).some((value2) => value2.run === run2.n) && pidAlive(launch.pid)) return;
+    for (const identity2 of identities) {
+      const alive = this.alive(identity2);
+      if (alive === "unknown") return;
+      if (alive !== "alive") continue;
+      if (!record2.capabilities.signal || record2.discard.steps.stop) return;
+      const signalOwn = { ...own2, pid: identity2.pid, processStartTime: identity2.startTime };
+      const stopped = await stopWorkerWithEscalation({
+        terminate: () => signalWorker(identity2.pid, "SIGTERM", record2.dir, void 0, signalOwn, probeProcess),
+        exited: () => this.alive(identity2) === "dead",
+        force: () => signalWorker(identity2.pid, "SIGKILL", record2.dir, void 0, signalOwn, probeProcess)
+      });
+      if (!stopped) return;
+    }
+    if (identities.some((value2) => this.alive(value2) !== "dead")) return;
+    if (owned && !await quiesceWorktreeProcesses(record2.dir)) return;
+    if (!record2.discard.steps.stop) {
+      await this.markDiscardStep(id3, "stop");
+      record2 = this.read(id3);
+    }
+    if (!record2.discard.steps.patch) {
+      if (owned) {
+        const ignored = await ignoredWorkerArtifacts(own2);
+        if (ignored.length && !record2.discard.force) {
+          await this.interruptDiscard(id3, `ignored artifacts appeared: ${ignored.join(", ")}`);
+          return;
+        }
+        await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+      }
+      await this.markDiscardStep(id3, "patch");
+      record2 = this.read(id3);
+    }
+    const published = record2.discard.patch;
+    if (published) {
+      const expected = path13.join(this.root, "patches", `${id3}.patch`);
+      if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
+      const valid = fs16.existsSync(expected) && fs16.lstatSync(expected).isFile() && createHash7("sha256").update(fs16.readFileSync(expected)).digest("hex") === published.sha256;
+      if (!valid) {
+        if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
+        await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
+      }
+    }
+    if (!record2.discard.steps.cleanup) {
+      if (owned) {
+        if (!await cleanupWorker(leadDir, own2, true, true, [], {}, record2.lead.participant, workers)) return;
+      } else {
+        await pruneMissingWorkerWorktree(leadDir, own2);
+        cleanupWorkerLogs(leadDir, own2);
+      }
+      await this.markDiscardStep(id3, "cleanup");
+    }
+    await this.markDiscardStep(id3, "prune");
+    await this.beginRetirement(id3, this.archiveOf(this.read(id3), { summary: "discarded", disposition: "discarded" }));
+  }
+  /** Admission is evidence of launch only when a run writer proves the matching nonce. */
+  async writeReport(id3, report) {
+    const record2 = this.read(id3);
+    const run2 = record2?.runs.at(-1);
+    if (!run2 || run2.n !== report.run || run2.nonce !== report.nonce || !["prepared", "active"].includes(record2.phase)) throw new Error("run not admitted");
+    const writer = this.writerFile(id3, report.run);
+    if (!fs16.existsSync(writer) && !createExclusive(writer, this.identity)) throw new Error("run writer busy");
+    const prior = this.readFact(writer, tokenShape);
+    if (prior && prior.nonce !== this.identity.nonce && !await leaseRetry(() => replace(
+      writer,
+      (current) => current.sessionId === this.identity.sessionId && this.alive(current) === "dead",
+      this.identity
+    ))) {
+      throw new Error("run writer busy");
+    }
+    await guarded(writer, () => {
+      const owner = this.readFact(writer, tokenShape);
+      if (owner?.nonce !== this.identity.nonce) throw new Error("run writer belongs to another instance");
+      const previous = this.readFact(this.reportFile(id3, report.run), reportShape);
+      if (previous && previous.nonce !== report.nonce) throw new Error("run report nonce mismatch");
+      writeAtomic(this.reportFile(id3, report.run), previous ? {
+        ...previous,
+        chain: previous.chain,
+        joinedAt: previous.joinedAt,
+        hostSessionId: previous.hostSessionId ?? report.hostSessionId,
+        done: previous.done ?? report.done,
+        posted: previous.posted ?? report.posted
+      } : report);
+    });
+    this.changed(id3);
+  }
+  /** A witnessed child-close observation is never replaced by a later unwitnessed poll. */
+  async writeExit(id3, observation) {
+    const file = this.exitFile(id3, observation.run);
+    await guarded(file, () => {
+      const old = this.readFact(file, exitShape);
+      if (!old || !old.witnessed && observation.witnessed) writeAtomic(file, observation);
+    });
+    this.changed(id3);
+  }
+  rollbackPreparation(record2) {
+    const prep = record2.prep;
+    if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
+    const leadDir = path13.dirname(path13.dirname(path13.dirname(record2.dir)));
+    if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
+    const run2 = (...args3) => execFileSync6("git", ["--git-dir", this.commonDir, ...args3], { encoding: "utf8" }).trim();
+    if (prep.created === true && fs16.existsSync(record2.dir)) {
+      const listing = run2("worktree", "list", "--porcelain");
+      const canonical = fs16.realpathSync(record2.dir);
+      const registered = listing.split("\n").filter((line) => line.startsWith("worktree ")).some((line) => {
+        try {
+          return fs16.realpathSync(line.slice(9)) === canonical;
+        } catch {
+          return false;
+        }
+      });
+      if (!registered) throw new Error(`unregistered preparation worktree ${record2.dir}`);
+      run2("worktree", "remove", "--force", record2.dir);
+    }
+    if (prep.branchCreated === true && prep.branchExisted === false) {
+      const ref = `refs/heads/${record2.branch}`;
+      let exists = false;
+      try {
+        run2("show-ref", "--verify", "--quiet", ref);
+        exists = true;
+      } catch (e) {
+        if (e.status !== 1) throw e;
+      }
+      if (exists) run2("branch", "-D", record2.branch);
+    }
+    const refs = prep.previousCarryRefs;
+    if (refs && typeof refs === "object" && !Array.isArray(refs)) {
+      for (const [ref, oid] of Object.entries(refs)) {
+        if (!/^refs\/room\/(carry|carry-untracked)\/[A-Za-z0-9._/-]+$/.test(ref)) throw new Error(`unsafe preparation ref ${ref}`);
+        if (typeof oid === "string" && /^[0-9a-f]{40,64}$/.test(oid)) run2("update-ref", ref, oid);
+        else if (oid === null) {
+          try {
+            run2("update-ref", "-d", ref);
+          } catch (e) {
+            if (e.status !== 1) throw e;
+          }
+        }
+      }
+    }
+  }
+  async abandonPreparation(id3) {
+    const record2 = this.read(id3);
+    if (!record2 || record2.runs.at(-1)?.launch) return;
+    if (record2.phase === "preparing" || record2.phase === "prepared") this.rollbackPreparation(record2);
+    await this.update(id3, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
+  }
+  async reconcile() {
+    for (const record2 of this.list()) {
+      const run2 = record2.runs.at(-1);
+      if (!run2) continue;
+      const hadOp = fs16.existsSync(this.opFile(record2.id));
+      const op = this.readFact(this.opFile(record2.id), (value2) => object3(value2) && tokenShape(value2.holder));
+      if (hadOp && !op) continue;
+      if (op && this.alive(op.holder) === "dead") await leaseRetry(() => recover(this.opFile(record2.id), () => true));
+      const report = this.reports(record2.id).find((value2) => value2.run === run2.n && value2.nonce === run2.nonce);
+      if (report?.hostSessionId && !record2.hostSessionId && !fs16.existsSync(this.opFile(record2.id))) {
+        await this.update(record2.id, (old) => ({ ...old, hostSessionId: old.hostSessionId ?? report.hostSessionId, seq: old.seq + 1 }));
+      }
+      if (record2.phase === "collecting" && (!op || this.alive(op.holder) === "dead")) {
+        await this.update(record2.id, (old) => ({
+          ...old,
+          phase: "active",
+          interrupted: old.interrupted ?? { op: "collect", at: this.now(), detail: "collection stopped; partial apply may remain" },
+          seq: old.seq + 1
+        }));
+        continue;
+      }
+      if (record2.phase === "discarding" && (!op || this.alive(op.holder) === "dead")) {
+        try {
+          await this.beginOperation(record2.id, "discard");
+          await this.replayDiscard(record2.id);
+        } catch (error2) {
+          process.stderr.write(`[room] discard replay ${record2.id}: ${error2}
+`);
+        } finally {
+          await this.finishOperation(record2.id).catch(() => {
+          });
+        }
+        continue;
+      }
+      if (record2.phase === "preparing" && this.alive(run2.launcher) === "dead") {
+        this.rollbackPreparation(record2);
+        await this.update(record2.id, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
+        continue;
+      }
+      if (!run2.launch) {
+        const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
+        const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
+        if (writer && report2) await this.update(record2.id, (old) => {
+          const latest = old.runs.at(-1);
+          if (latest.launch) return { ...old, seq: old.seq + 1 };
+          const process5 = report2.chain[0];
+          return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...latest, launch: { outcome: "launched", pid: process5?.pid ?? 0, ...process5 ? { process: process5 } : {} } }], seq: old.seq + 1 };
+        });
+        else if (this.alive(run2.launcher) === "dead") await this.update(record2.id, (old) => ({
+          ...old,
+          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "ambiguous", at: this.now() } }],
+          seq: old.seq + 1
+        }));
+        continue;
+      }
+      if (run2.launch.outcome === "ambiguous") {
+        const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
+        const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
+        if (writer && report2) await this.update(record2.id, (old) => {
+          const process5 = report2.chain[0];
+          return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "launched", pid: process5?.pid ?? 0, ...process5 ? { process: process5 } : {} } }], seq: old.seq + 1 };
+        });
+      }
+      if (run2.launch.outcome === "launched" && !this.exits(record2.id).some((e) => e.run === run2.n) && this.alive(run2.launcher) === "dead" && run2.launch.process && this.alive(run2.launch.process) === "dead") {
+        await this.writeExit(record2.id, { run: run2.n, code: null, at: this.now(), witnessed: false });
+      }
+    }
+    for (const file of files(path13.join(this.root, "patches"), ".patch")) {
+      const workerId = path13.basename(file, ".patch");
+      const owner = this.read(workerId);
+      if (owner && owner.phase !== "retired") continue;
+      if (this.now() - fs16.statSync(file).mtimeMs >= 7 * 24 * 60 * 60 * 1e3) fs16.rmSync(file, { force: true });
+    }
+    const next = /* @__PURE__ */ new Map();
+    for (const record2 of this.list()) next.set(record2.id, JSON.stringify([record2, this.reports(record2.id), this.exits(record2.id)]));
+    const externalChange = next.size !== this.observed.size || [...next].some(([key2, value2]) => this.observed.get(key2) !== value2);
+    this.observed = next;
+    if (externalChange) this.changed();
+  }
+  async migrate() {
+    const file = path13.join(this.root, "migration.json");
+    if (readJson(file)?.done) return;
+    const lock = path13.join(this.root, "migration.lock");
+    let acquired = false;
+    const deadline = performance2.now() + GUARD_WAIT_MS;
+    while (performance2.now() < deadline) {
+      if (createExclusive(lock, this.identity)) {
+        acquired = true;
+        break;
+      }
+      if (readJson(file)?.done) return;
+      if (await leaseRetry(() => recover(lock, () => true), deadline)) continue;
+      await new Promise((resolve5) => setTimeout(resolve5, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance2.now()))));
+    }
+    if (!acquired) throw new Error("registry migration in progress");
+    try {
+      const map2 = readJson(file) ?? { v: 1, sources: {}, done: false };
+      if (map2.done) return;
+      let sources;
+      try {
+        sources = (this.options.sources ?? discoverLegacyWorktrees)(this.commonDir);
+      } catch (error2) {
+        if (error2 instanceof LegacySnapshotUnavailable) return;
+        throw error2;
+      }
+      for (const source of sources) {
+        if (!map2.sources[source.key]) {
+          map2.sources[source.key] = { id: id2(), state: "assigned" };
+          writeAtomic(file, map2);
+        }
+        const target = map2.sources[source.key];
+        if (target.state === "imported") continue;
+        this.importLegacy(source, target.id);
+        target.state = "imported";
+        writeAtomic(file, map2);
+      }
+      map2.done = true;
+      writeAtomic(file, map2);
+    } finally {
+      await leaseRetry(() => compareAndRelease(lock, this.identity));
+    }
+  }
+  importLegacy(source, workerId) {
+    const file = this.workerFile(workerId);
+    const carryFile = path13.join(this.commonDir, "room-carry", `${source.tag}.json`);
+    const migratedCarryFile = `${carryFile}.migrated`;
+    if (!missing(file)) {
+      if (fs16.existsSync(carryFile) && !fs16.existsSync(migratedCarryFile)) fs16.renameSync(carryFile, migratedCarryFile);
+      return;
+    }
+    const token = this.identity;
+    const carryRecord2 = readJson(carryFile);
+    const base = commitExists(this.commonDir, carryRecord2?.base) ? carryRecord2.base : void 0;
+    const carriedBase = commitExists(this.commonDir, carryRecord2?.carriedBase) ? carryRecord2.carriedBase : void 0;
+    const carry = base && (!carryRecord2?.carriedBase || carriedBase) ? "delta" : "copy";
+    const hostSessionId = legacySession(source.dir, source.oldId, source.host);
+    const record2 = {
+      v: 1,
+      id: workerId,
+      tag: source.tag,
+      name: "",
+      mode: "local",
+      room: "",
+      lead: { participant: "", room: "", instance: token },
+      host: source.host,
+      model: source.model,
+      budget: { threads: 1, memGb: 1, nice: 10 },
+      share: source.share ?? "intent",
+      task: source.task ?? "legacy worker",
+      dir: source.dir,
+      outside: false,
+      branch: source.branch,
+      prep: { step: "prepared" },
+      base,
+      carriedBase,
+      hostSessionId,
+      capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
+      phase: source.keptWorktree ? "retired" : "active",
+      keptWorktree: source.keptWorktree,
+      cleanup: source.keptWorktree ? { legacy: "done" } : void 0,
+      runs: [{ n: 1, mode: "fresh", intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: 0, promptMsgIds: [], launcher: token, launch: { outcome: "imported" }, logStart: 0 }],
+      legacy: { id: source.key, source: source.dir, said: source.said, unowned: true },
+      createdAt: this.now(),
+      seq: 1
+    };
+    createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() });
+    createExclusive(file, record2);
+    if (fs16.existsSync(carryFile) && !fs16.existsSync(migratedCarryFile)) fs16.renameSync(carryFile, migratedCarryFile);
+  }
+};
+
+// packages/hub-core/src/protocol.ts
+var MSG_HUB = 7;
+var HUB_PROTO = 1;
+var HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
+var LEASE_TTL_MS = 45e3;
+var LEASE_RENEW_MS = 15e3;
+var SETTLE_MS = 5e3;
+var STARTING_RETRY_MS = 1e3;
+var REQUEST_TIMEOUT_LOCAL_MS = 5e3;
+var REQUEST_TIMEOUT_TEAM_MS = 1e4;
+function encodeFrame(frame) {
+  const enc = createEncoder();
+  writeVarUint(enc, MSG_HUB);
+  writeVarString(enc, JSON.stringify(frame));
+  return toUint8Array(enc);
+}
+function decodeFrame(input) {
+  let dec;
+  if (input instanceof Uint8Array) {
+    dec = createDecoder(input);
+    const type = readVarUint(dec);
+    if (type !== MSG_HUB) throw new Error(`not a hub frame: message type ${type}`);
+  } else dec = input;
+  return JSON.parse(readVarString(dec));
+}
+var COUNTER_BITS = 21;
+var COUNTER_LIMIT = 2 ** COUNTER_BITS;
+function encodeSeq(incarnation, n) {
+  if (!Number.isInteger(incarnation) || incarnation < 0 || incarnation >= 2 ** 32) throw new RangeError(`incarnation out of range: ${incarnation}`);
+  if (!Number.isInteger(n) || n < 0 || n >= COUNTER_LIMIT) throw new RangeError(`counter out of range: ${n}`);
+  return incarnation * COUNTER_LIMIT + n;
+}
+function incarnationOf(value2) {
+  return Math.floor(value2 / COUNTER_LIMIT);
+}
+
+// packages/hub-core/src/hub.ts
+var MAINTENANCE_MS = 6e4;
+function serializedStore(record2) {
+  let queue = Promise.resolve();
+  return {
+    advance(floor2) {
+      const run2 = queue.then(async () => {
+        const next = Math.max((await record2.read() ?? -1) + 1, floor2);
+        await record2.write(next);
+        return next;
+      });
+      queue = run2.catch(() => void 0);
+      return run2;
+    }
+  };
+}
+var HOLDER = "\0holder";
+var holderKey = (name2) => `${name2}${HOLDER}`;
+var encoder2 = new TextEncoder();
+var sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
+var isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+var isName = (v) => typeof v === "string" && validParticipantName(v) && v.length <= 200;
+var isCounter = (v) => Number.isSafeInteger(v) && v >= 0;
+function parseHolder(v) {
+  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || !Number.isInteger(v.pid) || typeof v.startTime !== "string" || typeof v.executable !== "string" || v.workerId !== void 0 && typeof v.workerId !== "string") return void 0;
+  return { sessionId: v.sessionId, pid: v.pid, startTime: v.startTime, executable: v.executable, ...v.workerId !== void 0 ? { workerId: v.workerId } : {} };
+}
+function hubHolder(v) {
+  const holder = parseHolder(v);
+  if (!holder || !isObject2(v) || !isCounter(v.epoch)) return void 0;
+  const ended = v.ended === "released" || v.ended === "expired" ? v.ended : void 0;
+  return { ...holder, epoch: v.epoch, at: typeof v.at === "number" ? v.at : 0, ...ended ? { ended } : {} };
+}
+var sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
+function knownOf(record2) {
+  const { epoch, at, ended, ...holder } = record2;
+  return { epoch, at, holder, ...ended ? { ended } : {} };
+}
+function hydrate(known, record2) {
+  if (known.holder || record2.epoch !== known.epoch) return;
+  const { at, holder } = knownOf(record2);
+  known.at = at;
+  known.holder = holder;
+}
+var higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
+function visible(doc) {
+  let epoch, seq;
+  const see = (v, kind) => {
+    if (!isCounter(v)) return;
+    if (kind === "epoch") epoch = higher(epoch, v);
+    else seq = higher(seq, v);
+  };
+  const meta2 = doc.metaMap;
+  see(meta2.get("hubEpoch"), "epoch");
+  see(meta2.get("hubSeq"), "seq");
+  for (const m of doc.bus.toArray()) see(m?.seq, "seq");
+  for (const m of doc.mail.values()) see(m?.seq, "seq");
+  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) see(value2?.epoch, "epoch");
+  const incarnation = Math.max(
+    isCounter(meta2.get("hubIncarnation")) ? meta2.get("hubIncarnation") : -1,
+    ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
+  );
+  return { epoch, seq, incarnation };
+}
+async function startHub(host) {
+  const hub = new RoomHub(host);
+  await hub.start();
+  return hub;
+}
+var RoomHub = class {
+  constructor(host) {
+    this.host = host;
+    this.limit = host.counterLimit ?? COUNTER_LIMIT;
+  }
+  host;
+  incarnation = 0;
+  limit;
+  epochs = 0;
+  seqs = 0;
+  lastEpoch;
+  lastSeq;
+  reincarnating;
+  startedAt = 0;
+  settled = false;
+  maintainedAt = 0;
+  dirty = false;
+  stopped = false;
+  unauthorized = false;
+  tenure;
+  leases = /* @__PURE__ */ new Map();
+  records = /* @__PURE__ */ new Map();
+  greeted = /* @__PURE__ */ new Set();
+  push = () => {
+  };
+  onUpdate = (_update, origin) => {
+    if (origin === HUB_ORIGIN) return;
+    this.dirty = true;
+    if (this.settling()) this.adoptSynced();
+  };
+  get doc() {
+    return this.host.doc;
+  }
+  async start() {
+    await this.incarnate();
+    this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
+    this.startedAt = this.maintainedAt = this.host.mono();
+    this.adoptSynced();
+    this.doc.doc.on("update", this.onUpdate);
+    this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
+  }
+  /** Take a new incarnation (§3): durable before anything is issued under it. */
+  async incarnate() {
+    const floor2 = Math.max(visible(this.doc).incarnation + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1e3));
+    const next = await this.host.store.advance(floor2);
+    if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
+    this.incarnation = next;
+    this.epochs = this.seqs = 0;
+    this.doc.doc.transact(() => {
+      this.doc.metaMap.set("hubIncarnation", next);
+    }, HUB_ORIGIN);
+  }
+  stop() {
+    this.stopped = true;
+    this.doc.doc.off("update", this.onUpdate);
+  }
+  onPush(fn) {
+    this.push = fn;
+  }
+  closed(conn) {
+    this.greeted.delete(conn);
+    for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
+  }
+  settling() {
+    return this.host.mono() - this.startedAt < SETTLE_MS;
+  }
+  notify(name2, lease, reason) {
+    if (lease.conn) this.push(lease.conn, { v: 1, push: "lease-lost", name: name2, epoch: lease.epoch, reason });
+  }
+  authorized() {
+    if (this.stopped) return false;
+    if (!this.host.authority || this.host.authority()) {
+      this.unauthorized = false;
+      return true;
+    }
+    if (!this.unauthorized) {
+      this.unauthorized = true;
+      this.host.log("hub: lost the authority lock; answering not-authority");
+      for (const [name2, lease] of this.leases) this.notify(name2, lease, "not-authority");
+    }
+    return false;
+  }
+  // ---- leases ----
+  record(name2) {
+    return hubHolder(this.doc.participants.get(holderKey(name2)));
+  }
+  /** The doc record for what the hub knows of a name, when it knows the holder. */
+  recordOf(k) {
+    return k.holder && { ...k.holder, epoch: k.epoch, at: k.at, ...k.ended ? { ended: k.ended } : {} };
+  }
+  /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
+  hold(name2, lease) {
+    this.leases.set(name2, lease);
+    this.records.set(name2, lease);
+    this.tenure.present(this.doc, name2, HUB_ORIGIN);
+  }
+  /**
+   * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
+   * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
+   */
+  live(name2) {
+    const lease = this.leases.get(name2);
+    if (!lease) return void 0;
+    const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
+    const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
+    const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
+    if (!ended && !expired) return lease;
+    this.end(name2, lease, ended ?? "expired");
+    this.notify(name2, lease, "expired");
+    return void 0;
+  }
+  end(name2, lease, how) {
+    this.leases.delete(name2);
+    const current = this.record(name2);
+    if (current) hydrate(lease, current);
+    const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, ended: how };
+    this.records.set(name2, ended);
+    const record2 = this.recordOf(ended);
+    if (record2) this.doc.doc.transact(() => {
+      this.doc.participants.set(holderKey(name2), record2);
+    }, HUB_ORIGIN);
+    this.host.log(`hub: lease ${lease.epoch} on ${name2} ${how}`);
+  }
+  /**
+   * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
+   * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
+   * rise to the highest values seen.
+   */
+  adoptSynced() {
+    const seen = visible(this.doc);
+    this.lastEpoch = higher(this.lastEpoch, seen.epoch);
+    this.lastSeq = higher(this.lastSeq, seen.seq);
+    for (const [key2, value2] of this.doc.participants.entries()) {
+      if (!key2.endsWith(HOLDER)) continue;
+      const record2 = hubHolder(value2);
+      if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
+      const name2 = key2.slice(0, -HOLDER.length);
+      const known = this.records.get(name2);
+      const lease = this.leases.get(name2);
+      if (known && record2.epoch <= known.epoch) {
+        if (lease) hydrate(lease, record2);
+        continue;
+      }
+      if (lease) {
+        this.leases.delete(name2);
+        this.notify(name2, lease, "superseded");
+      }
+      if (record2.ended) this.records.set(name2, knownOf(record2));
+      else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
+    }
+  }
+  /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
+  reserve(kind, count) {
+    if (this.reincarnating) return false;
+    if ((kind === "epoch" ? this.epochs : this.seqs) + count <= this.limit) return true;
+    this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
+      this.reincarnating = void 0;
+    });
+    return false;
+  }
+  /** The next epoch or seq, or undefined while a new incarnation is being taken. */
+  issue(kind) {
+    if (!this.reserve(kind, 1)) return void 0;
+    const n = kind === "epoch" ? this.epochs++ : this.seqs++;
+    return encodeSeq(this.incarnation, n);
+  }
+  /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
+  append(msg, wall) {
+    const seq = this.issue("seq");
+    if (seq === void 0) return void 0;
+    const record2 = { ...msg, seq, at: wall };
+    this.lastSeq = seq;
+    this.doc.doc.transact(() => {
+      this.doc.bus.push([record2]);
+      this.doc.metaMap.set("hubSeq", seq);
+    }, HUB_ORIGIN);
+    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
+    return record2;
+  }
+  // ---- requests ----
+  handle(conn, frame, p) {
+    const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
+    const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
+    if (!isObject2(frame) || frame.v !== 1 || !re || typeof frame.op !== "string") {
+      this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`);
+      return fail("invalid", "a hub request needs v: 1, an id and an op");
+    }
+    if (!this.authorized()) return fail("not-authority", "not the authority; reconnect");
+    if ("readOnly" in p && p.readOnly) return fail("read-only", "this connection is read-only");
+    const req = frame;
+    if (req.op === "hello") return this.hello(conn, req, fail);
+    if (!this.greeted.has(conn)) return fail("hello-first", "send hello first");
+    const starting = () => fail("starting", "the hub is starting", { retryMs: STARTING_RETRY_MS });
+    switch (req.op) {
+      case "acquire":
+        return this.acquire(conn, req, p, fail, starting);
+      case "renew":
+        return this.renew(conn, req, p, fail);
+      case "release":
+        return this.release(req, fail);
+      case "post":
+        return this.post(req, p, fail, starting);
+      default:
+        return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
+    }
+  }
+  hello(conn, req, fail) {
+    if (req.proto !== HUB_PROTO) {
+      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
+    }
+    this.greeted.add(conn);
+    return { v: 1, re: req.id, ok: true, proto: HUB_PROTO, incarnation: this.incarnation, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true };
+  }
+  acquire(conn, req, p, fail, starting) {
+    const holder = parseHolder(req.holder);
+    if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
+    const { name: name2 } = req;
+    if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
+    const live = this.live(name2);
+    if (!live && this.settling()) return starting();
+    if (live && live.holder?.sessionId !== holder.sessionId && req.supersedes !== live.epoch) {
+      return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
+    }
+    const epoch = this.issue("epoch");
+    if (epoch === void 0) return starting();
+    if (live) this.notify(name2, live, "superseded");
+    const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn };
+    this.lastEpoch = epoch;
+    this.doc.doc.transact(() => {
+      this.hold(name2, lease);
+      this.doc.participants.set(holderKey(name2), this.recordOf(lease));
+      this.doc.metaMap.set("hubEpoch", epoch);
+    }, HUB_ORIGIN);
+    this.host.log(`hub: granted ${name2} to ${holder.sessionId} at epoch ${epoch}${live ? ` (superseding ${live.epoch})` : ""}`);
+    return { v: 1, re: req.id, ok: true, epoch, ttlMs: LEASE_TTL_MS };
+  }
+  renew(conn, req, p, fail) {
+    if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
+    const { name: name2, epoch } = req;
+    const live = this.live(name2);
+    const ok = () => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS });
+    if (live?.epoch === epoch) {
+      live.renewed = this.host.mono();
+      live.conn = conn;
+      return ok();
+    }
+    const known = this.records.get(name2);
+    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
+      if (live) this.notify(name2, live, "superseded");
+      const record2 = this.record(name2);
+      const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
+      this.hold(name2, { ...synced, renewed: this.host.mono(), conn });
+      this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
+      return ok();
+    }
+    return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
+  }
+  release(req, fail) {
+    if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
+    const live = this.live(req.name);
+    const known = this.records.get(req.name);
+    if (live?.epoch === req.epoch) this.end(req.name, live, "released");
+    else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
+    return { v: 1, re: req.id, ok: true };
+  }
+  post(req, p, fail, starting) {
+    const msg = req.msg;
+    if (!isObject2(msg) || typeof msg.id !== "string" || !msg.id || typeof msg.type !== "string" || !MessageKinds[msg.type] || !isName(msg.from) || msg.to !== void 0 && typeof msg.to !== "string") return fail("invalid", "post needs a message with an id, a known type and a sender");
+    if (req.lease !== void 0) {
+      if (!isObject2(req.lease) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "post lease needs a name and an epoch");
+      if (this.live(req.lease.name)?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
+    }
+    const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
+    if (found) {
+      const seq = found.seq;
+      return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
+    }
+    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
+    const size2 = sizeOf2(msg);
+    if (size2 > MAX_MESSAGE_BYTES) return fail("too-large", `the message is ${Math.ceil(size2 / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`);
+    if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
+    const wall = this.host.wall();
+    if (msg.to && !req.auto) {
+      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
+      if (!admission.ok) return fail("over-cap", admission.reason);
+    }
+    if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
+    let priority2;
+    try {
+      priority2 = msg.priority ?? defaultPriority(msg);
+    } catch {
+      return fail("invalid", `cannot prioritise a ${msg.type} message`);
+    }
+    const record2 = this.append({ ...msg, priority: priority2 }, wall);
+    if (!record2) return starting();
+    return { v: 1, re: req.id, ok: true, seq: record2.seq, at: wall };
+  }
+  // ---- maintenance ----
+  tick() {
+    if (!this.authorized()) return;
+    for (const name2 of [...this.leases.keys()]) this.live(name2);
+    if (this.settling()) return;
+    if (!this.settled) {
+      this.settled = true;
+      this.dirty = true;
+    }
+    if (this.dirty) this.reassert();
+    const now = this.host.mono();
+    if (now - this.maintainedAt >= MAINTENANCE_MS) {
+      this.maintainedAt = now;
+      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN });
+      this.expire();
+    }
+  }
+  /** Rewrite hub-owned values a stale replica won back (§4.4). */
+  reassert() {
+    this.dirty = false;
+    const { doc } = this;
+    const archived = (id3) => doc.archive.has(id3) || doc.outcomes.has(id3);
+    doc.doc.transact(() => {
+      const names = new Set(this.records.keys());
+      for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER) && hubHolder(value2)) names.add(key2.slice(0, -HOLDER.length));
+      for (const name2 of names) {
+        const current = this.record(name2);
+        let known = this.records.get(name2);
+        if (current && !this.leases.has(name2) && (!known || current.epoch > known.epoch)) {
+          known = knownOf(current.ended ? current : { ...current, ended: "expired" });
+          this.records.set(name2, known);
+        }
+        if (!known) continue;
+        if (current) hydrate(known, current);
+        const want = this.recordOf(known);
+        if (want) {
+          if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
+        } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
+      }
+      const meta2 = doc.metaMap;
+      if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
+      if (this.lastEpoch !== void 0 && meta2.get("hubEpoch") !== this.lastEpoch) meta2.set("hubEpoch", this.lastEpoch);
+      if (this.lastSeq !== void 0 && meta2.get("hubSeq") !== this.lastSeq) meta2.set("hubSeq", this.lastSeq);
+      const seen = /* @__PURE__ */ new Set();
+      const drop = [];
+      doc.bus.toArray().forEach((m, i2) => {
+        const id3 = m?.id;
+        if (typeof id3 !== "string") return;
+        if (seen.has(id3) || archived(id3)) drop.push(i2);
+        seen.add(id3);
+      });
+      for (const i2 of drop.reverse()) doc.bus.delete(i2, 1);
+    }, HUB_ORIGIN);
+  }
+  /**
+   * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
+   * are released with sequenced notices, so a pass runs only when every claim could get a seq.
+   */
+  expire() {
+    if (!this.reserve("seq", Math.min(this.doc.claims.size, this.limit))) return;
+    const view = [];
+    for (const key2 of this.doc.participants.keys()) {
+      if (!key2.endsWith(HOLDER)) continue;
+      const name2 = key2.slice(0, -HOLDER.length);
+      view.push({ name: name2, fresh: !!this.live(name2), visible: true });
+    }
+    const wall = this.host.wall();
+    const post = (from2, body2) => this.append({ ...body2, priority: body2.priority ?? defaultPriority(body2), id: newId("m_"), from: from2.name, fromKind: from2.kind }, wall);
+    for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
+      this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
+      const lease = this.leases.get(name2);
+      if (lease) {
+        this.leases.delete(name2);
+        this.notify(name2, lease, "expired-participant");
+      }
+      this.records.delete(name2);
+    }
+  }
+};
+
+// packages/room-mcp/src/hub-client.ts
+function hubTransport(provider) {
+  const listeners = /* @__PURE__ */ new Set();
+  const reconnects = /* @__PURE__ */ new Set();
+  const old = provider.messageHandlers[MSG_HUB];
+  provider.messageHandlers[MSG_HUB] = (_encoder, decoder) => {
+    try {
+      const frame = decodeFrame(decoder);
+      const bytes = encodeFrame(frame);
+      for (const fn of listeners) fn(bytes);
+    } catch {
+    }
+  };
+  const status = (event) => {
+    if (event.status === "connected") for (const fn of reconnects) fn();
+  };
+  provider.on("status", status);
+  return {
+    send(bytes) {
+      if (!provider.wsconnected || !provider.ws) throw new Error("hub unreachable");
+      provider.ws.send(bytes);
+    },
+    connected: () => provider.wsconnected && !!provider.ws,
+    onFrame(fn) {
+      listeners.add(fn);
+      return () => {
+        listeners.delete(fn);
+        if (!listeners.size) provider.messageHandlers[MSG_HUB] = old;
+      };
+    },
+    onReconnect(fn) {
+      reconnects.add(fn);
+      return () => {
+        reconnects.delete(fn);
+        if (!reconnects.size) provider.off("status", status);
+      };
+    }
+  };
+}
+var PAUSED = "[room] hub unreachable; coordination paused. Your files are unaffected; messages and claims resume when it is back.";
+var NOT_SENT = "not sent: hub unreachable";
+var HubClient = class {
+  constructor(options) {
+    this.options = options;
+    this.transport = options.transport;
+    this.mono = options.mono ?? (() => performance.now());
+    this.wall = options.wall ?? (() => Date.now());
+    this.timeoutMs = options.local === false ? REQUEST_TIMEOUT_TEAM_MS : REQUEST_TIMEOUT_LOCAL_MS;
+    this.unsubs = [
+      this.transport.onFrame((bytes) => this.receive(bytes)),
+      this.transport.onReconnect(() => {
+        void this.reconnect();
+      })
+    ];
+    this.interval = setInterval(() => {
+      void this.renewAll();
+    }, LEASE_RENEW_MS);
+    this.interval.unref?.();
+  }
+  options;
+  transport;
+  mono;
+  wall;
+  timeoutMs;
+  leases = /* @__PURE__ */ new Map();
+  lostLeases = /* @__PURE__ */ new Set();
+  pending = /* @__PURE__ */ new Map();
+  retryWaits = /* @__PURE__ */ new Set();
+  unsubs;
+  interval;
+  nextId = 0;
+  helloOk = false;
+  incarnation;
+  pauseReason;
+  renewing = /* @__PURE__ */ new Set();
+  closed = false;
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.helloOk = false;
+    clearInterval(this.interval);
+    for (const unsub of this.unsubs) unsub();
+    for (const wait of this.retryWaits) {
+      clearTimeout(wait.timer);
+      wait.reject(new Error("hub client closed"));
+    }
+    this.retryWaits.clear();
+    for (const [id3, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("hub client closed"));
+      this.pending.delete(id3);
+    }
+  }
+  paused() {
+    if (this.closed) return PAUSED;
+    this.dropExpired();
+    if (this.pauseReason) return `${PAUSED} ${this.pauseReason}`;
+    return this.helloOk && this.lostLeases.size === 0 ? void 0 : PAUSED;
+  }
+  async hello() {
+    try {
+      const reply = await this.request({ op: "hello", proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId });
+      const old = this.incarnation;
+      this.incarnation = Number(reply.incarnation);
+      this.helloOk = true;
+      this.pauseReason = void 0;
+      if (old !== void 0 && old !== this.incarnation) void this.renewAll();
+      return reply;
+    } catch (error2) {
+      this.helloOk = false;
+      if (error2 instanceof HubError && error2.reason === "version") {
+        this.pauseReason = error2.message;
+      } else if (error2 instanceof Error && error2.message.includes("did not answer")) {
+        this.pauseReason = "the hub did not answer";
+      }
+      throw error2;
+    }
+  }
+  async acquire(name2, holder, supersedes) {
+    let t0 = 0, w0 = 0;
+    const reply = await this.request({ op: "acquire", name: name2, holder, ...supersedes === void 0 ? {} : { supersedes } }, () => {
+      t0 = this.mono();
+      w0 = this.wall();
+    });
+    const epoch = Number(reply.epoch);
+    this.leases.set(name2, { epoch, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
+    this.lostLeases.delete(name2);
+    return epoch;
+  }
+  async renew(name2) {
+    this.assertOpen();
+    this.dropExpired();
+    const lease = this.leases.get(name2);
+    if (!lease) throw new Error(NOT_SENT);
+    let t0 = 0, w0 = 0;
+    try {
+      const reply = await this.request({ op: "renew", name: name2, epoch: lease.epoch }, () => {
+        if (!this.valid(lease)) {
+          if (this.leases.get(name2) === lease) this.lose(name2);
+          throw new Error(NOT_SENT);
+        }
+        t0 = this.mono();
+        w0 = this.wall();
+      });
+      if (this.leases.get(name2) !== lease) return;
+      if (!this.valid(lease)) {
+        this.lose(name2);
+        return;
+      }
+      this.leases.set(name2, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
+    } catch (error2) {
+      if (error2 instanceof HubError && error2.reason === "stale" && this.leases.get(name2) === lease) this.lose(name2);
+      throw error2;
+    }
+  }
+  async release(name2) {
+    this.assertOpen();
+    const lease = this.leases.get(name2);
+    if (!lease) {
+      this.lostLeases.delete(name2);
+      return;
+    }
+    try {
+      await this.request({ op: "release", name: name2, epoch: lease.epoch });
+    } finally {
+      if (this.leases.get(name2) === lease) this.leases.delete(name2);
+      this.lostLeases.delete(name2);
+    }
+  }
+  async post(msg, options = {}) {
+    this.assertOpen();
+    if (this.paused()) throw new Error(NOT_SENT);
+    if (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT);
+    try {
+      return await this.request({ op: "post", msg, ...options }, () => {
+        if (this.paused() || options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) {
+          throw new Error(NOT_SENT);
+        }
+      });
+    } catch (error2) {
+      if (error2 instanceof HubError && error2.reason === "stale" && options.lease && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name);
+      throw error2;
+    }
+  }
+  valid(lease) {
+    return Math.max(this.mono() - lease.t0, this.wall() - lease.w0) < lease.ttlMs;
+  }
+  dropExpired() {
+    for (const [name2, lease] of this.leases) if (!this.valid(lease)) this.lose(name2);
+  }
+  lose(name2) {
+    this.leases.delete(name2);
+    this.lostLeases.add(name2);
+  }
+  async renewAll() {
+    if (!this.helloOk) return;
+    this.dropExpired();
+    for (const name2 of this.leases.keys()) {
+      if (this.renewing.has(name2)) continue;
+      this.renewing.add(name2);
+      void this.renew(name2).catch(() => {
+      }).finally(() => this.renewing.delete(name2));
+    }
+  }
+  async reconnect() {
+    try {
+      await this.hello();
+    } catch {
+    }
+  }
+  receive(bytes) {
+    let frame;
+    try {
+      frame = decodeFrame(bytes);
+    } catch {
+      return;
+    }
+    if (!frame || typeof frame !== "object" || !("v" in frame) || frame.v !== 1) return;
+    if ("push" in frame && frame.push === "lease-lost") {
+      const push = frame;
+      const lease = this.leases.get(push.name);
+      if (lease?.epoch === push.epoch) this.lose(push.name);
+      return;
+    }
+    if (!("re" in frame) || typeof frame.re !== "string") return;
+    const pending = this.pending.get(frame.re);
+    if (!pending) return;
+    this.pending.delete(frame.re);
+    clearTimeout(pending.timer);
+    pending.resolve(frame);
+  }
+  async request(body2, onSend) {
+    this.assertOpen();
+    const startedMono = this.mono(), startedWall = this.wall();
+    const startingBudget = this.timeoutMs + SETTLE_MS;
+    const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall);
+    for (; ; ) {
+      const t = await this.requestOnce(body2, onSend);
+      this.assertOpen();
+      if (t.ok) return t;
+      if (t.reason === "starting") {
+        const remaining = startingBudget - elapsed();
+        if (remaining <= 0) throw new HubError("starting", t.text);
+        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), remaining));
+        this.assertOpen();
+        if (elapsed() >= startingBudget) throw new HubError("starting", t.text);
+        continue;
+      }
+      if (t.reason === "hello-first" && body2.op !== "hello") {
+        await this.hello();
+        continue;
+      }
+      throw new HubError(t.reason, t.text);
+    }
+  }
+  requestOnce(body2, onSend) {
+    if (this.closed) return Promise.reject(new Error("hub client closed"));
+    if (!this.transport.connected()) return Promise.reject(new Error("hub unreachable"));
+    const id3 = `r${++this.nextId}`;
+    return new Promise((resolve5, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id3);
+        reject(new Error("the hub did not answer"));
+      }, this.timeoutMs);
+      this.pending.set(id3, { resolve: resolve5, reject, timer });
+      try {
+        this.assertOpen();
+        onSend?.();
+        this.assertOpen();
+        this.transport.send(encodeFrame({ ...body2, v: 1, id: id3 }));
+      } catch (error2) {
+        clearTimeout(timer);
+        this.pending.delete(id3);
+        reject(error2);
+      }
+    });
+  }
+  assertOpen() {
+    if (this.closed) throw new Error("hub client closed");
+  }
+  retryDelay(ms) {
+    this.assertOpen();
+    return new Promise((resolve5, reject) => {
+      const wait = { timer: void 0, reject };
+      wait.timer = setTimeout(() => {
+        this.retryWaits.delete(wait);
+        resolve5();
+      }, ms);
+      this.retryWaits.add(wait);
+    });
+  }
+};
+var HubError = class extends Error {
+  constructor(reason, message2) {
+    super(message2);
+    this.reason = reason;
+  }
+  reason;
+};
+
+// packages/room-mcp/src/post.ts
+var NOT_SENT2 = "not sent: hub unreachable";
+var TOLD = /* @__PURE__ */ new Set(["too-large", "over-cap", "room-full", "read-only", "version"]);
+var greetings = /* @__PURE__ */ new WeakMap();
+function greet(hub) {
+  greetings.set(hub, hub.hello().catch(() => {
+  }));
+}
+async function greeted(hub) {
+  await greetings.get(hub);
+}
+async function postWorkerMessage(post, record2, message2) {
+  const posted = await post({ name: record2.name, kind: "agent", owner: record2.lead.participant, label: record2.tag }, message2.body, { id: message2.id, auto: true });
+  if (!posted.ok) throw new Error(posted.text);
+}
+function releasePoster(post) {
+  return (from2, body2) => {
+    void post(from2, body2, { auto: true });
+  };
+}
+function createPost(room, hub) {
+  return (from2, body2, opts = {}) => {
+    const id3 = opts.id ?? newId("m_");
+    const sent = { ...outgoing(from2, body2, id3), at: Date.now() };
+    const result2 = (async () => {
+      try {
+        if (hub.paused()) await hub.hello().catch(() => {
+        });
+        const reply = await hub.post(outgoing(from2, body2, id3), opts.auto ? { auto: true } : {});
+        const seq = typeof reply.seq === "number" ? reply.seq : void 0;
+        const at = typeof reply.at === "number" ? reply.at : sent.at;
+        const msg = room.message(id3) ?? { ...sent, at, ...seq === void 0 ? {} : { seq } };
+        return { ok: true, msg, ...seq === void 0 ? {} : { seq }, ...reply.duplicate ? { duplicate: true } : {} };
+      } catch (error2) {
+        if (error2 instanceof HubError && TOLD.has(error2.reason)) return { ok: false, msg: sent, reason: error2.reason, text: error2.message };
+        return { ok: false, msg: sent, reason: "unreachable", text: NOT_SENT2 };
+      }
+    })();
+    return Object.assign(result2, { id: id3 });
+  };
+}
+
+// packages/room-mcp/src/worker-projector.ts
+var inRole = (record2, roomKey2, role) => role === "joined" ? record2.room === roomKey2 : record2.projectedInto === roomKey2;
+async function projectWorkers(s, registry2, lead, role, origin) {
+  const roomKey2 = s.roomName, fence = s.daemon.fence;
+  const { write: all2, retire: retiring } = registry2.projectable(lead, roomKey2);
+  const write2 = all2.filter(({ record: record2 }) => inRole(record2, roomKey2, role));
+  const retire = retiring.filter((record2) => inRole(record2, roomKey2, role));
+  const post = releasePoster(s.post);
+  const listed = /* @__PURE__ */ new Set([...write2.map(({ record: record2 }) => record2.id), ...retire.map((record2) => record2.id)]);
+  s.room.doc.transact(() => {
+    for (const { record: record2, status } of write2) {
+      const view = workerView(record2, status, fence);
+      if (JSON.stringify(s.room.workerViews.get(record2.id)) !== JSON.stringify(view)) s.room.workerViews.set(record2.id, view);
+      const stopped = status.status === "failed" || status.status === "stopped";
+      if (stopped && s.room.workerOwnsName(record2.id, record2.name) && (s.room.scopes.has(record2.name) || s.room.openClaims().some((c) => c.by === record2.name))) {
+        s.room.clearWorkerCoordination(record2.name, "worker stopped", post);
+      }
+    }
+    for (const [id3, view] of s.room.workerViews) {
+      if (view.lead !== lead || listed.has(id3)) continue;
+      const known = registry2.read(id3);
+      if (known ? inRole(known, roomKey2, role) : role === "joined") s.room.workerViews.delete(id3);
+    }
+  }, origin);
+  for (const record2 of retire) {
+    s.room.retireWorker(record2.id, { ...record2.archive ?? registry2.archiveOf(record2, { summary: "" }), id: record2.id }, post);
+    await registry2.finishCleanup(record2.id, roomKey2).catch(() => void 0);
+  }
+  return write2.map(({ record: record2 }) => record2);
+}
+function localWorkerView(s, id3) {
+  const registry2 = registrySnapshotForDir(s.dir);
+  const record2 = registry2.read(id3), status = registry2.status(id3);
+  return record2 && status ? workerView(record2, status, s.daemon.fence) : void 0;
+}
+var WorkerProjector = class {
+  constructor(s, registry2, log2 = () => {
+  }) {
+    this.s = s;
+    this.registry = registry2;
+    this.log = log2;
+  }
+  s;
+  registry;
+  log;
+  unsubscribe;
+  running = Promise.resolve();
+  stopped = false;
+  start() {
+    this.unsubscribe = this.registry.onChange(() => {
+      void this.project();
+    });
+    void this.project();
+  }
+  stop() {
+    this.stopped = true;
+    this.unsubscribe?.();
+  }
+  /** Serialized: a pass never overlaps another, and a request during a pass runs once after it. */
+  project() {
+    const next = this.running.then(async () => {
+      if (this.stopped) return;
+      try {
+        await projectWorkers(this.s, this.registry, this.s.me.name, "joined", this);
+      } catch (e) {
+        this.log(`worker projector (${this.s.roomName}): ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+    this.running = next;
+    return next;
+  }
+};
+
 // packages/room-mcp/src/bridge.ts
 var RELAY_TYPES = /* @__PURE__ */ new Set(["claim", "release", "changed", "conflict", "plan", "base", "scope"]);
 var INTERRUPT_TYPES = /* @__PURE__ */ new Set(["plan", "conflict", "base"]);
 var RELAY_DEDUPE_MS = 6e4;
-var SCOPE_REPOST_MS = 5 * 6e4;
 var RELAYED_MAX = 2e3;
+var PROJECT_TICK_MS = 3e4;
+var headIdentity2 = (h) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, complete: h.complete, projectedBy: h.projectedBy, projectedFrom: h.projectedFrom });
+var entryIdentity = (e) => e && JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence });
 var Bridge = class {
   constructor(team, local, o = {}) {
     this.team = team;
     this.local = local;
     this.o = o;
+    this.registry = o.registry;
   }
   team;
   local;
@@ -38514,36 +42172,34 @@ var Bridge = class {
   recent = /* @__PURE__ */ new Map();
   unobserve = [];
   timer = null;
-  lastScopeKey = "";
-  lastScopePost = { at: 0, content: "" };
+  tick = null;
   stopped = false;
-  /** The lead's own team scope (declared by the lead itself), kept underneath the workers' union. */
-  own;
-  /** True while the team scope record holds the union (coordination paths wider than the lead's own). */
-  unionPublished = false;
-  /** Workers of this lead, by their local participant name. */
+  registry;
+  running = Promise.resolve();
+  /** This lead's `local` workers that are not retiring, from the registry (never the room). */
   workers() {
-    return Array.from(this.local.room.workers.values()).filter((w) => w.lead === this.local.me.name);
-  }
-  workerNames() {
-    return new Set(this.workers().map((w) => w.name));
+    return (this.registry?.list() ?? []).filter((r) => r.lead.participant === this.local.me.name && r.room === this.local.roomName && !["retiring", "retired", "abandoned"].includes(r.phase));
   }
   tagOf(name2) {
     return this.workers().find((w) => w.name === name2)?.tag;
+  }
+  /** A worker's changed paths in the workers room: its current manifest incarnation, held entries included. */
+  changedPaths(name2) {
+    const head = this.local.room.manifestHead.get(name2);
+    return head ? [...this.local.room.manifest.get(manifestKey(name2, head.fence))?.keys() ?? []] : [];
   }
   /** Every path a worker has declared or changed. */
   workerPaths() {
     const out2 = /* @__PURE__ */ new Set();
     for (const w of this.workers()) {
       for (const p of this.local.room.scope(w.name)?.paths ?? []) out2.add(p);
-      for (const p of this.local.room.changedPaths(w.name)) out2.add(p);
+      for (const p of this.changedPaths(w.name)) out2.add(p);
     }
     return Array.from(out2).sort();
   }
   start() {
     const l = this.local.room, t = this.team.room;
-    const onLocalScopes = () => this.scheduleScope();
-    const onWorkers = () => this.scheduleScope();
+    const onLocal = () => this.schedule();
     const onLocalClaims = (ev) => {
       for (const [id3, ch] of ev.changes.keys) {
         if (ch.action === "add") this.mirrorClaim(id3);
@@ -38564,107 +42220,300 @@ var Bridge = class {
         }
       }
     };
-    const onLocalOverlays = () => this.scheduleScope();
     const onTeamBus = (ev) => {
       if (ev.transaction.local) return;
       for (const d of ev.changes.delta) for (const m of d.insert ?? []) this.relayDown(m);
     };
-    const onTeamScopes = (ev, tr) => {
-      if (tr.origin === this || !ev.keysChanged.has(this.team.me.name)) return;
-      this.own = this.team.room.scope(this.team.me.name);
-      this.lastScopeKey = "";
-      this.scheduleScope();
+    const onTeamLead = (ev, tr) => {
+      if (tr.origin === this) return;
+      const me = this.team.me.name;
+      if (ev.keysChanged.has(me) || [...ev.keysChanged].some((k) => k.startsWith(`${me}\0`))) this.schedule();
     };
-    this.own = t.scope(this.team.me.name);
-    l.scopes.observe(onLocalScopes);
-    l.workers.observe(onWorkers);
+    l.scopes.observe(onLocal);
     l.claims.observe(onLocalClaims);
-    l.overlays.observeDeep(onLocalOverlays);
-    l.deleted.observeDeep(onLocalOverlays);
-    l.overlayAt.observe(onLocalOverlays);
+    l.manifestHead.observe(onLocal);
+    l.manifest.observeDeep(onLocal);
     t.bus.observe(onTeamBus);
-    t.scopes.observe(onTeamScopes);
     t.claims.observe(onTeamClaims);
+    t.participants.observe(onTeamLead);
+    t.manifestHead.observe(onTeamLead);
     this.unobserve.push(
-      () => l.scopes.unobserve(onLocalScopes),
-      () => l.workers.unobserve(onWorkers),
+      () => l.scopes.unobserve(onLocal),
       () => l.claims.unobserve(onLocalClaims),
-      () => l.overlays.unobserveDeep(onLocalOverlays),
-      () => l.deleted.unobserveDeep(onLocalOverlays),
-      () => l.overlayAt.unobserve(onLocalOverlays),
+      () => l.manifestHead.unobserve(onLocal),
+      () => l.manifest.unobserveDeep(onLocal),
       () => t.bus.unobserve(onTeamBus),
-      () => t.scopes.unobserve(onTeamScopes),
-      () => t.claims.unobserve(onTeamClaims)
+      () => t.claims.unobserve(onTeamClaims),
+      () => t.participants.unobserve(onTeamLead),
+      () => t.manifestHead.unobserve(onTeamLead)
     );
-    for (const c of l.openClaims()) this.mirrorClaim(c.id);
-    this.scheduleScope();
+    this.tick = setInterval(() => this.schedule(), PROJECT_TICK_MS);
+    this.tick.unref?.();
+    const attach2 = (registry2) => {
+      if (this.stopped) return;
+      this.registry = registry2;
+      this.unobserve.push(registry2.onChange(() => this.schedule()));
+      for (const c of l.openClaims()) this.mirrorClaim(c.id);
+      this.schedule();
+    };
+    if (this.registry) attach2(this.registry);
+    else void registryForDir(this.local.dir).then(attach2, (e) => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`));
   }
-  /** Remove mirrored claims and stop observing. The lead's own scope is restored (the union was ours). */
+  /** Remove mirrored claims and the coordination record, and stop observing. Projections stay until retirement. */
   stop() {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
+    if (this.tick) clearInterval(this.tick);
     for (const u of this.unobserve) u();
     this.unobserve = [];
     for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this);
     this.mirrored.clear();
-    const me = this.team.me.name;
-    if (this.own) this.team.room.setScope(this.own, this);
-    else if (this.lastScopeKey && this.team.room.scope(me)) this.team.room.clearScope(me, this);
-    if (this.unionPublished) this.unionPublished = false;
+    const lead = this.team.me.name;
+    if (this.team.room.coordination.has(lead)) this.team.room.doc.transact(() => {
+      this.team.room.coordination.delete(lead);
+    }, this);
   }
   localIdOf(teamId) {
     for (const [l, t] of this.mirrored) if (t === teamId) return l;
     return void 0;
   }
-  scheduleScope() {
+  schedule() {
     if (this.stopped) return;
     const ms = this.o.debounceMs ?? 300;
     if (ms === 0) {
-      this.syncScope();
+      void this.sync();
       return;
     }
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      try {
-        this.syncScope();
-      } catch (e) {
-        this.o.log?.(`bridge: could not sync scope: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      void this.sync();
     }, ms);
     this.timer.unref?.();
   }
-  /** The lead's team scope = its own declared scope plus the union of its workers' declared and changed paths. */
-  syncScope() {
-    if (this.stopped) return;
-    const ws = this.workers();
-    const workerPaths = this.workerPaths();
-    const own2 = this.own;
-    const paths = Array.from(/* @__PURE__ */ new Set([...own2?.paths ?? [], ...workerPaths])).sort();
-    const key2 = JSON.stringify([ws.map((w) => [w.tag, this.local.room.scope(w.name)?.area, this.local.room.scope(w.name)?.summary]), paths, own2?.area, own2?.summary]);
-    if (key2 === this.lastScopeKey) return;
-    this.lastScopeKey = key2;
-    const me = this.team.me;
-    if (!workerPaths.length) {
-      if (own2) this.team.room.setScope(own2, this);
-      else if (this.team.room.scope(me.name)) this.team.room.clearScope(me.name, this);
-      if (this.unionPublished) this.unionPublished = false;
+  /** Coordination now, then one serialized projection pass. */
+  sync() {
+    if (this.stopped) return Promise.resolve();
+    try {
+      this.syncCoordination();
+    } catch (e) {
+      this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return this.project();
+  }
+  /**
+   * `coordination[lead] = {paths, workers, at}`: the union of the lead's projectable workers' scope and
+   * changed paths (manifest §5.6). Deleted when there are none. Never reads or writes `scopes[lead]`.
+   */
+  syncCoordination() {
+    if (this.stopped || !this.registry) return;
+    const lead = this.team.me.name;
+    const paths = this.workerPaths();
+    const workers = this.workers().map((w) => w.name).sort();
+    const current = this.team.room.coordination.get(lead);
+    if (!paths.length) {
+      if (current) this.team.room.doc.transact(() => {
+        this.team.room.coordination.delete(lead);
+      }, this);
       return;
     }
-    const areas = ws.map((w) => this.local.room.scope(w.name)?.area).filter((a) => !!a);
-    const area = own2?.area ?? areas[0] ?? "workers";
-    const lead = `lead of ${ws.length} worker${ws.length === 1 ? "" : "s"}: ${ws.map((w) => `${w.tag} (${w.task.slice(0, 40)})`).join("; ")}`;
-    const summary = own2 ? `own: ${own2.summary} \xB7 ${lead}` : lead;
-    const prev = this.team.room.scope(me.name);
-    this.unionPublished = true;
-    this.team.room.setScope({ by: me.name, byKind: me.kind, area, summary, paths, ...prev?.areas ? { areas: prev.areas } : {} }, this);
-    const now = Date.now();
-    const content = JSON.stringify([area, summary]);
-    if (content !== this.lastScopePost.content || now - this.lastScopePost.at >= SCOPE_REPOST_MS) {
-      void this.team.post(me, { type: "scope", area, summary, paths });
-      this.lastScopePost = { at: now, content };
+    if (current && JSON.stringify([current.paths, current.workers]) === JSON.stringify([paths, workers])) return;
+    const next = { paths, workers, at: Date.now() };
+    this.team.room.doc.transact(() => {
+      this.team.room.coordination.set(lead, next);
+    }, this);
+    this.o.log?.(`bridge: coordination covers ${paths.length} path(s) from ${workers.length} worker(s)`);
+  }
+  /** Serialized: one pass at a time, and a request during a pass runs once after it. */
+  project() {
+    const next = this.running.then(async () => {
+      if (this.stopped || !this.registry) return;
+      try {
+        await this.projectOnce(this.registry);
+      } catch (e) {
+        this.o.log?.(`bridge: could not project workers: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+    this.running = next;
+    return next;
+  }
+  /**
+   * `project(set)` (manifest §5.5, registry §13): views and retirement through the projector in the
+   * `projected` role, then each written worker's participant record and manifest; projections of this lead
+   * whose worker is no longer in the set are deleted.
+   */
+  async projectOnce(registry2) {
+    const written = await projectWorkers(this.team, registry2, this.local.me.name, "projected", this);
+    const keep = new Set(written.map((r) => r.id));
+    const lead = this.team.me.name;
+    const stale = [];
+    for (const key2 of this.team.room.participants.keys()) {
+      if (!key2.endsWith("\0proj")) continue;
+      const proj = this.team.room.participants.get(key2);
+      if (proj?.projectedBy === lead && !keep.has(proj.projectedFrom)) stale.push(key2.slice(0, -"\0proj".length));
     }
-    this.o.log?.(`bridge: team scope now covers ${paths.length} path(s) (${own2 ? `${own2.paths.length} own, ` : ""}${workerPaths.length} from ${ws.length} worker(s)); files shared stay under the lead's own ${own2?.paths.length ?? 0}`);
+    if (stale.length) this.team.room.doc.transact(() => {
+      for (const name2 of stale) this.dropProjection(name2);
+    }, this);
+    for (const record2 of written) {
+      if (this.stopped) return;
+      await this.projectWorker(record2);
+      await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record2.name });
+    }
+  }
+  /** Delete a projected participant's team records: its flat keys, manifest incarnations and head. */
+  dropProjection(name2) {
+    const room = this.team.room;
+    for (const key2 of [...room.participants.keys()]) if (key2.startsWith(`${name2}\0`)) room.participants.delete(key2);
+    for (const key2 of [...room.manifest.keys()]) if (key2.startsWith(`${name2}\0`)) room.manifest.delete(key2);
+    room.manifestHead.delete(name2);
+  }
+  /**
+   * Compose one worker's team projection, purely from local facts (manifest §5.5): base = the lead's team base B;
+   * entries = the worker's own workers-room manifest (against C) plus everything between B and C; every entry
+   * `held: 'worker'` except D; hashes only where the lead's team policy authorizes the path's text. Coverage is
+   * inherited from the source, never upgraded (N2).
+   */
+  async projectWorker(record2) {
+    const team = this.team.room, lead = this.team.me.name;
+    const leadGit = participantRecord(team, lead)?.git;
+    const fence = this.team.daemon.fence;
+    const policy = this.team.policyStore.policy;
+    if (!leadGit) return;
+    const B = leadGit.base, C2 = record2.base;
+    const view = participantsView(this.local.room, this.local.awareness, Date.now());
+    const source = snapshot(this.local.room, record2.name, view);
+    const sourceHead = source?.head;
+    const coverage = policy.level === "intent" ? { kind: "none", reason: "unprojectable" } : !sourceHead || !source?.fenceValid || !sourceHead.complete ? { kind: "none", reason: "starting" } : sourceHead.coverage.kind === "none" ? { kind: "none", reason: sourceHead.coverage.reason === "not-publisher" ? "not-publisher" : sourceHead.coverage.reason === "intent" ? "intent" : "starting" } : sourceHead.excluded.length ? { kind: "none", reason: "unprojectable" } : { kind: "all" };
+    const entries = /* @__PURE__ */ new Map();
+    const excluded = [];
+    let complete = coverage.kind === "all";
+    if (coverage.kind === "all" && C2 && source) {
+      const facts = await this.composeFacts(record2, B, C2, source.entries).catch((e) => {
+        this.o.log?.(`bridge: cannot compose ${record2.tag}'s projection: ${e instanceof Error ? e.message : String(e)}`);
+        return void 0;
+      });
+      if (!facts) complete = false;
+      else {
+        const salt = team.ensureRoomSalt();
+        const rules = this.team.daemon.inputs.rules;
+        for (const [path39, fact] of facts.carried) {
+          if (rules.roomIgnore.ignores(path39) || defaultIgnoredPath(path39)) {
+            excluded.push(digestPath(salt, path39));
+            facts.all.delete(path39);
+          }
+        }
+        for (const [path39, fact] of facts.all) {
+          const entry = fact.change === "D" ? { change: "D", state: "shared", at: fact.at, fence } : { change: fact.change, state: "held", held: "worker", at: fact.at, fence };
+          if (authorizesText(policy, path39)) {
+            if (fact.change !== "D" && fact.hash) {
+              entry.hash = fact.hash;
+              if (fact.size !== void 0) entry.size = fact.size;
+            }
+            if (fact.baseHash && fact.change !== "A") entry.baseHash = fact.baseHash;
+          }
+          entries.set(path39, entry);
+        }
+      }
+    } else if (coverage.kind === "all") complete = false;
+    excluded.sort();
+    const key2 = manifestKey(record2.name, fence);
+    const prevHead = team.manifestHead.get(record2.name);
+    const prevMap = team.manifest.get(key2);
+    const entriesChanged = (prevMap?.size ?? 0) !== entries.size || [...entries].some(([p, e]) => entryIdentity(prevMap?.get(p)) !== entryIdentity(e));
+    const exclusionChanged = JSON.stringify(prevHead?.excluded ?? []) !== JSON.stringify(excluded);
+    const head = {
+      base: B,
+      fence,
+      coverage: complete ? coverage : coverage.kind === "all" ? { kind: "none", reason: "starting" } : coverage,
+      projectedBy: lead,
+      projectedFrom: record2.id,
+      level: policy.level,
+      ...policy.level === "declared" ? { textPrefixes: [...policy.textPrefixes] } : {},
+      excluded,
+      rev: (prevHead?.rev ?? 0) + (entriesChanged || exclusionChanged || prevHead?.fence !== fence ? 1 : 0),
+      semRev: 0,
+      scannedAt: Date.now(),
+      complete
+    };
+    head.semRev = (prevHead?.semRev ?? 0) + (!prevHead || head.rev !== prevHead.rev || headIdentity2(head) !== headIdentity2(prevHead) ? 1 : 0);
+    const prevGit = participantRecord(team, record2.name)?.git;
+    const { rev: _leadRev, fence: _leadFence, ...leadFields } = leadGit;
+    const git3 = { ...leadFields, base: B, rev: prevGit?.rev ?? 0, fence };
+    const { rev: _prevRev, ...prevFields } = prevGit ?? { rev: 0 };
+    const { rev: _nextRev, ...nextFields } = git3;
+    if (JSON.stringify(prevFields) !== JSON.stringify(nextFields)) git3.rev += 1;
+    const identity2 = { name: record2.name, kind: "agent", owner: this.team.me.owner ?? lead, label: record2.tag };
+    const proj = { projectedFrom: record2.id, projectedBy: lead };
+    const unchanged = head.semRev === prevHead?.semRev && git3.rev === prevGit?.rev && JSON.stringify(team.participants.get(`${record2.name}\0proj`)) === JSON.stringify(proj);
+    if (unchanged) return;
+    team.doc.transact(() => {
+      for (const k of [...team.manifest.keys()]) if (k.startsWith(`${record2.name}\0`) && k !== key2) team.manifest.delete(k);
+      let map2 = team.manifest.get(key2);
+      if (!map2) {
+        map2 = new YMap();
+        team.manifest.set(key2, map2);
+      }
+      for (const p of [...map2.keys()]) if (!entries.has(p)) map2.delete(p);
+      for (const [p, e] of entries) if (entryIdentity(map2.get(p)) !== entryIdentity(e) || map2.get(p)?.at !== e.at) map2.set(p, e);
+      team.manifestHead.set(record2.name, head);
+      team.participants.set(`${record2.name}\0id`, identity2);
+      team.participants.set(`${record2.name}\0proj`, proj);
+      team.participants.set(`${record2.name}\0git`, git3);
+    }, this);
+  }
+  /**
+   * Source 1, the worker's own manifest against C, re-based onto B; source 2, `git diff B C` and the carried
+   * untracked files for paths the worker did not touch. `carried` lists source-2 paths (they pass the lead's
+   * exclusion rules). A path whose content equals B's blob has no entry.
+   */
+  async composeFacts(record2, B, C2, own2) {
+    const dir = this.local.dir;
+    const between = /* @__PURE__ */ new Map();
+    if (B !== C2) {
+      const raw = await git(dir, ["diff", "--raw", "--no-renames", "--no-abbrev", "-z", B, C2]);
+      const parts2 = raw.split("\0");
+      for (let i2 = 0; i2 + 1 < parts2.length; i2 += 2) {
+        const meta2 = parts2[i2].replace(/^:/, "").split(" "), path39 = parts2[i2 + 1];
+        if (meta2.length < 5 || !path39) continue;
+        const status = meta2[4][0];
+        if (!["M", "A", "D"].includes(status)) continue;
+        between.set(path39, { change: status, ...status !== "A" ? { oldBlob: meta2[2] } : {}, ...status !== "D" ? { newBlob: meta2[3] } : {} });
+      }
+    }
+    const untracked = new Map((record2.carriedUntracked ?? []).map((f) => [f.path, f.sha]));
+    const candidates = /* @__PURE__ */ new Set([...own2.keys(), ...between.keys(), ...untracked.keys()]);
+    const atB = await blobsAt(dir, B, candidates);
+    const all2 = /* @__PURE__ */ new Map(), carried = /* @__PURE__ */ new Map();
+    const now = Date.now();
+    const put = (path39, hash2, at, size2) => {
+      const base = atB.get(path39);
+      if (hash2 === void 0) return base ? { change: "D", baseHash: base.blob, at } : void 0;
+      if (base?.blob === hash2) return void 0;
+      return { change: base ? "M" : "A", hash: hash2, ...size2 !== void 0 ? { size: size2 } : {}, ...base ? { baseHash: base.blob } : {}, at };
+    };
+    for (const [path39, e] of own2) {
+      const fact = e.change === "D" ? put(path39, void 0, e.at) : e.hash ? put(path39, e.hash, e.at, e.size) : { change: atB.has(path39) ? "M" : "A", ...atB.get(path39) ? { baseHash: atB.get(path39).blob } : {}, at: e.at };
+      if (fact) all2.set(path39, fact);
+    }
+    const sizes = await blobsAt(dir, C2, [...between.keys()].filter((p) => !own2.has(p) && between.get(p).newBlob));
+    for (const [path39, d] of between) {
+      if (own2.has(path39) || untracked.has(path39)) continue;
+      const fact = put(path39, d.newBlob, now, sizes.get(path39)?.size);
+      if (fact) {
+        all2.set(path39, fact);
+        carried.set(path39, fact);
+      }
+    }
+    for (const [path39, sha] of untracked) {
+      if (own2.has(path39)) continue;
+      const fact = put(path39, sha, now);
+      if (fact) {
+        all2.set(path39, fact);
+        carried.set(path39, fact);
+      }
+    }
+    return { all: all2, carried };
   }
   mirrorClaim(localId) {
     if (this.mirrored.has(localId)) return;
@@ -38731,7 +42580,7 @@ var Bridge = class {
     const hit = this.workers().filter((w) => {
       if (broadcast) return true;
       const sc = this.local.room.scope(w.name);
-      const changed = this.local.room.changedPaths(w.name);
+      const changed = this.changedPaths(w.name);
       return paths.some((p) => sc && scopeCovers(sc, p) || changed.includes(p));
     });
     if (!hit.length) return;
@@ -38753,1522 +42602,338 @@ var Bridge = class {
     if (delivered.length) this.o.log?.(`bridge: relayed team ${m.type} ${m.id} to ${delivered.join(", ")} at ${priority2}`);
   }
 };
-
-// packages/room-mcp/src/worker-process.ts
-import { execFileSync as execFileSync5, spawn as spawn2 } from "node:child_process";
-import fs12 from "node:fs";
-import path9 from "node:path";
-
-// packages/room-mcp/src/worker-config.ts
-import fs10 from "node:fs";
-import path7 from "node:path";
-var WORKER_PORT_START = 4400;
-var WORKER_PORT_END = 4499;
-function allocateWorkerPort(used) {
-  const occupied = new Set(used);
-  for (let port = WORKER_PORT_START; port <= WORKER_PORT_END; port++) if (!occupied.has(port)) return port;
-  throw new Error(`all worker dev-server ports (${WORKER_PORT_START}-${WORKER_PORT_END}) are in use`);
-}
-var warnedMissingNice = false;
-function workerPriority(command, env = process.env, platform = process.platform) {
-  const raw = env.ROOM_WORKER_NICE?.trim();
-  const value2 = raw ? Number(raw) : 10;
-  const nice = Number.isFinite(value2) ? Math.max(0, Math.min(19, Math.trunc(value2))) : 10;
-  if (platform === "win32" || nice === 0) return { ...command, nice: 0 };
-  for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path7.delimiter)) {
-    const executable = path7.resolve(dir, "nice");
-    try {
-      fs10.accessSync(executable, fs10.constants.X_OK);
-      if (fs10.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command.cmd, ...command.args], nice };
-    } catch {
-    }
+async function blobsAt(dir, commit, paths) {
+  const list = [...paths];
+  const out2 = /* @__PURE__ */ new Map();
+  if (!list.length) return out2;
+  const raw = await git(dir, ["ls-tree", "-r", "-z", "--long", "--full-tree", commit, "--", ...list]);
+  for (const line of raw.split("\0")) {
+    const m = line.match(/^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.*)$/s);
+    if (m) out2.set(m[3], { blob: m[1], size: Number(m[2]) });
   }
-  if (!warnedMissingNice) {
-    warnedMissingNice = true;
-    process.stderr.write("room workers: nice is unavailable; starting workers at normal priority\n");
-  }
-  return { ...command, nice: 0 };
-}
-function workerBudget({ cores, memBytes, maxWorkers, running }) {
-  const workers = running + 1;
-  const divisor = Math.max(1, Math.min(maxWorkers, Math.max(workers, 4)), workers);
-  return { threads: Math.max(1, Math.floor(cores / divisor)), memGb: Math.max(1, Math.floor(memBytes / divisor / 1024 ** 3)) };
-}
-var WORKER_THREAD_CAPS = ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "LOKY_MAX_CPU_COUNT", "RAYON_NUM_THREADS"];
-function workerProcessEnv(options, inherited = process.env) {
-  const caps = {};
-  for (const key2 of WORKER_THREAD_CAPS) {
-    const cap = Number(inherited[key2]);
-    caps[key2] = options.isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, options.threads) : options.threads) : inherited[key2] ?? String(options.threads);
-  }
-  return {
-    ...caps,
-    ROOM_WORKER_THREADS: String(options.threads),
-    ROOM_WORKER_MEM_GB: String(options.memGb),
-    ROOM_WORKER_HOST: options.host,
-    ...options.model ? { ROOM_WORKER_MODEL: options.model } : {},
-    ...options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {},
-    ROOM_SERVER: options.server,
-    ROOM_ROOM: options.room,
-    ROOM_DIR: options.dir,
-    PWD: options.dir,
-    ...options.port ? { PORT: String(options.port) } : {},
-    ROOM_TAG: options.tag,
-    ROOM_LEAD: options.lead,
-    ROOM_OWNER: options.owner,
-    ROOM_SHARE: options.share,
-    ROOM_WORKER_ID: options.id,
-    ROOM_WORKER_RUN: String(options.run),
-    ROOM_LAUNCH_NONCE: options.nonce,
-    ROOM_REGISTRY: options.registry,
-    ...options.token ? { ROOM_TOKEN: options.token } : {},
-    ROOM_LOG_FILE: path7.join(options.logDir, ".room", "workers", `${options.tag}.mcp.log`)
-  };
-}
-function validTag(tag) {
-  if (typeof tag !== "string") return void 0;
-  const t = tag.trim();
-  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(t) ? t : void 0;
-}
-function workerPrompt(lead, tag, task, context) {
-  return [
-    `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
-    `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
-    `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
-    `If you spawn workers, collect them before your own room_done.`,
-    `Report progress in room_done; send notes only when the lead must know before you finish.`,
-    ...context ? [
-      `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : "normal"}; reasoning effort: ${context.effort ?? "host default"}. Stay within this budget and stagger heavy jobs.`,
-      ...context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : [],
-      ...context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(", ")}. Do not modify these paths or their contents; write outputs elsewhere.`] : [],
-      ...context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(", ")}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ""}.`] : []
-    ] : [],
-    "",
-    `TASK: ${task}`
-  ].join("\n");
-}
-var WORKER_EFFORTS = ["minimal", "low", "medium", "high"];
-function hostWorkerEffort(host, effort) {
-  return host === "claude" && effort === "minimal" ? "low" : effort;
-}
-function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANNEL, effort, options = {}) {
-  if (effort !== void 0 && !WORKER_EFFORTS.includes(effort)) throw new Error(`effort must be ${WORKER_EFFORTS.join("|")}`);
-  effort = hostWorkerEffort(host, effort);
-  if (options.resume && !options.sessionId) throw new Error("resuming a worker requires its host session id");
-  if (host === "codex") return { cmd: "codex", args: options.resume ? ["exec", "resume", options.sessionId, "-c", 'sandbox_mode="workspace-write"', ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] : ["exec", "-s", "workspace-write", ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] };
-  return {
-    cmd: "claude",
-    args: [...options.wakeChannels && claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
-  };
-}
-function workerMaxBudget(env = process.env) {
-  const value2 = env.ROOM_WORKER_MAX_BUDGET_USD?.trim();
-  if (!value2) return void 0;
-  if (!/^\d+(?:\.\d+)?$/.test(value2) || Number(value2) <= 0) throw new Error("ROOM_WORKER_MAX_BUDGET_USD must be a positive dollar amount");
-  return value2;
-}
-var LEAD_ONLY_ENV = ["ROOM_URL", "ROOM_NAME", "ROOM_DIR", "ROOM_SERVER", "ROOM_ROOM", "ROOM_TAG", "ROOM_LEAD", "ROOM_OWNER", "ROOM_SHARE", "ROOM_TOKEN", "ROOM_WORKER_ID", "ROOM_WORKER_RUN", "ROOM_LAUNCH_NONCE", "ROOM_REGISTRY", "ROOM_WORKER_HOST", "ROOM_WORKER_MODEL", "ROOM_WORKER_EFFORT", "ROOM_LOG_FILE", "ROOM_KIND", "PORT"];
-function workerEnv(base, extra) {
-  const out2 = {};
-  for (const [k, v] of Object.entries(base)) if (v !== void 0 && !LEAD_ONLY_ENV.includes(k)) out2[k] = v;
-  return { ...out2, ...extra };
+  return out2;
 }
 
-// packages/relay/src/process.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import fs11 from "node:fs";
-import path8 from "node:path";
-function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
-var systemProcessReaders = {
-  platform: process.platform,
-  readFile: (file) => fs11.readFileSync(file, "utf8"),
-  readLink: (file) => fs11.readlinkSync(file),
-  exec: (file, args3) => execFileSync4(file, args3, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: 3e3,
-    ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
-  })
-};
-function parsePsLstartUtc(line) {
-  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
-  if (!match) return void 0;
-  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
-  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1e3;
-  return Number.isInteger(seconds) ? seconds : void 0;
-}
-function probeProcess(pid, readers = systemProcessReaders) {
-  if (!pid || pid <= 0) return void 0;
-  const unreadable = () => pidAlive(pid) ? {} : void 0;
-  try {
-    if (readers.platform === "linux") {
-      const stat4 = readers.readFile(`/proc/${pid}/stat`);
-      const close = stat4.lastIndexOf(")");
-      if (close < 0) return unreadable();
-      const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
-      if (!/^\d+$/.test(startTicks ?? "")) return unreadable();
-      const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
-      if (!bootId) return unreadable();
-      let executable;
-      try {
-        executable = path8.basename(readers.readLink(`/proc/${pid}/exe`));
-      } catch {
-      }
-      return { startTime: `linux:${bootId}:${startTicks}`, executable };
-    }
-    if (readers.platform === "darwin") {
-      const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
-      const startSeconds = parsePsLstartUtc(lstart);
-      if (startSeconds === void 0) return unreadable();
-      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
-      if (!boot) return unreadable();
-      let executable;
-      try {
-        executable = path8.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
-      } catch {
-      }
-      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
-    }
-  } catch {
-  }
-  return unreadable();
-}
+// packages/room-mcp/src/conflict-set.ts
+import { createHash as createHash8 } from "node:crypto";
 
-// packages/room-mcp/src/worker-process.ts
-function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
-  if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
-  if (worker && !pidIsOurWorker(pid, worker, probe)) return false;
-  if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
-  try {
-    process.kill(pid, signal);
-    return true;
-  } catch {
-    return false;
-  }
-}
-var defaultSpawner = (spec16) => {
-  fs12.mkdirSync(path9.dirname(spec16.logFile), { recursive: true });
-  const fd = fs12.openSync(spec16.logFile, "a");
-  let child;
-  try {
-    child = spawn2(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", fd, fd] });
-  } catch (error2) {
-    fs12.closeSync(fd);
-    throw error2;
-  }
-  const closeLog = () => {
-    try {
-      fs12.closeSync(fd);
-    } catch {
+// packages/room-mcp/src/merge.ts
+import { execFile as execFile5 } from "node:child_process";
+import fs17 from "node:fs";
+import os4 from "node:os";
+import path14 from "node:path";
+
+// node_modules/node-diff3/dist/diff3.mjs
+function LCS(buffer1, buffer2) {
+  let equivalenceClasses = /* @__PURE__ */ Object.create(null);
+  for (let j = 0; j < buffer2.length; j++) {
+    const item = buffer2[j];
+    if (equivalenceClasses[item]) {
+      equivalenceClasses[item].push(j);
+    } else {
+      equivalenceClasses[item] = [j];
     }
-  };
-  child.once("close", closeLog);
-  child.once("error", closeLog);
-  const started = new Promise((resolve5, reject) => {
-    const done = (error2) => {
-      child.off("spawn", onSpawn);
-      child.off("error", onError);
-      if (error2) reject(error2);
-      else resolve5();
-    };
-    const onSpawn = () => done();
-    const onError = (error2) => done(error2);
-    child.once("spawn", onSpawn);
-    child.once("error", onError);
-  });
-  child.unref();
-  return {
-    pid: child.pid ?? -1,
-    started,
-    onExit: (cb) => {
-      child.once("close", cb);
-    },
-    onError: (cb) => {
-      child.once("error", cb);
-    },
-    kill: () => {
-      try {
-        return child.kill("SIGTERM");
-      } catch {
-        return false;
+  }
+  const NULLRESULT = { buffer1index: -1, buffer2index: -1, chain: null };
+  let candidates = [NULLRESULT];
+  for (let i2 = 0; i2 < buffer1.length; i2++) {
+    const item = buffer1[i2];
+    const buffer2indices = equivalenceClasses[item] || [];
+    let r = 0;
+    let c = candidates[0];
+    for (const j of buffer2indices) {
+      let s;
+      for (s = r; s < candidates.length; s++) {
+        if (candidates[s].buffer2index < j && (s === candidates.length - 1 || candidates[s + 1].buffer2index > j)) {
+          break;
+        }
       }
-    },
-    killForce: () => {
-      try {
-        return child.kill("SIGKILL");
-      } catch {
-        return false;
+      if (s < candidates.length) {
+        const newCandidate = { buffer1index: i2, buffer2index: j, chain: candidates[s] };
+        if (r === candidates.length) {
+          candidates.push(c);
+        } else {
+          candidates[r] = c;
+        }
+        r = s + 1;
+        c = newCandidate;
+        if (r === candidates.length) {
+          break;
+        }
       }
     }
-  };
-};
-async function stopWorkerWithEscalation(options) {
-  if (!await options.terminate()) return false;
-  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
-  const now = options.now ?? Date.now;
-  const wait = async () => {
-    const deadline = now() + 5e3;
-    while (!options.exited() && now() < deadline) await sleep2(50);
-    return options.exited();
-  };
-  if (await wait()) return true;
-  await options.force();
-  return wait();
-}
-function pidPresent(pid, probe = probeProcess) {
-  return pid > 0 && probe(pid) !== void 0;
-}
-function workerProcessOwnership(pid, w, probe = probeProcess) {
-  if (!pid || pid <= 0) return "not-ours";
-  const info2 = probe(pid);
-  if (!info2) return "not-ours";
-  if (!w.processStartTime) return "unknown";
-  if (!info2?.startTime || !info2.executable) return "unknown";
-  if (info2.startTime !== w.processStartTime) return "not-ours";
-  const executable = path9.basename(info2.executable);
-  return executable === w.host || executable === "node" ? "ours" : "not-ours";
-}
-function pidIsOurWorker(pid, w, probe = probeProcess) {
-  return workerProcessOwnership(pid, w, probe) === "ours";
-}
-function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
-  const resolved = (p) => {
-    try {
-      return fs12.realpathSync(p);
-    } catch {
-      return path9.resolve(p);
-    }
-  };
-  const root = resolved(dir);
-  return list().some((p) => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path9.sep)));
-}
-function processName(pid) {
-  try {
-    return path9.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 3e3,
-      env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
-    }).trim()) || "process";
-  } catch {
-    return "process";
+    candidates[r] = c;
   }
+  return candidates[candidates.length - 1];
 }
-function listCwdProcesses(platform = process.platform) {
-  const result2 = [];
-  if (platform === "linux") {
-    for (const entry of fs12.readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      const pid = Number(entry);
-      try {
-        const cwd = fs12.realpathSync(`/proc/${pid}/cwd`);
-        result2.push({ pid, cwd, command: "" });
-      } catch {
-      }
-    }
-  } else if (platform === "darwin") {
-    const output = execFileSync5("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
-    let pid = 0;
-    for (const line of output.split("\n")) {
-      if (line.startsWith("p")) pid = Number(line.slice(1));
-      else if (line.startsWith("n") && pid > 0) result2.push({ pid, cwd: line.slice(1), command: "" });
+function diffIndices(buffer1, buffer2) {
+  const lcs = LCS(buffer1, buffer2);
+  let result2 = [];
+  let tail1 = buffer1.length;
+  let tail2 = buffer2.length;
+  for (let candidate = lcs; candidate !== null; candidate = candidate.chain) {
+    const mismatchLength1 = tail1 - candidate.buffer1index - 1;
+    const mismatchLength2 = tail2 - candidate.buffer2index - 1;
+    tail1 = candidate.buffer1index;
+    tail2 = candidate.buffer2index;
+    if (mismatchLength1 || mismatchLength2) {
+      result2.push({
+        buffer1: [tail1 + 1, mismatchLength1],
+        buffer1Content: buffer1.slice(tail1 + 1, tail1 + 1 + mismatchLength1),
+        buffer2: [tail2 + 1, mismatchLength2],
+        buffer2Content: buffer2.slice(tail2 + 1, tail2 + 1 + mismatchLength2)
+      });
     }
   }
+  result2.reverse();
   return result2;
 }
-async function terminateWorktreeProcesses(dir, options = {}) {
-  const root = fs12.existsSync(dir) ? fs12.realpathSync(dir) : path9.resolve(dir);
-  const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
-  const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
-  const sleep2 = options.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
-  const resolved = (cwd) => {
-    try {
-      return fs12.realpathSync(cwd);
-    } catch {
-      return path9.resolve(cwd);
-    }
-  };
-  const list = options.list ?? listCwdProcesses;
-  const insideWorktree = (p) => {
-    const cwd = resolved(p.cwd);
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path9.sep));
-  };
-  const targets = list().filter(insideWorktree);
-  if (!targets.length) return [];
-  const beforeTerm = new Set(list().filter(insideWorktree).map((p) => p.pid));
-  const named = [];
-  for (const p of targets) {
-    if (!beforeTerm.has(p.pid) || !pidPresent(p.pid, options.probe)) continue;
-    const name2 = p.command || processName(p.pid);
-    try {
-      signal(p.pid, "SIGTERM");
-      named.push(`${name2} (pid ${p.pid})`);
-    } catch (error2) {
-      if (error2.code !== "ESRCH") throw error2;
+function diff3MergeRegions(a, o, b) {
+  let hunks = [];
+  function addHunk(h, ab) {
+    hunks.push({
+      ab,
+      oStart: h.buffer1[0],
+      oLength: h.buffer1[1],
+      abStart: h.buffer2[0],
+      abLength: h.buffer2[1]
+    });
+  }
+  diffIndices(o, a).forEach((item) => addHunk(item, "a"));
+  diffIndices(o, b).forEach((item) => addHunk(item, "b"));
+  hunks.sort((x, y) => x.oStart - y.oStart);
+  let results = [];
+  let currOffset = 0;
+  function advanceTo(endOffset) {
+    if (endOffset > currOffset) {
+      results.push({
+        stable: true,
+        buffer: "o",
+        bufferStart: currOffset,
+        bufferLength: endOffset - currOffset,
+        bufferContent: o.slice(currOffset, endOffset)
+      });
+      currOffset = endOffset;
     }
   }
-  if (!named.length) return [];
-  await sleep2(300);
-  const stillInside = new Set(list().filter(insideWorktree).map((p) => p.pid));
-  for (const p of targets) if (stillInside.has(p.pid) && pidPresent(p.pid, options.probe)) {
-    try {
-      signal(p.pid, "SIGKILL");
-    } catch (error2) {
-      if (error2.code !== "ESRCH") throw error2;
+  while (hunks.length) {
+    let hunk = hunks.shift();
+    let regionStart = hunk.oStart;
+    let regionEnd = hunk.oStart + hunk.oLength;
+    let regionHunks = [hunk];
+    advanceTo(regionStart);
+    while (hunks.length) {
+      const nextHunk = hunks[0];
+      const nextHunkStart = nextHunk.oStart;
+      if (nextHunkStart > regionEnd)
+        break;
+      regionEnd = Math.max(regionEnd, nextHunkStart + nextHunk.oLength);
+      regionHunks.push(hunks.shift());
     }
+    if (regionHunks.length === 1) {
+      if (hunk.abLength > 0) {
+        const buffer = hunk.ab === "a" ? a : b;
+        results.push({
+          stable: true,
+          buffer: hunk.ab,
+          bufferStart: hunk.abStart,
+          bufferLength: hunk.abLength,
+          bufferContent: buffer.slice(hunk.abStart, hunk.abStart + hunk.abLength)
+        });
+      }
+    } else {
+      let bounds = {
+        a: [a.length, -1, o.length, -1],
+        b: [b.length, -1, o.length, -1]
+      };
+      while (regionHunks.length) {
+        hunk = regionHunks.shift();
+        const oStart = hunk.oStart;
+        const oEnd = oStart + hunk.oLength;
+        const abStart = hunk.abStart;
+        const abEnd = abStart + hunk.abLength;
+        let b2 = bounds[hunk.ab];
+        b2[0] = Math.min(abStart, b2[0]);
+        b2[1] = Math.max(abEnd, b2[1]);
+        b2[2] = Math.min(oStart, b2[2]);
+        b2[3] = Math.max(oEnd, b2[3]);
+      }
+      const aStart = bounds.a[0] + (regionStart - bounds.a[2]);
+      const aEnd = bounds.a[1] + (regionEnd - bounds.a[3]);
+      const bStart = bounds.b[0] + (regionStart - bounds.b[2]);
+      const bEnd = bounds.b[1] + (regionEnd - bounds.b[3]);
+      let result2 = {
+        stable: false,
+        aStart,
+        aLength: aEnd - aStart,
+        aContent: a.slice(aStart, aEnd),
+        oStart: regionStart,
+        oLength: regionEnd - regionStart,
+        oContent: o.slice(regionStart, regionEnd),
+        bStart,
+        bLength: bEnd - bStart,
+        bContent: b.slice(bStart, bEnd)
+      };
+      results.push(result2);
+    }
+    currOffset = regionEnd;
   }
-  return named;
+  advanceTo(o.length);
+  return results;
 }
-
-// packages/room-mcp/src/worker-git.ts
-import fs14 from "node:fs";
-import os3 from "node:os";
-import path11 from "node:path";
-
-// packages/room-mcp/src/worker-state.ts
-import fs13 from "node:fs";
-import path10 from "node:path";
-
-// packages/room-mcp/src/worker-status.ts
-var IDLE_CLAIM_RELEASE_MS = 8 * 60 * 60 * 1e3;
-function idleClaimsDue(input) {
-  return input.host === "shared-app-server" && (input.heldClaims > 0 || input.hasScope === true) && Number.isFinite(input.lastActivityMs) && Number.isFinite(input.nowMs) && input.nowMs - input.lastActivityMs >= IDLE_CLAIM_RELEASE_MS;
-}
-var result = (status, run2, note, extra = {}) => ({ status, run: run2, ...note ? { note } : {}, ...extra });
-function statusOf(record2, runs = record2.runs, reports = [], exits = [], liveness2, nowMs = Date.now()) {
-  if (record2.phase === "retired") return result("retired");
-  if (record2.phase === "abandoned") return result("abandoned");
-  if (["collecting", "discarding", "retiring"].includes(record2.phase)) return result("collecting", void 0, record2.interrupted?.detail);
-  const ordered = [...runs].sort((a, b) => a.n - b.n);
-  let index = ordered.length - 1;
-  let current = ordered[index];
-  let neverResume = false;
-  while (current?.mode === "resume" && current.launch?.outcome === "never") {
-    neverResume = true;
-    current = ordered[--index];
-  }
-  if (!current) return result("starting", void 0, neverResume ? "follow-up not delivered" : void 0);
-  const note = neverResume ? "follow-up not delivered" : void 0;
-  const launch = current.launch;
-  if (launch?.outcome === "ambiguous") return result("ambiguous", current, "launch may or may not have started; resume or discard");
-  if (launch?.outcome === "never") return result("failed", current, `never started: ${launch.error}`);
-  if (launch?.outcome === "imported") return result("imported", current, "a 0.16 worker; Room cannot check whether its process still runs");
-  if (!launch) return result(liveness2(current.launcher) === "dead" ? "ambiguous" : "starting", current, note);
-  const report = reports.find((r) => r.run === current.n && r.nonce === current.nonce);
-  const exit = exits.find((e) => e.run === current.n);
-  const live = launch.process ? liveness2(launch.process) : void 0;
-  const waitingForJoin = !report && nowMs - current.intentAt >= 6e4 ? `has not joined the room: its host's Room plugin may be older than 0.17 (host ${record2.host})` : note;
-  if (launch.process && live === "alive") return result("running", current, record2.stop?.run === current.n ? "stopping" : waitingForJoin);
-  if (!exit && liveness2(current.launcher) === "alive") return result("running", current, record2.stop?.run === current.n ? "stopping" : waitingForJoin);
-  if (launch.process && live === "unknown" && !exit) return result("unknown", current, `cannot verify pid ${launch.pid}`);
-  if (report?.done) return result(
-    "done",
-    current,
-    exit?.code && exit.code !== 0 ? `exited ${exit.code} after reporting` : note,
-    { summary: report.done.summary, finishedAt: report.done.at, ...exit?.code != null ? { exitCode: exit.code } : {} }
-  );
-  if (record2.stop?.run === current.n) return result("stopped", current, record2.stop.reason, { finishedAt: record2.stop.at });
-  const earlierDone = ordered.some((r) => r.n < current.n && reports.some((p) => p.run === r.n && p.nonce === r.nonce && p.done));
-  if (exit?.witnessed && exit.code === 0 && earlierDone) return result("done", current, note, { finishedAt: exit.at, exitCode: 0 });
-  if (exit?.witnessed && exit.code === 0) return result("failed", current, "exited without room_done", { finishedAt: exit.at, exitCode: 0 });
-  if (exit?.witnessed) return result("failed", current, exit.signal ?? `exit ${exit.code ?? "unknown"}`, { finishedAt: exit.at, ...exit.code != null ? { exitCode: exit.code } : {} });
-  if (exit && current.mode === "resume" && earlierDone) return result("done", current, "follow-up outcome unknown: ended while no session of yours was running", { finishedAt: exit.at });
-  if (exit) return result("failed", current, "stopped while no session of yours was running", { finishedAt: exit.at });
-  return result("running", current, "exit being recorded");
-}
-function realStateInput(record2, status) {
-  const map2 = {
-    starting: "running",
-    running: "running",
-    unknown: "running",
-    ambiguous: "running",
-    done: "done",
-    failed: "failed",
-    stopped: "dismissed",
-    imported: "dismissed",
-    collecting: "dismissed",
-    retired: "dismissed",
-    abandoned: "dismissed"
+function diff3Merge(a, o, b, options) {
+  let defaults = {
+    excludeFalseConflicts: true,
+    stringSeparator: /\s+/
   };
-  const launch = status.run?.launch;
-  const signal = record2.capabilities.signal && launch?.outcome === "launched" && !!launch.process;
-  return {
-    id: record2.id,
-    tag: record2.tag,
-    name: record2.name,
-    lead: record2.lead.participant,
-    host: record2.host,
-    model: record2.model,
-    effort: record2.effort,
-    budget: record2.budget,
-    share: record2.share,
-    link: record2.link,
-    task: record2.task,
-    dir: record2.dir,
-    branch: record2.branch,
-    base: record2.base,
-    carriedBase: record2.carriedBase,
-    carriedUntracked: record2.carriedUntracked,
-    port: record2.port,
-    startedAt: record2.createdAt,
-    pid: signal ? launch.pid : 0,
-    processStartTime: signal ? launch.process.startTime : void 0,
-    hostSessionId: record2.capabilities.resume ? record2.hostSessionId : void 0,
-    status: map2[status.status],
-    summary: status.summary ?? record2.legacy?.said,
-    exitCode: status.exitCode,
-    finishedAt: status.finishedAt,
-    dismissedAt: status.status === "stopped" || status.status === "imported" ? record2.stop?.at ?? record2.createdAt : void 0,
-    stopReason: record2.stop?.reason === "discarded" ? void 0 : record2.stop?.reason
-  };
-}
-
-// packages/room-mcp/src/worker-state.ts
-function roomWorkerPathMatchesBranch(leadDir, workerDir, branch, nested = false) {
-  const relative3 = path10.relative(path10.resolve(leadDir), path10.resolve(workerDir)).split(path10.sep);
-  if (relative3.length < 3 || relative3.length % 3 !== 0 || !nested && relative3.length !== 3) return false;
-  return relative3.every((part, i2) => i2 % 3 === 0 ? part === ".room" : i2 % 3 === 1 ? part === "workers" : validRepoPath(part, RECORDED_PATH)) && branch === `room/${relative3.at(-1)}`;
-}
-async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
-  const byName = new Map([...workers].map((record2) => [record2.name, record2]));
-  const chain = [w];
-  const seen = /* @__PURE__ */ new Set([w.name]);
-  let owner = w.lead;
-  while (leadName && owner !== leadName) {
-    const record2 = byName.get(owner);
-    if (!record2 || seen.has(record2.name)) return false;
-    const parent = {
-      name: record2.name,
-      tag: record2.tag,
-      lead: record2.lead,
-      dir: "dir" in record2 ? record2.dir : record2.keptWorktree ?? path10.dirname(path10.dirname(path10.dirname(chain[0].dir))),
-      branch: "branch" in record2 ? record2.branch : `room/${record2.tag}`
-    };
-    chain.unshift(parent);
-    seen.add(parent.name);
-    owner = parent.lead;
+  options = Object.assign(defaults, options);
+  if (typeof a === "string")
+    a = a.split(options.stringSeparator);
+  if (typeof o === "string")
+    o = o.split(options.stringSeparator);
+  if (typeof b === "string")
+    b = b.split(options.stringSeparator);
+  let results = [];
+  const regions = diff3MergeRegions(a, o, b);
+  let okBuffer = [];
+  function flushOk() {
+    if (okBuffer.length) {
+      results.push({ ok: okBuffer });
+    }
+    okBuffer = [];
   }
-  try {
-    let parentDir = leadDir, parentName = leadName;
-    for (const record2 of chain) {
-      if (parentName && record2.lead !== parentName) return false;
-      if (!fs13.existsSync(record2.dir)) return false;
-      const parentRoot = fs13.realpathSync(parentDir), workerRoot = fs13.realpathSync(record2.dir);
-      if (workerRoot === parentRoot) return false;
-      if (!roomWorkerPathMatchesBranch(parentDir, record2.dir, record2.branch)) return false;
-      const expected = path10.join(parentRoot, ".room", "workers", path10.basename(record2.dir));
-      if (workerRoot !== fs13.realpathSync(expected)) return false;
-      if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record2.dir)) return false;
-      if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
-      parentDir = record2.dir;
-      parentName = record2.name;
+  function isFalseConflict(a2, b2) {
+    if (a2.length !== b2.length)
+      return false;
+    for (let i2 = 0; i2 < a2.length; i2++) {
+      if (a2[i2] !== b2[i2])
+        return false;
     }
     return true;
-  } catch {
-    return false;
   }
+  regions.forEach((region) => {
+    if (region.stable) {
+      okBuffer.push(...region.bufferContent);
+    } else {
+      if (options.excludeFalseConflicts && isFalseConflict(region.aContent, region.bContent)) {
+        okBuffer.push(...region.aContent);
+      } else {
+        flushOk();
+        results.push({
+          conflict: {
+            a: region.aContent,
+            aIndex: region.aStart,
+            o: region.oContent,
+            oIndex: region.oStart,
+            b: region.bContent,
+            bIndex: region.bStart
+          }
+        });
+      }
+    }
+  });
+  flushOk();
+  return results;
 }
-var ROOM_CARRY_IDENTITY = {
-  authorName: "Room",
-  authorEmail: "room@localhost",
-  subjectPrefix: "room: carried-in uncommitted work from ",
-  isRoomCarryCommit(name2, email2, subject) {
-    return name2 === ROOM_CARRY_IDENTITY.authorName && email2 === ROOM_CARRY_IDENTITY.authorEmail && subject.startsWith(ROOM_CARRY_IDENTITY.subjectPrefix) && /^.+$/.test(subject.slice(ROOM_CARRY_IDENTITY.subjectPrefix.length));
-  }
-};
-async function workerCommitCount(runGit, dir, ref, leadHead, w) {
-  const commits = (await runGit(dir, ["rev-list", ref, `^${leadHead}`])).trim().split("\n").filter(Boolean);
-  if (!commits.length) return 0;
-  const recorded = /* @__PURE__ */ new Set();
-  if (w.carriedBase) recorded.add(w.carriedBase);
+
+// packages/room-mcp/src/merge.ts
+var warnedFallback = false;
+async function gitMergeFile(base, ours, theirs, labels) {
+  const clean2 = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
+  if (ours === theirs || theirs === base) return clean2(ours);
+  if (ours === base) return clean2(theirs);
+  const dir = fs17.mkdtempSync(path14.join(os4.tmpdir(), "room-merge-file-"));
+  const oursPath = path14.join(dir, "ours"), basePath = path14.join(dir, "base"), theirsPath = path14.join(dir, "theirs");
   try {
-    recorded.add((await runGit(dir, ["rev-parse", "--verify", `refs/room/carry/${w.tag}`])).trim());
-  } catch {
-  }
-  const present = new Set(commits);
-  for (const commit of recorded) {
-    if (!/^[0-9a-f]{40,64}$/.test(commit) || !present.has(commit)) continue;
-    try {
-      const identity2 = (await runGit(dir, ["show", "-s", "--format=%an%x00%ae%x00%s", commit])).trim();
-      const [name2, email2, subject] = identity2.split("\0");
-      if (ROOM_CARRY_IDENTITY.isRoomCarryCommit(name2, email2, subject)) present.delete(commit);
-    } catch {
-    }
-  }
-  return present.size;
-}
-async function workerRealState(leadDir, w, options = {}) {
-  const deps = options.probes ?? {};
-  const exists = deps.exists ?? fs13.existsSync;
-  const runGit = deps.git ?? git;
-  const present = exists(w.dir);
-  const state = {
-    worktree: present ? "present" : "vanished",
-    hostSession: !!w.hostSessionId,
-    finished: w.exitCode !== void 0 || w.finishedAt !== void 0 || w.status !== "running",
-    status: w.status,
-    exitCode: w.exitCode,
-    dismissed: w.dismissedAt !== void 0 || w.status === "dismissed"
-  };
-  if (options.process) state.process = options.hasHandle ? "ours" : (deps.process ?? ((worker) => workerProcessOwnership(worker.pid, worker, options.probe)))(w);
-  if (options.ownership || options.git) state.owned = present && await (deps.owned ?? isOwnedWorkerWorktree)(leadDir, w, options.leadName, options.workers);
-  if (options.branch) {
-    const ref = `refs/heads/${w.branch}`;
-    state.branch = (await runGit(leadDir, ["for-each-ref", "--format=%(refname)", ref])).split("\n").includes(ref) ? "present" : "absent";
-    if (state.branch === "present") {
-      const count = await workerCommitCount(runGit, leadDir, ref, "HEAD", w);
-      if (!Number.isSafeInteger(count)) throw new Error(`could not count commits on ${w.branch}`);
-      state.branchAhead = count;
-    }
-  }
-  if (options.git && state.owned) {
-    state.merged = false;
-    state.clean = false;
-    try {
-      const owned = new Set(await (deps.changedPaths ?? workerChangedPaths)(w));
-      const status = await runGit(w.dir, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", "."]);
-      const uncommitted = new Set(status.split("\0").filter(Boolean).map((entry) => entry.slice(3)).filter((p) => owned.has(p)));
-      for (const p of w.carriedUntracked ?? []) if (owned.has(p.path) && !exists(path10.join(w.dir, p.path))) uncommitted.add(p.path);
-      state.uncommitted = uncommitted.size;
-      state.clean = state.uncommitted === 0;
-      const head = (await runGit(leadDir, ["rev-parse", "HEAD"])).trim();
-      const branch = `refs/heads/${w.branch}`;
-      state.ahead = Math.max(
-        await workerCommitCount(runGit, w.dir, branch, head, w),
-        await workerCommitCount(runGit, w.dir, "HEAD", head, w)
+    fs17.writeFileSync(oursPath, ours);
+    fs17.writeFileSync(basePath, base);
+    fs17.writeFileSync(theirsPath, theirs);
+    const result2 = await new Promise((resolve5) => {
+      execFile5(
+        "git",
+        ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
+        { maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
+        (error2, stdout) => {
+          const raw = error2 && error2.code;
+          resolve5({
+            code: typeof raw === "number" ? raw : error2 ? -1 : 0,
+            stdout,
+            unavailable: raw === "ENOENT",
+            error: error2 ?? void 0
+          });
+        }
       );
-      if (w.base && state.ahead === 0) {
-        const own2 = (await runGit(w.dir, ["rev-list", "--count", `${w.base}..${branch}`])).trim();
-        state.merged = /^\d+$/.test(own2) && Number(own2) > 0;
-      }
-    } catch {
-      state.ahead = void 0;
+    });
+    if (result2.unavailable) return fallback(base, ours, theirs, labels, "git unavailable");
+    if (result2.code < 0 || result2.code > 0 && !result2.stdout.includes("<<<<<<< " + labels.ours)) return fallback(base, ours, theirs, labels, result2.error?.message ?? `git exited ${result2.code} without conflict markers`);
+    try {
+      return parseGitMerge(result2.stdout, labels, result2.code);
+    } catch (error2) {
+      return fallback(base, ours, theirs, labels, `could not parse git output: ${String(error2)}`);
     }
+  } finally {
+    fs17.rmSync(dir, { recursive: true, force: true });
   }
-  return state;
 }
-function decideCollect(s, explicit, stopped) {
-  if (s.status !== "done" && !(stopped && (s.status === "running" || s.status === "dismissed"))) return "skip-status";
-  if (!explicit && stopped && s.status !== "done") return "skip-partial";
-  return s.worktree === "vanished" ? "missing" : "inspect";
+function fallback(base, ours, theirs, labels, fallbackReason) {
+  if (!warnedFallback) {
+    warnedFallback = true;
+    console.error("room: git could not render this preview; falling back to node-diff3");
+  }
+  const raw = diff3Merge(ours.split("\n"), base.split("\n"), theirs.split("\n"));
+  const chunks = [];
+  const rendered = [];
+  const conflicts = [];
+  let line = 1;
+  for (const part of raw) {
+    if (part.ok) {
+      chunks.push({ ok: part.ok });
+      rendered.push(...part.ok);
+      line += part.ok.length;
+      continue;
+    }
+    if (!part.conflict) continue;
+    const conflict = { from: line, to: line + Math.max(0, part.conflict.o.length - 1), ...part.conflict };
+    chunks.push({ conflict });
+    conflicts.push(conflict);
+    rendered.push(`<<<<<<< ${labels.ours}`, ...conflict.a, `||||||| ${labels.base}`, ...conflict.o, "=======", ...conflict.b, `>>>>>>> ${labels.theirs}`);
+    line += conflict.o.length;
+  }
+  return { status: conflicts.length ? "conflict" : "clean", algorithm: "fallback", fallbackReason, text: rendered.join("\n"), chunks, conflicts };
 }
-function decideDiscard(s) {
-  return s.worktree === "vanished" ? "prune" : s.owned ? "cleanup" : "retain-directory";
-}
-function decideStop(s) {
-  return { cwd: s.owned === true, host: s.process === "ours" ? "signal" : s.process === "unknown" ? "unknown" : "not-ours" };
-}
-function processExited(s) {
-  return s.process === "not-ours";
-}
-function decideRetire(s) {
-  if (!processExited(s) || !s.finished) return void 0;
-  if (s.dismissed) return "dismissed";
-  if (s.status !== "done") return void 0;
-  if (s.clean === true && s.ahead === 0) return s.merged ? "merged" : "clean";
-  return void 0;
-}
-function decideLeave(s) {
-  return s.status !== "done" && s.status !== "failed" && s.status !== "dismissed" || s.process === "ours" || s.process === "unknown" ? "stop" : "leave";
-}
-function decideShutdown(s) {
-  return decideLeave(s);
-}
-function decidePreview(s, diskEligible) {
-  return diskEligible && s.worktree === "present" ? "disk" : "shared";
-}
-function decideResume(s) {
-  if (s.worktree === "vanished") return "missing";
-  if (!s.hostSession) return "no-session";
-  return s.process === "ours" ? "wait-exit" : s.process === "unknown" ? "unknown" : "ready";
-}
-
-// packages/room-mcp/src/worker-git.ts
-var WORKERS_DIR = path11.join(".room", "workers");
-function workerOwnedPaths(w) {
-  const paths = w?.link ?? [];
-  return {
-    includes: (p) => paths.some((l) => p === l || p.startsWith(l + "/")),
-    exclusions: paths.map((l) => ":(exclude,literal)" + l)
+function parseGitMerge(text, labels, exitCode) {
+  if (exitCode === 0) return { status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] };
+  const lines = text.split("\n");
+  const chunks = [];
+  const conflicts = [];
+  let plain = [];
+  let sourceLine = 1;
+  const flush = () => {
+    if (!plain.length) return;
+    chunks.push({ ok: plain });
+    sourceLine += plain.length;
+    plain = [];
   };
-}
-async function ignoredWorkerArtifacts(w) {
-  const raw = await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--", ".", ...workerOwnedPaths(w).exclusions]);
-  return raw.split("\0").filter(Boolean).filter((p) => p !== ".room" && p !== ".room/" && !p.startsWith(".room/")).filter((p) => !isRegenerableBuildPath(p)).sort();
-}
-async function pruneMissingWorkerWorktree(leadDir, w, manageBranch = true) {
-  if (!roomWorkerPathMatchesBranch(leadDir, w.dir, w.branch, true)) {
-    throw new Error(`worker ${w.dir} is not an owned Room worktree`);
-  }
-  try {
-    fs14.lstatSync(w.dir);
-    throw new Error(`worktree ${w.dir} still exists`);
-  } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
-  }
-  await git(leadDir, ["worktree", "prune"]);
-  if (!manageBranch) return void 0;
-  const state = await workerRealState(leadDir, w, { branch: true });
-  if (state.branch === "absent") return `branch ${w.branch} was already absent`;
-  const count = state.branchAhead;
-  if (count) return `branch ${w.branch} kept: it has ${count} commit${count === 1 ? "" : "s"} not in your HEAD`;
-  await git(leadDir, ["branch", "-D", w.branch]);
-  return `branch ${w.branch} deleted (it has no commits of its own beyond your HEAD)`;
-}
-async function uncommittedCount(dir) {
-  const out2 = await git(dir, ["status", "--porcelain", "--untracked-files=normal"]);
-  return out2.split("\n").filter((line) => line.trim() && !/^..\s+"?\.room\//.test(line)).length;
-}
-function resolveWorkerLinks(repoDir, requested) {
-  let input = requested;
-  if (input === void 0) {
-    try {
-      input = fs14.readFileSync(path11.join(repoDir, ".roomlinks"), "utf8").split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).filter(Boolean);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-      input = [];
+  for (let i2 = 0; i2 < lines.length; ) {
+    if (lines[i2] !== `<<<<<<< ${labels.ours}`) {
+      plain.push(lines[i2++]);
+      continue;
     }
+    flush();
+    const baseMarker = lines.indexOf(`||||||| ${labels.base}`, i2 + 1);
+    const divider = baseMarker < 0 ? -1 : lines.indexOf("=======", baseMarker + 1);
+    const end = divider < 0 ? -1 : lines.indexOf(`>>>>>>> ${labels.theirs}`, divider + 1);
+    if (baseMarker < 0 || divider < 0 || end < 0) throw new Error("could not parse git merge-file conflict markers");
+    const a = lines.slice(i2 + 1, baseMarker), o = lines.slice(baseMarker + 1, divider), b = lines.slice(divider + 1, end);
+    const conflict = { from: sourceLine, to: sourceLine + Math.max(0, o.length - 1), a, o, b };
+    chunks.push({ conflict });
+    conflicts.push(conflict);
+    sourceLine += o.length;
+    i2 = end + 1;
   }
-  if (!Array.isArray(input) || input.some((p) => typeof p !== "string")) throw new Error("link must be an array of repo-relative paths");
-  if (!input.length) return [];
-  const root = fs14.realpathSync(repoDir);
-  const paths = input.map((raw) => {
-    const p = raw.trim();
-    if (!validRepoPath(p, LINK_INPUT_PATH)) throw new Error(`invalid link path: ${raw}`);
-    const source = fs14.realpathSync(path11.join(root, p));
-    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`);
-    const stat4 = fs14.statSync(source);
-    if (!stat4.isFile() && !stat4.isDirectory()) throw new Error(`link source must be a file or directory: ${p}`);
-    return p;
-  });
-  for (const [i2, a] of paths.entries()) for (const b of paths.slice(i2 + 1)) {
-    if (a === b || b.startsWith(a + "/") || a.startsWith(b + "/")) throw new Error(`overlapping link paths: ${a}, ${b}`);
-  }
-  return paths;
-}
-function prepareWorkerLinks(repoDir, workerDir, requested) {
-  const input = resolveWorkerLinks(repoDir, requested);
-  if (!input.length) return [];
-  const root = fs14.realpathSync(repoDir), destRoot = fs14.realpathSync(workerDir);
-  const links = input.map((p) => {
-    const source = fs14.realpathSync(path11.join(root, p));
-    if (!isInsideRoot(root, source)) throw new Error(`link source escapes repo: ${p}`);
-    const stat4 = fs14.statSync(source);
-    const target = path11.join(destRoot, p);
-    for (let at = target; at !== destRoot; at = path11.dirname(at)) {
-      let entry;
-      try {
-        entry = fs14.lstatSync(at);
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-      if (entry && (at === target || entry.isSymbolicLink() || !entry.isDirectory())) throw new Error(`link destination already present or traverses a non-directory: ${p}`);
-    }
-    return { p, source, target, directory: stat4.isDirectory() };
-  });
-  const made = [];
-  try {
-    for (const link of links) {
-      fs14.mkdirSync(path11.dirname(link.target), { recursive: true });
-      fs14.symlinkSync(link.source, link.target, link.directory ? "dir" : "file");
-      made.push(link.target);
-    }
-  } catch (e) {
-    for (const target of made.reverse()) fs14.unlinkSync(target);
-    throw e;
-  }
-  return links.map((l) => l.p);
-}
-var carriedSubject = (leadName) => `${ROOM_CARRY_IDENTITY.subjectPrefix}${leadName}`;
-var internalGit = (dir, args3) => git(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", ...args3]);
-var carryRef = (tag) => `refs/room/carry/${tag}`;
-var carriedUntrackedRef = (tag) => `refs/room/carry-untracked/${tag}`;
-var pathExcluded = (rel, exclusions) => exclusions.some((p) => rel === p || rel.startsWith(p.replace(/\/$/, "") + "/"));
-function patchArgs(base, exclusions, staged = false) {
-  return ["diff", ...staged ? ["--cached"] : [], "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", base, "--", ".", ...exclusions];
-}
-function retainUntrackedTree(dir, tag, paths) {
-  if (!paths.length) return void 0;
-  const scratch = fs14.mkdtempSync(path11.join(os3.tmpdir(), "room-carry-index-"));
-  const env = { ...process.env, GIT_INDEX_FILE: path11.join(scratch, "index") };
-  const run2 = (args3, wholeTreePaths) => boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", ...args3], { env, wholeTreePaths }).toString().trim();
-  try {
-    for (const entry of paths) {
-      const stat4 = fs14.lstatSync(path11.join(dir, entry.path));
-      const mode2 = stat4.isSymbolicLink() ? "120000" : stat4.mode & 73 ? "100755" : "100644";
-      run2(["update-index", "--add", "--cacheinfo", `${mode2},${entry.sha},${entry.path}`]);
-    }
-    const tree = run2(["write-tree"], paths.length);
-    run2(["update-ref", carriedUntrackedRef(tag), tree]);
-    return tree;
-  } finally {
-    fs14.rmSync(scratch, { recursive: true, force: true });
-  }
-}
-async function cleanupPreparedWorktree(repoDir, prepared) {
-  if (!prepared.created) return;
-  await internalGit(repoDir, ["worktree", "remove", "--force", prepared.dir]);
-  if (!prepared.branchCreated) return;
-  await internalGit(repoDir, ["branch", "-D", prepared.branch]);
-  for (const ref of [carryRef(prepared.branch.slice(5)), carriedUntrackedRef(prepared.branch.slice(5))]) {
-    const previous = prepared.previousCarryRefs?.[ref];
-    if (previous) await internalGit(repoDir, ["update-ref", ref, previous]);
-    else try {
-      await internalGit(repoDir, ["update-ref", "-d", ref]);
-    } catch {
-    }
-  }
-}
-async function prepareWorktree(repoDir, tag, leadName = "lead", linkExclusions, onStep, retry = 0, carry = true) {
-  const dir = path11.join(repoDir, WORKERS_DIR, tag);
-  const branch = `room/${tag}`;
-  const gitDir = (await git(repoDir, ["rev-parse", "--absolute-git-dir"])).trim();
-  if (["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].some((p) => fs14.existsSync(path11.join(gitDir, p)))) throw new Error("finish the merge or rebase before spawning workers");
-  if (fs14.existsSync(path11.join(dir, ".git"))) {
-    throw new Error(`worktree ${tag} is unmanaged; discard it by tag first`);
-  }
-  fs14.mkdirSync(path11.dirname(dir), { recursive: true });
-  await internalGit(repoDir, ["worktree", "prune"]);
-  let hasBranch = false;
-  try {
-    await git(repoDir, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
-    hasBranch = true;
-  } catch {
-  }
-  if (hasBranch) throw new Error(`branch ${branch} is unmanaged; discard it by tag first`);
-  const previousCarryRefs = {};
-  if (!hasBranch) for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
-    try {
-      previousCarryRefs[ref] = (await git(repoDir, ["rev-parse", "--verify", ref])).trim();
-    } catch {
-    }
-  }
-  let base;
-  if (!hasBranch) {
-    try {
-      base = (await git(repoDir, ["rev-parse", "--verify", "HEAD"])).trim();
-    } catch {
-      throw new Error("make a first commit before spawning workers");
-    }
-  }
-  await onStep?.("plan", {
-    worktreeExisted: false,
-    branchExisted: false,
-    previousCarryRefs: Object.fromEntries([carryRef(tag), carriedUntrackedRef(tag)].map((ref) => [ref, previousCarryRefs[ref] ?? null]))
-  });
-  await onStep?.("worktree", { created: true, branchCreated: true });
-  await internalGit(repoDir, ["worktree", "add", "-q", "-b", branch, dir, base]);
-  if (!base) return { dir, branch, created: true, branchCreated: false };
-  if (!carry) {
-    const result2 = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base };
-    await onStep?.("prepared", { created: true, branchCreated: true });
-    return result2;
-  }
-  try {
-    const exclusions = [...linkExclusions ?? []];
-    if (linkExclusions === void 0) {
-      try {
-        exclusions.push(...fs14.readFileSync(path11.join(repoDir, ".roomlinks"), "utf8").split(/\r?\n/).map((l) => l.replace(/#.*/, "").trim()).filter(Boolean));
-      } catch (e) {
-        if (e.code !== "ENOENT") throw e;
-      }
-    }
-    const excluded = [".room", ...exclusions].map((p) => `:(exclude,literal)${p.replace(/\/$/, "")}`);
-    const patch = await internalGit(repoDir, patchArgs(base, excluded));
-    if (patch) {
-      const scratch = fs14.mkdtempSync(path11.join(os3.tmpdir(), "room-carry-patch-"));
-      try {
-        const file = path11.join(scratch, "carry.patch");
-        fs14.writeFileSync(file, patch, { mode: 384 });
-        boundedGitSync(dir, ["-c", "core.hooksPath=/dev/null", "-c", "core.autocrlf=false", "apply", "--index", "--binary", file]);
-      } finally {
-        fs14.rmSync(scratch, { recursive: true, force: true });
-      }
-    }
-    const untracked = (await git(repoDir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).room"])).split("\0").filter(Boolean);
-    const carriedUntracked = [];
-    const skippedCarry = [];
-    let totalBytes = 0;
-    const carryRoot = fs14.realpathSync(repoDir);
-    for (const rel of untracked) {
-      if (pathExcluded(rel, exclusions)) {
-        skippedCarry.push({ path: rel, reason: "linked input" });
-        continue;
-      }
-      const source = path11.join(repoDir, rel), target = path11.join(dir, rel);
-      const stat4 = fs14.lstatSync(source);
-      if (stat4.isDirectory()) {
-        skippedCarry.push({ path: rel, reason: "nested repository or directory" });
-        continue;
-      }
-      if (!stat4.isFile() && !stat4.isSymbolicLink()) {
-        skippedCarry.push({ path: rel, reason: "special file" });
-        continue;
-      }
-      let containment;
-      try {
-        containment = containedRepoPath(carryRoot, path11.join(carryRoot, rel), { leaf: "read-contained-link" });
-      } catch {
-        skippedCarry.push({ path: rel, reason: "unresolvable path" });
-        continue;
-      }
-      if (!containment.ok) {
-        skippedCarry.push({ path: rel, reason: "path leaves repository" });
-        continue;
-      }
-      if (stat4.isSymbolicLink()) {
-        const link = fs14.readlinkSync(source);
-        if (path11.isAbsolute(link)) {
-          skippedCarry.push({ path: rel, reason: "absolute link" });
-          continue;
-        }
-      }
-      if (stat4.isFile() && (stat4.size > 5 * 1024 * 1024 || totalBytes + stat4.size > 50 * 1024 * 1024)) {
-        skippedCarry.push({ path: rel, reason: "size budget" });
-        continue;
-      }
-      fs14.mkdirSync(path11.dirname(target), { recursive: true });
-      if (stat4.isSymbolicLink()) fs14.symlinkSync(fs14.readlinkSync(source), target);
-      else {
-        await fs14.promises.copyFile(source, target);
-        fs14.chmodSync(target, stat4.mode);
-        totalBytes += stat4.size;
-      }
-      const sha = carriedContentHash(dir, rel, true);
-      carriedUntracked.push({ path: rel, sha, mode: stat4.mode & 511 });
-    }
-    const snapshotStable = async () => {
-      const latestPatch = await internalGit(repoDir, patchArgs(base, excluded));
-      const latestUntracked = (await git(repoDir, ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(exclude).room"])).split("\0").filter(Boolean);
-      const copiedStable = carriedUntracked.every(({ path: rel, sha }) => {
-        try {
-          return carriedContentHash(repoDir, rel) === sha;
-        } catch (error2) {
-          if (error2 instanceof Error && error2.message.includes("timed out")) throw error2;
-          return false;
-        }
-      });
-      return (await git(repoDir, ["rev-parse", "HEAD"])).trim() === base && latestPatch === patch && latestUntracked.join("\0") === untracked.join("\0") && copiedStable;
-    };
-    if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
-    const staged = (await internalGit(dir, ["diff", "--cached", "--name-only", "-z"])).split("\0").filter(Boolean);
-    if (staged.length) {
-      await onStep?.("carry-commit", {});
-      await git(dir, ["-c", "core.hooksPath=/dev/null", "-c", `user.name=${ROOM_CARRY_IDENTITY.authorName}`, "-c", `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, "-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", carriedSubject(leadName)]);
-    }
-    const commit = (await git(dir, ["rev-parse", "HEAD"])).trim();
-    const paths = [.../* @__PURE__ */ new Set([...staged, ...carriedUntracked.map((x) => x.path)])].sort();
-    if (paths.length) await onStep?.("carry-refs", {});
-    if (paths.length) await internalGit(repoDir, ["update-ref", carryRef(tag), commit]);
-    retainUntrackedTree(repoDir, tag, carriedUntracked);
-    if (!await snapshotStable()) throw new Error("lead changed during carry; retrying snapshot");
-    const result2 = { dir, branch, created: true, branchCreated: true, previousCarryRefs, base: commit, carriedBase: staged.length ? commit : void 0, carried: paths.length ? { count: paths.length, commit, paths } : void 0, carriedUntracked, skippedCarry };
-    await onStep?.("prepared", { created: true, branchCreated: true });
-    return result2;
-  } catch (e) {
-    if (e.message === "lead changed during carry; retrying snapshot") {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
-      if (retry >= 2) throw new Error("lead changed repeatedly during carry; try spawning again when HEAD is stable");
-      return prepareWorktree(repoDir, tag, leadName, linkExclusions, onStep, retry + 1, carry);
-    }
-    try {
-      await internalGit(dir, ["reset", "--hard", base]);
-      await internalGit(dir, ["clean", "-fdx"]);
-      for (const ref of [carryRef(tag), carriedUntrackedRef(tag)]) {
-        if (previousCarryRefs[ref]) await internalGit(repoDir, ["update-ref", ref, previousCarryRefs[ref]]);
-        else try {
-          await internalGit(repoDir, ["update-ref", "-d", ref]);
-        } catch {
-        }
-      }
-    } catch {
-      await cleanupPreparedWorktree(repoDir, { dir, branch, created: true, branchCreated: true, previousCarryRefs });
-      await internalGit(repoDir, ["worktree", "add", "-q", "-b", branch, dir, base]);
-    }
-    return { dir, branch, created: true, branchCreated: true, previousCarryRefs, base, carryFailed: true, carryError: e.message };
-  }
-}
-async function cleanupWorker(leadDir, w, collected = false, discarded = false, terminatedProcesses = [], processOptions = {}, leadName, workers = []) {
-  if (!discarded && (w.status === "failed" || w.exitCode !== 0)) return false;
-  if (decideDiscard(await workerRealState(leadDir, w, { ownership: true, leadName, workers })) !== "cleanup") return false;
-  const nested = (await git(leadDir, ["worktree", "list", "--porcelain"])).split("\n").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length)).filter((dir) => dir !== w.dir && isInsideRoot(fs14.realpathSync(w.dir), dir));
-  if (nested.length) throw new Error(`nested worker worktrees still present under ${w.tag}: ${nested.join(", ")}`);
-  const head = (await git(w.dir, ["rev-parse", "HEAD"])).trim();
-  const refs = /* @__PURE__ */ new Map();
-  for (const ref of [carryRef(w.tag), carriedUntrackedRef(w.tag)]) {
-    try {
-      refs.set(ref, (await git(leadDir, ["rev-parse", "--verify", ref])).trim());
-    } catch {
-    }
-  }
-  terminatedProcesses.push(...await terminateWorktreeProcesses(w.dir, processOptions));
-  try {
-    await internalGit(leadDir, ["worktree", "remove", ...collected ? ["--force"] : [], w.dir]);
-    await internalGit(leadDir, ["branch", "-D", w.branch]);
-    for (const ref of refs.keys()) await internalGit(leadDir, ["update-ref", "-d", ref]);
-  } catch (error2) {
-    const recovery = w.id ? path11.join(await realGitCommonDir(leadDir), "room", "registry", "patches", `${w.id}.patch`) : void 0;
-    const recoveryNote = recovery && fs14.existsSync(recovery) ? `actual worker edits are in ${recovery}` : `collected edits are in ${leadDir}`;
-    try {
-      let branchExists = true;
-      try {
-        await git(leadDir, ["rev-parse", "--verify", `refs/heads/${w.branch}`]);
-      } catch {
-        branchExists = false;
-      }
-      if (!branchExists) await internalGit(leadDir, ["branch", w.branch, head]);
-      if (!fs14.existsSync(path11.join(w.dir, ".git"))) await internalGit(leadDir, ["worktree", "add", "-q", w.dir, w.branch]);
-      for (const [ref, sha] of refs) await internalGit(leadDir, ["update-ref", ref, sha]);
-      for (const entry of w.carriedUntracked ?? []) {
-        if (!validRepoPath(entry.path, RECORDED_PATH)) continue;
-        const file = path11.join(w.dir, entry.path);
-        if (fs14.existsSync(file)) continue;
-        fs14.mkdirSync(path11.dirname(file), { recursive: true });
-        const mode2 = (await git(leadDir, ["ls-tree", carriedUntrackedRef(w.tag), "--", entry.path])).split(" ")[0];
-        if (mode2 === "120000") fs14.symlinkSync(boundedGitSync(leadDir, ["cat-file", "blob", entry.sha]).toString(), file);
-        else {
-          const bytes = boundedGitSync(leadDir, ["cat-file", "--filters", "--path=" + entry.path, entry.sha]);
-          fs14.writeFileSync(file, bytes, { mode: entry.mode ?? 420 });
-          fs14.chmodSync(file, entry.mode ?? 420);
-        }
-      }
-    } catch (restore) {
-      throw new Error(`cleanup failed: ${error2.message}; could not restore ${w.dir}: ${restore.message}; ${recoveryNote}`);
-    }
-    throw new Error(`cleanup failed: ${error2.message}; reconstructed base at ${w.dir}; ${recoveryNote}`);
-  }
-  cleanupWorkerLogs(leadDir, w);
-  return true;
-}
-function cleanupWorkerLogs(leadDir, w) {
-  const parent = path11.basename(path11.dirname(w.dir)) === "workers" && path11.basename(path11.dirname(path11.dirname(w.dir))) === ".room" ? path11.resolve(w.dir, "../../..") : leadDir;
-  for (const suffix of [".log", ".mcp.log"]) {
-    try {
-      fs14.rmSync(path11.join(parent, WORKERS_DIR, w.tag + suffix), { force: true });
-    } catch {
-    }
-  }
-  for (const dir of [path11.join(parent, WORKERS_DIR), path11.join(parent, ".room")]) {
-    try {
-      fs14.rmdirSync(dir);
-    } catch {
-    }
-  }
-}
-async function saveDiscardPatch(leadDir, w, publish2) {
-  const scratch = fs14.mkdtempSync(path11.join(os3.tmpdir(), "room-discard-"));
-  try {
-    const run2 = (args3, wholeTreePaths) => boundedGit(w.dir, args3, wholeTreePaths, { ...process.env, GIT_INDEX_FILE: path11.join(scratch, "index") });
-    const base = w.base ?? (await git(leadDir, ["merge-base", "HEAD", w.branch])).trim();
-    await run2(["read-tree", "HEAD"], UNKNOWN_WHOLE_TREE_PATHS);
-    const unchanged = carriedUnchangedPaths(workerBaseline(w));
-    const exclusions = [...workerOwnedPaths(w).exclusions, ...[...unchanged].map((p) => ":(exclude,literal)" + p)];
-    await run2(["add", "-A", "--", ".", ...exclusions], UNKNOWN_WHOLE_TREE_PATHS);
-    const patch = await run2(patchArgs(base, exclusions, true), UNKNOWN_WHOLE_TREE_PATHS);
-    if (!patch.length) return void 0;
-    const verifyDir = path11.join(scratch, "verify");
-    const verifyPatch = path11.join(scratch, "verify.patch");
-    fs14.writeFileSync(verifyPatch, patch, { mode: 384 });
-    await internalGit(leadDir, ["worktree", "add", "-q", "--detach", verifyDir, base]);
-    try {
-      boundedGitSync(verifyDir, ["apply", "--binary", verifyPatch]);
-    } finally {
-      await internalGit(leadDir, ["worktree", "remove", "--force", verifyDir]);
-    }
-    return publish2(patch);
-  } finally {
-    fs14.rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-// packages/room-mcp/src/hooks-bridge.ts
-import { execFile as execFile3 } from "node:child_process";
-import fs16 from "node:fs";
-import path13 from "node:path";
-
-// packages/room-mcp/src/presence.ts
-var AWARENESS_FRESH_MS = 3e4;
-function isFresh(awareness, clientId, now) {
-  const lastUpdated = awareness.meta.get(clientId)?.lastUpdated;
-  return lastUpdated !== void 0 && now - lastUpdated <= AWARENESS_FRESH_MS;
-}
-
-// packages/room-mcp/src/company.ts
-function sameCheckoutSession(s, name2) {
-  const mine = s.awareness.getLocalState()?.watchedDirectory;
-  if (!mine || name2 === s.me.name) return false;
-  const peers = [...s.awareness.getStates()].filter(([id3, value2]) => id3 !== s.awareness.clientID && value2.user?.name === name2 && isFresh(s.awareness, id3, Date.now()));
-  return peers.length > 0 && peers.every(([, value2]) => value2.watchedDirectory === mine);
-}
-function hasCompany(s, runningWorkers = [], now = Date.now()) {
-  const names = /* @__PURE__ */ new Map();
-  for (const [clientId, value2] of s.awareness.getStates()) {
-    const p = value2;
-    if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name || sameCheckoutSession(s, p.user.name)) continue;
-    if (!isFresh(s.awareness, clientId, now)) continue;
-    if (p.user.kind === "human" && p.status === "viewing") continue;
-    names.set(p.user.name, p.user.name);
-  }
-  for (const worker of runningWorkers) names.set(worker.name, names.get(worker.name) ?? worker.name);
-  const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b));
-  return { company: others.length > 0, others };
-}
-function describeCompany(s, company) {
-  const scopes = s.room.allScopes();
-  const current = [...s.awareness.getStates().values()];
-  const entries = company.others.map((name2) => {
-    const scope = scopes.find((sc) => name2 === sc.by);
-    const presence = current.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? current.find((p) => p.user?.name === name2);
-    const who2 = displayName({ name: name2, kind: presence?.user?.kind ?? scope?.byKind ?? "agent" });
-    return scope ? `${who2} is here, on ${scope.area}: ${scope.paths.join(", ")}` : `${who2} is here`;
-  });
-  return "[room] " + entries.join("; ") + ".";
-}
-
-// packages/relay/src/leases.ts
-import fs15 from "node:fs";
-import path12 from "node:path";
-import { createHash as createHash6, randomUUID } from "node:crypto";
-function liveness(identity2, probe = probeProcess) {
-  const observed = probe(identity2.pid);
-  if (!observed) return "dead";
-  if (observed.startTime && identity2.startTime && observed.startTime !== identity2.startTime) return "dead";
-  if (observed.executable && identity2.executable && observed.executable !== identity2.executable) return "dead";
-  if (!observed.startTime || !observed.executable || !identity2.startTime || !identity2.executable) return "unknown";
-  return "alive";
-}
-function syncDirectory(dir) {
-  let fd;
-  try {
-    fd = fs15.openSync(dir, "r");
-    fs15.fsyncSync(fd);
-  } catch (e) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
-  } finally {
-    if (fd !== void 0) fs15.closeSync(fd);
-  }
-}
-function ensureDurableDirectory(dir) {
-  const parent = path12.dirname(dir);
-  if (parent !== dir) ensureDurableDirectory(parent);
-  try {
-    fs15.mkdirSync(dir, { mode: 448 });
-  } catch (e) {
-    if (e.code !== "EEXIST") throw e;
-  }
-  if (parent !== dir) syncDirectory(parent);
-}
-var startMarker = (startTime) => createHash6("sha256").update(startTime).digest("hex").slice(0, 24);
-var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
-function cleanupOrphanTemps(dir, probe = probeProcess) {
-  let removed = 0;
-  for (const name2 of fs15.readdirSync(dir)) {
-    const match = tempPattern.exec(name2);
-    if (!match) continue;
-    const observed = probe(Number(match[1]));
-    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
-    try {
-      fs15.unlinkSync(path12.join(dir, name2));
-      removed++;
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-  }
-  if (removed) syncDirectory(dir);
-  return removed;
-}
-function writeTemp(file, content) {
-  const dir = path12.dirname(file);
-  ensureDurableDirectory(dir);
-  cleanupOrphanTemps(dir);
-  const start2 = probeProcess(process.pid)?.startTime;
-  const temp = `${file}.roomtmp-p${process.pid}-s${start2 ? startMarker(start2) : "u"}-n${randomUUID()}.tmp`;
-  const fd = fs15.openSync(temp, "wx", 384);
-  try {
-    fs15.writeFileSync(fd, JSON.stringify(content) + "\n");
-    fs15.fsyncSync(fd);
-  } catch (e) {
-    fs15.closeSync(fd);
-    fs15.rmSync(temp, { force: true });
-    syncDirectory(dir);
-    throw e;
-  }
-  fs15.closeSync(fd);
-  return temp;
-}
-function createExclusive(file, content) {
-  const temp = writeTemp(file, content);
-  try {
-    try {
-      fs15.linkSync(temp, file);
-    } catch (e) {
-      if (e.code === "EEXIST") return false;
-      throw e;
-    }
-    syncDirectory(path12.dirname(file));
-    return true;
-  } finally {
-    fs15.rmSync(temp, { force: true });
-    syncDirectory(path12.dirname(file));
-  }
-}
-function writeAtomic(file, content) {
-  const temp = writeTemp(file, content);
-  try {
-    fs15.renameSync(temp, file);
-    syncDirectory(path12.dirname(file));
-  } finally {
-    fs15.rmSync(temp, { force: true });
-    syncDirectory(path12.dirname(file));
-  }
-}
-function read(file) {
-  try {
-    return JSON.parse(fs15.readFileSync(file, "utf8"));
-  } catch (e) {
-    if (e.code === "ENOENT") return void 0;
-    throw e;
-  }
-}
-function leaseToken(value2) {
-  const candidate = value2.holder ?? value2;
-  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
-}
-function ownToken() {
-  const current = probeProcess(process.pid);
-  return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
-}
-function acquireGuard(file, probe, depth = 0) {
-  if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
-  const token = ownToken();
-  if (createExclusive(file, token)) return token;
-  const previous = read(file);
-  const previousHolder = previous && leaseToken(previous);
-  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
-  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
-  try {
-    const latest = read(file);
-    const latestHolder = latest && leaseToken(latest);
-    if (latestHolder && liveness(latestHolder, probe) === "dead") {
-      fs15.unlinkSync(file);
-      syncDirectory(path12.dirname(file));
-    }
-  } finally {
-    releaseGuard(`${file}.guard`, outer);
-  }
-  if (createExclusive(file, token)) return token;
-  throw new Error(`lease guard busy: ${file}`);
-}
-function releaseGuard(file, token) {
-  const current = read(file);
-  if (current && leaseToken(current)?.nonce === token.nonce) {
-    fs15.unlinkSync(file);
-    syncDirectory(path12.dirname(file));
-  }
-}
-function withGuard(file, fn, probe = probeProcess) {
-  const guard = `${file}.guard`;
-  const token = acquireGuard(guard, probe);
-  try {
-    const result2 = fn();
-    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
-    return result2;
-  } finally {
-    releaseGuard(guard, token);
-  }
-}
-function replace(file, expect, next) {
-  return withGuard(file, () => {
-    const current = read(file);
-    if (!current || !expect(current)) return false;
-    writeAtomic(file, next);
-    return true;
-  });
-}
-function compareAndRelease(file, token) {
-  return withGuard(file, () => {
-    const current = read(file);
-    if (!current || leaseToken(current)?.nonce !== token.nonce) return false;
-    fs15.unlinkSync(file);
-    syncDirectory(path12.dirname(file));
-    return true;
-  });
-}
-function recover(file, orphan, probe = probeProcess) {
-  return withGuard(file, () => {
-    const current = read(file);
-    const owner = current && leaseToken(current);
-    if (!current || !owner || liveness(owner, probe) !== "dead" || !orphan(current)) return false;
-    fs15.unlinkSync(file);
-    syncDirectory(path12.dirname(file));
-    return true;
-  });
-}
-
-// packages/room-mcp/src/hooks-bridge.ts
-function createWriteIntentReader(dir, sessionDir, now = Date.now) {
-  return (p) => {
-    const root = sessionDir();
-    if (!root) return void 0;
-    try {
-      const evidence = JSON.parse(fs16.readFileSync(path13.join(root, "write-intents.json"), "utf8"));
-      if (!Array.isArray(evidence.writes)) return void 0;
-      const at = now(), target = path13.resolve(dir, p);
-      return evidence.writes.some((w) => typeof w.path === "string" && typeof w.at === "number" && Number.isFinite(w.at) && w.at <= at && at - w.at < 12e4 && path13.resolve(w.path) === target);
-    } catch {
-      return void 0;
-    }
-  };
-}
-var HooksBridge = class {
-  constructor(s, o) {
-    this.s = s;
-    this.o = o;
-    hookHealth.set(s, newHookHealth(this.now()));
-  }
-  s;
-  o;
-  timer = null;
-  woken = /* @__PURE__ */ new Set();
-  /** Wakes that found no bound session yet, with when they first arrived. */
-  pending = /* @__PURE__ */ new Map();
-  pendingTimer = null;
-  unobserve = [];
-  delivering = /* @__PURE__ */ new Set();
-  generation = 0;
-  stopped = false;
-  written;
-  start() {
-    this.stopped = false;
-    this.generation++;
-    this.s.awareness.setLocalStateField("wakeUnavailable", claudeWakeUnavailable(this.s.dir));
-    const kick = () => this.scheduleWrite();
-    if (this.o.writeState !== false) {
-      this.s.room.doc.on("update", kick);
-      this.s.awareness.on("change", kick);
-      this.unobserve.push(() => {
-        this.s.room.doc.off("update", kick);
-        this.s.awareness.off("change", kick);
-      });
-    }
-    const onBus = (ev) => {
-      for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-        if (ev.transaction.local && m.from === this.s.me.name && m.fromKind !== "human") continue;
-        void this.maybeWake(m);
-      }
-    };
-    this.s.room.bus.observe(onBus);
-    this.unobserve.push(() => this.s.room.bus.unobserve(onBus));
-    this.scheduleWrite();
-  }
-  stop() {
-    this.stopped = true;
-    this.generation++;
-    for (const u of this.unobserve) u();
-    this.unobserve = [];
-    if (this.timer) clearTimeout(this.timer);
-    if (this.pendingTimer) clearTimeout(this.pendingTimer);
-    this.pending.clear();
-    if (this.o.writeState !== false && this.written) {
-      try {
-        fs16.rmSync(this.written, { force: true });
-      } catch {
-      }
-    }
-  }
-  /** Debounced: many small doc updates become one file write. */
-  scheduleWrite() {
-    if (this.o.writeState === false || this.stopped) return;
-    if (this.timer) return;
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      try {
-        this.write();
-      } catch (e) {
-        this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }, 150);
-    this.timer.unref?.();
-  }
-  /** state.json: counts and coordination for the hooks, written only while fenced (ledger "Local files"). */
-  write() {
-    if (this.stopped || this.o.writeState === false) return;
-    const dir = this.o.sessionDir();
-    if (!dir || !this.o.fenced()) return;
-    const me = this.s.me.name;
-    const openClaims = this.s.room.openClaims();
-    const ownClaims = openClaims.filter((c) => c.by === me && isAgentic(c.byKind)).map((c) => ({ path: c.path, from: c.from, to: c.to }));
-    const claims = openClaims.filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
-    const near = coordinationPaths(this.s.room, me, { includeOwnNonAgentClaims: true });
-    const company = this.o.company?.() ?? hasCompany(this.s, [], this.now());
-    const presences = [...this.s.awareness.getStates().values()];
-    const others = company.others.map((name2) => displayName({ name: name2, kind: (presences.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? presences.find((p) => p.user?.name === name2))?.user?.kind ?? this.s.room.scope(name2)?.byKind ?? "agent" }));
-    const paused = this.o.paused?.();
-    const file = path13.join(dir, "state.json");
-    fs16.mkdirSync(dir, { recursive: true, mode: 448 });
-    writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...paused ? { paused } : {} });
-    this.written = file;
-  }
-  /** Interrupts, questions addressed to me, and a base move while I have uncommitted work wake the idle Codex thread, once per message. */
-  async maybeWake(m) {
-    if (this.stopped) return;
-    const generation = this.generation;
-    if (this.isSeen(m.id)) return;
-    if (!this.o.forMe(m)) return;
-    const myClaims = this.s.room.openClaims().filter((c) => c.by === this.s.me.name);
-    const ownWorkers = new Set(Array.from(this.s.room.workers.values()).filter((w) => w.lead === this.s.me.name).map((w) => w.name));
-    const wake = shouldWakeOnMsg(this.s.me, m, myClaims, this.s.room.changedPaths(this.s.me.name).length > 0, ownWorkers).wake;
-    if (!wake || this.woken.has(m.id) || this.pending.has(m.id) || this.delivering.has(m.id)) return;
-    const session = this.o.session();
-    if (!session) {
-      if (this.stopped || generation !== this.generation) return;
-      this.pending.set(m.id, { msg: m, since: this.now() });
-      this.o.log?.(`cannot wake yet: no bound host session; will retry for ${m.type} ${m.id}`);
-      this.schedulePending();
-      return;
-    }
-    if (this.stopped || generation !== this.generation) return;
-    this.delivering.add(m.id);
-    try {
-      await this.deliver(m, session, generation);
-    } finally {
-      this.delivering.delete(m.id);
-    }
-  }
-  async deliver(m, session, generation) {
-    const active = () => !this.stopped && generation === this.generation;
-    if (!active()) return;
-    if (session.host === "claude") {
-      this.woken.add(m.id);
-      this.o.log?.(`claude host: ${m.type} ${m.id} handled via channel`);
-      return;
-    }
-    const text = m.type === "base" ? `[room] ${formatMsg(m).replace(` \u2014 ${BASE_CATCH_UP}`, "")}
-You have uncommitted work. ${BASE_CATCH_UP} Re-run room_preview_merge with the test command against anyone who changed the same files, then continue.` : `[room] ${formatMsg(m)}
-Call room_state, then react per the room-etiquette skill.`;
-    const delays = this.o.retryDelaysMs ?? [1e3, 3e3, 8e3];
-    for (let attempt = 0; ; attempt++) {
-      if (!active()) return;
-      if (this.isSeen(m.id)) return;
-      try {
-        await (this.o.queue ?? defaultQueue)(session.id, text);
-        if (!active()) return;
-        this.woken.add(m.id);
-        this.o.log?.(`woke session ${session.id.slice(0, 8)} for ${m.type} ${m.id}${attempt ? ` (attempt ${attempt + 1})` : ""}`);
-        return;
-      } catch (e) {
-        if (!active()) return;
-        const why = e instanceof Error ? e.message : String(e);
-        if (attempt >= delays.length) {
-          this.o.log?.(`could not wake session ${session.id.slice(0, 8)} for ${m.type} ${m.id} after ${attempt + 1} attempts: ${why}`);
-          return;
-        }
-        this.o.log?.(`wake attempt ${attempt + 1} failed (${why}); retrying in ${delays[attempt]}ms`);
-        await sleep(delays[attempt]);
-      }
-    }
-  }
-  schedulePending() {
-    if (this.stopped || this.pendingTimer || !this.pending.size) return;
-    this.pendingTimer = setTimeout(() => {
-      this.pendingTimer = null;
-      void this.retryPending().catch((e) => this.o.log?.(`hooks: could not retry pending wakes: ${e instanceof Error ? e.message : String(e)}`));
-    }, this.o.pendingPollMs ?? 5e3);
-    this.pendingTimer.unref?.();
-  }
-  /** Look for a bound session again; deliver what we can, drop what is too old. */
-  async retryPending() {
-    if (this.stopped) return;
-    const generation = this.generation;
-    const maxAge = this.o.pendingMaxMs ?? 10 * 60 * 1e3;
-    const session = this.o.session();
-    for (const [id3, p] of Array.from(this.pending)) {
-      if (this.stopped || generation !== this.generation) return;
-      if (this.isSeen(id3)) {
-        this.pending.delete(id3);
-        continue;
-      }
-      if (this.now() - p.since > maxAge) {
-        this.pending.delete(id3);
-        this.o.log?.(`gave up waking for ${p.msg.type} ${id3}: no session for ${Math.round(maxAge / 6e4)} min`);
-        continue;
-      }
-      if (!session) continue;
-      this.pending.delete(id3);
-      await this.maybeWake(p.msg);
-    }
-    this.schedulePending();
-  }
-  now() {
-    return this.o.now?.() ?? Date.now();
-  }
-  isSeen(id3) {
-    return this.s.room.seen(this.s.me.name).has(id3);
-  }
-};
-var sleep = (ms) => new Promise((r) => {
-  const t = setTimeout(r, ms);
-  t.unref?.();
-});
-function defaultQueue(threadId, text) {
-  return new Promise((resolve5, reject) => {
-    execFile3("codex", ["queue", "--thread", threadId, "--message", text], { timeout: 1e4 }, (err2, _out, stderr2) => err2 ? reject(new Error(String(stderr2 || err2.message).trim())) : resolve5());
-  });
-}
-var hookHealth = /* @__PURE__ */ new WeakMap();
-function newHookHealth(now) {
-  return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false };
-}
-function missingPreEditGuidance(s) {
-  const host = resolveSessionHost();
-  if (host === "claude") return "Room has not seen its before-edit hook run in this session although its tools are in use: the plugin's hooks may not be running; reinstall or re-enable the plugin.";
-  if (host === "codex") return "Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.";
-  return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
-}
-function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = !s.local) {
-  let health2 = hookHealth.get(s);
-  if (!health2) {
-    health2 = newHookHealth(now);
-    hookHealth.set(s, health2);
-  }
-  let sessionStartedAt = health2.since;
-  if (sessionDir) {
-    try {
-      const session = JSON.parse(fs16.readFileSync(path13.join(sessionDir, "session.json"), "utf8"));
-      if (typeof session.at === "number" && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at;
-    } catch {
-    }
-    try {
-      const activity = JSON.parse(fs16.readFileSync(path13.join(sessionDir, "hook-activity.json"), "utf8"));
-      if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && (resolveSessionHost() !== "claude" || activity.at >= sessionStartedAt)) health2.observed = true;
-    } catch {
-    }
-  }
-  if (!expected || health2.observed || health2.noted) return "";
-  const upFront = team && resolveSessionHost() === "codex";
-  if (upFront && tool === "room_join" && !health2.joinNoted && !health2.scopeNoted) {
-    health2.joinNoted = true;
-    return missingPreEditGuidance(s);
-  }
-  if (upFront && tool === "room_scope" && !health2.scopeNoted) {
-    health2.scopeNoted = true;
-    return missingPreEditGuidance(s);
-  }
-  if (health2.joinNoted || health2.scopeNoted) return "";
-  if (!health2.calls) health2.since = now;
-  health2.calls++;
-  if (health2.calls < 2 || now - health2.since < 3e4) return "";
-  if (resolveSessionHost() === "claude" && !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return "";
-  health2.noted = true;
-  return missingPreEditGuidance(s);
+  flush();
+  if (!conflicts.length) throw new Error(`git merge-file exited ${exitCode} without conflict markers`);
+  return { status: "conflict", algorithm: "git", text, chunks, conflicts };
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -40371,16 +43036,16 @@ var Diff = class {
       }
     }
   }
-  addToPath(path37, added, removed, oldPosInc, options) {
-    const last2 = path37.lastComponent;
+  addToPath(path39, added, removed, oldPosInc, options) {
+    const last2 = path39.lastComponent;
     if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
       return {
-        oldPos: path37.oldPos + oldPosInc,
+        oldPos: path39.oldPos + oldPosInc,
         lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
       };
     } else {
       return {
-        oldPos: path37.oldPos + oldPosInc,
+        oldPos: path39.oldPos + oldPosInc,
         lastComponent: { count: 1, added, removed, previousComponent: last2 }
       };
     }
@@ -40699,328 +43364,6 @@ function splitLines(text) {
     result2.push(result2.pop().slice(0, -1));
   }
   return result2;
-}
-
-// packages/room-mcp/src/conflicts.ts
-import { createHash as createHash7 } from "node:crypto";
-
-// packages/room-mcp/src/merge.ts
-import { execFile as execFile4 } from "node:child_process";
-import fs17 from "node:fs";
-import os4 from "node:os";
-import path14 from "node:path";
-
-// node_modules/node-diff3/dist/diff3.mjs
-function LCS(buffer1, buffer2) {
-  let equivalenceClasses = /* @__PURE__ */ Object.create(null);
-  for (let j = 0; j < buffer2.length; j++) {
-    const item = buffer2[j];
-    if (equivalenceClasses[item]) {
-      equivalenceClasses[item].push(j);
-    } else {
-      equivalenceClasses[item] = [j];
-    }
-  }
-  const NULLRESULT = { buffer1index: -1, buffer2index: -1, chain: null };
-  let candidates = [NULLRESULT];
-  for (let i2 = 0; i2 < buffer1.length; i2++) {
-    const item = buffer1[i2];
-    const buffer2indices = equivalenceClasses[item] || [];
-    let r = 0;
-    let c = candidates[0];
-    for (const j of buffer2indices) {
-      let s;
-      for (s = r; s < candidates.length; s++) {
-        if (candidates[s].buffer2index < j && (s === candidates.length - 1 || candidates[s + 1].buffer2index > j)) {
-          break;
-        }
-      }
-      if (s < candidates.length) {
-        const newCandidate = { buffer1index: i2, buffer2index: j, chain: candidates[s] };
-        if (r === candidates.length) {
-          candidates.push(c);
-        } else {
-          candidates[r] = c;
-        }
-        r = s + 1;
-        c = newCandidate;
-        if (r === candidates.length) {
-          break;
-        }
-      }
-    }
-    candidates[r] = c;
-  }
-  return candidates[candidates.length - 1];
-}
-function diffIndices(buffer1, buffer2) {
-  const lcs = LCS(buffer1, buffer2);
-  let result2 = [];
-  let tail1 = buffer1.length;
-  let tail2 = buffer2.length;
-  for (let candidate = lcs; candidate !== null; candidate = candidate.chain) {
-    const mismatchLength1 = tail1 - candidate.buffer1index - 1;
-    const mismatchLength2 = tail2 - candidate.buffer2index - 1;
-    tail1 = candidate.buffer1index;
-    tail2 = candidate.buffer2index;
-    if (mismatchLength1 || mismatchLength2) {
-      result2.push({
-        buffer1: [tail1 + 1, mismatchLength1],
-        buffer1Content: buffer1.slice(tail1 + 1, tail1 + 1 + mismatchLength1),
-        buffer2: [tail2 + 1, mismatchLength2],
-        buffer2Content: buffer2.slice(tail2 + 1, tail2 + 1 + mismatchLength2)
-      });
-    }
-  }
-  result2.reverse();
-  return result2;
-}
-function diff3MergeRegions(a, o, b) {
-  let hunks = [];
-  function addHunk(h, ab) {
-    hunks.push({
-      ab,
-      oStart: h.buffer1[0],
-      oLength: h.buffer1[1],
-      abStart: h.buffer2[0],
-      abLength: h.buffer2[1]
-    });
-  }
-  diffIndices(o, a).forEach((item) => addHunk(item, "a"));
-  diffIndices(o, b).forEach((item) => addHunk(item, "b"));
-  hunks.sort((x, y) => x.oStart - y.oStart);
-  let results = [];
-  let currOffset = 0;
-  function advanceTo(endOffset) {
-    if (endOffset > currOffset) {
-      results.push({
-        stable: true,
-        buffer: "o",
-        bufferStart: currOffset,
-        bufferLength: endOffset - currOffset,
-        bufferContent: o.slice(currOffset, endOffset)
-      });
-      currOffset = endOffset;
-    }
-  }
-  while (hunks.length) {
-    let hunk = hunks.shift();
-    let regionStart = hunk.oStart;
-    let regionEnd = hunk.oStart + hunk.oLength;
-    let regionHunks = [hunk];
-    advanceTo(regionStart);
-    while (hunks.length) {
-      const nextHunk = hunks[0];
-      const nextHunkStart = nextHunk.oStart;
-      if (nextHunkStart > regionEnd)
-        break;
-      regionEnd = Math.max(regionEnd, nextHunkStart + nextHunk.oLength);
-      regionHunks.push(hunks.shift());
-    }
-    if (regionHunks.length === 1) {
-      if (hunk.abLength > 0) {
-        const buffer = hunk.ab === "a" ? a : b;
-        results.push({
-          stable: true,
-          buffer: hunk.ab,
-          bufferStart: hunk.abStart,
-          bufferLength: hunk.abLength,
-          bufferContent: buffer.slice(hunk.abStart, hunk.abStart + hunk.abLength)
-        });
-      }
-    } else {
-      let bounds = {
-        a: [a.length, -1, o.length, -1],
-        b: [b.length, -1, o.length, -1]
-      };
-      while (regionHunks.length) {
-        hunk = regionHunks.shift();
-        const oStart = hunk.oStart;
-        const oEnd = oStart + hunk.oLength;
-        const abStart = hunk.abStart;
-        const abEnd = abStart + hunk.abLength;
-        let b2 = bounds[hunk.ab];
-        b2[0] = Math.min(abStart, b2[0]);
-        b2[1] = Math.max(abEnd, b2[1]);
-        b2[2] = Math.min(oStart, b2[2]);
-        b2[3] = Math.max(oEnd, b2[3]);
-      }
-      const aStart = bounds.a[0] + (regionStart - bounds.a[2]);
-      const aEnd = bounds.a[1] + (regionEnd - bounds.a[3]);
-      const bStart = bounds.b[0] + (regionStart - bounds.b[2]);
-      const bEnd = bounds.b[1] + (regionEnd - bounds.b[3]);
-      let result2 = {
-        stable: false,
-        aStart,
-        aLength: aEnd - aStart,
-        aContent: a.slice(aStart, aEnd),
-        oStart: regionStart,
-        oLength: regionEnd - regionStart,
-        oContent: o.slice(regionStart, regionEnd),
-        bStart,
-        bLength: bEnd - bStart,
-        bContent: b.slice(bStart, bEnd)
-      };
-      results.push(result2);
-    }
-    currOffset = regionEnd;
-  }
-  advanceTo(o.length);
-  return results;
-}
-function diff3Merge(a, o, b, options) {
-  let defaults = {
-    excludeFalseConflicts: true,
-    stringSeparator: /\s+/
-  };
-  options = Object.assign(defaults, options);
-  if (typeof a === "string")
-    a = a.split(options.stringSeparator);
-  if (typeof o === "string")
-    o = o.split(options.stringSeparator);
-  if (typeof b === "string")
-    b = b.split(options.stringSeparator);
-  let results = [];
-  const regions = diff3MergeRegions(a, o, b);
-  let okBuffer = [];
-  function flushOk() {
-    if (okBuffer.length) {
-      results.push({ ok: okBuffer });
-    }
-    okBuffer = [];
-  }
-  function isFalseConflict(a2, b2) {
-    if (a2.length !== b2.length)
-      return false;
-    for (let i2 = 0; i2 < a2.length; i2++) {
-      if (a2[i2] !== b2[i2])
-        return false;
-    }
-    return true;
-  }
-  regions.forEach((region) => {
-    if (region.stable) {
-      okBuffer.push(...region.bufferContent);
-    } else {
-      if (options.excludeFalseConflicts && isFalseConflict(region.aContent, region.bContent)) {
-        okBuffer.push(...region.aContent);
-      } else {
-        flushOk();
-        results.push({
-          conflict: {
-            a: region.aContent,
-            aIndex: region.aStart,
-            o: region.oContent,
-            oIndex: region.oStart,
-            b: region.bContent,
-            bIndex: region.bStart
-          }
-        });
-      }
-    }
-  });
-  flushOk();
-  return results;
-}
-
-// packages/room-mcp/src/merge.ts
-var warnedFallback = false;
-async function gitMergeFile(base, ours, theirs, labels) {
-  const clean2 = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
-  if (ours === theirs || theirs === base) return clean2(ours);
-  if (ours === base) return clean2(theirs);
-  const dir = fs17.mkdtempSync(path14.join(os4.tmpdir(), "room-merge-file-"));
-  const oursPath = path14.join(dir, "ours"), basePath = path14.join(dir, "base"), theirsPath = path14.join(dir, "theirs");
-  try {
-    fs17.writeFileSync(oursPath, ours);
-    fs17.writeFileSync(basePath, base);
-    fs17.writeFileSync(theirsPath, theirs);
-    const result2 = await new Promise((resolve5) => {
-      execFile4(
-        "git",
-        ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
-        { maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
-        (error2, stdout) => {
-          const raw = error2 && error2.code;
-          resolve5({
-            code: typeof raw === "number" ? raw : error2 ? -1 : 0,
-            stdout,
-            unavailable: raw === "ENOENT",
-            error: error2 ?? void 0
-          });
-        }
-      );
-    });
-    if (result2.unavailable) return fallback(base, ours, theirs, labels, "git unavailable");
-    if (result2.code < 0 || result2.code > 0 && !result2.stdout.includes("<<<<<<< " + labels.ours)) return fallback(base, ours, theirs, labels, result2.error?.message ?? `git exited ${result2.code} without conflict markers`);
-    try {
-      return parseGitMerge(result2.stdout, labels, result2.code);
-    } catch (error2) {
-      return fallback(base, ours, theirs, labels, `could not parse git output: ${String(error2)}`);
-    }
-  } finally {
-    fs17.rmSync(dir, { recursive: true, force: true });
-  }
-}
-function fallback(base, ours, theirs, labels, fallbackReason) {
-  if (!warnedFallback) {
-    warnedFallback = true;
-    console.error("room: git could not render this preview; falling back to node-diff3");
-  }
-  const raw = diff3Merge(ours.split("\n"), base.split("\n"), theirs.split("\n"));
-  const chunks = [];
-  const rendered = [];
-  const conflicts = [];
-  let line = 1;
-  for (const part of raw) {
-    if (part.ok) {
-      chunks.push({ ok: part.ok });
-      rendered.push(...part.ok);
-      line += part.ok.length;
-      continue;
-    }
-    if (!part.conflict) continue;
-    const conflict = { from: line, to: line + Math.max(0, part.conflict.o.length - 1), ...part.conflict };
-    chunks.push({ conflict });
-    conflicts.push(conflict);
-    rendered.push(`<<<<<<< ${labels.ours}`, ...conflict.a, `||||||| ${labels.base}`, ...conflict.o, "=======", ...conflict.b, `>>>>>>> ${labels.theirs}`);
-    line += conflict.o.length;
-  }
-  return { status: conflicts.length ? "conflict" : "clean", algorithm: "fallback", fallbackReason, text: rendered.join("\n"), chunks, conflicts };
-}
-function parseGitMerge(text, labels, exitCode) {
-  if (exitCode === 0) return { status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] };
-  const lines = text.split("\n");
-  const chunks = [];
-  const conflicts = [];
-  let plain = [];
-  let sourceLine = 1;
-  const flush = () => {
-    if (!plain.length) return;
-    chunks.push({ ok: plain });
-    sourceLine += plain.length;
-    plain = [];
-  };
-  for (let i2 = 0; i2 < lines.length; ) {
-    if (lines[i2] !== `<<<<<<< ${labels.ours}`) {
-      plain.push(lines[i2++]);
-      continue;
-    }
-    flush();
-    const baseMarker = lines.indexOf(`||||||| ${labels.base}`, i2 + 1);
-    const divider = baseMarker < 0 ? -1 : lines.indexOf("=======", baseMarker + 1);
-    const end = divider < 0 ? -1 : lines.indexOf(`>>>>>>> ${labels.theirs}`, divider + 1);
-    if (baseMarker < 0 || divider < 0 || end < 0) throw new Error("could not parse git merge-file conflict markers");
-    const a = lines.slice(i2 + 1, baseMarker), o = lines.slice(baseMarker + 1, divider), b = lines.slice(divider + 1, end);
-    const conflict = { from: sourceLine, to: sourceLine + Math.max(0, o.length - 1), a, o, b };
-    chunks.push({ conflict });
-    conflicts.push(conflict);
-    sourceLine += o.length;
-    i2 = end + 1;
-  }
-  flush();
-  if (!conflicts.length) throw new Error(`git merge-file exited ${exitCode} without conflict markers`);
-  return { status: "conflict", algorithm: "git", text, chunks, conflicts };
 }
 
 // packages/room-mcp/src/parse/engine.ts
@@ -41795,8 +44138,8 @@ var languageSpecs = [
   spec14,
   spec15
 ];
-function specForPath(path37) {
-  const lower = path37.toLowerCase();
+function specForPath(path39) {
+  const lower = path39.toLowerCase();
   return languageSpecs.find((spec16) => spec16.extensions.some((extension2) => lower.endsWith(extension2)));
 }
 
@@ -41869,14 +44212,14 @@ async function loadLanguage(spec16) {
 }
 async function ensureLanguages(paths) {
   const needed = /* @__PURE__ */ new Map();
-  for (const path37 of paths) {
-    const spec16 = specForPath(path37);
+  for (const path39 of paths) {
+    const spec16 = specForPath(path39);
     if (spec16) needed.set(spec16.grammar, spec16);
   }
   await Promise.all([...needed.values()].map(loadLanguage));
 }
-function loadedForPath(path37) {
-  const lower = path37.toLowerCase();
+function loadedForPath(path39) {
+  const lower = path39.toLowerCase();
   let best;
   for (const [extension2, loaded] of loadedByExtension) {
     if (lower.endsWith(extension2) && (!best || extension2.length > best[0])) best = [extension2.length, loaded];
@@ -41926,8 +44269,8 @@ function parsedDefinition(match, capture) {
     signature: signatureOf(capture.node, match)
   };
 }
-var parseFile = (path37, text) => {
-  const loaded = loadedForPath(path37);
+var parseFile = (path39, text) => {
+  const loaded = loadedForPath(path39);
   if (!loaded || text.length > MAX_BYTES) return void 0;
   let tree;
   try {
@@ -41981,7 +44324,9 @@ var parseFile = (path37, text) => {
 };
 
 // packages/room-mcp/src/graph-index.ts
-var isSourcePath = (path37) => specForPath(path37) !== void 0;
+import fs18 from "node:fs";
+import path15 from "node:path";
+var isSourcePath = (path39) => specForPath(path39) !== void 0;
 var MAX_FILES = 3e3;
 var MAX_BYTES2 = 256 * 1024;
 var MAX_REFRESH_CONCURRENCY = 8;
@@ -41992,10 +44337,10 @@ var MIN_PUBLISH_MS = 2e4;
 var YIELD_EVERY = 100;
 var YIELD_AFTER_MS = 50;
 var yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
-async function referencesSymbol(path37, text, symbol) {
-  if (!isSourcePath(path37) || text.length > MAX_BYTES2) return false;
-  await ensureLanguages([path37]);
-  const parsed = parseFile(path37, text);
+async function referencesSymbol(path39, text, symbol) {
+  if (!isSourcePath(path39) || text.length > MAX_BYTES2) return false;
+  await ensureLanguages([path39]);
+  const parsed = parseFile(path39, text);
   if (!parsed) return false;
   const wanted = bareSymbol(symbol);
   return [...parsed.refs, ...parsed.ownRefs].some((ref) => bareSymbol(ref) === wanted);
@@ -42006,10 +44351,10 @@ async function consumesSymbol(consumer, text, provider, symbol, known) {
   const parsed = parseFile(consumer, text);
   const name2 = symbol.split(/[.:]+/).filter(Boolean).at(-1) ?? symbol;
   const files2 = /* @__PURE__ */ new Map([[provider, { defs: [name2], refs: [], imports: [] }]]);
-  for (const path37 of known?.definersOf(name2) ?? []) if (path37 !== provider && path37 !== consumer) files2.set(path37, known.symbolsOf(path37));
+  for (const path39 of known?.definersOf(name2) ?? []) if (path39 !== provider && path39 !== consumer) files2.set(path39, known.symbolsOf(path39));
   files2.set(consumer, { defs: parsed.defs.map((definition) => definition.name), refs: parsed.refs, imports: parsed.imports });
-  const graph = new SymbolGraph((path37) => files2.get(path37));
-  for (const path37 of files2.keys()) graph.set(path37, "");
+  const graph = new SymbolGraph((path39) => files2.get(path39));
+  for (const path39 of files2.keys()) graph.set(path39, "");
   return graph.dependenciesOf(consumer).some((dep) => dep.symbol === name2 && dep.definedIn.includes(provider));
 }
 var GraphIndex = class {
@@ -42020,7 +44365,7 @@ var GraphIndex = class {
     this.dir = dir;
     this.log = log2;
     this.opts = opts;
-    this.graph = new SymbolGraph((path37) => this.cache.get(path37));
+    this.graph = new SymbolGraph((path39) => this.cache.get(path39));
   }
   room;
   me;
@@ -42079,18 +44424,13 @@ var GraphIndex = class {
         if (this.stopped) return;
         const paths = touchedPaths(events, root, known);
         if (this.base) {
-          for (const path37 of paths) if (isSourcePath(path37)) void this.refresh(path37);
+          for (const path39 of paths) if (isSourcePath(path39)) void this.refresh(path39);
         }
       };
     };
-    const onOverlays = observe(this.room.overlays);
-    const onDeleted = observe(this.room.deleted);
-    this.room.overlays.observeDeep(onOverlays);
-    this.room.deleted.observeDeep(onDeleted);
-    this.unobserve.push(() => {
-      this.room.overlays.unobserveDeep(onOverlays);
-      this.room.deleted.unobserveDeep(onDeleted);
-    });
+    const onManifest = observe(this.room.manifest);
+    this.room.manifest.observeDeep(onManifest);
+    this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest));
     const onMeta = () => {
       if (!this.stopped && this.initialStarted && this.room.meta.base && this.room.meta.base !== this.base) this.currentBuild = this.rebuild();
     };
@@ -42159,7 +44499,7 @@ var GraphIndex = class {
       paths = paths.slice(0, MAX_FILES);
     }
     const all2 = new Set(paths);
-    for (const person of this.room.overlays.keys()) for (const p of this.room.changedPaths(person)) if (isSourcePath(p)) all2.add(p);
+    for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all2.add(p);
     const t0 = Date.now();
     const pathsToRefresh = Array.from(all2);
     await ensureLanguages(pathsToRefresh);
@@ -42180,23 +44520,40 @@ var GraphIndex = class {
     await this.publish("ready");
     this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
   }
-  /** Current text for a path as the index sees it. */
-  async textFor(path37) {
-    if (this.room.deleted.get(this.me)?.has(path37)) return void 0;
-    const mine = this.room.text(path37, this.me);
+  ownText(pathname) {
+    if (!validRepoPath(pathname, DISK_READ_PATH)) return void 0;
+    try {
+      const root = fs18.realpathSync(this.dir);
+      const file = containedRepoPath(root, path15.join(root, pathname), { leaf: "read-contained-link" });
+      if (!file.ok) return void 0;
+      return fs18.readFileSync(file.path, "utf8");
+    } catch (error2) {
+      if (error2.code === "ENOENT") return void 0;
+      throw error2;
+    }
+  }
+  /** Only visible text or a certified base participates in the graph. */
+  async textFor(path39) {
+    const ownFence = this.room.manifestHead.get(this.me)?.fence;
+    const ownEntry = ownFence ? this.room.manifest.get(manifestKey(this.me, ownFence))?.get(path39) : void 0;
+    if (ownEntry?.change === "D") return void 0;
+    const mine = ownEntry ? this.ownText(path39) : void 0;
     if (mine !== void 0) return mine;
-    for (const person of this.room.overlays.keys()) {
+    for (const person of this.room.manifestHead.keys()) {
       if (person === this.me) continue;
-      const t = this.room.text(path37, person);
-      if (t !== void 0) return t;
+      const participant = snapshot(this.room, person, []);
+      const version2 = await versionOf(participant, path39, { gitAt: (sha, relpath) => (this.opts.read ?? gitShow)(this.dir, sha, relpath) });
+      if (!participant?.entries.has(path39) && version2.kind !== "excluded") continue;
+      if (version2.kind === "text") return version2.text;
+      return void 0;
     }
     if (!this.base) return void 0;
-    return (this.opts.read ?? gitShow)(this.dir, this.base, path37);
+    return (this.opts.read ?? gitShow)(this.dir, this.base, path39);
   }
-  refresh(path37) {
+  refresh(path39) {
     if (this.stopped) return Promise.resolve();
-    this.revisions.set(path37, (this.revisions.get(path37) ?? 0) + 1);
-    const inflight = this.pending.get(path37);
+    this.revisions.set(path39, (this.revisions.get(path39) ?? 0) + 1);
+    const inflight = this.pending.get(path39);
     if (inflight) {
       if (inflight.generation !== this.generation) {
         inflight.resolve();
@@ -42215,17 +44572,17 @@ var GraphIndex = class {
     const idle = new Promise((r) => {
       resolveIdle = r;
     });
-    this.pending.set(path37, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
-    this.refreshQueue.push(path37);
+    this.pending.set(path39, { generation: this.generation, promise, resolve: resolve5, idle, resolveIdle });
+    this.refreshQueue.push(path39);
     this.drainRefreshQueue();
     return promise;
   }
-  removeGraph(path37) {
-    this.graph.remove(path37);
+  removeGraph(path39) {
+    this.graph.remove(path39);
     this.graphRevision++;
   }
-  setGraph(path37, text) {
-    this.graph.set(path37, text);
+  setGraph(path39, text) {
+    this.graph.set(path39, text);
     this.graphRevision++;
   }
   async yieldAfterIndex() {
@@ -42236,20 +44593,20 @@ var GraphIndex = class {
   }
   drainRefreshQueue() {
     while (!this.stopped && this.activeRefreshes < MAX_REFRESH_CONCURRENCY && this.refreshQueue.length) {
-      const path37 = this.refreshQueue.shift();
+      const path39 = this.refreshQueue.shift();
       this.activeRefreshes++;
       const generation = this.generation;
-      void this.runRefresh(path37).catch((e) => {
-        this.log(`graph: ${path37}: ${e instanceof Error ? e.message : e}`);
+      void this.runRefresh(path39).catch((e) => {
+        this.log(`graph: ${path39}: ${e instanceof Error ? e.message : e}`);
         return generation === this.generation;
       }).then((done) => {
         this.activeRefreshes--;
-        const entry = this.pending.get(path37);
+        const entry = this.pending.get(path39);
         if (entry?.generation === generation) entry.resolve();
-        if (!done && !this.stopped) this.refreshQueue.push(path37);
+        if (!done && !this.stopped) this.refreshQueue.push(path39);
         else {
           entry?.resolveIdle();
-          this.pending.delete(path37);
+          this.pending.delete(path39);
         }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing);
@@ -42261,54 +44618,64 @@ var GraphIndex = class {
       });
     }
   }
-  async runRefresh(path37) {
+  async runRefresh(path39) {
     if (!this.stopped) {
-      const revision = this.revisions.get(path37), generation = this.generation;
-      await ensureLanguages([path37]);
-      const text = await this.textFor(path37);
-      const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path37, text);
+      const revision = this.revisions.get(path39), generation = this.generation;
+      await ensureLanguages([path39]);
+      const text = await this.textFor(path39);
+      const heldBy = text === void 0 ? [...this.room.manifestHead.keys()].filter((person) => {
+        if (person === this.me) return false;
+        const fence = this.room.manifestHead.get(person)?.fence;
+        return fence && this.room.manifest.get(manifestKey(person, fence))?.get(path39)?.state === "held";
+      }) : [];
+      const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path39, text);
       const symbols = parsed ? {
         defs: parsed.defs.map((definition) => definition.name),
         refs: parsed.refs,
         imports: parsed.imports
       } : void 0;
-      const mine = this.room.text(path37, this.me);
-      const mineDeleted = this.room.deleted.get(this.me)?.has(path37) ?? false;
-      const own2 = workerBaseline(this.room.workerOf(this.me));
+      const myFence = this.room.manifestHead.get(this.me)?.fence;
+      const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path39) : void 0;
+      const mine = myEntry && myEntry.change !== "D" ? this.ownText(path39) : void 0;
+      const mineDeleted = myEntry?.change === "D";
+      const own2 = carriedFrom(this.dir, this.me)?.baseline;
       const read2 = (sha, file) => (this.opts.read ?? gitShow)(this.dir, sha, file);
-      const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path37, read2) : await read2(this.base, path37).then(
+      const baseRead = mine !== void 0 || mineDeleted ? own2 ? await readBaseline(own2, path39, read2) : await read2(this.base, path39).then(
         (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
         (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
       ) : void 0;
       if (this.stopped) return true;
       if (generation !== this.generation) return false;
       if (!symbols || text === void 0) {
-        this.cache.delete(path37);
-        this.removeGraph(path37);
+        this.cache.delete(path39);
+        this.removeGraph(path39);
       } else {
-        this.cache.set(path37, symbols);
-        this.setGraph(path37, text);
+        this.cache.set(path39, symbols);
+        this.setGraph(path39, text);
       }
       if (mine !== void 0 || mineDeleted) {
         if (baseRead?.kind === "unavailable") {
-          this.degradedPaths.add(path37);
-          this.observedByPath.delete(path37);
-          this.log(`graph: baseline unavailable for ${path37}; observed contract coverage degraded: ${baseRead.error.message}`);
+          this.degradedPaths.add(path39);
+          this.observedByPath.delete(path39);
+          this.log(`graph: baseline unavailable for ${path39}; observed contract coverage degraded: ${baseRead.error.message}`);
           this.observedRevision++;
           await this.yieldAfterIndex();
-          return revision === this.revisions.get(path37);
+          return revision === this.revisions.get(path39);
         }
-        this.degradedPaths.delete(path37);
-        const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : mine ?? "", path37, parseFile).map((change) => ({ path: path37, ...change }));
-        if (changes.length) this.observedByPath.set(path37, changes);
-        else this.observedByPath.delete(path37);
+        this.degradedPaths.delete(path39);
+        const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : mine ?? "", path39, parseFile).map((change) => ({ path: path39, ...change }));
+        if (changes.length) this.observedByPath.set(path39, changes);
+        else this.observedByPath.delete(path39);
       } else {
-        this.observedByPath.delete(path37);
-        this.degradedPaths.delete(path37);
+        this.observedByPath.delete(path39);
+        if (heldBy.length) {
+          this.degradedPaths.add(path39);
+          this.log(`graph: ${path39} changed by ${heldBy.join(", ")}; contract not visible`);
+        } else this.degradedPaths.delete(path39);
       }
       this.observedRevision++;
       await this.yieldAfterIndex();
-      return revision === this.revisions.get(path37);
+      return revision === this.revisions.get(path39);
     }
     return true;
   }
@@ -42415,436 +44782,511 @@ function hashOf(text) {
   return h >>> 0;
 }
 
-// packages/room-mcp/src/conflicts.ts
+// packages/room-mcp/src/conflict-set.ts
+var hash = (value2) => createHash8("sha256").update(value2).digest("hex");
+var slotKey = (owner, kind, other, path39, subject = "") => [owner, kind, other, path39, subject].join("\0");
+var noticeId = (key2, epoch) => `cf:${hash(key2)}:${epoch}`;
 var ROOM = { name: "room", kind: "agent" };
-function changedRanges(base, live) {
-  const out2 = [];
-  for (const h of structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks) {
-    const from2 = h.newStart, to2 = h.newLines ? h.newStart + h.newLines - 1 : h.newStart;
-    out2.push({ from: from2, to: to2 });
+var retryMinutes = [1, 2, 4, 8];
+var ConflictSlots = class {
+  constructor(room, post, fence, now = Date.now, log2 = () => {
+  }) {
+    this.room = room;
+    this.post = post;
+    this.fence = fence;
+    this.now = now;
+    this.log = log2;
+    this.map = room.doc.getMap("conflicts");
   }
-  return out2;
-}
-var covers = (c, p, r) => claimsOverlap(c, { path: p, ...r }) && (c.path.endsWith("/") || c.from <= r.from && c.to >= r.to);
-async function mergePath(d, person, path37) {
-  const myBase = d.baseFor(d.me.name), theirBase = d.baseFor(person);
-  let ancestor = myBase;
-  if (theirBase !== myBase) {
-    try {
-      ancestor = await d.mergeBase(myBase, theirBase);
-    } catch {
-      return { status: "unknown", lines: [] };
+  room;
+  post;
+  fence;
+  now;
+  log;
+  map;
+  get(key2) {
+    return this.map.get(key2);
+  }
+  owned(owner) {
+    return [...this.map.entries()].filter(([, slot]) => slot.owner === owner);
+  }
+  drop(key2) {
+    this.room.doc.transact(() => this.map.delete(key2));
+  }
+  async settle(key2, result2) {
+    const prev = this.map.get(key2);
+    const now = this.now();
+    if (prev?.inputs === result2.inputs && prev.status === result2.status && prev.factId === result2.factId && result2.status !== "unknown") return prev;
+    const changedFact = result2.status === "conflict" || result2.status === "possible" ? prev?.settled !== result2.status || prev.factId !== result2.factId : false;
+    const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0);
+    const settled = result2.status === "unknown" ? prev?.settled ?? "none" : result2.status;
+    const unknownCount = result2.status === "unknown" ? Math.min(3, prev?.status === "unknown" ? Math.max(0, retryMinutes.findIndex((m) => (prev.retryAt ?? 0) - prev.checkedAt <= m * 6e4)) + 1 : 0) : 0;
+    const slot = {
+      ...result2,
+      ...result2.status === "unknown" && prev ? { factId: prev.factId } : {},
+      settled,
+      epoch,
+      fence: this.fence,
+      checkedAt: now,
+      ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {}
+    };
+    this.room.doc.transact(() => this.map.set(key2, slot));
+    if (changedFact) await this.postNotice(key2, slot);
+    else if (result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible")) await this.postNotice(key2, slot);
+    return slot;
+  }
+  /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
+  async replay(owner) {
+    for (const [key2, slot] of this.owned(owner)) {
+      if (slot.settled === "conflict" || slot.settled === "possible" || slot.settled === "clean" && slot.epoch > 0) await this.postNotice(key2, slot);
     }
   }
-  let m, t;
-  try {
-    m = await d.liveText(path37, d.me.name);
-    t = await d.liveText(path37, person);
-  } catch {
-    return { status: "unknown", lines: [] };
+  async postNotice(key2, slot) {
+    const id3 = noticeId(key2, slot.epoch) + (slot.settled === "clean" ? ":clean" : "");
+    const status = slot.settled;
+    const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" ? "interrupt" : "notify";
+    const text = status === "possible" ? `${slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `${slot.path}: the conflict with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
+    const body2 = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text };
+    const posted = await this.post(ROOM, body2, { id: id3, auto: true });
+    if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
+    if (slot.kind === "edit-in-claim" && status === "conflict") {
+      const holder = await this.post(ROOM, { ...body2, to: slot.other, priority: "notify" }, { id: `${noticeId(key2, slot.epoch)}:holder`, auto: true });
+      if (!holder.ok) this.log(`conflict holder notice ${id3}: ${holder.text}`);
+    }
   }
-  const descends = async (from2, sha) => await d.mergeBase(from2, sha).catch(() => "") === from2;
-  const pair = await pairBaseline(d.room.workerOf(d.me.name), d.room.workerOf(person), ancestor, descends);
-  let b;
-  try {
-    b = (pair ? await baselineText(pair, path37, d.baseText) : await d.baseText(ancestor, path37)) ?? "";
-  } catch {
-    return { status: "unknown", lines: [] };
+};
+var changedRanges = (base, live) => structuredPatch("a", "b", base, live, "", "", { context: 0 }).hunks.map((h) => ({ from: h.newStart, to: h.newStart + Math.max(0, h.newLines - 1) }));
+var asText = (v) => v.kind === "text" ? v.text : v.kind === "base" ? v.text ?? "" : v.kind === "deleted" ? "" : void 0;
+var sideInput = (snap, path39) => {
+  const entry = snap.entries.get(path39);
+  return entry ? entry.state === "held" && !entry.hash ? { change: entry.change, state: entry.state, held: entry.held } : { hash: entry.hash, state: entry.state, change: entry.change } : { committed: snap.head.base };
+};
+var ConflictSet = class {
+  constructor(team, owner = team.me.name, notices = team, log2 = (line) => process.stderr.write(`room-mcp: ${line}
+`), debounceMs = 2e3, carriedFrom2) {
+    this.team = team;
+    this.owner = owner;
+    this.notices = notices;
+    this.log = log2;
+    this.debounceMs = debounceMs;
+    this.carriedFrom = carriedFrom2;
+    const record2 = participantRecord(team.room, owner);
+    const fence = owner === team.me.name ? record2?.holder?.sessionId ?? "" : participantRecord(team.room, team.me.name)?.holder?.sessionId ?? "";
+    this.slots = new ConflictSlots(team.room, notices.post, fence, Date.now, log2);
   }
-  const mineT = m === null ? "" : m ?? b, theirs = t === null ? "" : t ?? b;
-  if (mineT === b || theirs === b) return { status: "one-side", lines: [] };
-  const res = await gitMergeFile(b, mineT, theirs, { ours: d.me.name, base: "base", theirs: person });
-  const lines = res.conflicts.map((c) => c.from);
-  return { status: lines.length ? "conflict" : "clean", lines };
-}
-var hashText = (text) => createHash7("sha256").update(text).digest("hex");
-var ConflictWatcher = class {
-  constructor(d) {
-    this.d = d;
-  }
-  d;
-  /** Notices on their way to the hub; flush() waits for them. */
-  posting = /* @__PURE__ */ new Set();
-  stopFns = [];
-  timers = /* @__PURE__ */ new Map();
-  /** "path|claimId" pairs already reported. */
-  reported = /* @__PURE__ */ new Set();
-  /** "person|path" pairs currently known to conflict. */
-  conflicting = /* @__PURE__ */ new Set();
-  inflight = /* @__PURE__ */ new Set();
-  mergeQueue = /* @__PURE__ */ new Map();
-  mergeStarts = [];
-  mergeTimer = null;
-  draining = null;
-  mergeHashes = /* @__PURE__ */ new Map();
-  observedReported = /* @__PURE__ */ new Set();
-  observedChecks = /* @__PURE__ */ new Set();
-  observedTimers = /* @__PURE__ */ new Map();
-  /** Last input hash per lead, so an unchanged lead costs nothing. */
-  observedInputs = /* @__PURE__ */ new Map();
-  /** Contract changes by (baseline, path, before and live text): a text is parsed once. */
-  observedCache = /* @__PURE__ */ new Map();
-  degradedBaseline = /* @__PURE__ */ new Set();
-  integrated = /* @__PURE__ */ new Map();
-  integrationReported = /* @__PURE__ */ new Set();
-  integrationTimer = null;
-  externalReported = /* @__PURE__ */ new Map();
+  team;
+  owner;
+  notices;
+  log;
+  debounceMs;
+  carriedFrom;
+  slots;
+  stops = [];
+  timer;
+  tick;
+  running;
+  rerun = false;
+  starts = [];
+  contractCache = /* @__PURE__ */ new Map();
   start() {
-    const onOverlays = (events) => {
-      const touched = /* @__PURE__ */ new Set();
-      for (const ev of events) {
-        if (ev.target === this.d.room.overlays) {
-          for (const person of ev.changes.keys.keys()) for (const p of this.d.room.changedPaths(person)) touched.add(`${person}|${p}`);
-        } else if (ev.path.length >= 2) {
-          touched.add(`${String(ev.path[0])}|${String(ev.path[1])}`);
-        } else if (ev.path.length === 1) {
-          for (const p of ev.changes.keys.keys()) touched.add(`${String(ev.path[0])}|${p}`);
-        }
-      }
-      for (const key2 of touched) {
-        const [person, p] = key2.split("|");
-        this.schedule(person, p);
-      }
-      this.checkAllObserved();
-    };
-    this.d.room.overlays.observeDeep(onOverlays);
-    this.stopFns.push(() => this.d.room.overlays.unobserveDeep(onOverlays));
-    const onGraphs = (event) => {
-      for (const person of event.keysChanged) if (person !== this.d.me.name) this.queueObserved(person);
-    };
-    this.d.room.graphs.observe(onGraphs);
-    this.stopFns.push(() => this.d.room.graphs.unobserve(onGraphs));
-    const onClaims = () => this.checkAllObserved();
-    this.d.room.claims.observe(onClaims);
-    this.stopFns.push(() => this.d.room.claims.unobserve(onClaims));
-    this.checkAllObserved();
+    const schedule = () => this.schedule();
+    for (const map2 of [this.team.room.manifest, this.team.room.manifestHead, this.team.room.participants, this.team.room.claims, this.team.room.graphs]) {
+      map2.observe(schedule);
+      this.stops.push(() => map2.unobserve(schedule));
+    }
+    const onSync = () => this.schedule(0);
+    this.team.provider.on?.("sync", onSync);
+    this.stops.push(() => this.team.provider.off?.("sync", onSync));
+    this.tick = setInterval(() => this.schedule(0), 6e4);
+    this.tick.unref?.();
+    if (this.team.provider.synced) this.schedule(0);
   }
   stop() {
-    for (const f of this.stopFns) f();
-    this.stopFns = [];
-    for (const t of [...this.timers.values(), ...this.observedTimers.values()]) clearTimeout(t);
-    this.timers.clear();
-    this.observedTimers.clear();
-    if (this.mergeTimer) clearTimeout(this.mergeTimer);
-    this.mergeTimer = null;
-    this.mergeQueue.clear();
-    if (this.integrationTimer) clearTimeout(this.integrationTimer);
-    this.integrationTimer = null;
+    for (const stop2 of this.stops) stop2();
+    this.stops.length = 0;
+    if (this.timer) clearTimeout(this.timer);
+    if (this.tick) clearInterval(this.tick);
   }
-  /** Post as the room. A notice the hub did not take is forgotten, so the next check derives it again (hub §7). */
-  notify(body2, forget) {
-    const posting = this.d.post(ROOM, body2, { auto: true }).then((r) => {
-      this.posting.delete(posting);
-      if (r.ok) return;
-      this.d.log?.(`${body2.type} notice ${r.text}`);
-      forget?.();
-    });
-    this.posting.add(posting);
+  schedule(ms = this.debounceMs) {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = void 0;
+      void this.reconcile("change").catch((e) => this.log(`conflict reconcile: ${String(e)}`));
+    }, ms);
+    this.timer.unref?.();
   }
-  /** Debounced per (person, path): a burst of keystrokes becomes one check. */
-  schedule(person, p) {
-    const key2 = `${person}|${p}`;
-    const prev = this.timers.get(key2);
-    if (prev) clearTimeout(prev);
-    const t = setTimeout(() => {
-      this.timers.delete(key2);
-      void this.check(person, p).catch((e) => this.d.log?.(`conflict check ${person}/${p}: ${e instanceof Error ? e.message : String(e)}`));
-    }, this.d.debounceMs ?? 2e3);
-    t.unref?.();
-    this.timers.set(key2, t);
-  }
-  /** Runs every check for a (person, path) pair now; tests call this instead of waiting. */
   async flush() {
-    const keys2 = Array.from(this.timers.keys());
-    for (const t of this.timers.values()) clearTimeout(t);
-    this.timers.clear();
-    for (const key2 of keys2) {
-      const [person, p] = key2.split("|");
-      await this.check(person, p);
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = void 0;
     }
-    await this.drainMerges();
-    for (const [person, t] of this.observedTimers) {
-      clearTimeout(t);
-      this.observedTimers.delete(person);
-      this.runObserved(person);
+    await this.reconcile("flush");
+  }
+  async reconcile(reason) {
+    if (this.running) {
+      this.rerun = true;
+      await this.running;
+      return;
     }
-    while (this.observedChecks.size) await Promise.all(this.observedChecks);
-    this.reportIntegrations();
-    await Promise.all(this.posting);
+    this.running = this.run(reason);
+    try {
+      await this.running;
+    } finally {
+      this.running = void 0;
+    }
+    if (this.rerun) {
+      this.rerun = false;
+      await this.reconcile("changed during check");
+    }
   }
-  checkAllObserved() {
-    for (const person of this.d.room.graphs.keys()) if (person !== this.d.me.name) this.queueObserved(person);
-    const worker = this.workerRecord();
-    if (worker?.lead && !this.d.room.graphs.has(worker.lead)) this.queueObserved(worker.lead);
-  }
-  workerRecord() {
-    return [...this.d.room.workers.values()].find((worker) => worker.name === this.d.me.name && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID));
-  }
-  /** My worker record when `person` is my lead and spawn carried their uncommitted work into my base. */
-  carriedWorkerFor(person) {
-    const worker = this.workerRecord();
-    const baseline = workerBaseline(worker);
-    return worker?.lead === person && carriesWork(baseline) ? baseline : void 0;
-  }
-  /** Debounced per person, like merge checks: a burst of overlay events becomes one check. */
-  queueObserved(person) {
-    clearTimeout(this.observedTimers.get(person));
-    const t = setTimeout(() => {
-      this.observedTimers.delete(person);
-      this.runObserved(person);
-    }, this.d.debounceMs ?? 2e3);
-    t.unref?.();
-    this.observedTimers.set(person, t);
-  }
-  runObserved(person) {
-    let work;
-    work = Promise.resolve().then(() => this.checkObserved(person)).catch((error2) => {
-      this.d.log?.(`contract check ${person}: ${error2 instanceof Error ? error2.message : String(error2)}`);
-    }).finally(() => this.observedChecks.delete(work));
-    this.observedChecks.add(work);
-  }
-  /**
-   * The lead's contract changes against my carried baseline, over carried paths and the lead's
-   * changed paths, so a revert to HEAD or a commit still counts.
-   */
-  async carriedChanges(baseline, lives) {
-    const out2 = [];
-    for (const [path37, live] of lives) {
-      const read2 = await readBaseline(baseline, path37, this.d.baseText);
-      const degradedKey = `${baseline.sha}\0${path37}`;
-      if (read2.kind === "unavailable") {
-        this.d.log?.(`contract coverage degraded for ${path37}: ${read2.error.message}`);
-        if (!this.degradedBaseline.has(degradedKey)) {
-          this.degradedBaseline.add(degradedKey);
-          this.notify({
-            type: "note",
-            to: this.d.me.name,
-            priority: "notify",
-            text: `contract coverage degraded for ${path37}: carried baseline unavailable; changes in this file cannot be checked`
-          }, () => this.degradedBaseline.delete(degradedKey));
-        }
+  async run(reason) {
+    const room = this.team.room;
+    const views = participantsView(room, this.team.awareness, Date.now());
+    const mine = snapshot(room, this.owner, views);
+    const ownGit = acceptedGit(participantRecord(room, this.owner), views);
+    if (!mine || ownGit === "updating") return;
+    const names = /* @__PURE__ */ new Set([...room.manifestHead.keys(), ...room.openClaims().map((c) => c.by), ...this.slots.owned(this.owner).map(([, s]) => s.other)]);
+    names.delete(this.owner);
+    if (this.owner !== this.team.me.name) names.delete(this.team.me.name);
+    for (const other of [...names].sort()) {
+      const theirs = snapshot(room, other, views);
+      const theirGit = acceptedGit(participantRecord(room, other), views);
+      const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other);
+      if (!theirs && !participantRecord(room, other)) {
+        for (const [key2] of existing) this.slots.drop(key2);
         continue;
       }
-      this.degradedBaseline.delete(degradedKey);
-      const before = read2.kind === "absent" ? "" : read2.text;
-      const key2 = `${baseline.sha}\0${path37}\0${hashText(before)}\0${live === null ? "" : hashText(live ?? "")}`;
-      let changes = this.observedCache.get(key2);
-      if (!changes) {
-        await ensureLanguages([path37]);
-        changes = observedContractChanges(before, live ?? "", path37, parseFile).map((change) => ({ path: path37, ...change }));
-        if (this.observedCache.size >= 1e3) this.observedCache.delete(this.observedCache.keys().next().value);
-        this.observedCache.set(key2, changes);
+      if (!theirs || theirGit === "updating") {
+        const why = `${other}'s manifest or base is updating`;
+        await this.slots.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
+        for (const [key2, slot] of existing) if (slot.path !== "*") await this.slots.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+        continue;
       }
-      out2.push(...changes);
+      await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), theirs);
+      const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
+      if ("cannotCompare" in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== "all" || theirs.head.coverage.kind !== "all" || !mine.fenceValid || !theirs.fenceValid) {
+        const why = "cannotCompare" in pair ? pair.cannotCompare : "manifest is incomplete or fenced out";
+        const key2 = slotKey(this.owner, "merge", other, "*");
+        await this.slots.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), factId: "", why });
+        for (const [existingKey, slot] of existing) if (slot.path !== "*") await this.slots.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+        continue;
+      }
+      this.slots.drop(slotKey(this.owner, "merge", other, "*"));
+      const mergeBase2 = pair.mergeBase;
+      const changed = async (snap, base) => {
+        const committed = await git(this.team.dir, ["diff", "--name-only", `${mergeBase2}..${base}`]).catch(() => "");
+        return /* @__PURE__ */ new Set([...snap.entries.keys(), ...committed.split("\n").filter(Boolean)]);
+      };
+      const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)]);
+      const candidates = new Set([...aPaths].filter((p) => bPaths.has(p)));
+      for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
+      for (const path39 of [...candidates].sort()) {
+        const key2 = slotKey(this.owner, "merge", other, path39);
+        if (!aPaths.has(path39) || !bPaths.has(path39)) {
+          await this.slots.settle(key2, { owner: this.owner, other, kind: "merge", path: path39, status: "clean", inputs: hash(JSON.stringify([ownGit.base, theirGit.base, mine.head.semRev, theirs.head.semRev, "outside-candidate"])), factId: "" });
+          continue;
+        }
+        const inputs = hash(JSON.stringify([
+          ownGit.base,
+          theirGit.base,
+          mergeBase2,
+          ownGit.anchored,
+          theirGit.anchored,
+          mine.head.semRev,
+          theirs.head.semRev,
+          sideInput(mine, path39),
+          sideInput(theirs, path39)
+        ]));
+        const previous = this.slots.get(key2);
+        if (previous?.inputs === inputs && previous.status !== "unknown") continue;
+        const read2 = (snap) => versionOf(snap, path39, {
+          gitAt: (sha, p) => gitShow(this.team.dir, sha, p),
+          known: async (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0)
+        });
+        const [a, b] = await Promise.all([read2(mine), read2(theirs)]);
+        const held = [a, b].some((v) => v.kind === "held" && !v.entry.hash);
+        if (held) {
+          const aChange = mine.entries.get(path39)?.change ?? "committed", bChange = theirs.entries.get(path39)?.change ?? "committed";
+          await this.slots.settle(key2, {
+            owner: this.owner,
+            other,
+            kind: "merge",
+            path: path39,
+            status: "possible",
+            inputs,
+            factId: hash(["possible", path39, mergeBase2, aChange, bChange].join("\0"))
+          });
+          continue;
+        }
+        const at = asText(a), bt = asText(b);
+        if (at === void 0 || bt === void 0) {
+          await this.slots.settle(key2, { owner: this.owner, other, kind: "merge", path: path39, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
+          continue;
+        }
+        let ancestor;
+        try {
+          ancestor = await gitShow(this.team.dir, mergeBase2, path39) ?? "";
+        } catch {
+          await this.slots.settle(key2, { owner: this.owner, other, kind: "merge", path: path39, status: "unknown", inputs, factId: "", why: "missing merge base" });
+          continue;
+        }
+        await this.budget();
+        const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: "base", theirs: other });
+        const lines = merged.conflicts.map((c) => c.from);
+        await this.slots.settle(key2, {
+          owner: this.owner,
+          other,
+          kind: "merge",
+          path: path39,
+          status: lines.length ? "conflict" : "clean",
+          inputs,
+          factId: lines.length ? hash(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
+          lines
+        });
+      }
+      await this.claims(mine, theirs, other, mergeBase2, aPaths);
     }
-    return out2;
+    await this.slots.replay(this.owner);
+    this.log(`conflicts ${this.owner}: reconciled ${reason}`);
   }
-  async checkObserved(person) {
-    const snapshot = this.d.room.graphs.get(person);
-    const carried = this.carriedWorkerFor(person);
-    if (!snapshot && !carried) return;
-    const mine = /* @__PURE__ */ new Set([
-      ...this.d.room.changedPaths(this.d.me.name),
-      ...this.d.room.openClaims().filter((claim2) => claim2.by === this.d.me.name).map((claim2) => claim2.path)
-    ]);
-    if (!mine.size) return;
-    let changes = snapshot?.observed ?? [];
-    const mineTexts = /* @__PURE__ */ new Map();
-    if (carried) {
-      const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried), ...this.d.room.changedPaths(person)]);
-      const lives = /* @__PURE__ */ new Map();
-      for (const path37 of [...paths].sort()) await this.d.liveText(path37, person).then((live) => lives.set(path37, live), () => void 0);
-      for (const path37 of [...mine].sort()) mineTexts.set(path37, await this.d.liveText(path37, this.d.me.name).catch(() => void 0));
-      const input = hashText(JSON.stringify([carried.sha, [...lives], [...mineTexts]]));
-      if (this.observedInputs.get(person) === input) return;
-      this.observedInputs.set(person, input);
-      changes = await this.carriedChanges(carried, lives);
+  async contracts(other, myPaths, theirs) {
+    const graph = this.team.room.graphs.get(other);
+    const live = /* @__PURE__ */ new Set();
+    const carried = this.carriedFrom?.(this.owner);
+    let changes = graph?.observed ?? [];
+    if (carried?.lead === other && carriesWork(carried.baseline)) {
+      const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()]);
+      const observed = [];
+      for (const path39 of paths) {
+        const before = await readBaseline(carried.baseline, path39, (sha, p) => gitShow(this.team.dir, sha, p));
+        if (before.kind === "unavailable") {
+          const key2 = slotKey(this.owner, "contract", other, path39, "*");
+          await this.slots.settle(key2, {
+            owner: this.owner,
+            other,
+            kind: "contract",
+            path: path39,
+            subject: "*",
+            status: "unknown",
+            inputs: hash(JSON.stringify([carried.baseline.sha, path39, "unavailable"])),
+            factId: "",
+            why: before.error.message
+          });
+          const id3 = `cf:${hash(`${key2}\0${carried.baseline.sha}`)}:degraded`;
+          const notice = await this.notices.post(ROOM, {
+            type: "note",
+            to: this.owner,
+            priority: "notify",
+            text: `contract coverage degraded for ${path39}: carried baseline unavailable; changes in this file cannot be checked`
+          }, { id: id3, auto: true });
+          if (!notice.ok) this.log(`contract coverage notice ${id3}: ${notice.text}`);
+          continue;
+        }
+        const version2 = await versionOf(theirs, path39, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) });
+        const after = asText(version2);
+        if (after === void 0) continue;
+        const oldText = before.kind === "absent" ? "" : before.text;
+        const cacheKey = hash(JSON.stringify([carried.baseline.sha, path39, oldText, after]));
+        let parsed = this.contractCache.get(cacheKey);
+        if (!parsed) {
+          await ensureLanguages([path39]);
+          parsed = observedContractChanges(oldText, after, path39, parseFile);
+          if (this.contractCache.size >= 1e3) this.contractCache.delete(this.contractCache.keys().next().value);
+          this.contractCache.set(cacheKey, parsed);
+        }
+        observed.push(...parsed.map((change) => ({ path: path39, ...change })));
+      }
+      changes = observed;
     }
     for (const change of changes) {
       if (change.kind === "add") continue;
-      const uses = carried ? (await Promise.all([...mineTexts].map(
-        async ([path37, live]) => live && await consumesSymbol(path37, live, change.path, change.symbol, this.d.graph?.()) ? path37 : void 0
-      ))).filter((path37) => !!path37).sort() : snapshot.edges.filter((edge) => edge.source === change.path && mine.has(edge.target) && edge.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol))).map((edge) => edge.target).sort();
+      let uses;
+      if (carried?.lead === other && carriesWork(carried.baseline)) {
+        uses = [];
+        for (const path39 of myPaths) {
+          const version2 = await versionOf(
+            snapshot(this.team.room, this.owner, participantsView(this.team.room, this.team.awareness, Date.now())),
+            path39,
+            { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) }
+          );
+          const text = asText(version2);
+          if (text && await consumesSymbol(path39, text, change.path, change.symbol, this.team.graph?.graph)) uses.push(path39);
+        }
+        uses.sort();
+      } else uses = graph?.edges.filter((edge) => edge.source === change.path && myPaths.has(edge.target) && edge.symbols.some((symbol) => bareSymbol(symbol) === bareSymbol(change.symbol))).map((edge) => edge.target).sort() ?? [];
       if (!uses.length) continue;
-      const key2 = `${person}\0${change.path}\0${change.symbol}\0${change.detail}`;
-      if (this.observedReported.has(key2)) continue;
-      this.observedReported.add(key2);
-      const action = change.kind === "signature" ? `changed the signature of ${change.symbol}()` : `deleted ${change.symbol}()`;
-      const consumers = uses.length === 1 ? `${uses[0]} uses it` : `${uses.join(", ")} use it`;
-      const text = `${person} ${action} in ${change.path} (${change.detail}); ${consumers}`;
-      this.notify({ type: "contract", to: this.d.me.name, priority: "notify", path: change.path, symbol: change.symbol, text }, () => this.observedReported.delete(key2));
-      this.d.log?.(`contract: ${text}`);
+      const key2 = slotKey(this.owner, "contract", other, change.path, change.symbol);
+      live.add(key2);
+      const input = hash(JSON.stringify([change, uses]));
+      await this.slots.settle(key2, {
+        owner: this.owner,
+        other,
+        kind: "contract",
+        path: change.path,
+        subject: change.symbol,
+        status: "conflict",
+        inputs: input,
+        factId: hash(JSON.stringify([change.symbol, change.detail, change.kind])),
+        why: change.detail
+      });
+    }
+    for (const [key2, slot] of this.slots.owned(this.owner)) {
+      if (slot.kind !== "contract" || slot.other !== other || live.has(key2)) continue;
+      await this.slots.settle(key2, {
+        owner: this.owner,
+        other,
+        kind: "contract",
+        path: slot.path,
+        subject: slot.subject,
+        status: "clean",
+        inputs: hash(`clean\0${key2}`),
+        factId: ""
+      });
     }
   }
-  async check(person, p) {
-    const key2 = `${person}|${p}`;
-    if (this.inflight.has(key2)) {
-      this.schedule(person, p);
-      return;
-    }
-    this.inflight.add(key2);
-    try {
-      if (person === this.d.me.name) await this.checkOverlap(p);
-      const me = this.d.me.name;
-      const people = (person === me ? this.d.room.whoChanged(p).filter((x) => x !== me) : [person]).filter((x) => !this.d.coLocated?.(x) && (this.d.isPresent?.(x) ?? true));
-      if (this.d.room.changedPaths(me).includes(p)) for (const other of people) this.mergeQueue.set(`${other}|${p}`, { person: other, path: p });
-      await this.drainMerges();
-    } catch (e) {
-      this.d.log?.(`conflict check ${key2}: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      this.inflight.delete(key2);
-    }
-  }
-  async checkOverlap(p) {
-    const me = this.d.me;
-    const live = this.d.room.text(p, me.name);
-    if (live === void 0) return;
-    const base = await this.d.baseText(this.d.baseFor(me.name), p) ?? "";
-    const ranges = changedRanges(base, live);
-    if (!ranges.length) return;
-    const claims = this.d.room.openClaims().filter((c) => ranges.some((r) => claimsOverlap(c, { path: p, ...r })));
-    const mine = claims.filter((c) => c.by === me.name && c.byKind === me.kind);
-    for (const c of claims) {
-      if (c.by === me.name && c.byKind === me.kind) continue;
-      const hit = ranges.find((r) => claimsOverlap(c, { path: p, ...r }) && !mine.some((m) => covers(m, p, r)));
-      if (!hit) continue;
-      const theirs = this.d.room.text(p, c.by) ?? await this.d.liveText(p, c.by).catch(() => void 0);
-      if (live === theirs) {
-        if (!this.integrationReported.has(c.by)) {
-          const paths = this.integrated.get(c.by) ?? /* @__PURE__ */ new Set();
-          paths.add(p);
-          this.integrated.set(c.by, paths);
-          if (!this.integrationTimer) {
-            this.integrationTimer = setTimeout(() => {
-              try {
-                this.reportIntegrations();
-              } catch (e) {
-                this.d.log?.(`integration report: ${e instanceof Error ? e.message : String(e)}`);
-              }
-            }, this.d.debounceMs ?? 2e3);
-            this.integrationTimer.unref?.();
-          }
+  async claims(mine, theirs, other, mergeBase2, changed) {
+    const all2 = this.team.room.openClaims();
+    const ownClaims = all2.filter((c) => c.by === this.owner), theirClaims = all2.filter((c) => c.by === other);
+    const seen = /* @__PURE__ */ new Set();
+    const paths = /* @__PURE__ */ new Set([
+      ...theirClaims.flatMap((c) => c.path.endsWith("/") ? [...changed].filter((path39) => claimsOverlap(c, { path: path39, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),
+      ...this.slots.owned(this.owner).filter(([, s]) => s.other === other && s.kind === "edit-in-claim").map(([, s]) => s.path)
+    ]);
+    const read2 = (snap, path39) => versionOf(snap, path39, { gitAt: (sha, p) => gitShow(this.team.dir, sha, p), known: (blob) => git(this.team.dir, ["cat-file", "-p", blob]).catch(() => void 0) });
+    for (const path39 of paths) {
+      if (path39.endsWith("/")) continue;
+      const [ownV, theirV] = await Promise.all([read2(mine, path39), read2(theirs, path39)]);
+      const ownText = asText(ownV), theirText = asText(theirV);
+      let ancestor;
+      try {
+        ancestor = await gitShow(this.team.dir, mergeBase2, path39) ?? "";
+      } catch {
+      }
+      for (const claim2 of theirClaims.filter((c) => claimsOverlap(c, { path: path39, from: 1, to: Number.MAX_SAFE_INTEGER }))) {
+        const key2 = slotKey(this.owner, "edit-in-claim", other, path39, claim2.id);
+        seen.add(key2);
+        const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase2, claim2.id, claim2.from, claim2.to, claim2.claimedHash, sideInput(mine, path39), sideInput(theirs, path39)]));
+        if (ownText === void 0 || ancestor === void 0) {
+          await this.slots.settle(key2, { owner: this.owner, other, kind: "edit-in-claim", path: path39, subject: claim2.id, status: "unknown", inputs, factId: "", why: "cannot map claim" });
+          continue;
         }
+        const mapped = claim2.path.endsWith("/") ? { from: 1, to: Math.max(1, ownText.split("\n").length), approximate: false } : claimInMyLines(claim2, theirText, ownText);
+        const ranges = changed.has(path39) ? changedRanges(ancestor, ownText) : [];
+        const hit = ranges.find((r) => claimsOverlap({ path: path39, ...mapped }, { path: path39, ...r }) && !ownClaims.some((c) => claimsOverlap(c, { path: path39, ...r })));
+        await this.slots.settle(key2, {
+          owner: this.owner,
+          other,
+          kind: "edit-in-claim",
+          path: path39,
+          subject: claim2.id,
+          status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
+          inputs,
+          factId: hit ? hash(JSON.stringify([claim2.id, hit, mapped])) : "",
+          ...hit ? { lines: [hit.from], why: mapped.approximate ? "approximate range" : claim2.intent } : {}
+        });
+      }
+    }
+    for (const a of ownClaims) for (const b of theirClaims) {
+      if (!coversPath(a.path, b.path)) continue;
+      if (a.path.endsWith("/") || b.path.endsWith("/")) {
+        const subject2 = `${a.id}\0${b.id}`, path39 = a.path.endsWith("/") ? b.path : a.path, key3 = slotKey(this.owner, "claims", other, path39, subject2);
+        seen.add(key3);
+        await this.slots.settle(key3, {
+          owner: this.owner,
+          other,
+          kind: "claims",
+          path: path39,
+          subject: subject2,
+          status: "conflict",
+          inputs: hash(JSON.stringify([a.id, a.path, a.from, a.to, b.id, b.path, b.from, b.to])),
+          factId: hash(JSON.stringify([subject2, a.path, b.path]))
+        });
         continue;
       }
-      if (this.d.writeIntent?.(p) === false) {
-        const now = (this.d.now ?? Date.now)();
-        for (const [path37, at] of this.externalReported) if (now - at >= 6e5) this.externalReported.delete(path37);
-        if (!this.externalReported.has(p)) {
-          this.externalReported.set(p, now);
-          this.notify({ type: "note", to: me.name, priority: "fyi", text: `${p} changed in your folder without a write from your session` }, () => this.externalReported.delete(p));
-        }
-        continue;
-      }
-      const k = `${p}|${c.id}`;
-      if (this.reported.has(k)) continue;
-      this.reported.add(k);
-      const who2 = displayName({ name: c.by, kind: c.byKind });
-      this.notify({
-        type: "conflict",
-        claimId: c.id,
-        otherClaimId: "",
-        path: p,
-        to: me.name,
-        priority: "interrupt",
-        text: `you edited ${p}:${hit.from}-${hit.to} inside ${who2}'s claim ${c.id} (${c.intent}); claim it or room_wait(${c.id})`
-      }, () => this.reported.delete(k));
-      this.notify({
-        type: "conflict",
-        claimId: c.id,
-        otherClaimId: "",
-        path: p,
-        to: c.by,
-        priority: "notify",
-        text: `${displayName(me)} edited ${p}:${hit.from}-${hit.to} inside your claim ${c.id} (${c.intent}) without claiming`
-      });
-      this.d.log?.(`overlap: my edit ${p}:${hit.from}-${hit.to} inside ${c.by}'s claim ${c.id}`);
-    }
-  }
-  reportIntegrations() {
-    if (this.integrationTimer) clearTimeout(this.integrationTimer);
-    this.integrationTimer = null;
-    for (const [holder, paths] of this.integrated) {
-      this.integrationReported.add(holder);
-      this.notify({
-        type: "note",
-        to: this.d.me.name,
-        priority: "fyi",
-        text: `${this.d.me.name} integrated ${paths.size} file${paths.size === 1 ? "" : "s"} of ${holder}`
+      const [av, bv] = await Promise.all([read2(mine, a.path), read2(theirs, b.path)]);
+      const at = asText(av), bt = asText(bv);
+      const mapped = at === void 0 ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(b, bt, at);
+      const subject = `${a.id}\0${b.id}`, key2 = slotKey(this.owner, "claims", other, a.path, subject);
+      seen.add(key2);
+      const hit = claimsOverlap(a, { path: b.path, ...mapped });
+      await this.slots.settle(key2, {
+        owner: this.owner,
+        other,
+        kind: "claims",
+        path: a.path,
+        subject,
+        status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
+        inputs: hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, a.id, a.from, a.to, a.claimedHash, b.id, b.from, b.to, b.claimedHash])),
+        factId: hit ? hash(JSON.stringify([subject, a.from, a.to, mapped])) : ""
       });
     }
-    this.integrated.clear();
-  }
-  async checkMerge(person, p) {
-    if (this.d.coLocated?.(person)) return;
-    if (this.d.isPresent && !this.d.isPresent(person)) return;
-    if (!this.d.room.changedPaths(person).includes(p)) return;
-    const key2 = `${person}|${p}`;
-    const mine = await this.d.liveText(p, this.d.me.name).catch(() => void 0);
-    const theirs = await this.d.liveText(p, person).catch(() => void 0);
-    const hash = createHash7("sha256").update(`${this.d.baseFor(this.d.me.name)}\0${this.d.baseFor(person)}\0${mine ?? ""}\0${theirs ?? ""}`).digest("hex");
-    if (this.mergeHashes.get(key2) === hash) return;
-    const res = await mergePath(this.d, person, p);
-    if (res.status === "unknown") return;
-    this.mergeHashes.set(key2, hash);
-    const was = this.conflicting.has(key2);
-    if (res.status === "conflict" && !was) {
-      this.conflicting.add(key2);
-      this.notify({
-        type: "merge-conflict",
-        path: p,
-        to: this.d.me.name,
-        text: `your ${p} and ${person}'s now conflict around line${res.lines.length === 1 ? "" : "s"} ${res.lines.join(", ")}; room_preview_merge(${person}) for detail`
-      }, () => {
-        this.conflicting.delete(key2);
-        this.mergeHashes.delete(key2);
-      });
-      this.d.log?.(`preview: ${p} conflicts with ${person}'s at ${res.lines.join(", ")}`);
-    } else if (res.status !== "conflict" && was) {
-      this.conflicting.delete(key2);
-      this.notify({ type: "note", to: this.d.me.name, priority: "fyi", text: `your ${p} and ${person}'s merge cleanly again` }, () => {
-        this.conflicting.add(key2);
-        this.mergeHashes.delete(key2);
+    for (const [key2, slot] of this.slots.owned(this.owner)) {
+      if (slot.other !== other || slot.kind !== "claims" && slot.kind !== "edit-in-claim" || seen.has(key2)) continue;
+      await this.slots.settle(key2, {
+        owner: this.owner,
+        other,
+        kind: slot.kind,
+        path: slot.path,
+        subject: slot.subject,
+        status: "clean",
+        inputs: hash(`released\0${key2}`),
+        factId: ""
       });
     }
   }
-  /** Drain coalesced pairs while respecting one global rolling-window budget. */
-  async drainMerges() {
-    if (this.draining) return this.draining;
-    this.draining = (async () => {
-      const now = this.d.now ?? Date.now;
-      const windowMs = this.d.mergeWindowMs ?? 1e4;
-      const budget = this.d.mergeBudget ?? 4;
-      while (this.mergeQueue.size) {
-        const at = now();
-        this.mergeStarts = this.mergeStarts.filter((t) => at - t < windowMs);
-        if (this.mergeStarts.length >= budget) {
-          if (!this.mergeTimer) {
-            const delay = Math.max(1, this.mergeStarts[0] + windowMs - at);
-            this.mergeTimer = setTimeout(() => {
-              this.mergeTimer = null;
-              void this.drainMerges().catch((e) => this.d.log?.(`merge preview: ${e instanceof Error ? e.message : String(e)}`));
-            }, delay);
-            this.mergeTimer.unref?.();
-          }
-          break;
-        }
-        const first = this.mergeQueue.entries().next().value;
-        if (!first) break;
-        this.mergeQueue.delete(first[0]);
-        this.mergeStarts.push(at);
-        await this.checkMerge(first[1].person, first[1].path);
-      }
-    })().finally(() => {
-      this.draining = null;
-    });
-    return this.draining;
+  async budget() {
+    const now = Date.now();
+    this.starts = this.starts.filter((t) => now - t < 1e4);
+    if (this.starts.length >= 4) await new Promise((resolve5) => setTimeout(resolve5, 1e4 - (now - this.starts[0])));
+    this.starts.push(Date.now());
   }
 };
+async function reconcileProjectedConflicts({ team, workers, owner }) {
+  await new ConflictSet(team, owner, workers).reconcile("projection");
+}
+
+// packages/room-mcp/src/presence.ts
+var AWARENESS_FRESH_MS2 = 3e4;
+function isFresh(awareness, clientId, now) {
+  const lastUpdated = awareness.meta.get(clientId)?.lastUpdated;
+  return lastUpdated !== void 0 && now - lastUpdated <= AWARENESS_FRESH_MS2;
+}
+
+// packages/room-mcp/src/company.ts
+function sameCheckoutSession(s, name2) {
+  const mine = s.awareness.getLocalState()?.watchedDirectory;
+  if (!mine || name2 === s.me.name) return false;
+  const peers = [...s.awareness.getStates()].filter(([id3, value2]) => id3 !== s.awareness.clientID && value2.user?.name === name2 && isFresh(s.awareness, id3, Date.now()));
+  return peers.length > 0 && peers.every(([, value2]) => value2.watchedDirectory === mine);
+}
+function hasCompany(s, runningWorkers = [], now = Date.now()) {
+  const names = /* @__PURE__ */ new Map();
+  for (const [clientId, value2] of s.awareness.getStates()) {
+    const p = value2;
+    if (!p.user || clientId === s.awareness.clientID || p.user.name === s.me.name || sameCheckoutSession(s, p.user.name)) continue;
+    if (!isFresh(s.awareness, clientId, now)) continue;
+    if (p.user.kind === "human" && p.status === "viewing") continue;
+    names.set(p.user.name, p.user.name);
+  }
+  for (const worker of runningWorkers) names.set(worker.name, names.get(worker.name) ?? worker.name);
+  const others = Array.from(names.values()).sort((a, b) => a.localeCompare(b));
+  return { company: others.length > 0, others };
+}
+function describeCompany(s, company) {
+  const scopes = s.room.allScopes();
+  const current = [...s.awareness.getStates().values()];
+  const entries = company.others.map((name2) => {
+    const scope = scopes.find((sc) => name2 === sc.by);
+    const presence = current.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? current.find((p) => p.user?.name === name2);
+    const who2 = displayName({ name: name2, kind: presence?.user?.kind ?? scope?.byKind ?? "agent" });
+    return scope ? `${who2} is here, on ${scope.area}: ${scope.paths.join(", ")}` : `${who2} is here`;
+  });
+  return "[room] " + entries.join("; ") + ".";
+}
 
 // packages/room-mcp/src/tools/context.ts
-import fs18 from "node:fs";
-import path15 from "node:path";
+import fs19 from "node:fs";
+import path16 from "node:path";
 var REPLY_BATCH = /* @__PURE__ */ Symbol("reply batch");
 var RO = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 var RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -42876,23 +45318,24 @@ var NeedFetch = class extends Error {
   detail;
   lead;
 };
-function diskWorker(s, person) {
-  if (!s.local || s.room.overlays.get(person)?.size) return void 0;
-  if ([...s.awareness.getStates().values()].some((p) => p.user?.name === person)) return void 0;
-  const worker = s.room.workerOf(person);
-  return worker?.dir && fs18.existsSync(worker.dir) ? worker : void 0;
+async function trustedWorker(s, person) {
+  const worker = localWorkers(s.dir, (record2) => record2.name === person && record2.lead.participant === s.me.name)[0];
+  if (!worker?.id) return void 0;
+  const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag);
+  if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return void 0;
+  return { ...realStateInput(trusted.record, trusted.status), dir: fs19.realpathSync(trusted.record.dir) };
 }
 var WORKTREE_NOTE = "(read from the worker's worktree on disk; the worker is not connected)";
 function workerText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe worker path: " + rel);
-  const root = fs18.realpathSync(dir);
-  const candidate = path15.resolve(root, rel);
+  const root = fs19.realpathSync(dir);
+  const candidate = path16.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe worker path: " + rel);
   try {
     const result2 = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
     if (!result2.ok) throw new Error("unsafe worker symlink: " + rel);
     const real = result2.path;
-    return fs18.readFileSync(real, "utf8");
+    return fs19.readFileSync(real, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
@@ -42915,7 +45358,7 @@ var defs = [
   }
 ];
 function handlers(state) {
-  const { S, liveText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state;
+  const { S, readText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state;
   const handlers10 = {
     async room_claim(a) {
       const s = S();
@@ -42929,12 +45372,12 @@ function handlers(state) {
       const directory = p.endsWith("/");
       if (directory && a.symbol) return "error: directory claims do not take a symbol";
       if (directory) {
-        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name ? [] : sc.paths.filter((path37) => coversPath(p, path37)).map((path37) => `${sc.by}'s scope includes ${path37}`));
+        const scopeHits = s.room.allScopes().flatMap((sc) => sc.by === s.me.name ? [] : sc.paths.filter((path39) => coversPath(p, path39)).map((path39) => `${sc.by}'s scope includes ${path39}`));
         const claimHits = s.room.openClaims().flatMap((c) => isMe(s, { name: c.by, kind: c.byKind }) || !coversPath(p, c.path) ? [] : [`${c.by}'s claim includes ${c.path}`]);
         const hits = [...scopeHits, ...claimHits];
         if (hits.length) return `cannot claim ${p}: it would cover another participant's declared work (${hits.join("; ")}). Claim narrower files instead.`;
       }
-      const t = directory ? void 0 : await liveText(s, p, s.me.name);
+      const t = directory ? void 0 : await readText(s, p, s.me.name);
       const isNew = t === void 0 || t === null;
       const n = isNew ? 1 : lines(t);
       let range;
@@ -42953,19 +45396,11 @@ function handlers(state) {
       const r = directory ? range : clampRange(range.from, range.to, n);
       const claimedHash = !isNew && !directory ? claimDigest(t, r.from, r.to) : void 0;
       const intentFull = symbol ? `${symbol}: ${intent}` : intent;
-      const overl = s.room.openClaims().filter((c) => !isMe(s, { name: c.by, kind: c.byKind }) && claimsOverlap(c, { path: p, ...r }));
       const claim2 = s.room.addClaim({ path: p, from: r.from, to: r.to, by: s.me.name, byKind: s.me.kind, intent: intentFull, ...plans.length ? { plans } : {}, ...claimedHash ? { claimedHash } : {} }, s.me);
       const posting = s.post(s.me, { type: "claim", claimId: claim2.id, path: p, from_line: r.from, to_line: r.to, intent: intentFull, ...plans.length ? { plans } : {} });
       s.room.setClaimMsg(claim2.id, posting.id);
-      const conflicts = overl.map((o) => s.post(s.me, {
-        type: "conflict",
-        claimId: claim2.id,
-        otherClaimId: o.id,
-        path: p,
-        to: o.by,
-        text: `${displayName(s.me)} claimed ${p}:${r.from}-${r.to} (${intentFull}) overlapping ${describeClaim(o)}`
-      }, { auto: true }));
-      const [posted] = await Promise.all([posting, ...conflicts]);
+      const posted = await posting;
+      await new ConflictSet(s, s.me.name, s, state.log, 0).reconcile("claim").catch((e) => state.log(`claim conflicts: ${String(e)}`));
       s.daemon.touch();
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} \u2014 ${intent}` });
       const out2 = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew && !directory ? " (new file)" : ""}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]];
@@ -42981,7 +45416,12 @@ function handlers(state) {
         }
       }
       if (superseded) await s.post(s.me, { type: "note", priority: "fyi", text: `${s.me.name} superseded ${superseded} plan(s)` });
-      for (const o of overl) out2.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Conflict posted. Do not edit that region; ask ${o.by}'s agent or wait for release.`);
+      const overlaps = (await Promise.all(s.room.openClaims().filter((c) => c.id !== claim2.id && !isMe(s, { name: c.by, kind: c.byKind })).map(async (c) => ({
+        claim: c,
+        range: await claimRangeInMyText(s, c, t ?? "")
+      })))).filter(({ claim: c, range: range2 }) => claimsOverlap({ path: c.path, ...range2 }, { path: p, ...r }));
+      for (const { claim: o, range: range2 } of overlaps)
+        out2.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range2.approximate ? "; approximate lines" : ""}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
         await s.graph.ready;
         for (const pl2 of plans) {
@@ -43021,6 +45461,18 @@ function handlers(state) {
   };
   return handlers10;
 }
+async function claimRangeInMyText(s, claim2, myText) {
+  if (claim2.path.endsWith("/")) return { from: claim2.from, to: claim2.to, approximate: false };
+  const view = participantsView(s.room, s.awareness, Date.now());
+  const raw = snapshot(s.room, claim2.by, view);
+  const owner = raw?.head.publisher ? snapshot(s.room, raw.head.publisher, view) : raw;
+  const version2 = await versionOf(owner, claim2.path, {
+    gitAt: (sha, path39) => gitShow(s.dir, sha, path39),
+    known: (blob) => git(s.dir, ["cat-file", "-p", blob]).catch(() => void 0)
+  });
+  const ownerText = version2.kind === "text" ? version2.text : version2.kind === "base" ? version2.text ?? "" : version2.kind === "deleted" ? "" : void 0;
+  return claimInMyLines(claim2, ownerText, myText);
+}
 function releaseClaimsOnDone(s, keep, name2 = s.me.name, clearScope = true) {
   const released = s.room.openClaims().filter((c) => c.by === name2 && c.byKind !== "human" && !keep?.(c));
   s.room.doc.transact(() => {
@@ -43051,55 +45503,14 @@ function parsePlans(v) {
   return out2;
 }
 function createClaims(deps) {
-  const { conflictPairs, mine, log: log2, ctx, liveText, baseFor } = deps;
-  const sessionDir = () => ctx.binding?.dir();
-  const observeClaims = (s) => {
-    s.room.claims.observe((ev, tr) => {
-      if (tr.local) return;
-      for (const [id3, ch] of ev.changes.keys) {
-        if (ch.action !== "add") continue;
-        const arrived = s.room.openClaims().find((c) => c.id === id3);
-        if (!arrived || arrived.by === s.me.name && arrived.byKind === s.me.kind) continue;
-        for (const m of mine(s)) {
-          if (!claimsOverlap(m, arrived)) continue;
-          const key2 = [m.id, arrived.id].sort().join(":");
-          if (conflictPairs.has(key2) || s.room.messages().some((x) => x.type === "conflict" && [x.claimId, x.otherClaimId].sort().join(":") === key2)) {
-            conflictPairs.add(key2);
-            continue;
-          }
-          conflictPairs.add(key2);
-          if (m.id.localeCompare(arrived.id) > 0) continue;
-          const text = `concurrent overlapping claims: ${describeClaim(m)} and ${describeClaim(arrived)}`;
-          void s.post(s.me, { type: "conflict", claimId: m.id, otherClaimId: arrived.id, path: m.path, text, to: arrived.by }, { auto: true });
-        }
-      }
-    });
-  };
+  const { log: log2, ctx } = deps;
   const planChanged = postPlanChange;
-  const startConflictWatcher = (s) => {
-    const watcher = new ConflictWatcher({
-      room: s.room,
-      me: s.me,
-      log: log2,
-      debounceMs: ctx.conflictDebounceMs,
-      post: s.post,
-      writeIntent: createWriteIntentReader(s.dir, sessionDir),
-      coLocated: (person) => {
-        const states = [...s.awareness.getStates().values()];
-        const mine2 = s.awareness.getLocalState()?.watchedDirectory;
-        return !!mine2 && states.some((state) => state?.user?.name === person && state.watchedDirectory === mine2);
-      },
-      liveText: (p, person) => liveText(s, p, person),
-      baseText: (sha, p) => gitShow(s.dir, sha, p),
-      baseFor: (person) => baseFor(s, person),
-      mergeBase: async (a, b) => (await git(s.dir, ["merge-base", a, b])).trim(),
-      graph: () => s.graph?.graph,
-      isPresent: (person) => Array.from(s.awareness.getStates().values()).some((state) => state?.user?.name === person)
-    });
-    watcher.start();
-    return watcher;
+  const startConflictSet = (s) => {
+    const set = new ConflictSet(s, s.me.name, s, log2, ctx.conflictDebounceMs, (person) => carriedFrom(s.dir, person));
+    set.start();
+    return set;
   };
-  return { observeClaims, planChanged, startConflictWatcher };
+  return { planChanged, startConflictSet };
 }
 
 // packages/room-mcp/src/tools/share.ts
@@ -43209,8 +45620,8 @@ import { tmpdir } from "node:os";
 import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
 
 // packages/relay/src/memory.ts
-import fs19 from "node:fs";
-import path16 from "node:path";
+import fs20 from "node:fs";
+import path17 from "node:path";
 import crypto from "node:crypto";
 var stderr = (line) => {
   process.stderr.write(`${line}
@@ -43235,20 +45646,20 @@ function largestRoots(update) {
   }
 }
 function memoryFile(commonDir, room) {
-  return path16.join(commonDir, "room-local", `${encodeURIComponent(room)}.ydoc`);
+  return path17.join(commonDir, "room-local", `${encodeURIComponent(room)}.ydoc`);
 }
 function loadMemory(commonDir, room, log2 = stderr) {
   const doc = new Doc2(), file = memoryFile(commonDir, room);
   try {
-    if (fs19.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
-    applyUpdate(doc, fs19.readFileSync(file));
+    if (fs20.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
+    applyUpdate(doc, fs20.readFileSync(file));
     return doc;
   } catch (e) {
     doc.destroy();
     if (e.code !== "ENOENT") {
       log2(`local room memory: cannot load ${file}: ${e}; starting empty`);
       try {
-        fs19.renameSync(file, `${file}.corrupt-${Date.now()}`);
+        fs20.renameSync(file, `${file}.corrupt-${Date.now()}`);
       } catch {
       }
     }
@@ -43267,17 +45678,17 @@ function saveMemory(commonDir, room, doc, log2 = stderr) {
     if (update.byteLength > MAX_MEMORY_BYTES) {
       warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
     }
-    fs19.mkdirSync(path16.dirname(file), { recursive: true, mode: 448 });
-    fs19.chmodSync(path16.dirname(file), 448);
-    fs19.writeFileSync(temp, update, { mode: 384, flag: "wx" });
-    fs19.renameSync(temp, file);
+    fs20.mkdirSync(path17.dirname(file), { recursive: true, mode: 448 });
+    fs20.chmodSync(path17.dirname(file), 448);
+    fs20.writeFileSync(temp, update, { mode: 384, flag: "wx" });
+    fs20.renameSync(temp, file);
     return true;
   } catch (e) {
     log2(`local room memory: cannot save ${file}: ${e}`);
     return false;
   } finally {
     try {
-      fs19.unlinkSync(temp);
+      fs20.unlinkSync(temp);
     } catch {
     }
   }
@@ -43334,7 +45745,7 @@ var RoomMemory = class {
     if (!this.forgotten) saveMemory(this.commonDir, this.room, this.doc, this.log);
   }
   forget() {
-    fs19.rmSync(memoryFile(this.commonDir, this.room), { force: true });
+    fs20.rmSync(memoryFile(this.commonDir, this.room), { force: true });
     this.forgotten = true;
     clearTimeout(this.debounce);
     clearTimeout(this.deadline);
@@ -43355,497 +45766,13 @@ var RoomMemory = class {
 };
 
 // packages/relay/src/hub.ts
-import fs20 from "node:fs";
-import path17 from "node:path";
+import fs21 from "node:fs";
+import path18 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
-
-// packages/hub-core/src/protocol.ts
-var MSG_HUB = 7;
-var HUB_PROTO = 1;
-var HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
-var LEASE_TTL_MS = 45e3;
-var LEASE_RENEW_MS = 15e3;
-var SETTLE_MS = 5e3;
-var STARTING_RETRY_MS = 1e3;
-var REQUEST_TIMEOUT_LOCAL_MS = 5e3;
-var REQUEST_TIMEOUT_TEAM_MS = 1e4;
-function encodeFrame(frame) {
-  const enc = createEncoder();
-  writeVarUint(enc, MSG_HUB);
-  writeVarString(enc, JSON.stringify(frame));
-  return toUint8Array(enc);
-}
-function decodeFrame(input) {
-  let dec;
-  if (input instanceof Uint8Array) {
-    dec = createDecoder(input);
-    const type = readVarUint(dec);
-    if (type !== MSG_HUB) throw new Error(`not a hub frame: message type ${type}`);
-  } else dec = input;
-  return JSON.parse(readVarString(dec));
-}
-var COUNTER_BITS = 21;
-var COUNTER_LIMIT = 2 ** COUNTER_BITS;
-function encodeSeq(incarnation, n) {
-  if (!Number.isInteger(incarnation) || incarnation < 0 || incarnation >= 2 ** 32) throw new RangeError(`incarnation out of range: ${incarnation}`);
-  if (!Number.isInteger(n) || n < 0 || n >= COUNTER_LIMIT) throw new RangeError(`counter out of range: ${n}`);
-  return incarnation * COUNTER_LIMIT + n;
-}
-function incarnationOf(value2) {
-  return Math.floor(value2 / COUNTER_LIMIT);
-}
-
-// packages/hub-core/src/hub.ts
-var MAINTENANCE_MS = 6e4;
-function serializedStore(record2) {
-  let queue = Promise.resolve();
-  return {
-    advance(floor2) {
-      const run2 = queue.then(async () => {
-        const next = Math.max((await record2.read() ?? -1) + 1, floor2);
-        await record2.write(next);
-        return next;
-      });
-      queue = run2.catch(() => void 0);
-      return run2;
-    }
-  };
-}
-var HOLDER = "\0holder";
-var holderKey = (name2) => `${name2}${HOLDER}`;
-var encoder2 = new TextEncoder();
-var sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
-var isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-var isName = (v) => typeof v === "string" && validParticipantName(v) && v.length <= 200;
-var isCounter = (v) => Number.isSafeInteger(v) && v >= 0;
-function parseHolder(v) {
-  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || !Number.isInteger(v.pid) || typeof v.startTime !== "string" || typeof v.executable !== "string" || v.workerId !== void 0 && typeof v.workerId !== "string") return void 0;
-  return { sessionId: v.sessionId, pid: v.pid, startTime: v.startTime, executable: v.executable, ...v.workerId !== void 0 ? { workerId: v.workerId } : {} };
-}
-function hubHolder(v) {
-  const holder = parseHolder(v);
-  if (!holder || !isObject2(v) || !isCounter(v.epoch)) return void 0;
-  const ended = v.ended === "released" || v.ended === "expired" ? v.ended : void 0;
-  return { ...holder, epoch: v.epoch, at: typeof v.at === "number" ? v.at : 0, ...ended ? { ended } : {} };
-}
-var sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
-function knownOf(record2) {
-  const { epoch, at, ended, ...holder } = record2;
-  return { epoch, at, holder, ...ended ? { ended } : {} };
-}
-function hydrate(known, record2) {
-  if (known.holder || record2.epoch !== known.epoch) return;
-  const { at, holder } = knownOf(record2);
-  known.at = at;
-  known.holder = holder;
-}
-var higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
-function visible(doc) {
-  let epoch, seq;
-  const see = (v, kind) => {
-    if (!isCounter(v)) return;
-    if (kind === "epoch") epoch = higher(epoch, v);
-    else seq = higher(seq, v);
-  };
-  const meta2 = doc.metaMap;
-  see(meta2.get("hubEpoch"), "epoch");
-  see(meta2.get("hubSeq"), "seq");
-  for (const m of doc.bus.toArray()) see(m?.seq, "seq");
-  for (const m of doc.mail.values()) see(m?.seq, "seq");
-  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) see(value2?.epoch, "epoch");
-  const incarnation = Math.max(
-    isCounter(meta2.get("hubIncarnation")) ? meta2.get("hubIncarnation") : -1,
-    ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
-  );
-  return { epoch, seq, incarnation };
-}
-async function startHub(host) {
-  const hub = new RoomHub(host);
-  await hub.start();
-  return hub;
-}
-var RoomHub = class {
-  constructor(host) {
-    this.host = host;
-    this.limit = host.counterLimit ?? COUNTER_LIMIT;
-  }
-  host;
-  incarnation = 0;
-  limit;
-  epochs = 0;
-  seqs = 0;
-  lastEpoch;
-  lastSeq;
-  reincarnating;
-  startedAt = 0;
-  settled = false;
-  maintainedAt = 0;
-  dirty = false;
-  stopped = false;
-  unauthorized = false;
-  tenure;
-  leases = /* @__PURE__ */ new Map();
-  records = /* @__PURE__ */ new Map();
-  greeted = /* @__PURE__ */ new Set();
-  push = () => {
-  };
-  onUpdate = (_update, origin) => {
-    if (origin === HUB_ORIGIN) return;
-    this.dirty = true;
-    if (this.settling()) this.adoptSynced();
-  };
-  get doc() {
-    return this.host.doc;
-  }
-  async start() {
-    await this.incarnate();
-    this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
-    this.startedAt = this.maintainedAt = this.host.mono();
-    this.adoptSynced();
-    this.doc.doc.on("update", this.onUpdate);
-    this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
-  }
-  /** Take a new incarnation (§3): durable before anything is issued under it. */
-  async incarnate() {
-    const floor2 = Math.max(visible(this.doc).incarnation + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1e3));
-    const next = await this.host.store.advance(floor2);
-    if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
-    this.incarnation = next;
-    this.epochs = this.seqs = 0;
-    this.doc.doc.transact(() => {
-      this.doc.metaMap.set("hubIncarnation", next);
-    }, HUB_ORIGIN);
-  }
-  stop() {
-    this.stopped = true;
-    this.doc.doc.off("update", this.onUpdate);
-  }
-  onPush(fn) {
-    this.push = fn;
-  }
-  closed(conn) {
-    this.greeted.delete(conn);
-    for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
-  }
-  settling() {
-    return this.host.mono() - this.startedAt < SETTLE_MS;
-  }
-  notify(name2, lease, reason) {
-    if (lease.conn) this.push(lease.conn, { v: 1, push: "lease-lost", name: name2, epoch: lease.epoch, reason });
-  }
-  authorized() {
-    if (this.stopped) return false;
-    if (!this.host.authority || this.host.authority()) {
-      this.unauthorized = false;
-      return true;
-    }
-    if (!this.unauthorized) {
-      this.unauthorized = true;
-      this.host.log("hub: lost the authority lock; answering not-authority");
-      for (const [name2, lease] of this.leases) this.notify(name2, lease, "not-authority");
-    }
-    return false;
-  }
-  // ---- leases ----
-  record(name2) {
-    return hubHolder(this.doc.participants.get(holderKey(name2)));
-  }
-  /** The doc record for what the hub knows of a name, when it knows the holder. */
-  recordOf(k) {
-    return k.holder && { ...k.holder, epoch: k.epoch, at: k.at, ...k.ended ? { ended: k.ended } : {} };
-  }
-  /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
-  hold(name2, lease) {
-    this.leases.set(name2, lease);
-    this.records.set(name2, lease);
-    this.tenure.present(this.doc, name2, HUB_ORIGIN);
-  }
-  /**
-   * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
-   * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
-   */
-  live(name2) {
-    const lease = this.leases.get(name2);
-    if (!lease) return void 0;
-    const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
-    const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
-    const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
-    if (!ended && !expired) return lease;
-    this.end(name2, lease, ended ?? "expired");
-    this.notify(name2, lease, "expired");
-    return void 0;
-  }
-  end(name2, lease, how) {
-    this.leases.delete(name2);
-    const current = this.record(name2);
-    if (current) hydrate(lease, current);
-    const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, ended: how };
-    this.records.set(name2, ended);
-    const record2 = this.recordOf(ended);
-    if (record2) this.doc.doc.transact(() => {
-      this.doc.participants.set(holderKey(name2), record2);
-    }, HUB_ORIGIN);
-    this.host.log(`hub: lease ${lease.epoch} on ${name2} ${how}`);
-  }
-  /**
-   * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
-   * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
-   * rise to the highest values seen.
-   */
-  adoptSynced() {
-    const seen = visible(this.doc);
-    this.lastEpoch = higher(this.lastEpoch, seen.epoch);
-    this.lastSeq = higher(this.lastSeq, seen.seq);
-    for (const [key2, value2] of this.doc.participants.entries()) {
-      if (!key2.endsWith(HOLDER)) continue;
-      const record2 = hubHolder(value2);
-      if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
-      const name2 = key2.slice(0, -HOLDER.length);
-      const known = this.records.get(name2);
-      const lease = this.leases.get(name2);
-      if (known && record2.epoch <= known.epoch) {
-        if (lease) hydrate(lease, record2);
-        continue;
-      }
-      if (lease) {
-        this.leases.delete(name2);
-        this.notify(name2, lease, "superseded");
-      }
-      if (record2.ended) this.records.set(name2, knownOf(record2));
-      else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
-    }
-  }
-  /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
-  reserve(kind, count) {
-    if (this.reincarnating) return false;
-    if ((kind === "epoch" ? this.epochs : this.seqs) + count <= this.limit) return true;
-    this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
-      this.reincarnating = void 0;
-    });
-    return false;
-  }
-  /** The next epoch or seq, or undefined while a new incarnation is being taken. */
-  issue(kind) {
-    if (!this.reserve(kind, 1)) return void 0;
-    const n = kind === "epoch" ? this.epochs++ : this.seqs++;
-    return encodeSeq(this.incarnation, n);
-  }
-  /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
-  append(msg, wall) {
-    const seq = this.issue("seq");
-    if (seq === void 0) return void 0;
-    const record2 = { ...msg, seq, at: wall };
-    this.lastSeq = seq;
-    this.doc.doc.transact(() => {
-      this.doc.bus.push([record2]);
-      this.doc.metaMap.set("hubSeq", seq);
-    }, HUB_ORIGIN);
-    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
-    return record2;
-  }
-  // ---- requests ----
-  handle(conn, frame, p) {
-    const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
-    const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
-    if (!isObject2(frame) || frame.v !== 1 || !re || typeof frame.op !== "string") {
-      this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`);
-      return fail("invalid", "a hub request needs v: 1, an id and an op");
-    }
-    if (!this.authorized()) return fail("not-authority", "not the authority; reconnect");
-    if ("readOnly" in p && p.readOnly) return fail("read-only", "this connection is read-only");
-    const req = frame;
-    if (req.op === "hello") return this.hello(conn, req, fail);
-    if (!this.greeted.has(conn)) return fail("hello-first", "send hello first");
-    const starting = () => fail("starting", "the hub is starting", { retryMs: STARTING_RETRY_MS });
-    switch (req.op) {
-      case "acquire":
-        return this.acquire(conn, req, p, fail, starting);
-      case "renew":
-        return this.renew(conn, req, p, fail);
-      case "release":
-        return this.release(req, fail);
-      case "post":
-        return this.post(req, p, fail, starting);
-      default:
-        return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
-    }
-  }
-  hello(conn, req, fail) {
-    if (req.proto !== HUB_PROTO) {
-      return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
-    }
-    this.greeted.add(conn);
-    return { v: 1, re: req.id, ok: true, proto: HUB_PROTO, incarnation: this.incarnation, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true };
-  }
-  acquire(conn, req, p, fail, starting) {
-    const holder = parseHolder(req.holder);
-    if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
-    const { name: name2 } = req;
-    if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
-    const live = this.live(name2);
-    if (!live && this.settling()) return starting();
-    if (live && live.holder?.sessionId !== holder.sessionId && req.supersedes !== live.epoch) {
-      return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
-    }
-    const epoch = this.issue("epoch");
-    if (epoch === void 0) return starting();
-    if (live) this.notify(name2, live, "superseded");
-    const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn };
-    this.lastEpoch = epoch;
-    this.doc.doc.transact(() => {
-      this.hold(name2, lease);
-      this.doc.participants.set(holderKey(name2), this.recordOf(lease));
-      this.doc.metaMap.set("hubEpoch", epoch);
-    }, HUB_ORIGIN);
-    this.host.log(`hub: granted ${name2} to ${holder.sessionId} at epoch ${epoch}${live ? ` (superseding ${live.epoch})` : ""}`);
-    return { v: 1, re: req.id, ok: true, epoch, ttlMs: LEASE_TTL_MS };
-  }
-  renew(conn, req, p, fail) {
-    if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
-    const { name: name2, epoch } = req;
-    const live = this.live(name2);
-    const ok = () => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS });
-    if (live?.epoch === epoch) {
-      live.renewed = this.host.mono();
-      live.conn = conn;
-      return ok();
-    }
-    const known = this.records.get(name2);
-    if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
-      if (live) this.notify(name2, live, "superseded");
-      const record2 = this.record(name2);
-      const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
-      this.hold(name2, { ...synced, renewed: this.host.mono(), conn });
-      this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
-      return ok();
-    }
-    return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
-  }
-  release(req, fail) {
-    if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
-    const live = this.live(req.name);
-    const known = this.records.get(req.name);
-    if (live?.epoch === req.epoch) this.end(req.name, live, "released");
-    else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
-    return { v: 1, re: req.id, ok: true };
-  }
-  post(req, p, fail, starting) {
-    const msg = req.msg;
-    if (!isObject2(msg) || typeof msg.id !== "string" || !msg.id || typeof msg.type !== "string" || !MessageKinds[msg.type] || !isName(msg.from) || msg.to !== void 0 && typeof msg.to !== "string") return fail("invalid", "post needs a message with an id, a known type and a sender");
-    if (req.lease !== void 0) {
-      if (!isObject2(req.lease) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "post lease needs a name and an epoch");
-      if (this.live(req.lease.name)?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
-    }
-    const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
-    if (found) {
-      const seq = found.seq;
-      return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
-    }
-    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
-    const size2 = sizeOf2(msg);
-    if (size2 > MAX_MESSAGE_BYTES) return fail("too-large", `the message is ${Math.ceil(size2 / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`);
-    if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
-    const wall = this.host.wall();
-    if (msg.to && !req.auto) {
-      const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
-      if (!admission.ok) return fail("over-cap", admission.reason);
-    }
-    if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
-    let priority2;
-    try {
-      priority2 = msg.priority ?? defaultPriority(msg);
-    } catch {
-      return fail("invalid", `cannot prioritise a ${msg.type} message`);
-    }
-    const record2 = this.append({ ...msg, priority: priority2 }, wall);
-    if (!record2) return starting();
-    return { v: 1, re: req.id, ok: true, seq: record2.seq, at: wall };
-  }
-  // ---- maintenance ----
-  tick() {
-    if (!this.authorized()) return;
-    for (const name2 of [...this.leases.keys()]) this.live(name2);
-    if (this.settling()) return;
-    if (!this.settled) {
-      this.settled = true;
-      this.dirty = true;
-    }
-    if (this.dirty) this.reassert();
-    const now = this.host.mono();
-    if (now - this.maintainedAt >= MAINTENANCE_MS) {
-      this.maintainedAt = now;
-      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN });
-      this.expire();
-    }
-  }
-  /** Rewrite hub-owned values a stale replica won back (§4.4). */
-  reassert() {
-    this.dirty = false;
-    const { doc } = this;
-    const archived = (id3) => doc.archive.has(id3) || doc.outcomes.has(id3);
-    doc.doc.transact(() => {
-      const names = new Set(this.records.keys());
-      for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER) && hubHolder(value2)) names.add(key2.slice(0, -HOLDER.length));
-      for (const name2 of names) {
-        const current = this.record(name2);
-        let known = this.records.get(name2);
-        if (current && !this.leases.has(name2) && (!known || current.epoch > known.epoch)) {
-          known = knownOf(current.ended ? current : { ...current, ended: "expired" });
-          this.records.set(name2, known);
-        }
-        if (!known) continue;
-        if (current) hydrate(known, current);
-        const want = this.recordOf(known);
-        if (want) {
-          if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
-        } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
-      }
-      const meta2 = doc.metaMap;
-      if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
-      if (this.lastEpoch !== void 0 && meta2.get("hubEpoch") !== this.lastEpoch) meta2.set("hubEpoch", this.lastEpoch);
-      if (this.lastSeq !== void 0 && meta2.get("hubSeq") !== this.lastSeq) meta2.set("hubSeq", this.lastSeq);
-      const seen = /* @__PURE__ */ new Set();
-      const drop = [];
-      doc.bus.toArray().forEach((m, i2) => {
-        const id3 = m?.id;
-        if (typeof id3 !== "string") return;
-        if (seen.has(id3) || archived(id3)) drop.push(i2);
-        seen.add(id3);
-      });
-      for (const i2 of drop.reverse()) doc.bus.delete(i2, 1);
-    }, HUB_ORIGIN);
-  }
-  /**
-   * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
-   * are released with sequenced notices, so a pass runs only when every claim could get a seq.
-   */
-  expire() {
-    if (!this.reserve("seq", Math.min(this.doc.claims.size, this.limit))) return;
-    const view = [];
-    for (const key2 of this.doc.participants.keys()) {
-      if (!key2.endsWith(HOLDER)) continue;
-      const name2 = key2.slice(0, -HOLDER.length);
-      view.push({ name: name2, fresh: !!this.live(name2), visible: true });
-    }
-    const wall = this.host.wall();
-    const post = (from2, body2) => this.append({ ...body2, priority: body2.priority ?? defaultPriority(body2), id: newId("m_"), from: from2.name, fromKind: from2.kind }, wall);
-    for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
-      this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
-      const lease = this.leases.get(name2);
-      if (lease) {
-        this.leases.delete(name2);
-        this.notify(name2, lease, "expired-participant");
-      }
-      this.records.delete(name2);
-    }
-  }
-};
-
-// packages/relay/src/hub.ts
-var hubDir = (commonDir) => path17.join(commonDir, "room", "hub");
-function readJson(file) {
+var hubDir = (commonDir) => path18.join(commonDir, "room", "hub");
+function readJson2(file) {
   try {
-    return JSON.parse(fs20.readFileSync(file, "utf8"));
+    return JSON.parse(fs21.readFileSync(file, "utf8"));
   } catch (e) {
     if (e.code === "ENOENT") return void 0;
     throw e;
@@ -43860,7 +45787,7 @@ var AuthorityLock = class _AuthorityLock {
   token;
   /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
   static take(commonDir) {
-    const file = path17.join(hubDir(commonDir), "authority.lock");
+    const file = path18.join(hubDir(commonDir), "authority.lock");
     const own2 = probeProcess(process.pid);
     const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
     if (createExclusive(file, token)) return new _AuthorityLock(file, token);
@@ -43873,7 +45800,7 @@ var AuthorityLock = class _AuthorityLock {
   /** The lock file still carries this lock's token (nonce included). */
   held() {
     try {
-      return readJson(this.file)?.nonce === this.token.nonce;
+      return readJson2(this.file)?.nonce === this.token.nonce;
     } catch {
       return false;
     }
@@ -43886,10 +45813,10 @@ var AuthorityLock = class _AuthorityLock {
   }
 };
 function incarnationFile(commonDir) {
-  const file = path17.join(hubDir(commonDir), "incarnation.json");
+  const file = path18.join(hubDir(commonDir), "incarnation.json");
   return serializedStore({
     read: async () => {
-      const max2 = readJson(file)?.max;
+      const max2 = readJson2(file)?.max;
       return typeof max2 === "number" ? max2 : void 0;
     },
     write: async (max2) => {
@@ -43916,9 +45843,9 @@ function holderDeadCheck(now = Date.now) {
 
 // packages/relay/src/index.ts
 import crypto2 from "node:crypto";
-import fs21 from "node:fs";
+import fs22 from "node:fs";
 import http from "node:http";
-import path18 from "node:path";
+import path19 from "node:path";
 async function observeTakeover(work, report) {
   try {
     await work();
@@ -44053,11 +45980,11 @@ function attach(docs, conn, req, opts) {
 }
 var LOCAL_FILE = "room-local.json";
 function relayFile(commonDir) {
-  return path18.join(commonDir, LOCAL_FILE);
+  return path19.join(commonDir, LOCAL_FILE);
 }
 function readRelayInfo(commonDir) {
   try {
-    const v = JSON.parse(fs21.readFileSync(relayFile(commonDir), "utf8"));
+    const v = JSON.parse(fs22.readFileSync(relayFile(commonDir), "utf8"));
     return typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
   } catch {
     return void 0;
@@ -44066,7 +45993,7 @@ function readRelayInfo(commonDir) {
 function deterministicPort(commonDir) {
   let real = commonDir;
   try {
-    real = fs21.realpathSync.native(commonDir);
+    real = fs22.realpathSync.native(commonDir);
   } catch {
   }
   const h = crypto2.createHash("sha1").update(real).digest();
@@ -44075,7 +46002,7 @@ function deterministicPort(commonDir) {
 function cloneId(commonDir) {
   let real = commonDir;
   try {
-    real = fs21.realpathSync.native(commonDir);
+    real = fs22.realpathSync.native(commonDir);
   } catch {
   }
   return crypto2.createHash("sha256").update(real).digest("hex");
@@ -44109,16 +46036,16 @@ function health(port, key2, timeoutMs2) {
 }
 var MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
 function findWebDist() {
-  const here = path18.dirname(new URL(import.meta.url).pathname);
+  const here = path19.dirname(new URL(import.meta.url).pathname);
   const candidates = [
     process.env.ROOM_WEB_DIST,
-    path18.resolve(here, "..", "web"),
+    path19.resolve(here, "..", "web"),
     // plugins/room/server/room-mcp.mjs -> plugins/room/web
-    path18.resolve(here, "..", "..", "web", "dist"),
+    path19.resolve(here, "..", "..", "web", "dist"),
     // packages/relay/src -> packages/web/dist
-    path18.resolve(here, "..", "..", "..", "web", "dist")
+    path19.resolve(here, "..", "..", "..", "web", "dist")
   ];
-  for (const c of candidates) if (c && fs21.existsSync(path18.join(c, "index.html"))) return c;
+  for (const c of candidates) if (c && fs22.existsSync(path19.join(c, "index.html"))) return c;
   return void 0;
 }
 var LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
@@ -44134,7 +46061,7 @@ function startRelay(port, opts = {}) {
       seed: opts.seed,
       ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
     };
-    const staticDir = opts.staticDir ? path18.resolve(opts.staticDir) : findWebDist();
+    const staticDir = opts.staticDir ? path19.resolve(opts.staticDir) : findWebDist();
     const server = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://x");
       if (url.pathname === "/health") {
@@ -44153,7 +46080,7 @@ function startRelay(port, opts = {}) {
           const room = url.searchParams.get("room") ?? "";
           const d = docs.get(encodeURIComponent(room));
           if (d?.memory) d.memory.forget();
-          else if (opts.commonDir) fs21.rmSync(memoryFile(opts.commonDir, room), { force: true });
+          else if (opts.commonDir) fs22.rmSync(memoryFile(opts.commonDir, room), { force: true });
           res.writeHead(204);
           res.end();
         } catch {
@@ -44164,10 +46091,10 @@ function startRelay(port, opts = {}) {
       }
       if (staticDir) {
         const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-        const file = path18.resolve(staticDir, rel);
-        if (file.startsWith(staticDir + path18.sep) && fs21.existsSync(file) && fs21.statSync(file).isFile()) {
-          res.writeHead(200, { "content-type": MIME[path18.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
-          fs21.createReadStream(file).pipe(res);
+        const file = path19.resolve(staticDir, rel);
+        if (file.startsWith(staticDir + path19.sep) && fs22.existsSync(file) && fs22.statSync(file).isFile()) {
+          res.writeHead(200, { "content-type": MIME[path19.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
+          fs22.createReadStream(file).pipe(res);
           return;
         }
       }
@@ -44255,12 +46182,12 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   const write2 = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`;
     try {
-      fs21.writeFileSync(tmp, JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
-      fs21.chmodSync(tmp, 384);
-      fs21.renameSync(tmp, file);
+      fs22.writeFileSync(tmp, JSON.stringify({ port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
+      fs22.chmodSync(tmp, 384);
+      fs22.renameSync(tmp, file);
     } catch (e) {
       try {
-        fs21.rmSync(tmp, { force: true });
+        fs22.rmSync(tmp, { force: true });
       } catch {
       }
       log2(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`);
@@ -44295,7 +46222,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     const lock = AuthorityLock.take(commonDir);
     if (!lock) {
       const winner = await awaitWinner();
-      if (!winner) throw new Error(`local room ${room}: another process holds ${path18.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
+      if (!winner) throw new Error(`local room ${room}: another process holds ${path19.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
       adopt(winner, "another process holds the relay authority; joined");
     } else {
       try {
@@ -44385,10 +46312,10 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
 }
 
 // packages/roomd/src/local.ts
-import path19 from "node:path";
+import path20 from "node:path";
 async function mainWorktree(dir) {
   const common = await gitCommonDir(dir);
-  return path19.basename(common) === ".git" ? path19.dirname(common) : path19.resolve(dir);
+  return path20.basename(common) === ".git" ? path20.dirname(common) : path20.resolve(dir);
 }
 async function localRoomName(dir, localBranch) {
   const main2 = await mainWorktree(dir);
@@ -44401,12 +46328,12 @@ async function localRoomName(dir, localBranch) {
     }
     if (!branch || branch === "HEAD") branch = "detached";
   }
-  return `local/${path19.basename(main2)}/${branch}`;
+  return `local/${path20.basename(main2)}/${branch}`;
 }
 
 // packages/room-mcp/src/credentials.ts
-import fs22 from "node:fs";
-import path20 from "node:path";
+import fs23 from "node:fs";
+import path21 from "node:path";
 var configuredPath;
 function configureCredentials(file) {
   configuredPath = file;
@@ -44434,17 +46361,17 @@ function serverKey(server) {
 }
 function loadCredentials() {
   try {
-    return JSON.parse(fs22.readFileSync(credentialsPath(), "utf8"));
+    return JSON.parse(fs23.readFileSync(credentialsPath(), "utf8"));
   } catch {
     return {};
   }
 }
 function save(all2) {
   const file = credentialsPath();
-  fs22.mkdirSync(path20.dirname(file), { recursive: true, mode: 448 });
-  fs22.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
+  fs23.mkdirSync(path21.dirname(file), { recursive: true, mode: 448 });
+  fs23.writeFileSync(file, JSON.stringify(all2, null, 1) + "\n", { mode: 384 });
   try {
-    fs22.chmodSync(file, 384);
+    fs23.chmodSync(file, 384);
   } catch {
   }
 }
@@ -44466,8 +46393,8 @@ function removeCredential(server) {
 }
 
 // packages/room-mcp/src/binding.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-import path21 from "node:path";
+import { execFileSync as execFileSync7 } from "node:child_process";
+import path22 from "node:path";
 var RECHECK_MS = 1e3;
 function createSessionBinding(cwd, env = process.env, now = Date.now) {
   let commonDir;
@@ -44477,7 +46404,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
   const common = () => {
     if (commonDir === void 0) {
       try {
-        commonDir = path21.resolve(cwd, execFileSync6("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        commonDir = path22.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
       } catch {
         commonDir = null;
       }
@@ -44490,7 +46417,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
     if (parent === void 0) {
       parent = identity(process.ppid) ?? null;
       try {
-        parentArgs = execFileSync6("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+        parentArgs = execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         parentArgs = "";
       }
@@ -44516,15 +46443,15 @@ function identity(pid) {
 }
 
 // packages/room-mcp/src/choice.ts
-import fs24 from "node:fs";
-import path22 from "node:path";
+import fs25 from "node:fs";
+import path23 from "node:path";
 
 // packages/room-mcp/src/owned-file.ts
-import fs23 from "node:fs";
+import fs24 from "node:fs";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function ownerPid(file) {
   try {
-    const raw = fs23.readFileSync(file, "utf8");
+    const raw = fs24.readFileSync(file, "utf8");
     const plainPid = /^\d+$/.test(raw.trim());
     const value2 = plainPid ? Number(raw.trim()) : JSON.parse(raw);
     const pid = plainPid ? value2 : value2 && typeof value2 === "object" && "pid" in value2 ? value2.pid : void 0;
@@ -44538,25 +46465,25 @@ function acquireOwnedFile(file, record2) {
   const create6 = () => {
     let fd;
     try {
-      fd = fs23.openSync(file, "wx", 384);
+      fd = fs24.openSync(file, "wx", 384);
     } catch (e) {
       if (e.code === "EEXIST") return void 0;
       throw e;
     }
     try {
-      fs23.writeFileSync(fd, token);
+      fs24.writeFileSync(fd, token);
     } catch (e) {
       try {
-        fs23.unlinkSync(file);
+        fs24.unlinkSync(file);
       } catch {
       }
       throw e;
     } finally {
-      fs23.closeSync(fd);
+      fs24.closeSync(fd);
     }
     return () => {
       try {
-        if (fs23.readFileSync(file, "utf8") === token) fs23.unlinkSync(file);
+        if (fs24.readFileSync(file, "utf8") === token) fs24.unlinkSync(file);
       } catch {
       }
     };
@@ -44571,7 +46498,7 @@ function acquireOwnedFile(file, record2) {
     const current = ownerPid(file);
     if (current === void 0 || pidAlive(current)) return void 0;
     try {
-      fs23.unlinkSync(file);
+      fs24.unlinkSync(file);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
@@ -44584,19 +46511,19 @@ function acquireOwnedFile(file, record2) {
 // packages/room-mcp/src/choice.ts
 var CHOICE_FILE = "room-choice.json";
 async function choiceFile(dir) {
-  return path22.join(await gitCommonDir(dir), CHOICE_FILE);
+  return path23.join(await gitCommonDir(dir), CHOICE_FILE);
 }
 async function worktreePath(dir) {
-  return fs24.realpathSync((await git(dir, ["rev-parse", "--show-toplevel"])).trim());
+  return fs25.realpathSync((await git(dir, ["rev-parse", "--show-toplevel"])).trim());
 }
 async function readChoice(dir) {
   try {
     const file = await choiceFile(dir);
-    const c = JSON.parse(fs24.readFileSync(file, "utf8"));
+    const c = JSON.parse(fs25.readFileSync(file, "utf8"));
     if (!c || typeof c.where !== "string") return void 0;
     const { tag, share: _share, warned: _warned, warnedLevels: _warnedLevels, ...choice } = c;
     if (typeof tag === "string") {
-      const main2 = fs24.realpathSync(path22.dirname(path22.dirname(file)));
+      const main2 = fs25.realpathSync(path23.dirname(path23.dirname(file)));
       choice.tags = { [main2]: tag, ...choice.tags };
     }
     return choice;
@@ -44610,10 +46537,10 @@ async function writeChoice(dir, where, by, room) {
   return withGuard(`${file}.lock`, () => {
     let prev;
     try {
-      prev = JSON.parse(fs24.readFileSync(file, "utf8"));
+      prev = JSON.parse(fs25.readFileSync(file, "utf8"));
     } catch {
     }
-    const tags = typeof prev?.tag === "string" ? { [fs24.realpathSync(path22.dirname(path22.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags;
+    const tags = typeof prev?.tag === "string" ? { [fs25.realpathSync(path23.dirname(path23.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags;
     const c = { where, at: Date.now(), ...by ? { by } : {}, ...where === LOCAL && room ? { room } : {}, ...tags ? { tags } : {} };
     writeAtomic(file, c);
     return c;
@@ -44636,10 +46563,10 @@ async function rememberTag(dir, tag) {
     const c = { ...prev ?? { where: LOCAL, at: Date.now() }, tags: { ...prev?.tags, [key2]: tag } };
     const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
     try {
-      fs24.writeFileSync(temp, JSON.stringify(c) + "\n", { mode: 384 });
-      fs24.renameSync(temp, file);
+      fs25.writeFileSync(temp, JSON.stringify(c) + "\n", { mode: 384 });
+      fs25.renameSync(temp, file);
     } finally {
-      fs24.rmSync(temp, { force: true });
+      fs25.rmSync(temp, { force: true });
     }
     return c;
   } finally {
@@ -44651,7 +46578,7 @@ async function removeSharingChoice(dir) {
   withGuard(`${file}.lock`, () => {
     let raw;
     try {
-      raw = JSON.parse(fs24.readFileSync(file, "utf8"));
+      raw = JSON.parse(fs25.readFileSync(file, "utf8"));
     } catch (error2) {
       if (error2.code === "ENOENT") return;
       throw error2;
@@ -44664,7 +46591,7 @@ async function removeSharingChoice(dir) {
 }
 async function clearChoice(dir) {
   try {
-    fs24.rmSync(await choiceFile(dir));
+    fs25.rmSync(await choiceFile(dir));
     return true;
   } catch {
     return false;
@@ -44677,9 +46604,9 @@ function describeWhere(server) {
 }
 
 // packages/room-mcp/src/policy-store.ts
-import fs25 from "node:fs";
-import path23 from "node:path";
-import { createHash as createHash8 } from "node:crypto";
+import fs26 from "node:fs";
+import path24 from "node:path";
+import { createHash as createHash9 } from "node:crypto";
 var emptyGrant = () => ({ active: [], ending: [], retained: [] });
 var sorted = (items) => [...new Set(items)].sort();
 var clean = (items) => sorted(items.map((p) => {
@@ -44687,8 +46614,8 @@ var clean = (items) => sorted(items.map((p) => {
   return p.endsWith("/") && normal !== "." ? `${normal}/` : normal;
 }).filter((p) => p !== "" && p !== ".."));
 async function sharingFile(dir, room, participant) {
-  const hash = createHash8("sha256").update(room).update("\0").update(participant).digest("hex");
-  return path23.join(await gitCommonDir(dir), "room", "sharing", `${hash}.json`);
+  const hash2 = createHash9("sha256").update(room).update("\0").update(participant).digest("hex");
+  return path24.join(await gitCommonDir(dir), "room", "sharing", `${hash2}.json`);
 }
 var PolicyStore = class _PolicyStore {
   constructor(file, record2) {
@@ -44704,11 +46631,11 @@ var PolicyStore = class _PolicyStore {
   onChange;
   currentPolicy;
   static async open({ dir, room, participant, server, requested = "full", ceiling = "full", publisher = true, onChange: onChange2 }) {
-    const worktree = fs25.realpathSync(dir);
+    const worktree = fs26.realpathSync(dir);
     const file = await sharingFile(dir, room, participant);
     let record2;
     try {
-      record2 = JSON.parse(fs25.readFileSync(file, "utf8"));
+      record2 = JSON.parse(fs26.readFileSync(file, "utf8"));
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
@@ -44716,7 +46643,7 @@ var PolicyStore = class _PolicyStore {
     if (!record2) {
       let legacy = {};
       try {
-        legacy = JSON.parse(fs25.readFileSync(await choiceFile(dir), "utf8"));
+        legacy = JSON.parse(fs26.readFileSync(await choiceFile(dir), "utf8"));
       } catch {
       }
       const priorLevel = legacy.share === "full" || legacy.share === "declared" || legacy.share === "intent" ? legacy.share : void 0;
@@ -44738,11 +46665,11 @@ var PolicyStore = class _PolicyStore {
       writeAtomic(file, record2);
     }
     const privateGit = worktreeGitDirFromDotGit(dir);
-    for (const name2 of fs25.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const oldFile = path23.join(privateGit, name2);
+    for (const name2 of fs26.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
+      const oldFile = path24.join(privateGit, name2);
       let legacy;
       try {
-        legacy = JSON.parse(fs25.readFileSync(oldFile, "utf8"));
+        legacy = JSON.parse(fs26.readFileSync(oldFile, "utf8"));
       } catch {
         continue;
       }
@@ -44751,7 +46678,7 @@ var PolicyStore = class _PolicyStore {
       const retained = clean([...record2.declared.retained, ...legacy.paths.filter((p) => typeof p === "string")]);
       record2 = { ...record2, declared: { ...record2.declared, retained }, updatedAt: Date.now() };
       writeAtomic(file, record2);
-      fs25.rmSync(oldFile, { force: true });
+      fs26.rmSync(oldFile, { force: true });
     }
     const store = new _PolicyStore(file, record2);
     store.ceiling = ceiling;
@@ -44791,7 +46718,12 @@ var PolicyStore = class _PolicyStore {
     return operation;
   }
   setRequested(requested) {
-    return this.update((old) => ({ ...old, requested, declared: requested === "declared" ? old.declared : emptyGrant(), updatedAt: Date.now() }));
+    return this.update((old) => old.requested === requested ? old : {
+      ...old,
+      requested,
+      declared: requested === "declared" ? old.declared : { ...old.declared, ending: [], retained: [] },
+      updatedAt: Date.now()
+    });
   }
   declare(paths) {
     const active = clean(paths);
@@ -44805,7 +46737,7 @@ var PolicyStore = class _PolicyStore {
     return this.update((old) => {
       if (this.policy !== input) return old;
       const ending = old.declared.ending.filter((prefix) => !input.ending.includes(prefix) || unsettled.some((p) => containsPath(prefix, p)));
-      const retained = new Set(old.declared.retained.filter((p) => entries.has(p)));
+      const retained = new Set(old.declared.retained.filter((p) => entries.has(p) || unsettled.includes(p)));
       for (const prefix of old.declared.ending) {
         if (!input.ending.includes(prefix) || ending.includes(prefix)) continue;
         for (const [p, entry] of entries) if (containsPath(prefix, p) && (entry.state === "shared" || entry.change === "D")) retained.add(p);
@@ -44833,20 +46765,20 @@ var PolicyStore = class _PolicyStore {
     return this.update((old) => ({ ...old, disclosed: { level, version: version2 }, updatedAt: Date.now() }), false);
   }
   static retire(dir, room, participant, server) {
-    const hash = createHash8("sha256").update(room).update("\0").update(participant).digest("hex");
-    const file = path23.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash}.json`);
-    fs25.rmSync(file, { force: true });
+    const hash2 = createHash9("sha256").update(room).update("\0").update(participant).digest("hex");
+    const file = path24.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash2}.json`);
+    fs26.rmSync(file, { force: true });
     const privateGit = worktreeGitDirFromDotGit(dir);
-    for (const name2 of fs25.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
-      const legacyFile = path23.join(privateGit, name2);
+    for (const name2 of fs26.readdirSync(privateGit).filter((n) => n === "room-retained-declared.json" || /^room-retained-declared-[a-f0-9]{64}\.json$/.test(n))) {
+      const legacyFile = path24.join(privateGit, name2);
       let legacy;
       try {
-        legacy = JSON.parse(fs25.readFileSync(legacyFile, "utf8"));
+        legacy = JSON.parse(fs26.readFileSync(legacyFile, "utf8"));
       } catch {
         continue;
       }
       const sameRoom = legacy.room === room || repoRoomOf(legacy.room ?? "", (candidate) => candidate === room) === room;
-      if (sameRoom && legacy.participant === participant && (!server || legacy.server === server)) fs25.rmSync(legacyFile, { force: true });
+      if (sameRoom && legacy.participant === participant && (!server || legacy.server === server)) fs26.rmSync(legacyFile, { force: true });
     }
   }
 };
@@ -44882,1523 +46814,10 @@ var CeilingSource = class {
   }
 };
 
-// packages/room-mcp/src/worker-registry.ts
-import fs26 from "node:fs";
-import path24 from "node:path";
-import { createHash as createHash9, randomBytes as randomBytes3 } from "node:crypto";
-import { execFileSync as execFileSync7 } from "node:child_process";
-import { performance as performance2 } from "node:perf_hooks";
-var readJson2 = (file) => {
-  try {
-    return JSON.parse(fs26.readFileSync(file, "utf8"));
-  } catch (e) {
-    if (["ENOENT", "ENOTDIR"].includes(e.code ?? "")) return void 0;
-    throw e;
-  }
-};
-var files = (dir, suffix) => {
-  try {
-    return fs26.readdirSync(dir).filter((n) => n.endsWith(suffix)).map((n) => path24.join(dir, n));
-  } catch (e) {
-    if (e.code === "ENOENT") return [];
-    throw e;
-  }
-};
-var crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-function base32(value2, length2) {
-  let out2 = "";
-  for (let n = 0; n < length2; n++) {
-    out2 = crockford[Number(value2 & 31n)] + out2;
-    value2 >>= 5n;
-  }
-  return out2;
-}
-var id2 = () => `w_${base32(BigInt(Date.now()), 10)}${base32(BigInt(`0x${randomBytes3(10).toString("hex")}`), 16)}`;
-var synthetic = () => ({ pid: process.pid, startTime: "", executable: "", sessionId: `mcp:${process.pid}`, nonce: randomBytes3(16).toString("hex") });
-var registries = /* @__PURE__ */ new Map();
-var MAX_PROCESS_REGISTRIES = 24;
-function registrySnapshotForDir(dir) {
-  return WorkerRegistry.snapshot(commonGitDirFromDotGit(dir));
-}
-async function registryForDir(dir, sessionId) {
-  const common = await gitCommonDir(dir);
-  let pending = registries.get(common);
-  if (!pending) {
-    if (registries.size >= MAX_PROCESS_REGISTRIES) {
-      const oldest = registries.keys().next().value;
-      if (oldest) {
-        const previous = registries.get(oldest);
-        registries.delete(oldest);
-        void previous?.then((registry2) => registry2.close()).catch(() => {
-        });
-      }
-    }
-    const processInfo = probeProcess(process.pid);
-    const identity2 = {
-      pid: process.pid,
-      startTime: processInfo?.startTime ?? "",
-      executable: processInfo?.executable ?? "",
-      sessionId: sessionId ?? `mcp:${process.pid}:${processInfo?.startTime ?? "unknown"}`,
-      nonce: randomBytes3(16).toString("hex")
-    };
-    pending = WorkerRegistry.open(common, { identity: identity2, watch: !process.env.VITEST });
-    registries.set(common, pending);
-    void pending.catch(() => {
-      if (registries.get(common) === pending) registries.delete(common);
-    });
-  } else {
-    registries.delete(common);
-    registries.set(common, pending);
-  }
-  return pending;
-}
-async function admitWorkerEnvironment(dir, env = process.env) {
-  const id3 = env.ROOM_WORKER_ID;
-  if (!id3) return;
-  const run2 = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE;
-  if (!Number.isSafeInteger(run2) || run2 < 1 || !nonce) throw new Error("this worker run was collected, discarded or superseded");
-  const registry2 = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID);
-  if (env.ROOM_REGISTRY && path24.resolve(env.ROOM_REGISTRY) !== registry2.root) throw new Error("this worker run was collected, discarded or superseded");
-  const processInfo = probeProcess(process.pid);
-  const parentInfo = probeProcess(process.ppid);
-  const chain = [
-    { pid: process.pid, startTime: processInfo?.startTime ?? "", executable: processInfo?.executable ?? "" },
-    ...parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? "", executable: parentInfo.executable ?? "" }] : []
-  ];
-  try {
-    await registry2.admit({
-      id: id3,
-      run: run2,
-      nonce,
-      dir,
-      chain,
-      hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID
-    });
-  } catch {
-    throw new Error("this worker run was collected, discarded or superseded");
-  }
-}
-var missing = (file) => !fs26.existsSync(file);
-var safeId = (value2) => /^w_[A-Za-z0-9_-]{1,64}$/.test(value2);
-var safeTag = (value2) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value2) && value2 !== "..";
-var GUARD_WAIT_MS = 3e4;
-var GUARD_POLL_MS = 25;
-var guardBusy = (error2) => error2 instanceof Error && error2.message.startsWith("lease guard busy: ");
-var pauseForGuard = async (deadline, error2) => {
-  if (!guardBusy(error2)) throw error2;
-  const remaining = deadline - performance2.now();
-  if (remaining <= 0) throw new Error(`registry guard wait exceeded ${GUARD_WAIT_MS} ms: ${error2.message}`);
-  await new Promise((resolve5) => setTimeout(resolve5, Math.min(GUARD_POLL_MS, remaining)));
-};
-async function guarded(file, fn, deadline = performance2.now() + GUARD_WAIT_MS) {
-  for (; ; ) {
-    let entered = false;
-    try {
-      return withGuard(file, (() => {
-        entered = true;
-        return fn();
-      }));
-    } catch (error2) {
-      if (entered) throw error2;
-      await pauseForGuard(deadline, error2);
-    }
-  }
-}
-async function leaseRetry(fn, deadline = performance2.now() + GUARD_WAIT_MS) {
-  for (; ; ) {
-    try {
-      return fn();
-    } catch (error2) {
-      await pauseForGuard(deadline, error2);
-    }
-  }
-}
-var object3 = (value2) => !!value2 && typeof value2 === "object" && !Array.isArray(value2);
-var tokenShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string" && typeof value2.sessionId === "string" && typeof value2.nonce === "string";
-var processShape = (value2) => object3(value2) && Number.isSafeInteger(value2.pid) && typeof value2.startTime === "string" && typeof value2.executable === "string";
-var runShape = (value2) => {
-  if (!object3(value2) || !Number.isSafeInteger(value2.n) || value2.n < 1 || !["fresh", "resume"].includes(value2.mode) || typeof value2.intentAt !== "number" || typeof value2.nonce !== "string" || !Array.isArray(value2.busFrontier) || !Array.isArray(value2.promptMsgIds) || !tokenShape(value2.launcher) || typeof value2.logStart !== "number") return false;
-  if (value2.launch === void 0) return true;
-  if (!object3(value2.launch)) return false;
-  switch (value2.launch.outcome) {
-    case "launched":
-      return Number.isSafeInteger(value2.launch.pid) && (value2.launch.process === void 0 || processShape(value2.launch.process));
-    case "never":
-      return typeof value2.launch.error === "string";
-    case "ambiguous":
-      return typeof value2.launch.at === "number";
-    case "imported":
-      return true;
-    default:
-      return false;
-  }
-};
-var recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && object3(value2.prep) && typeof value2.prep.step === "string" && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
-var reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed));
-var exitShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
-function commitExists(commonDir, oid) {
-  if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
-  try {
-    execFileSync7("git", ["--git-dir", commonDir, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-function legacySession(dir, oldId, host) {
-  if (!oldId) return void 0;
-  try {
-    const gitDir = execFileSync7("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
-    const local = readJson2(path24.join(gitDir, "room-session.json"));
-    return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
-  } catch {
-    return void 0;
-  }
-}
-var LegacySnapshotUnavailable = class extends Error {
-};
-function legacyDisplay(commonDir) {
-  const found = /* @__PURE__ */ new Map();
-  const canonical = (dir) => {
-    try {
-      return fs26.realpathSync(dir);
-    } catch {
-      return path24.resolve(dir);
-    }
-  };
-  for (const file of files(path24.join(commonDir, "room-local"), ".ydoc")) {
-    const doc = new Doc2();
-    try {
-      if (fs26.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MiB`);
-      applyUpdate(doc, fs26.readFileSync(file));
-      const room = new RoomDoc(doc);
-      for (const worker of room.workers.values()) {
-        if (!worker.dir || !worker.id) continue;
-        found.set(canonical(worker.dir), {
-          oldId: worker.id,
-          host: worker.host,
-          model: worker.model,
-          task: worker.task,
-          said: worker.summary
-        });
-      }
-      for (const retired of room.retiredWorkers()) {
-        if (!retired.keptWorktree) continue;
-        const prior = found.get(canonical(retired.keptWorktree));
-        found.set(canonical(retired.keptWorktree), {
-          ...prior,
-          host: retired.host,
-          model: retired.model,
-          task: retired.task,
-          said: retired.summary,
-          keptWorktree: retired.keptWorktree
-        });
-      }
-    } catch (error2) {
-      process.stderr.write(`[room] cannot import legacy worktrees while ${file} is unreadable: ${error2}
-`);
-      throw new LegacySnapshotUnavailable(`unreadable legacy snapshot: ${file}`);
-    } finally {
-      doc.destroy();
-    }
-  }
-  return found;
-}
-function discoverLegacyWorktrees(commonDir) {
-  let output;
-  try {
-    output = execFileSync7("git", ["--git-dir", commonDir, "worktree", "list", "--porcelain"], { encoding: "utf8" });
-  } catch {
-    return [];
-  }
-  const registered = new Set([...output.matchAll(/^worktree (.+)$/gm)].map((match) => {
-    try {
-      return fs26.realpathSync(match[1]);
-    } catch {
-      return path24.resolve(match[1]);
-    }
-  }));
-  const display = legacyDisplay(commonDir);
-  const out2 = [];
-  for (const block of output.split(/\n\s*\n/)) {
-    const dir = /^worktree (.+)$/m.exec(block)?.[1];
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (!dir || !branch?.startsWith("room/")) continue;
-    const tag = branch.slice(5);
-    if (path24.basename(dir) !== tag || !dir.includes(`${path24.sep}.room${path24.sep}workers${path24.sep}`)) continue;
-    let canonical;
-    try {
-      canonical = fs26.realpathSync(dir);
-    } catch {
-      continue;
-    }
-    const ownerCheckout = path24.dirname(path24.dirname(path24.dirname(canonical)));
-    if (!registered.has(ownerCheckout) || !roomWorkerPathMatchesBranch(ownerCheckout, canonical, branch)) continue;
-    const prior = display.get(canonical);
-    out2.push({
-      key: `worktree:${canonical}`,
-      tag,
-      dir: canonical,
-      branch,
-      host: prior?.host ?? "codex",
-      ...prior ?? {}
-    });
-  }
-  return out2;
-}
-var WorkerRegistry = class _WorkerRegistry {
-  constructor(commonDir, options) {
-    this.commonDir = commonDir;
-    this.options = options;
-    this.root = path24.join(commonDir, "room", "registry");
-    this.alive = options.liveness ?? liveness;
-    this.now = options.now ?? Date.now;
-    this.identity = options.identity ?? synthetic();
-  }
-  commonDir;
-  options;
-  root;
-  alive;
-  now;
-  identity;
-  listeners = /* @__PURE__ */ new Set();
-  observed = /* @__PURE__ */ new Map();
-  watchers = [];
-  heldOperations = /* @__PURE__ */ new Map();
-  timer;
-  watchQueued = false;
-  static async open(commonDir, options = {}) {
-    const registry2 = new _WorkerRegistry(commonDir, options);
-    if (options.migrate !== false) await registry2.migrate();
-    await registry2.reconcile();
-    if (options.watch !== false) registry2.watch();
-    return registry2;
-  }
-  static snapshot(commonDir) {
-    return new _WorkerRegistry(commonDir, { migrate: false, watch: false });
-  }
-  close() {
-    clearInterval(this.timer);
-    this.timer = void 0;
-    for (const watcher of this.watchers.splice(0)) watcher.close();
-  }
-  watch() {
-    for (const dir of [this.root, path24.join(this.root, "runs")]) {
-      fs26.mkdirSync(dir, { recursive: true, mode: 448 });
-      try {
-        const watcher = fs26.watch(dir, { persistent: false }, () => {
-          if (this.watchQueued) return;
-          this.watchQueued = true;
-          queueMicrotask(() => {
-            this.watchQueued = false;
-            void this.reconcile().catch((e) => {
-              process.stderr.write(`[room] registry reconcile: ${e}
-`);
-            });
-          });
-        });
-        watcher.on("error", (e) => {
-          watcher.close();
-          process.stderr.write(`[room] registry watch: ${e}; polling remains active
-`);
-        });
-        watcher.unref();
-        this.watchers.push(watcher);
-      } catch (e) {
-        process.stderr.write(`[room] registry watch: ${e}; polling remains active
-`);
-      }
-    }
-    this.timer = setInterval(() => {
-      void this.reconcile().catch((e) => {
-        process.stderr.write(`[room] registry reconcile: ${e}
-`);
-      });
-    }, 3e4);
-    this.timer.unref();
-  }
-  workerFile(id3) {
-    if (!safeId(id3)) throw new Error("invalid worker id");
-    return path24.join(this.root, "workers", `${id3}.json`);
-  }
-  opFile(id3) {
-    if (!safeId(id3)) throw new Error("invalid worker id");
-    return path24.join(this.root, "workers", `${id3}.op`);
-  }
-  tagFile(tag) {
-    if (!safeTag(tag)) throw new Error("invalid worker tag");
-    return path24.join(this.root, "tags", `${tag}.json`);
-  }
-  adoptionFile(id3) {
-    if (!safeId(id3)) throw new Error("invalid worker id");
-    return path24.join(this.root, "adoptions", `${id3}.json`);
-  }
-  runDir(id3, n) {
-    if (!safeId(id3) || !Number.isSafeInteger(n) || n < 1) throw new Error("invalid worker run");
-    return path24.join(this.root, "runs", id3);
-  }
-  reportFile(id3, n) {
-    return path24.join(this.runDir(id3, n), `${n}.report.json`);
-  }
-  exitFile(id3, n) {
-    return path24.join(this.runDir(id3, n), `${n}.exit.json`);
-  }
-  writerFile(id3, n) {
-    return path24.join(this.runDir(id3, n), `${n}.writer`);
-  }
-  get instance() {
-    return this.identity;
-  }
-  newId() {
-    return id2();
-  }
-  quarantine(file, why) {
-    const dir = path24.join(this.root, "quarantine");
-    fs26.mkdirSync(dir, { recursive: true, mode: 448 });
-    const dest = path24.join(dir, `${path24.basename(file)}.bad-${Date.now()}-${randomBytes3(4).toString("hex")}`);
-    try {
-      fs26.renameSync(file, dest);
-      process.stderr.write(`[room] quarantined ${file}: ${why}
-`);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-  }
-  hasQuarantinedRecord(id3) {
-    try {
-      return fs26.readdirSync(path24.join(this.root, "quarantine")).some((name2) => name2.startsWith(`${id3}.json.bad-`));
-    } catch (e) {
-      if (e.code === "ENOENT") return false;
-      throw e;
-    }
-  }
-  readFact(file, valid) {
-    try {
-      const value2 = readJson2(file);
-      if (value2 === void 0) return void 0;
-      if (valid(value2)) return value2;
-      this.quarantine(file, "invalid registry fact");
-    } catch (e) {
-      this.quarantine(file, e);
-    }
-    return void 0;
-  }
-  /** `id` names the one worker that changed; none means any may have (another instance's writes). */
-  changed(id3) {
-    for (const listener of this.listeners) listener(id3);
-  }
-  onChange(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  /** Callable by the wave-4 presence loop; its durable journal makes crash replay idempotent. */
-  async reconcileIdleClaims(action) {
-    const { doc, participant } = action;
-    const ownsNow = () => {
-      const holder = participantRecord(doc, participant)?.holder;
-      return holder ? holder.sessionId === action.sessionId : action.ownsParticipant?.() === true;
-    };
-    if (!ownsNow()) return false;
-    const claims = [...doc.claims.values()].filter((c) => c.by === participant && c.byKind !== "human");
-    const hasScope = doc.scopes.has(participant);
-    const key2 = createHash9("sha256").update(`${action.roomKey}\0${action.sessionId}\0${action.idleEpoch}`).digest("hex");
-    const file = path24.join(this.commonDir, "room", "sessions", action.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims", `${key2}.json`);
-    if (!fs26.existsSync(file) && !idleClaimsDue({
-      host: action.host,
-      lastActivityMs: action.lastActivityMs,
-      nowMs: action.monotonicMs(),
-      heldClaims: claims.length,
-      hasScope
-    })) return false;
-    return guarded(file, () => {
-      if (!ownsNow()) return false;
-      let journal = readJson2(file);
-      if (journal?.state === "done") return false;
-      if (!journal) {
-        journal = {
-          state: "pending",
-          claimIds: claims.map((c) => c.id),
-          claimNames: claims.map((c) => c.path.endsWith("/") ? c.path : `${c.path}:${c.from}-${c.to}`),
-          hadScope: hasScope
-        };
-        writeAtomic(file, journal);
-      }
-      const pending = journal;
-      doc.doc.transact(() => {
-        for (const claimId of pending.claimIds) {
-          const current = doc.claims.get(claimId);
-          if (current?.by === participant && current.byKind !== "human") doc.removeClaim(claimId);
-        }
-        if (pending.hadScope) doc.clearScope(participant);
-      });
-      const noticeId2 = `idle-claims:${action.sessionId}:${action.idleEpoch}`;
-      const names = pending.claimNames.length ? `released claims ${pending.claimNames.join(", ")}` : "released no claims";
-      action.postNotice(noticeId2, `${participant} ${names}${pending.hadScope ? " and cleared its scope" : ""} after 8 h idle`);
-      writeAtomic(file, { ...pending, state: "done" });
-      return true;
-    });
-  }
-  read(id3) {
-    const file = this.workerFile(id3);
-    try {
-      const record2 = readJson2(file);
-      if (record2 && !recordShape(record2, id3)) {
-        this.quarantine(file, "invalid worker record");
-        return void 0;
-      }
-      return record2;
-    } catch (e) {
-      this.quarantine(file, e);
-      return void 0;
-    }
-  }
-  list() {
-    return files(path24.join(this.root, "workers"), ".json").flatMap((file) => {
-      const id3 = path24.basename(file, ".json");
-      if (!safeId(id3)) {
-        this.quarantine(file, "invalid worker filename");
-        return [];
-      }
-      const record2 = this.read(id3);
-      return record2 ? [record2] : [];
-    });
-  }
-  status(id3) {
-    const record2 = this.read(id3);
-    if (!record2) return void 0;
-    return statusOf(record2, record2.runs, this.reports(id3), this.exits(id3), this.alive, this.now());
-  }
-  /** No room view or remote presence can turn into a local worktree capability. */
-  async trusted(lead, tagOrName) {
-    let candidate = this.list().find((r) => r.tag === tagOrName || r.name === tagOrName);
-    if (candidate?.legacy?.unowned) candidate = await this.adoptLegacy(candidate, lead);
-    if (!candidate || candidate.lead.participant !== lead.participant || candidate.lead.room !== lead.room || ["retiring", "retired", "abandoned"].includes(candidate.phase)) return void 0;
-    const reservation = readJson2(this.tagFile(candidate.tag));
-    if (reservation?.id !== candidate.id) return void 0;
-    const status = this.status(candidate.id);
-    if (!status) return void 0;
-    const workers = this.list().flatMap((record2) => {
-      const state = this.status(record2.id);
-      if (!state) return [];
-      const worker = realStateInput(record2, state);
-      try {
-        return [{ ...worker, dir: fs26.realpathSync(worker.dir) }];
-      } catch {
-        return [worker];
-      }
-    });
-    let leadDir;
-    try {
-      leadDir = fs26.realpathSync(lead.dir);
-    } catch {
-      return void 0;
-    }
-    let workerDir;
-    try {
-      workerDir = fs26.realpathSync(candidate.dir);
-    } catch {
-      return void 0;
-    }
-    if (!await isOwnedWorkerWorktree(leadDir, { ...realStateInput(candidate, status), dir: workerDir }, lead.participant, workers)) return void 0;
-    return { record: candidate, status };
-  }
-  async adoptLegacy(record2, lead) {
-    if (!lead.participant || !lead.room || record2.phase !== "active") return void 0;
-    let leadDir;
-    try {
-      leadDir = fs26.realpathSync(lead.dir);
-    } catch {
-      return void 0;
-    }
-    const status = this.status(record2.id);
-    if (!status) return void 0;
-    const worker = { ...realStateInput(record2, status), name: `${lead.participant}+${record2.tag}`, lead: lead.participant };
-    if (!await isOwnedWorkerWorktree(leadDir, worker, lead.participant)) return void 0;
-    const file = this.adoptionFile(record2.id);
-    createExclusive(file, { participant: lead.participant, room: lead.room, name: worker.name });
-    let adopted;
-    try {
-      adopted = readJson2(file);
-    } catch {
-      return void 0;
-    }
-    if (adopted?.participant !== lead.participant || adopted.room !== lead.room || adopted.name !== worker.name) return void 0;
-    return guarded(this.workerFile(record2.id), () => {
-      const current = this.read(record2.id);
-      if (!current) return void 0;
-      if (!current.legacy?.unowned) return current;
-      const next = {
-        ...current,
-        name: worker.name,
-        room: lead.room,
-        lead: { ...current.lead, participant: lead.participant, room: lead.room },
-        legacy: { ...current.legacy, unowned: false },
-        seq: current.seq + 1
-      };
-      writeAtomic(this.workerFile(record2.id), next);
-      this.changed(record2.id);
-      return next;
-    });
-  }
-  occupancy() {
-    return this.list().filter((r) => ["starting", "running", "unknown", "ambiguous"].includes(this.status(r.id)?.status ?? "")).length;
-  }
-  reports(id3) {
-    if (!safeId(id3)) throw new Error("invalid worker id");
-    return files(path24.join(this.root, "runs", id3), ".report.json").flatMap((f) => {
-      const report = this.readFact(f, reportShape);
-      if (report && path24.basename(f) !== `${report.run}.report.json`) {
-        this.quarantine(f, "run report filename mismatch");
-        return [];
-      }
-      return report ? [report] : [];
-    });
-  }
-  exits(id3) {
-    if (!safeId(id3)) throw new Error("invalid worker id");
-    return files(path24.join(this.root, "runs", id3), ".exit.json").flatMap((f) => {
-      const observation = this.readFact(f, exitShape);
-      if (observation && path24.basename(f) !== `${observation.run}.exit.json`) {
-        this.quarantine(f, "exit filename mismatch");
-        return [];
-      }
-      return observation ? [observation] : [];
-    });
-  }
-  /** Direct write-ahead seam for the wave-2 spawner; never spawns by itself. */
-  async writeIntent(record2, capacity = Number.POSITIVE_INFINITY) {
-    if (!safeId(record2.id) || !recordShape(record2, record2.id) || record2.runs[0].launch) throw new Error("invalid worker intent");
-    const deadline = performance2.now() + GUARD_WAIT_MS;
-    for (; ; ) {
-      try {
-        await guarded(path24.join(this.root, "capacity"), () => {
-          if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
-          const tagFile = this.tagFile(record2.tag);
-          if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) {
-            const reservation = readJson2(tagFile);
-            if (reservation?.id && safeId(reservation.id) && tokenShape(reservation.holder)) {
-              const bound = this.read(reservation.id);
-              const reusable = bound && (bound.phase === "abandoned" || bound.phase === "retired" && !bound.keptWorktree && !!bound.cleanup && Object.values(bound.cleanup).every((state) => state === "done"));
-              if (reusable) compareAndRelease(tagFile, reservation.holder);
-              else if (!bound && !this.hasQuarantinedRecord(reservation.id)) recover(tagFile, (current) => current.id === reservation.id);
-            }
-            if (!createExclusive(tagFile, { id: record2.id, holder: record2.lead.instance, at: this.now() })) throw new Error(`tag in use: ${record2.tag}`);
-          }
-          if (!createExclusive(this.opFile(record2.id), { op: "spawn", holder: record2.runs[0].launcher, at: this.now() })) throw new Error("worker operation lease busy");
-          if (!createExclusive(this.workerFile(record2.id), record2)) throw new Error(`worker already exists: ${record2.id}`);
-        }, deadline);
-        break;
-      } catch (error2) {
-        await pauseForGuard(deadline, error2);
-      }
-    }
-    this.heldOperations.set(record2.id, "spawn");
-    this.changed(record2.id);
-  }
-  /** One operation writer per worker; the next rollout step uses this for preparation and launch facts. */
-  async update(id3, edit) {
-    const priorOp = readJson2(this.opFile(id3));
-    if (priorOp && priorOp.holder.nonce !== this.identity.nonce && this.alive(priorOp.holder) === "dead") await leaseRetry(() => recover(this.opFile(id3), () => true));
-    const value2 = await guarded(this.opFile(id3), () => {
-      const op = readJson2(this.opFile(id3));
-      if (op && op.holder.nonce !== this.identity.nonce) throw new Error(`worker operation lease held by another instance: ${id3}`);
-      const old = this.read(id3);
-      if (!old) throw new Error(`unknown worker ${id3}`);
-      const next = edit(old);
-      if (next.id !== old.id || next.seq !== old.seq + 1 || !recordShape(next, id3)) throw new Error("worker update must retain id, advance seq and remain valid");
-      writeAtomic(this.workerFile(id3), next);
-      return next;
-    });
-    this.changed(id3);
-    return value2;
-  }
-  async finishOperation(id3) {
-    const released = await leaseRetry(() => compareAndRelease(this.opFile(id3), this.identity));
-    if (released) this.heldOperations.delete(id3);
-    return released;
-  }
-  async beginOperation(id3, op) {
-    const file = this.opFile(id3);
-    if (createExclusive(file, { op, holder: this.identity, at: this.now() })) {
-      this.heldOperations.set(id3, op);
-      return true;
-    }
-    const existing = this.readFact(file, (value2) => object3(value2) && typeof value2.op === "string" && tokenShape(value2.holder) && typeof value2.at === "number");
-    if (existing?.holder.nonce === this.identity.nonce) {
-      if (existing.op === "discard" && op === "stop" && this.heldOperations.get(id3) === "discard") return false;
-      throw new Error(`worker operation lease held by another call: ${id3}`);
-    }
-    if (existing && this.alive(existing.holder) === "dead") {
-      await leaseRetry(() => recover(file, () => true));
-      if (createExclusive(file, { op, holder: this.identity, at: this.now() })) {
-        this.heldOperations.set(id3, op);
-        return true;
-      }
-    }
-    throw new Error(`worker operation lease held by another instance: ${id3}`);
-  }
-  async withCollectLease(worktree, work) {
-    const canonical = fs26.realpathSync(worktree);
-    const key2 = createHash9("sha256").update(canonical).digest("hex");
-    const file = path24.join(this.root, "collect", `${key2}.json`);
-    const deadline = performance2.now() + GUARD_WAIT_MS;
-    for (; ; ) {
-      if (createExclusive(file, { holder: this.identity, worktree: canonical, at: this.now() })) break;
-      if (await leaseRetry(() => recover(file, () => true), deadline)) continue;
-      if (performance2.now() >= deadline) throw new Error("another collection is in progress");
-      await new Promise((resolve5) => setTimeout(resolve5, GUARD_POLL_MS));
-    }
-    try {
-      return await work();
-    } finally {
-      await leaseRetry(() => compareAndRelease(file, this.identity));
-    }
-  }
-  /** Append the next run while the same capacity guard used by fresh spawn is held. */
-  async resume(id3, capacity, input) {
-    await this.beginOperation(id3, "resume");
-    try {
-      const next = await guarded(path24.join(this.root, "capacity"), () => {
-        const old = this.read(id3);
-        if (!old || !old.capabilities.resume || !old.hostSessionId) throw new Error("worker has no resumable host session");
-        const status = this.status(id3)?.status;
-        if (!status || !["done", "failed", "ambiguous", "imported", "stopped"].includes(status)) throw new Error(`worker is ${status ?? "missing"}; cannot resume`);
-        if (status === "stopped" && !["lead-session-ended", "message-delivered-cancelled", "message-delivered-failed"].includes(old.stop?.reason ?? "")) throw new Error("discarded worker cannot resume");
-        if (this.occupancy() >= capacity) throw new Error("worker capacity reached");
-        const run2 = {
-          n: old.runs.at(-1).n + 1,
-          mode: "resume",
-          intentAt: this.now(),
-          nonce: input.nonce,
-          busFrontier: input.busFrontier ?? [],
-          promptMsgIds: input.promptMsgIds ?? [],
-          launcher: this.identity,
-          logStart: input.logStart
-        };
-        const record2 = { ...old, phase: "prepared", stop: void 0, runs: [...old.runs, run2], seq: old.seq + 1 };
-        writeAtomic(this.workerFile(id3), record2);
-        return record2;
-      });
-      this.changed(id3);
-      return next;
-    } catch (error2) {
-      await this.finishOperation(id3);
-      throw error2;
-    }
-  }
-  /** The child proves the launch nonce and its checkout before it receives report authority. */
-  async admit(input) {
-    const record2 = this.read(input.id);
-    const run2 = record2?.runs.at(-1);
-    let actual, expected;
-    try {
-      actual = fs26.realpathSync(input.dir);
-      expected = fs26.realpathSync(record2?.dir ?? "");
-    } catch {
-      throw new Error("worker run not admitted: checkout missing");
-    }
-    if (!run2 || run2.n !== input.run || run2.nonce !== input.nonce || actual !== expected || !["prepared", "active"].includes(record2.phase)) throw new Error("worker run not admitted");
-    const report = {
-      run: run2.n,
-      nonce: run2.nonce,
-      chain: input.chain,
-      joinedAt: this.now(),
-      ...input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}
-    };
-    await this.writeReport(input.id, report);
-    if (input.hostSessionId && !record2.hostSessionId && !fs26.existsSync(this.opFile(input.id))) await this.update(input.id, (old) => ({
-      ...old,
-      hostSessionId: old.hostSessionId ?? input.hostSessionId,
-      seq: old.seq + 1
-    }));
-    return this.reports(input.id).find((value2) => value2.run === run2.n);
-  }
-  async reportDone(id3, n, summary, changed) {
-    const record2 = this.read(id3), run2 = record2?.runs.at(-1);
-    const prior = this.reports(id3).find((report) => report.run === n);
-    if (!run2 || run2.n !== n || !prior) throw new Error("worker run not admitted");
-    await this.writeReport(id3, { ...prior, done: { at: this.now(), summary, changed } });
-    return this.reports(id3).find((report) => report.run === n);
-  }
-  /** The post callback must use the deterministic id with RoomDoc.post. */
-  /** `post` resolves once the hub took the message (a refusal throws), so `posted` is recorded only for a message that exists. */
-  async postCompletion(id3, n, post) {
-    const record2 = this.read(id3), run2 = record2?.runs.find((value2) => value2.n === n);
-    const report = this.reports(id3).find((value2) => value2.run === n);
-    if (!record2 || !run2 || !report?.done) throw new Error("worker completion not reported");
-    if (report.posted || run2.posted) return false;
-    const messageId = `wk:${id3}:${n}`;
-    await post(messageId, record2, report);
-    await this.writeReport(id3, { ...report, posted: messageId });
-    return true;
-  }
-  async postObservedFailure(id3, n, post) {
-    const record2 = this.read(id3), run2 = record2?.runs.find((value2) => value2.n === n);
-    const exit = this.exits(id3).find((value2) => value2.run === n);
-    const report = this.reports(id3).find((value2) => value2.run === n);
-    const status = this.status(id3);
-    if (!record2 || !run2 || !exit?.witnessed || run2.posted || report?.posted || status?.status !== "failed") return false;
-    const message2 = completionMessage(record2, run2, status, report);
-    if (!message2 || message2.body.type !== "note") return false;
-    await post(message2);
-    await this.update(id3, (old) => ({ ...old, runs: old.runs.map((value2) => value2.n === n ? { ...value2, posted: message2.id } : value2), seq: old.seq + 1 }));
-    return true;
-  }
-  async beginStop(id3, reason) {
-    return this.update(id3, (old) => ({ ...old, stop: { reason, at: this.now(), run: old.runs.at(-1).n }, seq: old.seq + 1 }));
-  }
-  async beginCollect(id3) {
-    return this.update(id3, (old) => ({ ...old, phase: "collecting", interrupted: void 0, seq: old.seq + 1 }));
-  }
-  async finishCollect(id3, success, keptWorktree) {
-    return this.update(id3, (old) => ({
-      ...old,
-      phase: success ? "retiring" : "active",
-      ...success ? { cleanup: { [old.room]: "pending" }, keptWorktree } : {},
-      seq: old.seq + 1
-    }));
-  }
-  async beginDiscard(id3, force, children) {
-    return this.update(id3, (old) => ({
-      ...old,
-      phase: "discarding",
-      discard: { force, children, steps: {} },
-      interrupted: void 0,
-      seq: old.seq + 1
-    }));
-  }
-  async markDiscardStep(id3, step) {
-    return this.update(id3, (old) => {
-      if (!old.discard) throw new Error("discard plan missing");
-      return { ...old, discard: { ...old.discard, steps: { ...old.discard.steps, [step]: true } }, seq: old.seq + 1 };
-    });
-  }
-  async interruptDiscard(id3, detail) {
-    return this.update(id3, (old) => ({
-      ...old,
-      phase: "active",
-      interrupted: { op: "discard", at: this.now(), detail },
-      seq: old.seq + 1
-    }));
-  }
-  /** Store the hash before linking a stable patch; replay validates the published bytes. */
-  async recordDiscardPatch(id3, bytes) {
-    const file = path24.join(this.root, "patches", `${id3}.patch`);
-    const sha256 = createHash9("sha256").update(bytes).digest("hex");
-    const record2 = this.read(id3);
-    if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
-    if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
-    if (record2.discard.patch && record2.discard.patch.sha256 !== sha256) throw new Error("discard patch changed after identity was recorded");
-    if (!record2.discard.patch) await this.update(id3, (old) => ({
-      ...old,
-      discard: { ...old.discard, patch: { path: file, sha256 } },
-      seq: old.seq + 1
-    }));
-    fs26.mkdirSync(path24.dirname(file), { recursive: true, mode: 448 });
-    let existing;
-    try {
-      existing = fs26.lstatSync(file);
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
-    }
-    if (existing) {
-      if (existing.isFile() && createHash9("sha256").update(fs26.readFileSync(file)).digest("hex") === sha256) return file;
-      this.quarantine(file, "discard patch hash mismatch");
-    }
-    const scratch = path24.join(this.root, "patches", `${id3}.${randomBytes3(8).toString("hex")}.tmp`);
-    try {
-      const fd = fs26.openSync(scratch, "wx", 384);
-      try {
-        fs26.writeFileSync(fd, bytes);
-        fs26.fsyncSync(fd);
-      } finally {
-        fs26.closeSync(fd);
-      }
-      fs26.linkSync(scratch, file);
-      const dir = fs26.openSync(path24.dirname(file), "r");
-      try {
-        fs26.fsyncSync(dir);
-      } finally {
-        fs26.closeSync(dir);
-      }
-      return file;
-    } finally {
-      fs26.rmSync(scratch, { force: true });
-    }
-  }
-  /** Replay only durable discard steps. A missing capability leaves the plan for a later retry. */
-  async replayDiscard(id3) {
-    let record2 = this.read(id3);
-    if (record2?.phase !== "discarding" || !record2.discard) return;
-    const leadDir = path24.dirname(path24.dirname(path24.dirname(record2.dir)));
-    const status = this.status(id3);
-    if (!status) return;
-    const own2 = realStateInput(record2, status);
-    const workers = this.list().flatMap((value2) => {
-      const current = this.status(value2.id);
-      return current ? [realStateInput(value2, current)] : [];
-    });
-    const owned = await isOwnedWorkerWorktree(leadDir, own2, record2.lead.participant, workers);
-    if (!owned && fs26.existsSync(record2.dir)) throw new Error(`discard replay lost ownership of ${record2.dir}`);
-    if (!record2.discard.steps.children) {
-      for (const childId of record2.discard.children) {
-        const child = this.read(childId);
-        if (!child || ["retiring", "retired"].includes(child.phase)) continue;
-        if (child.phase !== "discarding") await this.beginDiscard(childId, true, []);
-        await this.replayDiscard(childId);
-        if (!["retiring", "retired"].includes(this.read(childId)?.phase ?? "")) return;
-      }
-      await this.markDiscardStep(id3, "children");
-      record2 = this.read(id3);
-    }
-    if (!record2.discard.steps.stop) {
-      await this.beginStop(id3, "discarded");
-      const launch = record2.runs.at(-1)?.launch;
-      if (launch?.outcome === "launched" && launch.process && this.alive(launch.process) !== "dead") {
-        if (this.alive(launch.process) !== "alive" || !signalWorker(launch.pid, "SIGTERM", record2.dir, void 0, own2, probeProcess)) return;
-        if (this.alive(launch.process) !== "dead") return;
-      }
-      await this.markDiscardStep(id3, "stop");
-      record2 = this.read(id3);
-    }
-    if (!record2.discard.steps.patch) {
-      if (owned) {
-        const ignored = await ignoredWorkerArtifacts(own2);
-        if (ignored.length && !record2.discard.force) {
-          await this.interruptDiscard(id3, `ignored artifacts appeared: ${ignored.join(", ")}`);
-          return;
-        }
-        await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
-      }
-      await this.markDiscardStep(id3, "patch");
-      record2 = this.read(id3);
-    }
-    const published = record2.discard.patch;
-    if (published) {
-      const expected = path24.join(this.root, "patches", `${id3}.patch`);
-      if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-      const valid = fs26.existsSync(expected) && fs26.lstatSync(expected).isFile() && createHash9("sha256").update(fs26.readFileSync(expected)).digest("hex") === published.sha256;
-      if (!valid) {
-        if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
-        await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
-      }
-    }
-    if (!record2.discard.steps.cleanup) {
-      if (owned) {
-        if (!await cleanupWorker(leadDir, own2, true, true, [], {}, record2.lead.participant, workers)) return;
-      } else {
-        await pruneMissingWorkerWorktree(leadDir, own2);
-        cleanupWorkerLogs(leadDir, own2);
-      }
-      await this.markDiscardStep(id3, "cleanup");
-    }
-    await this.markDiscardStep(id3, "prune");
-    await this.update(id3, (old) => ({ ...old, phase: "retiring", cleanup: { [old.room]: "pending" }, seq: old.seq + 1 }));
-  }
-  /** Admission is evidence of launch only when a run writer proves the matching nonce. */
-  async writeReport(id3, report) {
-    const record2 = this.read(id3);
-    const run2 = record2?.runs.at(-1);
-    if (!run2 || run2.n !== report.run || run2.nonce !== report.nonce || !["prepared", "active"].includes(record2.phase)) throw new Error("run not admitted");
-    const writer = this.writerFile(id3, report.run);
-    if (!fs26.existsSync(writer) && !createExclusive(writer, this.identity)) throw new Error("run writer busy");
-    const prior = this.readFact(writer, tokenShape);
-    if (prior && prior.nonce !== this.identity.nonce && !await leaseRetry(() => replace(
-      writer,
-      (current) => current.sessionId === this.identity.sessionId && this.alive(current) === "dead",
-      this.identity
-    ))) {
-      throw new Error("run writer busy");
-    }
-    await guarded(writer, () => {
-      const owner = this.readFact(writer, tokenShape);
-      if (owner?.nonce !== this.identity.nonce) throw new Error("run writer belongs to another instance");
-      const previous = this.readFact(this.reportFile(id3, report.run), reportShape);
-      if (previous && previous.nonce !== report.nonce) throw new Error("run report nonce mismatch");
-      writeAtomic(this.reportFile(id3, report.run), previous ? {
-        ...previous,
-        chain: previous.chain,
-        joinedAt: previous.joinedAt,
-        hostSessionId: previous.hostSessionId ?? report.hostSessionId,
-        done: previous.done ?? report.done,
-        posted: previous.posted ?? report.posted
-      } : report);
-    });
-    this.changed(id3);
-  }
-  /** A witnessed child-close observation is never replaced by a later unwitnessed poll. */
-  async writeExit(id3, observation) {
-    const file = this.exitFile(id3, observation.run);
-    await guarded(file, () => {
-      const old = this.readFact(file, exitShape);
-      if (!old || !old.witnessed && observation.witnessed) writeAtomic(file, observation);
-    });
-    this.changed(id3);
-  }
-  rollbackPreparation(record2) {
-    const prep = record2.prep;
-    const leadDir = path24.dirname(path24.dirname(path24.dirname(record2.dir)));
-    if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
-    const run2 = (...args3) => execFileSync7("git", ["--git-dir", this.commonDir, ...args3], { encoding: "utf8" }).trim();
-    if (prep.created === true && fs26.existsSync(record2.dir)) {
-      const listing = run2("worktree", "list", "--porcelain");
-      const canonical = fs26.realpathSync(record2.dir);
-      const registered = listing.split("\n").filter((line) => line.startsWith("worktree ")).some((line) => {
-        try {
-          return fs26.realpathSync(line.slice(9)) === canonical;
-        } catch {
-          return false;
-        }
-      });
-      if (!registered) throw new Error(`unregistered preparation worktree ${record2.dir}`);
-      run2("worktree", "remove", "--force", record2.dir);
-    }
-    if (prep.branchCreated === true && prep.branchExisted === false) {
-      const ref = `refs/heads/${record2.branch}`;
-      let exists = false;
-      try {
-        run2("show-ref", "--verify", "--quiet", ref);
-        exists = true;
-      } catch (e) {
-        if (e.status !== 1) throw e;
-      }
-      if (exists) run2("branch", "-D", record2.branch);
-    }
-    const refs = prep.previousCarryRefs;
-    if (refs && typeof refs === "object" && !Array.isArray(refs)) {
-      for (const [ref, oid] of Object.entries(refs)) {
-        if (!/^refs\/room\/(carry|carry-untracked)\/[A-Za-z0-9._/-]+$/.test(ref)) throw new Error(`unsafe preparation ref ${ref}`);
-        if (typeof oid === "string" && /^[0-9a-f]{40,64}$/.test(oid)) run2("update-ref", ref, oid);
-        else if (oid === null) {
-          try {
-            run2("update-ref", "-d", ref);
-          } catch (e) {
-            if (e.status !== 1) throw e;
-          }
-        }
-      }
-    }
-  }
-  async abandonPreparation(id3) {
-    const record2 = this.read(id3);
-    if (!record2 || record2.runs.at(-1)?.launch) return;
-    if (record2.phase === "preparing" || record2.phase === "prepared") this.rollbackPreparation(record2);
-    await this.update(id3, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
-  }
-  async reconcile() {
-    for (const record2 of this.list()) {
-      const run2 = record2.runs.at(-1);
-      if (!run2) continue;
-      const hadOp = fs26.existsSync(this.opFile(record2.id));
-      const op = this.readFact(this.opFile(record2.id), (value2) => object3(value2) && tokenShape(value2.holder));
-      if (hadOp && !op) continue;
-      if (op && this.alive(op.holder) === "dead") await leaseRetry(() => recover(this.opFile(record2.id), () => true));
-      const report = this.reports(record2.id).find((value2) => value2.run === run2.n && value2.nonce === run2.nonce);
-      if (report?.hostSessionId && !record2.hostSessionId && !fs26.existsSync(this.opFile(record2.id))) {
-        await this.update(record2.id, (old) => ({ ...old, hostSessionId: old.hostSessionId ?? report.hostSessionId, seq: old.seq + 1 }));
-      }
-      if (record2.phase === "collecting" && (!op || this.alive(op.holder) === "dead")) {
-        await this.update(record2.id, (old) => ({
-          ...old,
-          phase: "active",
-          interrupted: old.interrupted ?? { op: "collect", at: this.now(), detail: "collection stopped; partial apply may remain" },
-          seq: old.seq + 1
-        }));
-        continue;
-      }
-      if (record2.phase === "discarding" && (!op || this.alive(op.holder) === "dead")) {
-        try {
-          await this.beginOperation(record2.id, "discard");
-          await this.replayDiscard(record2.id);
-        } catch (error2) {
-          process.stderr.write(`[room] discard replay ${record2.id}: ${error2}
-`);
-        } finally {
-          await this.finishOperation(record2.id).catch(() => {
-          });
-        }
-        continue;
-      }
-      if (record2.phase === "preparing" && this.alive(run2.launcher) === "dead") {
-        this.rollbackPreparation(record2);
-        await this.update(record2.id, (old) => ({ ...old, phase: "abandoned", seq: old.seq + 1 }));
-        continue;
-      }
-      if (!run2.launch) {
-        const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
-        const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
-        if (writer && report2) await this.update(record2.id, (old) => {
-          const latest = old.runs.at(-1);
-          if (latest.launch) return { ...old, seq: old.seq + 1 };
-          const process5 = report2.chain[0];
-          return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...latest, launch: { outcome: "launched", pid: process5?.pid ?? 0, ...process5 ? { process: process5 } : {} } }], seq: old.seq + 1 };
-        });
-        else if (this.alive(run2.launcher) === "dead") await this.update(record2.id, (old) => ({
-          ...old,
-          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "ambiguous", at: this.now() } }],
-          seq: old.seq + 1
-        }));
-        continue;
-      }
-      if (run2.launch.outcome === "ambiguous") {
-        const report2 = this.reports(record2.id).find((r) => r.run === run2.n && r.nonce === run2.nonce);
-        const writer = this.readFact(this.writerFile(record2.id, run2.n), tokenShape);
-        if (writer && report2) await this.update(record2.id, (old) => {
-          const process5 = report2.chain[0];
-          return { ...old, phase: "active", runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "launched", pid: process5?.pid ?? 0, ...process5 ? { process: process5 } : {} } }], seq: old.seq + 1 };
-        });
-      }
-      if (run2.launch.outcome === "launched" && !this.exits(record2.id).some((e) => e.run === run2.n) && this.alive(run2.launcher) === "dead" && run2.launch.process && this.alive(run2.launch.process) === "dead") {
-        await this.writeExit(record2.id, { run: run2.n, code: null, at: this.now(), witnessed: false });
-      }
-    }
-    for (const file of files(path24.join(this.root, "patches"), ".patch")) {
-      const workerId = path24.basename(file, ".patch");
-      const owner = this.read(workerId);
-      if (owner && owner.phase !== "retired") continue;
-      if (this.now() - fs26.statSync(file).mtimeMs >= 7 * 24 * 60 * 60 * 1e3) fs26.rmSync(file, { force: true });
-    }
-    const next = /* @__PURE__ */ new Map();
-    for (const record2 of this.list()) next.set(record2.id, JSON.stringify([record2, this.reports(record2.id), this.exits(record2.id)]));
-    const externalChange = next.size !== this.observed.size || [...next].some(([key2, value2]) => this.observed.get(key2) !== value2);
-    this.observed = next;
-    if (externalChange) this.changed();
-  }
-  async migrate() {
-    const file = path24.join(this.root, "migration.json");
-    if (readJson2(file)?.done) return;
-    const lock = path24.join(this.root, "migration.lock");
-    let acquired = false;
-    const deadline = performance2.now() + GUARD_WAIT_MS;
-    while (performance2.now() < deadline) {
-      if (createExclusive(lock, this.identity)) {
-        acquired = true;
-        break;
-      }
-      if (readJson2(file)?.done) return;
-      if (await leaseRetry(() => recover(lock, () => true), deadline)) continue;
-      await new Promise((resolve5) => setTimeout(resolve5, Math.max(0, Math.min(GUARD_POLL_MS, deadline - performance2.now()))));
-    }
-    if (!acquired) throw new Error("registry migration in progress");
-    try {
-      const map2 = readJson2(file) ?? { v: 1, sources: {}, done: false };
-      if (map2.done) return;
-      let sources;
-      try {
-        sources = (this.options.sources ?? discoverLegacyWorktrees)(this.commonDir);
-      } catch (error2) {
-        if (error2 instanceof LegacySnapshotUnavailable) return;
-        throw error2;
-      }
-      for (const source of sources) {
-        if (!map2.sources[source.key]) {
-          map2.sources[source.key] = { id: id2(), state: "assigned" };
-          writeAtomic(file, map2);
-        }
-        const target = map2.sources[source.key];
-        if (target.state === "imported") continue;
-        this.importLegacy(source, target.id);
-        target.state = "imported";
-        writeAtomic(file, map2);
-      }
-      map2.done = true;
-      writeAtomic(file, map2);
-    } finally {
-      await leaseRetry(() => compareAndRelease(lock, this.identity));
-    }
-  }
-  importLegacy(source, workerId) {
-    const file = this.workerFile(workerId);
-    const carryFile = path24.join(this.commonDir, "room-carry", `${source.tag}.json`);
-    const migratedCarryFile = `${carryFile}.migrated`;
-    if (!missing(file)) {
-      if (fs26.existsSync(carryFile) && !fs26.existsSync(migratedCarryFile)) fs26.renameSync(carryFile, migratedCarryFile);
-      return;
-    }
-    const token = this.identity;
-    const carryRecord2 = readJson2(carryFile);
-    const base = commitExists(this.commonDir, carryRecord2?.base) ? carryRecord2.base : void 0;
-    const carriedBase = commitExists(this.commonDir, carryRecord2?.carriedBase) ? carryRecord2.carriedBase : void 0;
-    const carry = base && (!carryRecord2?.carriedBase || carriedBase) ? "delta" : "copy";
-    const hostSessionId = legacySession(source.dir, source.oldId, source.host);
-    const record2 = {
-      v: 1,
-      id: workerId,
-      tag: source.tag,
-      name: "",
-      mode: "local",
-      room: "",
-      lead: { participant: "", room: "", instance: token },
-      host: source.host,
-      model: source.model,
-      budget: { threads: 1, memGb: 1, nice: 10 },
-      share: source.share ?? "intent",
-      task: source.task ?? "legacy worker",
-      dir: source.dir,
-      outside: false,
-      branch: source.branch,
-      prep: { step: "prepared" },
-      base,
-      carriedBase,
-      hostSessionId,
-      capabilities: { resume: !!hostSessionId, signal: false, collect: carry },
-      phase: source.keptWorktree ? "retired" : "active",
-      keptWorktree: source.keptWorktree,
-      cleanup: source.keptWorktree ? { legacy: "done" } : void 0,
-      runs: [{ n: 1, mode: "fresh", intentAt: this.now(), nonce: `imported:${workerId}`, busFrontier: [], promptMsgIds: [], launcher: token, launch: { outcome: "imported" }, logStart: 0 }],
-      legacy: { id: source.key, source: source.dir, said: source.said, unowned: true },
-      createdAt: this.now(),
-      seq: 1
-    };
-    createExclusive(this.tagFile(source.tag), { id: workerId, holder: token, at: this.now() });
-    createExclusive(file, record2);
-    if (fs26.existsSync(carryFile) && !fs26.existsSync(migratedCarryFile)) fs26.renameSync(carryFile, migratedCarryFile);
-  }
-};
-
-// packages/room-mcp/src/hub-client.ts
-function hubTransport(provider) {
-  const listeners = /* @__PURE__ */ new Set();
-  const reconnects = /* @__PURE__ */ new Set();
-  const old = provider.messageHandlers[MSG_HUB];
-  provider.messageHandlers[MSG_HUB] = (_encoder, decoder) => {
-    try {
-      const frame = decodeFrame(decoder);
-      const bytes = encodeFrame(frame);
-      for (const fn of listeners) fn(bytes);
-    } catch {
-    }
-  };
-  const status = (event) => {
-    if (event.status === "connected") for (const fn of reconnects) fn();
-  };
-  provider.on("status", status);
-  return {
-    send(bytes) {
-      if (!provider.wsconnected || !provider.ws) throw new Error("hub unreachable");
-      provider.ws.send(bytes);
-    },
-    connected: () => provider.wsconnected && !!provider.ws,
-    onFrame(fn) {
-      listeners.add(fn);
-      return () => {
-        listeners.delete(fn);
-        if (!listeners.size) provider.messageHandlers[MSG_HUB] = old;
-      };
-    },
-    onReconnect(fn) {
-      reconnects.add(fn);
-      return () => {
-        reconnects.delete(fn);
-        if (!reconnects.size) provider.off("status", status);
-      };
-    }
-  };
-}
-var PAUSED = "[room] hub unreachable; coordination paused. Your files are unaffected; messages and claims resume when it is back.";
-var NOT_SENT = "not sent: hub unreachable";
-var HubClient = class {
-  constructor(options) {
-    this.options = options;
-    this.transport = options.transport;
-    this.mono = options.mono ?? (() => performance.now());
-    this.wall = options.wall ?? (() => Date.now());
-    this.timeoutMs = options.local === false ? REQUEST_TIMEOUT_TEAM_MS : REQUEST_TIMEOUT_LOCAL_MS;
-    this.unsubs = [
-      this.transport.onFrame((bytes) => this.receive(bytes)),
-      this.transport.onReconnect(() => {
-        void this.reconnect();
-      })
-    ];
-    this.interval = setInterval(() => {
-      void this.renewAll();
-    }, LEASE_RENEW_MS);
-    this.interval.unref?.();
-  }
-  options;
-  transport;
-  mono;
-  wall;
-  timeoutMs;
-  leases = /* @__PURE__ */ new Map();
-  lostLeases = /* @__PURE__ */ new Set();
-  pending = /* @__PURE__ */ new Map();
-  retryWaits = /* @__PURE__ */ new Set();
-  unsubs;
-  interval;
-  nextId = 0;
-  helloOk = false;
-  incarnation;
-  pauseReason;
-  renewing = /* @__PURE__ */ new Set();
-  closed = false;
-  close() {
-    if (this.closed) return;
-    this.closed = true;
-    this.helloOk = false;
-    clearInterval(this.interval);
-    for (const unsub of this.unsubs) unsub();
-    for (const wait of this.retryWaits) {
-      clearTimeout(wait.timer);
-      wait.reject(new Error("hub client closed"));
-    }
-    this.retryWaits.clear();
-    for (const [id3, pending] of this.pending) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error("hub client closed"));
-      this.pending.delete(id3);
-    }
-  }
-  paused() {
-    if (this.closed) return PAUSED;
-    this.dropExpired();
-    if (this.pauseReason) return `${PAUSED} ${this.pauseReason}`;
-    return this.helloOk && this.lostLeases.size === 0 ? void 0 : PAUSED;
-  }
-  async hello() {
-    try {
-      const reply = await this.request({ op: "hello", proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId });
-      const old = this.incarnation;
-      this.incarnation = Number(reply.incarnation);
-      this.helloOk = true;
-      this.pauseReason = void 0;
-      if (old !== void 0 && old !== this.incarnation) void this.renewAll();
-      return reply;
-    } catch (error2) {
-      this.helloOk = false;
-      if (error2 instanceof HubError && error2.reason === "version") {
-        this.pauseReason = error2.message;
-      } else if (error2 instanceof Error && error2.message.includes("did not answer")) {
-        this.pauseReason = "the hub did not answer";
-      }
-      throw error2;
-    }
-  }
-  async acquire(name2, holder, supersedes) {
-    let t0 = 0, w0 = 0;
-    const reply = await this.request({ op: "acquire", name: name2, holder, ...supersedes === void 0 ? {} : { supersedes } }, () => {
-      t0 = this.mono();
-      w0 = this.wall();
-    });
-    const epoch = Number(reply.epoch);
-    this.leases.set(name2, { epoch, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
-    this.lostLeases.delete(name2);
-    return epoch;
-  }
-  async renew(name2) {
-    this.assertOpen();
-    this.dropExpired();
-    const lease = this.leases.get(name2);
-    if (!lease) throw new Error(NOT_SENT);
-    let t0 = 0, w0 = 0;
-    try {
-      const reply = await this.request({ op: "renew", name: name2, epoch: lease.epoch }, () => {
-        if (!this.valid(lease)) {
-          if (this.leases.get(name2) === lease) this.lose(name2);
-          throw new Error(NOT_SENT);
-        }
-        t0 = this.mono();
-        w0 = this.wall();
-      });
-      if (this.leases.get(name2) !== lease) return;
-      if (!this.valid(lease)) {
-        this.lose(name2);
-        return;
-      }
-      this.leases.set(name2, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
-    } catch (error2) {
-      if (error2 instanceof HubError && error2.reason === "stale" && this.leases.get(name2) === lease) this.lose(name2);
-      throw error2;
-    }
-  }
-  async release(name2) {
-    this.assertOpen();
-    const lease = this.leases.get(name2);
-    if (!lease) {
-      this.lostLeases.delete(name2);
-      return;
-    }
-    try {
-      await this.request({ op: "release", name: name2, epoch: lease.epoch });
-    } finally {
-      if (this.leases.get(name2) === lease) this.leases.delete(name2);
-      this.lostLeases.delete(name2);
-    }
-  }
-  async post(msg, options = {}) {
-    this.assertOpen();
-    if (this.paused()) throw new Error(NOT_SENT);
-    if (options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) throw new Error(NOT_SENT);
-    try {
-      return await this.request({ op: "post", msg, ...options }, () => {
-        if (this.paused() || options.lease && this.leases.get(options.lease.name)?.epoch !== options.lease.epoch) {
-          throw new Error(NOT_SENT);
-        }
-      });
-    } catch (error2) {
-      if (error2 instanceof HubError && error2.reason === "stale" && options.lease && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name);
-      throw error2;
-    }
-  }
-  valid(lease) {
-    return Math.max(this.mono() - lease.t0, this.wall() - lease.w0) < lease.ttlMs;
-  }
-  dropExpired() {
-    for (const [name2, lease] of this.leases) if (!this.valid(lease)) this.lose(name2);
-  }
-  lose(name2) {
-    this.leases.delete(name2);
-    this.lostLeases.add(name2);
-  }
-  async renewAll() {
-    if (!this.helloOk) return;
-    this.dropExpired();
-    for (const name2 of this.leases.keys()) {
-      if (this.renewing.has(name2)) continue;
-      this.renewing.add(name2);
-      void this.renew(name2).catch(() => {
-      }).finally(() => this.renewing.delete(name2));
-    }
-  }
-  async reconnect() {
-    try {
-      await this.hello();
-    } catch {
-    }
-  }
-  receive(bytes) {
-    let frame;
-    try {
-      frame = decodeFrame(bytes);
-    } catch {
-      return;
-    }
-    if (!frame || typeof frame !== "object" || !("v" in frame) || frame.v !== 1) return;
-    if ("push" in frame && frame.push === "lease-lost") {
-      const push = frame;
-      const lease = this.leases.get(push.name);
-      if (lease?.epoch === push.epoch) this.lose(push.name);
-      return;
-    }
-    if (!("re" in frame) || typeof frame.re !== "string") return;
-    const pending = this.pending.get(frame.re);
-    if (!pending) return;
-    this.pending.delete(frame.re);
-    clearTimeout(pending.timer);
-    pending.resolve(frame);
-  }
-  async request(body2, onSend) {
-    this.assertOpen();
-    const startedMono = this.mono(), startedWall = this.wall();
-    const startingBudget = this.timeoutMs + SETTLE_MS;
-    const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall);
-    for (; ; ) {
-      const t = await this.requestOnce(body2, onSend);
-      this.assertOpen();
-      if (t.ok) return t;
-      if (t.reason === "starting") {
-        const remaining = startingBudget - elapsed();
-        if (remaining <= 0) throw new HubError("starting", t.text);
-        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), remaining));
-        this.assertOpen();
-        if (elapsed() >= startingBudget) throw new HubError("starting", t.text);
-        continue;
-      }
-      if (t.reason === "hello-first" && body2.op !== "hello") {
-        await this.hello();
-        continue;
-      }
-      throw new HubError(t.reason, t.text);
-    }
-  }
-  requestOnce(body2, onSend) {
-    if (this.closed) return Promise.reject(new Error("hub client closed"));
-    if (!this.transport.connected()) return Promise.reject(new Error("hub unreachable"));
-    const id3 = `r${++this.nextId}`;
-    return new Promise((resolve5, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id3);
-        reject(new Error("the hub did not answer"));
-      }, this.timeoutMs);
-      this.pending.set(id3, { resolve: resolve5, reject, timer });
-      try {
-        this.assertOpen();
-        onSend?.();
-        this.assertOpen();
-        this.transport.send(encodeFrame({ ...body2, v: 1, id: id3 }));
-      } catch (error2) {
-        clearTimeout(timer);
-        this.pending.delete(id3);
-        reject(error2);
-      }
-    });
-  }
-  assertOpen() {
-    if (this.closed) throw new Error("hub client closed");
-  }
-  retryDelay(ms) {
-    this.assertOpen();
-    return new Promise((resolve5, reject) => {
-      const wait = { timer: void 0, reject };
-      wait.timer = setTimeout(() => {
-        this.retryWaits.delete(wait);
-        resolve5();
-      }, ms);
-      this.retryWaits.add(wait);
-    });
-  }
-};
-var HubError = class extends Error {
-  constructor(reason, message2) {
-    super(message2);
-    this.reason = reason;
-  }
-  reason;
-};
-
-// packages/room-mcp/src/post.ts
-var NOT_SENT2 = "not sent: hub unreachable";
-var TOLD = /* @__PURE__ */ new Set(["too-large", "over-cap", "room-full", "read-only", "version"]);
-var greetings = /* @__PURE__ */ new WeakMap();
-function greet(hub) {
-  greetings.set(hub, hub.hello().catch(() => {
-  }));
-}
-async function greeted(hub) {
-  await greetings.get(hub);
-}
-async function postWorkerMessage(post, record2, message2) {
-  const posted = await post({ name: record2.name, kind: "agent", owner: record2.lead.participant, label: record2.tag }, message2.body, { id: message2.id, auto: true });
-  if (!posted.ok) throw new Error(posted.text);
-}
-function releasePoster(post) {
-  return (from2, body2) => {
-    void post(from2, body2, { auto: true });
-  };
-}
-function createPost(room, hub) {
-  return (from2, body2, opts = {}) => {
-    const id3 = opts.id ?? newId("m_");
-    const sent = { ...outgoing(from2, body2, id3), at: Date.now() };
-    const result2 = (async () => {
-      try {
-        if (hub.paused()) await hub.hello().catch(() => {
-        });
-        const reply = await hub.post(outgoing(from2, body2, id3), opts.auto ? { auto: true } : {});
-        const seq = typeof reply.seq === "number" ? reply.seq : void 0;
-        const at = typeof reply.at === "number" ? reply.at : sent.at;
-        const msg = room.message(id3) ?? { ...sent, at, ...seq === void 0 ? {} : { seq } };
-        return { ok: true, msg, ...seq === void 0 ? {} : { seq }, ...reply.duplicate ? { duplicate: true } : {} };
-      } catch (error2) {
-        if (error2 instanceof HubError && TOLD.has(error2.reason)) return { ok: false, msg: sent, reason: error2.reason, text: error2.message };
-        return { ok: false, msg: sent, reason: "unreachable", text: NOT_SENT2 };
-      }
-    })();
-    return Object.assign(result2, { id: id3 });
-  };
-}
-
 // packages/room-mcp/src/session.ts
+function applySessionPolicy(daemon, policy) {
+  daemon.applyInputs({ ...daemon.inputs, policy });
+}
 var DEFAULT_WEB = "http://localhost:5173";
 function sessionDirectory(commonDir, sessionId) {
   if (!sessionId) throw new Error("session ID is required");
@@ -46561,7 +46980,7 @@ async function startLogin(server, provider) {
   return { ...p, provider: p.provider ?? provider ?? "github" };
 }
 async function pollLogin(server, p, opts = {}) {
-  const sleep2 = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const deadline = Date.now() + (opts.maxMs ?? 9e4);
   for (; ; ) {
     const res = await fetch(`${httpOf(server)}/auth/poll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ device: p.device }), signal: AbortSignal.timeout(15e3) });
@@ -46574,7 +46993,7 @@ async function pollLogin(server, p, opts = {}) {
     }
     if (b.error) return { error: b.error };
     if (Date.now() >= deadline) return { pending: true };
-    await sleep2(Math.max(1, p.interval) * 1e3);
+    await sleep(Math.max(1, p.interval) * 1e3);
   }
 }
 async function logout(server) {
@@ -46786,7 +47205,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     requested: options.requested,
     ceiling: options.ceiling,
     onChange: (policy) => {
-      if (daemon) daemon.applyInputs({ ...daemon.inputs, policy: { ...policy, publisher: !daemon.publishUnder, ...daemon.publishUnder ? { publisherName: daemon.publishUnder } : {} } });
+      if (daemon) applySessionPolicy(daemon, policy);
     }
   });
   if (options.requestedExplicit) await policyStore.setRequested(options.requested);
@@ -46799,9 +47218,10 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       name: name2,
       label,
       policy: policyStore.policy,
+      carried: workerCarried(options.dir),
       post: (from2, body2, opts) => {
-        if (seam) void seam.post(from2, body2, opts);
-        else options.log?.(`not posted before the hub connection: ${body2.type}`);
+        if (seam) return seam.post(from2, body2, opts);
+        options.log?.(`not posted before the hub connection: ${body2.type}`);
       },
       onFullScan: (policy, entries, unsettled) => policyStore.settle(policy, entries, unsettled).then(() => {
       }),
@@ -46828,8 +47248,6 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     const current = daemon.provider.awareness.getLocalState();
     const runtime2 = resolveSessionRuntime(binding.dir());
     if (current) daemon.provider.awareness.setLocalState({ ...current, host: resolveSessionHost(), ...runtime2 });
-    const worker = daemon.roomDoc.workerOf(name2);
-    if (worker && (!process.env.ROOM_WORKER_ID || worker.id === process.env.ROOM_WORKER_ID) && runtime2.model && worker.model !== runtime2.model) daemon.roomDoc.updateWorker(worker.tag, { model: runtime2.model }, worker.id);
   };
   let published = "";
   let lastActivity = Date.now();
@@ -47173,9 +47591,11 @@ async function launchWorkerProcess(policy, command, host, onLaunched, onSpawn, o
   let reservation;
   let passed = false;
   let delivered = false;
+  let owned = false;
   let proc;
   let exited = false;
   let watching = false;
+  let releaseReservation = true;
   try {
     try {
       reservation = reserveWorkerPort(id3, policy.usedPorts ?? [], void 0, policy.preferredPort);
@@ -47253,6 +47673,9 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     } catch (e) {
       throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e));
     }
+    owned = true;
+    releaseReservation = false;
+    if (proc.pid > 0) host.setHandle(id3, proc);
     bindWorkerPortReservation(proc, reservation);
     host.watch(id3, proc, (code) => {
       exited = true;
@@ -47267,7 +47690,6 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     }
     delivered = true;
     passed = true;
-    host.setHandle(id3, proc);
     const result2 = {
       proc,
       port,
@@ -47283,60 +47705,114 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     return result2;
   } catch (e) {
     let stopped = false;
-    if (delivered && proc) {
+    if (owned && proc) {
       const launchedProc = proc;
+      let started = false;
       try {
-        if (watching) stopped = await stopWorkerWithEscalation({
-          terminate: () => launchedProc.kill(),
-          exited: () => exited,
-          force: () => launchedProc.killForce?.() ?? false
-        });
-        else launchedProc.kill();
-      } catch (stopError) {
-        policy.log(`worker launch: could not stop ${tag}: ${stopError}`);
+        await launchedProc.started;
+        started = true;
+      } catch {
       }
+      delivered = started || launchedProc.pid > 0;
+      if (delivered) {
+        try {
+          if (watching) stopped = await stopWorkerWithEscalation({
+            terminate: () => launchedProc.kill(),
+            exited: () => exited,
+            force: () => launchedProc.killForce?.() ?? false
+          });
+          else launchedProc.kill();
+        } catch (stopError) {
+          policy.log(`worker launch: could not stop ${tag}: ${stopError}`);
+        }
+      }
+      if (!delivered || stopped || exited) releaseReservation = true;
     }
     if (e instanceof WorkerLaunchError) throw delivered ? new WorkerLaunchError(e.phase, e.message, true, proc?.pid, stopped) : e;
     throw new WorkerLaunchError("start", String(e instanceof Error ? e.message : e), delivered, proc?.pid, stopped);
   } finally {
-    if (!passed) reservation?.release();
+    if (!passed && releaseReservation) reservation?.release();
   }
-}
-
-// packages/room-mcp/src/worker-mirror.ts
-function mirrorRegistryWorkerRecord(s, registry2, id3) {
-  const record2 = registry2.read(id3), status = registry2.status(id3);
-  if (!record2 || !status) return;
-  const legacy = realStateInput(record2, status);
-  if (!legacy.summary) legacy.summary = registry2.reports(id3).filter((report) => report.done).at(-1)?.done?.summary;
-  legacy.spawnedAfter = status.run?.busFrontier.at(-1);
-  const launch = status.run?.launch;
-  if (launch?.outcome === "launched") {
-    legacy.pid = launch.pid;
-    legacy.processStartTime = launch.process?.startTime;
-  }
-  const current = s.room.workers.get(record2.tag);
-  if (current?.id === id3) s.room.updateWorker(record2.tag, legacy, id3);
-  else if (current && current.name === record2.name && current.startedAt === record2.createdAt && (!current.id || !current.id.startsWith("w_"))) s.room.updateWorker(record2.tag, legacy);
-  else if (!current) s.room.setWorker(legacy, releasePoster(s.post));
-}
-function followRegistry(s, registry2) {
-  return registry2.onChange((id3) => {
-    for (const record2 of id3 ? [registry2.read(id3)] : registry2.list()) {
-      if (record2 && record2.room === s.roomName && s.room.workers.has(record2.tag)) mirrorRegistryWorkerRecord(s, registry2, record2.id);
-    }
-  });
 }
 
 // packages/room-mcp/src/retire.ts
 import fs28 from "node:fs";
 import path27 from "node:path";
-function retireCollected(s, w, record2) {
-  if (fs28.existsSync(path27.join(w.dir, ".git"))) PolicyStore.retire(w.dir, s.roomName, w.name, new URL(s.roomUrl).origin);
-  s.room.retireParticipant(w.name, record2, releasePoster(s.post));
+async function retireWorker(rooms, s, id3, archive, extra = {}) {
+  const registry2 = await registryForDir(s.dir);
+  const record2 = registry2.read(id3);
+  if (!record2) return;
+  if (fs28.existsSync(path27.join(record2.dir, ".git"))) PolicyStore.retire(record2.dir, record2.room, record2.name, new URL(s.roomUrl).origin);
+  await registry2.beginRetirement(id3, archive, extra);
+  await rooms.project();
 }
-function repairRetired(s, present) {
-  for (const { worker, record: record2 } of s.room.legacyRetirements(present)) retireCollected(s, worker, record2);
+async function autoRetire(s, rooms) {
+  const registry2 = await registryForDir(s.dir);
+  const probe = rooms.probe.bind(rooms);
+  for (const record2 of registry2.list()) {
+    if (record2.lead.participant !== s.me.name || record2.room !== s.roomName || record2.phase !== "active") continue;
+    const status = registry2.status(record2.id);
+    if (!status) continue;
+    const w = realStateInput(record2, status);
+    if (w.stopReason) continue;
+    if (w.status === "done" && w.hostSessionId) continue;
+    if (rooms.hasHandle(s, w)) continue;
+    const state = await workerRealState(s.dir, w, { process: true, probe });
+    if (!processExited(state)) continue;
+    if (w.status === "running") {
+      await registry2.reconcile();
+      continue;
+    }
+    if (w.status !== "done" && !state.dismissed) continue;
+    const current = () => registry2.read(record2.id)?.seq === record2.seq && !rooms.hasHandle(s, w) && rooms.tracking(s);
+    const retiredAt = Date.now();
+    if (state.worktree === "vanished") {
+      try {
+        await pruneMissingWorkerWorktree(s.dir, w);
+      } catch {
+        continue;
+      }
+      if (!current()) continue;
+      await retireWorker(rooms, s, record2.id, registry2.archiveOf(record2, {
+        summary: "worktree was already gone",
+        finishedAt: w.finishedAt ?? retiredAt,
+        retiredAt,
+        disposition: "discarded"
+      }));
+      continue;
+    }
+    const workers = registry2.list().flatMap((other) => {
+      const st = registry2.status(other.id);
+      return st ? [realStateInput(other, st)] : [];
+    });
+    const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process };
+    const outcome = decideRetire(facts);
+    if (!outcome || !current()) continue;
+    try {
+      if ((await ignoredWorkerArtifacts(w)).length) continue;
+    } catch {
+      continue;
+    }
+    const reported = registry2.reports(record2.id).flatMap((report) => report.done?.changed ?? []);
+    const files2 = [.../* @__PURE__ */ new Set([...manifestPaths(s.room, w.name), ...reported])].sort();
+    if (facts.clean && w.exitCode === 0) {
+      try {
+        if (!await cleanupWorker(s.dir, w, true, false, [], { probe, list: rooms.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...workers])) continue;
+      } catch {
+        continue;
+      }
+    }
+    await retireWorker(rooms, s, record2.id, registry2.archiveOf(record2, {
+      summary: w.summary ?? "",
+      files: files2,
+      fileCount: files2.length,
+      finishedAt: w.finishedAt ?? retiredAt,
+      retiredAt,
+      outcome,
+      disposition: state.dismissed ? "discarded" : "collected",
+      ...outcome === "dismissed" && facts.uncommitted !== void 0 ? { uncommitted: facts.uncommitted } : {}
+    }));
+  }
 }
 
 // packages/room-mcp/src/registry.ts
@@ -47350,7 +47826,7 @@ function toolCallAborted() {
 function workerOrigin(s) {
   return {
     server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")),
-    isWorker: !!process.env.ROOM_TAG || !!s.room.workerOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name
+    isWorker: !!process.env.ROOM_TAG || !!s.room.workerViewOf(s.me.name) || !!s.me.owner && s.me.owner !== s.me.name
   };
 }
 var Rooms = class _Rooms {
@@ -47363,11 +47839,15 @@ var Rooms = class _Rooms {
   /** Processes this MCP instance started, by worker id. A lead that restarted only has the pid in the doc. */
   handles = /* @__PURE__ */ new Map();
   exitWaiters = /* @__PURE__ */ new Map();
-  retirementTimers = /* @__PURE__ */ new Map();
+  autoRetireTimers = /* @__PURE__ */ new Map();
   retiring = /* @__PURE__ */ new Map();
-  following = /* @__PURE__ */ new Map();
+  /** Each tracked session's writer of its workers' views and retirement cleanup (registry §13). */
+  projectors = /* @__PURE__ */ new Map();
   probe(pid) {
     return (this.o.probe ?? probeProcess)(pid);
+  }
+  get listCwdProcesses() {
+    return this.o.listCwdProcesses;
   }
   // ---- sessions ---------------------------------------------------------------
   primary() {
@@ -47405,21 +47885,23 @@ var Rooms = class _Rooms {
     }
     this.entries.set(s, { role, attachment: this.o.attach(s, role, lead) });
   }
-  /** Claims observer only (a session the host set without joining through the tools, e.g. in tests). */
+  /** The worker projector and auto-retirement only (a session the host set without joining through the tools, e.g. in tests). */
   track(s) {
     if (this.tracked.has(s)) return;
     this.tracked.add(s);
-    this.o.observeClaims(s);
     void registryForDir(s.dir).then((registry2) => {
-      if (this.tracked.has(s) && !this.following.has(s)) this.following.set(s, followRegistry(s, registry2));
+      if (!this.tracked.has(s) || this.projectors.has(s)) return;
+      const projector = new WorkerProjector(s, registry2, this.o.log);
+      this.projectors.set(s, projector);
+      projector.start();
     }).catch(() => {
     });
     const timer = setInterval(() => {
-      void this.retireWorkers(s).catch(() => {
+      void this.autoRetire(s).catch(() => {
       });
     }, 6e4);
     timer.unref();
-    this.retirementTimers.set(s, timer);
+    this.autoRetireTimers.set(s, timer);
   }
   /** Stop the session's attachments and forget it; a primary is also cleared from the host. Does not leave the room. */
   remove(s) {
@@ -47434,22 +47916,22 @@ var Rooms = class _Rooms {
     for (const e of this.entries.values()) await e.attachment?.flush?.();
   }
   stopRetirement(s) {
-    clearInterval(this.retirementTimers.get(s));
-    this.retirementTimers.delete(s);
-    this.following.get(s)?.();
-    this.following.delete(s);
+    clearInterval(this.autoRetireTimers.get(s));
+    this.autoRetireTimers.delete(s);
+    this.projectors.get(s)?.stop();
+    this.projectors.delete(s);
     this.tracked.delete(s);
   }
-  /** Recheck after exits, dismissals, merge previews and periodically while a session is tracked. */
-  async retireWorkers(session) {
+  /** Auto-retirement (registry §12, decideRetire's rules): after exits, before previews and PR tools, and every minute. */
+  async autoRetire(session) {
     for (const s of session ? [session] : this.all()) {
       const pending = this.retiring.get(s);
       if (pending) {
         await pending;
-        await this.retireWorkers(s);
+        await this.autoRetire(s);
         continue;
       }
-      const run2 = this.evaluateRetirement(s);
+      const run2 = autoRetire(s, this);
       this.retiring.set(s, run2);
       try {
         await run2;
@@ -47458,92 +47940,26 @@ var Rooms = class _Rooms {
       }
     }
   }
-  async evaluateRetirement(s) {
-    const present = new Set(Array.from(s.awareness?.getStates().values() ?? []).flatMap((p) => p.user?.name ? [p.user.name] : []));
-    repairRetired(s, present);
-    for (const w of s.room.workers.values()) {
-      if (w.stopReason) continue;
-      if (w.status === "done" && w.hostSessionId) continue;
-      if (w.lead !== s.me.name || this.hasHandle(s, w)) continue;
-      const state = await workerRealState(s.dir, w, { process: true, probe: this.probe.bind(this) });
-      if (!processExited(state)) continue;
-      if (w.status !== "done") s.room.clearWorkerCoordination(w.name, "worker stopped", releasePoster(s.post));
-      if (w.status === "running") {
-        await (await registryForDir(s.dir)).reconcile();
-        continue;
-      }
-      if (w.status !== "done" && !state.dismissed) continue;
-      if (state.worktree === "vanished") {
-        try {
-          await pruneMissingWorkerWorktree(s.dir, w);
-        } catch {
-          continue;
-        }
-        if (s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue;
-        const retiredAt2 = Date.now();
-        retireCollected(s, w, {
-          name: w.name,
-          tag: w.tag,
-          lead: w.lead,
-          host: w.host,
-          ...w.model ? { model: w.model } : {},
-          task: w.task,
-          summary: "worktree was already gone",
-          files: [],
-          fileCount: 0,
-          startedAt: w.startedAt,
-          finishedAt: w.finishedAt ?? retiredAt2,
-          retiredAt: retiredAt2,
-          outcome: "dismissed",
-          disposition: w.stopReason ? "stopped" : "discarded",
-          ...w.stopReason ? { stopReason: w.stopReason } : {}
-        });
-        continue;
-      }
-      const facts = { ...await workerRealState(s.dir, w, { git: true, leadName: w.lead }), process: state.process };
-      const outcome = decideRetire(facts);
-      if (!outcome || s.room.workers.get(w.tag) !== w || this.hasHandle(s, w) || !this.retirementTimers.has(s)) continue;
-      try {
-        if ((await ignoredWorkerArtifacts(w)).length) continue;
-      } catch {
-        continue;
-      }
-      const done = s.room.messages().filter((m) => m.type === "done" && m.from === w.name && m.at >= w.startedAt).at(-1);
-      const files2 = [.../* @__PURE__ */ new Set([...s.room.changedPaths(w.name), ...done?.type === "done" ? done.changed : []])].sort();
-      if (facts.clean && w.exitCode === 0) {
-        try {
-          if (!await cleanupWorker(s.dir, w, true, false, [], { probe: this.probe.bind(this), list: this.o.listCwdProcesses }, s.me.name, [...s.room.retiredWorkers(), ...s.room.workers.values()])) continue;
-        } catch {
-          continue;
-        }
-      }
-      const retiredAt = Date.now();
-      retireCollected(s, w, {
-        name: w.name,
-        tag: w.tag,
-        lead: w.lead,
-        host: w.host,
-        ...w.model ? { model: w.model } : {},
-        task: w.task,
-        summary: w.summary ?? "",
-        files: files2,
-        fileCount: files2.length,
-        startedAt: w.startedAt,
-        finishedAt: w.finishedAt ?? done?.at ?? retiredAt,
-        retiredAt,
-        outcome,
-        disposition: w.stopReason ? "stopped" : w.dismissedAt !== void 0 || w.status === "dismissed" ? "discarded" : "collected",
-        ...w.stopReason ? { stopReason: w.stopReason } : {},
-        ...outcome === "dismissed" && facts.uncommitted !== void 0 ? { uncommitted: facts.uncommitted } : {}
-      });
-    }
+  /** Every writer of worker facts runs once now: each session's projector, then attachments (the bridge). */
+  async project() {
+    for (const projector of this.projectors.values()) await projector.project();
+    for (const e of this.entries.values()) await e.attachment?.project?.();
+  }
+  /** Whether a session is still tracked (an auto-retirement pass stops writing for one that left). */
+  tracking(s) {
+    return this.tracked.has(s);
   }
   // ---- who lives where ----------------------------------------------------------
   static presences(s) {
     return Array.from(s.awareness.getStates().values()).filter((x) => !!x && typeof x === "object" && !!x.user);
   }
+  /** A worker's view where it joins: a `local` worker's view in the team room is only the bridge's projection. */
+  static joinedBy(s, name2) {
+    const view = s.room.workerViewOf(name2);
+    return !!view && (view.mode === "here" || !!s.local);
+  }
   static activeIn(s, name2) {
-    return s.room.scopes.has(name2) || s.room.overlays.has(name2) || _Rooms.presences(s).some((p) => p.user.name === name2);
+    return s.room.scopes.has(name2) || s.room.manifestHead.has(name2) || _Rooms.presences(s).some((p) => p.user.name === name2);
   }
   /**
    * The session in which a participant lives. Where the person is present or has work wins; a worker
@@ -47555,8 +47971,8 @@ var Rooms = class _Rooms {
     if (!others.length || name2 === from2.me.name) return from2;
     if (_Rooms.activeIn(from2, name2)) return from2;
     for (const s of others) if (_Rooms.activeIn(s, name2)) return s;
-    if (from2.room.workerOf(name2)) return from2;
-    for (const s of others) if (s.room.workerOf(name2)) return s;
+    if (_Rooms.joinedBy(from2, name2)) return from2;
+    for (const s of others) if (_Rooms.joinedBy(s, name2)) return s;
     return from2;
   }
   /** The session whose bus carries a message id, if any of ours does. */
@@ -47615,10 +48031,14 @@ var Rooms = class _Rooms {
     return "timeout";
   }
   /** Continue an exited, retained worker using a new durable run intent. */
-  async resumeWorker(s, w, followUp, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4) {
+  /**
+   * `beforeLaunch` runs once every check has passed and the run is reserved, just before the host starts; an
+   * error string from it (the follow-up could not be posted) ends the run unlaunched and is returned as is.
+   */
+  async resumeWorker(s, w, followUp, spawner = defaultSpawner, claudeChannel = DEFAULT_CLAUDE_CHANNEL, maxWorkers, log2 = console.error, at = Date.now, exitWaitMs = 3e4, beforeLaunch) {
     if (toolCallAborted()) return "error: tool call cancelled";
     const registry2 = await registryForDir(s.dir);
-    const known = registry2.list().find((record3) => record3.tag === w.tag && record3.lead.participant === s.me.name);
+    const known = registry2.reserved(w.tag);
     if (known && ["retiring", "retired"].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume`;
     if (known && !fs29.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`;
     const trusted = await registry2.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag);
@@ -47647,11 +48067,21 @@ var Rooms = class _Rooms {
       const next = await registry2.resume(record2.id, config2.maxWorkers, {
         nonce: randomUUID4(),
         logStart,
-        busFrontier: s.room.messages().map((message2) => message2.id)
+        busFrontier: highestSeq(s.room)
       });
       run2 = next.runs.at(-1);
     } catch (error2) {
       return `error: ${error2 instanceof Error ? error2.message : String(error2)}`;
+    }
+    const refused = await beforeLaunch?.();
+    if (refused) {
+      await registry2.update(record2.id, (old) => ({
+        ...old,
+        phase: "active",
+        runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "never", error: refused } }],
+        seq: old.seq + 1
+      }));
+      return refused;
     }
     try {
       const { server, isWorker } = workerOrigin(s);
@@ -47726,7 +48156,15 @@ var Rooms = class _Rooms {
         runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "never", error: launchError.message } }],
         seq: old.seq + 1
       }));
-      else await registry2.beginStop(record2.id, launchError.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed");
+      else {
+        if (!registry2.read(record2.id)?.runs.at(-1)?.launch) await registry2.update(record2.id, (old) => ({
+          ...old,
+          phase: "active",
+          runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1), launch: { outcome: "ambiguous", at: at() } }],
+          seq: old.seq + 1
+        })).catch((writeError) => log2(`worker resume outcome: ${writeError}`));
+        await registry2.beginStop(record2.id, launchError.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed").catch((writeError) => log2(`worker resume stop record: ${writeError}`));
+      }
       return launchError.delivered ? { delivered: true, reply: launchError.stopped ? `stopped after receiving your message: ${launchError.message}` : `could not stop ${record2.tag}; left running` } : `error: could not resume ${record2.tag}: ${launchError.message}`;
     } finally {
       await registry2.finishOperation(record2.id);
@@ -47910,7 +48348,7 @@ var defs3 = [
     name: "room_spawn",
     annotations: RW,
     description: "Start another agent (claude/codex) in its own worktree, in the background; use for agents in parallel or codex/claude to do part of the work, not a built-in subagent. Finish with room_collect.",
-    inputSchema: { type: "object", properties: { tag: str("worker tag"), task: str("self-contained task"), host: { type: "string", enum: ["claude", "codex"], description: "host (default: caller host)" }, model: str("model override for that host (optional)"), effort: { type: "string", enum: [...WORKER_EFFORTS], description: "reasoning effort" }, link: strs("read-only input paths; default .roomlinks; [] disables"), carry: { type: "boolean", description: "false starts from HEAD without lead changes" }, threads: { type: "integer", minimum: 1, description: "math-library thread budget for this worker (optional)" }, share: SHARE, allowOutside: { type: "boolean", description: "permit dir outside this repo (no worktree bookkeeping)" }, dir: str("use this existing directory instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default), or local workers bridged to this room" } }, required: ["tag", "task"] }
+    inputSchema: { type: "object", properties: { tag: str("worker tag"), task: str("self-contained task"), host: { type: "string", enum: ["claude", "codex"], description: "host (default: caller host)" }, model: str("model override for that host (optional)"), effort: { type: "string", enum: [...WORKER_EFFORTS], description: "reasoning effort" }, link: strs("read-only input paths; default .roomlinks; [] disables"), carry: { type: "boolean", description: "false starts from HEAD without lead changes" }, threads: { type: "integer", minimum: 1, description: "math-library thread budget for this worker (optional)" }, share: SHARE, dir: str("use an existing directory in this repo instead of creating a worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default), or local workers bridged to this room" } }, required: ["tag", "task"] }
   }
 ];
 function handlers3(state) {
@@ -47937,9 +48375,11 @@ function handlers3(state) {
         if (process.env.ROOM_WORKER_RUN && Number(process.env.ROOM_WORKER_RUN) !== ownRun.n || process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== ownRun.nonce) {
           return "error: this worker run was collected, discarded or superseded";
         }
-        const changed = s.room.changedPaths(s.me.name);
+        const changed = manifestPaths(s.room, s.me.name);
+        let saved = false;
         try {
           await registry2.reportDone(myId, ownRun.n, summary, changed);
+          saved = true;
           release();
           await registry2.postCompletion(myId, ownRun.n, async (id3, record2, report) => {
             const message2 = completionMessage(record2, ownRun, registry2.status(myId), report);
@@ -47948,7 +48388,8 @@ function handlers3(state) {
             if (!posted.ok) throw new Error(posted.text);
           });
         } catch (error2) {
-          return `error: could not record worker report: ${error2 instanceof Error ? error2.message : String(error2)}`;
+          const detail = error2 instanceof Error ? error2.message : String(error2);
+          return saved ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again.` : `error: could not record worker report: ${detail}`;
         }
       } else {
         release();
@@ -47966,7 +48407,7 @@ function handlers3(state) {
       }
       const localTestsFailed = /(?:local.{0,40}(?:tests?|checks?|suite).{0,40}fail|(?:tests?|checks?|suite).{0,40}fail.{0,40}local)/i.test(summary);
       const command = s.lastPreview?.testsCommand;
-      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.testsPassed === true && command) {
+      if (localTestsFailed && s.lastPreview?.clean && s.lastPreview.complete && s.lastPreview.testsPassed === true && command) {
         out2.push(`The combined preview passed \`${command}\`.`);
       }
       if (a.pr_note === true) {
@@ -48033,9 +48474,22 @@ function handlers3(state) {
       const dir = suppliedDir ?? path30.join(s.dir, ".room", "workers", tag);
       if (suppliedDir && !fs31.existsSync(dir)) return `error: ${dir} does not exist`;
       const relative3 = path30.relative(s.dir, dir);
-      const outside = relative3.startsWith("..") || path30.isAbsolute(relative3);
-      if (outside && a.allowOutside !== true) return `error: ${dir} is outside this repo (${s.dir}); pass allowOutside=true to run a worker there anyway (no worktree bookkeeping, its branch is whatever HEAD is there)`;
+      const outside = relative3 === ".." || relative3.startsWith(`..${path30.sep}`) || path30.isAbsolute(relative3);
+      if (outside) return `error: ${dir} is outside this repo; a worker's directory must be in this repo`;
+      if (suppliedDir) {
+        const canonical = path30.relative(fs31.realpathSync(s.dir), fs31.realpathSync(dir));
+        if (canonical === ".." || canonical.startsWith(`..${path30.sep}`) || path30.isAbsolute(canonical)) {
+          return `error: ${dir} resolves outside this repo; a worker's directory must be in this repo`;
+        }
+      }
       const branch = suppliedDir ? (await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "?")).trim() : `room/${tag}`;
+      if (suppliedDir && !await isOwnedWorkerWorktree(
+        s.dir,
+        { name: name2, tag, lead: s.me.name, dir, branch },
+        s.me.name
+      )) {
+        return `error: ${dir} is not an owned Room worktree for ${tag}; supply its .room/workers/${tag} checkout or omit dir`;
+      }
       const hostSessionId = host === "claude" ? randomUUID5() : void 0;
       const usedPorts = registry2.list().flatMap((record3) => typeof record3.port === "number" ? [record3.port] : []);
       const prep = { step: "plan", worktreeExisted: fs31.existsSync(dir), created: !suppliedDir && !fs31.existsSync(dir) };
@@ -48046,6 +48500,7 @@ function handlers3(state) {
         name: name2,
         mode: s === lead ? "here" : "local",
         room: s.roomName,
+        ...s === lead ? {} : { projectedInto: lead.roomName },
         lead: { participant: s.me.name, room: s.roomName, instance: registry2.instance },
         host,
         model,
@@ -48060,7 +48515,7 @@ function handlers3(state) {
         hostSessionId,
         capabilities: { resume: true, signal: true, collect: outside ? "none" : "delta" },
         phase: "intent",
-        runs: [{ n: 1, mode: "fresh", intentAt: now(), nonce, busFrontier: s.room.messages().map((message2) => message2.id), promptMsgIds: [], launcher: registry2.instance, logStart: 0 }],
+        runs: [{ n: 1, mode: "fresh", intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry2.instance, logStart: 0 }],
         createdAt: now(),
         seq: 1
       };
@@ -48069,6 +48524,7 @@ function handlers3(state) {
       } catch (error2) {
         return `error: ${error2 instanceof Error ? error2.message : String(error2)}`;
       }
+      let childOwned = false;
       try {
         let base, created = false;
         let carried, carryFailed = false, carryError;
@@ -48178,7 +48634,6 @@ function handlers3(state) {
                 } }],
                 seq: old.seq + 1
               }));
-              mirrorRegistryWorkerRecord(s, registry2, id3);
             },
             async (code) => {
               await registry2.writeExit(id3, { run: 1, code, witnessed: true, at: now() });
@@ -48189,14 +48644,21 @@ function handlers3(state) {
         } catch (e) {
           const error2 = e instanceof WorkerLaunchError ? e : new WorkerLaunchError("start", String(e));
           if (error2.delivered) {
+            childOwned = true;
             const reason = error2.phase === "cancelled" ? "message-delivered-cancelled" : "message-delivered-failed";
-            await registry2.beginStop(id3, reason);
+            if (!registry2.read(id3)?.runs[0].launch) await registry2.update(id3, (old) => ({
+              ...old,
+              phase: "active",
+              runs: [{ ...old.runs[0], launch: { outcome: "ambiguous", at: now() } }],
+              seq: old.seq + 1
+            })).catch((writeError) => state.log(`worker launch outcome: ${writeError}`));
+            await registry2.beginStop(id3, reason).catch((writeError) => state.log(`worker launch stop record: ${writeError}`));
             if (!error2.stopped) return `error: stop unconfirmed for ${tag} (pid ${error2.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`;
             return `error: stopped after start: ${error2.phase === "cancelled" ? "cancelled" : error2.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`;
           }
           const prefix = error2.phase === "port" ? "could not allocate a worker port: " : error2.phase === "budget" || error2.phase === "cancelled" ? "" : `could not start ${host}: `;
           if (!registry2.read(id3)?.runs[0].launch) {
-            await registry2.abandonPreparation(id3);
+            await registry2.abandonPreparation(id3).catch((cleanup) => state.log(`worker preparation cleanup: ${cleanup}`));
             return `error: ${prefix}${error2.message}`;
           }
           await registry2.update(id3, (old) => ({ ...old, phase: "active", seq: old.seq + 1 }));
@@ -48231,7 +48693,7 @@ function handlers3(state) {
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out2.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`);
         return out2.join("\n");
       } catch (error2) {
-        await registry2.abandonPreparation(id3).catch((cleanup) => {
+        if (!childOwned) await registry2.abandonPreparation(id3).catch((cleanup) => {
           state.log(`worker preparation cleanup: ${cleanup}`);
         });
         return `error: ${error2 instanceof Error ? error2.message : String(error2)}`;
@@ -48255,7 +48717,7 @@ function registryRunningWorkers(s, rooms) {
 }
 function createWorkerRuntime(deps) {
   const { ctx, rooms, doJoin, doLeave, log: log2, cleanupMine, now } = deps;
-  const myWorkers = (s) => Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name);
+  const myWorkers = (s) => localWorkers(s.dir, (record2) => record2.lead.participant === s.me.name && record2.room === s.roomName);
   const workerAlive = (s, w) => rooms.hasHandle(s, w) || pidIsOurWorker(w.pid, w, ctx.probe);
   const ensureWorkersRoom = async (lead) => {
     if (lead.local) return lead;
@@ -48304,7 +48766,7 @@ function createWorkerRuntime(deps) {
         if (processState.process !== "ours") return `pid ${w.pid} not signalled: the process is gone; worker record kept`;
       }
       const protectedPids = w.pid ? [w.pid] : [];
-      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...s.room.workers.values()] })).cwd;
+      const ownedWorktree = decideStop(await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: [...s.room.retiredWorkers(), ...localWorkers(s.dir)] })).cwd;
       const stopped = [];
       let cleanupError;
       const stopCwdProcesses = async () => {
@@ -48343,9 +48805,8 @@ function createWorkerRuntime(deps) {
     }
   };
   const startWorkersBridge = (lead, s) => {
-    const bridge = new Bridge(lead, s, { log: log2, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : void 0 });
+    const bridge = new Bridge(lead, s, { log: log2, debounceMs: ctx.conflictDebounceMs === 0 ? 0 : void 0, reconcileConflicts: reconcileProjectedConflicts });
     bridge.start();
-    ctx.attachChannel?.(s);
     return bridge;
   };
   return { myWorkers, workerAlive, ensureWorkersRoom, closeWorkersRoom, runningWorkers, dismissWorker, startWorkersBridge };
@@ -48370,11 +48831,12 @@ var defs4 = [
   }
 ];
 async function workerChangedCount(s, worker, processGone) {
-  const overlayCount = s.room.changedPaths(worker.name).length;
-  if (!await isOwnedWorkerWorktree(s.dir, worker, s.me.name, [...s.room.workers.values(), ...s.room.retiredWorkers()])) return overlayCount;
-  if (!processGone && worker.status === "running" && s.room.overlays.has(worker.name)) return overlayCount;
+  const overlayCount = manifestPaths(s.room, worker.name).length;
+  const trusted = await trustedWorker(s, worker.name);
+  if (!trusted) return overlayCount;
+  if (!processGone && trusted.status === "running" && overlayCount > 0) return overlayCount;
   try {
-    return (await workerChangedPaths(worker)).length;
+    return (await workerChangedPaths(trusted)).length;
   } catch (error2) {
     if (error2 instanceof Error && error2.message.includes("timed out")) throw new Error(`worker ${worker.tag} changed-file count unavailable: ${error2.message}`);
     return overlayCount;
@@ -48382,24 +48844,38 @@ async function workerChangedCount(s, worker, processGone) {
 }
 var formatRoomMessage = (s, m) => formatMsg(m, { scopes: s.room.allScopes(), messages: s.room.messages(), claims: s.room.openClaims() });
 function handlers4(state) {
-  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, liveText, lines, shareOf } = state;
+  const { S, loadAreas, areasOf, areasFor, setPresence, scopeLine: scopeLine2, areaLines, ledgerLines, rooms, others, presences, myAreas, inMyAreas, now, personLine: personLine2, claimLine: claimLine2, isMe, waitingOn, msgInMyAreas, prLines, myWorkers, workerPaths, readText, lines, shareOf } = state;
   const pathState = async (a) => {
     const s = S();
     if (typeof a.path !== "string" || !a.path) return "error: path is required";
     const p = a.path;
-    const t = await liveText(s, p, s.me.name);
+    const t = await readText(s, p, s.me.name);
     const n = t ? lines(t) : 1;
     const r = clampRange(Number(a.from ?? 1), Number(a.to ?? n), n);
     const out2 = [];
     const inRooms = [s, ...rooms.all().filter((x) => x !== s)];
     const tagged = (x, line) => x === s ? line : `${line} (workers room)`;
-    const who2 = /* @__PURE__ */ new Set();
+    const who2 = /* @__PURE__ */ new Map();
     for (const x of inRooms) {
-      for (const c of x.room.openClaims()) if (claimsOverlap(c, { path: p, ...r })) out2.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
+      for (const c of x.room.openClaims()) {
+        if (c.path !== p || c.by === s.me.name || typeof t !== "string") {
+          if (claimsOverlap(c, { path: p, ...r })) out2.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}`));
+          continue;
+        }
+        const theirs = await readText(x, p, c.by).catch(() => void 0);
+        const mapped = claimInMyLines(c, theirs ?? void 0, t);
+        if (!rangesOverlap(mapped.from, mapped.to, r.from, r.to)) continue;
+        const moved = mapped.approximate ? ` (your lines ${mapped.from}-${mapped.to}, approximate)` : mapped.from !== c.from || mapped.to !== c.to ? ` (your lines ${mapped.from}-${mapped.to})` : "";
+        out2.push(tagged(x, `claim ${c.id}: ${describeClaim(c)}${moved}`));
+      }
       for (const sc of x.room.allScopes()) if (sc.by !== s.me.name && scopeCovers(sc, p)) out2.push(tagged(x, `scope: ${sc.by} is on ${scopeLine2(sc)}`));
-      for (const n2 of x.room.whoChanged(p)) if (n2 !== s.me.name && !sameCheckoutSession(s, n2)) who2.add(n2);
+      for (const n2 of manifestChangers(x.room, p)) if (n2 !== s.me.name && !sameCheckoutSession(s, n2)) {
+        const fence = x.room.manifestHead.get(n2)?.fence;
+        const entry = fence ? x.room.manifest.get(manifestKey(n2, fence))?.get(p) : void 0;
+        who2.set(n2, entry?.state === "shared" ? "shared" : "not shared");
+      }
     }
-    if (who2.size) out2.push(`uncommitted changes by: ${Array.from(who2).sort().join(", ")}`);
+    if (who2.size) out2.push(`uncommitted changes by: ${[...who2].sort(([a2], [b]) => a2.localeCompare(b)).map(([n2, state2]) => `${n2} (${state2})`).join(", ")}`);
     return out2.length ? `${p}:${r.from}-${r.to}
 ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`;
   };
@@ -48411,7 +48887,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const paths = Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string" && !!x) : [];
       if (!area || !summary || !paths.length) return "error: area, summary and paths are required";
       await loadAreas(s);
-      const areas = areasOf(s).areasOf([...paths, ...s.room.changedPaths(s.me.name)]);
+      const areas = areasOf(s).areasOf([...paths, ...manifestPaths(s.room, s.me.name)]);
       s.room.setScope({ by: s.me.name, byKind: s.me.kind, area, summary, paths, areas });
       await s.policyStore.declare(paths);
       const posted = await s.post(s.me, { type: "scope", area, summary, paths });
@@ -48449,7 +48925,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const mineA = myAreas(s);
       const all2 = a.all === true || !mineA.length;
       const myClaims = s.room.openClaims().filter((c) => c.by === s.me.name);
-      const myPaths = [...s.room.scope(s.me.name)?.paths ?? [], ...s.room.changedPaths(s.me.name), ...myClaims.map((c) => c.path)];
+      const myPaths = [...s.room.scope(s.me.name)?.paths ?? [], ...manifestPaths(s.room, s.me.name), ...myClaims.map((c) => c.path)];
       const overlapsMyPath = (p) => myPaths.some((q) => scopeCovers({ paths: [q] }, p) || scopeCovers({ paths: [p] }, q));
       const pathInView = (p) => all2 || overlapsMyPath(p) || mineA.includes(areasOf(s).areaOf(p));
       const nearby = coordinationPaths(s.room, s.me.name);
@@ -48461,10 +48937,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       };
       const groups = splitParticipants({
         presences: ps,
-        workers: [...s.room.workers.values()],
+        workers: [...s.room.workerViews.values()],
         retiredWorkers: s.room.retiredWorkers(),
         scopes: [...s.room.scopes.entries()],
-        overlayPeople: [...s.room.overlays.keys()],
+        overlayPeople: [...s.room.manifestHead.keys()],
         changesByPerson: /* @__PURE__ */ new Map(),
         claims: s.room.openClaims(),
         now: now()
@@ -48478,8 +48954,9 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       out2.push(`participants${all2 ? "" : " overlapping your work"} (${activeCount} active${offlineCount ? `, ${offlineCount} offline teammate${offlineCount === 1 ? "" : "s"}` : ""}):`);
       for (const n of names) {
         const p = ps.find((x) => x.user.name === n && isAgentic(x.user.kind)) ?? ps.find((x) => x.user.name === n);
-        const worker = s.room.workerOf(n);
-        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: worker !== void 0 && !state.workerAlive(s, worker) }) : "offline";
+        const worker = s.room.workerViewOf(n);
+        const own2 = worker && myWorkers(s).find((w) => w.id === worker.id);
+        const ago = p || worker ? activityLabel(p?.lastActive, now(), { worker, processGone: !!own2 && !state.workerAlive(s, own2) }) : "offline";
         const who2 = participantIdentityLine(ps, n, worker, s.room.scope(n)?.byKind ?? s.room.openClaims().find((c) => c.by === n)?.byKind);
         if (sameCheckoutSession(s, n)) {
           const declaredScope = s.room.scope(n);
@@ -48520,7 +48997,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const changed = /* @__PURE__ */ new Map();
       let hiddenChanged = 0;
       for (const person of [s.me.name, ...others(s).filter((n) => !sameCheckoutSession(s, n))]) {
-        const paths = person === s.me.name ? [...new Set([s.me.name, ...presences(s).map((p) => p.user.name).filter((n) => sameCheckoutSession(s, n))].flatMap((n) => s.room.changedPaths(n)))] : s.room.changedPaths(person);
+        const paths = person === s.me.name ? [...new Set([s.me.name, ...presences(s).map((p) => p.user.name).filter((n) => sameCheckoutSession(s, n))].flatMap((n) => manifestPaths(s.room, n)))] : manifestPaths(s.room, person);
         const ps2 = paths.filter((p) => person === s.me.name || pathInView(p));
         hiddenChanged += paths.length - ps2.length;
         if (ps2.length) changed.set(person, ps2);
@@ -48543,9 +49020,12 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       out2.push(`recent bus${all2 ? "" : " in your areas"} (${msgs.length}):`);
       for (const x of msgs) out2.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`);
       out2.push(...prLines(s));
-      out2.push(...workerLines(await Promise.all(myWorkers(s).map(async (worker) => {
+      out2.push(...workerLines(await Promise.all(myWorkers(s).flatMap((worker) => {
+        const view = localWorkerView(s, worker.id);
+        return view ? [{ worker, view }] : [];
+      }).map(async ({ worker, view }) => {
         const processGone = worker.status === "running" && !state.workerAlive(s, worker);
-        return { worker, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => {
+        return { worker: view, dir: worker.dir, lastActive: presences(s).filter((p) => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => {
           const message2 = s.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
           return message2 ? formatRoomMessage(s, message2) : void 0;
         })(), now: now() };
@@ -48553,9 +49033,12 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const ws = wsRoom;
       if (ws) {
         out2.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`);
-        out2.push(...workerLines(await Promise.all(myWorkers(ws).map(async (worker) => {
+        out2.push(...workerLines(await Promise.all(myWorkers(ws).flatMap((worker) => {
+          const view = localWorkerView(ws, worker.id);
+          return view ? [{ worker, view }] : [];
+        }).map(async ({ worker, view }) => {
           const processGone = worker.status === "running" && !state.workerAlive(ws, worker);
-          return { worker, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => {
+          return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => {
             const message2 = ws.room.messages().filter((x) => x.from === worker.name).slice(-1)[0];
             return message2 ? formatRoomMessage(ws, message2) : void 0;
           })(), now: now() };
@@ -48593,7 +49076,7 @@ function createAreas(deps) {
   const areasOf = (s) => areaIndex.get(s) ?? Areas.topLevel();
   const areasFor = (s, person) => {
     const sc = s.room.scope(person);
-    const paths = [...sc?.paths ?? [], ...s.room.changedPaths(person), ...person === s.me.name ? presences(s).filter((p) => sameCheckoutSession(s, p.user.name)).flatMap((p) => s.room.changedPaths(p.user.name)) : []];
+    const paths = [...sc?.paths ?? [], ...manifestPaths(s.room, person), ...person === s.me.name ? presences(s).filter((p) => sameCheckoutSession(s, p.user.name)).flatMap((p) => manifestPaths(s.room, p.user.name)) : []];
     const stored = sc?.areas ?? presences(s).find((p) => p.user.name === person)?.areas ?? [];
     return Array.from(/* @__PURE__ */ new Set([...stored, ...areasOf(s).areasOf(paths)])).sort();
   };
@@ -48641,9 +49124,14 @@ function createAreas(deps) {
       name: name2,
       scope: s.room.scope(name2),
       presences: presences(s),
-      changedPaths: name2 === s.me.name ? [...new Set([name2, ...presences(s).map((p) => p.user.name).filter((n) => sameCheckoutSession(s, n))].flatMap((n) => s.room.changedPaths(n)))] : s.room.changedPaths(name2),
+      changedPaths: name2 === s.me.name ? [...new Set([name2, ...presences(s).map((p) => p.user.name).filter((n) => sameCheckoutSession(s, n))].flatMap((n) => manifestPaths(s.room, n)))] : manifestPaths(s.room, name2),
       messages: s.room.messages().filter((m) => m.type === "note"),
-      share: shareOf(s, name2)
+      share: shareOf(s, name2),
+      heldCount: (() => {
+        const head = s.room.manifestHead.get(name2);
+        return head ? [...s.room.manifest.get(`${name2}\0${head.fence}`)?.values() ?? []].filter((entry) => entry.fence === head.fence && entry.state === "held").length : 0;
+      })(),
+      excludedCount: s.room.manifestHead.get(name2)?.excluded.length ?? 0
     });
   };
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine: claimLine2, ledgerLines, scopeLine: scopeLine2, personLine: personLine2 };
@@ -48737,21 +49225,27 @@ async function prepareTeamSharingDisclosure(s) {
       return;
     }
     const share = s.daemon.share ?? s.shareRequested ?? "intent";
-    const rank = (level) => level === "intent" ? 0 : level === "declared" ? 1 : 2;
-    if (s.policyStore.disclosed.version < 1 || rank(share) > rank(s.policyStore.disclosed.level)) {
+    const rank2 = (level) => level === "intent" ? 0 : level === "declared" ? 1 : 2;
+    if (s.policyStore.disclosed.version < 1 || rank2(share) > rank2(s.policyStore.disclosed.level)) {
       state.pending = sharingSentence(s);
-      await s.policyStore.markDisclosed(share, 1);
+      state.level = share;
     } else state.delivered = true;
   })();
   await state.prepared;
 }
-function pendingTeamSharingDisclosure(s) {
-  return disclosures.get(s)?.pending;
-}
 async function offerTeamSharingDisclosure(s, ledger2) {
   await prepareTeamSharingDisclosure(s);
-  const sentence = pendingTeamSharingDisclosure(s);
-  if (sentence) ledger2.notice("sharing", sentence);
+  const state = disclosures.get(s);
+  const sentence = state?.pending;
+  if (!state || !sentence || state.delivered) return;
+  const level = state.level;
+  ledger2.notice("sharing", sentence, () => {
+    if (state.delivered) return;
+    state.delivered = true;
+    state.pending = void 0;
+    void s.policyStore.markDisclosed(level, 1).catch(() => {
+    });
+  });
 }
 function rejoinOptions(s, credentialsPath2) {
   return { dir: s.dir, credentialsPath: credentialsPath2, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/")), share: s.shareRequested, token: s.token };
@@ -48891,7 +49385,7 @@ function handlers5(state) {
       out2.push(...areaLines(s, mineA));
       out2.push(here.length ? `here now: ${here.map(label).join(", ")}` : "nobody else is here yet");
       for (const n of here) out2.push(`  ${label(n)}: ${personLine2(s, n)}`);
-      const away = others(s).filter((n) => !sameCheckoutSession(s, n) && !here.includes(n) && s.room.changedPaths(n).length);
+      const away = others(s).filter((n) => !sameCheckoutSession(s, n) && !here.includes(n) && manifestPaths(s.room, n).length);
       for (const n of away) out2.push(`  ${label(n)} (offline): ${personLine2(s, n)}`);
       if (s.autoTagNote) {
         out2.push(s.autoTagNote);
@@ -49015,22 +49509,11 @@ function createJoin(deps) {
       return `[room] your clone switched to branch ${branch} but joining ${target} failed: ${e instanceof Error ? e.message : String(e)}. Call room_join.`;
     }
   };
-  const envStaleDays = Number(process.env.ROOM_STALE_DAYS);
-  const STALE_MS = (ctx.config?.staleDays ?? (Number.isFinite(envStaleDays) && envStaleDays > 0 ? envStaleDays : 7)) * 24 * 60 * 60 * 1e3;
   const evictStale = (s) => {
-    const here = new Set(presences(s).map((p) => p.user.name));
-    const gone = [];
-    for (const person of Array.from(s.room.overlays.keys())) {
-      if (person === s.me.name || here.has(person)) continue;
-      const age = s.room.overlayAge(person, now());
-      if (age === void 0 || age < STALE_MS) continue;
-      const n = s.room.clearOverlays(person);
-      const days = Math.round(age / 864e5);
-      void s.post(s.me, { type: "note", text: `evicted stale uncommitted work of ${person} (${n} file${n === 1 ? "" : "s"}; last seen ${days} day${days === 1 ? "" : "s"} ago)`, priority: "fyi" });
-      log2(`evicted ${person}'s ${n} stale overlay file(s), ${days} days old`);
-      gone.push(person);
+    for (const [person, head] of s.room.manifestHead) {
+      if (person !== s.me.name) log2(`${person}'s manifest last scanned ${Math.max(0, Math.floor((now() - head.scannedAt) / 1e3))}s ago`);
     }
-    return gone;
+    return [];
   };
   const cleanupMine = (s, _why, keep) => releaseClaimsOnDone(s, keep);
   const serverOf = (a) => {
@@ -49084,7 +49567,7 @@ function createPrs(deps) {
   const refreshPrs = async (s) => {
     if (!s.roomName.startsWith("github.com/")) return "";
     const present = presences(s).map((p) => p.user.name);
-    const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workers.values()).map((w) => w.name));
+    const leader = prLeader(present.length ? present : [s.me.name], Array.from(s.room.workerViews.values()).map((w) => w.name));
     if (leader !== s.me.name) return "";
     let prs;
     try {
@@ -49143,6 +49626,29 @@ function createPrs(deps) {
   return { refreshPrs, startPrSync, stopPrSync, prLines, myPr, postLedger };
 }
 
+// packages/room-mcp/src/inbox-budget.ts
+var INBOX_BUDGET = 6e3;
+var rank = { interrupt: 0, notify: 1, fyi: 2 };
+var inboxOrder = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2 + rank[m.priority];
+function selectWithin(ledger2, sources, batch, budget, cost, atLeastOne = false) {
+  const all2 = sources.flatMap((s) => ledger2.available(s, batch).map((m) => ({ s, m })));
+  all2.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || a.m.at - b.m.at);
+  const chosen = [];
+  let used = 0;
+  for (const c of all2) {
+    const size2 = cost(c);
+    if (used + size2 > budget && !(atLeastOne && !chosen.length)) break;
+    chosen.push(c);
+    used += size2;
+  }
+  for (const s of sources) {
+    const ids = new Set(chosen.filter((c) => c.s === s).map((c) => c.m.id));
+    if (ids.size) ledger2.select(s, batch, (m) => ids.has(m.id));
+  }
+  return { chosen, more: all2.length - chosen.length };
+}
+var moreLine = (more) => `${more} more: call room_state`;
+
 // packages/room-mcp/src/tools/messaging.ts
 var WAIT_DEFAULT = 3e4;
 var WAIT_MAX = 1e5;
@@ -49187,20 +49693,20 @@ function handlers7(state) {
     ...presences(s).map((p) => p.user.name),
     ...s.room.colors.keys(),
     ...s.room.scopes.keys(),
-    ...s.room.overlays.keys(),
-    ...s.room.deleted.keys(),
+    ...s.room.manifestHead.keys(),
     ...s.room.openClaims().map((c) => c.by),
-    ...Array.from(s.room.workers.values(), (w) => w.name),
+    ...Array.from(s.room.workerViews.values(), (w) => w.name),
     ...s.room.retiredWorkers().map((w) => w.name),
     ...s.room.messages().map((m) => m.from)
   ].filter((n) => !isPrName(n)));
   const recipientNotice = (s, name2) => {
     const present = presences(s).some((p) => p.user.name === name2);
-    const worker = s.room.workerOf(name2);
+    const own2 = myWorkers(s).find((w) => w.name === name2);
+    const view = own2 ? void 0 : s.room.workerViewOf(name2);
+    const worker = own2 ?? view;
     const retired = !worker && s.room.retiredWorkers().filter((w) => w.name === name2).sort((a, b) => b.retiredAt - a.retiredAt)[0];
-    const exited = worker && (worker.exitCode !== void 0 || (s.local ? !workerAlive(s, worker) : worker.status !== "running" && !present));
-    const terminalStatuses = { running: false, done: true, failed: true, dismissed: true };
-    const terminal = worker && terminalStatuses[worker.status];
+    const exited = own2 ? own2.exitCode !== void 0 || (s.local ? !workerAlive(s, own2) : own2.status !== "running" && !present) : view ? view.exitCode !== void 0 || !workerLive(view.status) && !present : false;
+    const terminal = own2 ? own2.status !== "running" : view ? !workerLive(view.status) : false;
     if (retired || exited || terminal) {
       const record2 = retired || worker;
       const finished = record2.finishedAt;
@@ -49284,7 +49790,7 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       }
       if (sendType === "note" && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`;
       if (repliedNote && a.to && to2 !== repliedNote.from) return `error: note reply must go to ${repliedNote.from}`;
-      if (to2 && !s.room.workerOf(to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed`;
+      if (to2 && !s.room.workerViewOf(to2) && !myWorkers(s).some((w) => w.name === to2) && s.room.retiredWorkers().some((w) => w.name === to2)) return `error: ${to2} was collected or discarded and cannot be resumed`;
       const pr = typeof a.priority === "string" && ["fyi", "notify", "interrupt"].includes(a.priority) ? a.priority : void 0;
       const withPr = (o) => pr ? { ...o, priority: pr } : o;
       if (a.type === "changed" && (!Array.isArray(a.paths) || !a.paths.some((x) => typeof x === "string"))) return "error: changed requires paths";
@@ -49293,19 +49799,27 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       if (!["changed", "question", "answer", "note"].includes(String(a.type))) return `error: type must be changed|question|answer|note (got ${String(a.type)})`;
       const notes = [];
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`);
-      const addressedWorker = to2 && s.room.workerOf(to2);
-      let deliveredInPrompt = false;
-      if (addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running") {
-        const result2 = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log);
-        if (typeof result2 === "string" && result2.startsWith("error:")) return result2;
-        deliveredInPrompt = true;
-        notes.push(typeof result2 === "string" ? result2 : result2.reply);
-      }
+      const addressedWorker = to2 ? myWorkers(s).find((w) => w.name === to2) : void 0;
+      const resume = !!addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== "running";
       const paths = sendType === "changed" && Array.isArray(a.paths) ? a.paths.filter((x) => typeof x === "string") : [];
       const symbols = sendType === "changed" && Array.isArray(a.symbols) ? a.symbols.filter((x) => typeof x === "string") : [];
       const body2 = sendType === "changed" ? withPr({ type: "changed", paths, summary: text, ...symbols.length ? { symbols } : {}, ...to2 ? { to: to2 } : {} }) : sendType === "question" ? withPr({ type: "question", text, to: to2 }) : sendType === "answer" ? withPr({ type: "answer", to: question?.from ?? to2, inReplyTo: inferredQuestionId ?? a.inReplyTo, text }) : withPr({ type: "note", text, ...to2 ? { to: to2 } : {}, ...repliedNote ? { inReplyTo: repliedNote.id } : {} });
-      const posted = await s.post(s.me, body2);
-      if (!posted.ok) return [posted.text, ...deliveredInPrompt ? notes : []].join("\n");
+      let posted;
+      const post = async () => {
+        posted = await s.post(s.me, body2);
+        return posted.ok ? void 0 : posted.text;
+      };
+      let deliveredInPrompt = false;
+      if (resume) {
+        const result2 = await rooms.resumeWorker(s, addressedWorker, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, void 0, void 0, post);
+        if (posted?.ok === false) return posted.text;
+        if (typeof result2 === "string" && result2.startsWith("error:")) return posted ? `sent [${posted.msg.id}] ${formatMsg(posted.msg)}; ${result2}` : result2;
+        deliveredInPrompt = true;
+        notes.push(typeof result2 === "string" ? result2 : result2.reply);
+      } else {
+        const refused = await post();
+        if (refused) return refused;
+      }
       const msg = posted.msg;
       if (deliveredInPrompt) ledger2.commitPrompt(s, to2, [msg.id]);
       if (msg.type === "changed") notes.push(...await upgrade(s, msg, paths, symbols));
@@ -49355,9 +49869,9 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
       if (m.type === "question") return `${workersRoom ? "question from a worker" : "question for you"} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`;
       return `${workersRoom ? "workers room" : "message for you"}: ${formatMsg(m)}`;
     };
-    const rank = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2;
+    const rank2 = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2;
     const take = () => {
-      const found = all2().flatMap((x) => ledger2.available(x, batch, ends(x)).map((m) => ({ x, m }))).sort((p, q) => rank(p.m) - rank(q.m) || p.m.at - q.m.at)[0];
+      const found = all2().flatMap((x) => ledger2.available(x, batch, ends(x)).map((m) => ({ x, m }))).sort((p, q) => rank2(p.m) - rank2(q.m) || p.m.at - q.m.at)[0];
       if (!found) return void 0;
       ledger2.select(found.x, batch, (m) => m.id === found.m.id, "wait");
       return render(found.x, found.m);
@@ -49421,22 +49935,20 @@ ${open3.map(({ question: question2 }) => `${question2.id}: ${questionPreview(que
   return handlers10;
 }
 function createInbox(deps) {
-  const { rooms, log: log2, scheduleInboxWrite, msgInMyAreas, others, upgraded } = deps;
+  const { rooms, log: log2, scheduleInboxWrite, msgInMyAreas, others, upgraded, readVersion } = deps;
   const forMe = (s, m) => messageForMe(s.me, m, { claims: deps.mine(s), inMyAreas: (x) => msgInMyAreas(s, x) });
   const inbox = (s, batch) => {
-    const fresh = [];
     const ws = rooms.workers();
-    for (const source of [s, ...ws && ws !== s ? [ws] : []]) {
-      for (const m of deps.ledger.select(source, batch)) fresh.push(source === s ? m : { ...m, ..."text" in m ? { text: `[workers room] ${m.text}` } : {} });
-    }
-    if (!fresh.length) return "";
-    const rank = { interrupt: 0, notify: 1, fyi: 2 };
-    const order = (m) => m.priority === "interrupt" ? 0 : m.type === "question" ? 1 : 2 + rank[m.priority];
-    fresh.sort((a, b) => order(a) - order(b) || a.at - b.at);
+    const shown = ({ s: source, m }) => source === s ? m : { ...m, ..."text" in m ? { text: `[workers room] ${m.text}` } : {} };
+    const line = (m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})` : `  [${m.id}] ${formatMsg(m)}`;
+    const { chosen, more } = selectWithin(deps.ledger, [s, ...ws && ws !== s ? [ws] : []], batch, INBOX_BUDGET, (c) => line(shown(c)).length + 1, true);
+    if (!chosen.length) return "";
+    const fresh = chosen.map(shown);
     for (const m of fresh) log2(`inbox \u2192 ${s.me.name}: ${formatMsg(m)}`);
     scheduleInboxWrite();
     return `[inbox ${fresh.length}]
-${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})` : `  [${m.id}] ${formatMsg(m)}`).join("\n")}
+${fresh.map(line).join("\n")}${more ? `
+  ${moreLine(more)}` : ""}
 
 `;
   };
@@ -49461,9 +49973,9 @@ ${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${form
           }
         }
       } else {
-        for (const f of s.room.changedPaths(person)) {
-          const t = s.room.text(f, person) ?? "";
-          const sym = symbols.find((x) => t.includes(x));
+        for (const f of manifestPaths(s.room, person)) {
+          const version2 = await readVersion(s, f, person);
+          const sym = version2.kind === "text" ? symbols.find((x) => version2.text.includes(x)) : void 0;
           if (sym) {
             hit = `${f} uses ${sym}`;
             break;
@@ -49476,13 +49988,13 @@ ${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${form
   };
   const ownsFile = (s, person, f) => {
     const sc = s.room.scope(person);
-    return !!sc && scopeCovers(sc, f) || s.room.changedPaths(person).includes(f) || s.room.openClaims().some((c) => c.by === person && c.path === f);
+    return !!sc && scopeCovers(sc, f) || manifestPaths(s.room, person).includes(f) || s.room.openClaims().some((c) => c.by === person && c.path === f);
   };
   const owners = (s, f) => {
     const out2 = /* @__PURE__ */ new Set();
     for (const sc of s.room.allScopes()) if (!isPrName(sc.by) && scopeCovers(sc, f)) out2.add(sc.by);
     for (const c of s.room.claimsFor(f)) out2.add(c.by);
-    for (const p of s.room.whoChanged(f)) out2.add(p);
+    for (const p of manifestChangers(s.room, f)) out2.add(p);
     return Array.from(out2).sort();
   };
   const describeUsers = (s, files2) => files2.map((f) => {
@@ -49496,7 +50008,7 @@ ${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${form
     await s.graph.ready;
     const g = s.graph.graph;
     const sc = s.room.scope(s.me.name);
-    const myFiles = new Set(s.room.changedPaths(s.me.name));
+    const myFiles = new Set(manifestPaths(s.room, s.me.name));
     if (sc) {
       for (const f of allIndexed(s)) if (scopeCovers(sc, f)) myFiles.add(f);
     }
@@ -49519,7 +50031,7 @@ ${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${form
   const allIndexed = (s) => {
     const set = /* @__PURE__ */ new Set();
     for (const sc of s.room.allScopes()) for (const p of sc.paths) set.add(p);
-    for (const person of [s.me.name, ...others(s)]) for (const p of s.room.changedPaths(person)) set.add(p);
+    for (const person of [s.me.name, ...others(s)]) for (const p of manifestPaths(s.room, person)) set.add(p);
     return Array.from(set).filter((p) => s.graph.graph.has(p));
   };
   const upgrade = async (s, m, paths, symbols) => {
@@ -49538,13 +50050,335 @@ ${fresh.map((m) => m.type === "question" ? `  [${m.id}] QUESTION FOR YOU: ${form
   return { forMe, inbox, describeUsers, waitingOn, upgrade };
 }
 
-// packages/room-mcp/src/ledger.ts
+// packages/room-mcp/src/hooks-bridge.ts
 import fs32 from "node:fs";
 import path31 from "node:path";
+var HooksBridge = class {
+  constructor(s, o) {
+    this.s = s;
+    this.o = o;
+    hookHealth.set(s, newHookHealth(this.now()));
+  }
+  s;
+  o;
+  timer = null;
+  unobserve = [];
+  stopped = false;
+  written;
+  start() {
+    this.stopped = false;
+    const kick = () => this.scheduleWrite();
+    this.s.room.doc.on("update", kick);
+    this.s.awareness.on("change", kick);
+    this.unobserve.push(() => {
+      this.s.room.doc.off("update", kick);
+      this.s.awareness.off("change", kick);
+    });
+    this.scheduleWrite();
+  }
+  stop() {
+    this.stopped = true;
+    for (const u of this.unobserve) u();
+    this.unobserve = [];
+    if (this.timer) clearTimeout(this.timer);
+    if (this.written) {
+      try {
+        fs32.rmSync(this.written, { force: true });
+      } catch {
+      }
+    }
+  }
+  /** Debounced: many small doc updates become one file write. */
+  scheduleWrite() {
+    if (this.stopped) return;
+    if (this.timer) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      try {
+        this.write();
+      } catch (e) {
+        this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 150);
+    this.timer.unref?.();
+  }
+  /** state.json: counts and coordination for the hooks, written only while fenced (ledger "Local files"). */
+  write() {
+    if (this.stopped) return;
+    const dir = this.o.sessionDir();
+    if (!dir || !this.o.fenced()) return;
+    const me = this.s.me.name;
+    const openClaims = this.s.room.openClaims();
+    const ownClaims = openClaims.filter((c) => c.by === me && isAgentic(c.byKind)).map((c) => ({ path: c.path, from: c.from, to: c.to }));
+    const claims = openClaims.filter((c) => !(c.by === me && isAgentic(c.byKind))).map((c) => ({ id: c.id, path: c.path, from: c.from, to: c.to, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} }));
+    const near = coordinationPaths(this.s.room, me, { includeOwnNonAgentClaims: true });
+    const company = this.o.company?.() ?? hasCompany(this.s, [], this.now());
+    const presences = [...this.s.awareness.getStates().values()];
+    const others = company.others.map((name2) => displayName({ name: name2, kind: (presences.find((p) => p.user?.name === name2 && p.user.kind === "agent") ?? presences.find((p) => p.user?.name === name2))?.user?.kind ?? this.s.room.scope(name2)?.byKind ?? "agent" }));
+    const paused = this.o.paused?.();
+    const file = path31.join(dir, "state.json");
+    fs32.mkdirSync(dir, { recursive: true, mode: 448 });
+    writeAtomic(file, { name: me, room: this.s.roomName, at: this.now(), owedCount: this.o.owedCount(), notices: this.o.noticeCount?.() ?? 0, company: company.company, others, companyLine: describeCompany(this.s, company), claims, ownClaims, near, ...paused ? { paused } : {} });
+    this.written = file;
+  }
+  now() {
+    return this.o.now?.() ?? Date.now();
+  }
+};
+var hookHealth = /* @__PURE__ */ new WeakMap();
+function newHookHealth(now) {
+  return { since: now, calls: 0, noted: false, observed: false, joinNoted: false, scopeNoted: false };
+}
+function missingPreEditGuidance(s) {
+  const host = resolveSessionHost();
+  if (host === "claude") return "Room has not seen its before-edit hook run in this session although its tools are in use: the plugin's hooks may not be running; reinstall or re-enable the plugin.";
+  if (host === "codex") return "Pre-edit coordination is not confirmed yet; if the Room hooks were never approved, approve them once in an interactive Codex session.";
+  return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
+}
+function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = !s.local) {
+  let health2 = hookHealth.get(s);
+  if (!health2) {
+    health2 = newHookHealth(now);
+    hookHealth.set(s, health2);
+  }
+  let sessionStartedAt = health2.since;
+  if (sessionDir) {
+    try {
+      const session = JSON.parse(fs32.readFileSync(path31.join(sessionDir, "session.json"), "utf8"));
+      if (typeof session.at === "number" && Number.isFinite(session.at) && session.at <= now) sessionStartedAt = session.at;
+    } catch {
+    }
+    try {
+      const activity = JSON.parse(fs32.readFileSync(path31.join(sessionDir, "hook-activity.json"), "utf8"));
+      if (activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at <= now && (resolveSessionHost() !== "claude" || activity.at >= sessionStartedAt)) health2.observed = true;
+    } catch {
+    }
+  }
+  if (!expected || health2.observed || health2.noted) return "";
+  const upFront = team && resolveSessionHost() === "codex";
+  if (upFront && tool === "room_join" && !health2.joinNoted && !health2.scopeNoted) {
+    health2.joinNoted = true;
+    return missingPreEditGuidance(s);
+  }
+  if (upFront && tool === "room_scope" && !health2.scopeNoted) {
+    health2.scopeNoted = true;
+    return missingPreEditGuidance(s);
+  }
+  if (health2.joinNoted || health2.scopeNoted) return "";
+  if (!health2.calls) health2.since = now;
+  health2.calls++;
+  if (health2.calls < 2 || now - health2.since < 3e4) return "";
+  if (resolveSessionHost() === "claude" && !(s.room.changedPaths(s.me.name).length && (s.room.overlayAt.get(s.me.name) ?? -Infinity) >= sessionStartedAt)) return "";
+  health2.noted = true;
+  return missingPreEditGuidance(s);
+}
+
+// packages/room-mcp/src/wake-reconciler.ts
+import fs33 from "node:fs";
+import path32 from "node:path";
+var BACKOFF_MS = [1e3, 3e3, 8e3, 3e4];
+var WINDOW_MS = 5e3;
+var POLL_MS = 5e3;
+var MAX_NAMED = 5;
+var WakeReconciler = class {
+  constructor(o) {
+    this.o = o;
+  }
+  o;
+  sessions = /* @__PURE__ */ new Map();
+  running = false;
+  again = false;
+  stopped = false;
+  timer;
+  failures = 0;
+  lastSentAt;
+  sequence = 0;
+  record;
+  silent = false;
+  /** Watch a joined room: any change to it (bus, receipts, outcomes, claims) reconciles. */
+  attach(s) {
+    if (this.sessions.has(s)) return;
+    s.awareness.setLocalStateField("wakeUnavailable", claudeWakeUnavailable(s.dir));
+    const kick = () => this.reconcile();
+    s.room.doc.on("update", kick);
+    this.sessions.set(s, () => s.room.doc.off("update", kick));
+    this.reconcile();
+  }
+  detach(s) {
+    this.sessions.get(s)?.();
+    this.sessions.delete(s);
+  }
+  stop() {
+    this.stopped = true;
+    this.clearTimer();
+    for (const s of [...this.sessions.keys()]) this.detach(s);
+  }
+  /** Single-flight: a call during a pass runs one more pass after it. */
+  reconcile() {
+    if (this.stopped) return;
+    this.again = true;
+    if (this.running) return;
+    this.running = true;
+    queueMicrotask(() => {
+      void this.drain();
+    });
+  }
+  /** What would be woken now, in delivery order. */
+  wakeable() {
+    const out2 = [];
+    const woken = this.wakes();
+    for (const s of this.sessions.keys()) {
+      const { ledger: ledger2 } = this.o;
+      if (!ledger2.fenced(s)) continue;
+      const frontier = ledger2.frontier(s);
+      const claims = s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
+      const uncommitted = manifestPaths(s.room, s.me.name).length > 0;
+      const workers = this.o.ownWorkers?.(s);
+      const done = woken[s.roomName] ?? {};
+      for (const m of ledger2.candidates(s)) {
+        if ((m.seq ?? 0) <= frontier || done[m.id] || ledger2.reserved(s, m.id) || waitConsumesMessage(s, m)) continue;
+        if (shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) out2.push({ s, m });
+      }
+    }
+    return out2;
+  }
+  async drain() {
+    try {
+      while (this.again && !this.stopped) {
+        this.again = false;
+        await this.pass();
+      }
+    } catch (e) {
+      this.o.log?.(`wake: reconcile failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.running = false;
+    }
+  }
+  async pass() {
+    this.clearTimer();
+    const due = this.wakeable();
+    if (!due.length) {
+      this.failures = 0;
+      return;
+    }
+    const target = this.o.bound();
+    if (!target) {
+      this.arm(this.o.pollMs ?? POLL_MS);
+      return;
+    }
+    const windowMs = this.o.windowMs ?? WINDOW_MS;
+    const since = this.lastSentAt === void 0 ? Infinity : this.now() - this.lastSentAt;
+    if (since < windowMs) {
+      this.arm(windowMs - since);
+      return;
+    }
+    let via;
+    try {
+      via = await this.o.send(target, this.pointer(due));
+    } catch (e) {
+      const delays = this.o.backoffMs ?? BACKOFF_MS;
+      const delay = delays[Math.min(this.failures, delays.length - 1)];
+      this.failures++;
+      this.o.log?.(`wake: could not wake ${target.host} session ${target.id.slice(0, 8)} (${e instanceof Error ? e.message : String(e)}); retrying in ${delay}ms`);
+      this.arm(delay);
+      return;
+    }
+    if (this.stopped) return;
+    if (!via) {
+      if (!this.silent) this.o.log?.(`wake: this ${target.host} session has no wake path; messages wait for its next turn`);
+      this.silent = true;
+      return;
+    }
+    this.failures = 0;
+    this.lastSentAt = this.now();
+    const at = this.now();
+    const wakes = this.wakes();
+    for (const { s, m } of due) (wakes[s.roomName] ??= {})[m.id] = { via, at };
+    this.persist();
+    this.o.log?.(`wake: woke ${target.host} session ${target.id.slice(0, 8)} via ${via} for ${due.map(({ m }) => `${m.type} ${m.id}`).join(", ")}`);
+  }
+  /** `[room] N things need you: <from> <kind>; …` — who and what kind, never the text. */
+  pointer(due) {
+    const count = due.length;
+    const shown = count > MAX_NAMED ? MAX_NAMED - 1 : MAX_NAMED;
+    const phrases = due.slice(0, shown).map(({ m }) => `${m.from.replace(/\s+/g, " ").trim().slice(0, 40) || "someone"} ${kindPhrase(m.type)}`);
+    if (count > shown) phrases.push(`${count - shown} more`);
+    return `[room] ${count} ${count === 1 ? "thing needs" : "things need"} you: ${phrases.join("; ")}. Call room_state; it shows them. (#${++this.sequence})`;
+  }
+  /** wakes.json of the bound session, reloaded when the binding moves; entries no longer owed are pruned on write. */
+  wakes() {
+    const dir = this.o.sessionDir();
+    if (this.record && this.record.dir === dir) return this.record.wakes;
+    let wakes = {};
+    if (dir) {
+      try {
+        wakes = JSON.parse(fs33.readFileSync(path32.join(dir, "wakes.json"), "utf8"));
+      } catch {
+      }
+    }
+    this.record = { dir, wakes };
+    return wakes;
+  }
+  persist() {
+    const record2 = this.record;
+    if (!record2) return;
+    for (const s of this.sessions.keys()) {
+      const entries = record2.wakes[s.roomName];
+      if (!entries || !this.o.ledger.fenced(s)) continue;
+      const owed2 = new Set(this.o.ledger.candidates(s).map((m) => m.id));
+      for (const id3 of Object.keys(entries)) if (!owed2.has(id3)) delete entries[id3];
+    }
+    if (!record2.dir) return;
+    try {
+      fs33.mkdirSync(record2.dir, { recursive: true, mode: 448 });
+      writeAtomic(path32.join(record2.dir, "wakes.json"), record2.wakes);
+    } catch (e) {
+      this.o.log?.(`wake: could not write wakes.json: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  arm(ms) {
+    if (this.stopped) return;
+    this.clearTimer();
+    this.timer = setTimeout(() => {
+      this.timer = void 0;
+      this.reconcile();
+    }, ms);
+    this.timer.unref?.();
+  }
+  clearTimer() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = void 0;
+  }
+  now() {
+    return this.o.now?.() ?? Date.now();
+  }
+};
+function kindPhrase(type) {
+  switch (type) {
+    case "question":
+      return "asked a question";
+    case "answer":
+      return "answered";
+    case "changed":
+      return "reported a change";
+    case "note":
+      return "sent a note";
+    case "done":
+      return "finished";
+    case "base":
+      return "moved the base";
+    default:
+      return "has an update";
+  }
+}
+
+// packages/room-mcp/src/ledger.ts
+import fs34 from "node:fs";
+import path33 from "node:path";
 import { createHash as createHash11, randomUUID as randomUUID6 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
-function noticeId(kind, text) {
+function noticeId2(kind, text) {
   return `n:${kind}:${createHash11("sha256").update(text).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
@@ -49574,6 +50408,7 @@ var Ledger = class {
   noticeReservations = /* @__PURE__ */ new Map();
   cursors = /* @__PURE__ */ new WeakMap();
   pendingNotices = /* @__PURE__ */ new Map();
+  onDelivered = /* @__PURE__ */ new Map();
   delivered;
   /** A session may deliver for P only while it is P's holder (or no holder is recorded yet, before wave 4). */
   fenced(s) {
@@ -49589,6 +50424,14 @@ var Ledger = class {
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s) {
     this.cursor(s);
+  }
+  /** The highest hub seq `s` had observed at its first bind: only later messages can wake it (MF8). */
+  frontier(s) {
+    return this.cursor(s).frontier;
+  }
+  /** Whether a live batch holds `id` (in flight, so not wakeable). */
+  reserved(s, id3) {
+    return this.reservations.has(key(s, id3));
   }
   /** Owed messages of `s` that no live batch holds (nor `batch` itself) and `filter` accepts; nothing is reserved. */
   available(s, batch, filter) {
@@ -49636,8 +50479,18 @@ var Ledger = class {
         this.pendingNotices.delete(n.id);
       }
       this.persistNotices();
+      for (const n of batch.notices) this.fireDelivered(n.id);
     }
     this.end(batch);
+  }
+  /**
+   * The reply or hook output that selected these no longer carries them (it failed after selecting):
+   * they are selectable again, and a later commit of this batch receipts nothing.
+   */
+  discard(batch) {
+    this.release(batch);
+    batch.items.length = 0;
+    batch.notices.length = 0;
   }
   /**
    * The lead's receipt for a follow-up it put in a resumed worker's prompt. Until resume acceptance
@@ -49651,14 +50504,28 @@ var Ledger = class {
     if (batch.settled) return;
     this.end(batch);
   }
-  /** Offer a local notice until a confirmed handoff receipts it. */
-  notice(kind, text) {
-    const n = { id: noticeId(kind, text), text };
-    if (!this.deliveredNotices()[n.id] && !this.pendingNotices.has(n.id)) {
+  /**
+   * Offer a local notice until a confirmed handoff receipts it. `onDelivered` runs after that receipt, or
+   * at once when notices.json already holds one (a crash between the receipt and the caller's own record).
+   */
+  notice(kind, text, onDelivered) {
+    const n = { id: noticeId2(kind, text), text };
+    if (onDelivered) this.onDelivered.set(n.id, onDelivered);
+    if (this.deliveredNotices()[n.id]) this.fireDelivered(n.id);
+    else if (!this.pendingNotices.has(n.id)) {
       this.pendingNotices.set(n.id, n);
       this.o.onSettled?.();
     }
     return n;
+  }
+  fireDelivered(id3) {
+    const fn = this.onDelivered.get(id3);
+    this.onDelivered.delete(id3);
+    try {
+      fn?.();
+    } catch (e) {
+      this.o.log?.(`notice ${id3}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   /** How many notices wait for a handoff (the hooks' state.json says so without their text). */
   noticeCount() {
@@ -49696,12 +50563,12 @@ var Ledger = class {
     let changed = false;
     for (const m of s.room.messages()) {
       onBus.add(m.id);
-      if (m.to || cursor.frontier.has(m.id) || cursor.routed.has(m.id) || messageForMe(s.me, m, context)) continue;
+      if (m.to || (m.seq ?? 0) <= cursor.frontier || cursor.routed.has(m.id) || messageForMe(s.me, m, context)) continue;
       cursor.routed.add(m.id);
       changed = true;
     }
-    for (const set of [cursor.frontier, cursor.routed]) for (const id3 of set) if (!onBus.has(id3)) {
-      set.delete(id3);
+    for (const id3 of cursor.routed) if (!onBus.has(id3)) {
+      cursor.routed.delete(id3);
       changed = true;
     }
     if (changed) this.persistCursor(s, cursor);
@@ -49711,20 +50578,21 @@ var Ledger = class {
     let cursor = this.cursors.get(s);
     if (cursor?.participant === s.me.name) return cursor;
     const stored = this.readCursors()[s.roomName];
-    cursor = stored?.participant === s.me.name ? { participant: s.me.name, frontier: new Set(stored.frontier), routed: new Set(stored.routed) } : { participant: s.me.name, frontier: seedFrontier(s), routed: /* @__PURE__ */ new Set() };
+    const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier);
+    cursor = kept ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) } : { participant: s.me.name, frontier: ownLaunchFrontier(s) ?? highestSeq(s.room), routed: /* @__PURE__ */ new Set() };
     this.cursors.set(s, cursor);
-    if (!stored || stored.participant !== s.me.name) this.persistCursor(s, cursor);
+    if (!kept) this.persistCursor(s, cursor);
     return cursor;
   }
   file(name2) {
     const dir = this.o.sessionDir?.();
-    return dir ? path31.join(dir, name2) : void 0;
+    return dir ? path33.join(dir, name2) : void 0;
   }
   readCursors() {
     const file = this.file("cursor.json");
     if (!file) return {};
     try {
-      return JSON.parse(fs32.readFileSync(file, "utf8"));
+      return JSON.parse(fs34.readFileSync(file, "utf8"));
     } catch {
       return {};
     }
@@ -49734,8 +50602,8 @@ var Ledger = class {
     if (!file) return;
     try {
       const all2 = this.readCursors();
-      all2[s.roomName] = { participant: cursor.participant, frontier: [...cursor.frontier], routed: [...cursor.routed] };
-      fs32.mkdirSync(path31.dirname(file), { recursive: true, mode: 448 });
+      all2[s.roomName] = { participant: cursor.participant, frontier: cursor.frontier, routed: [...cursor.routed] };
+      fs34.mkdirSync(path33.dirname(file), { recursive: true, mode: 448 });
       writeAtomic(file, all2);
     } catch (e) {
       this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`);
@@ -49745,7 +50613,7 @@ var Ledger = class {
     if (!this.delivered) {
       const file = this.file("notices.json");
       try {
-        this.delivered = file ? JSON.parse(fs32.readFileSync(file, "utf8")) : {};
+        this.delivered = file ? JSON.parse(fs34.readFileSync(file, "utf8")) : {};
       } catch {
         this.delivered = {};
       }
@@ -49756,19 +50624,22 @@ var Ledger = class {
     const file = this.file("notices.json");
     if (!file) return;
     try {
-      fs32.mkdirSync(path31.dirname(file), { recursive: true, mode: 448 });
+      fs34.mkdirSync(path33.dirname(file), { recursive: true, mode: 448 });
       writeAtomic(file, this.deliveredNotices());
     } catch (e) {
       this.o.log?.(`could not write ${file}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 };
-function seedFrontier(s) {
-  const bus = s.room.messages();
-  const worker = s.room.workerOf(s.me.name);
-  const spawnedAfter = worker?.status === "running" ? worker.spawnedAfter : void 0;
-  const at = spawnedAfter === void 0 ? bus.length - 1 : spawnedAfter === "" ? -1 : bus.findIndex((m) => m.id === spawnedAfter);
-  return new Set(bus.slice(0, spawnedAfter && at < 0 ? bus.length : at + 1).filter((m) => !m.to).map((m) => m.id));
+function ownLaunchFrontier(s) {
+  const id3 = process.env.ROOM_WORKER_ID, run2 = Number(process.env.ROOM_WORKER_RUN);
+  if (!id3 || !Number.isSafeInteger(run2)) return void 0;
+  try {
+    const record2 = registrySnapshotForDir(s.dir).read(id3);
+    return record2?.name === s.me.name ? record2.runs.find((r) => r.n === run2)?.busFrontier : void 0;
+  } catch {
+    return void 0;
+  }
 }
 
 // packages/room-mcp/src/relevance.ts
@@ -49782,12 +50653,18 @@ function createRelevance(now = Date.now) {
     if (branchNote) return !s.daemon?.branch || s.daemon.branch === branchNote[1];
     const sha = m.type === "base" ? m.base : m.type === "pushed" ? m.toSha : void 0;
     if (!sha) return true;
-    const key2 = `${s.dir}\0${sha}`;
+    let head;
+    try {
+      head = execFileSync9("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
+    } catch {
+      return true;
+    }
+    const key2 = `${s.dir}\0${head}\0${sha}`;
     const known = integrated.get(key2);
     if (known === true) return false;
     if (known !== void 0 && now() - known < RECHECK_MS2) return true;
     try {
-      execFileSync9("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
+      execFileSync9("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
       integrated.set(key2, true);
       return false;
     } catch {
@@ -49805,7 +50682,6 @@ function createHandlerState(ctx) {
   const doJoin = ctx.join ?? joinSession;
   const doLeave = ctx.leave ?? leaveSession;
   const upgraded = /* @__PURE__ */ new Set();
-  const conflictPairs = /* @__PURE__ */ new Set();
   let roomBridge = null;
   let primaryHooks = null;
   const doClose = ctx.close ?? (async (s) => {
@@ -49814,25 +50690,22 @@ function createHandlerState(ctx) {
   });
   const attach2 = (s, role, lead) => {
     ledger2.bind(s);
-    const hooks = new HooksBridge(s, {
-      forMe: (m) => inboxServices.forMe(s, m),
+    wakes.attach(s);
+    const hooks = role === "primary" ? new HooksBridge(s, {
       owedCount: () => ledger2.candidates(s).length,
       noticeCount: () => ledger2.noticeCount(),
       fenced: () => ledger2.fenced(s),
-      session: () => ctx.binding?.bound(),
       sessionDir: () => ctx.binding?.dir(),
       paused: () => s.hub.paused(),
       company: () => company(s),
-      log: log2,
-      queue: ctx.queue,
-      ...role === "workers" ? { writeState: false } : {}
-    });
-    hooks.start();
-    if (role === "primary") primaryHooks = hooks;
+      log: log2
+    }) : null;
+    hooks?.start();
+    if (hooks) primaryHooks = hooks;
     let watcher = null;
     let bridge = null;
     if (role === "primary") {
-      watcher = claims.startConflictWatcher(s);
+      watcher = claims.startConflictSet(s);
       prs.startPrSync(s);
     } else if (lead) {
       bridge = workers.startWorkersBridge(lead, s);
@@ -49840,26 +50713,24 @@ function createHandlerState(ctx) {
     }
     return {
       stop() {
-        hooks.stop();
+        wakes.detach(s);
+        hooks?.stop();
         watcher?.stop();
-        if (primaryHooks === hooks) primaryHooks = null;
+        if (hooks && primaryHooks === hooks) primaryHooks = null;
         if (role === "primary") prs.stopPrSync();
         if (bridge) {
           bridge.stop();
           if (roomBridge === bridge) roomBridge = null;
         }
       },
-      flush: () => watcher?.flush() ?? Promise.resolve()
+      flush: () => watcher?.flush() ?? Promise.resolve(),
+      project: () => bridge?.sync() ?? Promise.resolve()
     };
   };
-  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), observeClaims: (s) => claims.observeClaims(s), attach: attach2, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses });
+  const rooms = new Rooms({ primary: () => ctx.getSession(), setPrimary: (s) => ctx.setSession(s), attach: attach2, log: log2, probe: ctx.probe, listCwdProcesses: ctx.listCwdProcesses });
   const S = () => {
     const s = ctx.getSession();
     if (!s) throw new NotJoined();
-    for (const roomSession of /* @__PURE__ */ new Set([s, ...rooms.all()])) {
-      const present = new Set(Array.from(roomSession.awareness?.getStates().values() ?? []).flatMap((p) => p.user?.name ? [p.user.name] : []));
-      repairRetired(roomSession, present);
-    }
     return s;
   };
   const isMe = (s, p) => p.name === s.me.name && p.kind === s.me.kind;
@@ -49867,64 +50738,69 @@ function createHandlerState(ctx) {
   const others = (s) => {
     const names = /* @__PURE__ */ new Set();
     for (const k of s.room.scopes.keys()) names.add(k);
-    for (const k of s.room.overlays.keys()) names.add(k);
+    for (const k of s.room.manifestHead.keys()) names.add(k);
     for (const p of presences(s)) names.add(p.user.name);
     names.delete(s.me.name);
     const retired = new Set(s.room.retiredWorkers().map((w) => w.name));
-    return Array.from(names).filter((n) => !isPrName(n) && (!retired.has(n) || s.room.workerOf(n))).sort();
+    return Array.from(names).filter((n) => !isPrName(n) && (!retired.has(n) || s.room.workerViewOf(n))).sort();
   };
   const presences = (s) => Array.from(s.awareness.getStates().values()).filter((x) => !!x && typeof x === "object" && !!x.user);
-  const shareOf = (s, person) => {
-    if (person === s.me.name) return s.daemon.share ?? "full";
-    const p = presences(s).find((x) => x.user.name === person && isAgentic(x.user.kind)) ?? presences(s).find((x) => x.user.name === person);
-    return p?.share ?? "full";
-  };
-  const withheld = (s, person, p) => {
-    const level = shareOf(s, person);
-    if (level === "intent") return `${person} shares intent only; ask them or wait for their push`;
-    if (level === "declared" && p !== void 0 && !scopeCovers({ paths: s.room.scope(person)?.paths ?? [] }, p)) return `${p}: not shared (${person} shares declared paths only; ${p} is outside their scope)`;
-    return void 0;
-  };
+  const shareOf = (s, person) => s.room.manifestHead.get(person)?.level ?? "intent";
   const setPresence = (s, patch) => {
     const cur = s.awareness.getLocalState() ?? {};
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() });
   };
   const base = (s) => s.room.meta.base ?? "HEAD";
-  const baseFor = (s, person) => {
-    const worker = diskWorker(s, person);
-    if (worker) return worker.base ?? base(s);
-    const record2 = s.room.workerOf(person);
-    if (workerBaseline(record2)?.carriedCommit && (record2.lead === s.me.name || s.room.workerOf(s.me.name)?.lead === record2.lead)) return record2.base;
-    return s.room.baseOf(person) ?? base(s);
-  };
-  const baseText = async (s, path37, person = s.me.name) => gitShow(diskWorker(s, person)?.dir ?? s.dir, baseFor(s, person), path37);
-  const liveText = async (s, path37, person) => {
-    const worker = diskWorker(s, person);
-    if (worker) return workerText(worker.dir, path37);
-    if (s.room.deleted.get(person)?.has(path37)) return null;
-    const ov = s.room.text(path37, person);
-    if (ov !== void 0) return ov;
-    try {
-      return await baseText(s, path37, person);
-    } catch (e) {
-      const sha = baseFor(s, person), worker2 = s.room.workerOf(person), baseline = workerBaseline(worker2);
-      throw new NeedFetch(person, sha, e instanceof Error ? e.message : String(e), baseline?.carriedCommit && baseline.sha === sha ? worker2.lead : void 0);
+  const baseFor = (s, person) => s.room.manifestHead.get(person)?.base ?? s.room.baseOf(person) ?? base(s);
+  const baseText = async (s, path39, person = s.me.name) => gitShow(s.dir, baseFor(s, person), path39);
+  const readVersion = async (s, path39, person) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const view = participantsView(s.room, s.awareness, now());
+      const snap = snapshot(s.room, person, view);
+      const result2 = await versionOf(snap, path39, {
+        gitAt: (sha, relpath) => gitShow(s.dir, sha, relpath),
+        known: (hash2) => git(s.dir, ["cat-file", "blob", hash2]).catch(() => void 0)
+      });
+      if (!snap || snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, now()))) return result2;
     }
+    return { kind: "unknown", why: "updating", detail: `${person}'s changes moved during the read; re-run` };
+  };
+  const readText = async (s, path39, person) => {
+    if (person === s.me.name) return workerText(s.dir, path39);
+    const worker = await trustedWorker(s, person);
+    if (worker) return workerText(worker.dir, path39);
+    const version2 = await readVersion(s, path39, person);
+    if (version2.kind === "text") return version2.text;
+    if (version2.kind === "deleted") return null;
+    if (version2.kind === "base") return version2.text;
+    throw new Error(`${path39}: ${person}'s version is ${version2.kind}${"detail" in version2 ? ` (${version2.detail})` : ""}`);
   };
   const lines = (t) => t.endsWith("\n") ? t.split("\n").length - 1 : t.split("\n").length;
   const areas = createAreas({ ctx, log: log2, base, presences, others, shareOf, now, isMe });
-  const claims = createClaims({ conflictPairs, mine, log: log2, ctx, liveText, baseFor });
+  const claims = createClaims({ log: log2, ctx });
   const scheduleInboxWrite = () => primaryHooks?.scheduleWrite();
   const ledger2 = new Ledger({
     sessionId: () => ctx.binding?.id() ?? syntheticSessionId({ pid: process.pid, startTime: "", executable: "" }),
     sessionDir: () => ctx.binding?.dir(),
     route: (s) => ({ claims: mine(s), inMyAreas: (m) => areas.msgInMyAreas(s, m) }),
     relevant: createRelevance(),
-    onSettled: scheduleInboxWrite,
+    onSettled: () => {
+      scheduleInboxWrite();
+      wakes.reconcile();
+    },
     log: log2,
     hookLeaseMs: ctx.hookLeaseMs
   });
-  const inboxServices = createInbox({ ledger: ledger2, rooms, log: log2, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded });
+  const wakes = new WakeReconciler({
+    ledger: ledger2,
+    bound: () => ctx.binding?.bound(),
+    sessionDir: () => ctx.binding?.dir(),
+    log: log2,
+    send: ctx.wake ?? (async () => void 0),
+    // without a host sender (tests), wakes are off
+    ownWorkers: (s) => new Set(workers.myWorkers(s).map((w) => w.name))
+  });
+  const inboxServices = createInbox({ ledger: ledger2, rooms, log: log2, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion });
   const prs = createPrs({ ctx, presences, log: log2, now });
   const share = createShare();
   const join5 = createJoin({
@@ -49962,23 +50838,23 @@ function createHandlerState(ctx) {
     others,
     presences,
     shareOf,
-    withheld,
     setPresence,
     base,
     baseFor,
     baseText,
-    liveText,
+    readVersion,
+    readText,
     lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,
     upgraded,
-    conflictPairs,
     attachHooks: (s) => rooms.add(s, "primary"),
     clearStale: (s) => {
       join5.evictStale(s);
       return state.cleanupMine(s, "stale from an earlier session");
     },
     async shutdown() {
+      wakes.stop();
       const s = ctx.getSession();
       if (!s) return;
       const running = (await Promise.all(state.runningWorkers(s).map(async (r) => ({ ...r, action: decideShutdown(await workerRealState(r.s.dir, r.w, { process: true, hasHandle: rooms.hasHandle?.(r.s, r.w), probe: ctx.probe })) })))).filter((r) => r.action === "stop");
@@ -50031,15 +50907,28 @@ function createHandlerState(ctx) {
 }
 
 // packages/room-mcp/src/tools/collect.ts
-import fs35 from "node:fs";
-import path34 from "node:path";
+import fs37 from "node:fs";
+import path36 from "node:path";
 
 // packages/room-mcp/src/tools/combined-tree.ts
-import fs33 from "node:fs";
-import path32 from "node:path";
+import fs35 from "node:fs";
+import path34 from "node:path";
 async function buildCombinedTree(state, caller, participants, options = {}) {
-  const { rooms, liveText, baseFor, shareOf, withheld } = state;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result2 = await buildCombinedTreeOnce(state, caller, participants, options);
+    if (result2.current) return result2;
+  }
+  throw new Error("participants' changes moved during the preview; re-run");
+}
+async function buildCombinedTreeOnce(state, caller, participants, options = {}) {
+  const { rooms, baseFor } = state;
   const people = participants.map((p) => p.person);
+  const snapshots = /* @__PURE__ */ new Map();
+  if (!options.diskOnly) for (const { person, session } of participants) snapshots.set(person, {
+    session,
+    snap: snapshot(session.room, person, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : [])
+  });
+  const gaps = [];
   const previewWorkers = /* @__PURE__ */ new WeakMap();
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s);
@@ -50048,12 +50937,35 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
       previewWorkers.set(s, byPerson);
     }
     if (byPerson.has(person)) continue;
-    const w = s.local || options.diskWorkers?.has(person) ? s.room.workerOf(person) : void 0;
-    const candidate = w?.lead === s.me.name ? w : diskWorker(s, person);
+    const candidate = s.local || options.diskWorkers?.has(person) ? await trustedWorker(s, person) : void 0;
     const worker = candidate && decidePreview(await workerRealState(s.dir, candidate), true) === "disk" ? candidate : void 0;
     byPerson.set(person, worker);
   }
   const previewWorker = (s, person) => previewWorkers.get(s)?.get(person);
+  const coverageLines = [];
+  for (const [person, { session, snap }] of snapshots) {
+    if (previewWorker(session, person)) {
+      coverageLines.push(`${person}: trusted local worktree`);
+      continue;
+    }
+    if (!snap) {
+      gaps.push({ person, why: "no manifest record" });
+      coverageLines.push(`${person}: no manifest record`);
+      continue;
+    }
+    const age = Math.max(0, Math.floor(((state.now?.() ?? Date.now()) - snap.head.scannedAt) / 1e3));
+    coverageLines.push(`${person} (${snap.head.level}, scanned ${age}s ago, rev ${snap.head.rev}):`);
+    const shared = [...snap.entries].filter(([, entry]) => entry.state === "shared").map(([path39]) => path39);
+    const held = [...snap.entries].filter(([, entry]) => entry.state === "held").map(([path39, entry]) => `${path39} (${entry.held ?? "not shared"})`);
+    coverageLines.push(`  shared: ${shared.length ? shared.join(", ") : "none"}`);
+    coverageLines.push(`  changed, text not shared: ${held.length ? held.join(", ") : "none"}`);
+    if (snap.head.excluded.length) coverageLines.push(`  ${snap.head.excluded.length} changed path(s) excluded by ${person}'s rules (names not shared)`);
+    if (snap.head.coverage.kind === "none") coverageLines.push(`  coverage: ${snap.head.coverage.reason}`);
+    if (!snap.head.complete) coverageLines.push("  updating after a commit; re-run");
+    if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: "manifest updating or holder changed" });
+    if (snap.head.coverage.kind === "none") gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` });
+    if (snap.head.excluded.length) gaps.push({ person, why: `${snap.head.excluded.length} changed path(s) excluded; names not shared` });
+  }
   const diskWorkers = new Map(participants.flatMap(({ session, person }) => {
     const worker = previewWorker(session, person);
     return worker ? [[person, worker]] : [];
@@ -50064,29 +50976,47 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (worker) previewDirs.add(worker.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
-    if (fs33.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
-    return [path32.resolve(dir), fs33.realpathSync(dir)];
+    if (fs35.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path34.resolve(dir), fs35.realpathSync(dir)];
   }));
   const rootOf = (dir) => {
-    const root = roots.get(path32.resolve(dir));
+    const canonical = fs35.realpathSync(dir);
+    const root = roots.get(path34.resolve(dir)) ?? [...roots.values()].find((value2) => value2 === canonical);
     if (!root) throw new Error("uncaptured preview root: " + dir);
     return root;
   };
   for (const dir of previewDirs) rootOf(dir);
+  const remoteVersions = /* @__PURE__ */ new Map();
+  const remoteVersion = async (s, person, p) => {
+    let versions = remoteVersions.get(person);
+    if (!versions) {
+      versions = /* @__PURE__ */ new Map();
+      remoteVersions.set(person, versions);
+    }
+    const cached2 = versions.get(p);
+    if (cached2) return cached2;
+    const version2 = await versionOf(snapshots.get(person)?.snap, p, {
+      gitAt: (sha, relpath) => checkoutText(caller.dir, `${sha}:${relpath}`, relpath),
+      known: (hash2) => git(caller.dir, ["cat-file", "blob", hash2]).catch(() => void 0)
+    });
+    versions.set(p, version2);
+    return version2;
+  };
   const previewText = async (s, p, person) => {
     const w = previewWorker(s, person);
     const dir = w?.dir ?? (person === caller.me.name && s === caller ? caller.dir : void 0);
-    if (!dir || !options.diskOnly && !w && (s.room.text(p, person) !== void 0 || s.room.deleted.get(person)?.has(p))) {
-      const live = await liveText(s, p, person);
-      return options.encoding === "latin1" && typeof live === "string" ? Buffer.from(live, "utf8").toString("latin1") : live;
+    if (!dir) {
+      const version2 = await remoteVersion(s, person, p);
+      const text = version2.kind === "text" ? version2.text : version2.kind === "base" ? version2.text ?? null : version2.kind === "deleted" ? null : void 0;
+      return options.encoding === "latin1" && typeof text === "string" ? Buffer.from(text, "utf8").toString("latin1") : text;
     }
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: "allow" })) throw new Error("unsafe preview path: " + p);
     const root = rootOf(dir);
     try {
-      const result2 = containedRepoPath(root, path32.join(root, p), { leaf: "read-contained-link" });
+      const result2 = containedRepoPath(root, path34.join(root, p), { leaf: "read-contained-link" });
       if (!result2.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result2.path;
-      return fs33.readFileSync(file, options.encoding ?? "utf8");
+      return fs35.readFileSync(file, options.encoding ?? "utf8");
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -50107,10 +51037,10 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     if (isGitTimeout(error2)) throw error2;
     return false;
   });
-  const callerWorker = caller.room.workerOf(caller.me.name);
+  const callerCarried = carriedFrom(caller.dir, caller.me.name), callerWorker = callerCarried?.baseline;
   const callerBaseline = await pairBaseline(callerWorker, void 0, ancestor, descends);
   const pairs = /* @__PURE__ */ new Map();
-  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, session.room.workerOf(person), ancestor, descends));
+  for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, carriedFrom(session.dir, person)?.baseline, ancestor, descends));
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]));
   const pathSet = /* @__PURE__ */ new Set();
   const theirPaths = /* @__PURE__ */ new Set();
@@ -50126,7 +51056,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     const visibleIgnored = ignored.filter((p) => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p));
     if (visibleIgnored.length) ignoredNotes.push("NOT previewed (gitignored, " + item.person + "): " + visibleIgnored.join(", "));
     if (!options.diskOnly) {
-      for (const p of item.session.room.changedPaths(item.person)) if (!ignored.some((i2) => p === i2 || i2.endsWith("/") && p.startsWith(i2))) add2(p);
+      for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) if (!ignored.some((i2) => p === i2 || i2.endsWith("/") && p.startsWith(i2))) add2(p);
     }
     if (dir) {
       for (const p of (await gitWholeTree(dir, ["diff", "--name-only", "-z", ancestor, "--"])).split("\0").filter(Boolean)) add2(p);
@@ -50141,15 +51071,15 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     for (const { session, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
       const worker = previewWorker(session, person);
       const dir = worker?.dir ?? (session === caller && person === caller.me.name ? caller.dir : void 0);
-      let reason = workerOwnedPaths(session.room.workerOf(person)).includes(p) ? "linked input" : void 0;
+      let reason = workerOwnedPaths(localWorkerBaseline(session.dir, person)).includes(p) ? "linked input" : void 0;
       if (!reason && dir) {
         const root = rootOf(dir);
         try {
-          if (!containedRepoPath(root, path32.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
+          if (!containedRepoPath(root, path34.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
           try {
-            if (fs33.lstatSync(path32.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+            if (fs35.lstatSync(path34.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
           } catch {
           }
         }
@@ -50166,13 +51096,23 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
     const dirs = [caller.dir, ...participants.map(({ session, person }) => previewWorker(session, person)?.dir).filter((dir) => !!dir)];
     if (dirs.some((dir) => {
       try {
-        return fs33.lstatSync(path32.join(dir, p)).isDirectory();
+        return fs35.lstatSync(path34.join(dir, p)).isDirectory();
       } catch {
         return false;
       }
     })) {
       pathSet.delete(p);
       ignoredNotes.push("NOT previewed (directory or nested repository): " + p);
+    }
+  }
+  if (!options.diskOnly) for (const p of [...pathSet]) {
+    for (const { person, session } of participants) {
+      if (previewWorker(session, person)) continue;
+      const version2 = await remoteVersion(session, person, p);
+      if (version2.kind === "text" || version2.kind === "base" || version2.kind === "deleted") continue;
+      const why = version2.kind === "held" ? version2.entry.held === "scope" ? `changed by ${person}, outside ${person}'s declared area` : `changed by ${person}, text not shared (${version2.why})` : version2.kind === "excluded" ? `changed by ${person}, excluded by their rules` : `${person}'s version unknown: ${version2.detail}`;
+      gaps.push({ person, path: p, why });
+      pathSet.delete(p);
     }
   }
   let callerOnly = 0;
@@ -50208,24 +51148,19 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
   const initial = new Map(merged);
   const out2 = [];
   const fallbacks = /* @__PURE__ */ new Set();
-  out2.push(...ignoredNotes);
+  out2.push(...coverageLines, ...ignoredNotes);
   let hardCount = 0;
   let conflictCount = 0;
   const resolvedText = /* @__PURE__ */ new Map();
   const conflictingPaths = /* @__PURE__ */ new Map();
   for (const [index, { person, session }] of participants.entries()) {
-    const declaredNote = shareOf(session, person) === "declared" ? `note: ${person} shares declared paths only; their changes outside their scope are not in this preview` : "";
     const clean2 = [], conflicts = [], onlyOne = [], sameChange = [], resolvable = [];
     const pair = pairs.get(person);
-    const leadBase = baseFor(session, person);
-    const leadUsesCarriedBase = !!pair && pair.worker === caller.me.name && person === callerWorker?.lead && await descends(leadBase, pair.sha);
     for (const p of paths) {
       const mine = merged.get(p);
       const b = await baseAt(pair, p);
       const theirsRaw = await previewText(session, p, person);
-      const unsharedLead = leadUsesCarriedBase && session.room.text(p, person) === void 0 && !session.room.deleted.get(person)?.has(p) && !!withheld(session, person, p);
-      if (unsharedLead) out2.push(`${person}'s current text of ${p} is not shared; assumed unchanged since your spawn`);
-      const mineT = mine ?? "", theirs = unsharedLead ? b : theirsRaw === void 0 ? leadUsesCarriedBase ? null : b : theirsRaw;
+      const mineT = mine ?? "", theirs = theirsRaw === void 0 ? b : theirsRaw;
       if (theirs === b) continue;
       if (mine === theirs) {
         const prior2 = owners.get(p) ?? [caller.me.name];
@@ -50305,7 +51240,6 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
 ${detail.join("\n")}`);
     }
     out2.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(" + ")}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ""}`);
-    if (declaredNote) out2.push(declaredNote);
     if (onlyOne.length) out2.push(`only ${person} changed ${onlyOne.length === 1 ? "this file" : "these files"} since its start${pair?.carriedCommit ? ", which already includes your carried edits" : ""}: ${onlyOne.join(", ")}`);
     out2.push(...sameChange);
     if (clean2.length) out2.push(`both changed, merge cleanly: ${clean2.join(", ")}`);
@@ -50315,7 +51249,8 @@ ${conflicts.join("\n")}`);
     if (resolvable.length && options.resolve !== true) out2.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`);
   }
   out2.unshift(`preview merge of your changes with ${people.map((p) => `${p}'s`).join(", ")} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? "fallback" : "git"}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join("; ")}` : ""}):`);
-  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers };
+  const isCurrent = () => [...snapshots.values()].every(({ session, snap }) => !snap || snapshotStillCurrent(session.room, snap, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []));
+  return { ancestor, deltaBases, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent };
 }
 function supersetSide(a, b) {
   const contains2 = (outer, inner) => {
@@ -50330,10 +51265,10 @@ function supersetSide(a, b) {
 }
 
 // packages/room-mcp/src/tools/files.ts
-import { execFile as execFile5, spawn as spawn3 } from "node:child_process";
-import fs34 from "node:fs";
+import { execFile as execFile6, spawn as spawn4 } from "node:child_process";
+import fs36 from "node:fs";
 import os7 from "node:os";
-import path33 from "node:path";
+import path35 from "node:path";
 import { stripVTControlCharacters } from "node:util";
 var defs8 = [
   {
@@ -50368,62 +51303,67 @@ function testCommandFor(dir) {
   const files2 = {};
   for (const file of ["package.json", "pyproject.toml", "uv.lock", "Makefile"]) {
     try {
-      files2[file] = fs34.readFileSync(path33.join(dir, file), "utf8");
+      files2[file] = fs36.readFileSync(path35.join(dir, file), "utf8");
     } catch {
       files2[file] = void 0;
     }
   }
   return suggestedTestCommand(files2);
 }
-function ownUnpublishedCheckout(s, person) {
-  const publisher = s.awareness.getLocalState()?.publishUnder;
-  return person === s.me.name && !!publisher && sameCheckoutSession(s, publisher);
-}
 function ownDiskText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe room path: " + rel);
-  const root = fs34.realpathSync(dir);
-  const candidate = path33.resolve(root, rel);
+  const root = fs36.realpathSync(dir);
+  const candidate = path35.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe room path: " + rel);
   try {
     const result2 = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
     if (!result2.ok) throw new Error("unsafe room symlink: " + rel);
     const real = result2.path;
-    if (!fs34.statSync(real).isFile()) throw new Error("not a file: " + rel);
-    return fs34.readFileSync(real, "utf8");
+    if (!fs36.statSync(real).isFile()) throw new Error("not a file: " + rel);
+    return fs36.readFileSync(real, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return null;
     throw e;
   }
 }
 function handlers8(state) {
-  const { S, rooms, others, presences, withheld, liveText, lines, baseFor, ledgerLines, baseText, shareOf, describeUsers } = state;
+  const { S, rooms, others, presences, readVersion, lines, baseFor, ledgerLines, baseText, describeUsers } = state;
+  const gapLine = (person, p, version2) => {
+    if (version2.kind === "held") {
+      const reason = version2.entry.held === "scope" ? "outside their declared area" : version2.entry.held === "binary" ? "binary file" : "worker text not in this room";
+      const size2 = version2.entry.size === void 0 ? "" : ` (${version2.entry.size} bytes)`;
+      return `${p} changed by ${person}${size2}; text not shared: ${reason}`;
+    }
+    if (version2.kind === "excluded") return `${person} changed ${p}; it is excluded by their ignore rules or size limits`;
+    return `${p}: ${person}'s version is unknown: ${version2.kind === "unknown" ? version2.detail : "unavailable"}`;
+  };
   const readDiff = async (a) => {
     const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
     const s = rooms.holding(person, S());
-    const worker = diskWorker(s, person);
-    const ownDisk = ownUnpublishedCheckout(s, person);
+    const worker = await trustedWorker(s, person);
+    const ownDisk = person === s.me.name;
     const label = (text) => worker ? `${WORKTREE_NOTE}
 ${text}` : text;
     const one = async (p) => {
-      const l = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person);
-      const b = await baseText(s, p, worker ? person : void 0) ?? "";
+      const version2 = ownDisk || worker ? void 0 : await readVersion(s, p, person);
+      if (version2 && !["text", "base", "deleted"].includes(version2.kind)) return gapLine(person, p, version2);
+      const l = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p) : version2?.kind === "text" ? version2.text : version2?.kind === "base" ? version2.text : null;
+      const b = await gitShow(worker?.dir ?? s.dir, baseFor(s, person), p) ?? "";
       const live = l === null ? "" : l ?? b;
       return live === b ? "" : createTwoFilesPatch(`a/${p}`, `b/${p}`, b, live, "base", person, { context: 3 });
     };
-    const held = withheld(s, person, typeof a.path === "string" && a.path ? a.path : void 0);
-    if (held) return held;
     if (typeof a.path === "string" && a.path) return label(await one(a.path) || `${a.path}: no difference between base and ${person}'s version`);
     const parts2 = [];
     const paths = worker || ownDisk ? new Set([
       ...(await gitWholeTree(worker?.dir ?? s.dir, ["diff", "--name-only", "-z", baseFor(s, person), "--"])).split("\0"),
       ...(await gitWholeTree(worker?.dir ?? s.dir, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0")
-    ].filter(Boolean)) : s.room.changedPaths(person);
+    ].filter(Boolean)) : manifestPaths(s.room, person);
     for (const p of paths) {
       const d = await one(p);
       if (d) parts2.push(d);
     }
-    const level = shareOf(s, person);
-    if (level === "declared") parts2.push(`(${person} shares declared paths only: changes outside their scope are not shared)`);
+    const head = s.room.manifestHead.get(person);
+    if (head) parts2.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === "none" ? ` (${head.coverage.reason})` : ""}; ${head.excluded.length} changed path(s) excluded (names not shared)`);
     return label(parts2.length ? parts2.join("\n") : `${person} has no uncommitted changes`);
   };
   const handlers10 = {
@@ -50433,19 +51373,20 @@ ${text}` : text;
       const p = a.path;
       const person = typeof a.person === "string" && a.person ? a.person : S().me.name;
       const s = rooms.holding(person, S());
-      const held = withheld(s, person, p);
-      if (held) return held;
-      const note = diskWorker(s, person) ? ` ${WORKTREE_NOTE}` : "";
-      const ownDisk = ownUnpublishedCheckout(s, person);
-      const t = ownDisk ? ownDiskText(s.dir, p) : await liveText(s, p, person);
+      const worker = await trustedWorker(s, person);
+      const note = worker ? ` ${WORKTREE_NOTE}` : "";
+      const ownDisk = person === s.me.name;
+      const version2 = ownDisk || worker ? void 0 : await readVersion(s, p, person);
+      if (version2 && !["text", "base", "deleted"].includes(version2.kind)) return gapLine(person, p, version2);
+      const t = ownDisk || worker ? ownDiskText(worker?.dir ?? s.dir, p) : version2?.kind === "text" ? version2.text : version2?.kind === "base" ? version2.text : null;
       if (t === null) {
         if (ownDisk && await baseText(s, p, person) === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
         return `${p}: deleted by ${person} (uncommitted)${note}`;
       }
       if (t === void 0) return `error: ${p} exists neither at base nor in ${person}'s changes${note}`;
-      const edited = ownDisk ? t !== await baseText(s, p, person) : s.room.text(p, person) !== void 0;
-      const out2 = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ", uncommitted edits" : diskWorker(s, person) ? ", worktree file" : ", unchanged"} on their HEAD ${baseFor(s, person).slice(0, 10)})${note}`];
-      const who2 = s.room.whoChanged(p).filter((x) => x !== person && !sameCheckoutSession(s, x));
+      const edited = ownDisk ? t !== await baseText(s, p, person) : !!worker || version2?.kind === "text";
+      const out2 = [`${p} as ${person} sees it (${lines(t)} lines${edited ? ", uncommitted edits" : ", unchanged"} on their base ${baseFor(s, person).slice(0, 10)})${note}`];
+      const who2 = manifestChangers(s.room, p).filter((x) => x !== person && !sameCheckoutSession(s, x));
       if (who2.length) out2.push(`! also changed (uncommitted) by: ${who2.join(", ")} \u2014 room_read with person= to see theirs`);
       for (const c of s.room.claimsFor(p)) out2.push(`! claim ${c.id}: ${describeClaim(c)}`);
       out2.push(withLineNumbers(t));
@@ -50482,37 +51423,37 @@ ${text}` : text;
       if (a.includeOffline !== void 0 && typeof a.includeOffline !== "boolean") return "error: includeOffline must be a boolean";
       const explicit = Array.isArray(a.people) || !!alias;
       const allSessions = rooms.all();
-      const fullName = (name2) => allSessions.flatMap((s) => [...s.room.workers.values()]).find((w) => w.tag === name2 && w.lead === caller.me.name)?.name ?? name2;
+      const fullName = (name2) => allSessions.flatMap((s) => localWorkers(s.dir)).find((w) => w.tag === name2 && w.lead === caller.me.name)?.name ?? name2;
       const presentSession = (person) => allSessions.find((s) => presences(s).some((p) => p.user.name === person));
       const present = Array.from(new Set(allSessions.flatMap((s) => presences(s).map((p) => p.user.name)))).filter((p) => p !== caller.me.name);
       const available = Array.from(new Set(allSessions.flatMap((s) => others(s)))).filter((p) => p !== caller.me.name);
       const people = Array.from(new Set(explicit ? Array.isArray(a.people) ? a.people.map((p) => fullName(p.trim())) : [fullName(alias)] : (a.includeOffline === true ? available : present).sort())).filter((p) => p !== caller.me.name);
-      const offlineWithOverlays = available.filter((person) => !present.includes(person) && rooms.holding(person, caller).room.changedPaths(person).length > 0);
-      const skipped = !explicit && a.includeOffline !== true ? offlineWithOverlays : [];
-      const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with overlays: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
+      const offlineWithFacts = available.filter((person) => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0);
+      const skipped = !explicit && a.includeOffline !== true ? offlineWithFacts : [];
+      const skippedNote = skipped.length ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? "" : "s"} with manifest facts: ${skipped.join(", ")}; include with people: [${skipped.map((p) => JSON.stringify(p)).join(", ")}] or includeOffline: true` : "";
       if (!people.length) return ["no present participants to merge", skippedNote].filter(Boolean).join("\n");
       const participants = people.map((person) => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }));
       const missingNotes = [];
       for (const { person, session } of participants) {
-        const held = withheld(session, person);
-        const ownLocalWorker = session.local && session.room.workerOf(person);
+        const ownLocalWorker = session.local && localWorkers(session.dir, (record2) => record2.name === person)[0];
         const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker);
         const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name);
         const missing2 = !!ownLocalWorker && facts?.worktree === "vanished" && ownLocalWorker.lead === caller.me.name;
         if (missing2) missingNotes.push(`${person}'s worktree no longer exists; previewing its shared overlay instead`);
-        if (held && !(held.startsWith(`${person} shares intent only;`) && preview === "disk")) {
-          return missing2 ? `${person}'s worktree no longer exists; ${held}` : held;
-        }
       }
       const run2 = typeof a.run === "string" && a.run.trim() ? a.run.trim() : "";
       const noTestsNote = run2 ? "" : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`;
       try {
         const result2 = await buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...run2 ? { encoding: "latin1" } : { skipCallerOnly: true } });
-        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2 } = result2;
-        if (!paths.length && !result2.callerOnly && result2.ignoredNotes.length) return [...missingNotes, "no mergeable changes", ...result2.ignoredNotes].join("\n");
-        if (!paths.length && !result2.callerOnly) return [...missingNotes, `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}`, skippedNote].filter(Boolean).join("\n");
+        const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2, gaps, complete } = result2;
+        const gapLines = gaps.map((gap) => `${gap.person}${gap.path ? ` ${gap.path}` : ""}: ${gap.why}`);
+        if (!paths.length && !result2.callerOnly && !run2) {
+          caller.lastPreview = { clean: hardCount === 0, complete, testsPassed: false };
+          return [...missingNotes, ...out2, complete ? `none of you (${[caller.me.name, ...people].join(", ")}) has changes relative to ${ancestor.slice(0, 10)}` : `PARTIAL preview: no mergeable shared changes; not in the room: ${gapLines.join("; ")}`, skippedNote].filter(Boolean).join("\n");
+        }
         out2.unshift(...missingNotes);
         if (skippedNote) out2.push(skippedNote);
+        if (!complete) out2.push(`PARTIAL preview: ${gapLines.join("; ")}; the combined code was NOT fully checked`);
         for (const [p, text] of resolvedText) out2.push(`--- resolved ${p} (write this to your clone) ---
 ${text}--- end ${p} ---`);
         out2.push(`final combined tree: ${merged.size} path(s) applied${result2.callerOnly ? ` (plus ${result2.callerOnly} only you changed)` : ""} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(", ")}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ""}`);
@@ -50524,7 +51465,7 @@ ${text}--- end ${p} ---`);
             const modeParticipants = (await Promise.all(participants.map(async ({ person }) => {
               const w = result2.diskWorkers.get(person);
               if (!w) return void 0;
-              const dir = result2.roots.get(path33.resolve(w.dir));
+              const dir = result2.roots.get(path35.resolve(w.dir));
               if (!dir) throw new Error("uncaptured preview root: " + w.dir);
               return { dir, baseModes: addCarriedUntrackedModes(await gitTreeModes(caller.dir, result2.deltaBases.get(person)), w), ownedPaths: workerOwnedPaths(w), unchangedCarried: carriedUnchangedPaths(workerBaseline(w)), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) };
             }))).filter((x) => !!x);
@@ -50532,7 +51473,7 @@ ${text}--- end ${p} ---`);
             for (const p of merged.keys()) {
               let leadMode = 420;
               try {
-                const stat4 = fs34.lstatSync(path33.join(caller.dir, p));
+                const stat4 = fs36.lstatSync(path35.join(caller.dir, p));
                 if (stat4.isFile()) leadMode = stat4.mode & 511;
               } catch (e) {
                 if (e.code !== "ENOENT") throw e;
@@ -50542,15 +51483,20 @@ ${text}--- end ${p} ---`);
             const verdict = await runInMergedTree(caller, ancestor, merged, run2, modes);
             out2.push(verdict.text);
             ranOk = verdict.passed;
+            if (!complete) out2.push("Tests ran on a partial tree; this does not verify the combined work");
           }
         }
-        caller.lastPreview = { clean: hardCount === 0, ...run2 ? { testsPassed: hardCount === 0 && ranOk, testsCommand: run2 } : {} };
-        if (!hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
+        if (!result2.isCurrent()) {
+          caller.lastPreview = { clean: false, complete: false, testsPassed: false, ...run2 ? { testsCommand: run2 } : {} };
+          return `${people.join(", ")} moved during the preview; re-run. The combined code was NOT fully checked`;
+        }
+        caller.lastPreview = { clean: hardCount === 0, complete, ...run2 ? { testsPassed: complete && hardCount === 0 && ranOk, partialPassed: !complete && hardCount === 0 && ranOk, testsCommand: run2 } : {} };
+        if (complete && !hardCount && ranOk) await caller.post(caller.me, { type: "note", text: `merge preview with ${people.join(", ")}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : "no conflicts"} across ${paths.length} path(s)${run2 ? `; "${run2}" passed` : ""}`, priority: "fyi" });
         return out2.join("\n");
       } catch (error2) {
         const message2 = error2 instanceof Error ? error2.message : String(error2);
         if (!isGitTimeout(error2)) throw error2;
-        caller.lastPreview = { clean: false };
+        caller.lastPreview = { clean: false, complete: false };
         return `preview failed: ${message2.replace(/ failed: timed out/, " timed out")}; combined code was NOT checked`;
       }
     }
@@ -50558,52 +51504,52 @@ ${text}--- end ${p} ---`);
   return handlers10;
 }
 function linkSharedDirs(cloneDir, scratchDir) {
-  const venv = path33.join(cloneDir, ".venv");
-  if (fs34.existsSync(venv) && !fs34.existsSync(path33.join(scratchDir, ".venv"))) fs34.symlinkSync(venv, path33.join(scratchDir, ".venv"));
+  const venv = path35.join(cloneDir, ".venv");
+  if (fs36.existsSync(venv) && !fs36.existsSync(path35.join(scratchDir, ".venv"))) fs36.symlinkSync(venv, path35.join(scratchDir, ".venv"));
   const candidates = ["node_modules"];
   for (const top of ["packages", "apps", "libs"]) {
-    const d = path33.join(cloneDir, top);
-    if (!fs34.existsSync(d)) continue;
-    for (const e of fs34.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path33.join(top, e.name, "node_modules"));
+    const d = path35.join(cloneDir, top);
+    if (!fs36.existsSync(d)) continue;
+    for (const e of fs36.readdirSync(d, { withFileTypes: true })) if (e.isDirectory()) candidates.push(path35.join(top, e.name, "node_modules"));
   }
   for (const rel of candidates) {
-    const src = path33.join(cloneDir, rel), dst = path33.join(scratchDir, rel);
-    if (!fs34.existsSync(src) || fs34.existsSync(dst)) continue;
+    const src = path35.join(cloneDir, rel), dst = path35.join(scratchDir, rel);
+    if (!fs36.existsSync(src) || fs36.existsSync(dst)) continue;
     mirrorLinks(cloneDir, scratchDir, src, dst);
   }
 }
 function mirrorLinks(cloneDir, scratchDir, src, dst) {
-  ensureMergedDirectory(scratchDir, path33.relative(scratchDir, dst));
-  for (const e of fs34.readdirSync(src, { withFileTypes: true })) {
-    const from2 = path33.join(src, e.name), to2 = path33.join(dst, e.name);
+  ensureMergedDirectory(scratchDir, path35.relative(scratchDir, dst));
+  for (const e of fs36.readdirSync(src, { withFileTypes: true })) {
+    const from2 = path35.join(src, e.name), to2 = path35.join(dst, e.name);
     if (e.isSymbolicLink()) {
-      const target = path33.resolve(src, fs34.readlinkSync(from2));
-      const inside = path33.relative(cloneDir, target);
-      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path33.sep).includes("node_modules");
-      fs34.symlinkSync(isWorkspace ? path33.join(scratchDir, inside) : target, to2);
+      const target = path35.resolve(src, fs36.readlinkSync(from2));
+      const inside = path35.relative(cloneDir, target);
+      const isWorkspace = inside && !inside.startsWith("..") && !inside.split(path35.sep).includes("node_modules");
+      fs36.symlinkSync(isWorkspace ? path35.join(scratchDir, inside) : target, to2);
     } else if (e.isDirectory() && e.name.startsWith("@")) {
       mirrorLinks(cloneDir, scratchDir, from2, to2);
     } else {
-      fs34.symlinkSync(from2, to2);
+      fs36.symlinkSync(from2, to2);
     }
   }
 }
 function ensureMergedDirectory(root, rel) {
-  const canonicalRoot = path33.resolve(root);
+  const canonicalRoot = path35.resolve(root);
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   if (!rel) return canonicalRoot;
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
   let at = canonicalRoot;
   for (const part of rel.split("/")) {
-    at = path33.join(at, part);
+    at = path35.join(at, part);
     let stat4;
     try {
-      stat4 = fs34.lstatSync(at);
+      stat4 = fs36.lstatSync(at);
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
     }
     if (stat4?.isSymbolicLink() || stat4 && !stat4.isDirectory()) throw new Error("unsafe merged ancestor: " + rel);
-    if (!stat4) fs34.mkdirSync(at);
+    if (!stat4) fs36.mkdirSync(at);
     if (!containedRepoPath(canonicalRoot, at, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged path escapes scratch tree: " + rel);
   }
   return at;
@@ -50624,12 +51570,12 @@ function mergedFileMode(rel, initialMode, participants) {
   let mode2 = initialMode;
   for (const participant of participants) {
     if (participant.ownedPaths?.includes(rel) || participant.unchangedCarried?.has(rel)) continue;
-    const src = path33.join(participant.dir, rel);
+    const src = path35.join(participant.dir, rel);
     let stat4;
     try {
-      const root = path33.resolve(participant.dir);
-      if (!containedRepoPath(root, path33.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
-      stat4 = fs34.lstatSync(src);
+      const root = path35.resolve(participant.dir);
+      if (!containedRepoPath(root, path35.join(root, rel), { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("unsafe worker mode path: " + rel);
+      stat4 = fs36.lstatSync(src);
     } catch (e) {
       if (e.code === "ENOENT") continue;
       throw e;
@@ -50646,29 +51592,29 @@ function mergedFileMode(rel, initialMode, participants) {
 }
 function materializeMergedFile(root, rel, bytes, mode2 = 420) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe merged path: " + rel);
-  const canonicalRoot = path33.resolve(root);
+  const canonicalRoot = path35.resolve(root);
   if (!containedRepoPath(canonicalRoot, canonicalRoot, { leaf: "read-contained-link", allowRoot: true }).ok) throw new Error("merged root is no longer safe");
   const parts2 = rel.split("/");
   const parent = ensureMergedDirectory(canonicalRoot, parts2.slice(0, -1).join("/"));
-  const file = path33.join(parent, parts2.at(-1));
+  const file = path35.join(parent, parts2.at(-1));
   let stat4;
   try {
-    stat4 = fs34.lstatSync(file);
+    stat4 = fs36.lstatSync(file);
   } catch (e) {
     if (e.code !== "ENOENT") throw e;
   }
-  if (stat4?.isSymbolicLink()) fs34.unlinkSync(file);
+  if (stat4?.isSymbolicLink()) fs36.unlinkSync(file);
   else if (stat4 && !stat4.isFile()) throw new Error("merged path is not a regular file: " + rel);
   if (bytes === null) {
-    if (stat4 && !stat4.isSymbolicLink()) fs34.rmSync(file);
+    if (stat4 && !stat4.isSymbolicLink()) fs36.rmSync(file);
     return;
   }
-  const fd = fs34.openSync(file, fs34.constants.O_WRONLY | fs34.constants.O_CREAT | fs34.constants.O_TRUNC | (fs34.constants.O_NOFOLLOW ?? 0), mode2);
+  const fd = fs36.openSync(file, fs36.constants.O_WRONLY | fs36.constants.O_CREAT | fs36.constants.O_TRUNC | (fs36.constants.O_NOFOLLOW ?? 0), mode2);
   try {
-    fs34.writeFileSync(fd, bytes);
-    fs34.fchmodSync(fd, mode2);
+    fs36.writeFileSync(fd, bytes);
+    fs36.fchmodSync(fd, mode2);
   } finally {
-    fs34.closeSync(fd);
+    fs36.closeSync(fd);
   }
 }
 function testVerdict(output, code) {
@@ -50681,16 +51627,16 @@ function testVerdict(output, code) {
   return { passed, text: [...summaries.slice(-5), verdict].join("\n") };
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map()) {
-  const dir = fs34.realpathSync(fs34.mkdtempSync(path33.join(os7.tmpdir(), "room-merge-")));
+  const dir = fs36.realpathSync(fs36.mkdtempSync(path35.join(os7.tmpdir(), "room-merge-")));
   try {
     await materializeGitTree(s.dir, ancestor, dir);
     for (const [rel, text] of merged) materializeMergedFile(dir, rel, text === null ? null : Buffer.from(text, "latin1"), modes.get(rel) ?? 420);
     linkSharedDirs(s.dir, dir);
-    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs34.existsSync(candidate));
+    const bash = ["/bin/bash", "/usr/bin/bash"].find((candidate) => fs36.existsSync(candidate));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
     const result2 = await new Promise((resolve5) => {
-      execFile5(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+      execFile6(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
         const raw = err2 ? err2.code : 0;
         resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
       });
@@ -50704,7 +51650,7 @@ ${verdict.text}` };
     if (isGitTimeout(e)) throw e;
     return { passed: false, text: `could not run in merged tree: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
-    fs34.rmSync(dir, { recursive: true, force: true });
+    fs36.rmSync(dir, { recursive: true, force: true });
   }
 }
 var CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
@@ -50712,8 +51658,8 @@ async function materializeGitTree(cloneDir, ref, destination) {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
   await git(cloneDir, ["cat-file", "-e", `${ref}^{commit}`]);
   await new Promise((resolve5, reject) => {
-    const archive = spawn3("git", ["-C", cloneDir, "archive", "--format=tar", ref], { stdio: ["ignore", "pipe", "pipe"] });
-    const extract = spawn3("tar", ["-x", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
+    const archive = spawn4("git", ["-C", cloneDir, "archive", "--format=tar", ref], { stdio: ["ignore", "pipe", "pipe"] });
+    const extract = spawn4("tar", ["-x", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
     let archiveError = "", extractError = "", archiveCode, extractCode;
     let settled = false;
     const fail = (error2) => {
@@ -50791,7 +51737,7 @@ var defs9 = [{
   } }
 }];
 var split = (value2) => value2.split("\0").filter(Boolean);
-var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...s.room.workers.values()];
+var ownershipRecords = (s) => [...s.room.retiredWorkers(), ...localWorkers(s.dir)];
 async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors, probe, list) {
   if (!decideStop(await workerRealState(leadDir, w, { ownership: true, leadName, workers })).cwd) return [];
   try {
@@ -50804,15 +51750,15 @@ async function stopOwnedWorktreeProcesses(leadDir, w, leadName, workers, errors,
 var failureReason = (w) => w.exitCode !== void 0 && w.exitCode !== 0 ? `exit code ${w.exitCode}${w.summary ? `; ${w.summary.replace(/\s+/g, " ").slice(0, 180)}` : ""}` : w.stopReason ?? w.summary?.replace(/\s+/g, " ").slice(0, 180) ?? "worker reported failure";
 function safePath(root, rel) {
   if (!validRepoPath(rel, MATERIALIZED_PATH)) throw new Error("unsafe collection path: " + rel);
-  const result2 = containedRepoPath(root, path34.join(root, rel), { leaf: "reject-link", allowMissing: true });
+  const result2 = containedRepoPath(root, path36.join(root, rel), { leaf: "reject-link", allowMissing: true });
   if (!result2.ok) throw new Error(result2.reason === "link" ? "symlink collection path refused: " + rel : "unsafe collection path: " + rel);
   return result2.path;
 }
 function copyFiles(root, paths) {
   const files2 = /* @__PURE__ */ new Set();
   const visit = (rel) => {
-    const file = safePath(root, rel), stat4 = fs35.statSync(file);
-    if (stat4.isDirectory()) for (const name2 of fs35.readdirSync(file)) visit(rel + "/" + name2);
+    const file = safePath(root, rel), stat4 = fs37.statSync(file);
+    if (stat4.isDirectory()) for (const name2 of fs37.readdirSync(file)) visit(rel + "/" + name2);
     else if (stat4.isFile()) files2.add(rel);
     else throw new Error("not a regular file: " + rel);
   };
@@ -50822,22 +51768,22 @@ function copyFiles(root, paths) {
 async function assertNoOperation(dir) {
   for (const name2 of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"]) {
     const file = (await git(dir, ["rev-parse", "--git-path", name2])).trim();
-    if (fs35.existsSync(path34.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
+    if (fs37.existsSync(path36.resolve(dir, file))) throw new Error("finish the existing Git operation in " + dir + " before collecting");
   }
 }
 function handlers9(state) {
   const missingCapability = (s, w) => {
-    const records = registrySnapshotForDir(s.dir).list();
-    const record2 = records.find((candidate) => candidate.tag === w.tag);
+    const registry2 = registrySnapshotForDir(s.dir);
+    const record2 = registry2.reserved(w.tag);
     if (record2 && record2.lead.participant !== s.me.name) {
-      const parent = records.find((candidate) => candidate.name === record2.lead.participant);
+      const parent = registry2.reservedByTagOrName(record2.lead.participant);
       return `${w.tag} belongs to ${record2.lead.participant}; collect it through that lead (resume it if needed), or room_collect tag=${parent?.tag ?? "PARENT"} discard=true force=true to save recovery patches`;
     }
     return `${w.tag}: no local worker capability (worktree missing or unmanaged)`;
   };
   const holdingWorker = (tag, from2) => {
-    const records = registrySnapshotForDir(from2.dir).list().filter((record2) => record2.tag === tag);
-    return state.rooms.all().find((room) => records.some((record2) => record2.room === room.roomName)) ?? from2;
+    const record2 = registrySnapshotForDir(from2.dir).reserved(tag);
+    return state.rooms.all().find((room) => record2?.room === room.roomName) ?? from2;
   };
   const unverifiedLive = async (s, w) => {
     if (!pidPresent(w.pid, state.ctx?.probe)) return void 0;
@@ -50845,14 +51791,15 @@ function handlers9(state) {
     return facts.process === "ours" ? void 0 : `could not verify ${w.tag}'s process (pid ${w.pid}); left running, not stopped`;
   };
   const ownership = (s, w, discarding) => {
-    const known = [...s.room.workers.values(), ...s.room.retiredWorkers()];
+    const live = localWorkers(s.dir);
+    const known = [...live, ...s.room.retiredWorkers()];
     const visited = /* @__PURE__ */ new Set();
     let lead = w.lead;
     let liveLead;
     while (lead && !visited.has(lead)) {
       if (lead === s.me.name) return { owned: true, liveLead };
       visited.add(lead);
-      const active = [...s.room.workers.values()].find((parent) => parent.name === lead);
+      const active = live.find((parent) => parent.name === lead);
       if (active && !discarding.has(lead) && !liveLead && (state.workerAlive(s, active) || pidPresent(active.pid, state.ctx?.probe))) liveLead = lead;
       lead = known.find((parent) => parent.name === lead)?.lead ?? "";
     }
@@ -50861,7 +51808,7 @@ function handlers9(state) {
   const descendants = (s, w) => {
     const out2 = [];
     const visit = (parent) => {
-      for (const child of s.room.workers.values()) if (child.lead === parent.name) {
+      for (const child of localWorkers(s.dir)) if (child.lead === parent.name) {
         visit(child);
         out2.push(child);
       }
@@ -50892,19 +51839,13 @@ function handlers9(state) {
     if ((a.discard || a.mode === "copy") && !a.tag) return "error: tag required for copy or discard";
     if (a.paths !== void 0 && a.mode !== "copy") return "error: paths is only supported in copy mode";
     if (a.discard) {
-      const kept = rooms.all().flatMap((s2) => s2.room.retiredWorkers().filter((r) => r.tag === a.tag && r.keptWorktree).map((r) => ({ s: s2, r }))).find(({ s: s2, r }) => ownership(s2, {
-        ...r,
-        dir: r.keptWorktree,
-        branch: "room/" + r.tag,
-        status: "done",
-        exitCode: 0,
-        pid: 0
-      }, discarding).owned);
-      if (kept && !kept.s.room.workers.has(a.tag)) {
+      const kept = rooms.all().flatMap((s2) => s2.room.retiredWorkers().filter((r) => r.tag === a.tag && r.keptWorktree).map((r) => ({ s: s2, r }))).find(({ s: s2, r }) => ownership(s2, r, discarding).owned);
+      if (kept && !localWorkers(kept.s.dir).some((live) => live.tag === a.tag)) {
         const { s: s2, r } = kept;
-        const w2 = { ...r, dir: r.keptWorktree, branch: "room/" + r.tag, status: "done", exitCode: 0, pid: 0 };
         const active = registry2.list().find((record2) => record2.tag === r.tag && record2.keptWorktree === r.keptWorktree);
-        if (!active) return "error: kept worker has no local registry record";
+        const activeStatus = active && registry2.status(active.id);
+        if (!active || !activeStatus) return "error: kept worker has no local registry record";
+        const w2 = { ...realStateInput(active, activeStatus), dir: r.keptWorktree, branch: "room/" + r.tag, status: "done", exitCode: 0, pid: 0 };
         try {
           await registry2.beginOperation(active.id, "discard");
         } catch {
@@ -50929,20 +51870,14 @@ repeat with force=true to delete them`;
           if (!missing2 && !await cleanupWorker(s2.dir, w2, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s2.me.name, ownershipRecords(s2))) throw new Error("worker is not an owned Room worktree");
           await registry2.markDiscardStep(active.id, "cleanup");
           const archive = s2.room.doc.getArray("retiredWorkers");
-          const index = archive.toArray().findIndex((item) => item.name === r.name && item.startedAt === r.startedAt && item.lead === r.lead);
+          const index = archive.toArray().findIndex((item) => item.id === active.id);
           if (index >= 0) s2.room.doc.transact(() => {
             archive.delete(index);
             const { keptWorktree: _keptWorktree, ...cleared } = r;
             archive.insert(index, [{ ...cleared, summary: "discarded", disposition: "discarded" }]);
           });
           await registry2.markDiscardStep(active.id, "prune");
-          await registry2.update(active.id, (old) => ({
-            ...old,
-            phase: "retiring",
-            keptWorktree: void 0,
-            cleanup: { [old.room]: "pending" },
-            seq: old.seq + 1
-          }));
+          await retireWorker(rooms, s2, active.id, { ...r, summary: "discarded", disposition: "discarded", keptWorktree: void 0 }, { keptWorktree: void 0 });
           return "discarded " + r.tag + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
         } catch (e) {
           await registry2.interruptDiscard(active.id, e instanceof Error ? e.message : String(e)).catch(() => {
@@ -50953,7 +51888,7 @@ repeat with force=true to delete them`;
         }
       }
       const s = actingLead ?? holdingWorker(a.tag, lead);
-      const w = s.room.workers.get(a.tag);
+      const w = localWorkers(s.dir, (record2) => record2.tag === a.tag)[0];
       if (!w) return "error: no worker " + a.tag + " owned by you";
       const owner = ownership(s, w, discarding);
       if (!owner.owned) return "error: no worker " + a.tag + " owned by you";
@@ -50974,11 +51909,14 @@ repeat with force=true to delete them`;
         await registry2.beginDiscard(lock, a.force === true, children.map((child) => child.id).filter(Boolean));
         const childResults = [];
         for (const child of children) {
-          if (!s.room.workers.has(child.tag)) continue;
+          if (!localWorkers(s.dir).some((live) => live.id === child.id)) continue;
           const childLead = { ...s, dir: w.dir, me: { ...s.me, name: w.name } };
           const result2 = await roomCollect({ tag: child.tag, discard: true, force: true }, /* @__PURE__ */ new Set([...discarding, w.name]), childLead);
           childResults.push(result2);
-          if (!result2.startsWith("discarded ") && !result2.startsWith("stopped ")) return `error: could not dispose of nested worker ${child.tag}: ${result2}; retained ${w.dir}`;
+          if (!result2.startsWith("discarded ") && !result2.startsWith("stopped ")) {
+            await registry2.interruptDiscard(lock, `could not dispose of nested worker ${child.tag}: ${result2}`);
+            return `error: could not dispose of nested worker ${child.tag}: ${result2}; retained ${w.dir}`;
+          }
         }
         await registry2.markDiscardStep(lock, "children");
         const cleanupErrors = [];
@@ -50987,7 +51925,10 @@ repeat with force=true to delete them`;
         const terminated = await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
         if (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe)) {
           const how = await state.dismissWorker(s, w, "discarded by the lead");
-          if (s.room.workers.get(w.tag)?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+          if (localWorkers(s.dir, (record2) => record2.id === w.id)[0]?.status === "running" && (state.workerAlive(s, w) || pidPresent(w.pid, state.ctx?.probe))) {
+            await registry2.interruptDiscard(lock, `could not discard ${w.tag}: ${how}`);
+            return "could not discard " + w.tag + ": " + how + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "");
+          }
           if (how.includes("cwd process cleanup failed:")) cleanupErrors.push(how);
           const stopped = await stopWorkerWithEscalation({
             terminate: () => true,
@@ -51000,7 +51941,10 @@ repeat with force=true to delete them`;
         }
         await registry2.markDiscardStep(lock, "stop");
         const unsafeAfterDismissal = await unverifiedLive(s, w);
-        if (unsafeAfterDismissal) return unsafeAfterDismissal;
+        if (unsafeAfterDismissal) {
+          await registry2.interruptDiscard(lock, unsafeAfterDismissal);
+          return unsafeAfterDismissal;
+        }
         terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) });
         const missing2 = decideDiscard(afterStop) === "prune";
@@ -51009,7 +51953,7 @@ repeat with force=true to delete them`;
           try {
             missingDetail = await pruneMissingWorkerWorktree(s.dir, w);
           } catch (error2) {
-            const recordedPath = path34.basename(w.dir) === w.tag && path34.basename(path34.dirname(w.dir)) === "workers" && path34.basename(path34.dirname(path34.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
+            const recordedPath = path36.basename(w.dir) === w.tag && path36.basename(path36.dirname(w.dir)) === "workers" && path36.basename(path36.dirname(path36.dirname(w.dir))) === ".room" && w.branch === `room/${w.tag}`;
             if (!verifiedProcess || !recordedPath || !(error2 instanceof Error) || !error2.message.includes("is not an owned Room worktree")) throw error2;
           }
           cleanupWorkerLogs(s.dir, w);
@@ -51020,7 +51964,7 @@ repeat with force=true to delete them`;
           await registry2.interruptDiscard(lock, `ignored artifacts appeared: ${ignored.join(", ")}`);
           return [
             `error: discard refused; ignored artifacts not covered by a recovery patch: ${ignored.join(", ")}`,
-            ...ignored.map((p) => `kept ${p} at ${path34.join(w.dir, p)}`),
+            ...ignored.map((p) => `kept ${p} at ${path36.join(w.dir, p)}`),
             `retained worktree: ${w.dir}`,
             ...terminated.length ? ["stopped processes: " + terminated.join(", ")] : [],
             ...cleanupErrors,
@@ -51032,8 +51976,9 @@ repeat with force=true to delete them`;
         if (ownedWorktree && !await cleanupWorker(s.dir, w, true, true, terminated, { probe: state.ctx?.probe, list: state.ctx?.listCwdProcesses }, s.me.name, ownershipRecords(s))) throw new Error("worker is not an owned Room worktree");
         await registry2.markDiscardStep(lock, "cleanup");
         releaseClaimsOnDone(s, () => false, w.name, false);
+        await registry2.markDiscardStep(lock, "prune");
         const retiredAt = Date.now();
-        retireCollected(s, w, {
+        await retireWorker(rooms, s, lock, {
           name: w.name,
           tag: w.tag,
           lead: w.lead,
@@ -51049,8 +51994,6 @@ repeat with force=true to delete them`;
           outcome: "dismissed",
           disposition: "discarded"
         });
-        await registry2.markDiscardStep(lock, "prune");
-        await registry2.update(lock, (old) => ({ ...old, phase: "retiring", cleanup: { [old.room]: "pending" }, seq: old.seq + 1 }));
         return [...childResults, (decideDiscard(afterStop) === "retain-directory" ? `stopped ${w.tag}; kept ${w.dir} (an existing directory, not a Room worktree)` : "discarded " + w.tag) + (missingDetail ? "; its worktree was already gone; " + missingDetail : "") + (patch ? "; recovery patch: " + patch + " (kept for a week)" : "") + (terminated.length ? "; stopped processes: " + terminated.join(", ") : "") + (ignored.length ? "; deleted without a copy: " + ignored.join(", ") : "") + (cleanupErrors.length ? "; " + cleanupErrors.join("; ") : "")].join("\n");
       } catch (e) {
         await registry2.interruptDiscard(lock, e instanceof Error ? e.message : String(e)).catch(() => {
@@ -51061,7 +52004,7 @@ repeat with force=true to delete them`;
       }
     }
     const sessions = a.tag ? [holdingWorker(a.tag, lead)] : rooms.all();
-    const candidates = sessions.flatMap((s) => [...s.room.workers.values()].filter((w) => {
+    const candidates = sessions.flatMap((s) => localWorkers(s.dir, (record2) => record2.room === s.roomName).filter((w) => {
       if (a.tag && w.tag !== a.tag) return false;
       const owner = ownership(s, w, discarding);
       return owner.owned && (!owner.liveLead || !!a.tag);
@@ -51074,7 +52017,7 @@ repeat with force=true to delete them`;
     }
     const out2 = [];
     const selected = [];
-    const leadRoot = fs35.realpathSync(lead.dir);
+    const leadRoot = fs37.realpathSync(lead.dir);
     const workerRoots = /* @__PURE__ */ new Map();
     const workerLocks = [];
     const collectStarted = /* @__PURE__ */ new Set();
@@ -51119,7 +52062,7 @@ repeat with force=true to delete them`;
             out2.push(`${a.tag ? "nothing to collect" : "skipped " + w.tag}: worktree ${w.dir} is gone`);
             continue;
           }
-          const workerRoot = fs35.realpathSync(w.dir);
+          const workerRoot = fs37.realpathSync(w.dir);
           if (workerRoot === leadRoot) throw new Error("worker must have a separate worktree");
           await assertNoOperation(w.dir);
           if (await realGitCommonDir(lead.dir) !== await realGitCommonDir(w.dir)) throw new Error("worker is not a worktree of this repository");
@@ -51130,9 +52073,9 @@ repeat with force=true to delete them`;
           if (terminated.length) out2.push("stopped processes from " + w.tag + ": " + terminated.join(", "));
           out2.push(...cleanupErrors.map((error2) => `${w.tag}: ${error2}`));
           const now = state.now ?? Date.now;
-          const sleep2 = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
+          const sleep = state.ctx?.sleep ?? ((ms) => new Promise((resolve5) => setTimeout(resolve5, ms)));
           const deadline = now() + 15e3;
-          while (state.workerAlive(s, w) && now() < deadline) await sleep2(Math.min(250, deadline - now()));
+          while (state.workerAlive(s, w) && now() < deadline) await sleep(Math.min(250, deadline - now()));
           if (state.workerAlive(s, w)) {
             out2.push("skipped " + w.tag + ": process has not exited after 15 s");
             continue;
@@ -51142,7 +52085,7 @@ repeat with force=true to delete them`;
             out2.push(unsafeAfterWait);
             continue;
           }
-          const current = s.room.workers.get(w.tag);
+          const current = localWorkers(s.dir, (record2) => record2.id === w.id)[0];
           if (!current || current.id !== w.id || current.startedAt !== w.startedAt || current.status !== "done" && !(stopped && (current.status === "running" || current.status === "dismissed"))) {
             out2.push("skipped " + w.tag + ": changed while waiting");
             continue;
@@ -51172,17 +52115,17 @@ repeat with force=true to delete them`;
         const tracked = new Set(split(await gitWholeTree(lead.dir, ["ls-files", "-z"])));
         for (const p of files2) {
           const dst = safePath(leadRoot, p);
-          if (fs35.existsSync(dst) && !fs35.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
-          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs35.existsSync(dst))) {
-            if (!fs35.existsSync(dst) || !fs35.readFileSync(dst).equals(fs35.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
+          if (fs37.existsSync(dst) && !fs37.statSync(dst).isFile()) return "error: copy destination is not a regular file: " + p;
+          if (a.force !== true && (modified.has(p) || !tracked.has(p) && fs37.existsSync(dst))) {
+            if (!fs37.existsSync(dst) || !fs37.readFileSync(dst).equals(fs37.readFileSync(safePath(workerRoot, p)))) return "error: lead has modified " + p + "; pass force=true to overwrite";
           }
         }
         releasePaths(files2);
         for (const p of files2) {
           const dst = safePath(leadRoot, p);
-          fs35.mkdirSync(path34.dirname(dst), { recursive: true });
-          fs35.copyFileSync(safePath(workerRoot, p), dst);
-          fs35.chmodSync(dst, fs35.statSync(safePath(workerRoot, p)).mode & 511);
+          fs37.mkdirSync(path36.dirname(dst), { recursive: true });
+          fs37.copyFileSync(safePath(workerRoot, p), dst);
+          fs37.chmodSync(dst, fs37.statSync(safePath(workerRoot, p)).mode & 511);
           out2.push("copied " + p);
         }
         if (!files2.length) out2.push("nothing copied (empty directories)");
@@ -51200,7 +52143,7 @@ repeat with force=true to delete them`;
           diskWorkers: new Set(selected.map(({ w }) => w.name)),
           encoding: "latin1",
           skipCallerOnly: true,
-          roots: new Map([[path34.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path34.resolve(w.dir), workerRoots.get(w)])])
+          roots: new Map([[path36.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path36.resolve(w.dir), workerRoots.get(w)])])
         }
       );
       const unsupported = result2.ignoredNotes.filter((note) => !note.includes("gitignored") && !note.includes("linked input"));
@@ -51217,9 +52160,9 @@ repeat with force=true to delete them`;
       }
       for (const [p, text] of result2.merged) {
         const file = safePath(leadRoot, p);
-        const before = fs35.existsSync(file) ? fs35.readFileSync(file) : null;
+        const before = fs37.existsSync(file) ? fs37.readFileSync(file) : null;
         if ((before === null ? null : before.toString("latin1")) !== result2.initial.get(p)) throw new Error(p + " changed during collection; nothing written, retry");
-        const oldMode = before !== null ? fs35.statSync(file).mode & 511 : 420;
+        const oldMode = before !== null ? fs37.statSync(file).mode & 511 : 420;
         const mode2 = mergedFileMode(p, oldMode, selected.map(({ w }) => ({ dir: workerRoots.get(w), baseModes: baseModes.get(w.name), ownedPaths: workerOwnedPaths(w), unchangedCarried: unchangedCarried.get(w.name), carriedPaths: new Set(w.carriedUntracked?.map((entry) => entry.path) ?? []) })));
         const after = text === null ? null : Buffer.from(text, "latin1");
         if (before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode2 === oldMode || before === null && after === null) continue;
@@ -51243,19 +52186,17 @@ repeat with force=true to delete them`;
       }
       out2.push("Changes from " + selected.map((x) => x.w.tag).join(", ") + ": " + (changes.map((x) => x.p).join(", ") || "already present") + ". Nothing committed or staged.");
       for (const { s, w } of selected) {
-        let keptDir;
+        let archived;
         const finishOne = async (success = true) => {
-          if (w.id) {
-            await registry2.finishCollect(w.id, success, keptDir);
-            collectStarted.delete(w.id);
-          }
+          if (success && archived) await retireWorker(rooms, s, w.id, archived.entry, archived.keptWorktree ? { keptWorktree: archived.keptWorktree } : {});
+          else await registry2.abortCollect(w.id);
+          collectStarted.delete(w.id);
         };
         releaseClaimsOnDone(s, () => false, w.name, false);
         const retire = (summary, keptWorktree, keptReason) => {
-          if (keptWorktree) keptDir = keptWorktree;
           const retiredAt = Date.now();
           const files2 = result2.paths.filter((p) => result2.owners.get(p)?.includes(w.name));
-          retireCollected(s, w, {
+          archived = { keptWorktree, entry: {
             name: w.name,
             tag: w.tag,
             lead: w.lead,
@@ -51271,7 +52212,7 @@ repeat with force=true to delete them`;
             retiredAt,
             outcome: "dismissed",
             disposition: "collected"
-          });
+          } };
         };
         if (state.workerAlive(s, w)) {
           out2.push("kept " + w.tag + ": clean exit not confirmed");
@@ -51296,7 +52237,7 @@ repeat with force=true to delete them`;
           const ignored = await ignoredWorkerArtifacts(w);
           if (ignored.length) {
             out2.push("kept " + w.tag + ": uncopied ignored artifacts");
-            out2.push(...ignored.map((p) => `kept ${p} at ${path34.join(w.dir, p)}`));
+            out2.push(...ignored.map((p) => `kept ${p} at ${path36.join(w.dir, p)}`));
             out2.push(`retained worktree: ${w.dir}`);
             retire(`kept for ignored output at ${w.dir}`, w.dir, "uncopied ignored artifacts");
             await finishOne();
@@ -51319,7 +52260,7 @@ repeat with force=true to delete them`;
       }
       return out2.join("\n");
     } catch (e) {
-      for (const id3 of collectStarted) await registry2.finishCollect(id3, false).catch(() => {
+      for (const id3 of collectStarted) await registry2.abortCollect(id3).catch(() => {
       });
       return [...out2, "error: " + (e instanceof Error ? e.message : String(e))].join("\n");
     } finally {
@@ -51389,7 +52330,7 @@ function createTools(ctx) {
     try {
       const body2 = await h(name2 === "room_wait" ? { ...args3 ?? {}, [WAIT_SIGNAL]: signal, [REPLY_BATCH]: batch } : args3 ?? {});
       if (toolCallAborted() && name2 !== "room_send" && name2 !== "room_spawn") return "error: tool call cancelled";
-      if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.retireWorkers();
+      if (name2 === "room_preview_merge" || name2.startsWith("room_pr_")) await state.rooms.autoRetire();
       const s2 = ctx.getSession();
       if (s2 && s2 !== s) s2.refreshRuntime?.();
       if (s2 && autoJoin && (name2 === "room_join" || name2 === "room_create")) autoJoin.retarget(s2);
@@ -51407,6 +52348,7 @@ function createTools(ctx) {
       if (s2) delete s2.autoTagNote;
       return prefix + notices + (paused ? paused + "\n\n" : "") + (health2 ? health2 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
     } catch (e) {
+      ledger2.discard(batch);
       if (toolCallAborted()) return "error: tool call cancelled";
       if (e instanceof NotJoined) return notJoined();
       if (e instanceof NotLoggedIn) return `error: ${e.message}`;
@@ -51429,23 +52371,24 @@ function createTools(ctx) {
       startup = ledger2.notice("startup", text);
       withdrawStartup();
     },
-    hookSelect() {
+    hookSelect(budget = INBOX_BUDGET) {
       const batch = ledger2.open("hook");
       withdrawStartup();
       const s = ctx.getSession();
       const ws = state.rooms.workers();
-      const items = [];
-      if (s) for (const source of [s, ...ws && ws !== s ? [ws] : []]) {
-        for (const m of ledger2.select(source, batch)) items.push({ id: m.id, priority: m.priority, line: `${source === s ? "" : "[workers room] "}${formatMsg(m)}` });
-      }
-      return { batch, items, notices: ledger2.notices(batch).map((n) => n.text) };
+      const notices = ledger2.notices(batch).map((n) => n.text);
+      const line = ({ s: source, m }) => `${source === s ? "" : "[workers room] "}${formatMsg(m)}`;
+      const room = budget - notices.reduce((n, text) => n + text.length + 1, 0);
+      const { chosen, more } = s ? selectWithin(ledger2, [s, ...ws && ws !== s ? [ws] : []], batch, room, (c) => line(c).length + 3) : { chosen: [], more: 0 };
+      const items = chosen.map((c) => ({ id: c.m.id, priority: c.m.priority, line: line(c) }));
+      return { batch, items, notices, more };
     },
     async call(name2, args3, signal, handoff2) {
       const batch = ledger2.open("reply");
       try {
         const text = await run2(name2, args3, signal, batch);
         if (signal?.aborted) ledger2.release(batch);
-        else if (handoff2) handoff2({ commit: () => ledger2.commit(batch), release: () => ledger2.release(batch) });
+        else if (handoff2) handoff2({ text, commit: () => ledger2.commit(batch), release: () => ledger2.discard(batch) });
         else ledger2.commit(batch);
         return text;
       } catch (e) {
@@ -51454,53 +52397,6 @@ function createTools(ctx) {
       }
     }
   };
-}
-
-// packages/room-mcp/src/wake.ts
-function cleanMeta(m) {
-  const out2 = {};
-  for (const [k, v] of Object.entries(m)) {
-    if (v === void 0 || v === "") continue;
-    const key2 = k.toLowerCase().replace(/[^a-z0-9_]/g, "_");
-    out2[key2] = String(v);
-  }
-  return out2;
-}
-function shouldWake(me, ev, myClaims = [], hasUncommitted = false, ownWorkerNames) {
-  if (ev.kind === "msg") {
-    const m = ev.msg;
-    if (!shouldWakeOnMsg(me, m, myClaims, hasUncommitted, ownWorkerNames).wake) return null;
-    const path37 = "path" in m ? m.path : "paths" in m ? m.paths[0] : void 0;
-    return {
-      content: `${formatMsg(m)}
-${JSON.stringify(m)}`,
-      meta: cleanMeta({ type: m.type, from: m.from, from_kind: m.fromKind, path: path37, msg_id: m.id })
-    };
-  }
-  if (ev.kind === "claim") {
-    const c = ev.claim;
-    if (!shouldWakeOnClaim(me, c, myClaims).wake) return null;
-    const hit = myClaims.find((mine) => claimsOverlap(mine, c));
-    if (!hit) return null;
-    return {
-      content: `${describeClaim(c)} \u2014 overlaps your claim ${hit.id} (${hit.path}:${hit.from}-${hit.to})
-${JSON.stringify({ claim: c, mine: hit })}`,
-      meta: cleanMeta({ type: "claim_overlap", from: c.by, from_kind: c.byKind, path: c.path, msg_id: c.id })
-    };
-  }
-  if (ev.kind === "cursor") {
-    if (ev.who.kind !== "human") return null;
-    if (ev.who.name === me.name) {
-    }
-    const hit = myClaims.find((mine) => cursorInClaim(ev.cursor, mine));
-    if (!hit) return null;
-    return {
-      content: `${ev.who.name} is editing ${ev.cursor.path}:${ev.cursor.from}-${ev.cursor.to}, inside your claim ${hit.id} (${hit.intent})
-${JSON.stringify({ cursor: ev.cursor, claim: hit })}`,
-      meta: cleanMeta({ type: "cursor_in_claim", from: ev.who.name, from_kind: ev.who.kind, path: ev.cursor.path, msg_id: hit.id })
-    };
-  }
-  return null;
 }
 
 // packages/room-mcp/src/auto-join.ts
@@ -51771,8 +52667,12 @@ var FlushedStdioTransport = class extends StdioServerTransport {
   }
   send(message2) {
     const id3 = "id" in message2 && ("result" in message2 || "error" in message2) ? message2.id : void 0;
-    const settle = id3 === void 0 ? void 0 : this.pending.get(id3);
+    let settle = id3 === void 0 ? void 0 : this.pending.get(id3);
     if (id3 !== void 0) this.pending.delete(id3);
+    if (settle && !carries(message2, settle.text)) {
+      settle.release();
+      settle = void 0;
+    }
     return new Promise((resolve5, reject) => {
       try {
         this.out.write(serializeMessage(message2), (error2) => {
@@ -51791,11 +52691,15 @@ var FlushedStdioTransport = class extends StdioServerTransport {
     });
   }
 };
+function carries(message2, text) {
+  const content = "result" in message2 ? message2.result.content : void 0;
+  return Array.isArray(content) && content.some((c) => typeof c?.text === "string" && c.text.includes(text));
+}
 
 // packages/room-mcp/src/arbitration.ts
-import fs36 from "node:fs";
+import fs38 from "node:fs";
 import net2 from "node:net";
-import path35 from "node:path";
+import path37 from "node:path";
 import { randomBytes as randomBytes4 } from "node:crypto";
 async function startArbitration(o) {
   const key2 = randomBytes4(24).toString("hex");
@@ -51810,19 +52714,20 @@ async function startArbitration(o) {
       }
       return { ok: !!batch2 };
     }
-    if (req.op !== "select" || typeof req.sessionId !== "string") return { ok: false, reason: "invalid" };
+    if (req.op !== "select" && req.op !== "ping" || typeof req.sessionId !== "string") return { ok: false, reason: "invalid" };
     const bound = o.binding.bound();
     if (!bound) return { ok: false, reason: "unbound" };
     if (bound.id !== req.sessionId) return { ok: false, reason: "foreign" };
-    const { batch, items, notices } = o.select();
+    if (req.op === "ping") return { ok: true };
+    const { batch, items, notices, more } = o.select();
     if (!items.length && !notices.length) {
       o.ledger.release(batch);
-      return { ok: true, batch: batch.id, items, notices, leaseMs: 0 };
+      return { ok: true, batch: batch.id, items, notices, more, leaseMs: 0 };
     }
     batches.set(batch.id, batch);
     const forget = setTimeout(() => batches.delete(batch.id), 6e4);
     forget.unref?.();
-    return { ok: true, batch: batch.id, items, notices, leaseMs: o.hookLeaseMs ?? HOOK_LEASE_MS };
+    return { ok: true, batch: batch.id, items, notices, more, leaseMs: o.hookLeaseMs ?? HOOK_LEASE_MS };
   };
   const server = net2.createServer((socket) => {
     socket.setEncoding("utf8");
@@ -51861,15 +52766,15 @@ async function startArbitration(o) {
   let written;
   const publish2 = () => {
     const dir = o.binding.dir();
-    if (dir === (written && path35.dirname(written))) return;
+    if (dir === (written && path37.dirname(written))) return;
     if (written) removeOwn(written, key2);
     written = void 0;
     if (!dir) return;
     try {
-      fs36.mkdirSync(dir, { recursive: true, mode: 448 });
-      const file = path35.join(dir, "mcp.json");
+      fs38.mkdirSync(dir, { recursive: true, mode: 448 });
+      const file = path37.join(dir, "mcp.json");
       writeAtomic(file, { port, key: key2, pid: process.pid, startTime: self2?.startTime ?? "" });
-      fs36.chmodSync(file, 384);
+      fs38.chmodSync(file, 384);
       written = file;
     } catch (e) {
       o.log?.(`arbitration: could not publish its endpoint: ${e instanceof Error ? e.message : String(e)}`);
@@ -51890,13 +52795,13 @@ async function startArbitration(o) {
 }
 function removeOwn(file, key2) {
   try {
-    if (JSON.parse(fs36.readFileSync(file, "utf8")).key === key2) fs36.rmSync(file, { force: true });
+    if (JSON.parse(fs38.readFileSync(file, "utf8")).key === key2) fs38.rmSync(file, { force: true });
   } catch {
   }
 }
 
 // packages/room-mcp/src/workspace.ts
-import fs37 from "node:fs";
+import fs39 from "node:fs";
 import { execFileSync as execFileSync10 } from "node:child_process";
 function fallbackWorkspace(env, processDir) {
   const value2 = (key2) => env[key2]?.trim() || void 0;
@@ -51934,9 +52839,9 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
   const roots = /* @__PURE__ */ new Set();
   for (const key2 of Object.keys(workspaces)) {
     try {
-      const real = fs37.realpathSync(key2);
+      const real = fs39.realpathSync(key2);
       const root = rootOf(real);
-      if (root) roots.add(fs37.realpathSync(root));
+      if (root) roots.add(fs39.realpathSync(root));
     } catch {
     }
   }
@@ -51944,11 +52849,11 @@ function codexWorkspace(params2, rootOf = worktreeRoot) {
 }
 async function sameWorkspace(a, b) {
   try {
-    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs37.realpathSync(dir));
+    const [rootA, rootB] = [worktreeRoot(a) ?? a, worktreeRoot(b) ?? b].map((dir) => fs39.realpathSync(dir));
     if (rootA !== rootB) return false;
     const [gitA, gitB] = await Promise.allSettled([gitCommonDir(a), gitCommonDir(b)]);
     if (gitA.status === "rejected" || gitB.status === "rejected") return gitA.status === gitB.status;
-    return fs37.realpathSync(gitA.value) === fs37.realpathSync(gitB.value);
+    return fs39.realpathSync(gitA.value) === fs39.realpathSync(gitB.value);
   } catch {
     return false;
   }
@@ -52061,10 +52966,10 @@ var ROOM_LOG_MAX_BYTES = 1024 * 1024;
 function appendRoomLog(file, line, maxBytes = ROOM_LOG_MAX_BYTES) {
   try {
     try {
-      if (fs38.statSync(file).size >= maxBytes) fs38.renameSync(file, `${file}.1`);
+      if (fs40.statSync(file).size >= maxBytes) fs40.renameSync(file, `${file}.1`);
     } catch {
     }
-    fs38.appendFileSync(file, `${line}
+    fs40.appendFileSync(file, `${line}
 `, { mode: 384 });
   } catch {
   }
@@ -52073,14 +52978,14 @@ var LOG_FILE = process.env.ROOM_LOG_FILE;
 var ROOM_LOG_FILE;
 var log = (s) => {
   try {
-    fs38.writeSync(2, `room-mcp: ${s}
+    fs40.writeSync(2, `room-mcp: ${s}
 `);
   } catch {
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
   if (LOG_FILE) {
     try {
-      fs38.appendFileSync(LOG_FILE, `${at} ${s}
+      fs40.appendFileSync(LOG_FILE, `${at} ${s}
 `);
     } catch {
     }
@@ -52090,7 +52995,7 @@ var log = (s) => {
 function createBundleUpdateNotice(file) {
   let startupMtime;
   try {
-    startupMtime = fs38.statSync(file).mtimeMs;
+    startupMtime = fs40.statSync(file).mtimeMs;
   } catch {
     return () => "";
   }
@@ -52098,7 +53003,7 @@ function createBundleUpdateNotice(file) {
   return () => {
     if (warned2) return "";
     try {
-      if (fs38.statSync(file).mtimeMs <= startupMtime) return "";
+      if (fs40.statSync(file).mtimeMs <= startupMtime) return "";
     } catch {
       return "";
     }
@@ -52123,18 +53028,19 @@ async function main() {
       const startup = await resolveConfig({ dir, env: process.env });
       if (signal.aborted) throw new Error("Room is shutting down");
       LOG_FILE = startup.logFile;
-      ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path36.join(common, ROOM_LOG), () => void 0);
+      ROOM_LOG_FILE = await gitCommonDir(dir).then((common) => path38.join(common, ROOM_LOG), () => void 0);
       if (signal.aborted) throw new Error("Room is shutting down");
       const sessionBinding = createSessionBinding(dir);
+      const wake = createWakeSender({ channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification) });
       const tools = createTools({ getSession: () => session, setSession: (s) => {
         session = s;
-        if (s) attachChannel(s);
-      }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s), binding: sessionBinding });
+        if (s) joined(s);
+      }, cwd: dir, config: startup, wake, binding: sessionBinding });
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(), log });
       const adopt = async (s) => {
         await offerTeamSharingDisclosure(s, tools.ledger);
         session = s;
-        attachChannel(s);
+        joined(s);
         tools.attachHooks(s);
         const n = tools.clearStale(s);
         if (n) log(`cleared ${n} stale claim(s) from an earlier session`);
@@ -52145,26 +53051,7 @@ async function main() {
         const updateNotice = bundleUpdateNotice();
         return (updateNotice ? updateNotice + "\n\n" : "") + body2;
       };
-      const attachedWakeSessions = /* @__PURE__ */ new WeakSet();
-      const attachChannel = (s) => {
-        if (attachedWakeSessions.has(s)) return;
-        attachedWakeSessions.add(s);
-        const router = new SocketWakeRouter({ host: resolveSessionHost(), channel: startup.claudeChannel, notify: (notification) => mcp.notification(notification), isUnread: (wake) => !wake.meta.msg_id || !s.room.seen(s.me.name).has(wake.meta.msg_id), isPendingWait: (wake) => !!s.room.messages().find((m) => m.id === wake.meta.msg_id && waitConsumesMessage(s, m)), log });
-        const myClaims = () => s.room.openClaims().filter((c) => c.by === s.me.name && isAgentic(c.byKind));
-        s.room.bus.observe((ev) => {
-          for (const d of ev.changes.delta) for (const m of d.insert ?? []) {
-            if (m.from === s.me.name && m.fromKind !== "human" || s.room.seen(s.me.name).has(m.id)) continue;
-            router.push(shouldWake(
-              s.me,
-              { kind: "msg", msg: m },
-              myClaims(),
-              s.room.changedPaths(s.me.name).length > 0,
-              new Set(Array.from(s.room.workers.values()).filter((w) => w.lead === s.me.name).map((w) => w.name))
-            ));
-          }
-        });
-        log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
-      };
+      const joined = (s) => log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
       const prior = findRoomFile(dir);
       const chosen = startup.server;
       log(`room: ${startup.where.replace(/\?.*$/, "")} (${startup.whereRule === "env" ? startup.whereEnv ?? "ROOM_SERVER" : startup.whereRule === "remembered" ? "remembered in this clone" : "default: nothing configured"})`);
@@ -52297,7 +53184,6 @@ export {
   serverAuthMode,
   serverShareMax,
   setCredential,
-  shouldWake,
   startLogin
 };
 /*! Bundled license information:
