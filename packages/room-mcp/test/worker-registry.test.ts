@@ -84,7 +84,10 @@ describe('WorkerRegistry durable store', () => {
     const store = await openRegistry(dir, { liveness: () => 'dead', migrate: false })
     await store.writeIntent(intent())
     await store.reconcile()
-    await store.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [{ pid: 42, startTime: 'born', executable: '/bin/codex' }], joinedAt: 4 })
+    await store.writeReport('w_01', { run: 1, nonce: 'launch-nonce', chain: [
+      { pid: 41, startTime: 'mcp', executable: '/bin/room-mcp' },
+      { pid: 42, startTime: 'born', executable: '/bin/codex' },
+    ], joinedAt: 4 })
     await store.reconcile()
     expect(store.read('w_01')?.runs[0].launch).toMatchObject({ outcome: 'launched', pid: 42 })
     expect(store.read('w_01')?.phase).toBe('active')

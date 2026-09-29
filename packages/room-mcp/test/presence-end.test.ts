@@ -14,7 +14,7 @@ function fixture(host: HostKind, overrides: Partial<PresenceEndOptions> = {}) {
   const published: number[] = []
   const state = { holds: false, leads: false, waiting: false, hostAlive: undefined as boolean | undefined }
   const presence = new PresenceEnd({
-    hostKind: host, tickMs: 0, mono: () => now,
+    hostKind: host, tickMs: 0, mono: () => now, episodeId: 'test',
     hostAlive: () => state.hostAlive, holds: () => state.holds, leadsWorkers: () => state.leads, waiting: () => state.waiting,
     hostEnded: reason => events.push(`ended: ${reason}`),
     leave: async idle => { events.push(`leave after ${idle / MIN} min`) },
@@ -93,7 +93,7 @@ describe('presence end and the idle lease (registry §18)', () => {
     await at(IDLE_CLAIMS_MS - MIN)
     expect(events).toEqual([])
     await at(IDLE_CLAIMS_MS)
-    expect(events).toEqual([`release at 480 min (idle-1)`, 'leave after 480 min'])
+    expect(events).toEqual([`release at 480 min (idle-test-1)`, 'leave after 480 min'])
     // Activity starts a new idle epoch, and the eight hours start again (row 28a).
     advanceTo(IDLE_CLAIMS_MS + MIN)
     presence.activity()
@@ -101,7 +101,7 @@ describe('presence end and the idle lease (registry §18)', () => {
     await at(IDLE_CLAIMS_MS + 7 * 60 * MIN)
     expect(events).toHaveLength(2)
     await at(2 * IDLE_CLAIMS_MS + MIN)
-    expect(events.at(-2)).toBe('release at 480 min (idle-2)')
+    expect(events.at(-2)).toBe('release at 480 min (idle-test-2)')
   })
 
   it('never releases an interactive CLI session\'s claims for quiet time (row 28a)', async () => {

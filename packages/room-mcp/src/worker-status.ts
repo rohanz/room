@@ -15,6 +15,8 @@ export interface Run {
 export interface ExitObservation { run: number; code: number | null; signal?: string; at: number; witnessed: boolean }
 export interface RunReport {
   run: number; nonce: string; chain: ProcessIdentity[]; joinedAt: number; hostSessionId?: string
+  /** Parent host captured at admission; null means it could not be verified (the first chain member is the MCP). */
+  hostProcess?: ProcessIdentity | null
   done?: { at: number; summary: string; changed: string[] }; posted?: string
 }
 export type PrepStep = 'plan' | 'worktree' | 'branch' | 'carry-commit' | 'carry-refs' | 'untracked' | 'prepared'
