@@ -263,7 +263,7 @@ describe('session gating', () => {
       const compact = await t.tools.call('room_state', {})
       expect(compact).toContain('participants overlapping your work (1 active, 1 offline teammate):')
       expect(compact).toContain('failed (codex, failed')
-      expect(compact).not.toContain('finished:')
+      expect(compact).toContain('Rohan+old (worker old) finished:')
       expect(compact).not.toContain('Rohan+old ·')
       expect(compact).not.toContain('archived summary')
       const expanded = await t.tools.call('room_state', { all: true })

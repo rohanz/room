@@ -583,7 +583,7 @@ server.on('upgrade', (req, socket, head) => {
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
-    if (v && v.exp > Date.now() && v.room === repo) return accept({ readOnly: true })
+    if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true })
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
   const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }

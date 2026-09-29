@@ -24,7 +24,7 @@ function setup() {
 }
 /** The lead projector's view of a worker, keyed by worker ID. */
 function worker(tag: string, status: WorkerView['status'] = 'running'): WorkerView {
-  return { id: `w_${tag}`, name: `Lead+${tag}`, tag, lead: 'Lead', mode: 'local', host: 'codex', model: 'model', task: 'Task', branch: tag, status, run: 1, startedAt: 1, fence: 'test' }
+  return { id: `w_${tag}`, name: `Lead+${tag}`, tag, lead: 'Lead', mode: 'local', host: 'codex', model: 'model', task: 'Task', branch: tag, status, run: 1, startedAt: 1, fence: '1' }
 }
 function retired(tag: string): RetiredWorker & { id: string } {
   return { id: `w_${tag}`, name: `Lead+${tag}`, tag, lead: 'Lead', host: 'codex', model: 'model', task: 'Task', summary: 'Finished the task', files: ['a.ts'], fileCount: 61, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' }
@@ -51,6 +51,7 @@ it('labels an untagged agent separately from a human in both participant and tim
 
 it('nests active and failed workers, collapses archives, and counts active in both presentations', () => {
   const { room, conn, dom } = setup()
+  room.participants.set('Lead\0holder', { sessionId: 'fixture:Lead', epoch: 1 })
   show(room, worker('running'))
   show(room, worker('failed', 'failed'))
   room.scopes.set('Away', { by: 'Away', byKind: 'agent', area: 'api', summary: 'Away', paths: [], at: 1 })

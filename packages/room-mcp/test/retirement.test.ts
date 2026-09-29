@@ -42,7 +42,7 @@ function registry(dir: string) {
   writeFileSync(join(dir, '.git', 'room', 'registry', 'migration.json'), JSON.stringify({ v: 1, sources: {}, done: true }))
   const room = new RoomDoc()
   const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir, me: { name: 'lead' }, roomName: 'local/repo/main', roomUrl: 'ws://team/local%2Frepo%2Fmain',
-    daemon: { fence: 'lead-session' } } as unknown as Session
+    daemon: { fence: 'lead-session' }, provider: { on() {}, off() {} } } as unknown as Session
   let primary: Session | null = s
   const rooms = new Rooms({ primary: () => primary, setPrimary: p => { primary = p }, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)

@@ -182,6 +182,7 @@ describe('room server with the fake GitHub issuer', () => {
   it('logs and audits an observed identity objection while applying the member update', async () => {
     const session = await login('bob')
     const room = 'github.com/o/identity/main'
+    const repo = 'github.com/o/identity'
     expect((await post('/rooms', { room, session })).status).toBe(201)
     await sendMemberUpdate(room, session, doc => doc.getMap('scopes').set('alice', {
       by: 'alice', byKind: 'agent', area: 'api', summary: 'foreign', paths: ['a.ts'], at: 1,
@@ -190,13 +191,13 @@ describe('room server with the fake GitHub issuer', () => {
     let entries: { event: string; room?: string; login?: string; reason?: string }[] = []
     for (let i = 0; i < 20; i++) {
       entries = await (await fetch(`${base}/audit?session=${session}`)).json() as typeof entries
-      if (entries.some(entry => entry.event === 'identity_violation' && entry.room === room)) break
+      if (entries.some(entry => entry.event === 'identity_violation' && entry.room === repo)) break
       await new Promise(resolve => setTimeout(resolve, 25))
     }
     expect(entries).toContainEqual(expect.objectContaining({
-      event: 'identity_violation', room, login: 'bob', reason: expect.stringMatching(/update applied: scopes mutation for alice/),
+      event: 'identity_violation', room: repo, login: 'bob', reason: expect.stringMatching(/update applied: scopes mutation for alice/),
     }))
-    expect(logs.join('')).toContain(`observed identity-bearing update from bob (room ${room}); update applied: scopes mutation for alice`)
+    expect(logs.join('')).toContain(`observed identity-bearing update from bob (room ${repo}); update applied: scopes mutation for alice`)
   })
 })
 

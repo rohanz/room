@@ -72,7 +72,8 @@ it.each(['done', 'failed', 'stopped', 'running'] as const)('shares %s worker rec
   vi.useFakeTimers(); vi.setSystemTime(600_000)
   vi.stubGlobal('document', { createElement: () => new Element(), activeElement: null, addEventListener: vi.fn(), removeEventListener: vi.fn() })
   const room = new RoomDoc()
-  room.workerViews.set('w_test', { id: 'w_test', name: 'Ada+test', tag: 'test', lead: 'Ada', mode: 'local', host: 'codex', task: 'test', branch: 'test', status, run: 1, startedAt: 0, finishedAt: 240_000, fence: 'test' })
+  room.participants.set('Ada\0holder', { sessionId: 'fixture:Ada', epoch: 1 })
+  room.workerViews.set('w_test', { id: 'w_test', name: 'Ada+test', tag: 'test', lead: 'Ada', mode: 'local', host: 'codex', task: 'test', branch: 'test', status, run: 1, startedAt: 0, finishedAt: 240_000, fence: '1' })
   const states = new Map([[1, { user: { name: 'Ada+test', kind: 'agent' }, lastActive: 599_000 }]])
   const conn = { room, provider: { awareness: { getStates: () => states, on: vi.fn() } } } as unknown as Conn
   const people = participantsPanel(conn, createFocusState()) as unknown as Element

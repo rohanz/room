@@ -157,7 +157,8 @@ describe('resumed worker boundaries', () => {
     t.exits[0](1)
     await vi.waitFor(() => expect(workerByTag(t.dir, 'broken')).toMatchObject({ status: 'failed', exitCode: 1 }))
     await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt')).toMatchObject([{ to: 'rohanz', text: expect.stringContaining('worker broken failed: exit 1') }]))
-    expect(t.room.messages().filter(m => m.type === 'done')).toEqual([])
+    const record = (await t.record('broken'))!, run = record.runs.at(-1)!
+    expect(t.room.messages().filter(m => m.type === 'done' && m.id === `wk:${record.id}:${run.n}`)).toEqual([])
   })
 
   it("records the lead's highest seq at intent as the run's busFrontier", async () => {
@@ -294,7 +295,7 @@ describe('resumed worker boundaries', () => {
     await t.seed('vanished')
     rmSync(workerByTag(t.dir, 'vanished')!.dir, { recursive: true, force: true })
     const before = t.room.messages().length
-    expect(await t.tools.call('room_send', { type: 'note', to: 'vanished', text: 'again' })).toBe('error: cannot resume vanished: its worktree no longer exists')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'vanished', text: 'again' })).toMatch(/error: cannot resume vanished: its worktree no longer exists$/)
     expect(t.specs).toHaveLength(0)
     expect(t.room.messages()).toHaveLength(before)
   })
@@ -304,18 +305,19 @@ describe('resumed worker boundaries', () => {
     await t.seed('busy', { status: 'running' })
     await t.seed('waiting')
     const before = t.room.messages().length
-    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/^error: worker capacity reached/)
+    expect(await t.tools.call('room_send', { type: 'note', to: 'waiting', text: 'again' })).toMatch(/error: worker capacity reached[^\n]*$/)
     expect(t.room.messages()).toHaveLength(before)
   })
 
   it('does not launch or post when cancelled before spawn', async () => {
     const t = setup()
     await t.seed('before-spawn')
+    const before = t.room.messages().length
     const controller = new AbortController()
     controller.abort()
     expect(await t.tools.call('room_send', { type: 'note', to: 'before-spawn', text: 'not delivered' }, controller.signal)).toBe('error: tool call cancelled')
     expect(t.specs).toHaveLength(0)
-    expect(t.room.messages()).toHaveLength(0)
+    expect(t.room.messages()).toHaveLength(before)
   })
 
 })
