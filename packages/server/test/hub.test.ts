@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -7,7 +7,6 @@ import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
@@ -19,6 +18,7 @@ import { contractSuite, fakeClock, holder, socketClient, waitFor, type ContractC
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from '../src/hub.js'
 import { DocumentIdentityGuard, bindDocumentIdentity, capDocSize, makeReadOnly, type DocumentIdentityMode } from '../src/readonly.js'
 import { docNameOf, roomNameOf } from '../src/names.js'
+import { devServers } from './dev-server.js'
 
 const ROOM = 'git/example.com/o/r/main'
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'room-server-hub-'))
@@ -263,15 +263,15 @@ describe('server hub wiring', () => {
 })
 
 describe('the server process', () => {
-  const here = path.dirname(fileURLToPath(import.meta.url))
+  const servers = devServers()
   let proc: ChildProcess | undefined
-  afterAll(() => { proc?.kill('SIGKILL') })
+  afterAll(async () => { await servers.stopAll() })
   const freePort = () => new Promise<number>((resolve, reject) => {
     const srv = net.createServer(); srv.on('error', reject)
     srv.listen(0, '127.0.0.1', () => { const p = (srv.address() as { port: number }).port; srv.close(() => resolve(p)) })
   })
   async function start(port: number, dir: string): Promise<ChildProcess> {
-    const p = spawn(process.execPath, [path.resolve(here, '../../../node_modules/tsx/dist/cli.mjs'), path.resolve(here, '../src/index.ts')], {
+    const p = servers.start({
       env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), YPERSISTENCE: dir, ROOM_SERVER: '', GITHUB_CLIENT_ID: '', ROOM_TOKEN: '', OIDC_ISSUER: '', DATABASE_URL: '', NODE_ENV: 'test' },
       stdio: 'ignore',
     })
@@ -294,12 +294,11 @@ describe('the server process', () => {
     expect(first).toMatchObject({ ok: true, proto: 1, authority: true })
     const { view } = await (await fetch(`http://127.0.0.1:${port}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'local/hub/main' }) })).json() as { view: string }
     expect(await hello(port, `?view=${view}`)).toMatchObject({ ok: false, reason: 'read-only' })
-    proc.kill('SIGKILL')
-    await new Promise(r => proc!.once('exit', r))
+    await servers.stop(proc, 'SIGKILL')
     proc = await start(port, dir)
     const second = await hello(port)
     expect(second.incarnation as number).toBeGreaterThan(first.incarnation as number)
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'hub', 'incarnation.json'), 'utf8')).max).toBe(second.incarnation)
-    proc.kill('SIGKILL')
+    await servers.stop(proc, 'SIGKILL')
   }, 60_000)
 })

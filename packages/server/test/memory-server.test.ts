@@ -1,18 +1,18 @@
 /** The real websocket loader must see updates written by an in-memory migration. */
 import { afterAll, beforeAll, expect, it } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import * as sync from 'y-protocols/sync'
+import { devServers } from './dev-server.js'
 
-const here = path.dirname(fileURLToPath(import.meta.url))
+const servers = devServers()
 let proc: ChildProcess, port: number, base: string
 const logs: string[] = []
 const post = (route: string, body: unknown) => fetch(`${base}${route}`, {
@@ -60,7 +60,7 @@ beforeAll(async () => {
   const env = { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_TOKEN: 'shared', GITHUB_CLIENT_ID: '', NODE_ENV: 'test' }
   delete env.YPERSISTENCE
   delete env.DATABASE_URL
-  proc = spawn(process.execPath, [path.resolve(here, '../../../node_modules/tsx/dist/cli.mjs'), path.resolve(here, '../src/index.ts')], {
+  proc = servers.start({
     env, stdio: ['ignore', 'pipe', 'pipe'],
   })
   proc.stdout!.on('data', d => logs.push(String(d))); proc.stderr!.on('data', d => logs.push(String(d)))
@@ -71,9 +71,9 @@ beforeAll(async () => {
   }
   throw new Error(`server did not start: ${logs.join('')}`)
 }, 15_000)
-afterAll(() => {
-  proc?.kill()
-  if (port) fs.rmSync(path.join(os.tmpdir(), `room-server-hub-${port}`), { recursive: true, force: true })
+afterAll(async () => {
+  try { await servers.stopAll() }
+  finally { if (port) fs.rmSync(path.join(os.tmpdir(), `room-server-hub-${port}`), { recursive: true, force: true }) }
 })
 
 it('hydrates a migrated in-memory target before websocket sync', async () => {

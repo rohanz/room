@@ -4,18 +4,17 @@
  * GitHub token, and ROOM_TOKEN on a github.com room.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
+import { devServers } from './dev-server.js'
 
-const here = path.dirname(fileURLToPath(import.meta.url))
+const servers = devServers()
 let proc: ChildProcess, port = 0, base = ''
 const persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-server-test-'))
 const logs: string[] = []
@@ -27,7 +26,7 @@ async function freePort(): Promise<number> {
   })
 }
 async function startServer(env: Record<string, string>): Promise<ChildProcess> {
-  const p = spawn(process.execPath, [path.resolve(here, '../../../node_modules/tsx/dist/cli.mjs'), path.resolve(here, '../src/index.ts')], {
+  const p = servers.start({
     env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'],
   })
   p.stdout!.on('data', d => logs.push(String(d))); p.stderr!.on('data', d => logs.push(String(d)))
@@ -78,7 +77,7 @@ beforeAll(async () => {
   port = await freePort(); base = `http://127.0.0.1:${port}`
   proc = await startServer({ GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_ADMINS: 'bob', ROOM_IDENTITY_GUARD: '', NODE_ENV: 'test', YPERSISTENCE: persistenceDir })
 }, 30_000)
-afterAll(() => { proc?.kill(); fs.rmSync(persistenceDir, { recursive: true, force: true }) })
+afterAll(async () => { try { await servers.stopAll() } finally { fs.rmSync(persistenceDir, { recursive: true, force: true }) } })
 
 describe('room server with the fake GitHub issuer', () => {
   it('cuts a repository over on a schema-2 preflight and refuses old requests', async () => {
@@ -232,12 +231,12 @@ describe('room server with the fake GitHub issuer', () => {
 
 describe('room server refuses the fake issuer in production', () => {
   it('exits at startup', async () => {
-    const p2 = spawn(process.execPath, [path.resolve(here, '../../../node_modules/tsx/dist/cli.mjs'), path.resolve(here, '../src/index.ts')], {
+    const p2 = servers.start({
       env: { ...process.env, HOST: '127.0.0.1', PORT: String(await freePort()), GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'production' }, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let err = ''
     p2.stderr!.on('data', d => { err += d })
-    const code = await new Promise<number | null>(r => p2.on('exit', r))
+    const code = p2.exitCode ?? await new Promise<number | null>(r => p2.once('exit', r))
     expect(code).toBe(1)
     expect(err).toContain('test issuer')
   }, 30_000)
