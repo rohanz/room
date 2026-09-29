@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { gitBlobHash, manifestKey, type ManifestEntry, type RoomDoc } from '@room/shared'
-import { epochPublication } from '../../shared/src/testing.js'
+import { epochPublication } from '@room/shared/testing'
 
 /** Schema-2 publication fixture for web tests; mirrors the daemon's current incarnation. */
 export function publish(room: RoomDoc, name: string, path: string, text: string, baseText = '', base = 'base'): void {

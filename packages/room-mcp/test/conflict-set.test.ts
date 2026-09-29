@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId } from '../src/conflict-set.js'
-import { epochPublication } from '../../shared/src/testing.js'
+import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
 
 describe('ConflictSlots', () => {

@@ -9,7 +9,9 @@
     "./git": "./src/git.ts",
     "./baseline": "./src/baseline.ts",
     "./local": "./src/local.ts",
-    "./policy": "./src/policy.ts"
+    "./policy": "./src/policy.ts",
+    "./publisher": "./src/publisher.ts",
+    "./disk-scan": "./src/disk-scan.ts"
   },
   "bin": {
     "roomd": "./src/cli.ts"
@@ -27,6 +29,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@room/room-mcp": "*",
     "@types/ws": "^8.5.0"
   },
   "license": "PolyForm-Noncommercial-1.0.0"

@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./leases": "./src/leases.ts",
-    "./process": "./src/process.ts"
+    "./process": "./src/process.ts",
+    "./local-migrate": "./src/local-migrate.ts"
   },
   "dependencies": {
     "@room/hub-core": "*",

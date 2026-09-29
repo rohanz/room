@@ -13,8 +13,8 @@
  */
 import { git } from '@room/roomd/git'
 import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } from '@room/roomd'
-import { defaultExcludedPath } from '../../roomd/src/policy.js'
-import { ignoredTrackedPaths } from '../../roomd/src/disk-scan.js'
+import { defaultExcludedPath } from '@room/roomd/policy'
+import { ignoredTrackedPaths } from '@room/roomd/disk-scan'
 import * as Y from 'yjs'
 import { digestPath, formatMsg, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshot } from '@room/shared'
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg } from '@room/shared'

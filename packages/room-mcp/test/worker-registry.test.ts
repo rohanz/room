@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkerRegistry, admitWorkerEnvironment, closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { idleClaimsDue, type WorkerRecord } from '../src/worker-status.js'
 import { RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
-import { memoryFile, saveMemory } from '../../relay/src/memory.js'
+import { memoryFile, saveMemory } from '@room/relay'
 
 
 const dirs: string[] = []
