@@ -26062,18 +26062,17 @@ var init_src2 = __esm({
         await this.waitForGitOperation(head);
         const paths = [...new Set(snapshot.map((c) => c.path))];
         const changedPaths = new Set(await gitPathsBetween(this.dir, this.appliedHead, head, true));
-        const changed = paths.filter((p) => changedPaths.has(p) && this.isSafeRoomPath(p, false));
+        const changed = paths.filter((p) => changedPaths.has(p));
         if (!changed.length) return;
         const changedClaims = new Set(changed);
         const headTexts = await gitShowMany(this.dir, head, changed);
         if (this.stopped || await gitHead(this.dir) !== head) return;
-        const dirtyPaths = /* @__PURE__ */ new Set();
+        const dirtyPaths = new Set((await gitChanged(this.dir)).filter((p) => changedClaims.has(p)));
         const currentTexts = new Map(changed.map((p) => {
+          if (!this.isSafeRoomPath(p, false)) return [p, void 0];
           try {
             if (!fs8.lstatSync(this.abs(p)).isFile()) return [p, headTexts.get(p)];
-            const disk = fs8.readFileSync(this.abs(p), "utf8");
-            if (disk !== headTexts.get(p)) dirtyPaths.add(p);
-            return [p, disk];
+            return [p, fs8.readFileSync(this.abs(p), "utf8")];
           } catch {
             return [p, headTexts.get(p)];
           }
@@ -51069,7 +51068,7 @@ async function main() {
       const tools = createTools({ getSession: () => session, setSession: (s) => {
         session = s;
         if (s) attachChannel(s);
-      }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s) });
+      }, cwd: dir, config: startup, attachChannel: (s) => attachChannel(s), log });
       const adopt = async (s) => {
         await prepareTeamSharingDisclosure(s);
         const disclosure = pendingTeamSharingDisclosure(s);
