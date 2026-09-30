@@ -132,7 +132,9 @@ it('serves 0.16 clients until the first 0.17 preflight, then migrates the record
   const exported = await post('/archive/export', { room: main, schema: 2 }, { authorization: `Bearer ${session}` })
   expect(exported.status).toBe(200)
   const archived = new Y.Doc()
-  Y.applyUpdate(archived, new Uint8Array(await exported.arrayBuffer()))
+  expect(exported.headers.get('content-type')).toBe('application/vnd.room.updates')
+  const framed = Buffer.from(await exported.arrayBuffer())
+  for (let at = 0; at < framed.byteLength; at += 4 + framed.readUInt32BE(at)) Y.applyUpdate(archived, framed.subarray(at + 4, at + 4 + framed.readUInt32BE(at)))
   expect((archived.getMap('scopes').get('ben') as { summary: string }).summary).toBe('main scope')
   expect((await post('/archive/export', { room: otherMain, schema: 2 }, { authorization: `Bearer ${session}` })).status).toBe(404)
 

@@ -39935,6 +39935,45 @@ function exportRoomLedger(s, opts = {}) {
   fs33.writeFileSync(outputPath, markdown);
   return { path: outputPath, lines: markdown.trimEnd().split("\n").length };
 }
+async function applyArchiveFrames(doc, body2) {
+  if (!body2) throw new Error("archive frame stream missing");
+  const reader = body2.getReader(), header = new Uint8Array(4);
+  let headerAt = 0, update, updateAt = 0, complete = false;
+  try {
+    for (; ; ) {
+      const { done, value: value2 } = await reader.read();
+      if (done) break;
+      for (let at = 0; at < value2.byteLength; ) {
+        if (!update) {
+          const count2 = Math.min(4 - headerAt, value2.byteLength - at);
+          header.set(value2.subarray(at, at + count2), headerAt);
+          headerAt += count2;
+          at += count2;
+          if (headerAt < 4) continue;
+          const length2 = new DataView(header.buffer).getUint32(0);
+          if (!length2 || length2 > 64 * 1048576) throw new Error("archive frame too large or empty");
+          update = new Uint8Array(length2);
+          updateAt = 0;
+          headerAt = 0;
+        }
+        const count = Math.min(update.byteLength - updateAt, value2.byteLength - at);
+        update.set(value2.subarray(at, at + count), updateAt);
+        updateAt += count;
+        at += count;
+        if (updateAt === update.byteLength) {
+          applyUpdate(doc, update);
+          update = void 0;
+        }
+      }
+    }
+    if (headerAt || update) throw new Error("truncated archive frame");
+    complete = true;
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {
+    });
+    reader.releaseLock();
+  }
+}
 async function exportArchiveLedger(s, legacyRoom, opts = {}) {
   if (s.local) throw new Error("local legacy snapshots are kept on this machine; archive export requires a team server");
   const a = await authFor(s);
@@ -39947,7 +39986,8 @@ async function exportArchiveLedger(s, legacyRoom, opts = {}) {
   if (!res.ok) throw new Error(`archive ${legacyRoom} unavailable: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   const doc = new Doc2();
   try {
-    applyUpdate(doc, new Uint8Array(await res.arrayBuffer()));
+    if (res.headers.get("content-type")?.split(";")[0] === "application/vnd.room.updates") await applyArchiveFrames(doc, res.body);
+    else applyUpdate(doc, new Uint8Array(await res.arrayBuffer()));
     const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, "-");
     const outputPath = opts.path ? path29.resolve(s.dir, opts.path) : path29.join(s.dir, ".room", "ledger", `${legacyRoom.replaceAll("/", "_")}-${timestamp}.md`);
     const markdown = renderPrNote(new RoomDoc(doc), { roomName: legacyRoom, now, history: true });
