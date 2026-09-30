@@ -54831,7 +54831,7 @@ var defs4 = [
   {
     name: "room_spawn",
     annotations: RW,
-    description: "Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together. Message a finished worker to resume it.",
+    description: "Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together; message a finished worker to resume it in its worktree.",
     inputSchema: { type: "object", properties: { tag: str("worker tag"), task: str("task"), host: { type: "string", enum: ["claude", "codex"], description: "default: caller host" }, model: str("host model override"), effort: { type: "string", enum: [...WORKER_EFFORTS], description: "reasoning effort" }, link: strs("input paths; default .roomlinks; [] disables"), carry: { type: "boolean", description: "false: start from HEAD" }, threads: { type: "integer", minimum: 1, description: "worker thread budget" }, share: SHARE, allowOutside: { type: "boolean", description: "allow a team worker outside this repo" }, dir: str("existing directory; no new worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default) or local workers room" } }, required: ["tag", "task"] }
   }
 ];
