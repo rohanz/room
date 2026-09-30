@@ -41,6 +41,12 @@ it('loads a document with more than 500 records without writing (y-leveldb getYD
   expect(await levelStoredSize(db, 'many')).toEqual(before)
   loaded.destroy(); doc.destroy()
 })
+it('rejects a failed read even though y-leveldb swallows the transaction error', async () => {
+  const f = await fixture()
+  vi.spyOn(f.db, 'createReadStream').mockImplementationOnce(() => { throw new Error('read failed') })
+  await expect(levelLoad(f.provider, 'from')).rejects.toThrow('read failed')
+  f.doc.destroy()
+})
 it('replaces snapshots atomically with a matching discovery vector: an interrupted write changes nothing', async () => {
   const f = await fixture(), snapshot = Y.encodeStateAsUpdate(f.doc)
   const before = await levelStoredSize(f.db, 'from')

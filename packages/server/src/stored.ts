@@ -31,8 +31,8 @@ export function isLevelProvider(provider: unknown): provider is LevelProvider {
   return !!provider && typeof (provider as LevelProvider)._transact === 'function'
 }
 
-/** y-leveldb's getYDoc without its trim: past 500 records it appends a snapshot and clears the old ones
- *  without waiting, so a crash can leave both. Compaction happens only through levelReplace. */
+/** y-leveldb's getYDoc without its trim: past 500 records it appends a snapshot, then clears the old ones
+ *  in a separate write, so a crash can leave both. Compaction happens only through levelReplace. */
 export async function levelLoad(provider: LevelProvider, name: string): Promise<Y.Doc> {
   const result = await provider._transact(async db => {
     try { return { updates: await getLevelUpdates(db, name) as Uint8Array[] } } catch (error) { return { error } }
