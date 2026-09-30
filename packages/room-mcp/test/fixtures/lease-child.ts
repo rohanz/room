@@ -14,7 +14,9 @@ if (mode === 'create') {
 } else if (mode === 'temp') {
   const link = fs.linkSync
   fs.linkSync = ((temp: string, target: string) => {
-    fs.writeFileSync(ready, temp)
+    // Renamed into place: the test reads the path as soon as the ready file exists.
+    fs.writeFileSync(`${ready}.part`, temp)
+    fs.renameSync(`${ready}.part`, ready)
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000)
     return link(temp, target)
   }) as typeof fs.linkSync
