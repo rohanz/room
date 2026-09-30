@@ -12,7 +12,7 @@ export function assertValidParticipantName(name: string): void {
 export function docNameOf(reqUrl: string): string { return roomNameOf(reqUrl.split('?')[0]) }
 /** Clients encode the room name once or twice; decode until it stops changing. */
 export function roomNameOf(roomPath: string): string {
-  let name = roomPath.replace(/^\/+/, '')
+  let name = roomPath.replace(/^\//, '')
   for (let i = 0; i < 3; i++) {
     let next: string
     try { next = decodeURIComponent(name) } catch { break }
@@ -21,22 +21,45 @@ export function roomNameOf(roomPath: string): string {
   }
   return name
 }
+export interface ParsedRoom { name: string; repo: string; github?: string }
+const segment = (part: string) => !!part && part !== '.' && part !== '..' && !/[\x00-\x1f\x7f-\x9f\\?#%]/u.test(part)
+/** Reject internal keys and malformed namespaces before admission or document access. */
+export function parseRoomName(input: string, schema2 = false): ParsedRoom | undefined {
+  const name = roomNameOf(input)
+  if (!name || name.length > 512 || name.startsWith('archive:')) return undefined
+  const parts = name.split('/')
+  if (!parts.every(segment)) return undefined
+  if (parts[0]?.toLowerCase() === 'github.com') {
+    const owner = parts[1], repository = parts[2]
+    if (parts.length < 3 || schema2 && parts.length !== 3 || !owner || !repository ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(owner) ||
+      !/^[a-z0-9_.-]{1,100}$/i.test(repository) || repository === '.' || repository === '..') return undefined
+    return { name, repo: `github.com/${owner.toLowerCase()}/${repository.toLowerCase()}`, github: `${owner.toLowerCase()}/${repository.toLowerCase()}` }
+  }
+  if (parts[0] === 'git' && parts.length >= 3 && /^[a-z0-9.-]+(?::[0-9]{1,5})?$/i.test(parts[1]!) && !parts[1]!.startsWith('.') && !parts[1]!.endsWith('.'))
+    return { name, repo: name }
+  if (parts[0] === 'local' && parts.length >= 2) return { name, repo: name }
+  return undefined
+}
+export function validRoomName(input: string, schema2 = false): boolean { return !!parseRoomName(input, schema2) }
+export function archiveOwnerOf(name: string): string | undefined {
+  const m = /^archive:(.+):([0-9a-f]{8}-[0-9a-f-]{27,})$/i.exec(name)
+  if (!m) return undefined
+  const parsed = parseRoomName(m[1], true)
+  return parsed?.repo
+}
 /** "github.com%2Fowner%2Frepo%2Fbranch" (or decoded) -> "owner/repo". A name with no branch is still that GitHub repo:
  *  it must never fall through to the rules for non-GitHub rooms, which do not check push access. */
 export function githubRepoOf(roomPath: string): string | undefined {
-  const name = roomNameOf(roomPath)
-  const m = name.match(/^github\.com\/([^/]+)\/([^/]+)(?:\/|$)/)
-  return m ? `${m[1]}/${m[2]}` : undefined
+  return parseRoomName(roomPath)?.github
 }
 
 
-/** A repository room is the origin-derived name. Only an already-open proper prefix
- * can identify a legacy branch suffix; segment counting would truncate real repo names. */
+/** Compatibility helper: only GitHub's fixed owner/repo shape can discard a branch suffix. */
 export function repoRoomOf(roomName: string, isOpen: (name: string) => boolean): string {
-  const name = roomNameOf(roomName)
-  const canonical = name.startsWith('github.com/') ? name.toLowerCase() : name
-  for (let i = canonical.length - 1; i > 0; i--) {
-    if (canonical[i] === '/' && isOpen(canonical.slice(0, i))) return canonical.slice(0, i)
-  }
-  return canonical
+  const parsed = parseRoomName(roomName)
+  if (!parsed) return roomNameOf(roomName)
+  if (parsed.github) return parsed.repo
+  void isOpen
+  return parsed.name
 }

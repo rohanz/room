@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc, type Msg } from '@room/shared'
-import { migrateRepo, type MigrationIO } from '../src/migrate.js'
+import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry, type MigrationIO } from '../src/migrate.js'
 import type { OpenRepo } from '../src/store.js'
 
 const repo = 'github.com/o/r'
@@ -35,6 +35,47 @@ function fixture(failAfter?: string) {
 }
 
 describe('migrateRepo', () => {
+  it('cannot absorb another GitHub repository through an open prefix', async () => {
+    const f = fixture()
+    const victim = 'github.com/o/r2/private'
+    const hostile = new RoomDoc(); hostile.scopes.set('victim', { by: 'victim', byKind: 'agent', area: 'private', summary: 'secret', paths: ['secret.ts'], at: 1 })
+    f.docs.set(victim, Y.encodeStateAsUpdate(hostile.doc))
+    await migrateRepo(repo, f.entry, f.io)
+    expect(f.entry.legacy).not.toContain(victim)
+    expect(new RoomDoc(await f.io.load(repo)).scopes.has('victim')).toBe(false)
+    expect(f.docs.has(victim)).toBe(true)
+    expect(closeDocumentNames(repo, f.entry, [...f.docs.keys()], new Set([repo, 'github.com/o/r2']))).not.toContain(victim)
+  })
+
+  it('migrates only recorded non-GitHub branch documents, excluding other registry entries', () => {
+    const key = 'git/host/a/repo'
+    const entry: OpenRepo = { at: 1, branches: [`${key}/main`, 'git/host/a-b/repo/main', 'git/host/ab/repo', 'git/host/a/repo2'] }
+    const docs = [...entry.branches, `${key}/unrecorded`]
+    expect(migrationSources(key, entry, docs, new Set([key, 'git/host/ab/repo']))).toEqual([`${key}/main`])
+    const short = 'git/host/a'
+    const shortEntry: OpenRepo = { at: 1, branches: [`${short}/main`, `${short}/b/main`, 'git/host/a-b/main', 'git/host/ab'] }
+    const registered = new Set([short, `${short}/b`, 'git/host/ab'])
+    expect(migrationSources(short, shortEntry, [...shortEntry.branches, `${short}/unrecorded`], registered)).toEqual([`${short}/main`])
+    expect(closeDocumentNames(short, shortEntry, [...shortEntry.branches, 'git/host/a-b/private'], registered)).toEqual([short, `${short}/main`])
+    expect(migrationSources('local/a', { at: 1, branches: ['local/a/b/main'] }, ['local/a/b/main'], new Set(['local/a', 'local/a/b']))).toEqual([])
+  })
+
+  it('quarantines poisoned registry roots and filters cross-repository sources and plans', () => {
+    const poisoned = 'github.com'
+    const victim = 'github.com/victim/private'
+    const log: string[] = []
+    const safe = safeRoomRegistry({
+      [poisoned]: { at: 1, branches: [victim], legacy: [victim] },
+      'github.com/victim': { at: 1, branches: [victim], legacy: [victim] },
+      [victim]: { at: 2, branches: [`${victim}/main`, 'github.com/other/repo/main'], legacy: ['github.com/other/repo/main'],
+        plan: { id: 'x', sources: [`${victim}/main`, 'github.com/other/repo/main'], moved: 'archive:github.com/other/repo:123e4567-e89b-12d3-a456-426614174000' } },
+    }, line => log.push(line))
+    expect(safe[poisoned]).toBeUndefined()
+    expect(safe['github.com/victim']).toBeUndefined()
+    expect(log[0]).toContain('quarantined invalid room registry key')
+    expect(safe[victim].legacy).toEqual([])
+    expect(safe[victim].plan).toMatchObject({ sources: [`${victim}/main`], moved: undefined })
+  })
   it('archives an old document at the canonical key and includes differently cased aliases', async () => {
     const f = fixture()
     const old = new RoomDoc(); old.scopes.set('early', { by: 'early', byKind: 'agent', area: 'old', summary: 'old', paths: ['old.ts'], at: 1 })

@@ -36,7 +36,7 @@ import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
 import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
-import { docNameOf, roomNameOf, githubRepoOf, repoRoomOf } from './names.js'
+import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
@@ -44,7 +44,7 @@ import { makeAdmitted, type Creds } from './admit.js'
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
-import { migrateRepo } from './migrate.js'
+import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 
 const PORT = Number(process.env.PORT ?? 1234)
@@ -102,11 +102,27 @@ function saveViewTokens() {
 /** Repos someone has opened, keyed by their canonical origin-derived names. */
 const rooms = new Map<string, OpenRepo>()
 const locks = new RepoLocks()
-const canonical = (name: string) => repoRoomOf(name, key => rooms.has(key))
-const oldBranchRepo = (name: string) => name.split('/').slice(0, name.startsWith('github.com/') ? 3 : name.startsWith('git/') ? 4 : 2).join('/')
-const roomsLoaded = auth.ready.then(() => store.loadRooms()).then(all => {
-  for (const [key, value] of Object.entries(all)) {
-    const name = repoRoomOf(key, () => false)
+const canonical = (name: string, schema2 = false) => {
+  const parsed = parseRoomName(name, schema2)
+  if (!parsed) return roomNameOf(name)
+  if (parsed.github || schema2 || rooms.has(parsed.name)) return parsed.repo
+  return [...rooms].find(([, entry]) => entry.branches.includes(parsed.name) || entry.legacy?.includes(parsed.name))?.[0] ?? parsed.name
+}
+const oldBranchRepo = (name: string) => name.split('/').slice(0, name.split('/')[0]?.toLowerCase() === 'github.com' ? 3 : name.startsWith('git/') ? 4 : 2).join('/')
+async function loadRoomsWithRetry(): Promise<Record<string, OpenRepo>> {
+  let delay = 1000
+  for (;;) {
+    try { return await store.loadRooms() }
+    catch (error) {
+      console.log(`could not load the room registry; retrying: ${error instanceof Error ? error.message : error}`)
+      await new Promise(resolve => setTimeout(resolve, delay))
+      delay = Math.min(delay * 2, 10_000)
+    }
+  }
+}
+const roomsLoaded = auth.ready.then(loadRoomsWithRetry).then(all => {
+  for (const [key, value] of Object.entries(safeRoomRegistry(all))) {
+    const name = parseRoomName(key, true)!.repo
     const previous = rooms.get(name)
     if (!previous) {
       rooms.set(name, { ...value, branches: [...new Set(value.branches ?? [])],
@@ -191,10 +207,10 @@ async function migrateOpenRepo(repo: string): Promise<void> {
       freeze: names => freezeDocs(names, upgradeText(repo)),
       revoke: async names => {
         const set = new Set(names)
-        for (const [token, value] of viewTokens) if (set.has(value.room) || canonical(value.room) === repo) viewTokens.delete(token)
+        for (const [token, value] of viewTokens) if (set.has(value.room) || parseRoomName(value.room)?.repo === repo) viewTokens.delete(token)
         saveViewTokens()
       },
-    })
+    }, new Set(rooms.keys()))
   })
 }
 /** Repos nobody has connected to for ROOM_IDLE_DAYS (default 30) are closed automatically: their
@@ -207,7 +223,7 @@ async function expireIdle() {
       await locks.run(repo, async () => {
         const current = rooms.get(repo)
         if (!current?.legacy?.length || !current.migratedAt) return
-        for (const name of current.legacy) await clearDoc(name)
+        for (const name of migrationSources(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
         const doc = await loadDoc(repo)
         doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
         await writeDoc(repo, Y.encodeStateAsUpdate(doc))
@@ -227,8 +243,8 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
     const r = rooms.get(repo)
     if (!r) return []
     if (oldClient && r.mode === 'repo') return undefined
-    const names = new Set([repo, ...r.branches, ...(r.legacy ?? []), ...(r.plan?.sources ?? [])])
-    for (const name of await listDocs()) if (canonical(name) === repo) names.add(name)
+    const names = new Set(closeDocumentNames(repo, r, await listDocs(), new Set(rooms.keys())))
+    for (const name of names) await hubs.flushName(name)
     rooms.delete(repo); await saveRooms()
     for (const [key, value] of viewTokens) if (names.has(value.room)) viewTokens.delete(key)
     saveViewTokens()
@@ -263,13 +279,14 @@ const server = http.createServer((req, res) => {
     try {
       const linked = new URL(url.searchParams.get('room')!)
       const name = roomNameOf(linked.pathname)
+      if (!parseRoomName(name, linked.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
       const repo = canonical(name)
       const entry = rooms.get(repo)
       const token = url.searchParams.get('view')!
       if (entry?.mode === 'repo' && (name !== repo ||
         (entry.plan?.moved && name === repo && viewTokens.get(token)?.room !== repo)))
         return html(410, `<h1>Room link expired</h1><p>${oldLinkText}</p>`)
-    } catch { /* let the browser handle an invalid room URL */ }
+    } catch { return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name') }
   }
 
   // ---- auth ----
@@ -319,6 +336,7 @@ const server = http.createServer((req, res) => {
 
   // ---- rooms ----
   if (url.pathname === '/rooms' && req.method === 'GET') {
+    if (url.searchParams.has('room') && !parseRoomName(url.searchParams.get('room') ?? '', url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     const c = queryCreds()
     void (async () => {
       const out: ({ repo: string } & OpenRepo)[] = []
@@ -330,6 +348,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/rooms' && req.method === 'DELETE') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`close refused: ${v.why}`); return text(v.status, v.why) }
@@ -344,13 +363,13 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (!parseRoomName(room, o.schema === 2) || o.schema !== 2 && !parseRoomName(oldBranchRepo(roomNameOf(room)), true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`open refused: ${v.why}`); return text(v.status, v.why) }
     const by = v.login ?? str(o.by)
     const requested = roomNameOf(room)
-    const name = o.schema === 2 ? canonical(requested) : canonical(oldBranchRepo(requested))
-    if (o.schema === 2 && name !== repoRoomOf(requested, () => false)) return json(409, { room: name })
+    const name = o.schema === 2 ? canonical(requested, true) : canonical(oldBranchRepo(requested))
     let created = false
     await locks.run(name, async () => {
       const existing = rooms.get(name)
@@ -358,7 +377,7 @@ const server = http.createServer((req, res) => {
       if (!existing) {
         created = true
         const priorDocs = await listDocs()
-        const oldDocs = o.schema === 2 && priorDocs.some(doc => doc === name || repoRoomOf(doc, key => key === name) === name)
+        const oldDocs = o.schema === 2 && priorDocs.some(doc => doc === name || parseRoomName(doc)?.github && parseRoomName(doc)?.repo === name)
         const fresh = !priorDocs.includes(name) && !oldDocs
         rooms.set(name, { by, at: Date.now(), branches: [], mode: o.schema === 2 && !oldDocs ? 'repo' : 'branch',
           ...(o.schema === 2 && !oldDocs ? { migratedAt: Date.now() } : {}) })
@@ -371,6 +390,8 @@ const server = http.createServer((req, res) => {
         console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`)
         audit({ event: 'room_opened', room: name, login: by, id: v.id })
       }
+      const opened = rooms.get(name)
+      if (o.schema !== 2 && requested !== name && opened && !opened.branches.includes(requested)) { opened.branches.push(requested); await saveRooms() }
     })
     if (res.writableEnded) return
     if (o.schema === 2) await migrateOpenRepo(name)
@@ -380,6 +401,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
+    if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`view-token refused: ${v.why}`); return text(v.status, v.why) }
@@ -405,6 +427,7 @@ const server = http.createServer((req, res) => {
 
   // Legacy documents are retained for 30 days but never connected to a writable socket.
   if (url.pathname === '/archive' && req.method === 'GET') {
+    if (!parseRoomName(url.searchParams.get('repo') ?? '', true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     void (async () => {
       const repo = canonical(url.searchParams.get('repo') ?? '')
       const entry = rooms.get(repo)
@@ -420,8 +443,11 @@ const server = http.createServer((req, res) => {
     if (o.schema !== 2) return text(403, 'update Room to 0.17 or later to export an archive')
     const name = str(o.room)
     if (!name) return text(400, 'room required')
+    if (!archiveOwnerOf(name) && !parseRoomName(name)) return text(400, 'invalid archive name')
     if (o.view) return text(403, 'view tokens cannot export an archive')
-    const repo = [...rooms].find(([, r]) => r.legacy?.includes(name))?.[0]
+    const parsed = parseRoomName(name)
+    const owner = archiveOwnerOf(name) ?? (parsed?.github ? parsed.repo : undefined)
+    const repo = [...rooms].find(([key, r]) => (!owner || key === owner) && r.legacy?.includes(name) && migrationSources(key, r, [name], new Set(rooms.keys())).includes(name))?.[0]
     if (!repo) return text(404, 'archive not found')
     const v = await admitted(repo, creds(o))
     if (!v.ok) return text(v.status, v.why)
@@ -439,6 +465,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/github/prs' && req.method === 'GET') {
     const room = str(url.searchParams.get('room') ?? undefined)
     if (!room) return text(400, 'room required')
+    if (!parseRoomName(room, url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo')
     const c = queryCreds()
     void (async () => {
       const name = roomNameOf(room)
@@ -459,6 +486,7 @@ const server = http.createServer((req, res) => {
     const number = Number(o.number)
     const body = str(o.body)
     if (!room) return text(400, 'room required')
+    if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo')
     if (!Number.isInteger(number) || number <= 0) return text(400, 'number required (positive PR number)')
     if (!body) return text(400, 'body required')
     const c = creds(o)
@@ -523,6 +551,7 @@ setInterval(() => hubs.tick(), 1000).unref()
 wss.on('connection', (conn, req) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const raw = docNameOf(req.url ?? '/')
+  if (!parseRoomName(raw, url.searchParams.get('schema') === '2' && !url.searchParams.has('view'))) { conn.close(1008, 'invalid room name'); return }
   const repo = canonical(raw)
   const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
   setupWSConnection(conn, req, { gc: true, docName })
@@ -562,6 +591,8 @@ function awarenessOwnerMap(roomName: string): Map<number, string> {
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const roomName = roomNameOf(url.pathname)
+  // A retired branch link (view key) keeps its branch suffix so it can be told 410 instead of 400.
+  if (!parseRoomName(roomName, url.searchParams.get('schema') === '2' && !url.searchParams.has('view'))) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
   const repo = canonical(roomName)
   const schema2 = url.searchParams.get('schema') === '2'
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName

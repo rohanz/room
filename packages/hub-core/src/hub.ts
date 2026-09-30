@@ -59,8 +59,15 @@ export interface HubHost {
   owns?(p: Principal, name: string): boolean
   /** Server: the room's document is over its size cap. */
   full?(): boolean
+  /** Server: why the room cannot take coordination writes now (its storage is failing); undefined when it can. */
+  unavailable?(): string | undefined
   /** Tests: a smaller per-incarnation counter limit than 2^21. */
   counterLimit?: number
+}
+
+/** The room's replicated state is not something a hub may start from; the durable record was left untouched. */
+export class RoomStateError extends Error {
+  override readonly name = 'RoomStateError'
 }
 
 export interface Hub {

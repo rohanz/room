@@ -3,7 +3,42 @@ import * as Y from 'yjs'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
 import type { OpenRepo } from './store.js'
-import { repoRoomOf } from './names.js'
+import { archiveOwnerOf, parseRoomName } from './names.js'
+
+/** A source is either recorded by the old registry or a GitHub document with the same exact repo identity. */
+export function migrationSources(repo: string, entry: OpenRepo, docs: string[], registered: ReadonlySet<string> = new Set()): string[] {
+  const parsed = parseRoomName(repo, true)
+  if (!parsed || parsed.repo !== repo) return []
+  const recorded = new Set([...entry.branches, ...(entry.legacy ?? []), ...(entry.plan?.sources ?? [])])
+  return [...new Set([...recorded, ...docs])].filter(name => {
+    if (name === repo || registered.has(name) && parseRoomName(name)?.repo !== repo) return false
+    if (name.startsWith('archive:')) return recorded.has(name) && archiveOwnerOf(name) === repo
+    const source = parseRoomName(name)
+    if (!source) return false
+    if (!parsed.github && [...registered].some(key => key.startsWith(`${repo}/`) && (name === key || name.startsWith(`${key}/`)))) return false
+    return parsed.github ? source.repo === repo : recorded.has(name) && name.startsWith(`${repo}/`)
+  })
+}
+
+export function closeDocumentNames(repo: string, entry: OpenRepo, docs: string[], registered: ReadonlySet<string> = new Set()): string[] {
+  return [repo, ...migrationSources(repo, entry, docs, registered)]
+}
+
+/** Discard invalid registry keys and strip poisoned source lists before any migration can resume. */
+export function safeRoomRegistry(all: Record<string, OpenRepo>, log: (line: string) => void = console.log): Record<string, OpenRepo> {
+  const valid = new Set(Object.keys(all).filter(key => !!parseRoomName(key, true)))
+  const out: Record<string, OpenRepo> = {}
+  for (const [key, value] of Object.entries(all)) {
+    if (!valid.has(key)) { log(`quarantined invalid room registry key: ${JSON.stringify(key)}`); continue }
+    const owned = migrationSources(parseRoomName(key, true)!.repo, value, [], valid)
+    const keep = new Set(owned)
+    out[key] = { ...value, branches: (value.branches ?? []).filter(s => keep.has(s)),
+      legacy: (value.legacy ?? []).filter(s => keep.has(s)),
+      ...(value.plan ? { plan: { ...value.plan, sources: value.plan.sources.filter(s => keep.has(s)),
+        ...(value.plan.moved && archiveOwnerOf(value.plan.moved) !== parseRoomName(key, true)!.repo ? { moved: undefined } : {}) } } : {}) }
+  }
+  return out
+}
 
 export interface MigrationIO {
   list(): Promise<string[]>
@@ -18,12 +53,12 @@ export interface MigrationIO {
 }
 
 /** The caller holds repoLock. A persisted plan makes every replay use the same sources and archive key. */
-export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO): Promise<void> {
+export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO, registered: ReadonlySet<string> = new Set()): Promise<void> {
   if (entry.migratedAt) return
   const save = () => io.save()
   if (!entry.plan) {
     const names = new Set([...entry.branches, ...(entry.legacy ?? []), ...await io.list()])
-    const sources = [...names].filter(name => name !== repo && !name.startsWith('archive:') && repoRoomOf(name, p => p === repo) === repo)
+    const sources = migrationSources(repo, entry, [...names], registered)
     const canonicalDoc = names.has(repo) ? await io.load(repo) : undefined
     const moved = canonicalDoc && new RoomDoc(canonicalDoc).meta.schemaVersion !== 2
       ? `archive:${repo}:${crypto.randomUUID()}` : undefined
@@ -34,6 +69,8 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     await save()
   }
   const plan = entry.plan
+  plan.sources = migrationSources(repo, entry, plan.sources, registered)
+  if (plan.moved && archiveOwnerOf(plan.moved) !== repo) plan.moved = undefined
   if (entry.step === 'planned') {
     await io.freeze([...plan.sources, repo])
     await io.revoke([...plan.sources, repo])

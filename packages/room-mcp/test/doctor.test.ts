@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, runDoctor, type DoctorFacts } from '../src/doctor.js'
+import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, type DoctorFacts } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 
 const version = '0.17.0'
@@ -136,6 +136,41 @@ describe('doctor report', () => {
     expect(await probeHealth('https://fixture.invalid/health', fetcher as unknown as typeof fetch)).toEqual({ ok: false, redirect: 'HTTP 302' })
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect(evaluateDoctor({ ...base(), server: 'wss://fixture.invalid', serverHealth: false, serverRedirect: 'HTTP 302' }).find(r => r.name === 'team server')).toMatchObject({ level: 'WARN', finding: 'server redirected /health (HTTP 302); check ROOM_SERVER' })
+  })
+  it('reads health protocol and storage with a timeout', async () => {
+    const fetcher = vi.fn(async (_url: string, opts: RequestInit) => {
+      expect(opts.signal).toBeDefined()
+      return { ok: true, status: 200, json: async () => ({ ok: true, schema: 2, hub: 1, storage: 'failing' }) } as Response
+    })
+    expect(await probeHealth('https://fixture.invalid/health', fetcher as unknown as typeof fetch)).toEqual({ ok: true, schema: 2, hub: 1, storage: 'failing' })
+  })
+  it('checks the server schema and hub protocol, including storage failure', () => {
+    const healthy = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverSchema: 2, serverHub: 1 }
+    expect(evaluateDoctor(healthy).find(r => r.name === 'team server')).toMatchObject({ level: 'PASS' })
+    expect(evaluateDoctor({ ...healthy, serverSchema: undefined }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: 'the server is older than Room 0.17: deploy 0.17' })
+    expect(evaluateDoctor({ ...healthy, serverHub: 2 }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: 'server schema 2, hub 2; need schema 2, hub 1' })
+    expect(evaluateDoctor({ ...healthy, serverStorage: 'failing' }).find(r => r.name === 'team server')).toMatchObject({ level: 'FAIL', finding: "the server's storage is failing" })
+  })
+  it('validates a saved credential in a header without putting it in the URL', async () => {
+    const fetcher = vi.fn(async (url: string, opts: RequestInit) => {
+      expect(url).toBe('https://fixture.invalid/auth/me')
+      expect(opts.headers).toEqual({ Authorization: 'Bearer secret' })
+      expect(opts.signal).toBeDefined()
+      return { status: 200, ok: true, json: async () => ({ login: 'rohan' }) } as Response
+    })
+    expect(await probeCredential('https://fixture.invalid/auth/me', 'secret', fetcher as unknown as typeof fetch)).toEqual({ status: 'valid', login: 'rohan' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('distinguishes rejected credentials from old servers and network failures', async () => {
+    const rejected = vi.fn(async () => ({ status: 401, ok: false }) as Response)
+    expect(await probeCredential('https://fixture.invalid/auth/me', 'secret', rejected as unknown as typeof fetch)).toEqual({ status: 'rejected' })
+    const failed = vi.fn(async () => { throw new Error('offline') })
+    expect(await probeCredential('https://fixture.invalid/auth/me', 'secret', failed as unknown as typeof fetch)).toEqual({ status: 'unverified' })
+    const healthy = { ...base(), server: 'wss://fixture.invalid', serverHealth: true, serverSchema: 2, serverHub: 1, credential: true }
+    expect(evaluateDoctor({ ...healthy, credentialStatus: 'valid', credentialLogin: 'rohan' }).find(r => r.name === 'team login')).toMatchObject({ level: 'PASS', finding: 'logged in as rohan' })
+    expect(evaluateDoctor({ ...healthy, credentialStatus: 'rejected' }).find(r => r.name === 'team login')).toMatchObject({ level: 'FAIL', finding: 'saved credential was rejected; log in again (room_login)' })
+    expect(evaluateDoctor({ ...healthy, serverSchema: undefined, credentialStatus: 'rejected' }).find(r => r.name === 'team login')).toMatchObject({ level: 'WARN', finding: 'credential present; the server did not confirm it' })
+    expect(evaluateDoctor({ ...healthy, credentialStatus: 'unverified' }).find(r => r.name === 'team login')).toMatchObject({ level: 'WARN', finding: 'credential present (not verified)' })
   })
 })
 

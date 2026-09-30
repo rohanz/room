@@ -36,7 +36,7 @@ export type Req = { v: 1; id: string } & (
 export type Op = Req['op']
 
 export type Reason = 'version' | 'hello-first' | 'not-authority' | 'starting' | 'held' | 'not-yours' | 'stale'
-  | 'read-only' | 'too-large' | 'over-cap' | 'room-full' | 'invalid'
+  | 'read-only' | 'too-large' | 'over-cap' | 'room-full' | 'invalid' | 'unavailable' | 'rate-limited'
 
 export type ReplyOk = { v: 1; re: string; ok: true; [k: string]: unknown }
 export type ReplyErr = { v: 1; re: string; ok: false; reason: Reason; text: string; retryMs?: number; [k: string]: unknown }

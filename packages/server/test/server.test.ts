@@ -81,13 +81,32 @@ beforeAll(async () => {
 afterAll(async () => { try { await servers.stopAll() } finally { fs.rmSync(persistenceDir, { recursive: true, force: true }) } })
 
 describe('room server with the fake GitHub issuer', () => {
+  it('refuses incomplete GitHub parents before admission and preserves the victim room', async () => {
+    const session = await login('namespace-victim')
+    const victim = 'github.com/namespace-victim/private'
+    expect((await post('/rooms', { room: victim, session, schema: 2 })).status).toBe(201)
+    for (const parent of ['github.com', 'github.com/namespace-victim']) {
+      expect((await post('/rooms', { room: parent, session, schema: 2 })).status).toBe(400)
+      expect((await post('/view-token', { room: parent, session, schema: 2 })).status).toBe(400)
+      expect((await fetch(`${base}/archive?repo=${encodeURIComponent(parent)}&session=${session}`)).status).toBe(400)
+      expect((await post('/archive/export', { room: parent, session, schema: 2 })).status).toBe(400)
+      expect((await fetch(`${base}/github/prs?room=${encodeURIComponent(parent)}&session=${session}`)).status).toBe(400)
+      expect((await post('/github/pr-note', { room: parent, session, number: 1, body: 'note' })).status).toBe(400)
+      expect((await fetch(`${base}/?view=x&room=${encodeURIComponent(`${base}/${encodeURIComponent(parent)}`)}`)).status).toBe(400)
+      expect((await fetch(`${base}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: parent, session, schema: 2 }) })).status).toBe(400)
+      expect(await join(parent, { session, schema: '2' })).toBe(400)
+    }
+    expect((await post('/view-token', { room: victim, session, schema: 2 })).status).toBe(200)
+    expect(await join(victim, { session, schema: '2' })).toBe(101)
+    expect(await join(`${victim}/main`, { session, schema: '2' })).toBe(400)
+  })
   it('cuts a repository over on a schema-2 preflight and refuses old requests', async () => {
     const session = await login('cutover')
     const room = 'github.com/cutover/project'
     expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
     expect((await post('/view-token', { room, schema: 2 })).status).toBe(401)
     expect(await join(`${room}/main`, { session })).toBe(101)
-    const migrated = await post('/view-token', { room: `${room}/feature`, session, schema: 2 })
+    const migrated = await post('/view-token', { room, session, schema: 2 })
     expect(migrated.status).toBe(200)
     expect(await migrated.json()).toMatchObject({ room, hub: 1 })
     const oldText = `update Room to 0.17 or later: this repository now has one room for all branches (${room})`
@@ -105,8 +124,8 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await join(`${room}/main`, { session })).toBe(403)
     expect(await join(room, { session, schema: '2' })).toBe(101)
     const alias = await post('/rooms', { room: `${room}/main`, session, schema: 2 })
-    expect(alias.status).toBe(409)
-    expect(await alias.json()).toEqual({ room })
+    expect(alias.status).toBe(400)
+    expect(await alias.text()).toContain('invalid room name')
   })
 
   it('closes an already joined 0.16 socket with the upgrade text', async () => {

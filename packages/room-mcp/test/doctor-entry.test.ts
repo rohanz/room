@@ -23,7 +23,7 @@ async function callDoctor(roomUrl?: string, failRuntime = false): Promise<{ repl
   const preload = path.join(root, 'probe.mjs')
   writeFileSync(preload, `import net from 'node:net'
 net.createServer = () => { process.stderr.write('PROBE_LISTEN\\n'); throw new Error('listener started') }
-globalThis.fetch = async url => { process.stderr.write('PROBE_FETCH ' + url + '\\n'); return new Response('{}', { status: 200 }) }
+globalThis.fetch = async url => { process.stderr.write('PROBE_FETCH ' + url + '\\n'); return new Response('{\"ok\":true,\"schema\":2,\"hub\":1}', { status: 200 }) }
 `)
   // The wrapper names the parent like Codex's shared app-server, so startup stays deferred.
   const wrapper = path.join(root, 'fixture-app-server.mjs')
@@ -75,7 +75,7 @@ child.on('exit', code => process.exit(code ?? 0))
 describe('MCP entry doctor route', () => {
   it('answers the first call without starting arbitration or fetching admission config', async () => {
     const { reply, stderr } = await callDoctor()
-    expect(reply.result.content[0].text).toContain('team server: /health answered')
+    expect(reply.result.content[0].text).toContain('team server: schema 2, hub 1; storage healthy')
     expect(stderr).not.toContain('PROBE_LISTEN')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
@@ -89,7 +89,7 @@ describe('MCP entry doctor route', () => {
   it('still answers after runtime initialization fails at the arbitration listener', async () => {
     const { reply, stderr } = await callDoctor(undefined, true)
     expect(stderr).toContain('PROBE_LISTEN')
-    expect(reply.result.content[0].text).toContain('team server: /health answered')
+    expect(reply.result.content[0].text).toContain('team server: schema 2, hub 1; storage healthy')
     expect(stderr.match(/PROBE_FETCH [^\n]+/g)).toEqual(['PROBE_FETCH https://fixture.invalid/health'])
   })
 })

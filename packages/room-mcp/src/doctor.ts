@@ -27,7 +27,8 @@ export interface DoctorFacts {
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
-  server?: string; serverHealth?: boolean; serverRedirect?: string; credential?: boolean
+  server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
+  credential?: boolean; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
   relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; configError?: string; stale?: string; inSession?: boolean
 }
 
@@ -88,8 +89,18 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   }
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')
   else if (f.server) {
-    add(f.serverHealth ? 'PASS' : 'WARN', 'team server', f.serverRedirect ? `server redirected /health (${f.serverRedirect}); check ROOM_SERVER` : f.serverHealth ? '/health answered' : '/health unavailable', 'Check ROOM_SERVER and server status')
-    add(f.credential ? 'PASS' : 'WARN', 'team login', f.credential ? 'login present' : 'login missing', 'Run room_login')
+    if (f.serverRedirect) add('WARN', 'team server', `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, 'Check ROOM_SERVER and server status')
+    else if (!f.serverHealth) add('WARN', 'team server', '/health unavailable', 'Check ROOM_SERVER and server status')
+    else if (f.serverStorage === 'failing') add('FAIL', 'team server', "the server's storage is failing", 'Check server storage before joining')
+    else if (f.serverSchema === undefined) add('FAIL', 'team server', 'the server is older than Room 0.17: deploy 0.17', 'Deploy Room 0.17 on the server')
+    else if (f.serverSchema !== 2 || f.serverHub !== 1) add('FAIL', 'team server', `server schema ${f.serverSchema}, hub ${f.serverHub ?? 'missing'}; need schema 2, hub 1`, 'Deploy a compatible Room 0.17 server')
+    else add('PASS', 'team server', 'schema 2, hub 1; storage healthy')
+    if (!f.credential && f.sharedToken) add('PASS', 'team login', 'shared token configured; login check does not apply')
+    else if (!f.credential) add('WARN', 'team login', 'login missing', 'Run room_login')
+    else if (f.credentialStatus === 'valid') add('PASS', 'team login', `logged in as ${f.credentialLogin}`)
+    else if (f.credentialStatus === 'rejected' && f.serverSchema === 2 && f.serverHub === 1) add('FAIL', 'team login', 'saved credential was rejected; log in again (room_login)', 'Run room_login')
+    else if (f.credentialStatus === 'rejected') add('WARN', 'team login', 'credential present; the server did not confirm it', 'Deploy Room 0.17, then retry room doctor')
+    else add('WARN', 'team login', 'credential present (not verified)', 'Check server connection, then retry room doctor')
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
   if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
   add(f.inSession ? f.stale ? 'WARN' : 'PASS' : 'PASS', 'running session', f.inSession ? f.stale ?? 'matches installed bundle' : 'n/a', 'Restart the host session or reconnect Room (/mcp)')
@@ -130,11 +141,22 @@ export function codexHooksRoot(marketplaces: unknown, name: string | undefined):
   } catch { /* an older marketplace layout */ }
   return path.resolve(root, entry ?? path.join('plugins', 'room'))
 }
-export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string }> {
+export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string; schema?: number; hub?: number; storage?: string }> {
   try {
     const r = await fetcher(url, { signal: AbortSignal.timeout(3000), redirect: 'manual' })
-    return { ok: r.ok, ...(r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {}) }
+    if (!r.ok) return { ok: false, ...(r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {}) }
+    const body = await r.json() as { ok?: boolean; schema?: number; hub?: number; storage?: string }
+    return { ok: body.ok === true, schema: body.schema, hub: body.hub, storage: body.storage }
   } catch { return { ok: false } }
+}
+export async function probeCredential(url: string, session: string, fetcher: typeof fetch = fetch): Promise<{ status: 'valid' | 'rejected' | 'unverified'; login?: string }> {
+  try {
+    const r = await fetcher(url, { headers: { Authorization: `Bearer ${session}` }, signal: AbortSignal.timeout(3000), redirect: 'manual' })
+    if (r.status === 401) return { status: 'rejected' }
+    if (!r.ok) return { status: 'unverified' }
+    const body = await r.json() as { login?: string }
+    return typeof body.login === 'string' && body.login ? { status: 'valid', login: body.login } : { status: 'unverified' }
+  } catch { return { status: 'unverified' } }
 }
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
@@ -167,11 +189,22 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     if (config.server !== 'local') {
       f.server = config.server
       configureCredentials(config.credentialsPath)
-      f.credential = !!config.token || !!getCredential(config.server)
+      const session = getCredential(config.server)?.session
+      f.credential = !!session
+      f.sharedToken = !!config.token
       const u = new URL(config.server); u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:'; u.pathname = '/health'; u.search = ''
       const health = await probeHealth(u.toString())
       f.serverHealth = health.ok
       f.serverRedirect = health.redirect
+      f.serverSchema = health.schema
+      f.serverHub = health.hub
+      f.serverStorage = health.storage
+      if (session) {
+        u.pathname = '/auth/me'
+        const credential = await probeCredential(u.toString(), session)
+        f.credentialStatus = credential.status
+        f.credentialLogin = credential.login
+      }
     } else if (f.repo) {
       const common = await gitCommonDir(dir)
       const info = readRelayInfo(common)

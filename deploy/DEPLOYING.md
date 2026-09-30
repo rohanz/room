@@ -14,6 +14,8 @@ Anyone with `flyctl` access to the app can do everything below. Nothing here nee
 
 ## Deploy
 
+For the **0.17 cutover**, step 0 is the [pre-upgrade snapshot](#017-cutover-snapshot-and-rollback) below. Do not deploy until its new snapshot ID is listed, and keep the matching Postgres dump if `DATABASE_URL` is configured.
+
 ```sh
 cd <repo root>
 npm run build -w @room/web            # the image copies packages/web/dist
@@ -29,6 +31,38 @@ no local Docker on the usual dev machine, so `--local-only` is not an option.
 
 A deploy restarts the machine; expect one `502` for up to a minute, then `200` in under 100 ms.
 Watch it: `for i in 1 2 3; do sleep 30; curl -s -o /dev/null -w "%{http_code}\n" https://room-rohanz.fly.dev/health; done`.
+
+## 0.17 cutover snapshot and rollback
+
+This procedure is documented and will be rehearsed on staging separately; it has **not yet been exercised**. Commands follow Fly's [volume snapshot](https://docs.fly.io/volumes/snapshots/) and [volume management](https://docs.fly.io/volumes/volume-manage/) documentation as fetched on 2026-09-30. Fly keeps snapshots for **5 days by default** (configurable from 1 to 60 days). Roll back within that window or raise retention before upgrading.
+
+**Step 0, before deploying 0.17:** stop the machine for a quiescent snapshot, since LevelDB may otherwise be mid-write. Record the machine and volume IDs, then create a snapshot of `room_data` in `sin`; wait until the new snapshot appears and record its ID. If `DATABASE_URL` is configured, take a `pg_dump` at the same stopped-machine point and retain it with the volume snapshot.
+
+```sh
+fly machine stop <machine id> -a room-rohanz
+fly volumes list -a room-rohanz
+fly volumes snapshots create <volume id> -a room-rohanz
+fly volumes snapshots list <volume id> -a room-rohanz
+# If DATABASE_URL is set, take and retain a matching dump now:
+pg_dump "$DATABASE_URL" --format=custom --file=room-registry-pre-017.dump
+```
+
+Deploy 0.17 using the command in [Deploy](#deploy), then update all clients together using [the upgrade guide](../docs/upgrading.md). A **0.16 server cannot safely serve a volume migrated by 0.17**. Putting the 0.16 image back on the migrated volume is not a rollback; legacy Markdown exports are not a rollback image.
+
+**Rollback:** stop the 0.17 machine. Restore the pre-upgrade snapshot to a new `room_data` volume at least as large as the original (1 GB here), in `sin`. If `DATABASE_URL` was used, restore the matching pre-upgrade `pg_dump` while the server is stopped. Attach the restored volume at `/data` to a new machine, retire the old machine, then deploy the **0.16.40 image**. Alternatively, use Fly's scale command to create a machine and new volume from the snapshot. Reinstall 0.16.40 clients on Claude Code and Codex with the commands in [the upgrade guide](../docs/upgrading.md#roll-back-the-cutover), and restart their sessions. Check rooms and logins before destroying the old volume; destruction is permanent and has no undo.
+
+```sh
+fly machine stop <old machine id> -a room-rohanz
+fly volumes create room_data --snapshot-id <snapshot id> -s 1 -r sin -a room-rohanz
+fly machine clone <old machine id> --region sin --attach-volume <new volume id>:/data -a room-rohanz
+fly machine destroy <old machine id> -a room-rohanz
+# Alternative to create and attach via clone: fly scale count --with-new-volumes --from-snapshot <snapshot id> 1 -a room-rohanz
+# If DATABASE_URL was used, restore its matching dump while the server is stopped:
+pg_restore --clean --if-exists --dbname="$DATABASE_URL" room-registry-pre-017.dump
+cd <room-0.16.40-checkout>  # commit 73866e6; see the upgrade guide
+flyctl deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
+fly volumes destroy <old volume id> -a room-rohanz  # only after verifying the rollback
+```
 
 After a server deploy that also changed the plugin bundle, refresh the local installs so tests
 run against the shipped code:

@@ -143,12 +143,14 @@ Everything is on the `room_data` volume (`/data` in the container): LevelDB room
 ```sh
 docker compose -f deploy/docker-compose.yml stop room
 docker run --rm -v deploy_room_data:/data -v "$PWD":/backup alpine tar czf /backup/room-data.tgz -C /data .
+# If DATABASE_URL is configured, run while the container is still stopped:
+pg_dump "$DATABASE_URL" --format=custom --file=room-registry.dump
 docker compose -f deploy/docker-compose.yml start room
 ```
 
-With `DATABASE_URL`, back up Postgres with `pg_dump` as usual; the volume then holds only the
-documents. Stopping the container first keeps LevelDB consistent; a hot copy usually works but
-is not guaranteed.
+With `DATABASE_URL`, keep `room-registry.dump` beside the volume archive; the volume then holds only the documents. Restore that dump with `pg_restore --clean --if-exists --dbname="$DATABASE_URL" room-registry.dump` while the server is stopped. Stopping the container first keeps LevelDB consistent; a hot copy usually works but is not guaranteed.
+
+For a **0.16 → 0.17 cutover**, keep a pre-upgrade copy of the entire stopped-server volume and a matching `pg_dump` if `DATABASE_URL` is set. A 0.16 server cannot serve a volume that 0.17 has migrated. To roll back, stop 0.17, restore both pre-upgrade stores, run the 0.16.40 image, and reinstall 0.16.40 clients on both hosts as shown in [the upgrade guide](../docs/upgrading.md#roll-back-the-cutover). Legacy Markdown exports are not a rollback image.
 
 ## Upgrading
 
@@ -159,10 +161,7 @@ docker compose -f deploy/docker-compose.yml build room
 docker compose -f deploy/docker-compose.yml up -d room
 ```
 
-State on the volume is forward-compatible: sessions written before OIDC support load as
-GitHub sessions; Postgres tables are created with `IF NOT EXISTS`. Clients reconnect on their
-own; rooms show a brief "disconnected" while the container restarts. The `docker compose`
-healthcheck hits `/health`.
+For the 0.17 cutover, take the stopped-server snapshot described above **before** these commands. Earlier session records load as GitHub sessions, and Postgres tables are created with `IF NOT EXISTS`; this does not make a migrated 0.17 volume backward-compatible with 0.16. Clients must update together as described in [the upgrade guide](../docs/upgrading.md). The `docker compose` healthcheck hits `/health`.
 
 Running without Docker is the same server: `YPERSISTENCE=/var/lib/room PORT=8080 npm run server`
 under systemd, with the same environment.
