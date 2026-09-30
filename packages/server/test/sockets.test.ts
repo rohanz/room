@@ -60,23 +60,46 @@ describe('connection and outbound budgets', () => {
     first(); second()
     expect(quotas.total).toBe(0)
   })
-  it('drops a slow consumer while a fast one still receives, and evicts the largest aggregate queue', () => {
+  it('reserves every send before enqueue, evicts the largest queue, and releases on completion', () => {
     const budget = new OutboundBudget(100, 120)
-    const fake = (queued: number) => ({ bufferedAmount: queued, send: vi.fn(), close: vi.fn(), terminate: vi.fn(), once: vi.fn() })
-    const slow = fake(95), fast = fake(0), fastSend = fast.send
-    budget.track(slow); budget.track(fast)
-    slow.send(Buffer.alloc(10)); fast.send(Buffer.alloc(10))
-    expect(slow.terminate).toHaveBeenCalledOnce()
-    expect(fastSend).toHaveBeenCalledOnce()
-    // Into an empty queue a message always goes, whatever its size: it is the only way a large document arrives.
-    const idle = fake(0), idleSend = idle.send
-    budget.track(idle); idle.send(Buffer.alloc(500))
-    expect(idleSend).toHaveBeenCalledOnce()
-    expect(idle.terminate).not.toHaveBeenCalled()
-    const larger = fake(100), smaller = fake(50)
-    budget.track(larger); budget.track(smaller); budget.sweep()
-    expect(larger.terminate).toHaveBeenCalledOnce()
-    expect(smaller.terminate).not.toHaveBeenCalled()
+    const fake = () => {
+      let complete: ((error?: Error) => void) | undefined
+      const socket = { bufferedAmount: 0, send: vi.fn((_data: unknown, callback: (error?: Error) => void) => { complete = callback }),
+        close: vi.fn(), terminate: vi.fn(), once: vi.fn() }
+      return { socket, complete: () => complete?.() }
+    }
+    const a = fake(), b = fake(), c = fake()
+    for (const item of [a, b, c]) budget.track(item.socket)
+    a.socket.send(Buffer.alloc(70)); b.socket.send(Buffer.alloc(40))
+    expect(budget.queuedBytes).toBe(110)
+    c.socket.send(Buffer.alloc(50))
+    expect(a.socket.terminate).toHaveBeenCalledOnce()
+    expect(b.socket.terminate).not.toHaveBeenCalled()
+    expect(budget.queuedBytes).toBe(90)
+    b.complete(); expect(budget.queuedBytes).toBe(50)
+    const huge = fake(); budget.track(huge.socket); huge.socket.send(Buffer.alloc(500))
+    expect(huge.complete()).toBeUndefined()
+    expect(huge.socket.close).toHaveBeenCalledWith(1013, 'server output budget exhausted; retry')
+    expect(budget.queuedBytes).toBeLessThanOrEqual(120)
+    c.complete(); expect(budget.queuedBytes).toBe(0)
+  })
+  it('keeps N concurrent initial responses within the process ceiling', () => {
+    const budget = new OutboundBudget(100, 100)
+    const readers = Array.from({ length: 10 }, () => {
+      const callbacks: ((error?: Error) => void)[] = []
+      const sent = vi.fn((_data: unknown, callback: (error?: Error) => void) => callbacks.push(callback))
+      const socket = { bufferedAmount: 0, send: sent, close: vi.fn(), terminate: vi.fn(), once: vi.fn() }
+      budget.track(socket)
+      return { socket, callbacks, sent }
+    })
+    for (const reader of readers) {
+      reader.socket.send(Buffer.alloc(80))
+      expect(budget.queuedBytes).toBeLessThanOrEqual(100)
+    }
+    expect(readers.filter(r => r.sent.mock.calls.length)).toHaveLength(10)
+    expect(readers.filter(r => r.socket.terminate.mock.calls.length)).toHaveLength(9)
+    readers[9].callbacks[0]()
+    expect(budget.queuedBytes).toBe(0)
   })
 })
 

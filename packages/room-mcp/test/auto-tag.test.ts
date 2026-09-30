@@ -27,15 +27,32 @@ function repo() {
 }
 let sessions = 0
 /** Join `room` (one hub for every join in a test) from `dir`; names are decided by the local and hub leases. */
-async function start(room: HubRoom, dir = repo(), tag?: string, sessionId = `s${++sessions}`) {
+async function start(room: HubRoom, dir = repo(), tag?: string, sessionId = `s${++sessions}`, principal?: { id: string; login: string; readOnly: false }) {
   const log = vi.fn()
   const config = await resolveConfig({ dir, env: tag ? { ROOM_TAG: tag } : {} })
   const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', localKey: 'key', name: tag ? `name+${tag}` : 'name', label: config.tag, owner: 'name', kind: 'agent',
-    requested: 'full', sessionId, providerFactory: (_s, _r, doc: Y.Doc) => room.provider(doc), log }, config.tag)
+    requested: 'full', sessionId, providerFactory: (_s, _r, doc: Y.Doc) => room.provider(doc, principal), log }, config.tag)
   cleanup.push(() => result.daemon.stop())
   return { ...result, log, dir }
 }
 describe('automatic session tags (registry §15: local lease, then hub lease)', () => {
+  it('a second OIDC principal with the same login automatically tries a tagged name', async () => {
+    const room = hubRoom()
+    const first = { id: 'oidc:first', login: 'name', readOnly: false as const }
+    const second = { id: 'oidc:second', login: 'name', readOnly: false as const }
+    await start(room, repo(), undefined, 'first', first)
+    const secondDir = repo()
+    vi.stubEnv('ROOM_HOST', 'codex')
+    const joined = await start(room, secondDir, undefined, 'second', second)
+    expect(joined.me.name).toBe('name+codex')
+    expect(joined.autoTagNote).toContain('name belongs to another account with the same display name')
+  })
+  it('an explicit tag remains refused for another OIDC principal', async () => {
+    const room = hubRoom()
+    await room.hold('name+custom', 'first', { id: 'oidc:first', login: 'name', readOnly: false })
+    await expect(start(room, repo(), 'custom', 'second', { id: 'oidc:second', login: 'name', readOnly: false }))
+      .rejects.toThrow('name+custom belongs to another principal')
+  })
   it('production join passes hub pushed acceptance back to the daemon', async () => {
     const room = hubRoom(), s = await start(room)
     const fromSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s.dir, encoding: 'utf8' }).trim()

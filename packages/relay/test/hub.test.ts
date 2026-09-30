@@ -8,18 +8,43 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { SETTLE_MS, encodeSeq, startHub } from '@room/hub-core'
-import { contractSuite, fakeClock, holder, socketClient, waitFor, type MakeEnv } from '../../hub-core/test/contract.js'
+import { SETTLE_MS, encodeSeq, startHub, MSG_HUB, encodeFrame, decodeFrame, type Reply, type Push } from '@room/hub-core'
+import { contractSuite, fakeClock, holder, waitFor, type MakeEnv } from '../../hub-core/test/contract.js'
 import { AuthorityLock, deterministicPort, ensureLocalRelay, localProofHeader, memoryFile, readRelayInfo, startRelay, type StartedRelay } from '../src/index.js'
 import { incarnationFile } from '../src/hub.js'
+import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-hub-'))
 const KEY = 'hub-test-key'
 const ROOM = 'local/contract'
 const roomUrl = (port: number, room = ROOM) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`
 const authed = (url: string, key: string) => {
-  const parsed = new URL(url)
-  return socketClient(url, { authorization: localProofHeader(key, 'GET', parsed.pathname + parsed.search, Number(parsed.port)) })
+  return secureSocketClient(url, key)
+}
+
+async function secureSocketClient(url: string, key: string) {
+  const WS = authorizedWebSocket({ key })
+  const ws = new WS(url)
+  ws.binaryType = 'arraybuffer'
+  await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
+  ws.send(Uint8Array.of(0, 0))
+  const pending = new Map<string, (reply: Reply) => void>()
+  const pushes: Push[] = []
+  ws.on('message', (data: ArrayBuffer) => {
+    const buf = new Uint8Array(data)
+    if (buf[0] !== MSG_HUB) return
+    const frame = decodeFrame(buf) as Reply | Push
+    if ('push' in frame) pushes.push(frame)
+    else pending.get(frame.re)?.(frame)
+  })
+  let n = 0
+  const send = (body: Record<string, unknown>) => new Promise<Reply>(resolve => {
+    const id = `r${++n}`
+    pending.set(id, reply => { pending.delete(id); resolve(reply) })
+    ws.send(encodeFrame({ v: 1, id, ...body } as never))
+  })
+  return { ws, send, pushes, hello: () => send({ op: 'hello', proto: 1, schema: 2, client: 'contract', sessionId: 'c' }),
+    close: () => new Promise<void>(resolve => { if (ws.readyState === ws.CLOSED) return resolve(); ws.once('close', resolve); ws.close() }) }
 }
 
 /** The contract over a real relay: the hub runs under the clone's authority lock, on the test clock. */
@@ -205,7 +230,8 @@ describe('relay hub wiring', () => {
     const common = await makeCommonDir()
     const replica = new RoomDoc()
     const inherited = encodeSeq(5, 3)
-    replica.participants.set('ada\u0000holder', { ...holder('s1'), epoch: inherited, at: 1 })
+    // A holder record as the hub writes it: with the principal and session that acquired it.
+    replica.participants.set('ada\u0000holder', { ...holder('s1'), epoch: inherited, at: 1, principal: 'local', session: 's1' })
     const owner = await ensureLocalRelay(common, 'local/x', { watchMs: 30_000 })
     const b = await ensureLocalRelay(common, 'local/x', { watchMs: 100, seed: () => Y.encodeStateAsUpdate(replica.doc) })
     try {

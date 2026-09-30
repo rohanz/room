@@ -31,6 +31,8 @@ import * as awarenessProtocol from 'y-protocols/awareness'
 import { MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
+import { SecureSession } from './secure.js'
+export { SecureSession } from './secure.js'
 export { localProofHeader, localViewKey, relayHealth, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
 class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
 export function safeUrl(target: string | undefined): URL {
@@ -68,23 +70,53 @@ function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
 export const RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024
-/** A message into an empty queue always goes: it is the only way a large document reaches a client, and refusing
- *  it would disconnect that client again on every reconnect. Only a consumer already behind is cut off. */
 export function relayOutputAllowed(queued: number, aggregateQueued: number, nextBytes: number, socketBudget = RELAY_SOCKET_QUEUE_BYTES): boolean {
-  return queued === 0 || (queued + nextBytes <= socketBudget && aggregateQueued + nextBytes <= RELAY_TOTAL_QUEUE_BYTES)
+  return (queued === 0 || queued + nextBytes <= socketBudget) && aggregateQueued + nextBytes <= RELAY_TOTAL_QUEUE_BYTES
 }
-const activeSockets = new Set<WebSocket>()
 /** A relay started with its own per-socket budget (RelayOptions.socketQueueBytes) records it per connection. */
 const socketBudgets = new WeakMap<WebSocket, number>()
+const sessions = new WeakMap<WebSocket, SecureSession>()
+const queued = new Map<WebSocket, number>()
+let totalQueued = 0
+let stateReservation = 0
+function dropSocket(conn: WebSocket): void {
+  totalQueued -= queued.get(conn) ?? 0
+  queued.delete(conn)
+}
+function full(conn: WebSocket): void {
+  conn.close(1013, 'relay output queue full')
+  setTimeout(() => { if (conn.readyState !== conn.CLOSED) conn.terminate() }, 1000).unref?.()
+}
+function capacityFor(bytes: number, except: WebSocket): boolean {
+  if (totalQueued + stateReservation + bytes > RELAY_TOTAL_QUEUE_BYTES) {
+    for (const [slow, amount] of [...queued].sort((a, b) => b[1] - a[1])) {
+      if (totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES) break
+      if (slow === except || amount === 0) continue
+      // Discard its queued bytes immediately, so the replacement frame never shares
+      // the process budget with a slow reader's pending output.
+      slow.close(1013, 'relay output queue full')
+      slow.terminate()
+      dropSocket(slow)
+    }
+  }
+  return totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES
+}
 function send(conn: WebSocket, buf: Uint8Array): void {
   if (conn.readyState !== conn.OPEN) return
-  const total = [...activeSockets].reduce((sum, socket) => sum + socket.bufferedAmount, 0)
-  if (!relayOutputAllowed(conn.bufferedAmount, total, buf.byteLength, socketBudgets.get(conn))) {
-    conn.close(1013, 'relay output queue full')
-    setTimeout(() => { if (conn.readyState !== conn.CLOSED) conn.terminate() }, 1000).unref?.()
-    return
-  }
-  try { conn.send(buf) } catch { try { conn.close() } catch { /* gone */ } }
+  const session = sessions.get(conn)
+  if (!session?.ready) return
+  const bytes = buf.byteLength + 16
+  const own = queued.get(conn) ?? 0
+  if (own > 0 && own + bytes > (socketBudgets.get(conn) ?? RELAY_SOCKET_QUEUE_BYTES)) { full(conn); return }
+  if (!capacityFor(bytes, conn)) { full(conn); return }
+  try {
+    const frame = session.encrypt(buf)
+    queued.set(conn, own + bytes); totalQueued += bytes
+    conn.send(frame, error => {
+      if (queued.has(conn)) { queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - bytes)); totalQueued -= bytes }
+      if (error) full(conn)
+    })
+  } catch { dropSocket(conn); try { conn.close() } catch { /* gone */ } }
 }
 function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): RelayDoc {
   let d = docs.get(name)
@@ -146,16 +178,48 @@ export function hubReply(d: RelayDoc, conn: WebSocket, raw: Uint8Array, hubOn: b
   if (!d.hub) return { v: 1, re, ok: false, reason: 'starting', text: 'the hub is starting', retryMs: STARTING_RETRY_MS }
   return d.hub.handle(conn, frame, { local: true }, raw.byteLength)
 }
-function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.IncomingMessage, opts: DocOptions): void {
+function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.IncomingMessage, opts: DocOptions & { key: string }): void {
   const name = encodeURIComponent(decodeURIComponent((req.url ?? '/').slice(1).split('?')[0]))
+  const room = decodeURIComponent(name)
+  const session = new SecureSession(opts.readOnly ? localViewKey(opts.key, room) : opts.key, room, 'relay')
+  sessions.set(conn, session)
+  const timer = setTimeout(() => conn.close(1008, 'secure handshake timeout'), 5000)
+  timer.unref?.()
+  let hello = false
+  const handshake = (raw: Buffer, binary: boolean) => {
+    try {
+      if (!binary) throw new Error('binary secure frames required')
+      if (!hello) {
+        hello = true
+        const reply = session.relayHello(raw)
+        if (!capacityFor(reply.length, conn)) { full(conn); return }
+        queued.set(conn, reply.length); totalQueued += reply.length
+        conn.send(reply, error => {
+          if (queued.has(conn)) { queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - reply.length)); totalQueued -= reply.length }
+          if (error) full(conn)
+        })
+        return
+      }
+      const first = session.decrypt(raw)
+      clearTimeout(timer)
+      conn.off('message', handshake)
+      attachReady(docs, conn, name, opts, first)
+      conn.emit('message', first, true)
+    } catch { clearTimeout(timer); conn.close(1008, 'invalid secure frame') }
+  }
+  conn.on('message', handshake)
+  conn.on('close', () => { clearTimeout(timer); dropSocket(conn) })
+}
+function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string, opts: DocOptions, first: Buffer): void {
   const d = getDoc(docs, name, opts)
   d.conns.set(conn, new Set())
-  activeSockets.add(conn)
   if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes)
   const allowState = stateRequestLimiter()
   conn.binaryType = 'arraybuffer'
   conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
-    const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? new Uint8Array(Buffer.concat(raw)) : new Uint8Array(raw)
+    let buf: Uint8Array
+    try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
+    catch { conn.close(1008, 'invalid secure frame'); return }
     if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
     try {
       const dec = decoding.createDecoder(buf)
@@ -163,8 +227,14 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
       switch (decoding.readVarUint(dec)) {
         case MSG_SYNC:
           if (opts.readOnly && decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) break
+          // Reserve room for a full snapshot before y-protocols allocates its reply.
+          // Live docs can exceed the snapshot ceiling; send() still enforces the hard process cap.
+          const step1 = decoding.peekVarUint(dec) === syncProtocol.messageYjsSyncStep1
+          if (step1 && !capacityFor(RELAY_SOCKET_QUEUE_BYTES, conn)) { full(conn); return }
+          if (step1) stateReservation += RELAY_SOCKET_QUEUE_BYTES
           encoding.writeVarUint(enc, MSG_SYNC)
-          syncProtocol.readSyncMessage(dec, enc, d.doc, conn)
+          try { syncProtocol.readSyncMessage(dec, enc, d.doc, conn) }
+          finally { if (step1) stateReservation -= RELAY_SOCKET_QUEUE_BYTES }
           if (encoding.length(enc) > 1) send(conn, encoding.toUint8Array(enc))
           break
         case MSG_AWARENESS:
@@ -181,7 +251,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
     if (!d.conns.has(conn)) return
     const ids = d.conns.get(conn)
     d.conns.delete(conn)
-    activeSockets.delete(conn)
+    dropSocket(conn)
     d.hub?.closed(conn)
     if (ids?.size) awarenessProtocol.removeAwarenessStates(d.awareness, Array.from(ids), null)
     if (!d.conns.size && !d.closed) d.memory?.flush() // a closed relay already saved its last state
@@ -406,7 +476,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
     const docs = relayDocs()
     wss.on('connection', (conn, req) => {
-      try { safeUrl(req.url); attach(docs, conn, req, { ...docOptions, readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
+      try { safeUrl(req.url); attach(docs, conn, req, { ...docOptions, key: opts.key ?? '', readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
       catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
     })
     const ticker = setInterval(() => {

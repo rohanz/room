@@ -47,7 +47,7 @@ import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from '
 import { RepoLocks } from './repo-lock.js'
 import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { HUB_ORIGIN } from '@room/hub-core'
-import { bodyReader, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
+import { bodyReader, ExportReservations, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -136,6 +136,10 @@ const connectionCounts = new ConnectionReservations({ total: MAX_CONNECTIONS, ro
 const MAX_QUEUED_BYTES = Number(process.env.ROOM_MAX_QUEUED_MB ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) + 4) * 1048576
 const MAX_TOTAL_QUEUED_BYTES = Number(process.env.ROOM_MAX_TOTAL_QUEUED_MB ?? 256) * 1048576
 const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
+const MAX_EXPORTS = Number(process.env.ROOM_MAX_EXPORTS ?? 2)
+const EXPORT_DEADLINE_MS = Number(process.env.ROOM_EXPORT_DEADLINE_MS ?? 120_000)
+const EXPORT_CHUNK_BYTES = Number(process.env.ROOM_EXPORT_CHUNK_KB ?? 64) * 1024
+const exportsInFlight = new ExportReservations(MAX_EXPORTS)
 const locks = new RepoLocks()
 let pendingRoomCreations = 0
 const canonical = (name: string, schema2 = false) => {
@@ -599,9 +603,35 @@ const server = http.createServer((req, res) => {
     if (!repo) return text(404, 'archive not found')
     const v = await admitted(repo, creds(o))
     if (!v.ok) return text(v.status, v.why)
-    const update = Y.encodeStateAsUpdate(await loadDoc(name))
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
-    res.end(Buffer.from(update))
+    const c = creds(o)
+    const principal = c.session ? `session:${c.session}` : c.token ? `token:${c.token}` : `address:${clientIp(req)}`
+    const releaseSlot = exportsInFlight.reserve(principal)
+    if (!releaseSlot) { res.setHeader('Retry-After', '5'); return text(429, 'archive export busy; retry') }
+    let releaseBytes: (() => void) | undefined
+    let update: Uint8Array | undefined
+    let disconnected = false
+    const cleanup = () => { disconnected = true; releaseBytes?.(); releaseBytes = undefined; update = undefined; releaseSlot(); clearTimeout(deadline) }
+    const deadline = setTimeout(() => res.destroy(), EXPORT_DEADLINE_MS)
+    res.once('close', cleanup)
+    try {
+      const live = docs.get(name)
+      const doc = live ?? await loadDoc(name)
+      try { if (!disconnected) update = Y.encodeStateAsUpdate(doc) }
+      finally { if (!live) doc.destroy() }
+      if (disconnected || !update) return
+      releaseBytes = outbound.reserve(update.byteLength)
+      if (!releaseBytes) return text(503, 'server output budget exhausted; retry')
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
+      for (let at = 0; at < update.byteLength && !disconnected; at += EXPORT_CHUNK_BYTES) {
+        if (!res.write(update.subarray(at, at + EXPORT_CHUNK_BYTES))) {
+          await new Promise<void>(resolve => {
+            const done = () => { res.off('drain', done); res.off('close', done); resolve() }
+            res.once('drain', done); res.once('close', done)
+          })
+        }
+      }
+      if (!disconnected) res.end()
+    } finally { if (disconnected || !res.headersSent) cleanup() }
   })
 
   // ---- github (pull requests) ----
@@ -847,10 +877,11 @@ server.on('upgrade', (req, socket, head) => {
           ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
         })
         // Outermost of all: a state request costs an encoding of the whole document, for viewers and members alike.
-        limitStateRequests(ws, { perMinute: 10, maxQueuedBytes: 1048576, queued: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) })
+        limitStateRequests(ws, { perMinute: 10, maxQueuedBytes: 1048576, queued: () => ws.bufferedAmount,
+          canSendState: () => outbound.canFit(docMeter(docKey).size()), close: (code, reason) => ws.close(code, reason) })
         if (!opts.readOnly) {
           let budget = awarenessBudgets.get(docKey)
-          if (!budget) { budget = new AwarenessBudget(getYDoc(docKey, true).awareness, { maxMessageBytes: AWARENESS_MAX_MESSAGE_BYTES,
+          if (!budget) { budget = new AwarenessBudget(() => docs.get(docKey)?.awareness, { maxMessageBytes: AWARENESS_MAX_MESSAGE_BYTES,
             maxStateBytes: AWARENESS_MAX_STATE_BYTES, maxMessagesPerMinute: AWARENESS_MAX_MESSAGES_PER_MINUTE,
             maxIdsPerConnection: AWARENESS_MAX_IDS_PER_CONNECTION, maxIdsPerRoom: AWARENESS_MAX_IDS_PER_ROOM }); awarenessBudgets.set(docKey, budget) }
           budget.bind(ws, (code, reason) => ws.close(code, reason))

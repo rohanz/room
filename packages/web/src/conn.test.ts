@@ -39,7 +39,7 @@ describe('browser ticket connection', () => {
   })
 
   it('proves a local view capability without sending it', async () => {
-    const dom = browser('http://127.0.0.1/#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=local-view')
+    const dom = browser('http://127.0.0.1/#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=local-view&relay=1')
     const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local-ticket' }) })
     vi.stubGlobal('fetch', request)
     const conn = connect(dom.window.location.search)
@@ -49,6 +49,7 @@ describe('browser ticket connection', () => {
     const body = JSON.parse(request.mock.calls[0]![1].body)
     expect(body.proof).toMatch(/^[a-f0-9]{64}$/)
     expect(body).not.toHaveProperty('view')
+    expect(mocks.provider.mock.calls[0]![3]).toHaveProperty('WebSocketPolyfill')
   })
 
   it('mints a new ticket after a disconnected websocket', async () => {

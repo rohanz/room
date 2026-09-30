@@ -20,4 +20,9 @@ describe('worker module characterization', () => {
     expect(env).toMatchObject({ ROOM_WORKER_ID: 'id', ROOM_WORKER_RUN: '1',
       ROOM_LAUNCH_NONCE: 'test-nonce', ROOM_REGISTRY: '/repo/.git/room/registry' })
   })
+
+  it('passes a nested Git room through ROOM_ROOM for team workers', () => {
+    const env = workerProcessEnv({ threads: 2, memGb: 1, host: 'codex', server: 'ws://team', room: 'git/gitlab.example/group/subgroup/repo', dir: '/worker', tag: 'w', lead: 'l', owner: 'o', share: 'intent', run: 1, nonce: 'test-nonce', registry: '/repo/.git/room/registry', id: 'id', logDir: '/lead', isWorker: true }, {})
+    expect(env.ROOM_ROOM).toBe('git/gitlab.example/group/subgroup/repo')
+  })
 })

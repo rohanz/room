@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { realGitCommonDir } from '@room/roomd'
 import { localRoomName } from '@room/roomd/local'
 import { handlers as scopeHandlers } from './scope.js'
-import { DEFAULT_SERVER, NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
+import { DEFAULT_SERVER, NoRoom, NotLoggedIn, checkTeamAdmission, closeRoom, deriveRoomName, normalizeExplicitRoomName, normalizeLocalRoomName, parseServer, resolveAuth, resolveServer, type JoinOptions, type Session } from '../session.js'
 import { displayName } from '@room/shared'
 import { sameCheckoutSession } from '../company.js'
 import { clearChoice, describeWhere, writeChoice } from '../choice.js'
@@ -156,7 +156,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // only a local/default destination falls back to the hosted server.
       const createFromLocal = a.create === true && resolved.server === LOCAL
       const choice = { server: createFromLocal ? resolved.teamServer : resolved.server, where: createFromLocal ? 'team' : resolved.where, rule: resolved.whereRule }
-      const requestedRoom = createFromLocal && resolved.whereRule === 'remembered' ? (typeof a.room === 'string' ? a.room : process.env.ROOM_ROOM) : resolved.room
+      const rawRoom = createFromLocal && resolved.whereRule === 'remembered' ? (typeof a.room === 'string' ? a.room : process.env.ROOM_ROOM) : resolved.room
+      const requestedRoom = choice.server !== LOCAL && rawRoom ? normalizeExplicitRoomName(rawRoom, log) : rawRoom
       const targetRoom = choice.server === LOCAL
         ? requestedRoom !== undefined ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir)
         : requestedRoom ?? (await deriveRoomName(dir)).roomName
@@ -175,7 +176,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${stay}`
         if (e instanceof NoRoom) {
           const repo = e.roomName.startsWith('github.com/') ? e.roomName.split('/').slice(1, 3).join('/') : e.roomName
-          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`
+          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet.${e.roomName.startsWith('git/') ? ` Server says: ${e.message}\n` : ' '}Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`
         }
         const why = message(e)
         return `error: ${why}${/[.!?]$/.test(why) ? '' : '.'}${stay}`
@@ -233,7 +234,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         dir,
         credentialsPath: resolved.credentialsPath,
         name: resolved.name,
-        room: choice.server === LOCAL ? targetRoom : requestedRoom,
+        room: targetRoom,
         server: choice.server,
         create: a.create === true,
         confirm: a.confirm === true,
@@ -311,7 +312,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const config = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } })
         if (config.server === LOCAL) return 'error: not in a local room; nothing to close without joining'
         if (a.confirm !== true) return 'error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user\'s explicit request'
-        const roomName = (await deriveRoomName(dir)).repo ?? config.room
+        const roomName = normalizeExplicitRoomName((await deriveRoomName(dir)).repo ?? config.room ?? '')
         if (!roomName) return `error: ${dir} has no origin remote; room_join needs a room name`
         const { server, token } = parseServer(config.server)
         configureCredentials(config.credentialsPath)

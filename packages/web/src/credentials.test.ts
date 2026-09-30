@@ -24,7 +24,7 @@ describe('browser link credentials', () => {
   })
 
   it('parses a fragment capability and proves a local view without sending it', async () => {
-    const dom = new JSDOM('', { url: 'http://127.0.0.1:4444/#room=ws%3A%2F%2F127.0.0.1%3A4444%2Flocal%252Frepo&view=read-only&participant=Pat' })
+    const dom = new JSDOM('', { url: 'http://127.0.0.1:4444/#room=ws%3A%2F%2F127.0.0.1%3A4444%2Flocal%252Frepo&view=read-only&participant=Pat&relay=1' })
     vi.stubGlobal('location', dom.window.location)
     vi.stubGlobal('crypto', webcrypto)
     const auth = takeLinkCredentials('', dom.window.sessionStorage, vi.fn())
@@ -37,5 +37,10 @@ describe('browser link credentials', () => {
     expect(body.proof).toBe(viewTicketProof('read-only', 'local/repo', body.ts, body.nonce))
     expect(await browserViewProof('read-only', 'local/repo', body.ts, body.nonce)).toBe(body.proof)
     vi.unstubAllGlobals()
+  })
+  it('sends an ordinary view credential to a loopback team server without a relay marker', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'team' }) })
+    await mintTicket({ serverUrl: 'ws://localhost:1234', encodedRoomName: 'team', displayRoomName: 'team' }, { view: 'team-view', key: '', token: '', relay: false }, request)
+    expect(JSON.parse(request.mock.calls[0]![1].body)).toMatchObject({ room: 'team', schema: 2, view: 'team-view' })
   })
 })

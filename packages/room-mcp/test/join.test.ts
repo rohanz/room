@@ -134,7 +134,7 @@ it('identifies an old server when the 0.17 hub is absent', async () => {
 it.each(['argument', 'ROOM_ROOM', 'ROOM_URL', 'remembered'] as const)('retargets a legacy GitHub %s room before preflight', async source => {
   const server = 'ws://upgrade.example'
   const legacy = 'github.com/example/repo/feature/deep'
-  const credentialsPath = join(dir, 'upgrade-credentials.json')
+  const credentialsPath = join(dir, 'credentials.json')
   writeFileSync(credentialsPath, JSON.stringify({ [server]: { session: 's'.repeat(64), login: 'Ada', at: Date.now() } }))
   vi.stubEnv('ROOM_CREDENTIALS', credentialsPath)
   if (source === 'ROOM_ROOM') vi.stubEnv('ROOM_ROOM', legacy)
@@ -157,14 +157,60 @@ it.each(['argument', 'ROOM_ROOM', 'ROOM_URL', 'remembered'] as const)('retargets
   await expect(joinSession({ dir, where: source === 'ROOM_URL' ? undefined : server,
     ...(source === 'argument' ? { room: legacy } : {}), ...remembered, log: text => notices.push(text) })).rejects.toThrow(/preflight refused for test/)
   expect(rooms).toEqual(['github.com/example/repo'])
-  expect(notices).toEqual([expect.stringContaining('branch part ignored')])
+  expect(notices).toEqual(source === 'remembered' ? [] : [expect.stringContaining('branch part ignored')])
 })
 
-it('refuses a non-GitHub branch room with a setting to change before network access', async () => {
-  vi.stubEnv('ROOM_ROOM', 'git/gitlab.example/owner/repo/main')
-  vi.stubGlobal('fetch', vi.fn(() => { throw new Error('network should not be reached') }))
-  await expect(joinSession({ dir, where: 'ws://upgrade.example' })).rejects.toThrow(/Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice/)
-  expect(fetch).not.toHaveBeenCalled()
+it.each(['room_join', 'room_create'] as const)('%s normalizes legacy GitHub rooms before tool preflight', async tool => {
+  const server = 'ws://upgrade.example', seen: string[] = []
+  const credentialsPath = join(dir, 'credentials.json')
+  writeFileSync(credentialsPath, JSON.stringify({ [server]: { session: 's'.repeat(64), login: 'Ada', at: Date.now() } }))
+  vi.stubEnv('ROOM_CREDENTIALS', credentialsPath)
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname === '/auth/config') return Response.json({ github: 'device' })
+    const room = (JSON.parse(String(init?.body)) as { room: string }).room
+    seen.push(room)
+    return room === 'github.com/example/repo' ? Response.json({ hub: 1 }) : new Response('legacy room refused', { status: 400 })
+  }))
+  const t = branchTools(session('local/current', { local: true }))
+  const reply = await t.tools.call(tool, { where: server, room: 'github.com/example/repo/main', ...(tool === 'room_create' ? { confirm: true } : {}) })
+  expect(reply).toContain('joined github.com/example/repo')
+  expect(seen).toEqual(['github.com/example/repo'])
+  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ room: 'github.com/example/repo' }))
+})
+
+it('accepts a nested non-GitHub repository name through explicit join and rejoin', async () => {
+  const server = 'ws://nested.example', room = 'git/gitlab.example/group/subgroup/repo'
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => new URL(url).pathname === '/auth/config'
+    ? Response.json({}) : (JSON.parse(String(init?.body)) as { room: string }).room === room
+      ? Response.json({ hub: 1 }) : new Response('wrong room', { status: 400 })))
+  const t = branchTools(session('local/current', { local: true }))
+  const reply = await t.tools.call('room_join', { where: server, room })
+  expect(reply).toContain(`joined ${room}`)
+  expect(t.joiner).toHaveBeenCalledWith(expect.objectContaining({ room }))
+  await t.tools.call('room_join', { where: server, room })
+  expect(t.active()?.roomName).toBe(room)
+})
+
+it('a team worker preflights its inherited nested ROOM_ROOM unchanged', async () => {
+  const room = 'git/gitlab.example/group/subgroup/repo', seen: string[] = []
+  vi.stubEnv('ROOM_ROOM', room)
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname === '/auth/config') return Response.json({})
+    seen.push((JSON.parse(String(init?.body)) as { room: string }).room)
+    return new Response('room not opened', { status: 404 })
+  }))
+  await expect(joinSession({ dir, where: 'ws://nested-worker.example' })).rejects.toThrow('room not opened')
+  expect(seen).toEqual([room])
+})
+
+it.each([400, 404])('shows server text and branch hint for non-GitHub HTTP %i', async status => {
+  const server = `ws://nested-${status}.example`, room = 'git/gitlab.example/group/subgroup/repo/main'
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+    ? Response.json({}) : new Response('server rejected this room', { status })))
+  const t = branchTools(session('local/current', { local: true }))
+  const reply = await t.tools.call('room_join', { where: server, room })
+  expect(reply).toContain('server rejected this room')
+  expect(reply).toContain('if this name ends in a branch, remove it')
 })
 
 it('room_login server=team uses the remembered concrete server', async () => {

@@ -1,6 +1,7 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { RoomDoc, colorFor, type Presence } from '@room/shared'
+import { secureWebSocket } from './secure-websocket.js'
 
 export interface RoomLocation {
   serverUrl: string
@@ -37,13 +38,13 @@ function roomLocationFromQuery(search = location.search): RoomLocation {
 }
 
 /** Read fragment capabilities from browser memory; strip old query credentials after arrival. */
-export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getItem' | 'setItem'>, replace: (url: string) => void): { view: string; key: string; token: string } {
+export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getItem' | 'setItem'>, replace: (url: string) => void): { view: string; key: string; token: string; relay: boolean } {
   const url = new URL(location.href)
   const q = new URLSearchParams(search)
   const fragment = new URLSearchParams(url.hash.slice(1))
   const room = fragment.get('room') ?? q.get('room') ?? ''
   const slot = `room-credential:${room}`
-  const incoming = { view: fragment.get('view') ?? q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: fragment.get('token') ?? q.get('token') ?? '' }
+  const incoming = { view: fragment.get('view') ?? q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: fragment.get('token') ?? q.get('token') ?? '', relay: fragment.get('relay') === '1' }
   if (incoming.view || incoming.key || incoming.token) try { storage.setItem(slot, JSON.stringify(incoming)) } catch { /* this tab still holds it in memory */ }
   for (const name of ['view', 'key', 'token']) {
     const values = url.searchParams.getAll(name).filter(v => name === 'view' && (v === 'board' || v === 'code'))
@@ -53,7 +54,7 @@ export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getI
   if (url.hash) { url.searchParams.set('room', room); url.hash = '' }
   if (incoming.view || incoming.key || incoming.token || location.hash) replace(url.toString())
   try { return incoming.view || incoming.key || incoming.token ? incoming : JSON.parse(storage.getItem(slot) ?? '{}') }
-  catch { return { view: '', key: '', token: '' } }
+  catch { return { view: '', key: '', token: '', relay: false } }
 }
 
 export async function browserViewProof(view: string, room: string, ts: number, nonce: string): Promise<string> {
@@ -63,10 +64,10 @@ export async function browserViewProof(view: string, room: string, ts: number, n
   return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
-export async function mintTicket(loc: RoomLocation, auth: { view: string; key: string; token: string }, request: typeof fetch = fetch): Promise<string> {
+export async function mintTicket(loc: RoomLocation, auth: { view: string; key: string; token: string; relay?: boolean }, request: typeof fetch = fetch): Promise<string> {
   const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
-  const local = new URL(loc.serverUrl).hostname === '127.0.0.1' || new URL(loc.serverUrl).hostname === 'localhost'
-  if (local && auth.key) throw new Error('This local link uses an obsolete key. Ask your agent for a fresh room view URL.')
+  const local = !!auth.relay
+  if (auth.key) throw new Error('this local link is from an older Room; ask your agent for a new one')
   let credential: Record<string, unknown> = auth.view ? { view: auth.view } : {}
   if (local && auth.view) {
     const ts = Date.now(), nonce = [...crypto.getRandomValues(new Uint8Array(16))].map(v => v.toString(16).padStart(2, '0')).join('')
@@ -92,7 +93,7 @@ export function connect(search = location.search): Conn {
   const room = new RoomDoc(doc)
   const storage = (() => { try { return sessionStorage } catch { return { getItem: () => null, setItem: () => {} } } })()
   const auth = takeLinkCredentials(search, storage, url => history.replaceState(history.state, '', url))
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { connect: false, params: { schema: '2' } })
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { connect: false, params: { schema: '2' }, ...(auth.relay && auth.view ? { WebSocketPolyfill: secureWebSocket(auth.view) } : {}) })
   let stopped = false
   const showError = (why: string) => {
     const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))

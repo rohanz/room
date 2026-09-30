@@ -6,6 +6,20 @@ export class HttpFailure extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+/** Holds export slots through response completion, not just through document loading. */
+export class ExportReservations {
+  private readonly principals = new Set<string>()
+  private active = 0
+  constructor(readonly maxActive: number) {}
+  reserve(principal: string): (() => void) | undefined {
+    if (this.active >= this.maxActive || this.principals.has(principal)) return undefined
+    this.active++; this.principals.add(principal)
+    let released = false
+    return () => { if (!released) { released = true; this.active--; this.principals.delete(principal) } }
+  }
+  get count(): number { return this.active }
+}
+
 export function isAdminIdentity(st: { login: string; id?: string; provider?: 'github' | 'oidc' }, admins: ReadonlySet<string>): boolean {
   return st.provider === 'oidc' ? !!st.id && admins.has(st.id) : st.provider === 'github' && admins.has(st.login)
 }

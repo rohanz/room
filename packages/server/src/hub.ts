@@ -140,6 +140,16 @@ export class ServerHubs {
     state.pending = run().finally(() => { state.pending = undefined; if (state.dirty && !state.retry) this.write(name, state) })
   }
 
+  /** Stock y-websocket destroys a disconnected document only after writeState resolves. Keep
+   * that promise pending through storage failures so its old state cannot be lost or orphaned. */
+  private async waitForRecoveredWrite(name: string): Promise<void> {
+    for (;;) {
+      try { await this.flushName(name); return } catch {
+        await new Promise<void>(resolve => setTimeout(resolve, 50))
+      }
+    }
+  }
+
   /** The stock bind code plus a `loaded` promise per doc; the hub starts after it (§6). */
   persistence(provider: PersistenceProvider): { provider: PersistenceProvider; bindState(docName: string, doc: Y.Doc): Promise<void>; writeState(docName: string): Promise<void> } {
     return {
@@ -151,7 +161,7 @@ export class ServerHubs {
           this.queueWrite(docName, state, update)
         }
         const loaded = (async () => {
-          await this.flushName(docName)
+          await this.waitForRecoveredWrite(docName)
           const persisted = await provider.getYDoc(docName)
           this.writes.set(docName, state)
           doc.once('destroy', () => { if (this.writes.get(docName) === state && !state.dirty && !state.pending && !state.error) this.writes.delete(docName) })
@@ -162,7 +172,7 @@ export class ServerHubs {
         this.loads.set(doc, { loaded, stored: () => this.flushName(docName) })
         return loaded
       },
-      writeState: async docName => { await this.flushName(docName) },
+      writeState: async docName => { await this.waitForRecoveredWrite(docName) },
     }
   }
 

@@ -71,7 +71,8 @@ const AWARENESS_TOMBSTONE_MS = 60_000
  * session that reconnects announces its ID with a newer clock, as always.
  */
 export class AwarenessBudget {
-  constructor(private readonly awareness: AwarenessState, private readonly options: AwarenessBudgetOptions) {}
+  constructor(private readonly currentAwareness: AwarenessState | (() => AwarenessState | undefined), private readonly options: AwarenessBudgetOptions) {}
+  private current(): AwarenessState | undefined { return typeof this.currentAwareness === 'function' ? this.currentAwareness() : this.currentAwareness }
   bind(conn: EmitterLike, close: (code: number, reason: string) => void): void {
     const emit = conn.emit.bind(conn), added = new Set<number>()
     const now = this.options.now ?? Date.now
@@ -85,7 +86,9 @@ export class AwarenessBudget {
       if (bytes.byteLength > this.options.maxMessageBytes || ++messages > this.options.maxMessagesPerMinute) return refuse('presence budget exceeded')
       const adding: number[] = []
       try {
-        const states = this.awareness.getStates()
+        const awareness = this.current()
+        if (!awareness) return false
+        const states = awareness.getStates()
         const d = decoding.createDecoder(bytes)
         decoding.readVarUint(d)
         const inner = decoding.createDecoder(decoding.readVarUint8Array(d))
@@ -94,7 +97,7 @@ export class AwarenessBudget {
           const id = decoding.readVarUint(inner)
           const clock = decoding.readVarUint(inner)
           const raw = decoding.readVarString(inner)
-          const known = this.awareness.meta.get(id)
+          const known = awareness.meta.get(id)
           if (known && clock <= known.clock) continue // an echo or a stale entry: y-protocols ignores it
           if (Buffer.byteLength(raw) > this.options.maxStateBytes) throw Error('presence state too large')
           // Adds a record to the room: a new state, or a removal of an ID the room has never heard of.
@@ -104,18 +107,20 @@ export class AwarenessBudget {
         if (added.size + adding.length > this.options.maxIdsPerConnection) throw Error('presence ID budget exceeded')
       } catch { return refuse('invalid or excessive presence') }
       if (adding.length) {
-        const fresh = adding.filter(id => !this.awareness.meta.has(id)).length
-        if (this.awareness.meta.size + fresh > this.options.maxIdsPerRoom) this.prune(now())
+        const awareness = this.current()
+        if (!awareness) return false
+        const fresh = adding.filter(id => !awareness.meta.has(id)).length
+        if (awareness.meta.size + fresh > this.options.maxIdsPerRoom) this.prune(awareness, now())
         // A full room takes no new IDs for now; the newcomer stays connected and its next heartbeat tries again.
-        if (this.awareness.meta.size + fresh > this.options.maxIdsPerRoom) return false
+        if (awareness.meta.size + fresh > this.options.maxIdsPerRoom) return false
         for (const id of adding) added.add(id)
       }
       return emit(event, ...args)
     }) as EmitterLike['emit']
   }
-  private prune(now: number): void {
-    const states = this.awareness.getStates()
-    for (const [id, record] of this.awareness.meta) if (!states.has(id) && now - record.lastUpdated >= AWARENESS_TOMBSTONE_MS) this.awareness.meta.delete(id)
+  private prune(awareness: AwarenessState, now: number): void {
+    const states = awareness.getStates()
+    for (const [id, record] of awareness.meta) if (!states.has(id) && now - record.lastUpdated >= AWARENESS_TOMBSTONE_MS) awareness.meta.delete(id)
   }
 }
 
@@ -415,6 +420,8 @@ export interface StateRequestLimit {
   /** No further state is encoded for a connection with this much still unsent. */
   maxQueuedBytes: number
   queued(): number
+  /** Whether the process can hold another encoded copy of the current room state. */
+  canSendState?(): boolean
   close(code: number, reason: string): void
   now?: () => number
 }
@@ -432,6 +439,10 @@ export function limitStateRequests(conn: EmitterLike, limit: StateRequestLimit):
       if (now() - windowStart >= 60_000) { windowStart = now(); count = 0; closed = false }
       if (++count > limit.perMinute || limit.queued() > limit.maxQueuedBytes) {
         if (!closed) { closed = true; limit.close(4429, 'too many state requests') }
+        return false
+      }
+      if (limit.canSendState && !limit.canSendState()) {
+        if (!closed) { closed = true; limit.close(1013, 'server output budget exhausted; retry') }
         return false
       }
     }

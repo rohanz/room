@@ -157,8 +157,9 @@ export async function acquireName(options: AcquireOptions): Promise<Acquired> {
     } catch (e) {
       if (e instanceof HubError && (e.reason === 'held' || e.reason === 'not-yours')) {
         await releaseLocalName(file, options.token)
-        if (options.explicit || e.reason === 'not-yours') throw new NameRefused(e.reason === 'held' ? `${candidate.name} is held by another session` : e.message)
-        passed.set(candidate.name, 'held by another session')
+        const disallowed = e.reason === 'not-yours' && /not a name this login may hold/.test(e.message)
+        if (options.explicit || disallowed) throw new NameRefused(e.reason === 'held' ? `${candidate.name} is held by another session` : e.message)
+        passed.set(candidate.name, e.reason === 'not-yours' ? 'belongs to another account with the same display name' : 'held by another session')
         continue
       }
       // Unreachable, timed out or still starting: keep the local lease and start paused (hub §7).
@@ -216,10 +217,13 @@ export async function chooseName(o: ChooseNameOptions): Promise<ChosenName> {
   if (o.explicitTag !== undefined) return { ...chosen, label }
   const rememberedName = remembered === undefined ? undefined : nameOf(remembered)
   const heldElsewhere = (name: string) => chosen.passed.get(name) === 'held by another session'
+  const otherAccount = (name: string) => chosen.passed.get(name) === 'belongs to another account with the same display name'
   const rememberedHeld = rememberedName !== undefined && heldElsewhere(rememberedName)
   let note: string | undefined
   if (rememberedHeld || (chosen.name !== o.owner && chosen.name !== rememberedName)) {
-    note = `joined as ${chosen.name} (${rememberedHeld ? `remembered name ${rememberedName} is in use by another session`
+    note = `joined as ${chosen.name} (${rememberedName && otherAccount(rememberedName) ? `remembered name ${rememberedName} belongs to another account with the same display name`
+      : otherAccount(o.owner) ? `${o.owner} belongs to another account with the same display name`
+      : rememberedHeld ? `remembered name ${rememberedName} is in use by another session`
       : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`
     o.log?.(note)
   }

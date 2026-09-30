@@ -6,7 +6,7 @@ import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import { bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity, limitStateRequests } from '../src/readonly.js'
+import { AwarenessBudget, bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity, limitStateRequests } from '../src/readonly.js'
 import { hubAppend } from '@room/shared/testing'
 
 const doc = new Y.Doc()
@@ -53,6 +53,37 @@ describe('read-only view connections', () => {
     expect([...seen[0]]).toEqual([...step1])
     expect(dropped).toBe(3)
   })
+})
+
+it('resolves current awareness after room unload, preserving the room cap and existing echoes', () => {
+  const state = () => ({ meta: new Map<number, { clock: number; lastUpdated: number }>(), getStates() { return new Map([...this.meta].map(([id]) => [id, {}])) } })
+  let current = state()
+  const budget = new AwarenessBudget(() => current, { maxMessageBytes: 10000, maxStateBytes: 1000,
+    maxMessagesPerMinute: 100, maxIdsPerConnection: 100, maxIdsPerRoom: 32 })
+  const packet = (ids: number[]) => {
+    const inner = encoding.createEncoder(), outer = encoding.createEncoder()
+    encoding.writeVarUint(inner, ids.length)
+    for (const id of ids) { encoding.writeVarUint(inner, id); encoding.writeVarUint(inner, 1); encoding.writeVarString(inner, '{}') }
+    encoding.writeVarUint(outer, 1); encoding.writeVarUint8Array(outer, encoding.toUint8Array(inner))
+    return encoding.toUint8Array(outer)
+  }
+  const conn = new EventEmitter(), closed: number[] = []
+  conn.on('message', (buf: Uint8Array) => {
+    const d = decoding.createDecoder(buf); decoding.readVarUint(d)
+    const inner = decoding.createDecoder(decoding.readVarUint8Array(d))
+    const count = decoding.readVarUint(inner)
+    for (let i = 0; i < count; i++) { const id = decoding.readVarUint(inner); decoding.readVarUint(inner); decoding.readVarString(inner); current.meta.set(id, { clock: 1, lastUpdated: 1 }) }
+  })
+  budget.bind(conn, code => closed.push(code))
+  conn.emit('message', packet(Array.from({ length: 32 }, (_, i) => i + 1)))
+  current = state()
+  conn.emit('message', packet(Array.from({ length: 17 }, (_, i) => i + 1)))
+  expect(current.meta.size).toBe(17)
+  expect(conn.emit('message', packet(Array.from({ length: 15 }, (_, i) => i + 18)))).toBe(true)
+  expect(current.meta.size).toBe(32)
+  expect(conn.emit('message', packet([33]))).toBe(false)
+  expect(current.meta.size).toBe(32)
+  expect(closed).toEqual([])
 })
 
 describe('identity-bound connections', () => {
@@ -427,6 +458,15 @@ describe('state request budget (security re-review: 80 bytes of sync requests dr
     limitStateRequests(conn, { perMinute: 5, maxQueuedBytes: 1000, queued, now: () => now.at, close: code => closed.push(code) })
     return { conn, seen, closed, now }
   }
+  it('refuses another state transfer when the process output cannot hold it', () => {
+    const conn = new EventEmitter(), seen: Uint8Array[] = [], closed: number[] = []
+    conn.on('message', (buf: Uint8Array) => seen.push(buf))
+    limitStateRequests(conn, { perMinute: 5, maxQueuedBytes: 1000, queued: () => 0,
+      canSendState: () => false, close: code => closed.push(code) })
+    conn.emit('message', step1)
+    expect(seen).toHaveLength(0)
+    expect(closed).toEqual([1013])
+  })
   it('passes a connection\'s few state requests and refuses a flood', () => {
     const { conn, seen, closed, now } = wired()
     for (let i = 0; i < 5; i++) conn.emit('message', step1)

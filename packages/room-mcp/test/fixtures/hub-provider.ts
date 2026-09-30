@@ -5,7 +5,7 @@ import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import { Awareness } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
-import { MSG_HUB, SETTLE_MS, decodeFrame, encodeFrame, serializedStore, startHub, type HolderIn, type Hub } from '@room/hub-core'
+import { MSG_HUB, SETTLE_MS, decodeFrame, encodeFrame, serializedStore, startHub, type HolderIn, type Hub, type Principal } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 
 export interface HubRoom {
@@ -13,9 +13,9 @@ export interface HubRoom {
   doc: RoomDoc
   hub: Promise<Hub>
   /** A provider for roomd/the probe: its doc syncs with the hub's, and hub frames go to the hub. */
-  provider(doc: Y.Doc): WebsocketProvider
+  provider(doc: Y.Doc, principal?: Principal): WebsocketProvider
   /** Another session holds `name` (a live lease, as from another clone). */
-  hold(name: string, sessionId?: string): Promise<number>
+  hold(name: string, sessionId?: string, principal?: Principal): Promise<number>
   /** That session releases it. */
   release(name: string, epoch: number): Promise<void>
 }
@@ -25,7 +25,7 @@ export function hubRoom(): HubRoom {
   let offset = 0, max: number | undefined
   const hub = startHub({ doc, mono: () => performance.now() + offset, wall: () => Date.now(), log: () => {}, store: serializedStore({ read: async () => max, write: async v => { max = v } }) })
     .then(h => { offset += SETTLE_MS; return h })
-  const provider = (local: Y.Doc): WebsocketProvider => {
+  const provider = (local: Y.Doc, principal: Principal = { local: true }): WebsocketProvider => {
     Y.applyUpdate(local, Y.encodeStateAsUpdate(doc.doc))
     const toHub = (update: Uint8Array, origin: unknown) => { if (origin !== 'hub') Y.applyUpdate(doc.doc, update, 'peer') }
     const fromHub = (update: Uint8Array, origin: unknown) => { if (origin !== 'peer') Y.applyUpdate(local, update, 'hub') }
@@ -40,7 +40,7 @@ export function hubRoom(): HubRoom {
         send(bytes: Uint8Array) {
           const frame = decodeFrame(bytes)
           void hub.then(h => {
-            const dec = decoding.createDecoder(encodeFrame(h.handle(conn, frame, { local: true })))
+            const dec = decoding.createDecoder(encodeFrame(h.handle(conn, frame, principal)))
             decoding.readVarUint(dec)
             handlers[MSG_HUB]?.(encoding.createEncoder(), dec, p, true, MSG_HUB)
           })
@@ -51,11 +51,11 @@ export function hubRoom(): HubRoom {
     })
     return p as unknown as WebsocketProvider
   }
-  const hold = async (name: string, sessionId = `other-${name}`): Promise<number> => {
+  const hold = async (name: string, sessionId = `other-${name}`, principal: Principal = { local: true }): Promise<number> => {
     const h = await hub, conn = {}
     const holder: HolderIn = { sessionId, pid: process.pid, startTime: '', executable: '' }
-    h.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId }, { local: true })
-    const reply = h.handle(conn, { v: 1, id: 'a', op: 'acquire', name, holder }, { local: true }) as { ok: boolean; epoch: number }
+    h.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId }, principal)
+    const reply = h.handle(conn, { v: 1, id: 'a', op: 'acquire', name, holder }, principal) as { ok: boolean; epoch: number }
     if (!reply.ok) throw new Error(`could not hold ${name}: ${JSON.stringify(reply)}`)
     return reply.epoch
   }

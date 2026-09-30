@@ -93,32 +93,58 @@ export interface BufferedSocket extends ClosableSocket {
 /** Wrap send, so all producers (including the stock Yjs broadcaster) share one ceiling. */
 export class OutboundBudget {
   private readonly sockets = new Set<BufferedSocket>()
+  private readonly pending = new Map<BufferedSocket, number>()
+  private queuedTotal = 0
   constructor(private readonly perSocket: number, private readonly total: number) {}
+  get queuedBytes(): number { return this.queuedTotal }
+  canFit(bytes: number): boolean { return Number.isFinite(bytes) && bytes >= 0 && this.queuedBytes + bytes <= this.total }
+  /** HTTP exports hold their encoded body until the response finishes or disconnects. */
+  reserve(bytes: number): (() => void) | undefined {
+    if (!this.canFit(bytes)) return undefined
+    this.queuedTotal += bytes
+    let released = false
+    return () => { if (!released) { released = true; this.queuedTotal -= bytes } }
+  }
   track(socket: BufferedSocket): void {
     const send = socket.send.bind(socket)
     socket.send = ((data: unknown, ...args: unknown[]) => {
       if (!this.sockets.has(socket)) return
       const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data instanceof Uint8Array ? data.byteLength : Buffer.isBuffer(data) ? data.byteLength : 0
-      // Into an empty queue a message always goes: a large document has no other way to arrive.
-      if (socket.bufferedAmount > 0 && socket.bufferedAmount + bytes > this.perSocket) { this.drop(socket); return }
-      send(data, ...args)
+      const queued = Math.max(socket.bufferedAmount, this.pending.get(socket) ?? 0)
+      if (queued > 0 && queued + bytes > this.perSocket) { this.drop(socket); return }
+      if (!this.canFit(bytes)) {
+        for (const victim of [...this.sockets].filter(s => s !== socket).sort((a, b) => (this.pending.get(b) ?? 0) - (this.pending.get(a) ?? 0))) {
+          if (this.canFit(bytes)) break
+          if ((this.pending.get(victim) ?? 0) > 0) this.drop(victim)
+        }
+      }
+      if (!this.canFit(bytes)) { this.drop(socket, 'server output budget exhausted; retry'); return }
+      this.pending.set(socket, (this.pending.get(socket) ?? 0) + bytes)
+      this.queuedTotal += bytes
+      const callback = typeof args.at(-1) === 'function' ? args.pop() as (error?: Error) => void : undefined
+      const done = (error?: Error) => {
+        if (this.pending.has(socket)) { this.pending.set(socket, this.pending.get(socket)! - bytes); this.queuedTotal -= bytes }
+        callback?.(error)
+      }
+      try { send(data, ...args, done) } catch (error) { done(error as Error); throw error }
     }) as BufferedSocket['send']
     this.sockets.add(socket)
-    socket.once('close', () => this.sockets.delete(socket))
+    this.pending.set(socket, 0)
+    socket.once('close', () => { this.sockets.delete(socket); this.queuedTotal -= this.pending.get(socket) ?? 0; this.pending.delete(socket) })
   }
   sweep(): void {
-    let total = [...this.sockets].reduce((n, s) => n + s.bufferedAmount, 0)
-    if (total <= this.total) return
-    for (const socket of [...this.sockets].sort((a, b) => b.bufferedAmount - a.bufferedAmount)) {
-      if (total <= this.total) break
-      total -= socket.bufferedAmount
+    if (this.queuedBytes <= this.total) return
+    for (const socket of [...this.sockets].sort((a, b) => (this.pending.get(b) ?? 0) - (this.pending.get(a) ?? 0))) {
+      if (this.queuedBytes <= this.total) break
       this.drop(socket)
     }
   }
-  private drop(socket: BufferedSocket): void {
+  private drop(socket: BufferedSocket, reason = 'slow consumer; retry'): void {
     if (!this.sockets.delete(socket)) return
+    this.queuedTotal -= this.pending.get(socket) ?? 0
+    this.pending.delete(socket)
     // 1013 is retryable by y-websocket clients; 44xx is terminal to them.
-    socket.close(1013, 'slow consumer; retry')
+    socket.close(1013, reason)
     socket.terminate()
   }
 }

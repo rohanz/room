@@ -46,6 +46,51 @@ describe('migrateRepo', () => {
     expect(f.entry.migrationSkippedSources).toBeGreaterThan(0)
     expect(f.docs.has(two)).toBe(true)
   })
+  it('stops reading after the byte budget and counts untouched archives', async () => {
+    const f = fixture()
+    for (let i = 0; i < 100; i++) {
+      const name = `${repo}/extra-${i}`
+      const room = new RoomDoc(); room.scopes.set(`p${i}`, { by: `p${i}`, byKind: 'agent', area: 'a', summary: 'x'.repeat(1000), paths: ['a'], at: 1 })
+      f.docs.set(name, Y.encodeStateAsUpdate(room.doc))
+    }
+    const loaded: string[] = [], load = f.io.load
+    f.io.load = async name => { loaded.push(name); return load(name) }
+    f.io.maxReadBytes = 100
+    await migrateRepo(repo, f.entry, f.io)
+    expect(loaded.length).toBeLessThan(5)
+    expect(f.entry.migrationSkippedSources).toBeGreaterThan(90)
+    expect(f.entry.migrationSkippedRecordCountsUnknown).toBeGreaterThan(90)
+  })
+  it('bounds actual encoded target growth and records dropped sources', async () => {
+    const f = fixture()
+    f.io.maxTargetBytes = 1000
+    await migrateRepo(repo, f.entry, f.io)
+    expect(f.docs.get(repo)!.byteLength).toBeLessThanOrEqual(1000)
+    expect(f.entry.migrationSkippedSources).toBeGreaterThanOrEqual(0)
+  })
+  it('builds thousands of ambiguous claims without copying each previous group', async () => {
+    const f = fixture()
+    const room = new RoomDoc()
+    room.scopes.set('ben', { by: 'ben', byKind: 'agent', area: 'a', summary: 'a', paths: ['a'], at: 1 })
+    for (let i = 0; i < 3000; i++) room.claims.set(`claim-${i}`, { id: `claim-${i}`, by: 'ben', byKind: 'agent', path: 'a', from: i, to: i + 1, intent: 'edit', at: 1 })
+    f.docs.set(two, Y.encodeStateAsUpdate(room.doc))
+    const start = performance.now()
+    await migrateRepo(repo, f.entry, f.io)
+    expect(performance.now() - start).toBeLessThan(10000)
+    expect(f.entry.unresolved).toBeGreaterThan(0)
+  })
+  it('skips malformed and oversized records before translation', async () => {
+    const f = fixture()
+    const doc = new RoomDoc()
+    doc.scopes.set('bad', { by: 1, summary: 'bad' } as never)
+    doc.scopes.set('large', { by: 'large', byKind: 'agent', area: 'a', summary: 'x'.repeat(70_000), paths: ['a'], at: 1 })
+    f.docs.set(two, Y.encodeStateAsUpdate(doc.doc))
+    await migrateRepo(repo, f.entry, f.io)
+    const target = new RoomDoc(await f.io.load(repo))
+    expect(target.scopes.has('bad')).toBe(false)
+    expect(target.scopes.has('large')).toBe(false)
+    expect(f.entry.migrationSkippedRecords).toBeGreaterThanOrEqual(2)
+  })
   it('cannot absorb another GitHub repository through an open prefix', async () => {
     const f = fixture()
     const victim = 'github.com/o/r2/private'

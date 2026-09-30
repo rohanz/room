@@ -35,10 +35,19 @@ describe('local relay proof protocol', () => {
     expect(relayOutputAllowed(0, 0, 100)).toBe(true)
     expect(relayOutputAllowed(RELAY_SOCKET_QUEUE_BYTES, 0, 1)).toBe(false)
     expect(relayOutputAllowed(1, RELAY_TOTAL_QUEUE_BYTES, 1)).toBe(false)
-    // A message into an empty queue always goes: refusing the one frame that carries a large document
-    // would disconnect that client on every reconnect, forever.
+    // A single large document may exceed the per-socket budget, but never the process budget.
     expect(relayOutputAllowed(0, 0, RELAY_SOCKET_QUEUE_BYTES * 2)).toBe(true)
-    expect(relayOutputAllowed(0, RELAY_TOTAL_QUEUE_BYTES, 1)).toBe(true)
+    expect(relayOutputAllowed(0, RELAY_TOTAL_QUEUE_BYTES, 1)).toBe(false)
+    expect(relayOutputAllowed(0, RELAY_TOTAL_QUEUE_BYTES - 1, 1)).toBe(true)
+    expect(relayOutputAllowed(0, 0, RELAY_TOTAL_QUEUE_BYTES + 1)).toBe(false)
+    let aggregate = 0
+    const documentBytes = 64 * 1024 * 1024 + 16
+    let admitted = 0
+    for (let n = 0; n < 12; n++) {
+      if (relayOutputAllowed(0, aggregate, documentBytes)) { aggregate += documentBytes; admitted++ }
+      expect(aggregate).toBeLessThanOrEqual(RELAY_TOTAL_QUEUE_BYTES)
+    }
+    expect(admitted).toBe(3)
     // The budgets hold at least one full document (the 64 MiB snapshot ceiling).
     expect(RELAY_SOCKET_QUEUE_BYTES).toBeGreaterThanOrEqual(64 * 1024 * 1024)
   })

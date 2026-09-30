@@ -4,6 +4,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
+import { normalizeExplicitRoomName } from './room-name.js'
 
 export type WorkerHost = 'claude' | 'codex'
 
@@ -94,7 +95,7 @@ export function workerProcessEnv(options: {
   return {
     ...caps, ROOM_WORKER_THREADS: String(options.threads), ROOM_WORKER_MEM_GB: String(options.memGb),
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
-    ROOM_SERVER: options.server, ROOM_ROOM: options.room, ROOM_DIR: options.dir, PWD: options.dir,
+    ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
     ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id, ROOM_WORKER_RUN: String(options.run), ROOM_LAUNCH_NONCE: options.nonce,

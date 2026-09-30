@@ -4,9 +4,20 @@ import { Socket } from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { bodyReader, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from '../src/http.js'
+import { bodyReader, ExportReservations, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from '../src/http.js'
 
 describe('HTTP entry guards', () => {
+  it('holds one export per principal and two process slots until release', () => {
+    const slots = new ExportReservations(2)
+    const a = slots.reserve('a')!, b = slots.reserve('b')!
+    expect(slots.reserve('a')).toBeUndefined()
+    expect(slots.reserve('c')).toBeUndefined()
+    expect(slots.count).toBe(2)
+    a(); a()
+    expect(slots.count).toBe(1)
+    expect(slots.reserve('c')).toBeTypeOf('function')
+    b()
+  })
   it('M5 rejects malformed request targets without throwing URL errors', () => {
     expect(() => safeUrl('//[')).toThrow(HttpFailure)
     expect(safeUrl('/health').pathname).toBe('/health')

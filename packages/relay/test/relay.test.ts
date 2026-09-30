@@ -5,12 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
-const keyedSocket = (key: string) => class extends WebSocket {
-  constructor(address: string | URL, protocols?: string | string[]) {
-    const url = new URL(address.toString())
-    super(address, protocols, { headers: { authorization: localProofHeader(key, 'GET', url.pathname + url.search, Number(url.port)) } })
-  }
-} as typeof WebSocket
+import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
+const keyedSocket = (key: string) => authorizedWebSocket({ key })
 import { WebsocketProvider } from 'y-websocket'
 import { deterministicPort, ensureLocalRelay, LOCAL_FILE, localProofHeader, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
 import { portAnswers, relayAnswers } from './probes.js'
@@ -72,7 +68,7 @@ describe('local relay browser view', () => {
     const dist = await fsp.mkdtemp(path.join(os.tmpdir(), 'room-dist-'))
     await fsp.writeFile(path.join(dist, 'index.html'), '<!doctype html><title>Room</title>')
     await fsp.writeFile(path.join(dist, 'app.js'), 'console.log(1)')
-    const relay = await startRelay(0, { staticDir: dist })
+    const relay = await startRelay(0, { staticDir: dist, key: 'test-key' })
     try {
       const root = await get(`http://127.0.0.1:${relay.port}/`)
       expect(root.status).toBe(200); expect(root.type).toContain('text/html'); expect(root.body).toContain('<title>Room</title>')
@@ -90,7 +86,7 @@ describe('local relay browser view', () => {
       const outside = await get(`http://127.0.0.1:${relay.port}/../../etc/passwd`)
       expect(outside.body).not.toContain('root:')
       const doc = new Y.Doc()
-      const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent('local/x'), doc, { WebSocketPolyfill: WebSocket as never, params: { schema: '2' } })
+      const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent('local/x'), doc, { WebSocketPolyfill: keyedSocket('test-key') as never, params: { schema: '2' } })
       await until(() => provider.synced)
       provider.destroy()
       // a sibling directory that merely shares the prefix is not served

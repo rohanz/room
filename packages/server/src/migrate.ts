@@ -90,79 +90,97 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     const maxTargetBytes = io.maxTargetBytes ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
     const maxSources = io.maxSources ?? Number(process.env.ROOM_MIGRATION_MAX_SOURCES ?? 1000)
     const maxReadBytes = io.maxReadBytes ?? Number(process.env.ROOM_MIGRATION_MAX_READ_MB ?? 128) * 1048576
+    const maxRecordBytes = Number(process.env.ROOM_MIGRATION_MAX_RECORD_KB ?? 64) * 1024
     const candidates = plan.sources.slice(0, maxSources)
     let skippedSources = plan.sources.length - candidates.length, skippedRecords = 0
-    const target = new RoomDoc(await io.load(repo))
-    const sources: string[] = []
-    let readBytes = 0, plannedBytes = Y.encodeStateAsUpdate(target.doc).byteLength
-    for (const name of candidates) {
+    let unknownCounts = skippedSources
+    const base = await io.load(repo)
+    const baseUpdate = Y.encodeStateAsUpdate(base)
+    base.destroy()
+    let readBytes = baseUpdate.byteLength
+    type Records = { name: string; bytes: number; scopes: [string, Scope][]; claims: Claim[]; messages: Msg[] }
+    const sources: Records[] = []
+    const valid = (value: unknown, fields: string[]): boolean => {
+      if (!value || typeof value !== 'object' || fields.some(f => typeof (value as Record<string, unknown>)[f] !== 'string')) return false
+      try { return Buffer.byteLength(JSON.stringify(value)) <= maxRecordBytes } catch { return false }
+    }
+    for (const [index, name] of candidates.entries()) {
+      if (readBytes >= maxReadBytes) { skippedSources += candidates.length - index; unknownCounts += candidates.length - index; break }
       const source = new RoomDoc(await io.load(name))
       const bytes = Y.encodeStateAsUpdate(source.doc).byteLength
-      const records = source.scopes.size + source.claims.size + source.bus.length + source.mail.size
-      if (readBytes + bytes > maxReadBytes || plannedBytes + bytes > maxTargetBytes) {
-        skippedSources++; skippedRecords += records; continue
+      readBytes += bytes
+      const scopes = [...source.scopes].filter(([person, value]) => valid(value, ['by', 'byKind', 'area', 'summary']) &&
+        typeof person === 'string' && Array.isArray(value.paths) && value.paths.every(path => typeof path === 'string') && Number.isFinite(value.at)) as [string, Scope][]
+      const claims = [...source.claims.values()].filter(value => valid(value, ['id', 'by', 'byKind', 'path', 'intent']) &&
+        Number.isSafeInteger(value.from) && Number.isSafeInteger(value.to) && value.to >= value.from && Number.isFinite(value.at)) as Claim[]
+      const messages = [...source.bus.toArray(), ...source.mail.values()].filter(value => valid(value, ['id', 'from', 'fromKind', 'type', 'priority']) &&
+        Number.isFinite(value.at) && (value.to === undefined || typeof value.to === 'string') &&
+        !(value.to && source.seen(value.to).has(value.id))) as Msg[]
+      const count = source.scopes.size + source.claims.size + source.bus.length + source.mail.size
+      skippedRecords += count - scopes.length - claims.length - messages.length
+      source.doc.destroy()
+      if (readBytes > maxReadBytes) { skippedSources += candidates.length - index; skippedRecords += scopes.length + claims.length + messages.length; unknownCounts += candidates.length - index - 1; break }
+      sources.push({ name, bytes, scopes, claims, messages })
+    }
+    const makeTarget = (included: Records[]) => {
+      const baseDoc = new Y.Doc(); Y.applyUpdate(baseDoc, baseUpdate)
+      const target = new RoomDoc(baseDoc)
+      const occurrences = new Map<string, Set<string>>()
+      const mark = (person: string | undefined, name: string) => {
+        if (!person) return
+        let found = occurrences.get(person); if (!found) { found = new Set(); occurrences.set(person, found) }
+        found.add(name)
       }
-      readBytes += bytes; plannedBytes += bytes; sources.push(name)
-    }
-    const occurrences = new Map<string, Set<string>>()
-    const mark = (name: string | undefined, source: string) => {
-      if (!name) return
-      let found = occurrences.get(name); if (!found) { found = new Set(); occurrences.set(name, found) }
-      found.add(source)
-    }
-    for (const name of sources) {
-      const room = new RoomDoc(await io.load(name))
-      for (const person of room.scopes.keys()) mark(person, name)
-      for (const claim of room.claims.values()) mark(claim.by, name)
-      for (const person of room.overlays.keys()) mark(person, name)
-      for (const person of room.legacyDeleted.keys()) mark(person, name)
-      for (const msg of [...room.bus.toArray(), ...room.mail.values()]) { mark(msg.from, name); mark(msg.to, name) }
-    }
-    const translated = (name: string, source: string) => (occurrences.get(name)?.size ?? 0) > 1
-      ? `?${crypto.createHash('sha256').update(`${source}\0${name}`).digest('hex').slice(0, 16)}` : name
-    const unresolved = target.doc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
-    for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
-        const key = `${source}\0${person}`
-        if (!unresolved.has(key)) unresolved.set(key, { placeholder: translated(person, source), claims: [] })
+      for (const source of included) {
+        for (const [person] of source.scopes) mark(person, source.name)
+        for (const claim of source.claims) mark(claim.by, source.name)
+        for (const msg of source.messages) { mark(msg.from, source.name); mark(msg.to, source.name) }
       }
-      for (const name of sources) {
-        const room = new RoomDoc(await io.load(name))
-        const records = room.scopes.size + room.claims.size + room.bus.length + room.mail.size
-        // Check each source before copying it: a skipped source stays in the archive for export.
-        // Sequential loads cap transient memory; this conservative estimate leaves room for Yjs metadata.
-        if (Y.encodeStateAsUpdate(target.doc).byteLength + Y.encodeStateAsUpdate(room.doc).byteLength > maxTargetBytes) {
-          skippedSources++; skippedRecords += records; continue
+      const translated = (person: string, name: string) => (occurrences.get(person)?.size ?? 0) > 1
+        ? `?${crypto.createHash('sha256').update(`${name}\0${person}`).digest('hex').slice(0, 16)}` : person
+      const groups = new Map<string, { placeholder: string; claims: Claim[]; scope?: Scope; ids: Set<string> }>()
+      for (const [person, found] of occurrences) if (found.size > 1) for (const name of found) groups.set(`${name}\0${person}`, { placeholder: translated(person, name), claims: [], ids: new Set() })
+      for (const source of included) {
+        const name = source.name
+        for (const [person, scope] of source.scopes) {
+          const by = translated(person, name), copy = { ...scope, by, origin: name }
+          const group = groups.get(`${name}\0${person}`)
+          if (group) group.scope ??= copy
+          else if (!target.scopes.has(by)) target.scopes.set(by, copy)
         }
-        for (const [person, scope] of room.scopes) {
-          const by = translated(person, name)
-          const copy = { ...scope, by, origin: name }
-          if (by !== person) {
-            const key = `${name}\0${person}`
-            const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
-            if (!old.scope) unresolved.set(key, { ...old, scope: copy })
-          } else if (!target.scopes.has(by)) target.scopes.set(by, copy)
-        }
-        for (const claim of room.claims.values()) {
+        for (const claim of source.claims) {
           const by = translated(claim.by, name)
           const { anchor: _anchor, ...rest } = claim
           const copy = { ...rest, by, origin: name }
-          if (by !== claim.by) {
-            const key = `${name}\0${claim.by}`
-            const old = unresolved.get(key) ?? { placeholder: by, claims: [] }
-            if (!old.claims.some(c => c.id === claim.id)) unresolved.set(key, { ...old, claims: [...old.claims, copy] })
-          } else if (!target.claims.has(claim.id)) target.claims.set(claim.id, copy)
+          const group = groups.get(`${name}\0${claim.by}`)
+          if (group) { if (!group.ids.has(claim.id)) { group.ids.add(claim.id); group.claims.push(copy) } }
+          else if (!target.claims.has(claim.id)) target.claims.set(claim.id, copy)
         }
-        for (const msg of [...room.bus.toArray(), ...room.mail.values()]) {
-          if (!msg.to || room.seen(msg.to).has(msg.id) || target.mail.has(msg.id)) continue
+        for (const msg of source.messages) {
+          if (!msg.to || target.mail.has(msg.id)) continue
           target.mail.set(msg.id, { ...msg, from: translated(msg.from, name), to: translated(msg.to, name) } as Msg)
         }
       }
+      const unresolved = target.doc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
+      for (const [key, group] of groups) unresolved.set(key, { placeholder: group.placeholder, claims: group.claims, ...(group.scope ? { scope: group.scope } : {}) })
       target.metaMap.set('schemaVersion', 2)
-    await io.write(repo, Y.encodeStateAsUpdate(target.doc))
-    entry.unresolved = unresolved.size
+      return { target, unresolved: unresolved.size, update: Y.encodeStateAsUpdate(target.doc) }
+    }
+    let result = makeTarget(sources)
+    while (result.update.byteLength > maxTargetBytes && sources.length) {
+      result.target.doc.destroy()
+      const largest = sources.reduce((best, value) => value.bytes > best.bytes ? value : best)
+      sources.splice(sources.indexOf(largest), 1)
+      skippedSources++; skippedRecords += largest.scopes.length + largest.claims.length + largest.messages.length
+      result = makeTarget(sources)
+    }
+    if (result.update.byteLength > maxTargetBytes) { result.target.doc.destroy(); throw new Error('canonical document exceeds migration target cap') }
+    await io.write(repo, result.update)
+    result.target.doc.destroy()
+    entry.unresolved = result.unresolved
     entry.migrationSkippedSources = skippedSources
     entry.migrationSkippedRecords = skippedRecords
-    entry.migrationSkippedRecordCountsUnknown = plan.sources.length - candidates.length
+    entry.migrationSkippedRecordCountsUnknown = unknownCounts
     entry.step = 'written'; await save()
   }
   if (entry.step === 'written') {

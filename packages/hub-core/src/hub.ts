@@ -220,6 +220,7 @@ class RoomHub implements Hub {
   private startedAt = 0
   private freshAtStart = false
   private settled = false
+  private legacyExpired = false
   private maintainedAt = 0
   private dirty = false
   private stopped = false
@@ -228,6 +229,7 @@ class RoomHub implements Hub {
   private tenure!: ExpiryTenure
   private readonly leases = new Map<string, Lease>()
   private readonly records = new Map<string, Known>()
+  private readonly legacyHolders = new Map<string, number>()
   private readonly greeted = new Set<object>()
   private readonly sessions = new Map<object, string>()
   private readonly rates = new Map<string, { at: number; count: number }>()
@@ -324,15 +326,7 @@ class RoomHub implements Hub {
 
   private owner(conn: object, p: Principal, name: string, lease: Known | undefined): boolean {
     if (this.host.owns && !this.host.owns(p, name)) return false
-    if (lease?.principal && lease.principal !== this.principal(p)) {
-      // Pre-id records may be claimed once by their original holder session and login.
-      if (!('id' in p) || !p.id || lease.principal !== `login:${p.login ?? ''}`) return false
-      const session = this.sessions.get(conn)
-      if (!session || (lease.session ?? lease.holder?.sessionId) !== session) return false
-      lease.principal = p.id
-      const record = this.recordOf(lease)
-      if (record) this.doc.doc.transact(() => { this.doc.participants.set(holderKey(name), record) }, HUB_ORIGIN)
-    }
+    if (!lease?.principal || lease.principal !== this.principal(p)) return false
     const session = this.sessions.get(conn)
     return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session)
   }
@@ -394,6 +388,17 @@ class RoomHub implements Hub {
     }
   }
 
+  /** The same allocation budget governs new grants and both ways of carrying a synced holder. */
+  private allocationFailure(name: string, principal: string, live: boolean): string | undefined {
+    this.prunePrincipal(principal)
+    this.pruneRecords()
+    if (live && [...this.leases].filter(([n]) => n !== name).length >= MAX_LEASES_PER_ROOM) return 'the room has too many live leases'
+    if (live && [...this.leases].filter(([n, l]) => n !== name && l.principal === principal).length >= MAX_LEASES_PER_PRINCIPAL) return 'this principal has too many live leases'
+    if ([...this.records].filter(([n]) => n !== name).length >= MAX_RETAINED_NAMES) return 'the room has too many retained names'
+    if ([...this.records].filter(([n, r]) => n !== name && r.principal === principal).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return 'this principal has too many retained names'
+    return undefined
+  }
+
   /**
    * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
    * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
@@ -437,16 +442,20 @@ class RoomHub implements Hub {
       const name = key.slice(0, -HOLDER.length)
       const known = this.records.get(name)
       const lease = this.leases.get(name)
-      if (!known && this.records.size >= MAX_RETAINED_NAMES) continue
       if (known && record.epoch <= known.epoch) {
         // A terminal record for a live lease's epoch ends it at its next `live` check.
         if (lease) hydrate(lease, record)
         continue
       }
+      if (!record.principal) {
+        if (!record.ended) this.legacyHolders.set(name, record.epoch)
+        continue
+      }
+      if (this.allocationFailure(name, record.principal, !record.ended)) continue
       // A live lease below an earlier incarnation's record is itself inherited, and that grant superseded it.
       if (lease) { this.leases.delete(name); this.notify(name, lease, 'superseded') }
       if (record.ended) this.records.set(name, knownOf(record))
-      else if (this.leases.size < MAX_LEASES_PER_ROOM) this.hold(name, { ...knownOf(record), renewed: this.host.mono() })
+      else this.hold(name, { ...knownOf(record), renewed: this.host.mono() })
     }
   }
 
@@ -540,19 +549,20 @@ class RoomHub implements Hub {
     if (unavailable) return unavailable
     if (this.host.full?.()) return fail('room-full', "this room's document is over its size limit")
     const live = this.live(name)
+    const stored = this.record(name)
+    // `supersedes` is the explicit handoff (a lead's reservation passed to its worker): any session of the SAME
+    // principal may take the lease by its epoch; the epoch is public, so another principal never may.
+    if (stored && stored.epoch === req.supersedes && stored.principal !== this.principal(p)) return fail('not-yours', `${name} belongs to another principal`)
     if (!live && this.settling()) return starting()
-    if (live?.principal && live.principal !== this.principal(p)
-      && !(('id' in p) && p.id && live.principal === `login:${p.login ?? ''}` && this.owner(conn, p, name, live))) return fail('not-yours', `${name} belongs to another principal`)
+    if (!live && stored && !stored.ended && !stored.principal && this.legacyHolders.get(name) === stored.epoch
+      && this.host.mono() - this.startedAt < LEASE_TTL_MS) return fail('held', `${name} is held by a legacy record until its TTL ends`)
+    if (live && live.principal !== this.principal(p)) return fail('not-yours', `${name} belongs to another principal`)
     if (live && req.supersedes !== live.epoch
       && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
       return fail('held', `${name} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } })
     }
-    if (live && live.principal && live.principal !== this.principal(p)) return fail('not-yours', `${name} belongs to another principal`)
-    if (!live && this.leases.size >= MAX_LEASES_PER_ROOM) return fail('room-full', 'the room has too many live leases')
-    const owned = [...this.leases.values()].filter(l => l.principal === this.principal(p)).length
-    if (!live && owned >= MAX_LEASES_PER_PRINCIPAL) return fail('room-full', 'this principal has too many live leases')
-    if (!live) { this.prunePrincipal(this.principal(p)); if ([...this.records.values()].filter(r => r.principal === this.principal(p)).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return fail('room-full', 'this principal has too many retained names') }
-    if (!live && this.records.size >= MAX_RETAINED_NAMES) { this.pruneRecords(); if (this.records.size >= MAX_RETAINED_NAMES) return fail('room-full', 'the room has too many retained names') }
+    const capacity = this.allocationFailure(name, this.principal(p), true)
+    if (capacity) return fail('room-full', capacity)
     const epoch = this.issue('epoch')
     if (epoch === undefined) return starting()
     if (live) this.notify(name, live, 'superseded')
@@ -570,10 +580,12 @@ class RoomHub implements Hub {
   private renew(conn: object, req: Extract<Req, { op: 'renew' }>, p: Principal, fail: Fail): Reply {
     if (!isName(req.name) || !isCounter(req.epoch)) return fail('invalid', 'renew needs a name and an epoch')
     const { name, epoch } = req
+    const stored = this.record(name)
     const existing = this.leases.get(name) ?? this.records.get(name)
     if (this.host.owns && !this.host.owns(p, name) || existing?.epoch === epoch && !this.owner(conn, p, name, existing)) {
       return fail('not-yours', `${name} belongs to another holder session`)
     }
+    if (stored?.epoch === epoch && !this.owner(conn, p, name, knownOf(stored))) return fail('not-yours', `${name} belongs to another holder session`)
     const outage = this.unavailable(fail)
     if (outage) {
       const lease = this.leases.get(name)
@@ -594,7 +606,9 @@ class RoomHub implements Hub {
       && (!this.host.owns || this.host.owns(p, name))) {
       const record = this.record(name)
       if (!record || record.epoch !== epoch || record.ended || (record.session ?? record.sessionId) !== this.sessions.get(conn)
-        || (record.principal && record.principal !== this.principal(p))) return fail('not-yours', `${name} belongs to another holder session`)
+        || record.principal !== this.principal(p)) return fail('not-yours', `${name} belongs to another holder session`)
+      const capacity = this.allocationFailure(name, this.principal(p), true)
+      if (capacity) return fail('room-full', capacity)
       if (live) this.notify(name, live, 'superseded')
       const synced = record?.epoch === epoch && !record.ended ? knownOf(record) : { epoch, at: this.host.wall() }
       this.hold(name, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn })
@@ -606,10 +620,12 @@ class RoomHub implements Hub {
 
   private release(conn: object, req: Extract<Req, { op: 'release' }>, p: Principal, fail: Fail): Reply {
     if (!isName(req.name) || !isCounter(req.epoch)) return fail('invalid', 'release needs a name and an epoch')
-    const existing = this.leases.get(req.name) ?? this.records.get(req.name)
+    const stored = this.record(req.name)
+    const existing = this.leases.get(req.name) ?? this.records.get(req.name) ?? (stored?.epoch === req.epoch ? knownOf(stored) : undefined)
     if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
       return fail('not-yours', `${req.name} belongs to another holder session`)
     }
+    if (stored?.epoch === req.epoch && !this.owner(conn, p, req.name, knownOf(stored))) return fail('not-yours', `${req.name} belongs to another holder session`)
     const unavailable = this.unavailable(fail)
     if (unavailable) return unavailable
     const live = this.live(req.name)
@@ -628,11 +644,13 @@ class RoomHub implements Hub {
     // The fence: the poster's own live lease, whatever `from` says (a bridge posts for its workers under its own).
     if (!isObject(req.lease) || Object.keys(req.lease).some(k => k !== 'name' && k !== 'epoch')
       || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail('invalid', "a post carries the poster's name lease")
-    const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name)
+    const stored = this.record(req.lease.name)
+    const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name) ?? (stored?.epoch === req.lease.epoch ? knownOf(stored) : undefined)
     if (this.host.owns && !this.host.owns(p, req.lease.name)
       || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
       return fail('not-yours', `${req.lease.name} belongs to another holder session`)
     }
+    if (stored?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, knownOf(stored))) return fail('not-yours', `${req.lease.name} belongs to another holder session`)
     const unavailable = this.unavailable(fail)
     if (unavailable) return unavailable
     const live = this.live(req.lease.name)
@@ -678,6 +696,7 @@ class RoomHub implements Hub {
     for (const name of [...this.leases.keys()]) this.live(name)
     if (this.settling()) return
     if (!this.settled) { this.settled = true; this.dirty = true }
+    if (!this.legacyExpired && this.host.mono() - this.startedAt >= LEASE_TTL_MS) { this.legacyExpired = true; this.dirty = true }
     if (this.dirty) this.reassert()
     const now = this.host.mono()
     if (now - this.maintainedAt >= MAINTENANCE_MS) {
@@ -700,6 +719,7 @@ class RoomHub implements Hub {
         let known = this.records.get(name)
         // A holder the hub never knew, above its own word and not live here: remember it as ended.
         if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name)
+          && (current.principal || current.ended || this.legacyExpired || this.legacyHolders.get(name) !== current.epoch)
           && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
           known = knownOf(current.ended ? current : { ...current, ended: 'expired' })
           this.records.set(name, known)

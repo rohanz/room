@@ -11,6 +11,8 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
+import { normalizeExplicitRoomName } from './room-name.js'
+export { normalizeExplicitRoomName } from './room-name.js'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
@@ -396,10 +398,10 @@ export function findRoomFile(start: string): (RoomFile & { room: string; _from: 
 /** The validated current root always supplies the folder, even when copied room metadata names another clone. */
 export async function startupJoinOptions(root: string, server: string, room?: string): Promise<JoinOptions | undefined> {
   if (server === LOCAL) return { dir: root, room, server: LOCAL }
-  if (room) return { dir: root, room, server }
+  if (room) return { dir: root, room: normalizeExplicitRoomName(room), server }
   if ((await deriveRoomName(root).catch(() => ({ roomName: undefined }))).roomName) return { dir: root, server }
   const prior = findRoomFile(root)
-  if (prior) return { dir: root, name: prior.name, room: decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, '')), server }
+  if (prior) return { dir: root, name: prior.name, room: normalizeExplicitRoomName(decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, ''))), server }
   return undefined
 }
 
@@ -410,19 +412,8 @@ export async function deriveRoomName(dir: string): Promise<{ roomName?: string; 
   return { repo: canonical, branch, roomName: canonical }
 }
 
-/** Only GitHub's fixed host/owner/repo shape makes a branch suffix unambiguous. */
-function normalizeExplicitRoomName(name: string, origin?: string, log?: (text: string) => void): string {
-  const parts = name.split('/')
-  if (parts[0] === 'github.com' && parts.length > 3 && parts[1] && parts[2] && parts.slice(3).every(Boolean)) {
-    const canonical = parts.slice(0, 3).join('/').toLowerCase()
-    log?.(`room ${name}: branch part ignored because Room 0.17 has one room per repository; joining ${canonical}`)
-    return canonical
-  }
-  if (parts[0] === 'git' && parts.length > 4 || origin && !origin.startsWith('github.com/') && name.startsWith(`${origin}/`)) {
-    throw new RoomdError(`legacy branch room ${name} cannot be mapped safely. Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice to the repository room (${origin ?? 'git/<host>/<owner>/<repo>'}); Room 0.17 accepts one room per repository.`, 2)
-  }
-  return name
-}
+const branchRoomHint = (room: string): string => room.startsWith('git/')
+  ? '\nRoom 0.17 has one room per repository: if this name ends in a branch, remove it.' : ''
 
 async function defaultName(dir: string): Promise<string | undefined> {
   try { const n = (await git(dir, ['config', 'user.name'])).trim(); if (n) return n } catch { /* fall through */ }
@@ -757,8 +748,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop")`, 2)
     roomName = d.roomName
   } else {
-    const origin = (await deriveRoomName(dir).catch(() => ({ roomName: undefined }))).roomName
-    roomName = normalizeExplicitRoomName(roomName, origin, opts.log)
+    roomName = normalizeExplicitRoomName(roomName, opts.log)
   }
   const auth = await resolveAuth(server, roomName, token)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
@@ -776,13 +766,13 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
     const err = await timed('preflight', () => createRoom(server, roomName!, { ...creds, by: name }))
-    if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}`, 2)
+    if (err) throw new RoomdError(`${server} would not open ${roomName}: ${err}${branchRoomHint(roomName)}`, 2)
     pre = await timed('preflight', () => preflight(server, roomName!, creds))
   }
   // Preflight over HTTP: a refused websocket only shows up as a sync timeout, so ask the server first.
-  if (pre?.missing) throw new NoRoom(roomName, pre.reason, server)
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ''), server)
   if (pre?.loginNeeded) throw new NotLoggedIn(server)
-  if (pre && !pre.canonical) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2)
+  if (pre && !pre.canonical) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}${pre.status === 400 ? branchRoomHint(roomName) : ''}`, 2)
   if (pre?.canonical && pre.canonical !== roomName) {
     opts.log?.('room names no longer carry a branch; joined ' + pre.canonical)
     roomName = pre.canonical
@@ -868,7 +858,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
-  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}`
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}&relay=1`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
@@ -956,23 +946,24 @@ function removeStaleCredential(server: string, reason: string): void { if (/expi
 
 /** Check team admission before a move leaves its current room. A room_create may open a missing room after confirmation. */
 export async function checkTeamAdmission(rawServer: string, roomName: string, opts: { token?: string; credentialsPath?: string; create?: boolean; confirm?: boolean } = {}): Promise<void> {
+  roomName = normalizeExplicitRoomName(roomName)
   if (opts.credentialsPath) configureCredentials(opts.credentialsPath)
   const parsed = parseServer(rawServer)
   const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token)
   const pre = await preflight(parsed.server, roomName, creds)
   if (!pre || pre.canonical) return
   if (pre.missing) {
-    if (!opts.create) throw new NoRoom(roomName, pre.reason, parsed.server)
+    if (!opts.create) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ''), parsed.server)
     if (opts.confirm !== true) throw new RoomdError('room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed', 2)
     return
   }
   if (pre.loginNeeded) throw new NotLoggedIn(parsed.server)
-  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}`, 2)
+  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}${pre.status === 400 ? branchRoomHint(roomName) : ''}`, 2)
 }
 
 /** Why the server would refuse us, or undefined when access is fine (or the server cannot be asked).
  *  `missing`: access is fine but nobody has opened this repo yet. */
-async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string } | undefined> {
+async function preflight(server: string, roomName: string, auth: Creds): Promise<{ reason: string; missing?: boolean; loginNeeded?: boolean; canonical?: string; status?: number } | undefined> {
   try {
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
     if (res.ok) {
@@ -987,8 +978,8 @@ async function preflight(server: string, roomName: string, auth: Creds): Promise
       return { reason }
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
-    if (res.status === 400) return { reason: (await res.text()).trim() || 'invalid room name (HTTP 400)' }
-    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true }
+    if (res.status === 400) return { reason: (await res.text()).trim() || 'invalid room name (HTTP 400)', status: 400 }
+    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true, status: 404 }
     return undefined // older server or unexpected status: let the websocket try
   } catch (e) {
     return { reason: `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})` }

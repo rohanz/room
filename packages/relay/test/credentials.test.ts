@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
-import WebSocket from 'ws'
+import WebSocket, { WebSocketServer } from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import * as encoding from 'lib0/encoding'
@@ -49,7 +49,7 @@ describe('local relay credentials', () => {
       const nextBody = JSON.stringify({ room, schema: 2, ts: nextTs, nonce: nextNonce, proof: viewTicketProof(view, room, nextTs, nextNonce) })
       const viewTicket = (await (await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body: nextBody })).json() as { ticket: string }).ticket
       const viewerDoc = new Y.Doc(), writerDoc = new Y.Doc()
-      const viewer = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), viewerDoc, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', ticket: viewTicket }, disableBc: true })
+      const viewer = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), viewerDoc, { WebSocketPolyfill: authorizedWebSocket({ viewKey: view }) as never, params: { schema: '2', ticket: viewTicket }, disableBc: true })
       const writer = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), writerDoc, { WebSocketPolyfill: authorizedWebSocket({ key }) as never, params: { schema: '2' }, disableBc: true })
       try {
         await new Promise<void>((resolve, reject) => {
@@ -83,16 +83,89 @@ describe('local relay credentials', () => {
         ws.once('error', () => resolve())
       })
       expect(captured.join('\n')).not.toContain(key)
-      expect(captured.every(request => request.startsWith('GET /health'))).toBe(true)
+      // The listener sees the nonce-only health probe and the signed upgrade, nothing reusable; the upgrade got no relay
+      // hello, so no document frame followed it.
+      expect(captured.length).toBeGreaterThan(0)
+      expect(captured.every(request => request.startsWith('GET /health') || request.startsWith('GET /local%2Fcredentials'))).toBe(true)
     } finally { await new Promise<void>(resolve => fake.close(() => resolve())) }
+  })
+
+  it('keeps document text encrypted through a forwarding socket and rejects altered frames', async () => {
+    const relay = await startRelay(0, { key })
+    const proxy = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await new Promise<void>(resolve => proxy.once('listening', resolve))
+    const proxyPort = (proxy.address() as { port: number }).port
+    const observed: Buffer[] = []
+    let alter = false, frames = 0
+    proxy.on('connection', (downstream, req) => {
+      const path = req.url!
+      // The test signs the upstream upgrade because the proxy listens on a different port.
+      // Forwarded WebSocket messages themselves remain opaque to the proxy.
+      const upstream = new WebSocket(`ws://127.0.0.1:${relay.port}${path}`, { headers: { authorization: localProofHeader(key, 'GET', path, relay.port) } })
+      downstream.on('message', data => {
+        const frame = Buffer.from(data as Buffer)
+        observed.push(Buffer.from(frame))
+        // Leave the hello alone; flip one bit of the first encrypted frame.
+        if (alter && ++frames === 2) frame[0] ^= 1
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(frame)
+        else upstream.once('open', () => upstream.send(frame))
+      })
+      upstream.on('message', data => { if (downstream.readyState === WebSocket.OPEN) downstream.send(data) })
+      upstream.on('close', code => downstream.close(code))
+      downstream.on('close', () => upstream.close())
+      upstream.on('error', () => downstream.close())
+    })
+    try {
+      const Polyfill = authorizedWebSocket({ key })
+      const path = `/${encodeURIComponent(room)}?schema=2`
+      const ws = new Polyfill(`ws://127.0.0.1:${proxyPort}${path}`)
+      await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
+      const marker = 'reviewer-plaintext-marker-7361'
+      const doc = new Y.Doc(); doc.getText('private').insert(0, marker)
+      const frame = encoding.createEncoder()
+      encoding.writeVarUint(frame, 0)
+      syncProtocol.writeUpdate(frame, Y.encodeStateAsUpdate(doc))
+      ws.send(encoding.toUint8Array(frame))
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(Buffer.concat(observed).toString()).not.toContain(marker)
+      ws.close()
+      alter = true
+      const second = new Polyfill(`ws://127.0.0.1:${proxyPort}${path}`)
+      await new Promise<void>((resolve, reject) => { second.once('open', resolve); second.once('error', reject) })
+      const closed = new Promise<number>(resolve => second.once('close', code => resolve(code)))
+      second.send(Uint8Array.of(0, 0))
+      expect(await closed).toBe(1008)
+      doc.destroy()
+    } finally {
+      await new Promise<void>(resolve => proxy.close(() => resolve()))
+      await relay.close()
+    }
+  })
+
+  it('sends no document frame to an impostor that fakes the relay hello', async () => {
+    const impostor = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await new Promise<void>(resolve => impostor.once('listening', resolve))
+    const port = (impostor.address() as { port: number }).port
+    const received: Buffer[] = []
+    impostor.on('connection', ws => ws.on('message', data => {
+      received.push(Buffer.from(data as Buffer))
+      ws.send(Buffer.concat([Buffer.from('room-secure-v1'), Buffer.alloc(48)]))
+    }))
+    try {
+      const Polyfill = authorizedWebSocket({ key })
+      const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
+      await new Promise<void>(resolve => ws.once('close', () => resolve()))
+      expect(received).toHaveLength(1)
+      expect(received[0]?.subarray(0, 14).toString()).toBe('room-secure-v1')
+    } finally { await new Promise<void>(resolve => impostor.close(() => resolve())) }
   })
 
   it('closes state-request floods and a consumer sent more than its output budget', async () => {
     const relay = await startRelay(0, { key, socketQueueBytes: 256 * 1024 })
-    const path = `/${encodeURIComponent(room)}?schema=2`
     const open = () => new Promise<WebSocket>((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${relay.port}${path}`, { headers: { authorization: localProofHeader(key, 'GET', path, relay.port) } })
-      ws.once('open', () => resolve(ws)); ws.once('error', reject)
+      const Polyfill = authorizedWebSocket({ key })
+      const ws = new Polyfill(`ws://127.0.0.1:${relay.port}/${encodeURIComponent(room)}?schema=2`)
+      ws.once('open', () => { ws.send(Uint8Array.of(0, 0)); resolve(ws) }); ws.once('error', reject)
     })
     try {
       const flood = await open()

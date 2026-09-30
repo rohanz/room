@@ -23739,8 +23739,8 @@ function sources(common, room) {
         throw new Error(`invalid legacy snapshot name: ${file}`);
       }
       if (name2 !== room && !name2.startsWith(`${room}/`)) return [];
-      const full = path7.join(legacyDir(common), file);
-      return [{ file: full, name: name2, mtime: fs10.statSync(full).mtimeMs }];
+      const full2 = path7.join(legacyDir(common), file);
+      return [{ file: full2, name: name2, mtime: fs10.statSync(full2).mtimeMs }];
     });
   } catch (error2) {
     if (error2.code === "ENOENT") return [];
@@ -24161,6 +24161,7 @@ var init_hub = __esm({
       startedAt = 0;
       freshAtStart = false;
       settled = false;
+      legacyExpired = false;
       maintainedAt = 0;
       dirty = false;
       stopped = false;
@@ -24169,6 +24170,7 @@ var init_hub = __esm({
       tenure;
       leases = /* @__PURE__ */ new Map();
       records = /* @__PURE__ */ new Map();
+      legacyHolders = /* @__PURE__ */ new Map();
       greeted = /* @__PURE__ */ new Set();
       sessions = /* @__PURE__ */ new Map();
       rates = /* @__PURE__ */ new Map();
@@ -24268,16 +24270,7 @@ var init_hub = __esm({
       }
       owner(conn, p, name2, lease) {
         if (this.host.owns && !this.host.owns(p, name2)) return false;
-        if (lease?.principal && lease.principal !== this.principal(p)) {
-          if (!("id" in p) || !p.id || lease.principal !== `login:${p.login ?? ""}`) return false;
-          const session2 = this.sessions.get(conn);
-          if (!session2 || (lease.session ?? lease.holder?.sessionId) !== session2) return false;
-          lease.principal = p.id;
-          const record2 = this.recordOf(lease);
-          if (record2) this.doc.doc.transact(() => {
-            this.doc.participants.set(holderKey(name2), record2);
-          }, HUB_ORIGIN);
-        }
+        if (!lease?.principal || lease.principal !== this.principal(p)) return false;
         const session = this.sessions.get(conn);
         return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
       }
@@ -24341,6 +24334,16 @@ var init_hub = __esm({
           }, HUB_ORIGIN);
         }
       }
+      /** The same allocation budget governs new grants and both ways of carrying a synced holder. */
+      allocationFailure(name2, principal, live) {
+        this.prunePrincipal(principal);
+        this.pruneRecords();
+        if (live && [...this.leases].filter(([n]) => n !== name2).length >= MAX_LEASES_PER_ROOM) return "the room has too many live leases";
+        if (live && [...this.leases].filter(([n, l]) => n !== name2 && l.principal === principal).length >= MAX_LEASES_PER_PRINCIPAL) return "this principal has too many live leases";
+        if ([...this.records].filter(([n]) => n !== name2).length >= MAX_RETAINED_NAMES) return "the room has too many retained names";
+        if ([...this.records].filter(([n, r]) => n !== name2 && r.principal === principal).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return "this principal has too many retained names";
+        return void 0;
+      }
       /**
        * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
        * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
@@ -24384,17 +24387,21 @@ var init_hub = __esm({
           const name2 = key2.slice(0, -HOLDER.length);
           const known = this.records.get(name2);
           const lease = this.leases.get(name2);
-          if (!known && this.records.size >= MAX_RETAINED_NAMES) continue;
           if (known && record2.epoch <= known.epoch) {
             if (lease) hydrate(lease, record2);
             continue;
           }
+          if (!record2.principal) {
+            if (!record2.ended) this.legacyHolders.set(name2, record2.epoch);
+            continue;
+          }
+          if (this.allocationFailure(name2, record2.principal, !record2.ended)) continue;
           if (lease) {
             this.leases.delete(name2);
             this.notify(name2, lease, "superseded");
           }
           if (record2.ended) this.records.set(name2, knownOf(record2));
-          else if (this.leases.size < MAX_LEASES_PER_ROOM) this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
+          else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
         }
       }
       /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
@@ -24489,23 +24496,16 @@ var init_hub = __esm({
         if (unavailable) return unavailable;
         if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
         const live = this.live(name2);
+        const stored = this.record(name2);
+        if (stored && stored.epoch === req.supersedes && stored.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
         if (!live && this.settling()) return starting();
-        if (live?.principal && live.principal !== this.principal(p) && !("id" in p && p.id && live.principal === `login:${p.login ?? ""}` && this.owner(conn, p, name2, live))) return fail("not-yours", `${name2} belongs to another principal`);
+        if (!live && stored && !stored.ended && !stored.principal && this.legacyHolders.get(name2) === stored.epoch && this.host.mono() - this.startedAt < LEASE_TTL_MS) return fail("held", `${name2} is held by a legacy record until its TTL ends`);
+        if (live && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
         if (live && req.supersedes !== live.epoch && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
           return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
         }
-        if (live && live.principal && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
-        if (!live && this.leases.size >= MAX_LEASES_PER_ROOM) return fail("room-full", "the room has too many live leases");
-        const owned = [...this.leases.values()].filter((l) => l.principal === this.principal(p)).length;
-        if (!live && owned >= MAX_LEASES_PER_PRINCIPAL) return fail("room-full", "this principal has too many live leases");
-        if (!live) {
-          this.prunePrincipal(this.principal(p));
-          if ([...this.records.values()].filter((r) => r.principal === this.principal(p)).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return fail("room-full", "this principal has too many retained names");
-        }
-        if (!live && this.records.size >= MAX_RETAINED_NAMES) {
-          this.pruneRecords();
-          if (this.records.size >= MAX_RETAINED_NAMES) return fail("room-full", "the room has too many retained names");
-        }
+        const capacity = this.allocationFailure(name2, this.principal(p), true);
+        if (capacity) return fail("room-full", capacity);
         const epoch = this.issue("epoch");
         if (epoch === void 0) return starting();
         if (live) this.notify(name2, live, "superseded");
@@ -24522,10 +24522,12 @@ var init_hub = __esm({
       renew(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
         const { name: name2, epoch } = req;
+        const stored = this.record(name2);
         const existing = this.leases.get(name2) ?? this.records.get(name2);
         if (this.host.owns && !this.host.owns(p, name2) || existing?.epoch === epoch && !this.owner(conn, p, name2, existing)) {
           return fail("not-yours", `${name2} belongs to another holder session`);
         }
+        if (stored?.epoch === epoch && !this.owner(conn, p, name2, knownOf(stored))) return fail("not-yours", `${name2} belongs to another holder session`);
         const outage = this.unavailable(fail);
         if (outage) {
           const lease = this.leases.get(name2);
@@ -24545,7 +24547,9 @@ var init_hub = __esm({
         const known = this.records.get(name2);
         if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
           const record2 = this.record(name2);
-          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal && record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
+          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
+          const capacity = this.allocationFailure(name2, this.principal(p), true);
+          if (capacity) return fail("room-full", capacity);
           if (live) this.notify(name2, live, "superseded");
           const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
           this.hold(name2, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn });
@@ -24556,10 +24560,12 @@ var init_hub = __esm({
       }
       release(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
-        const existing = this.leases.get(req.name) ?? this.records.get(req.name);
+        const stored = this.record(req.name);
+        const existing = this.leases.get(req.name) ?? this.records.get(req.name) ?? (stored?.epoch === req.epoch ? knownOf(stored) : void 0);
         if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
           return fail("not-yours", `${req.name} belongs to another holder session`);
         }
+        if (stored?.epoch === req.epoch && !this.owner(conn, p, req.name, knownOf(stored))) return fail("not-yours", `${req.name} belongs to another holder session`);
         const unavailable = this.unavailable(fail);
         if (unavailable) return unavailable;
         const live = this.live(req.name);
@@ -24574,10 +24580,12 @@ var init_hub = __esm({
         if (sizeOf2(msg) > MAX_MESSAGE_BYTES) return fail("too-large", `the message exceeds ${MAX_MESSAGE_BYTES / 1024} KiB`);
         if (!validMessageShape(msg) || !msg.id || !isName(msg.from) || msg.to !== void 0 && !isName(msg.to) || msg.at !== void 0 || msg.seq !== void 0 || req.auto !== void 0 && typeof req.auto !== "boolean") return fail("invalid", "post has invalid message fields");
         if (!isObject2(req.lease) || Object.keys(req.lease).some((k) => k !== "name" && k !== "epoch") || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
-        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name);
+        const stored = this.record(req.lease.name);
+        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name) ?? (stored?.epoch === req.lease.epoch ? knownOf(stored) : void 0);
         if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
           return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         }
+        if (stored?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, knownOf(stored))) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         const unavailable = this.unavailable(fail);
         if (unavailable) return unavailable;
         const live = this.live(req.lease.name);
@@ -24627,6 +24635,10 @@ var init_hub = __esm({
           this.settled = true;
           this.dirty = true;
         }
+        if (!this.legacyExpired && this.host.mono() - this.startedAt >= LEASE_TTL_MS) {
+          this.legacyExpired = true;
+          this.dirty = true;
+        }
         if (this.dirty) this.reassert();
         const now = this.host.mono();
         if (now - this.maintainedAt >= MAINTENANCE_MS) {
@@ -24646,7 +24658,7 @@ var init_hub = __esm({
           for (const name2 of names) {
             const current = this.record(name2);
             let known = this.records.get(name2);
-            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
+            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (current.principal || current.ended || this.legacyExpired || this.legacyHolders.get(name2) !== current.epoch) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
               known = knownOf(current.ended ? current : { ...current, ended: "expired" });
               this.records.set(name2, known);
             }
@@ -25344,8 +25356,88 @@ var init_proof = __esm({
   }
 });
 
-// packages/relay/src/index.ts
+// packages/relay/src/secure.ts
 import crypto4 from "node:crypto";
+var MAGIC, LABEL, INFO_C2S, INFO_S2C, SecureSession;
+var init_secure = __esm({
+  "packages/relay/src/secure.ts"() {
+    "use strict";
+    MAGIC = Buffer.from("room-secure-v1");
+    LABEL = Buffer.from("room-relay-v2\0relay\0");
+    INFO_C2S = Buffer.from("room-relay-v2 c2s");
+    INFO_S2C = Buffer.from("room-relay-v2 s2c");
+    SecureSession = class {
+      constructor(key2, room, role) {
+        this.key = key2;
+        this.room = room;
+        this.role = role;
+      }
+      key;
+      room;
+      role;
+      cn;
+      sn;
+      tx;
+      rx;
+      sent = 0n;
+      received = 0n;
+      get ready() {
+        return !!this.tx;
+      }
+      clientHello(nonce = crypto4.randomBytes(16)) {
+        if (this.role !== "client" || this.cn || nonce.length !== 16) throw new Error("invalid client hello");
+        this.cn = Buffer.from(nonce);
+        return Buffer.concat([MAGIC, this.cn]);
+      }
+      relayHello(frame, nonce = crypto4.randomBytes(16)) {
+        if (this.role !== "relay" || this.cn || frame.length !== MAGIC.length + 16 || nonce.length !== 16 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay hello");
+        this.cn = Buffer.from(frame.subarray(MAGIC.length));
+        this.sn = Buffer.from(nonce);
+        const proof = this.proof();
+        this.derive();
+        return Buffer.concat([MAGIC, this.sn, proof]);
+      }
+      acceptRelayHello(frame) {
+        if (this.role !== "client" || !this.cn || this.sn || frame.length !== MAGIC.length + 48 || !Buffer.from(frame.subarray(0, MAGIC.length)).equals(MAGIC)) throw new Error("invalid relay proof");
+        this.sn = Buffer.from(frame.subarray(MAGIC.length, MAGIC.length + 16));
+        if (!crypto4.timingSafeEqual(Buffer.from(frame.subarray(MAGIC.length + 16)), this.proof())) throw new Error("invalid relay proof");
+        this.derive();
+      }
+      proof() {
+        return crypto4.createHmac("sha256", this.key).update(LABEL).update(this.cn).update(this.sn).update(Buffer.from([0])).update(this.room).digest();
+      }
+      derive() {
+        const salt = Buffer.concat([this.cn, this.sn]);
+        const c2s = Buffer.from(crypto4.hkdfSync("sha256", this.key, salt, INFO_C2S, 32));
+        const s2c = Buffer.from(crypto4.hkdfSync("sha256", this.key, salt, INFO_S2C, 32));
+        this.tx = this.role === "client" ? c2s : s2c;
+        this.rx = this.role === "client" ? s2c : c2s;
+      }
+      iv(counter) {
+        const iv = Buffer.alloc(12);
+        iv.writeBigUInt64BE(counter, 4);
+        return iv;
+      }
+      encrypt(data) {
+        if (!this.tx) throw new Error("handshake incomplete");
+        const cipher = crypto4.createCipheriv("aes-256-gcm", this.tx, this.iv(this.sent++));
+        return Buffer.concat([cipher.update(data), cipher.final(), cipher.getAuthTag()]);
+      }
+      decrypt(data) {
+        if (!this.rx || data.length < 16) throw new Error("invalid encrypted frame");
+        const frame = Buffer.from(data);
+        const decipher = crypto4.createDecipheriv("aes-256-gcm", this.rx, this.iv(this.received));
+        decipher.setAuthTag(frame.subarray(frame.length - 16));
+        const plain = Buffer.concat([decipher.update(frame.subarray(0, -16)), decipher.final()]);
+        this.received++;
+        return plain;
+      }
+    };
+  }
+});
+
+// packages/relay/src/index.ts
+import crypto5 from "node:crypto";
 import fs13 from "node:fs";
 import http2 from "node:http";
 import path10 from "node:path";
@@ -25369,7 +25461,7 @@ async function observeTakeover(work, report) {
 }
 function stateRequestLimiter(now = Date.now) {
   let started = now(), count = 0;
-  return (buf, queued) => {
+  return (buf, queued2) => {
     try {
       const dec = createDecoder(buf);
       const kind = readVarUint(dec);
@@ -25381,28 +25473,61 @@ function stateRequestLimiter(now = Date.now) {
       started = now();
       count = 0;
     }
-    return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES;
+    return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued2 <= RELAY_STATE_QUEUE_BYTES;
   };
 }
 function relayDocs() {
   return /* @__PURE__ */ new Map();
 }
-function relayOutputAllowed(queued, aggregateQueued, nextBytes, socketBudget = RELAY_SOCKET_QUEUE_BYTES) {
-  return queued === 0 || queued + nextBytes <= socketBudget && aggregateQueued + nextBytes <= RELAY_TOTAL_QUEUE_BYTES;
+function dropSocket(conn) {
+  totalQueued -= queued.get(conn) ?? 0;
+  queued.delete(conn);
+}
+function full(conn) {
+  conn.close(1013, "relay output queue full");
+  setTimeout(() => {
+    if (conn.readyState !== conn.CLOSED) conn.terminate();
+  }, 1e3).unref?.();
+}
+function capacityFor(bytes, except) {
+  if (totalQueued + stateReservation + bytes > RELAY_TOTAL_QUEUE_BYTES) {
+    for (const [slow, amount] of [...queued].sort((a, b) => b[1] - a[1])) {
+      if (totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES) break;
+      if (slow === except || amount === 0) continue;
+      slow.close(1013, "relay output queue full");
+      slow.terminate();
+      dropSocket(slow);
+    }
+  }
+  return totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES;
 }
 function send(conn, buf) {
   if (conn.readyState !== conn.OPEN) return;
-  const total = [...activeSockets].reduce((sum, socket) => sum + socket.bufferedAmount, 0);
-  if (!relayOutputAllowed(conn.bufferedAmount, total, buf.byteLength, socketBudgets.get(conn))) {
-    conn.close(1013, "relay output queue full");
-    setTimeout(() => {
-      if (conn.readyState !== conn.CLOSED) conn.terminate();
-    }, 1e3).unref?.();
+  const session = sessions.get(conn);
+  if (!session?.ready) return;
+  const bytes = buf.byteLength + 16;
+  const own2 = queued.get(conn) ?? 0;
+  if (own2 > 0 && own2 + bytes > (socketBudgets.get(conn) ?? RELAY_SOCKET_QUEUE_BYTES)) {
+    full(conn);
+    return;
+  }
+  if (!capacityFor(bytes, conn)) {
+    full(conn);
     return;
   }
   try {
-    conn.send(buf);
+    const frame = session.encrypt(buf);
+    queued.set(conn, own2 + bytes);
+    totalQueued += bytes;
+    conn.send(frame, (error2) => {
+      if (queued.has(conn)) {
+        queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - bytes));
+        totalQueued -= bytes;
+      }
+      if (error2) full(conn);
+    });
   } catch {
+    dropSocket(conn);
     try {
       conn.close();
     } catch {
@@ -25474,14 +25599,63 @@ function hubReply(d, conn, raw, hubOn, readOnly = false) {
 }
 function attach(docs, conn, req, opts) {
   const name2 = encodeURIComponent(decodeURIComponent((req.url ?? "/").slice(1).split("?")[0]));
+  const room = decodeURIComponent(name2);
+  const session = new SecureSession(opts.readOnly ? localViewKey(opts.key, room) : opts.key, room, "relay");
+  sessions.set(conn, session);
+  const timer = setTimeout(() => conn.close(1008, "secure handshake timeout"), 5e3);
+  timer.unref?.();
+  let hello = false;
+  const handshake = (raw, binary2) => {
+    try {
+      if (!binary2) throw new Error("binary secure frames required");
+      if (!hello) {
+        hello = true;
+        const reply = session.relayHello(raw);
+        if (!capacityFor(reply.length, conn)) {
+          full(conn);
+          return;
+        }
+        queued.set(conn, reply.length);
+        totalQueued += reply.length;
+        conn.send(reply, (error2) => {
+          if (queued.has(conn)) {
+            queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - reply.length));
+            totalQueued -= reply.length;
+          }
+          if (error2) full(conn);
+        });
+        return;
+      }
+      const first = session.decrypt(raw);
+      clearTimeout(timer);
+      conn.off("message", handshake);
+      attachReady(docs, conn, name2, opts, first);
+      conn.emit("message", first, true);
+    } catch {
+      clearTimeout(timer);
+      conn.close(1008, "invalid secure frame");
+    }
+  };
+  conn.on("message", handshake);
+  conn.on("close", () => {
+    clearTimeout(timer);
+    dropSocket(conn);
+  });
+}
+function attachReady(docs, conn, name2, opts, first) {
   const d = getDoc(docs, name2, opts);
   d.conns.set(conn, /* @__PURE__ */ new Set());
-  activeSockets.add(conn);
   if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes);
   const allowState = stateRequestLimiter();
   conn.binaryType = "arraybuffer";
   conn.on("message", (raw) => {
-    const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? new Uint8Array(Buffer.concat(raw)) : new Uint8Array(raw);
+    let buf;
+    try {
+      buf = raw === first ? first : sessions.get(conn).decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw);
+    } catch {
+      conn.close(1008, "invalid secure frame");
+      return;
+    }
     if (!allowState(buf, conn.bufferedAmount)) {
       conn.close(1013, "too many state requests");
       return;
@@ -25492,8 +25666,18 @@ function attach(docs, conn, req, opts) {
       switch (readVarUint(dec)) {
         case MSG_SYNC:
           if (opts.readOnly && peekVarUint(dec) !== messageYjsSyncStep1) break;
+          const step1 = peekVarUint(dec) === messageYjsSyncStep1;
+          if (step1 && !capacityFor(RELAY_SOCKET_QUEUE_BYTES, conn)) {
+            full(conn);
+            return;
+          }
+          if (step1) stateReservation += RELAY_SOCKET_QUEUE_BYTES;
           writeVarUint(enc2, MSG_SYNC);
-          readSyncMessage(dec, enc2, d.doc, conn);
+          try {
+            readSyncMessage(dec, enc2, d.doc, conn);
+          } finally {
+            if (step1) stateReservation -= RELAY_SOCKET_QUEUE_BYTES;
+          }
           if (length(enc2) > 1) send(conn, toUint8Array(enc2));
           break;
         case MSG_AWARENESS:
@@ -25511,7 +25695,7 @@ function attach(docs, conn, req, opts) {
     if (!d.conns.has(conn)) return;
     const ids = d.conns.get(conn);
     d.conns.delete(conn);
-    activeSockets.delete(conn);
+    dropSocket(conn);
     d.hub?.closed(conn);
     if (ids?.size) removeAwarenessStates(d.awareness, Array.from(ids), null);
     if (!d.conns.size && !d.closed) d.memory?.flush();
@@ -25547,7 +25731,7 @@ function deterministicPort(commonDir) {
     real = fs13.realpathSync.native(commonDir);
   } catch {
   }
-  const h = crypto4.createHash("sha1").update("schema-2\0").update(real).digest();
+  const h = crypto5.createHash("sha1").update("schema-2\0").update(real).digest();
   return 4e4 + h.readUInt32BE(0) % 2e4;
 }
 function cloneId(commonDir) {
@@ -25556,7 +25740,7 @@ function cloneId(commonDir) {
     real = fs13.realpathSync.native(commonDir);
   } catch {
   }
-  return crypto4.createHash("sha256").update(real).digest("hex");
+  return crypto5.createHash("sha256").update(real).digest("hex");
 }
 async function probeRelay(port, commonDir, key2, timeoutMs2 = 800) {
   const identity2 = await relayIdentity(port, key2, timeoutMs2);
@@ -25680,7 +25864,7 @@ function startRelay(port, opts = {}) {
               res.end("too many pending tickets");
               return;
             }
-            const ticket = crypto4.randomBytes(16).toString("hex");
+            const ticket = crypto5.randomBytes(16).toString("hex");
             tickets.set(ticket, { room, expires: now + ticketTtl });
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
@@ -25738,7 +25922,7 @@ function startRelay(port, opts = {}) {
     wss.on("connection", (conn, req) => {
       try {
         safeUrl(req.url);
-        attach(docs, conn, req, { ...docOptions, readOnly: !!req.ticketView });
+        attach(docs, conn, req, { ...docOptions, key: opts.key ?? "", readOnly: !!req.ticketView });
       } catch (e) {
         opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
         conn.close(1008, "Bad Request");
@@ -25886,7 +26070,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   if (existing) adopt(existing, "joined");
   else {
     if (opts.joinOnly) throw new NoLocalRelay(room);
-    key2 = readRelayInfo(commonDir)?.key ?? crypto4.randomBytes(16).toString("hex");
+    key2 = readRelayInfo(commonDir)?.key ?? crypto5.randomBytes(16).toString("hex");
     const want = deterministicPort(commonDir);
     const lock = AuthorityLock.take(commonDir);
     if (!lock) {
@@ -25986,7 +26170,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     }
   };
 }
-var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, activeSockets, socketBudgets, hubBudget, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
+var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
 var init_src3 = __esm({
   "packages/relay/src/index.ts"() {
     "use strict";
@@ -26006,6 +26190,8 @@ var init_src3 = __esm({
     init_src2();
     init_src();
     init_proof();
+    init_secure();
+    init_secure();
     init_proof();
     HttpFailure = class extends Error {
       constructor(status, message2) {
@@ -26020,8 +26206,11 @@ var init_src3 = __esm({
     RELAY_STATE_QUEUE_BYTES = 1024 * 1024;
     RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024;
     RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024;
-    activeSockets = /* @__PURE__ */ new Set();
     socketBudgets = /* @__PURE__ */ new WeakMap();
+    sessions = /* @__PURE__ */ new WeakMap();
+    queued = /* @__PURE__ */ new Map();
+    totalQueued = 0;
+    stateReservation = 0;
     hubBudget = new HubRequestBudget();
     LOCAL_FILE = path10.join("room", "relay.json");
     MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
@@ -26042,27 +26231,65 @@ function authorizedWebSocket(credentials) {
     ...credentials.token ? { "x-room-token": credentials.token } : {}
   };
   return class AuthorizedWebSocket extends wrapper_default {
+    secure;
+    pending = [];
+    opened = false;
+    timer;
     constructor(address, protocols) {
-      if (!credentials.key) {
-        super(address, protocols, { headers });
+      const url = new URL(address.toString());
+      if (credentials.key || credentials.viewKey) {
+        const port = Number(url.port);
+        if (url.protocol !== "ws:" || url.hostname !== "127.0.0.1" || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("local relay requires ws://127.0.0.1:<port>");
+        super(address, protocols, { headers: { ...headers, ...credentials.key ? { authorization: localProofHeader(credentials.key, "GET", url.pathname + url.search, port) } : {} } });
+        this.secure = new SecureSession(credentials.key ?? credentials.viewKey, decodeURIComponent(url.pathname.slice(1)), "client");
+        this.timer = setTimeout(() => this.close(1008, "secure handshake timeout"), 5e3);
+        this.timer.unref?.();
+      } else super(address, protocols, { headers });
+    }
+    emit(event, ...args3) {
+      if (!this.secure) return super.emit(event, ...args3);
+      if (event === "open") {
+        super.send(this.secure.clientHello());
+        return true;
+      }
+      if (event === "message") {
+        try {
+          const data = args3[0];
+          const raw = data instanceof ArrayBuffer ? new Uint8Array(data) : Array.isArray(data) ? Buffer.concat(data) : data;
+          if (!this.opened) {
+            this.secure.acceptRelayHello(raw);
+            this.opened = true;
+            clearTimeout(this.timer);
+            super.emit("open");
+            for (const item of this.pending.splice(0)) this.send(item.data, item.options, item.cb);
+            return true;
+          }
+          const plain = this.secure.decrypt(raw);
+          return super.emit("message", plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength), true);
+        } catch {
+          this.close(1008, "invalid secure frame");
+          return false;
+        }
+      }
+      if (event === "close") clearTimeout(this.timer);
+      return super.emit(event, ...args3);
+    }
+    send(data, options, cb) {
+      if (!this.secure) {
+        super.send(data, options, cb);
         return;
       }
-      const url = new URL(address.toString());
-      const port = Number(url.port);
-      super(address, protocols, { headers, finishRequest: (request) => {
-        if (url.protocol !== "ws:" || url.hostname !== "127.0.0.1" || !Number.isInteger(port) || port < 1 || port > 65535) {
-          request.destroy(new Error("local relay requires ws://127.0.0.1:<port>"));
-          return;
-        }
-        void relayHealth(port, credentials.key).then((health) => {
-          if (!health) {
-            request.destroy(new Error("local relay identity could not be verified"));
-            return;
-          }
-          request.setHeader("authorization", localProofHeader(credentials.key, "GET", url.pathname + url.search, port));
-          request.end();
-        }, (error2) => request.destroy(error2));
-      } });
+      if (typeof options === "function") {
+        cb = options;
+        options = void 0;
+      }
+      if (!this.opened) {
+        this.pending.push({ data, options, cb });
+        return;
+      }
+      const frame = this.secure.encrypt(data instanceof ArrayBuffer ? new Uint8Array(data) : Buffer.from(data));
+      if (options) super.send(frame, options, cb);
+      else super.send(frame, cb);
     }
   };
 }
@@ -26943,17 +27170,17 @@ var init_esm = __esm({
         if (stats.isDirectory())
           return "directory";
         if (stats && stats.isSymbolicLink()) {
-          const full = entry.fullPath;
+          const full2 = entry.fullPath;
           try {
-            const entryRealPath = await realpath(full);
+            const entryRealPath = await realpath(full2);
             const entryRealPathStats = await lstat(entryRealPath);
             if (entryRealPathStats.isFile()) {
               return "file";
             }
             if (entryRealPathStats.isDirectory()) {
               const len = entryRealPath.length;
-              if (full.startsWith(entryRealPath) && full.substr(len, 1) === psep) {
-                const recursiveError = new Error(`Circular symlink detected: "${full}" points to "${entryRealPath}"`);
+              if (full2.startsWith(entryRealPath) && full2.substr(len, 1) === psep) {
+                const recursiveError = new Error(`Circular symlink detected: "${full2}" points to "${entryRealPath}"`);
                 recursiveError.code = RECURSIVE_ERROR_CODE;
                 return this._onError(recursiveError);
               }
@@ -27541,7 +27768,7 @@ var init_handler = __esm({
         if (this.fsw.closed) {
           return;
         }
-        const full = entry.fullPath;
+        const full2 = entry.fullPath;
         const dir = this.fsw._getWatchedDir(directory);
         if (!this.fsw.options.followSymlinks) {
           this.fsw._incrReadyCount();
@@ -27555,22 +27782,22 @@ var init_handler = __esm({
           if (this.fsw.closed)
             return;
           if (dir.has(item)) {
-            if (this.fsw._symlinkPaths.get(full) !== linkPath) {
-              this.fsw._symlinkPaths.set(full, linkPath);
+            if (this.fsw._symlinkPaths.get(full2) !== linkPath) {
+              this.fsw._symlinkPaths.set(full2, linkPath);
               this.fsw._emit(EV.CHANGE, path50, entry.stats);
             }
           } else {
             dir.add(item);
-            this.fsw._symlinkPaths.set(full, linkPath);
+            this.fsw._symlinkPaths.set(full2, linkPath);
             this.fsw._emit(EV.ADD, path50, entry.stats);
           }
           this.fsw._emitReady();
           return true;
         }
-        if (this.fsw._symlinkPaths.has(full)) {
+        if (this.fsw._symlinkPaths.has(full2)) {
           return true;
         }
-        this.fsw._symlinkPaths.set(full, true);
+        this.fsw._symlinkPaths.set(full2, true);
       }
       _handleRead(directory, initialAdd, wh, target, dir, depth, throttler) {
         directory = sysPath.join(directory, "");
@@ -30095,6 +30322,22 @@ var init_plugin = __esm({
   }
 });
 
+// packages/room-mcp/src/room-name.ts
+function normalizeExplicitRoomName(name2, log2) {
+  const parts2 = name2.split("/");
+  if (parts2[0] === "github.com" && parts2.length > 3 && parts2[1] && parts2[2] && parts2.slice(3).every(Boolean)) {
+    const canonical = parts2.slice(0, 3).join("/").toLowerCase();
+    log2?.(`room ${name2}: branch part ignored because Room 0.17 has one room per repository; joining ${canonical}`);
+    return canonical;
+  }
+  return name2;
+}
+var init_room_name = __esm({
+  "packages/room-mcp/src/room-name.ts"() {
+    "use strict";
+  }
+});
+
 // packages/room-mcp/src/worker-config.ts
 import fs16 from "node:fs";
 import path13 from "node:path";
@@ -30173,7 +30416,7 @@ function workerProcessEnv(options, inherited = process.env) {
     ...options.model ? { ROOM_WORKER_MODEL: options.model } : {},
     ...options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {},
     ROOM_SERVER: options.server,
-    ROOM_ROOM: options.room,
+    ROOM_ROOM: options.server === "local" ? options.room : normalizeExplicitRoomName(options.room),
     ROOM_DIR: options.dir,
     PWD: options.dir,
     ...options.port ? { PORT: String(options.port) } : {},
@@ -30269,6 +30512,7 @@ var init_worker_config = __esm({
     "use strict";
     init_plugin();
     init_config();
+    init_room_name();
     WORKER_PORT_START = 4400;
     WORKER_PORT_END = 4499;
     warnedMissingNice = false;
@@ -37993,8 +38237,9 @@ async function acquireName(options) {
     } catch (e) {
       if (e instanceof HubError && (e.reason === "held" || e.reason === "not-yours")) {
         await releaseLocalName(file, options.token);
-        if (options.explicit || e.reason === "not-yours") throw new NameRefused(e.reason === "held" ? `${candidate.name} is held by another session` : e.message);
-        passed.set(candidate.name, "held by another session");
+        const disallowed = e.reason === "not-yours" && /not a name this login may hold/.test(e.message);
+        if (options.explicit || disallowed) throw new NameRefused(e.reason === "held" ? `${candidate.name} is held by another session` : e.message);
+        passed.set(candidate.name, e.reason === "not-yours" ? "belongs to another account with the same display name" : "held by another session");
         continue;
       }
       return { ...candidate, file, passed, ownWorktree };
@@ -38037,10 +38282,11 @@ async function chooseName(o) {
   if (o.explicitTag !== void 0) return { ...chosen, label };
   const rememberedName = remembered === void 0 ? void 0 : nameOf(remembered);
   const heldElsewhere = (name2) => chosen.passed.get(name2) === "held by another session";
+  const otherAccount = (name2) => chosen.passed.get(name2) === "belongs to another account with the same display name";
   const rememberedHeld = rememberedName !== void 0 && heldElsewhere(rememberedName);
   let note;
   if (rememberedHeld || chosen.name !== o.owner && chosen.name !== rememberedName) {
-    note = `joined as ${chosen.name} (${rememberedHeld ? `remembered name ${rememberedName} is in use by another session` : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`;
+    note = `joined as ${chosen.name} (${rememberedName && otherAccount(rememberedName) ? `remembered name ${rememberedName} belongs to another account with the same display name` : otherAccount(o.owner) ? `${o.owner} belongs to another account with the same display name` : rememberedHeld ? `remembered name ${rememberedName} is in use by another session` : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`;
     o.log?.(note);
   }
   if (chosen.tag !== remembered && !chosen.ownWorktree.has(rememberedName ?? o.owner)) await rememberTag(o.dir, chosen.tag);
@@ -38695,28 +38941,16 @@ function findRoomFile(start2) {
 }
 async function startupJoinOptions(root, server, room) {
   if (server === LOCAL) return { dir: root, room, server: LOCAL };
-  if (room) return { dir: root, room, server };
+  if (room) return { dir: root, room: normalizeExplicitRoomName(room), server };
   if ((await deriveRoomName(root).catch(() => ({ roomName: void 0 }))).roomName) return { dir: root, server };
   const prior = findRoomFile(root);
-  if (prior) return { dir: root, name: prior.name, room: decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, "")), server };
+  if (prior) return { dir: root, name: prior.name, room: normalizeExplicitRoomName(decodeRoom(new URL(prior.room).pathname.replace(/^\/+/, ""))), server };
   return void 0;
 }
 async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
   const canonical = repo ? canonicalRepo(repo) : void 0;
   return { repo: canonical, branch, roomName: canonical };
-}
-function normalizeExplicitRoomName(name2, origin, log2) {
-  const parts2 = name2.split("/");
-  if (parts2[0] === "github.com" && parts2.length > 3 && parts2[1] && parts2[2] && parts2.slice(3).every(Boolean)) {
-    const canonical = parts2.slice(0, 3).join("/").toLowerCase();
-    log2?.(`room ${name2}: branch part ignored because Room 0.17 has one room per repository; joining ${canonical}`);
-    return canonical;
-  }
-  if (parts2[0] === "git" && parts2.length > 4 || origin && !origin.startsWith("github.com/") && name2.startsWith(`${origin}/`)) {
-    throw new RoomdError(`legacy branch room ${name2} cannot be mapped safely. Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice to the repository room (${origin ?? "git/<host>/<owner>/<repo>"}); Room 0.17 accepts one room per repository.`, 2);
-  }
-  return name2;
 }
 async function defaultName(dir) {
   try {
@@ -39125,8 +39359,7 @@ async function joinSession(opts) {
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop")`, 2);
     roomName = d.roomName;
   } else {
-    const origin = (await deriveRoomName(dir).catch(() => ({ roomName: void 0 }))).roomName;
-    roomName = normalizeExplicitRoomName(roomName, origin, opts.log);
+    roomName = normalizeExplicitRoomName(roomName, opts.log);
   }
   const auth = await resolveAuth(server, roomName, token);
   const label = config2.tag?.replace(/[^A-Za-z0-9_-]/g, "") || void 0;
@@ -39142,12 +39375,12 @@ async function joinSession(opts) {
   if (opts.create && pre?.missing) {
     if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
     const err2 = await timed("preflight", () => createRoom(server, roomName, { ...creds, by: name2 }));
-    if (err2) throw new RoomdError(`${server} would not open ${roomName}: ${err2}`, 2);
+    if (err2) throw new RoomdError(`${server} would not open ${roomName}: ${err2}${branchRoomHint(roomName)}`, 2);
     pre = await timed("preflight", () => preflight(server, roomName, creds));
   }
-  if (pre?.missing) throw new NoRoom(roomName, pre.reason, server);
+  if (pre?.missing) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ""), server);
   if (pre?.loginNeeded) throw new NotLoggedIn(server);
-  if (pre && !pre.canonical) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}`, 2);
+  if (pre && !pre.canonical) throw new RoomdError(`${server} refused ${roomName}: ${pre.reason}${pre.status === 400 ? branchRoomHint(roomName) : ""}`, 2);
   if (pre?.canonical && pre.canonical !== roomName) {
     opts.log?.("room names no longer carry a branch; joined " + pre.canonical);
     roomName = pre.canonical;
@@ -39240,7 +39473,7 @@ async function joinLocal(dir, opts) {
   }
   replica = daemon.roomDoc.doc;
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
-  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}`;
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}&relay=1`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
@@ -39331,18 +39564,19 @@ function removeStaleCredential(server, reason) {
   if (/expired or unknown/.test(reason)) removeCredential(server);
 }
 async function checkTeamAdmission(rawServer, roomName, opts = {}) {
+  roomName = normalizeExplicitRoomName(roomName);
   if (opts.credentialsPath) configureCredentials(opts.credentialsPath);
   const parsed = parseServer(rawServer);
   const { login: _login, ...creds } = await resolveAuth(parsed.server, roomName, opts.token ?? parsed.token);
   const pre = await preflight(parsed.server, roomName, creds);
   if (!pre || pre.canonical) return;
   if (pre.missing) {
-    if (!opts.create) throw new NoRoom(roomName, pre.reason, parsed.server);
+    if (!opts.create) throw new NoRoom(roomName, pre.reason + (pre.status === 404 ? branchRoomHint(roomName) : ""), parsed.server);
     if (opts.confirm !== true) throw new RoomdError("room_create opens this repo for everyone with push access; call with confirm=true only after the user has agreed", 2);
     return;
   }
   if (pre.loginNeeded) throw new NotLoggedIn(parsed.server);
-  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}`, 2);
+  throw new RoomdError(`${parsed.server} refused ${roomName}: ${pre.reason}${pre.status === 400 ? branchRoomHint(roomName) : ""}`, 2);
 }
 async function preflight(server, roomName, auth) {
   try {
@@ -39361,8 +39595,8 @@ async function preflight(server, roomName, auth) {
       return { reason };
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || "forbidden" };
-    if (res.status === 400) return { reason: (await res.text()).trim() || "invalid room name (HTTP 400)" };
-    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true };
+    if (res.status === 400) return { reason: (await res.text()).trim() || "invalid room name (HTTP 400)", status: 400 };
+    if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true, status: 404 };
     return void 0;
   } catch (e) {
     return { reason: `cannot reach ${server} (${e instanceof Error ? e.message : String(e)})` };
@@ -39418,13 +39652,15 @@ async function leaveSession(s) {
   await s.daemon.stop();
   await s.local?.stop();
 }
-var timed, DEFAULT_WEB, NoRoom, NotLoggedIn, configCache, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, httpOf;
+var timed, DEFAULT_WEB, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, httpOf;
 var init_session = __esm({
   "packages/room-mcp/src/session.ts"() {
     "use strict";
     init_connection();
     init_y_websocket();
     init_yjs();
+    init_room_name();
+    init_room_name();
     init_src4();
     init_src3();
     init_local();
@@ -39468,6 +39704,7 @@ var init_session = __esm({
       server;
     };
     configCache = /* @__PURE__ */ new Map();
+    branchRoomHint = (room) => room.startsWith("git/") ? "\nRoom 0.17 has one room per repository: if this name ends in a branch, remove it." : "";
     ceilings = /* @__PURE__ */ new Map();
     SERVER_RETRY_MS = 45e3;
     ROOM_CLOSED_CODE = 4001;
@@ -39714,13 +39951,13 @@ function knownNames(session, presences) {
   ].filter((n) => !isPrName(n)));
 }
 function resolveDisplayedName(requested, context2, caller) {
-  const sessions = context2.all();
-  const known = new Set(sessions.flatMap((s) => [...knownNames(s, context2.presences)]));
+  const sessions2 = context2.all();
+  const known = new Set(sessions2.flatMap((s) => [...knownNames(s, context2.presences)]));
   if (known.has(requested)) return { name: requested };
   const candidates = /* @__PURE__ */ new Set();
   const key2 = addressKey(requested);
   for (const name2 of known) if (addressKey(name2) === key2) candidates.add(name2);
-  for (const room of sessions) {
+  for (const room of sessions2) {
     for (const identity2 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
       if (addressKey(displayName(identity2)) === key2) candidates.add(identity2.name);
     }
@@ -39737,10 +39974,10 @@ function resolveDisplayedName(requested, context2, caller) {
   if (names.length) return names.length > 1 ? { ambiguous: names } : { name: names[0] };
   const owner = key2.endsWith("'s agent") ? key2.slice(0, -"'s agent".length) : key2;
   const active = /* @__PURE__ */ new Map();
-  for (const room of sessions) for (const identity2 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
+  for (const room of sessions2) for (const identity2 of [room.me, ...context2.presences(room).map((p) => p.user)]) {
     if (identity2.kind === "agent") active.set(identity2.name, identity2);
   }
-  for (const room of sessions) for (const worker of room.room.acceptedWorkerViews()) {
+  for (const room of sessions2) for (const worker of room.room.acceptedWorkerViews()) {
     if (workerLive(worker.status) && !active.has(worker.name)) active.set(worker.name, { name: worker.name, kind: "agent" });
   }
   const owned = [...active.values()].filter((id3) => addressKey(id3.owner ?? id3.name.split("+")[0]) === owner);
@@ -56687,10 +56924,10 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       }
       let summarizedClaims = 0;
       for (const [person, claims] of [...byPerson].sort(([a2], [b]) => a2 === s.me.name ? -1 : b === s.me.name ? 1 : a2.localeCompare(b))) {
-        const full = claims.filter((c) => a.all === true || c.by === s.me.name || overlapsMyPath(c.path));
-        const rest = claims.filter((c) => !full.includes(c));
+        const full2 = claims.filter((c) => a.all === true || c.by === s.me.name || overlapsMyPath(c.path));
+        const rest = claims.filter((c) => !full2.includes(c));
         out2.push(`  ${person}: ${claims.length} claim(s)${rest.length ? ` \xB7 ${commonDirectory(rest.map((c) => c.path))}` : ""}`);
-        for (const c of full) out2.push(claimLine2(s, c));
+        for (const c of full2) out2.push(claimLine2(s, c));
         summarizedClaims += rest.length;
       }
       const changed = /* @__PURE__ */ new Map();
@@ -57030,7 +57267,8 @@ function handlers6(state) {
       const resolved = await timed2("resolve", () => resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } }));
       const createFromLocal = a.create === true && resolved.server === LOCAL;
       const choice = { server: createFromLocal ? resolved.teamServer : resolved.server, where: createFromLocal ? "team" : resolved.where, rule: resolved.whereRule };
-      const requestedRoom = createFromLocal && resolved.whereRule === "remembered" ? typeof a.room === "string" ? a.room : process.env.ROOM_ROOM : resolved.room;
+      const rawRoom = createFromLocal && resolved.whereRule === "remembered" ? typeof a.room === "string" ? a.room : process.env.ROOM_ROOM : resolved.room;
+      const requestedRoom = choice.server !== LOCAL && rawRoom ? normalizeExplicitRoomName(rawRoom, log2) : rawRoom;
       const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : requestedRoom ?? (await deriveRoomName(dir)).roomName;
       const stay = cur ? cur.local ? ` You're still in this machine's local room (${cur.roomName}), which works for agents on this computer.` : ` You're still in ${cur.roomName}.` : "";
       if (!targetRoom) return `Team rooms need a shared server and a git origin remote to name the room, and ${dir} has no origin.${stay || ' The local room needs neither: room_join(where="local").'} To use a team room, add an origin (git remote add origin <url>) and say 'join the room' again, or name a room: room_join(where="team", room="<name>").`;
@@ -57047,7 +57285,8 @@ function handlers6(state) {
         if (e instanceof NotLoggedIn) return `error: not logged in to ${e.server}. Call room_login server=${JSON.stringify(e.server)}, show its code/URL, then call room_login with the same server again to wait; retry room_join where=${JSON.stringify(e.server)} afterward.${stay}`;
         if (e instanceof NoRoom) {
           const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName;
-          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`;
+          return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet.${e.roomName.startsWith("git/") ? ` Server says: ${e.message}
+` : " "}Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`;
         }
         const why = message2(e);
         return `error: ${why}${/[.!?]$/.test(why) ? "" : "."}${stay}`;
@@ -57113,7 +57352,7 @@ function handlers6(state) {
           dir,
           credentialsPath: resolved.credentialsPath,
           name: resolved.name,
-          room: choice.server === LOCAL ? targetRoom : requestedRoom,
+          room: targetRoom,
           server: choice.server,
           create: a.create === true,
           confirm: a.confirm === true,
@@ -57211,7 +57450,7 @@ function handlers6(state) {
         const config2 = await resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath } });
         if (config2.server === LOCAL) return "error: not in a local room; nothing to close without joining";
         if (a.confirm !== true) return "error: room_close removes this repository room and all shared uncommitted work for everyone on every branch; call with confirm=true only on the user's explicit request";
-        const roomName = (await deriveRoomName(dir)).repo ?? config2.room;
+        const roomName = normalizeExplicitRoomName((await deriveRoomName(dir)).repo ?? config2.room ?? "");
         if (!roomName) return `error: ${dir} has no origin remote; room_join needs a room name`;
         const { server, token } = parseServer(config2.server);
         configureCredentials(config2.credentialsPath);
@@ -59526,8 +59765,8 @@ repeat with force=true to delete them`;
         await registry2.finishOperation(lock);
       }
     }
-    const sessions = a.tag ? [holdingWorker(a.tag, lead)] : rooms.all();
-    const candidates = sessions.flatMap((s) => localWorkers(s.dir, (record2) => record2.room === s.roomName).filter((w) => {
+    const sessions2 = a.tag ? [holdingWorker(a.tag, lead)] : rooms.all();
+    const candidates = sessions2.flatMap((s) => localWorkers(s.dir, (record2) => record2.room === s.roomName).filter((w) => {
       if (a.tag && w.tag !== a.tag) return false;
       const owner = ownership(s, w, discarding);
       return owner.owned && (!owner.liveLead || !!a.tag);
@@ -60733,11 +60972,11 @@ async function nextIdleEpisode(commonDir) {
     }
   }
 }
-function joinedPresenceHolds(sessions) {
-  return sessions.some((s) => !!s.room.scope(s.me.name) || s.room.openClaims().some((c) => c.by === s.me.name && c.byKind !== "human"));
+function joinedPresenceHolds(sessions2) {
+  return sessions2.some((s) => !!s.room.scope(s.me.name) || s.room.openClaims().some((c) => c.by === s.me.name && c.byKind !== "human"));
 }
-function joinedPresenceWorkers(sessions, hasWrite = (dir, room, lead) => registrySnapshotForDir(dir).projectable(lead, room).write.length > 0) {
-  return sessions.some((s) => {
+function joinedPresenceWorkers(sessions2, hasWrite = (dir, room, lead) => registrySnapshotForDir(dir).projectable(lead, room).write.length > 0) {
+  return sessions2.some((s) => {
     try {
       return hasWrite(s.dir, s.roomName, s.me.name);
     } catch {

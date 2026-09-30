@@ -110,6 +110,35 @@ it('recovers a failed document write with the complete state and no unhandled re
   } finally { process.off('unhandledRejection', listener) }
 })
 
+it('keeps a disconnected document until recovery and loads its state before replacement', async () => {
+  const stored = new Map<string, Uint8Array>()
+  let fail = false
+  const provider: PersistenceProvider = {
+    getYDoc: async name => { const doc = new Y.Doc(); if (stored.has(name)) Y.applyUpdate(doc, stored.get(name)!); return doc },
+    storeUpdate: async (name, update) => {
+      if (fail) throw new Error('disk full')
+      stored.set(name, stored.has(name) ? Y.mergeUpdates([stored.get(name)!, update]) : update)
+    },
+  }
+  const hubs = new ServerHubs({ store: { advance: async floor => floor }, log: () => {}, full: () => false })
+  const persistence = hubs.persistence(provider), old = new Y.Doc(), replacement = new Y.Doc()
+  await persistence.bindState('room', old)
+  await hubs.flush(old)
+  fail = true
+  old.getMap('scopes').set('late', { summary: 'must survive' })
+  await vi.waitFor(() => expect(hubs.storageFailure('room')).toContain('disk full'))
+  let destroyed = false
+  old.once('destroy', () => { destroyed = true })
+  const disconnect = persistence.writeState('room').then(() => old.destroy())
+  const loading = persistence.bindState('room', replacement)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  expect(destroyed).toBe(false)
+  fail = false
+  await Promise.all([disconnect, loading])
+  expect(destroyed).toBe(true)
+  expect(replacement.getMap('scopes').get('late')).toMatchObject({ summary: 'must survive' })
+})
+
 it('contains a throwing hub tick and handle while metering hub-origin document updates', async () => {
   const logged: string[] = [], bytes: number[] = []
   const hubs = new ServerHubs({ store: { advance: async floor => floor }, log: line => logged.push(line), full: () => false,
