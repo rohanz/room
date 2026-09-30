@@ -21,7 +21,7 @@ export const CODEX_ROOM_HOOK_HASHES = {
 /** Hash of the frozen hooks.json bytes for which Codex 0.158 produced the identities above. */
 export const CODEX_ROOM_HOOKS_FILE_SHA256 = '336c0b90c935ff627f9988ceb92e21c887b44c9b6e904b2c2ddd9a188db4b777'
 type Result = { level: 'PASS' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
-type Plugin = { version?: string; root?: string; hooksRoot?: string }
+type Plugin = { version?: string; recordedVersion?: string; root?: string; hooksRoot?: string }
 export interface DoctorFacts {
   node?: string; git?: string; repo: boolean; claudeCli: boolean; codexCli: boolean
   claudeListOk?: boolean; codexListOk?: boolean
@@ -67,10 +67,15 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     if (!cli) { add('PASS', name, 'not installed'); continue }
     if (listOk === false) { add('WARN', name, 'plugin list unavailable', `Retry ${name} plugin list --json`); continue }
     if (!plugin) { add(installed.length ? 'PASS' : 'WARN', name, 'Room not installed', 'Install room@room from rohanz/room'); continue }
+    const reinstall = name === 'Claude Code'
+      ? 'claude plugin marketplace update room && claude plugin update room@room'
+      : 'codex plugin marketplace upgrade room && codex plugin add room@room'
     const match = plugin.version === version
-    add(match ? 'PASS' : 'FAIL', name, `Room ${plugin.version ?? 'unknown'}; bundle ${version}`, `Update the marketplace and reinstall room@room in ${name}`)
+    add(match ? 'PASS' : 'FAIL', name, `loaded Room ${plugin.version ?? 'unknown'}; bundle ${version}`, reinstall)
+    if (name === 'Claude Code' && match && plugin.recordedVersion && plugin.recordedVersion !== version)
+      add('WARN', 'Claude Code install record', `records Room ${plugin.recordedVersion}; loaded Room ${version}`, 'claude plugin update room@room')
     const stamp = hookVersion(name === 'Codex' ? f.codexHooks : f.claudeHooks)
-    add(stamp === version ? 'PASS' : 'FAIL', `${name} hooks`, stamp ? `${stamp}; bundle ${version}` : 'version stamp missing', `Update the marketplace and reinstall room@room in ${name}`)
+    add(stamp === version ? 'PASS' : 'FAIL', `${name} hooks`, stamp ? `${stamp}; bundle ${version}` : 'version stamp missing', reinstall)
   }
   if (f.codex) {
     const trust = codexRoomHookTrustStatus(f.codexTrust)
@@ -98,6 +103,22 @@ async function command(file: string, args: string[]): Promise<string | undefined
   catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : '' }
 }
 function read(file?: string): string | undefined { try { return file ? fs.readFileSync(file, 'utf8') : undefined } catch { return undefined } }
+function manifestVersion(root: string | undefined, host: 'claude' | 'codex'): string | undefined {
+  const contents = read(root && path.join(root, host === 'claude' ? '.claude-plugin' : '.codex-plugin', 'plugin.json'))
+  try { return (JSON.parse(contents ?? '') as { version?: string }).version } catch { return undefined }
+}
+export function claudePlugin(row: { version?: string; installPath?: string } | undefined, marketplaces: unknown): Plugin | undefined {
+  if (!row) return undefined
+  const market = Array.isArray(marketplaces) ? marketplaces.find(m => m?.name === 'room') as { source?: string; path?: string; installLocation?: string } | undefined : undefined
+  const root = market?.source?.toLowerCase() === 'directory' && (market.path || market.installLocation)
+    ? path.join(market.path ?? market.installLocation!, 'plugins', 'room') : row.installPath
+  return { version: manifestVersion(root, 'claude'), recordedVersion: row.version, root }
+}
+export function codexPlugin(row: { version?: string; marketplaceName?: string } | undefined, marketplaces: unknown, codexHome: string): Plugin | undefined {
+  if (!row) return undefined
+  const root = row.version && path.join(codexHome, 'plugins', 'cache', 'room', 'room', row.version)
+  return { version: manifestVersion(root, 'codex'), recordedVersion: row.version, root, hooksRoot: codexHooksRoot(marketplaces, row.marketplaceName) }
+}
 /** Codex runs hooks from the marketplace root (a local path or its Git snapshot), not from the plugin cache. */
 export function codexHooksRoot(marketplaces: unknown, name: string | undefined): string | undefined {
   const root = (marketplaces as { marketplaces?: { name?: string; root?: string }[] } | undefined)?.marketplaces?.find(m => m?.name === name)?.root
@@ -117,19 +138,20 @@ export async function probeHealth(url: string, fetcher: typeof fetch = fetch): P
 }
 export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
 async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
-  const [gitVersion, head, claudeJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
+  const [gitVersion, head, claudeJson, claudeMarketsJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
     command('git', ['--version']), command('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD']),
-    command('claude', ['plugin', 'list', '--json']), command('codex', ['plugin', 'list', '--json']),
+    command('claude', ['plugin', 'list', '--json']), command('claude', ['plugin', 'marketplace', 'list', '--json']), command('codex', ['plugin', 'list', '--json']),
     command('codex', ['plugin', 'marketplace', 'list', '--json']), command('claude', ['--version']),
   ])
-  let claudeList: unknown, codexList: unknown, codexMarkets: unknown
+  let claudeList: unknown, claudeMarkets: unknown, codexList: unknown, codexMarkets: unknown
   try { claudeList = JSON.parse(claudeJson ?? '') } catch { /* CLI unavailable */ }
+  try { claudeMarkets = JSON.parse(claudeMarketsJson ?? '') } catch { /* CLI unavailable */ }
   try { codexList = JSON.parse(codexJson ?? '') } catch { /* CLI unavailable */ }
   try { codexMarkets = JSON.parse(codexMarketsJson ?? '') } catch { /* CLI unavailable */ }
   const claudeRow = Array.isArray(claudeList) ? claudeList.find(x => x?.id === 'room@room') : undefined
   const codexRow = (codexList as { installed?: unknown[] } | undefined)?.installed?.find((x: any) => x?.pluginId === 'room@room') as any
-  const claude: Plugin | undefined = claudeRow ? { version: claudeRow.version, root: claudeRow.installPath } : undefined
-  const codex: Plugin | undefined = codexRow ? { version: codexRow.version, hooksRoot: codexHooksRoot(codexMarkets, codexRow.marketplaceName) } : undefined
+  const claude = claudePlugin(claudeRow, claudeMarkets)
+  const codex = codexPlugin(codexRow, codexMarkets, process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'))
   const f: DoctorFacts = {
     node: process.version, git: gitVersion, repo: !!head, claudeCli: claudeJson !== undefined, codexCli: codexJson !== undefined,
     claudeListOk: Array.isArray(claudeList), codexListOk: Array.isArray((codexList as { installed?: unknown[] } | undefined)?.installed),

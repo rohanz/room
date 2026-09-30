@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, runDoctor, type DoctorFacts } from '../src/doctor.js'
+import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, runDoctor, type DoctorFacts } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 
 const version = '0.17.0'
@@ -19,6 +19,48 @@ const base = (): DoctorFacts => ({ node: 'v22.14.0', git: 'git version 2.39.0', 
   inSession: true })
 
 describe('doctor report', () => {
+  it.each(['directory', 'git'])('reads the loaded plugin for %s marketplace installs on both hosts', source => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'room-doctor-versions-'))
+    const marketRoot = path.join(root, 'marketplace')
+    const claudeCache = path.join(root, 'claude-cache')
+    const codexHome = path.join(root, 'codex')
+    const codexCache = path.join(codexHome, 'plugins', 'cache', 'room', 'room', '0.8.0')
+    const writeManifest = (pluginRoot: string, host: 'claude' | 'codex', loadedVersion: string) => {
+      const manifestDir = path.join(pluginRoot, host === 'claude' ? '.claude-plugin' : '.codex-plugin')
+      mkdirSync(manifestDir, { recursive: true })
+      writeFileSync(path.join(manifestDir, 'plugin.json'), JSON.stringify({ name: 'room', version: loadedVersion }))
+    }
+    const writeHooks = (pluginRoot: string) => {
+      mkdirSync(path.join(pluginRoot, 'hooks'), { recursive: true })
+      writeFileSync(path.join(pluginRoot, 'hooks', 'common.mjs'), `export const HOOKS_VERSION = '${version}'`)
+    }
+    const claudeLoadedRoot = source === 'directory' ? path.join(marketRoot, 'plugins', 'room') : claudeCache
+    writeManifest(claudeLoadedRoot, 'claude', source === 'directory' ? version : '0.8.0')
+    writeHooks(claudeLoadedRoot)
+    if (source === 'directory') writeManifest(claudeCache, 'claude', '0.8.0')
+    writeManifest(codexCache, 'codex', '0.8.0')
+    const codexHooks = path.join(marketRoot, 'plugins', 'room')
+    writeHooks(codexHooks)
+    const claudeMarkets = [{ name: 'room', source, path: marketRoot, installLocation: marketRoot }]
+    const codexMarkets = { marketplaces: [{ name: 'room', root: marketRoot, marketplaceSource: { sourceType: source } }] }
+    const claude = claudePlugin({ version: '0.8.0', installPath: claudeCache }, claudeMarkets)
+    const codex = codexPlugin({ version: '0.8.0', marketplaceName: 'room' }, codexMarkets, codexHome)
+    expect(claude).toMatchObject({ version: source === 'directory' ? version : '0.8.0', root: claudeLoadedRoot, recordedVersion: '0.8.0' })
+    expect(codex).toMatchObject({ version: '0.8.0', root: codexCache, hooksRoot: codexHooks })
+    const rows = evaluateDoctor({ ...base(), claude, codex })
+    expect(rows.find(r => r.name === 'Claude Code')?.level).toBe(source === 'directory' ? 'PASS' : 'FAIL')
+    if (source === 'directory') expect(rows.find(r => r.name === 'Claude Code install record')).toMatchObject({ level: 'WARN', fix: 'claude plugin update room@room' })
+    else expect(rows.find(r => r.name === 'Claude Code install record')).toBeUndefined()
+    expect(rows.find(r => r.name === 'Codex')).toMatchObject({ level: 'FAIL', fix: 'codex plugin marketplace upgrade room && codex plugin add room@room' })
+    if (source === 'directory') {
+      writeManifest(claudeLoadedRoot, 'claude', '0.8.0')
+      expect(evaluateDoctor({ ...base(), claude: claudePlugin({ version: '0.8.0', installPath: claudeCache }, claudeMarkets) })
+        .find(r => r.name === 'Claude Code')).toMatchObject({ level: 'FAIL', fix: 'claude plugin marketplace update room && claude plugin update room@room' })
+    }
+    writeManifest(codexCache, 'codex', version)
+    expect(evaluateDoctor({ ...base(), codex: codexPlugin({ version: '0.8.0', marketplaceName: 'room' }, codexMarkets, codexHome) })
+      .find(r => r.name === 'Codex')?.level).toBe('PASS')
+  })
   it('finds Codex hooks in the marketplace root, including a Git snapshot', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'room-doctor-market-'))
     mkdirSync(path.join(root, '.agents', 'plugins'), { recursive: true })
