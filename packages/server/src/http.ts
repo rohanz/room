@@ -16,6 +16,15 @@ export function requestCancellation(req: http.IncomingMessage, res: http.ServerR
     dispose: () => { req.off('aborted', cancel); res.off('close', cancel) } }
 }
 
+/** A disconnected waiter releases its response slot while shared upstream work can finish. */
+export async function waitForResult<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return undefined
+  let cancel!: () => void
+  const stopped = new Promise<undefined>(resolve => { cancel = () => resolve(undefined); signal.addEventListener('abort', cancel, { once: true }) })
+  try { return await Promise.race([work, stopped]) }
+  finally { signal.removeEventListener('abort', cancel) }
+}
+
 export function waitForDrain(res: http.ServerResponse, signal: AbortSignal): Promise<void> {
   if (signal.aborted || res.destroyed) return Promise.resolve()
   return new Promise(resolve => {

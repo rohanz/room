@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -9,6 +10,7 @@ import { LeveldbPersistence } from 'y-leveldb'
 import * as Y from 'yjs'
 import { classifyDoc, servedBy016, type Inventory, type InventoryDoc } from '../src/inventory.js'
 import type { OpenRepo } from '../src/store.js'
+import { levelDbOf } from '../src/stored.js'
 
 const repo = 'github.com/o/r'
 const registry: Record<string, OpenRepo> = { [repo]: { at: 1, branches: [`${repo}/main`] } }
@@ -33,11 +35,22 @@ async function expectUnchanged(dir: string, before: Awaited<ReturnType<typeof sn
 }
 
 describe('inventory classification', () => {
-  it('matches the exact decoded names 0.16.40 served', () => {
-    for (const name of [repo, `${repo}/main`, 'local/demo/main', 'git/example.com/o/r/main']) expect(servedBy016(name)).toBe(true)
+  it('matches the literal repository prefixes 0.16.40 admitted', () => {
+    for (const name of [`${repo}/main`, 'local/demo/main', 'git/example.com/o/r/main']) expect(servedBy016(name)).toBe(true)
     for (const name of ['github.com%2Fo%2Fr%2Fmain', 'github.com%252Fo%252Fr%252Fmain', 'local%2Fdemo%2Fmain', '/local/demo', 'x', 'archive:invalid']) expect(servedBy016(name)).toBe(false)
     expect(classifyDoc('github.com%252Fo%252Fr%252Fmain', registry).kind).toBe('never-served')
     expect(classifyDoc(repo, registry).kind).toBe('canonical')
+  })
+  it('serves percent-containing suffixes and case aliases but never encoded repository prefixes', () => {
+    for (const name of [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main']) {
+      expect(servedBy016(name), name).toBe(true)
+      expect(classifyDoc(name, registry)).toEqual({ repo, kind: 'served' })
+    }
+    for (const name of ['github.com%2Fo%2Fr%2Fmain', 'github.com%252Fo%252Fr%252Fmain']) {
+      expect(servedBy016(name), name).toBe(false)
+      expect(classifyDoc(name, registry).kind).toBe('never-served')
+    }
+    for (const name of ['/github.com/o/r/main', `${repo}/`, 'github.com/o!/r/main']) expect(servedBy016(name)).toBe(false)
   })
   it('only recognizes archives recorded by their owner', () => {
     const archive = `archive:${repo}:12345678-1234-1234-1234-123456789abc`
@@ -53,6 +66,8 @@ describe('inventory classification', () => {
       expect(classifyDoc(name, rooms).kind).toBe('served')
       expect(classifyDoc(`${key}/other`, rooms).kind).toBe('unregistered')
       expect(classifyDoc(name.replaceAll('/', '%2F'), rooms).kind).toBe('unregistered')
+      const percent = `${key}/feature%2Fx`
+      expect(classifyDoc(percent, { [key]: { at: 1, branches: [percent] } }).kind).toBe('served')
     }
   })
 })
@@ -120,6 +135,44 @@ describe('operator inventory pre-flight', () => {
       expect(result.stderr).toContain('stopped server')
       expect((await fs.readdir(path.dirname(dir))).filter(name => name.startsWith(`${path.basename(dir)}.room-inventory-`))).toEqual([])
     } finally { await db.destroy() }
+  })
+
+  it('holds the source LOCK before the first file copy so a mid-copy server cannot start', async () => {
+    const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'room-inventory-lock-race-'))
+    const source = path.join(fixture, 'source'), preload = path.join(fixture, 'copy-probe.mjs'), result = path.join(fixture, 'probe.txt')
+    await fs.mkdir(source)
+    const db = new LeveldbPersistence(source), doc = new Y.Doc(); doc.getMap('fixture').set('x', true)
+    await db.storeUpdate(`${repo}/main`, Y.encodeStateAsUpdate(doc)); await db.destroy(); doc.destroy()
+    await fs.writeFile(path.join(source, 'rooms.json'), JSON.stringify(registry))
+    // A separate process must probe the hard-linked inode: POSIX locks are process-scoped.
+    const probe = `import { LeveldbPersistence } from 'y-leveldb'; const p = new LeveldbPersistence(process.argv[1]); let db; await p._transact(async d => { db = d }); const failed = new Promise((_, reject) => db.on('error', reject)); try { await Promise.race([db.open(), failed]); await p.destroy(); process.stdout.write('opened') } catch { process.stdout.write('locked') }`
+    await fs.writeFile(preload, `import fs from 'node:fs/promises'; import { execFile } from 'node:child_process'; import { promisify } from 'node:util'; const copy = fs.copyFile; let first = true; fs.copyFile = async (...args) => { if (first) { first = false; const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(probe)}, ${JSON.stringify(source)}], { env: { ...process.env, NODE_OPTIONS: '' } }); await fs.writeFile(${JSON.stringify(result)}, stdout) } return copy(...args) }`)
+    try {
+      await exec(process.execPath, ['--import', preload, '--import', 'tsx', 'scripts/room-inventory.mts', source], { cwd: root }).catch(() => {})
+      expect(await fs.readFile(result, 'utf8')).toBe('locked')
+      expect((await fs.readdir(fixture)).filter(name => name.startsWith('source.room-inventory-'))).toEqual([])
+    } finally { await fs.rm(fixture, { recursive: true, force: true }) }
+  })
+  it('reports an oversized table and exits 2 even without a discovery record', async () => {
+    const source = await fs.mkdtemp(path.join(os.tmpdir(), 'room-inventory-table-'))
+    try {
+      await fs.writeFile(path.join(source, 'rooms.json'), JSON.stringify(registry))
+      const provider = new LeveldbPersistence(source), db = await levelDbOf(provider), doc = new Y.Doc()
+      doc.getMap('padding').set('random', new Uint8Array(crypto.randomBytes(10 * 1048576)))
+      // Models a raw copy interrupted before publishing v1_sv discovery.
+      await db.batch([{ type: 'put', key: ['v1', `${repo}/large`, 'update', 0], value: Y.encodeStateAsUpdate(doc) }])
+      await provider.destroy(); doc.destroy()
+      const before = await snapshot(source), result = await run(source, '--budget-mb', '1', '--json')
+      expect(result.code).toBe(2)
+      const inventory: Inventory = JSON.parse(result.stdout)
+      expect(inventory.docs).toEqual([])
+      expect(inventory.tables).toContainEqual(expect.objectContaining({ level: 0, smallest: `${repo}/large`, largest: `${repo}/large` }))
+      expect(inventory.tables[0]!.bytes).toBeGreaterThan(10 * 1048576)
+      expect(inventory.tables[0]!.file).toBeGreaterThan(0)
+      const text = await run(source, '--budget-mb', '1')
+      expect(text.code).toBe(2); expect(text.stdout).toContain('tables over budget:')
+      await expectUnchanged(source, before)
+    } finally { await fs.rm(source, { recursive: true, force: true }) }
   })
 
   it('returns zero for a clean inventory and one for operator errors', async () => {

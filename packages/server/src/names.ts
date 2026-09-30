@@ -41,6 +41,19 @@ export function parseRoomName(input: string, schema2 = false): ParsedRoom | unde
   if (parts[0] === 'local' && parts.length >= 2) return { name, repo: name }
   return undefined
 }
+/** Historical stored keys are literal: 0.16 admission split the prefix after at most three decodes.
+ *  A triple-encoded request could preserve any nonempty suffix, including percent escapes. */
+export function parseLegacyRoomName(name: string): ParsedRoom | undefined {
+  if (name.startsWith('/')) return undefined
+  const github = /^github\.com\/([^/]+)\/([^/]+)(?:\/(.+))?$/i.exec(name)
+  if (github) {
+    const root = parseRoomName(`github.com/${github[1]}/${github[2]}`, true)
+    return root ? { ...root, name } : undefined
+  }
+  if (!name.startsWith('git/') && !name.startsWith('local/')) return undefined
+  const parsed = parseRoomName(name.replaceAll('%', '_'))
+  return parsed ? { name, repo: name } : undefined
+}
 export function archiveOwnerOf(name: string): string | undefined {
   const m = /^archive:(.+):([0-9a-f]{8}-[0-9a-f-]{27,})$/i.exec(name)
   if (!m) return undefined

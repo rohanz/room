@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
 import type { OpenRepo } from './store.js'
-import { archiveOwnerOf, parseRoomName } from './names.js'
+import { archiveOwnerOf, parseRoomName, parseLegacyRoomName } from './names.js'
 import { servedBy016, classifyDoc } from './inventory.js'
 import type { StoredSize } from './stored.js'
 
@@ -15,7 +15,7 @@ export function migrationSources(repo: string, entry: OpenRepo, docs: string[], 
   return [...new Set([...recorded, ...docs])].filter(name => {
     if (name === repo || registered.has(name) && parseRoomName(name)?.repo !== repo) return false
     if (name.startsWith('archive:')) return recorded.has(name) && archiveOwnerOf(name) === repo
-    const source = parseRoomName(name)
+    const source = parseLegacyRoomName(name)
     if (!source || !servedBy016(name)) return false
     if (!parsed.github && [...registered].some(key => key.startsWith(`${repo}/`) && (name === key || name.startsWith(`${key}/`)))) return false
     return parsed.github ? source.repo === repo : recorded.has(name) && name.startsWith(`${repo}/`)
@@ -103,7 +103,7 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     try { size = await io.stored(name, LOAD_MAX_BYTES) }
     catch { throw new MigrationReadFailure() }
     if (found.kind !== 'never-served' && !size.over) continue
-    const reason = found.kind === 'never-served' ? found.reason! : 'over the per-document load budget: kept as an archive without loading'
+    const reason = found.kind === 'never-served' ? found.reason! : size.reason ?? 'over the per-document load budget: kept as an archive without loading'
     const item = { name, bytes: size.bytes, over: size.over, reason }
     if (!quarantined.has(name)) console.log(`migration quarantine: ${repo} ${JSON.stringify(name)} ${size.over ? '>' : ''}${size.bytes}bytes ${reason}`)
     quarantined.set(name, item)
@@ -177,7 +177,8 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     const candidates = plan.sources.slice(0, maxSources)
     let skippedSources = plan.sources.length - candidates.length, skippedRecords = 0
     let unknownCounts = skippedSources
-    const base = await checkedLoad(repo)
+    // A cleared/absent canonical needs no iterator: seeking its old SSTs could read the huge archive.
+    const base = (await io.list()).includes(repo) ? await checkedLoad(repo) : new Y.Doc()
     if (!base) throw new Error('migration canonical source exceeds read budget')
     const baseUpdate = Y.encodeStateAsUpdate(base)
     release(repo, base)

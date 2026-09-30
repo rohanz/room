@@ -12,9 +12,11 @@ import { devServers } from './dev-server.js'
 const servers = devServers()
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-export-'))
 const repo = 'github.com/archiver/project', archive = `${repo}/main`
+const compacted = `${repo}/compacted`, tooLarge = `${repo}/too-large`
+const historical = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`]
 let port: number, base: string
-const post = (route: string, body: unknown) => fetch(`${base}${route}`, {
-  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+const post = (route: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${base}${route}`, {
+  method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
 })
 
 beforeAll(async () => {
@@ -23,12 +25,23 @@ beforeAll(async () => {
   doc.getText('padding').insert(0, 'x'.repeat(8 * 1024 * 1024))
   await db.storeUpdate(archive, Y.encodeStateAsUpdate(doc))
   doc.destroy()
+  for (const [name, mb] of [[compacted, 20], [tooLarge, 28]] as const) {
+    const large = new Y.Doc()
+    if (name === tooLarge) { large.getMap('fixture').set('small', true); await db.storeUpdate(name, Y.encodeStateAsUpdate(large)) }
+    const vector = Y.encodeStateVector(large)
+    large.getText('padding').insert(0, 'x'.repeat(mb * 1048576))
+    await db.storeUpdate(name, Y.encodeStateAsUpdate(large, vector)); large.destroy()
+  }
+  for (const name of historical) {
+    const old = new Y.Doc(); old.getMap('fixture').set('name', name)
+    await db.storeUpdate(name, Y.encodeStateAsUpdate(old)); old.destroy()
+  }
   const canonical = new Y.Doc()
   for (let i = 0; i < 1005; i++) canonical.getMap('unresolved').set(`key-${i}-${'x'.repeat(8192)}`, {})
   await db.storeUpdate(repo, Y.encodeStateAsUpdate(canonical))
   canonical.destroy(); await db.destroy()
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({
-    [repo]: { at: Date.now(), branches: [archive], legacy: [archive], mode: 'repo', migratedAt: Date.now() },
+    [repo]: { at: Date.now(), branches: [archive, compacted, tooLarge, ...historical], legacy: [archive, compacted, tooLarge, ...historical], mode: 'repo', migratedAt: Date.now() },
   }))
   port = await new Promise<number>((resolve, reject) => {
     const socket = net.createServer(); socket.once('error', reject)
@@ -36,7 +49,7 @@ beforeAll(async () => {
   })
   base = `http://127.0.0.1:${port}`
   const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '',
-    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' }, { EXPORT_DEADLINE_MS: 3000 })
+    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_DOC_MAX_MB: '24', ROOM_ADMINS: 'archiver', ROOM_TEST_INVENTORY_DELAY_MS: '700', ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' }, { EXPORT_DEADLINE_MS: 3000 })
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error('export test server exited')
     try { if ((await fetch(`${base}/health`)).ok) return } catch { /* starting */ }
@@ -45,6 +58,64 @@ beforeAll(async () => {
   throw new Error('export test server did not start')
 }, 40_000)
 afterAll(async () => { try { await servers.stopAll() } finally { fs.rmSync(dir, { recursive: true, force: true }) } })
+
+// /auth/device allows 10 starts per minute per address; the file's tests share one server.
+const sessions = new Map<string, Promise<string>>()
+function login(name = 'archiver'): Promise<string> {
+  let session = sessions.get(name)
+  if (!session) {
+    session = (async () => {
+      const started = await (await post('/auth/device', {})).json() as { device: string }
+      return ((await (await post('/auth/poll', { device: started.device, fakeLogin: name })).json()) as { session: string }).session
+    })()
+    sessions.set(name, session)
+  }
+  return session
+}
+it('exports a single 20 MB snapshot as one frame despite the websocket message cap', async () => {
+  const session = await login(), result = await post('/archive/export', { room: compacted, schema: 2, session })
+  expect(result.status).toBe(200)
+  expect(result.headers.get('content-type')).toBe('application/vnd.room.updates')
+  const framed = Buffer.from(await result.arrayBuffer()), length = framed.readUInt32BE(0)
+  expect(length).toBeGreaterThan(20 * 1048576)
+  expect(framed.length).toBe(length + 4)
+  const doc = new Y.Doc(); Y.applyUpdate(doc, framed.subarray(4))
+  expect(doc.getText('padding').length).toBe(20 * 1048576); doc.destroy()
+}, 15_000)
+it('refuses an oversized later record before sending any archive headers or frames', async () => {
+  const session = await login(), result = await post('/archive/export', { room: tooLarge, schema: 2, session })
+  expect(result.status).toBe(507)
+  expect(result.headers.get('content-type')).toBe('text/plain')
+  expect(await result.text()).toContain('ROOM_DOC_MAX_MB')
+})
+it('exports exact percent-containing legacy names and refuses their purge', async () => {
+  const session = await login(), headers = { authorization: `Bearer ${session}` }
+  for (const name of historical) {
+    const result = await post('/archive/export', { room: name, schema: 2, session })
+    expect(result.status).toBe(200)
+    const frame = Buffer.from(await result.arrayBuffer()), doc = new Y.Doc()
+    Y.applyUpdate(doc, frame.subarray(4)); expect(doc.getMap('fixture').get('name')).toBe(name); doc.destroy()
+    expect((await post('/admin/purge', { name, confirm: name }, headers)).status).toBe(403)
+  }
+})
+
+it('coalesces admin inventory requests and releases disconnected waiters before the scan ends', async () => {
+  const session = await login(), headers = { authorization: `Bearer ${session}` }
+  const url = `${base}/admin/inventory`
+  // Let startup inventory settle before measuring request-triggered scans.
+  await (await fetch(url, { headers })).arrayBuffer()
+  const count = async () => ((await (await fetch(`${base}/health`)).json()) as { inventoryScans: number }).inventoryScans
+  const before = await count(), controllers = Array.from({ length: MAX_HTTP_RESPONSES_PER_PRINCIPAL }, () => new AbortController())
+  const waiting = controllers.map(controller => fetch(url, { headers, signal: controller.signal }).catch(() => undefined))
+  await new Promise(resolve => setTimeout(resolve, 150))
+  expect(await count()).toBe(before + 1)
+  controllers.forEach(controller => controller.abort()); await Promise.all(waiting)
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const [a, b] = await Promise.all([fetch(url, { headers }), fetch(url, { headers })])
+  expect(a.status).toBe(200); expect(b.status).toBe(200)
+  expect(await a.json()).toEqual(await b.json())
+  expect(await count()).toBe(before + 1)
+}, 15_000)
 
 it('holds one principal slot for a stalled client, then releases it on deadline', async () => {
   const started = await (await post('/auth/device', {})).json() as { device: string }

@@ -37,6 +37,27 @@ function fixture(failAfter?: string) {
 }
 
 describe('migrateRepo', () => {
+  it('migrates historical percent suffixes under their exact stored names', async () => {
+    const f = fixture(), names = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main']
+    for (const [i, name] of names.entries()) {
+      const room = new RoomDoc(); room.scopes.set(`legacy${i}`, { by: `legacy${i}`, byKind: 'agent', area: 'a', summary: name, paths: [], at: 1 })
+      f.docs.set(name, Y.encodeStateAsUpdate(room.doc)); room.doc.destroy()
+    }
+    await migrateRepo(repo, f.entry, f.io)
+    expect(f.entry.legacy).toEqual(expect.arrayContaining(names))
+    expect(f.entry.quarantined ?? []).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: names[0] })]))
+    const target = new RoomDoc(await f.io.load(repo))
+    for (let i = 0; i < names.length; i++) expect(target.scopes.has(`legacy${i}`)).toBe(true)
+    target.doc.destroy()
+  })
+  it('keeps percent source ownership evidence while sanitizing each registry list', () => {
+    for (const key of [repo, 'local/demo', 'git/host/o/r']) {
+      const name = `${key}/feature%2Fx`, entry: OpenRepo = { at: 1, branches: [name], legacy: [name], plan: { id: 'p', sources: [name] } }
+      const safe = safeRoomRegistry({ [key]: entry })[key]
+      expect(safe).toMatchObject(entry)
+      expect(migrationSources(key, safe, [])).toEqual([name])
+    }
+  })
   it('loads sources sequentially and leaves capped sources in exportable archives', async () => {
     const f = fixture()
     let active = 0, peak = 0
@@ -332,7 +353,7 @@ it('raw-copies an oversized canonical legacy document without decoding it', asyn
   await migrateRepo(repo, f.entry, f.io)
   const moved = f.entry.plan!.moved!
   expect(copy).toHaveBeenCalledWith(repo, moved)
-  expect(load.mock.calls.filter(([name]) => name === repo)).toHaveLength(1) // fresh canonical, after raw move
+  expect(load.mock.calls.filter(([name]) => name === repo)).toHaveLength(0) // build the absent canonical without a storage iterator
   expect(f.entry.legacy).toContain(moved)
   expect(f.docs.has(moved)).toBe(true)
   expect(f.entry.migratedAt).toBe(100)

@@ -46,10 +46,10 @@ import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from '.
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
-import { levelDbOf, levelStoredSize, levelStoredUpdates, levelCopyRaw, isLevelProvider, type StoredSize } from './stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
-import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
+import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 import {
   LOAD_MAX_BYTES, MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
@@ -230,9 +230,13 @@ const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]
 }
 const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
 const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...docs.keys()])]
-const storedSize = async (name: string, limit = LOAD_MAX_BYTES): Promise<StoredSize> => {
+const storedTables = async (names?: readonly string[]) => {
   const p = provider()
-  if (isLevelProvider(p)) return levelStoredSize(await levelDbOf(p), name, limit)
+  return isLevelProvider(p) ? levelStoredTables(await levelDbOf(p), names) : undefined
+}
+const storedSize = async (name: string, limit = LOAD_MAX_BYTES, tables?: Awaited<ReturnType<typeof storedTables>>): Promise<StoredSize> => {
+  const p = provider()
+  if (isLevelProvider(p)) return levelStoredSize(await levelDbOf(p), name, limit, tables)
   const bytes = memoryDocs.get(name)?.byteLength ?? 0
   return { bytes, updates: memoryDocs.has(name) ? 1 : 0, over: bytes > limit }
 }
@@ -243,8 +247,21 @@ const copyRaw = async (from: string, to: string): Promise<void> => {
   if (!update) throw new Error('raw copy source missing')
   memoryDocs.set(to, update)
 }
+let inventoryScan: ReturnType<typeof takeInventory> | undefined, testInventoryScans = 0
+async function inventorySnapshot() {
+  if (inventoryScan) return inventoryScan
+  const work = (async () => {
+    testInventoryScans++
+    if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_INVENTORY_DELAY_MS) await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_INVENTORY_DELAY_MS)))
+    const names = await listDocs()
+    const tables = await storedTables(names)
+    return takeInventory(names, Object.fromEntries(rooms), (name, limit) => storedSize(name, limit, tables), LOAD_MAX_BYTES, tables)
+  })()
+  inventoryScan = work
+  try { return await work } finally { inventoryScan = undefined }
+}
 void roomsLoaded.then(async () => {
-  const inventory = await takeInventory(await listDocs(), Object.fromEntries(rooms), storedSize, LOAD_MAX_BYTES)
+  const inventory = await inventorySnapshot()
   for (const line of formatInventory(inventory).split('\n')) if (line.startsWith('  !')) console.log(`stored inventory: ${line.trim()}`)
 }).catch(error => console.log(`stored inventory failed: ${error instanceof Error ? error.message : error}`))
 const loadDoc = async (name: string): Promise<Y.Doc> => {
@@ -315,11 +332,14 @@ async function migrateOpenRepo(repo: string): Promise<void> {
   await locks.run(repo, async () => {
     const r = rooms.get(repo)
     if (!r || r.migratedAt) return
+    let tables: ReturnType<typeof storedTables> | undefined
+    const changed = async (work: () => Promise<unknown>) => { tables = undefined; try { await work() } finally { tables = undefined } }
     await migrateRepo(repo, r, {
-      list: listDocs, load: loadDoc, write: writeDoc, clear: clearDoc, save: saveRooms,
-      stored: storedSize, copyRaw,
+      list: listDocs, load: loadDoc, write: (name, update) => changed(() => writeDoc(name, update)), clear: name => changed(() => clearDoc(name)), save: saveRooms,
+      stored: async (name, limit) => storedSize(name, limit, await (tables ??= storedTables())),
+      copyRaw: (from, to) => changed(() => copyRaw(from, to)),
       release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
-      freeze: names => freezeDocs(names, upgradeText(repo)),
+      freeze: names => changed(() => freezeDocs(names, upgradeText(repo))),
       revoke: async names => {
         const set = new Set(names)
         for (const [token, value] of viewTokens) if (set.has(value.room) || parseRoomName(value.room)?.repo === repo) { viewTokens.delete(token); credentialSockets.close({ kind: 'view', value: token }, 4403, 'view access revoked') }
@@ -433,7 +453,7 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-room-token')
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
   }
-  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(process.env.NODE_ENV === 'test' ? { archiveLoads: testArchiveLoads } : {}), ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
+  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(process.env.NODE_ENV === 'test' ? { archiveLoads: testArchiveLoads, inventoryScans: testInventoryScans } : {}), ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
   const headerCreds = (): Creds => ({ session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1], token: str(req.headers['x-room-token']) })
   const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token) ?? headerCreds().token, session: str(o.session) ?? headerCreds().session })
   if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') {
@@ -560,8 +580,16 @@ const server = http.createServer((req, res) => {
     if (!st) return text(401, 'not logged in: send Authorization: Bearer <session>')
     if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
     const releaseWork = responseWork?.hold()
-    void roomsLoaded.then(async () => json(200, await takeInventory(await listDocs(), Object.fromEntries(rooms), storedSize, LOAD_MAX_BYTES)))
-      .catch(e => text(500, `inventory unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
+    const cancellation = requestCancellation(req, res)
+    void (async () => {
+      try {
+        await waitForResult(roomsLoaded, cancellation.signal)
+        if (cancellation.cancelled()) return
+        const inventory = await waitForResult(inventorySnapshot(), cancellation.signal)
+        if (!cancellation.cancelled() && inventory) json(200, inventory)
+      } catch (e) { if (!cancellation.cancelled()) text(500, `inventory unavailable: ${e instanceof Error ? e.message : e}`) }
+      finally { cancellation.dispose(); releaseWork?.() }
+    })()
     return
   }
   if (url.pathname === '/admin/purge' && req.method === 'POST') return withBody(async o => {
@@ -744,12 +772,11 @@ const server = http.createServer((req, res) => {
     if (o.schema !== 2) return text(403, 'update Room to 0.17 or later to export an archive')
     const name = str(o.room)
     if (!name) return text(400, 'room required')
-    if (!archiveOwnerOf(name) && !parseRoomName(name)) return text(400, 'invalid archive name')
     if (o.view) return text(403, 'view tokens cannot export an archive')
     const parsed = parseRoomName(name)
     const owner = archiveOwnerOf(name) ?? (parsed?.github ? parsed.repo : undefined)
     const repo = [...rooms].find(([key, r]) => (!owner || key === owner) && r.legacy?.includes(name) && migrationSources(key, r, [name], new Set(rooms.keys())).includes(name))?.[0]
-    if (!repo) return text(404, 'archive not found')
+    if (!repo) return text(!archiveOwnerOf(name) && !parseRoomName(name) ? 400 : 404, 'archive not found')
     const v = await admitted(repo, creds(o))
     if (cancellation.cancelled()) return
     if (!v.ok) return text(v.status, v.why)
@@ -765,12 +792,21 @@ const server = http.createServer((req, res) => {
           yield live ? Y.encodeStateAsUpdate(live) : memoryDocs.get(name) ?? new Uint8Array([0, 0])
         }
       }
+      let total = 0, largest = 0, frames = 0
+      // Preflight retains no records and refuses capacity failures before any streaming headers.
       for await (const update of updates()) {
         if (cancellation.cancelled()) return
-        if (update.byteLength > MAX_MESSAGE_BYTES) throw new HttpFailure(507, 'stored archive update too large to export')
+        total += update.byteLength; frames++; largest = Math.max(largest, update.byteLength)
+      }
+      const reservation = largest + 4
+      if (reservation > DOC_MAX_RESERVATION_BYTES || !slot.resize(reservation) || !responseWork?.resize(reservation))
+        throw new HttpFailure(507, 'archive record too large to export; raise ROOM_DOC_MAX_MB or ROOM_MAX_TOTAL_QUEUED_MB')
+      if (cancellation.cancelled()) return
+      res.writeHead(200, { 'content-type': 'application/vnd.room.updates', 'content-length': total + frames * 4 })
+      for await (const update of updates()) {
+        if (cancellation.cancelled()) return
         const bytes = update.byteLength + 4 + res.writableLength
         if (!slot.resize(bytes) || !responseWork?.resize(bytes)) throw new HttpFailure(503, 'server output budget exhausted; retry')
-        if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/vnd.room.updates' })
         const header = Buffer.alloc(4); header.writeUInt32BE(update.byteLength)
         if (!res.write(header)) await waitForDrain(res, cancellation.signal)
         for (let at = 0; at < update.byteLength && !cancellation.cancelled(); at += EXPORT_CHUNK_BYTES) {
@@ -778,7 +814,6 @@ const server = http.createServer((req, res) => {
         }
       }
       if (!cancellation.cancelled()) {
-        if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/vnd.room.updates' })
         res.end()
         await waitForResponse(res)
       }

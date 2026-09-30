@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import { expect, it, vi } from 'vitest'
-import { ResponseWork, WorkSlots, scanRooms, archiveListing } from '../src/http.js'
+import { ResponseWork, WorkSlots, scanRooms, archiveListing, waitForResult } from '../src/http.js'
 import { OutboundBudget } from '../src/sockets.js'
 
 class Response extends EventEmitter {
@@ -16,6 +16,17 @@ class Response extends EventEmitter {
   destroy() { this.destroyed = true; this.emit('close') }
   asHttp() { return this as unknown as http.ServerResponse }
 }
+it('cancels one coalesced response wait without canceling the shared work', async () => {
+  let finish!: (result: string) => void
+  const work = new Promise<string>(resolve => { finish = resolve }), controller = new AbortController()
+  const res = new Response(), slots = new WorkSlots(1, 1, new OutboundBudget(100, 100))
+  const lease = ResponseWork.reserve(slots, 'a', res.asHttp(), 1000)!, release = lease.hold()
+  const waiter = waitForResult(work, controller.signal).finally(release)
+  res.destroy(); controller.abort()
+  await expect(waiter).resolves.toBeUndefined()
+  expect(slots.count).toBe(0)
+  finish('inventory'); await expect(work).resolves.toBe('inventory')
+})
 it('each coalesced waiter owns a slot and byte reservation until finish or deadline', async () => {
   vi.useFakeTimers()
   try {

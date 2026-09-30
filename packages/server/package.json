@@ -17,13 +17,13 @@
     "pg": "^8.23.0",
     "tsx": "4.23.13",
     "ws": "^8.21.0",
+    "y-leveldb": "^0.1.0",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
-    "@types/ws": "^8.5.0",
-    "y-leveldb": "^0.1.0"
+    "@types/ws": "^8.5.0"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

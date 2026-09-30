@@ -325,6 +325,20 @@ it('reads framed archive updates split across arbitrary transport chunks', async
   } finally { archived.doc.destroy(); s.room.doc.destroy(); vi.unstubAllGlobals() }
 })
 
+it('accepts a 20 MB compacted archive frame above the websocket message cap', async () => {
+  const archived = new RoomDoc()
+  archived.doc.getText('padding').insert(0, 'x'.repeat(20 * 1048576))
+  archived.bus.push([{ id: 'large', type: 'changed', from: 'ben', fromKind: 'agent', paths: ['old.py'], summary: 'large compacted snapshot', at: 1, priority: 'fyi' }])
+  const update = Y.encodeStateAsUpdate(archived.doc), header = Buffer.alloc(4); header.writeUInt32BE(update.length)
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(Buffer.concat([header, update]), { headers: { 'content-type': 'application/vnd.room.updates' } })))
+  try {
+    const output = join(dir, 'large-frame.md')
+    await exportArchiveLedger(s, 'git/x/o/r/main', { path: output })
+    expect(readFileSync(output, 'utf8')).toContain('large compacted snapshot')
+  } finally { archived.doc.destroy(); s.room.doc.destroy(); vi.unstubAllGlobals() }
+})
+
 it.each([Buffer.from([0, 0]), Buffer.from([0, 0, 0, 10, 1]), Buffer.from([127, 255, 255, 255])])('rejects truncated or oversized archive frames without writing a ledger', async body => {
   const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/vnd.room.updates' } })))
