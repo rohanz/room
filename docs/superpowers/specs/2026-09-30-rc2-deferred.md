@@ -14,11 +14,13 @@ is listed here for post-release work.
 | 3 | `f1719d3` | 4 / 2 | 2 / 3 |
 | 4 | `e274970` | 1 / 1 | 1 / 3 |
 | 5 | `d7e7e37` | 0 / 2 | 0 / 2 |
+| 6 (release re-review after the finishing batch) | `2aadb18` | (not rerun) | 0 / 2, both fixed in `9884bd8` |
 
 The review reports are kept outside the repository, in the lead session's scratchpad under `n3/rc2-reviews/`
 (`sec-r2` to `sec-r6` and `release-r1` to `release-r5`: security files are numbered one higher because of the stopped
 first run; `prop-out.md` is the proportionality review and `simp-out.md` the security re-review of the final pass,
-which found the four final changes sound). The first security run of round 1 was stopped by the model provider's content filter while it ran proof-of-concept
+which found the four final changes sound). The release re-review of `d7e7e37..2aadb18` (round 6 above) is kept as
+`/tmp/room-rc2-review-in/release-out.md` on the lead's machine. The first security run of round 1 was stopped by the model provider's content filter while it ran proof-of-concept
 inputs; it was rerun with the instruction to review by reading source and tests. Its two interim findings (relay
 ticket body of `null`, unbounded replies to repeated state requests) were fixed before the rerun.
 
@@ -53,9 +55,24 @@ ticket body of `null`, unbounded replies to repeated state requests) were fixed 
   `-webkit-line-clamp` with `-webkit-box`, which all three engines implement. Safari itself was not run: Playwright's
   WebKit build stands in for it.
 - **The staging snapshot and restore rehearsal** in `deploy/DEPLOYING.md` and `docs/upgrading.md` (documented, not run).
-- **The model-based routing evals** (`claude plugin eval`) were not rerun; tool descriptions were not reworded.
-- **An intermittent hang of the full suite** with the default reporter (twice in this batch: one vitest worker idle
-  until killed). The same tree passed with `--reporter=verbose` each time; the hanging file was not identified.
+- ~~The model-based routing evals~~ **Rerun 2026-10-01** at `423ab3d` (`claude plugin eval . --scaffold --allow-tools Edit
+  Write --trust-plugin -j 4`, Claude Code 2.1.285): 19 of 19 cases passed with score 1.0, mean delta over the no-plugin
+  baseline 0.66 (15 minutes, $18). Tool descriptions were not changed, so no routing work followed.
+- **The intermittent hang of the full suite** (twice in the rc2 batch) did not recur in this batch: 12 full
+  default-reporter runs and 12 runs of `workers.test.ts` (six at a time) before the change below, then 10 consecutive
+  full default-reporter runs on the final tree (none hung; 9 passed outright, and run 3 failed one test on its 20 s timeout in `local.test.ts`, which now
+  has 60 s; 337 to 344 s each). The rc2 lead's transcript narrows the cause: both times one genuine vitest fork sat at 0% CPU, outlived the killed main process
+  (one for over an hour), and held no sockets, which fits a worker blocked in a synchronous child-process call rather
+  than a leaked handle; `--reporter=verbose` passing three times was coincidence. The suite makes tens of thousands of
+  synchronous `ps`, `sysctl`, `lsof` and `git` calls, and a `timeout` option does not bound them (Node sends one
+  SIGTERM and then waits for the child to exit). The command itself was not identified.
+  `packages/shared/src/test-watchdog.ts`, started from `vitest.setup.ts`, now ends any such wait: after 120 s without an event-loop turn
+  it prints `[test watchdog]` with the file, the test and the command, kills that process tree so the call throws
+  and the test fails, and ends the worker if it stays blocked; a file running past 15 minutes is ended the same way.
+  If that line ever appears, it names the root cause. Two load-dependent flakes found on the way were fixed
+  (`preview-check-lifetime.test.ts`, `leases.test.ts`: a child's ready file appeared before it was complete).
+- The `$TMPDIR` of the lead's machine holds over 120,000 `room*`/`roomd*` directories left by test runs: many
+  suites do not remove what they create. Harmless, but worth a cleanup pass.
 
 ## Proportionality review (2026-09-30, `fb11191..5c6719d`)
 

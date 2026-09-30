@@ -53,7 +53,7 @@ describe('local mode (no server)', () => {
       expect(await tools.call('room_state', {})).toContain("an older Room session still holds this room's relay")
       expect(await tools.call('room_state', { check: true })).toContain('WARN  canonical relay: an older Room session')
     } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
-  })
+  }, 60_000) // a join, a state and a doctor run take 9 to 13 s, and past 20 s when the run is starting its heaviest files
   it('resolves the server setting: unset/local → local, hosted → the hosted URL, else the URL', () => {
     expect(resolveServer(undefined)).toBe('local')
     expect(resolveServer('local')).toBe('local')
