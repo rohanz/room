@@ -200,6 +200,9 @@ export function createTools(ctx: ToolCtx): Tools {
       return { batch, items, notices, more }
     },
     async call(name, args, signal, handoff) {
+      // Setup checks must work while auto-join, rebinding, or room sync is stuck.
+      // They do not reserve inbox messages or touch the current room.
+      if (name === 'room_state' && args?.check === true) return handlers.room_state(args)
       let release: (() => void) | undefined
       if (CHOOSES_ROOM.has(name)) {
         pendingMoves++

@@ -157,6 +157,7 @@ async function main() {
         return rebinding
       }
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
+        if (req.params.name === 'room_state' && req.params.arguments?.check === true) return tools.call(req.params.name, req.params.arguments, signal, handoff)
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
         else if (rebinding) await rebinding

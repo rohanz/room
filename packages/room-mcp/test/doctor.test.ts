@@ -3,13 +3,15 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { codexHooksRoot, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, type DoctorFacts } from '../src/doctor.js'
+import { createHash } from 'node:crypto'
+import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, runDoctor, type DoctorFacts } from '../src/doctor.js'
+import type { Session } from '../src/session.js'
 
 const version = '0.17.0'
 const trust = `[hooks.state."room@room:hooks.json:pre_tool_use:0:0"]
-trusted_hash = "sha256:${'a'.repeat(64)}"
+trusted_hash = "${CODEX_ROOM_HOOK_HASHES['pre_tool_use:0:0']}"
 [hooks.state."room@room:hooks.json:session_start:0:0"]
-trusted_hash = "sha256:${'b'.repeat(64)}"`
+trusted_hash = "${CODEX_ROOM_HOOK_HASHES['session_start:0:0']}"`
 const base = (): DoctorFacts => ({ node: 'v22.14.0', git: 'git version 2.39.0', repo: true,
   claudeCli: true, codexCli: true, claude: { version }, codex: { version }, claudeVersion: '2.1.285',
   claudeHooks: `export const HOOKS_VERSION = '${version}'`, codexHooks: `export const HOOKS_VERSION = '${version}'`,
@@ -74,11 +76,24 @@ describe('doctor report', () => {
   it('parses only both Room hook trust entries and stamps', () => {
     expect(codexRoomHooksTrusted(trust)).toBe(true)
     expect(codexRoomHooksTrusted(trust.replace('session_start', 'other'))).toBe(false)
+    expect(codexRoomHookTrustStatus(trust.replace(CODEX_ROOM_HOOK_HASHES['pre_tool_use:0:0'], `sha256:${'0'.repeat(64)}`))).toBe('modified')
+    expect(evaluateDoctor({ ...base(), codexTrust: trust.replace(CODEX_ROOM_HOOK_HASHES['pre_tool_use:0:0'], `sha256:${'0'.repeat(64)}`) }).find(r => r.name === 'Codex hook trust')).toMatchObject({ level: 'WARN' })
+    expect(codexRoomHookTrustStatus(trust.replace('session_start', 'other'))).toBe('absent')
     expect(hookVersion('no stamp')).toBeUndefined()
     const root = fileURLToPath(new URL('../../../plugins/room/', import.meta.url))
+    expect(createHash('sha256').update(readFileSync(root + 'hooks.json')).digest('hex')).toBe(CODEX_ROOM_HOOKS_FILE_SHA256)
     const hooks = readFileSync(root + 'hooks/common.mjs', 'utf8')
     const manifest = JSON.parse(readFileSync(root + '.claude-plugin/plugin.json', 'utf8')) as { version: string }
     expect(hookVersion(hooks)).toBe(manifest.version)
+  })
+  it('does not follow a redirected health probe', async () => {
+    const fetcher = vi.fn(async (_url: string, opts: RequestInit) => {
+      expect(opts.redirect).toBe('manual')
+      return { ok: false, status: 302 } as Response
+    })
+    expect(await probeHealth('https://fixture.invalid/health', fetcher as unknown as typeof fetch)).toEqual({ ok: false, redirect: 'HTTP 302' })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(evaluateDoctor({ ...base(), server: 'wss://fixture.invalid', serverHealth: false, serverRedirect: 'HTTP 302' }).find(r => r.name === 'team server')).toMatchObject({ level: 'WARN', finding: 'server redirected /health (HTTP 302); check ROOM_SERVER' })
   })
 })
 
@@ -91,4 +106,27 @@ it('room_state check works before a session joins', async () => {
   const { createTools } = await import('../src/tools.js')
   const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository' })
   expect(await tools.call('room_state', { check: true })).toContain('PASS  doctor: report from tool')
+})
+
+it.each(['in progress', 'failed'])('room_state check bypasses an %s automatic join', async state => {
+  const { createTools } = await import('../src/tools.js')
+  const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository' })
+  const ensure = vi.fn(state === 'failed' ? () => { throw new Error('AUTO_JOIN_TOUCHED') } : () => new Promise<void>(() => {}))
+  const settle = vi.fn(state === 'failed' ? () => Promise.reject(new Error('AUTO_JOIN_TOUCHED')) : () => new Promise<void>(() => {}))
+  tools.setAutoJoin({ ensure, settle, cancel() {}, retarget() {}, ...(state === 'failed' ? { failure: 'join failed' } : {}) })
+  expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
+  expect(ensure).not.toHaveBeenCalled()
+  expect(settle).not.toHaveBeenCalled()
+})
+
+it('room_state check diagnoses a never-synced session and its selected checkout', async () => {
+  const { createTools } = await import('../src/tools.js')
+  const doctor = vi.mocked(runDoctor)
+  doctor.mockClear()
+  let active: Session | null = null
+  const tools = createTools({ getSession: () => active, setSession: s => { active = s }, cwd: '/original/checkout' })
+  active = { dir: '/selected/checkout', roomUrl: 'wss://selected.example/repository', roomName: 'repository', token: 'test-token', provider: { synced: false }, daemon: { touch: vi.fn() } } as unknown as Session
+  expect(await tools.call('room_state', { check: true })).toBe('PASS  doctor: report from tool')
+  expect(doctor).toHaveBeenCalledWith('/selected/checkout', true, { server: 'wss://selected.example', token: 'test-token', credentialsPath: undefined })
+  expect(active.daemon.touch).not.toHaveBeenCalled()
 })

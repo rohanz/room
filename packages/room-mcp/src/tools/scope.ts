@@ -103,7 +103,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_state(a) {
-      if (a.check === true) return runDoctor(state.ctx.cwd ?? process.cwd(), true)
+      if (a.check === true) {
+        const active = state.ctx.getSession()
+        const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf('/')) : undefined
+        return runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : undefined)
+      }
       const s = S()
       await loadAreas(s)
       const m = s.room.meta

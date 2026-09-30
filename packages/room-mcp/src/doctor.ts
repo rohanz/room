@@ -14,6 +14,12 @@ import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { t
 
 const exec = promisify(execFile)
 const minimumGit = [2, 31, 0] // git rev-parse --path-format=absolute
+export const CODEX_ROOM_HOOK_HASHES = {
+  'pre_tool_use:0:0': 'sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb',
+  'session_start:0:0': 'sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18',
+} as const
+/** Hash of the frozen hooks.json bytes for which Codex 0.158 produced the identities above. */
+export const CODEX_ROOM_HOOKS_FILE_SHA256 = '336c0b90c935ff627f9988ceb92e21c887b44c9b6e904b2c2ddd9a188db4b777'
 type Result = { level: 'PASS' | 'WARN' | 'FAIL'; name: string; finding: string; fix?: string }
 type Plugin = { version?: string; root?: string; hooksRoot?: string }
 export interface DoctorFacts {
@@ -21,7 +27,7 @@ export interface DoctorFacts {
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
-  server?: string; serverHealth?: boolean; credential?: boolean
+  server?: string; serverHealth?: boolean; serverRedirect?: string; credential?: boolean
   relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; configError?: string; stale?: string; inSession?: boolean
 }
 
@@ -37,10 +43,17 @@ function atLeast(raw: string | undefined, min: number[]): boolean {
 }
 export function hookVersion(text?: string): string | undefined { return text?.match(/export const HOOKS_VERSION = ['"]([^'"]+)['"]/)?.[1] }
 export function codexRoomHooksTrusted(toml?: string): boolean {
-  if (!toml) return false
+  return codexRoomHookTrustStatus(toml) === 'trusted'
+}
+export function codexRoomHookTrustStatus(toml?: string): 'trusted' | 'modified' | 'absent' {
+  if (!toml) return 'absent'
   const sections = [...toml.matchAll(/^\[hooks\.state\."room@room:hooks\.json:([^"\]]+)"\]([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)]
-  return ['pre_tool_use:0:0', 'session_start:0:0'].every(kind =>
-    sections.some(m => m[1] === kind && /^trusted_hash\s*=\s*"sha256:[a-f\d]{64}"/m.test(m[2])))
+  const hashes = Object.entries(CODEX_ROOM_HOOK_HASHES).map(([kind, expected]) => {
+    const body = sections.find(m => m[1] === kind)?.[2]
+    return { expected, stored: body?.match(/^trusted_hash\s*=\s*"(sha256:[a-f\d]{64})"/m)?.[1] }
+  })
+  if (hashes.some(h => !h.stored)) return 'absent'
+  return hashes.every(h => h.stored === h.expected) ? 'trusted' : 'modified'
 }
 export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Result[] {
   const rows: Result[] = []
@@ -59,7 +72,10 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     const stamp = hookVersion(name === 'Codex' ? f.codexHooks : f.claudeHooks)
     add(stamp === version ? 'PASS' : 'FAIL', `${name} hooks`, stamp ? `${stamp}; bundle ${version}` : 'version stamp missing', `Update the marketplace and reinstall room@room in ${name}`)
   }
-  if (f.codex) add(codexRoomHooksTrusted(f.codexTrust) ? 'PASS' : 'FAIL', 'Codex hook trust', codexRoomHooksTrusted(f.codexTrust) ? 'Room hooks trusted' : 'Room hooks not trusted', 'Open Codex and accept the hooks prompt, or trust them in /hooks')
+  if (f.codex) {
+    const trust = codexRoomHookTrustStatus(f.codexTrust)
+    add(trust === 'trusted' ? 'PASS' : trust === 'modified' ? 'WARN' : 'FAIL', 'Codex hook trust', trust === 'trusted' ? 'Room hooks trusted' : trust === 'modified' ? 'Room hooks changed since trust was granted' : 'Room hooks not trusted', trust === 'modified' ? "Codex will ask to trust Room's hooks again; accept it (or /hooks)" : 'Open Codex and accept the hooks prompt, or trust them in /hooks')
+  }
   if (f.claude) {
     const min = process.platform === 'win32' ? [2, 1, 234] : [2, 1, 224]
     add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', f.claudeVersion ? `Claude Code ${f.claudeVersion}` : 'version unknown', `Update Claude Code to ${min.join('.')} or newer`)
@@ -67,7 +83,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   }
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')
   else if (f.server) {
-    add(f.serverHealth ? 'PASS' : 'WARN', 'team server', f.serverHealth ? '/health answered' : '/health unavailable', 'Check ROOM_SERVER and server status')
+    add(f.serverHealth ? 'PASS' : 'WARN', 'team server', f.serverRedirect ? `server redirected /health (${f.serverRedirect}); check ROOM_SERVER` : f.serverHealth ? '/health answered' : '/health unavailable', 'Check ROOM_SERVER and server status')
     add(f.credential ? 'PASS' : 'WARN', 'team login', f.credential ? 'login present' : 'login missing', 'Run room_login')
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
   if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
@@ -93,10 +109,14 @@ export function codexHooksRoot(marketplaces: unknown, name: string | undefined):
   } catch { /* an older marketplace layout */ }
   return path.resolve(root, entry ?? path.join('plugins', 'room'))
 }
-async function health(url: string): Promise<boolean> {
-  try { const r = await fetch(url, { signal: AbortSignal.timeout(3000) }); return r.ok } catch { return false }
+export async function probeHealth(url: string, fetcher: typeof fetch = fetch): Promise<{ ok: boolean; redirect?: string }> {
+  try {
+    const r = await fetcher(url, { signal: AbortSignal.timeout(3000), redirect: 'manual' })
+    return { ok: r.ok, ...(r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {}) }
+  } catch { return { ok: false } }
 }
-async function collectDoctorFacts(dir: string, inSession = false): Promise<DoctorFacts> {
+export interface DoctorDestination { server: string; token?: string; credentialsPath?: string }
+async function collectDoctorFacts(dir: string, inSession = false, selected?: DoctorDestination): Promise<DoctorFacts> {
   const [gitVersion, head, claudeJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
     command('git', ['--version']), command('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD']),
     command('claude', ['plugin', 'list', '--json']), command('codex', ['plugin', 'list', '--json']),
@@ -121,23 +141,25 @@ async function collectDoctorFacts(dir: string, inSession = false): Promise<Docto
     stale: inSession ? createStaleVersionWarning(fileURLToPath(import.meta.url))() : undefined,
   }
   try {
-    const config = await resolveConfig({ dir })
+    const config = selected ?? await resolveConfig({ dir })
     if (config.server !== 'local') {
       f.server = config.server
       configureCredentials(config.credentialsPath)
       f.credential = !!config.token || !!getCredential(config.server)
       const u = new URL(config.server); u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:'; u.pathname = '/health'; u.search = ''
-      f.serverHealth = await health(u.toString())
+      const health = await probeHealth(u.toString())
+      f.serverHealth = health.ok
+      f.serverRedirect = health.redirect
     } else if (f.repo) {
       const common = await gitCommonDir(dir)
       const info = readRelayInfo(common)
       f.legacyRelay = legacyRelayRunning(common)
       f.relayFile = info ? relayFile(common) : undefined
-      if (info) f.relayHealth = await health(`http://127.0.0.1:${info.port}/health`)
+      if (info) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info.port}/health`)).ok
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   return f
 }
-export async function runDoctor(dir: string, inSession = false): Promise<string> {
-  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession)))
+export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination): Promise<string> {
+  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession, selected)))
 }
