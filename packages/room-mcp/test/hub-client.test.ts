@@ -135,6 +135,39 @@ describe('HubClient', () => {
     client.close()
   })
 
+  it('reacquires its name after an unsynced restart refuses epoch-only renewal', async () => {
+    const { client, transport } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    transport.answer = req => req.op === 'renew'
+      ? { ok: false, reason: 'not-yours', text: 'holder record has not synced' }
+      : req.op === 'acquire' ? { ok: true, epoch: 43, ttlMs: LEASE_TTL_MS } : { ok: true }
+    await expect(client.renew('alice')).rejects.toMatchObject({ reason: 'not-yours' })
+    expect(client.lease('alice')).toBeUndefined()
+    expect(await client.acquire('alice', holder)).toBe(43)
+    expect(client.lease('alice')).toBe(43)
+    client.close()
+  })
+
+  it('retries rate-limited and unavailable replies, preserving the server text on exhaustion', async () => {
+    const { client, transport, advance } = fixture()
+    await client.hello(); await client.acquire('alice', holder)
+    let attempts = 0
+    transport.answer = req => req.op === 'post' && ++attempts === 1
+      ? { ok: false, reason: 'rate-limited', text: 'slow down', retryMs: 1000 }
+      : { ok: true, seq: 6, at: 1 }
+    const pending = client.post({ id: 'm1', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
+    await Promise.resolve()
+    advance(1000); await vi.advanceTimersByTimeAsync(1000)
+    expect((await pending).seq).toBe(6)
+    expect(attempts).toBe(2)
+    transport.answer = req => req.op === 'release' ? { ok: false, reason: 'unavailable', text: 'disk offline', retryMs: 1000 } : { ok: true }
+    const rejected = expect(client.release('alice')).rejects.toMatchObject({ reason: 'unavailable', message: 'disk offline' })
+    for (let i = 0; i < (REQUEST_TIMEOUT_LOCAL_MS + SETTLE_MS) / 1000; i++) { advance(1000); await vi.advanceTimersByTimeAsync(1000) }
+    await rejected
+    expect(client.lease('alice')).toBe(42)
+    client.close()
+  })
+
   it('renews held leases every 15 seconds', async () => {
     const { client, transport, advance } = fixture()
     await client.hello(); await client.acquire('alice', holder)

@@ -8,9 +8,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { RoomDoc } from '@room/shared'
-import { SETTLE_MS, encodeSeq } from '@room/hub-core'
+import { SETTLE_MS, encodeSeq, startHub } from '@room/hub-core'
 import { contractSuite, fakeClock, holder, socketClient, waitFor, type MakeEnv } from '../../hub-core/test/contract.js'
 import { AuthorityLock, deterministicPort, ensureLocalRelay, memoryFile, readRelayInfo, startRelay, type StartedRelay } from '../src/index.js'
+import { incarnationFile } from '../src/hub.js'
 
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-hub-'))
 const KEY = 'hub-test-key'
@@ -50,6 +51,19 @@ const relayEnv: MakeEnv = async clock => {
 contractSuite('local relay', relayEnv)
 
 describe('relay hub wiring', () => {
+  it('recovers an rc1-poisoned incarnation file before serving a clean room', async () => {
+    const common = await makeCommonDir()
+    const file = path.join(common, 'room', 'hub', 'incarnation.json')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ max: 2 ** 32 + 1 }))
+    try {
+      const clock = fakeClock()
+      const hub = await startHub({ doc: new RoomDoc(), store: incarnationFile(common), mono: clock.mono, wall: clock.wall, log: () => {} })
+      expect(hub.incarnation).toBeLessThan(2 ** 32)
+      expect(JSON.parse(fs.readFileSync(file, 'utf8')).max).toBe(hub.incarnation)
+      hub.stop()
+    } finally { fs.rmSync(common, { recursive: true, force: true }) }
+  })
   it('two racers with the derived port taken: one lock holder serves the hub; a relay without the lock answers only not-authority', async () => {
     const common = await makeCommonDir()
     const squatter = http.createServer((_q, res) => { res.end('not a relay') })
@@ -167,7 +181,8 @@ describe('relay hub wiring', () => {
       const next = await waitFor(async () => { try { return await socketClient(roomUrl(port, 'local/x', key)) } catch { return undefined } }, 5000)
       const hello = await waitFor(async () => { const r = await next.hello(); return r.ok && r }, 5000)
       expect(hello.incarnation as number).toBeGreaterThan(first.incarnation as number)
-      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: true })
+      // No replica carried ada's holder record to the survivor: the public epoch alone does not prove the session.
+      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: false, reason: 'not-yours' })
       const bob = await waitFor(async () => { const r = await next.send({ op: 'acquire', name: 'bob', holder: holder('s2') }); return r.ok && r }, 10_000)
       expect(bob.epoch as number).toBeGreaterThan(epoch)
       await next.close()
@@ -193,7 +208,8 @@ describe('relay hub wiring', () => {
       await owner.stop()
       await waitFor(() => b.owned, 8000)
       const c = await socketClient(roomUrl(b.port, 'local/x', b.key))
-      const hello = await waitFor(async () => { const r = await c.hello(); return r.ok && r })
+      // The inherited holder's own session renews; any other session is refused (the epoch is a fence, not a secret).
+      const hello = await waitFor(async () => { const r = await c.send({ op: 'hello', proto: 1, schema: 2, client: 'contract', sessionId: 's1' }); return r.ok && r })
       expect(hello.incarnation as number).toBeGreaterThan(5)
       expect(await c.send({ op: 'renew', name: 'ada', epoch: inherited })).toMatchObject({ ok: true })
       expect(await c.send({ op: 'acquire', name: 'ada', holder: holder('other') })).toMatchObject({ ok: false, reason: 'held' })

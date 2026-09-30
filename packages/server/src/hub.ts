@@ -7,7 +7,7 @@ import fsp, { type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { MSG_HUB, STARTING_RETRY_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
+import { HUB_ORIGIN, MSG_HUB, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
@@ -65,14 +65,16 @@ export interface PersistenceProvider {
   clearDocument?(docName: string): Promise<void>
 }
 
-interface Entry { doc: Y.Doc; room: RoomDoc; hub?: Hub; stopped?: boolean }
-interface Loading { loaded: Promise<void>; stored: () => Promise<unknown> }
+interface Entry { doc: Y.Doc; room: RoomDoc; hub?: Hub; stopped?: boolean; startError?: string; startFailed?: boolean; lastTickError?: number }
+interface Loading { loaded: Promise<void>; stored: () => Promise<void> }
+interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean; pendingUpdate?: Uint8Array; pending?: Promise<void>; error?: string; retry?: ReturnType<typeof setTimeout>; delay: number }
 
 export interface ServerHubsOptions {
   store: IncarnationStore
   log(line: string): void
   /** The room's document is over its size cap. */
   full(room: string): boolean
+  hubBytes?(room: string, bytes: number): void
   mono?: () => number
   wall?: () => number
 }
@@ -84,30 +86,80 @@ export class ServerHubs {
   private readonly entries = new Map<string, Entry>()
   private readonly freshRooms = new Set<string>()
   private readonly loads = new WeakMap<Y.Doc, Loading>()
-  private readonly pendingWrites = new Map<string, Promise<unknown>>()
+  private readonly writes = new Map<string, WriteState>()
+  private readonly maxDirtyRooms = 16
   constructor(private readonly opts: ServerHubsOptions) {}
 
   /** Called only by the room-opening endpoint after it creates a room with no prior document. */
   markFresh(name: string): void { this.freshRooms.add(name) }
+
+  storageFailure(name: string): string | undefined {
+    const state = this.writes.get(name)
+    if (state?.error) return `room storage is failing; retry: ${state.error}`
+    if (this.dirtyCount() >= this.maxDirtyRooms && !state?.dirty) return 'room storage backlog is full; retry'
+    return undefined
+  }
+
+  anyStorageFailure(): boolean { return [...this.writes.values()].some(state => !!state.error) }
+  private dirtyCount(): number { return [...this.writes.values()].filter(state => state.dirty || state.pending || state.error).length }
+
+  private queueWrite(name: string, state: WriteState, update?: Uint8Array): void {
+    if (!state.pending && !state.error) state.pendingUpdate = update
+    state.dirty = true
+    if (!state.error) this.write(name, state)
+  }
+
+  private write(name: string, state: WriteState): void {
+    if (state.pending || !state.dirty) return
+    const run = async () => {
+      while (state.dirty) {
+        state.dirty = false
+        try {
+          const update = state.pendingUpdate ?? Y.encodeStateAsUpdate(state.doc)
+          state.pendingUpdate = undefined
+          await state.provider.storeUpdate(name, update)
+          if (state.error) {
+            this.opts.log(`room ${name}: storage recovered`)
+            const entry = this.entries.get(name)
+            if (entry?.startFailed && !entry.startError) this.restart(name, entry)
+          }
+          state.error = undefined
+          state.delay = 250
+        } catch (error) {
+          state.dirty = true
+          state.pendingUpdate = undefined
+          state.error = error instanceof Error ? error.message : String(error)
+          this.opts.log(`room ${name}: storage failed: ${state.error}`)
+          state.retry = setTimeout(() => { state.retry = undefined; this.write(name, state) }, state.delay)
+          state.retry.unref?.()
+          state.delay = Math.min(state.delay * 2, 10_000)
+          break
+        }
+      }
+    }
+    state.pending = run().finally(() => { state.pending = undefined; if (state.dirty && !state.retry) this.write(name, state) })
+  }
 
   /** The stock bind code plus a `loaded` promise per doc; the hub starts after it (§6). */
   persistence(provider: PersistenceProvider): { provider: PersistenceProvider; bindState(docName: string, doc: Y.Doc): Promise<void>; writeState(docName: string): Promise<void> } {
     return {
       provider,
       bindState: (docName, doc) => {
-        let last: Promise<unknown> = Promise.resolve()
-        const store = (update: Uint8Array) => {
-          last = last.then(() => provider.storeUpdate(docName, update))
-          this.pendingWrites.set(docName, last)
+        const state: WriteState = { doc, provider, dirty: false, delay: 250 }
+        const store = (update: Uint8Array, origin: unknown) => {
+          if (origin === HUB_ORIGIN) this.opts.hubBytes?.(docName, update.byteLength)
+          this.queueWrite(docName, state, update)
         }
         const loaded = (async () => {
           await this.flushName(docName)
           const persisted = await provider.getYDoc(docName)
-          store(Y.encodeStateAsUpdate(doc))
+          this.writes.set(docName, state)
+          doc.once('destroy', () => { if (this.writes.get(docName) === state && !state.dirty && !state.pending && !state.error) this.writes.delete(docName) })
           Y.applyUpdate(doc, Y.encodeStateAsUpdate(persisted))
           doc.on('update', store)
+          this.queueWrite(docName, state, Y.encodeStateAsUpdate(doc))
         })()
-        this.loads.set(doc, { loaded, stored: () => last })
+        this.loads.set(doc, { loaded, stored: () => this.flushName(docName) })
         return loaded
       },
       writeState: async docName => { await this.flushName(docName) },
@@ -128,7 +180,7 @@ export class ServerHubs {
     void (loading?.loaded ?? Promise.resolve())
       .then(() => startHub({
         doc: entry.room, mono: this.opts.mono ?? (() => performance.now()), wall: this.opts.wall ?? Date.now, log,
-        store: this.opts.store, owns, full: () => this.opts.full(name), fresh,
+        store: this.opts.store, owns, full: () => this.opts.full(name), unavailable: () => this.storageFailure(name), fresh,
       }))
       .then(async hub => {
         await loading?.stored() // the incarnation's meta mirror, stored before the hub serves
@@ -136,10 +188,25 @@ export class ServerHubs {
         hub.onPush((conn, push) => (conn as { send(buf: Uint8Array): void }).send(encodeFrame(push)))
         entry.hub = hub
       })
-      .catch(e => log(`the hub could not start: ${e instanceof Error ? e.message : e}`))
+      .catch(e => {
+        entry.startError = e instanceof RoomStateError ? e.message : undefined
+        entry.startFailed = true
+        log(`the hub could not start: ${e instanceof Error ? e.message : e}`)
+        if (!entry.startError && !this.storageFailure(name)) this.restart(name, entry)
+      })
   }
 
   current(name: string): Hub | undefined { return this.entries.get(name)?.hub }
+  startFailure(name: string): string | undefined { return this.entries.get(name)?.startError }
+
+  private restart(name: string, entry: Entry): void {
+    const retry = setTimeout(() => {
+      if (this.entries.get(name) !== entry || entry.hub || entry.startError) return
+      this.stop(name)
+      this.ensure(name, entry.doc)
+    }, 1000)
+    retry.unref?.()
+  }
 
   /** Drain a loaded document's writes before migration clears its old key. */
   async flush(doc: Y.Doc): Promise<void> {
@@ -150,9 +217,14 @@ export class ServerHubs {
 
   /** A disconnected document is already out of stock y-websocket's docs map. */
   async flushName(name: string): Promise<void> {
-    const pending = this.pendingWrites.get(name)
-    await pending
-    if (pending && this.pendingWrites.get(name) === pending) this.pendingWrites.delete(name)
+    const state = this.writes.get(name)
+    if (!state) return
+    if (state.error) throw new Error(`room ${name}: storage is failing: ${state.error}`)
+    if (state.dirty && !state.pending) this.write(name, state)
+    while (state.pending) {
+      await state.pending
+      if (state.error) throw new Error(`room ${name}: storage is failing: ${state.error}`)
+    }
   }
 
   /** Stop a room's hub (its doc is going away: the last connection left, or the repo was closed). */
@@ -164,7 +236,10 @@ export class ServerHubs {
     this.entries.delete(name)
   }
 
-  tick(): void { for (const entry of this.entries.values()) entry.hub?.tick() }
+  tick(): void { for (const [name, entry] of this.entries) try { entry.hub?.tick() } catch (error) {
+    const now = Date.now()
+    if (now - (entry.lastTickError ?? 0) >= 60_000) { entry.lastTickError = now; this.opts.log(`room ${name}: hub tick failed: ${error instanceof Error ? error.message : error}`) }
+  } }
 }
 
 interface HubSocket {
@@ -177,7 +252,7 @@ interface HubSocket {
  * Answer hub frames (type 7) on a room connection. Installed before the other wrappers, so it is the
  * innermost: they pass type 7 through, and it consumes those frames instead of forwarding them.
  */
-export function bindHub(ws: HubSocket, hub: () => Hub | undefined, principal: Principal): void {
+export function bindHub(ws: HubSocket, hub: () => Hub | undefined, principal: Principal, unavailable?: () => string | undefined): void {
   const emit = ws.emit.bind(ws)
   ws.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event !== 'message') return emit(event, ...args)
@@ -187,13 +262,17 @@ export function bindHub(ws: HubSocket, hub: () => Hub | undefined, principal: Pr
     try { frame = decodeFrame(buf) } catch { frame = undefined }
     const id = (frame as { id?: unknown } | undefined)?.id
     const re = typeof id === 'string' ? id : ''
-    const current = hub()
-    const reply: Reply = 'readOnly' in principal && principal.readOnly
-      ? { v: 1, re, ok: false, reason: 'read-only', text: 'this connection is read-only' }
-      : current ? current.handle(ws, frame, principal)
-        : { v: 1, re, ok: false, reason: 'starting', text: 'the room is loading', retryMs: STARTING_RETRY_MS }
+    let reply: Reply
+    try {
+      const current = hub(), failure = unavailable?.()
+      reply = 'readOnly' in principal && principal.readOnly
+        ? { v: 1, re, ok: false, reason: 'read-only', text: 'this connection is read-only' }
+        : failure ? { v: 1, re, ok: false, reason: 'unavailable', text: failure, retryMs: STARTING_RETRY_MS }
+          : current ? current.handle(ws, frame, principal)
+            : { v: 1, re, ok: false, reason: 'starting', text: 'the room is loading', retryMs: STARTING_RETRY_MS }
+    } catch (error) { reply = { v: 1, re, ok: false, reason: 'invalid', text: error instanceof Error ? error.message : String(error) } }
     try { ws.send(encodeFrame(reply)) } catch { /* the connection is closing */ }
     return true
   }) as HubSocket['emit']
-  ws.once('close', () => hub()?.closed(ws))
+  ws.once('close', () => { try { hub()?.closed(ws) } catch { /* the connection is closing */ } })
 }

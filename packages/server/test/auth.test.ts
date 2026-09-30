@@ -58,10 +58,15 @@ describe('device-flow auth', () => {
 
   it('poll: pending, then success stores the GitHub token server-side and returns a session', async () => {
     const gh = fakeGitHub({ tokenResponses: [{ error: 'authorization_pending' }, { error: 'slow_down', interval: 10 }, { access_token: 'gho_secret', token_type: 'bearer' }], login: 'octo' })
-    const a = new Auth({ clientId: 'cid', fetch: gh.fetch })
+    let now = 0
+    const a = new Auth({ clientId: 'cid', fetch: gh.fetch, now: () => now })
     const { device } = await a.startDevice()
     expect(await a.poll(device)).toEqual({ pending: true })
     expect(await a.poll(device)).toEqual({ pending: true })
+    expect(gh.calls.filter(c => c.url.endsWith('/login/oauth/access_token'))).toHaveLength(1)
+    now += 5000
+    expect(await a.poll(device)).toEqual({ pending: true })
+    now += 10000
     const r = await a.poll(device)
     expect(r).toMatchObject({ login: 'octo' })
     const session = (r as { session: string }).session

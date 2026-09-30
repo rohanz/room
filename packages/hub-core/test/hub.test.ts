@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { OWED_TTL_MS, ROOM_STALE_MS, RoomDoc } from '@room/shared'
-import { LEASE_TTL_MS, MAINTENANCE_MS, SETTLE_MS, incarnationOf, serializedStore, startHub, type Hub, type HubHost, type Push } from '../src/index.js'
+import { LEASE_TTL_MS, MAINTENANCE_MS, MAX_LEASES_PER_PRINCIPAL, MAX_RETAINED_NAMES_PER_PRINCIPAL, POST_RATE_PER_LEASE, SETTLE_MS, RoomStateError, incarnationOf, serializedStore, startHub, type Hub, type HubHost, type Push } from '../src/index.js'
 import { contractSuite, fakeClock, holder, memoryEnv } from './contract.js'
 
 contractSuite('in process', memoryEnv())
@@ -19,6 +19,120 @@ const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', se
 const local = { local: true } as const
 
 describe('hub in process', () => {
+  it('refuses Bob renewing, releasing, or posting with Alice’s public epoch without replacing her push connection', async () => {
+    const h = host({ fresh: true, owns: (p, name) => 'login' in p && p.login === name })
+    const hub = await startHub(h)
+    const alice = {}, bob = {}, pushes: object[] = []
+    hub.onPush((conn, push) => { if (push.push === 'lease-lost') pushes.push(conn) })
+    hub.handle(alice, { ...hello, sessionId: 'alice-session' }, { login: 'alice', readOnly: false })
+    hub.handle(bob, { ...hello, sessionId: 'bob-session' }, { login: 'bob', readOnly: false })
+    const epoch = (hub.handle(alice, { v: 1, id: 'a', op: 'acquire', name: 'alice', holder: holder('alice-session') }, { login: 'alice', readOnly: false }) as { epoch: number }).epoch
+    const bobPrincipal = { login: 'bob', readOnly: false }
+    expect(hub.handle(bob, { v: 1, id: 'r', op: 'renew', name: 'alice', epoch }, bobPrincipal)).toMatchObject({ reason: 'not-yours' })
+    expect(hub.handle(bob, { v: 1, id: 'x', op: 'release', name: 'alice', epoch }, bobPrincipal)).toMatchObject({ reason: 'not-yours' })
+    expect(hub.handle(bob, { v: 1, id: 'p', op: 'post', lease: { name: 'alice', epoch }, msg: { id: 'm1', type: 'note', from: 'bob', text: 'x' } }, bobPrincipal)).toMatchObject({ reason: 'not-yours' })
+    const sameLoginOtherSession = { login: 'alice', readOnly: false }
+    expect(hub.handle(bob, { v: 1, id: 'same-login', op: 'renew', name: 'alice', epoch }, sameLoginOtherSession)).toMatchObject({ reason: 'not-yours' })
+    expect(h.doc.messages()).toEqual([])
+    const reconnected = {}
+    hub.handle(reconnected, { ...hello, sessionId: 'alice-session' }, sameLoginOtherSession)
+    expect(hub.handle(reconnected, { v: 1, id: 'r2', op: 'renew', name: 'alice', epoch }, sameLoginOtherSession)).toMatchObject({ ok: true })
+    hub.handle(reconnected, { v: 1, id: 'a2', op: 'acquire', name: 'alice', holder: holder('alice-session') }, sameLoginOtherSession)
+    expect(pushes).toEqual([reconnected])
+  })
+
+  it('quarantines a forged high incarnation before touching the shared store; recovers a poisoned durable max', async () => {
+    let max: number | undefined
+    const store = serializedStore({ read: async () => max, write: async n => { max = n } })
+    const forged = new RoomDoc()
+    forged.metaMap.set('hubIncarnation', 2 ** 32)
+    await expect(startHub(host({ doc: forged, store }))).rejects.toBeInstanceOf(RoomStateError)
+    expect(max).toBeUndefined()
+    const forgedSeq = new RoomDoc()
+    forgedSeq.bus.push([{ id: 'm', type: 'note', from: 'alice', text: 'x', seq: (2 ** 32) * (2 ** 21), at: 1 } as never])
+    await expect(startHub(host({ doc: forgedSeq, store }))).rejects.toBeInstanceOf(RoomStateError)
+    expect(max).toBeUndefined()
+    const clean = await startHub(host({ store }))
+    expect(clean.incarnation).toBeLessThan(2 ** 32)
+    clean.stop()
+    max = 2 ** 32 + 1 // rc1 wrote this invalid value before validating the room
+    const recovered = await startHub(host({ store }))
+    expect(max).toBe(recovered.incarnation)
+    expect(max).toBeLessThan(2 ** 32)
+    recovered.stop()
+    max = 2 ** 32 - 1 // in range, but impossibly far ahead of the process's own floor
+    const implausible = await startHub(host({ store }))
+    expect(max).toBe(implausible.incarnation)
+    expect(max).toBeLessThan(2 ** 32 - 1)
+  })
+
+  it('rejects malformed changed posts and drops the same malformed CRDT record during maintenance', async () => {
+    const h = host({ fresh: true })
+    const hub = await startHub(h), conn = {}
+    hub.handle(conn, hello, local)
+    const epoch = (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, local) as { epoch: number }).epoch
+    expect(hub.handle(conn, { v: 1, id: 'p', op: 'post', lease: { name: 'ada', epoch }, msg: { id: 'bad', type: 'changed', from: 'ada', paths: {}, summary: 'x' } }, local)).toMatchObject({ reason: 'invalid' })
+    h.doc.bus.push([{ id: 'bad', type: 'changed', from: 'ada', paths: {}, summary: 'x', at: h.clock.wall(), priority: 'fyi' } as never])
+    h.clock.advance(MAINTENANCE_MS + SETTLE_MS)
+    expect(() => hub.tick()).not.toThrow()
+    expect(h.doc.messages().some(m => m.id === 'bad')).toBe(false)
+  })
+
+  it('bounds holders, live and retained names, and refuses acquisition when the document is full', async () => {
+    let full = false
+    const h = host({ fresh: true, full: () => full })
+    const hub = await startHub(h), conn = {}
+    hub.handle(conn, hello, local)
+    expect(hub.handle(conn, { v: 1, id: 'huge', op: 'acquire', name: 'huge', holder: holder('s', { executable: 'x'.repeat(2_000_000) }) }, local)).toMatchObject({ ok: false, reason: 'too-large' })
+    const epoch = (hub.handle(conn, { v: 1, id: 'first', op: 'acquire', name: 'n0', holder: holder('s') }, local) as { epoch: number }).epoch
+    full = true
+    expect(hub.handle(conn, { v: 1, id: 'full', op: 'acquire', name: 'n1', holder: holder('s') }, local)).toMatchObject({ reason: 'room-full' })
+    expect(hub.handle(conn, { v: 1, id: 'renew', op: 'renew', name: 'n0', epoch }, local)).toMatchObject({ ok: true })
+    expect(hub.handle(conn, { v: 1, id: 'release', op: 'release', name: 'n0', epoch }, local)).toMatchObject({ ok: true })
+    full = false
+    for (let i = 0; i < MAX_LEASES_PER_PRINCIPAL; i++) expect(hub.handle(conn, { v: 1, id: `l${i}`, op: 'acquire', name: `l${i}`, holder: holder('s') }, local)).toMatchObject({ ok: true })
+    expect(hub.handle(conn, { v: 1, id: 'overflow', op: 'acquire', name: 'overflow', holder: holder('s') }, local)).toMatchObject({ reason: 'room-full' })
+    for (let i = 0; i < MAX_LEASES_PER_PRINCIPAL; i++) {
+      const record = h.doc.participants.get(`l${i}\u0000holder`) as { epoch: number }
+      hub.handle(conn, { v: 1, id: `r${i}`, op: 'release', name: `l${i}`, epoch: record.epoch }, local)
+    }
+    for (let i = 0; i < MAX_RETAINED_NAMES_PER_PRINCIPAL + 2; i++) {
+      const name = `e${i}`
+      const got = hub.handle(conn, { v: 1, id: `e${i}`, op: 'acquire', name, holder: holder('s') }, local) as { epoch: number }
+      expect(got.epoch).toBeTypeOf('number')
+      hub.handle(conn, { v: 1, id: `er${i}`, op: 'release', name, epoch: got.epoch }, local)
+    }
+    expect([...h.doc.participants.keys()].filter(k => k.endsWith('\u0000holder')).length).toBeLessThanOrEqual(MAX_RETAINED_NAMES_PER_PRINCIPAL)
+  })
+
+  it('rate-limits a flood and refuses durable writes while unavailable', async () => {
+    let unavailable: string | undefined
+    const h = host({ fresh: true, unavailable: () => unavailable })
+    const hub = await startHub(h), conn = {}
+    hub.handle(conn, hello, local)
+    const epoch = (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, local) as { epoch: number }).epoch
+    const post = (i: number) => hub.handle(conn, { v: 1, id: `p${i}`, op: 'post', lease: { name: 'ada', epoch }, msg: { id: `m${i}`, type: 'note', from: 'ada', text: 'x' } }, local)
+    for (let i = 0; i < POST_RATE_PER_LEASE; i++) expect(post(i)).toMatchObject({ ok: true })
+    expect(post(POST_RATE_PER_LEASE)).toMatchObject({ reason: 'rate-limited', retryMs: expect.any(Number) })
+    unavailable = 'storage is down'
+    let writes = 0
+    h.doc.doc.on('update', () => { writes++ })
+    expect(post(POST_RATE_PER_LEASE + 1)).toMatchObject({ reason: 'unavailable', text: unavailable })
+    expect(hub.handle(conn, { v: 1, id: 'a2', op: 'acquire', name: 'new', holder: holder('s') }, local)).toMatchObject({ reason: 'unavailable' })
+    for (let i = 0; i < 4; i++) {
+      h.clock.advance(LEASE_TTL_MS / 2)
+      hub.tick()
+      expect(hub.handle(conn, { v: 1, id: `r${i}`, op: 'renew', name: 'ada', epoch }, local)).toMatchObject({ ok: true })
+    }
+    expect(hub.handle(conn, { v: 1, id: 'x', op: 'release', name: 'ada', epoch }, local)).toMatchObject({ reason: 'unavailable' })
+    expect(writes).toBe(0)
+    expect(h.doc.participants.get('ada\u0000holder')).not.toHaveProperty('ended')
+    unavailable = undefined
+    hub.tick()
+    h.clock.advance(LEASE_TTL_MS)
+    hub.tick()
+    expect(h.doc.participants.get('ada\u0000holder')).toHaveProperty('ended', 'expired')
+  })
   it('grants a name immediately only for a genuinely fresh room', async () => {
     const h = host({ fresh: true } as Partial<HubHost>)
     const hub = await startHub(h)
@@ -35,7 +149,7 @@ describe('hub in process', () => {
     const other = {}
     next.handle(other, hello, local)
     expect(next.handle(other, { v: 1, id: 'reopen', op: 'acquire', name: 'ben', holder: holder('s2') }, local)).toMatchObject({ ok: false, reason: 'starting' })
-    expect(next.handle(other, { v: 1, id: 'renew', op: 'renew', name: 'ada', epoch: first.epoch }, local)).toMatchObject({ ok: true })
+    expect(next.handle(other, { v: 1, id: 'renew', op: 'renew', name: 'ada', epoch: first.epoch }, local)).toMatchObject({ ok: false, reason: 'not-yours' })
     next.stop()
   })
 
@@ -303,7 +417,7 @@ describe('the hub remembers ended holders', () => {
     return { first, epoch, live: first.doc.participants.get('ada\u0000holder') as Record<string, unknown> }
   }
 
-  for (const adoption of ['seed', 'renew'] as const) {
+  for (const adoption of ['seed'] as const) {
     for (const when of ['inside', 'just after'] as const) {
       for (const how of ['released', 'expired'] as const) {
         it(`a late ${how} record ends an epoch adopted by ${adoption}, ${when} the settle window`, async () => {
@@ -332,21 +446,21 @@ describe('the hub remembers ended holders', () => {
     }
   }
 
-  it("a released renew adoption whose holder syncs after the settle window gets its ended record in the same pass", async () => {
+  it("a missing holder record cannot be adopted with an epoch alone", async () => {
     const { first, epoch, live } = await predecessor()
     const second = host({ store: first.store, doc: new RoomDoc() })
     const b = await startHub(second)
     const conn = {}
     b.handle(conn, hello, local)
     const renew = () => b.handle(conn, { v: 1, id: 'n', op: 'renew', name: 'ada', epoch }, local)
-    expect(renew()).toMatchObject({ ok: true })
-    expect(b.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch }, local)).toMatchObject({ ok: true })
+    expect(renew()).toMatchObject({ ok: false, reason: 'not-yours' })
+    expect(b.handle(conn, { v: 1, id: 'r', op: 'release', name: 'ada', epoch }, local)).toMatchObject({ ok: false, reason: 'stale' })
     second.clock.advance(SETTLE_MS)
     b.tick()
     staleSync(second.doc, live)
     b.tick()
     b.tick()
-    expect(second.doc.participants.get('ada\u0000holder')).toEqual({ ...live, ended: 'released' })
+    expect(second.doc.participants.get('ada\u0000holder')).toMatchObject({ ...live, ended: 'expired' })
     expect(renew()).toMatchObject({ ok: false, reason: 'stale' })
   })
 })

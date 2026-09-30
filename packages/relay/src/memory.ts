@@ -28,6 +28,13 @@ export function memoryFile(commonDir: string, room: string): string {
   return path.join(commonDir, 'room', 'relay', `${encodeURIComponent(room)}.ydoc`)
 }
 
+function syncDirectory(dir: string): void {
+  let fd: number | undefined
+  try { fd = fs.openSync(dir, 'r'); fs.fsyncSync(fd) }
+  catch (error) { if (!['EINVAL', 'ENOTSUP', 'EISDIR', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error }
+  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
 /** Failure is isolated to a disposable doc; even a partially applied corrupt update is discarded. */
 export function loadMemory(commonDir: string, room: string, log = stderr): Y.Doc {
   const doc = new Y.Doc(), file = memoryFile(commonDir, room)
@@ -63,7 +70,10 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     fs.chmodSync(path.dirname(file), 0o700)
     fs.writeFileSync(temp, update, { mode: 0o600, flag: 'wx' })
+    const fd = fs.openSync(temp, 'r')
+    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
     fs.renameSync(temp, file)
+    syncDirectory(path.dirname(file))
     return true
   } catch (e) { log(`local room memory: cannot save ${file}: ${e}`); return false }
   finally { try { fs.unlinkSync(temp) } catch { /* no temp file */ } }

@@ -65,6 +65,7 @@ export interface DiskFact {
   size?: number
   text?: string
   binary?: boolean
+  budgetOmitted?: boolean
   excluded?: boolean
   ignored?: boolean
   exclusionReason?: 'untracked lockfile'
@@ -113,6 +114,7 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
     const change = fact.baseHash ? 'M' : 'A'
     if (!authorizesText(policy, p)) { entries.set(p, { change, state: 'held', held: 'scope', at: fact.at, ino: fact.ino }); continue }
     const values = { change, hash: fact.hash, size: fact.size, ...(fact.baseHash ? { baseHash: fact.baseHash } : {}), at: fact.at, ino: fact.ino } as const
+    if (fact.budgetOmitted) { hide('budget'); continue }
     if (fact.binary || fact.text === undefined) { entries.set(p, { ...values, state: 'held', held: 'binary' }); continue }
     if (used + fact.size > inputs.rules.budget) { hide('budget'); continue }
     used += fact.size

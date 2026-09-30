@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,7 +8,7 @@ import { WebsocketProvider } from 'y-websocket'
 import { OWED_PER_RECIPIENT, RoomDoc, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { ensureLocalRelay } from '@room/relay'
-import { HubClient, hubTransport, type HubTransport } from '../src/hub-client.js'
+import { HubClient, HubError, hubTransport, type HubTransport } from '../src/hub-client.js'
 import { createPost, NOT_SENT } from '../src/post.js'
 import { memoryTransport, testLease } from './fixtures/hub.js'
 
@@ -64,6 +64,16 @@ describe('Session.post through the hub (hub §11)', () => {
     const refused = await post<NoteMsg>(ada, { type: 'note', to: 'cy', text: 'one more' })
     expect(refused).toMatchObject({ ok: false, reason: 'over-cap', text: expect.stringContaining('cy has 200 undelivered messages') })
     expect(await post<NoteMsg>(ada, { type: 'note', to: 'cy', text: 'conflict' }, { auto: true })).toMatchObject({ ok: true })
+  })
+
+  it('surfaces exhausted storage and rate-limit replies with the hub text', async () => {
+    const { hub, post } = seam()
+    expect(await post<NoteMsg>(ada, { type: 'note', text: 'prime' })).toMatchObject({ ok: true })
+    const spy = vi.spyOn(hub, 'post')
+    for (const reason of ['unavailable', 'rate-limited'] as const) {
+      spy.mockRejectedValueOnce(new HubError(reason, `${reason}: retry later`))
+      expect(await post<NoteMsg>(ada, { type: 'note', text: 'again' })).toMatchObject({ ok: false, reason, text: `${reason}: retry later` })
+    }
   })
 
   it('a hub that never answers is reported as unreachable, not as sent', async () => {

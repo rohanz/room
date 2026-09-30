@@ -37,6 +37,19 @@ type RedeclaresTo = { [K in MsgType]: undefined extends MessageMap[K]['to'] ? (M
 const everyKindAddressesParticipants: [RedeclaresTo] extends [never] ? true : false = true
 
 describe('owed (test 1)', () => {
+  it('drops malformed replicated bus, mail, archive, outcome, and scope records during trim', () => {
+    const room = new RoomDoc()
+    room.bus.push([{ id: 'bad', type: 'changed', from: 'quinn', paths: {}, summary: 'x', at: NOW } as never])
+    room.mail.set('bad-mail', { type: 'changed', paths: {} } as never)
+    room.archive.set('bad-archive', null as never)
+    room.outcomes.set('bad-outcome', null as never)
+    room.scopes.set('bad-scope', null as never)
+    expect(() => trim(room, NOW)).not.toThrow()
+    expect(room.messages()).toEqual([])
+    expect(room.mail.size).toBe(0)
+    expect(room.archive.size).toBe(0)
+    expect(room.outcomes.size).toBe(0)
+  })
   it('rejects registered kinds whose `to` is anything but the addressee participant', () => {
     expect(everyKindAddressesParticipants).toBe(true)
   })

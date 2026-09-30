@@ -247,6 +247,29 @@ describe('room server with the fake GitHub issuer', () => {
     }))
     expect(logs.join('')).toContain(`observed identity-bearing update from bob (room ${repo}); update applied: scopes mutation for alice`)
   })
+
+  it('answers malformed targets with 400, caps request bodies at 413, and keeps serving', async () => {
+    const raw = (request: string) => new Promise<string>((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => socket.write(request))
+      let out = ''
+      socket.on('data', chunk => { out += chunk })
+      socket.on('close', () => resolve(out))
+      socket.on('error', reject)
+      setTimeout(() => socket.destroy(), 3000)
+    })
+    // Node's parser accepts this target; `new URL` does not (security review M5).
+    expect(await raw('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')).toMatch(/^HTTP\/1\.1 400 /)
+    expect(await raw('GET //[ HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 400 /)
+    // An unauthenticated chunked body past the limit is refused while streaming (M6).
+    const chunk = 'a'.repeat(32 * 1024)
+    let big = 'POST /auth/start HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n'
+    for (let i = 0; i < 8; i++) big += `${chunk.length.toString(16)}\r\n${chunk}\r\n`
+    expect(await raw(big)).toMatch(/^HTTP\/1\.1 413 /)
+    expect((await fetch(`${base}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(1024 * 1024) }, body: 'x'.repeat(1024 * 1024) }).catch(() => ({ status: 413 }))).status).toBe(413)
+    // A path that escapes to a sibling directory sharing the static root's prefix is not served (S3).
+    expect((await raw('GET /x/..//etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))).not.toMatch(/root:/)
+    expect(await (await fetch(`${base}/health`)).json()).toEqual({ ok: true, schema: 2, hub: 1 })
+  })
 })
 
 describe('room server refuses the fake issuer in production', () => {

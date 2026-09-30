@@ -206,7 +206,7 @@ export class HubClient {
       if (!this.valid(lease)) { this.lose(name); return }
       this.leases.set(name, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 })
     } catch (error) {
-      if (error instanceof HubError && error.reason === 'stale' && this.leases.get(name) === lease) this.lose(name)
+      if (error instanceof HubError && (error.reason === 'stale' || error.reason === 'not-yours') && this.leases.get(name) === lease) this.lose(name)
       throw error
     }
   }
@@ -215,11 +215,9 @@ export class HubClient {
     this.assertOpen()
     const lease = this.leases.get(name)
     if (!lease) { this.lostLeases.delete(name); return }
-    try { await this.request({ op: 'release', name, epoch: lease.epoch }) }
-    finally {
-      if (this.leases.get(name) === lease) this.leases.delete(name)
-      this.lostLeases.delete(name)
-    }
+    await this.request({ op: 'release', name, epoch: lease.epoch })
+    if (this.leases.get(name) === lease) this.leases.delete(name)
+    this.lostLeases.delete(name)
   }
 
   /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
@@ -233,7 +231,7 @@ export class HubClient {
       }
     }) }
     catch (error) {
-      if (error instanceof HubError && error.reason === 'stale'
+      if (error instanceof HubError && (error.reason === 'stale' || error.reason === 'not-yours')
         && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name)
       throw error
     }
@@ -293,12 +291,12 @@ export class HubClient {
       const t = await this.requestOnce(body, onSend)
       this.assertOpen()
       if (t.ok) return t
-      if (t.reason === 'starting') {
+      if (t.reason === 'starting' || t.reason === 'unavailable' || t.reason === 'rate-limited') {
         const remaining = startingBudget - elapsed()
-        if (remaining <= 0) throw new HubError('starting', t.text)
+        if (remaining <= 0) throw new HubError(t.reason, t.text)
         await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), remaining))
         this.assertOpen()
-        if (elapsed() >= startingBudget) throw new HubError('starting', t.text)
+        if (elapsed() >= startingBudget) throw new HubError(t.reason, t.text)
         continue
       }
       if (t.reason === 'hello-first' && body.op !== 'hello') {

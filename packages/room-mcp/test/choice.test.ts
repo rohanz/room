@@ -57,7 +57,7 @@ describe('room choice', () => {
 })
 
 describe('tags per worktree', () => {
-  it('migrates the legacy tag only to the main worktree and drops it on every next write', async () => {
+  it('migrates the legacy tag only to the main worktree and drops it on the next write', async () => {
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'init'], { cwd: dir })
     const worktree = join(dir, 'worktree')
     execFileSync('git', ['worktree', 'add', '-qb', 'worker', worktree], { cwd: dir })
@@ -72,7 +72,8 @@ describe('tags per worktree', () => {
       const stored = JSON.parse(readFileSync(file, 'utf8'))
       expect(stored).not.toHaveProperty('tag')
       expect(stored.tags[mainKey]).toBe('')
-      expect(stored).not.toHaveProperty('warned')
+      // 0.16 sharing inputs survive tag and destination rewrites until the policy store has replaced them.
+      expect(stored.warned).toEqual([mainKey])
     }
     await rememberTag(worktree, 'codex')
     await rememberTag(dir, 'claude')

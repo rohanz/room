@@ -23,7 +23,7 @@ export type Posting<T extends Msg = Msg> = Promise<PostResult<T>> & { readonly i
 export type Post = <T extends Msg>(from: Identity, body: PostBody<T>, opts?: PostOpts) => Posting<T>
 
 /** Refusals whose text the hub wrote for the sender (hub §2.4); anything else means the hub was not reached. */
-const TOLD: ReadonlySet<string> = new Set<Reason>(['too-large', 'over-cap', 'room-full', 'read-only', 'version'])
+const TOLD: ReadonlySet<string> = new Set<Reason>(['too-large', 'over-cap', 'room-full', 'read-only', 'version', 'unavailable', 'rate-limited'])
 
 const greetings = new WeakMap<HubClient, Promise<unknown>>()
 

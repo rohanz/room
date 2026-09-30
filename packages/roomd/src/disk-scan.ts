@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
 import { git, gitBlobInfoMany, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
-import { defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
+import { authorizesText, defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
 export class StalePublication extends Error {}
@@ -65,6 +65,7 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
   const [blobs, format, gitIgnored] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)])
   onBaseBlobs?.(blobs)
   const facts: DiskFact[] = []
+  let retainedTextBytes = 0
   let lastYield = performance.now()
   let sinceYield = 0
   for (const p of paths) {
@@ -132,7 +133,12 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
     let binary = false
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
     catch { binary = true }
-    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, text, binary, at: stat.mtimeMs, ino: stat.ino,
+    const isChanged = (changed.has(p) || !!baseHash) && hash !== baseHash
+    const publishable = isChanged && authorizesText(inputs.policy, p) && text !== undefined
+    const budgetOmitted = publishable && retainedTextBytes + bytes.length > inputs.rules.budget
+    if (publishable && !budgetOmitted) retainedTextBytes += bytes.length
+    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, ...(budgetOmitted ? {} : { text }), binary,
+      ...(budgetOmitted ? { budgetOmitted: true } : {}), at: stat.mtimeMs, ino: stat.ino,
       ...(!changed.has(p) && !baseHash ? { changed: false } : {}) })
   }
   return facts

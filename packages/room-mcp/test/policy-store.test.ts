@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { PolicyStore, sharingFile } from '../src/policy-store.js'
+import { writeChoice } from '../src/choice.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
@@ -75,4 +76,21 @@ it('migrates a matching legacy sharing level and retained grant, then removes th
   expect(store.disclosed).toEqual({ level: 'declared', version: 1 })
   expect(fs.existsSync(oldGrant)).toBe(false)
   expect(JSON.parse(fs.readFileSync(choice, 'utf8'))).toEqual({ where: 'team', at: 1 })
+})
+
+it('carries restricted legacy fields through destination rewrites until the new policy is durable', async () => {
+  const dir = checkout(), choice = path.join(dir, '.git', 'room-choice.json')
+  fs.writeFileSync(choice, JSON.stringify({ where: 'local', at: 1, share: 'intent', warned: ['old'] }))
+  await writeChoice(dir, 'ws://team')
+  expect(JSON.parse(fs.readFileSync(choice, 'utf8'))).toMatchObject({ share: 'intent', warned: ['old'] })
+  const store = await PolicyStore.open({ dir, room: 'repo', participant: 'alice', requested: 'full' })
+  expect(store.requested).toBe('intent')
+  expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBeUndefined()
+})
+
+it.each([['ambiguous', '{broken'], ['unknown level', JSON.stringify({ where: 'local', share: 'private' })]])('fails closed for %s legacy choice', async (_case, contents) => {
+  const dir = checkout()
+  fs.writeFileSync(path.join(dir, '.git', 'room-choice.json'), contents)
+  const store = await PolicyStore.open({ dir, room: 'repo', participant: 'alice', requested: 'full' })
+  expect(store.requested).toBe('intent')
 })

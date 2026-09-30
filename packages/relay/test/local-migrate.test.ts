@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,7 +13,39 @@ import { probeProcess } from '../src/process.js'
 let common: string
 const ledgerFile = (room: string) => path.join(common, 'room', 'relay', `migrated-${crypto.createHash('sha256').update(room).digest('hex').slice(0, 16)}.json`)
 beforeEach(() => { common = fs.mkdtempSync(path.join(os.tmpdir(), 'room-migrate-')) })
-afterEach(() => { fs.rmSync(common, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); fs.rmSync(common, { recursive: true, force: true }) })
+
+it('fsyncs the imported snapshot and its directory before committing the ledger', () => {
+  const room = 'local/shop', source = new RoomDoc(new Y.Doc())
+  source.bus.push([{ id: 'durable', type: 'note', from: 'ada', fromKind: 'agent', text: 'hi', at: 1, priority: 'fyi' }])
+  const dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/main`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  const steps: string[] = [], handles = new Map<number, string>()
+  const write = fs.writeFileSync, open = fs.openSync, sync = fs.fsyncSync, rename = fs.renameSync
+  vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: unknown) => {
+    if (String(file).includes('.ydoc.')) steps.push('write')
+    return write(file, data, options as never)
+  }) as typeof fs.writeFileSync)
+  vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: string | number, mode?: fs.Mode) => {
+    const fd = open(file, flags, mode)
+    handles.set(fd, String(file))
+    return fd
+  }) as typeof fs.openSync)
+  vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    const file = handles.get(fd) ?? ''
+    if (file.includes('.ydoc.')) steps.push('file fsync')
+    else if (file === path.dirname(memoryFile(common, room))) steps.push('directory fsync')
+    return sync(fd)
+  })
+  vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+    if (String(to) === memoryFile(common, room)) steps.push('snapshot rename')
+    if (String(to) === ledgerFile(room)) steps.push('ledger commit')
+    return rename(from, to)
+  })
+  catchUpLocal(common, room, new Y.Doc())
+  expect(steps).toEqual(['write', 'file fsync', 'snapshot rename', 'directory fsync', 'ledger commit'])
+})
 
 it('catches up a running old relay by ID without resurrecting a released claim', () => {
   const room = 'local/shop', oldName = `${room}/main`

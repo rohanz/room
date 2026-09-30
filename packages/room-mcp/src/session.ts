@@ -357,6 +357,12 @@ export async function pollLogin(server: string, p: LoginProgress, opts: { maxMs?
   const deadline = Date.now() + (opts.maxMs ?? 90_000)
   for (;;) {
     const res = await fetch(`${httpOf(server)}/auth/poll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: p.device }), signal: AbortSignal.timeout(15000) })
+    if (res.status === 429) {
+      const retry = Math.max(1, Number(res.headers.get('retry-after')) || p.interval)
+      if (Date.now() + retry * 1000 >= deadline) return { pending: true }
+      await sleep(retry * 1000)
+      continue
+    }
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` }
     const b = await res.json() as { pending?: boolean; error?: string; session?: string; login?: string }
     if (b.session && b.login) { setCredential(server, { session: b.session, login: b.login, at: Date.now() }); configCache.delete(server); return { login: b.login } }

@@ -30,6 +30,11 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { MSG_HUB, STARTING_RETRY_MS, decodeFrame, encodeFrame, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
+class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
+export function safeUrl(target: string | undefined): URL {
+  if (!target || !target.startsWith('/') || target.startsWith('//') || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, 'Bad Request')
+  try { return new URL(target, 'http://x') } catch { throw new HttpFailure(400, 'Bad Request') }
+}
 
 /** Convert a takeover failure into a reported, settled operation for the interval owner. */
 export async function observeTakeover(work: () => Promise<void>, report: (error: unknown) => void): Promise<void> {
@@ -273,7 +278,8 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     }
     const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
     const server = http.createServer((req, res) => {
-      const url = new URL(req.url ?? '/', 'http://x')
+      try {
+      const url = safeUrl(req.url)
       if (url.pathname === '/health') {
         // Open to joiners; with the clone's key it also confirms the key, so a stale discovery file is never trusted.
         const keyOk = !!opts.key && isLoopback(req.socket.remoteAddress) && req.headers.authorization === 'Bearer ' + opts.key
@@ -304,13 +310,18 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       }
       res.writeHead(200, { 'content-type': 'text/plain' })
       res.end(staticDir ? 'room local relay\n' : 'room local relay (no browser view built: run npm run build -w @room/web)\n')
+      } catch (e) { opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) { res.writeHead(e instanceof HttpFailure ? e.status : 500); res.end(e instanceof HttpFailure ? e.message : 'Internal Server Error') } }
     })
     const wss = new WebSocketServer({ noServer: true })
     const docs = relayDocs()
-    wss.on('connection', (conn, req) => attach(docs, conn, req, docOptions))
+    wss.on('connection', (conn, req) => {
+      try { safeUrl(req.url); attach(docs, conn, req, docOptions) }
+      catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
+    })
     const ticker = setInterval(() => {
       for (const [name, d] of docs) {
-        d.hub?.tick()
+        try { d.hub?.tick() }
+        catch (error) { opts.log?.(`hub maintenance ${name}: ${error instanceof Error ? error.message : String(error)}`) }
         if (opts.commonDir && d.memory) try { catchUpLocal(opts.commonDir, decodeURIComponent(name), d.doc, opts.log) }
         catch (error) { opts.log?.(`local migration: ${error instanceof Error ? error.message : String(error)}`) }
       }
@@ -318,15 +329,18 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     ticker.unref?.()
     server.on('upgrade', (req, socket, head) => {
       const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`); socket.destroy() }
+      try {
+      const url = safeUrl(req.url)
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
-      if (new URL(req.url ?? '/', 'http://x').searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
+      if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
       if (opts.key) {
-        const given = new URL(req.url ?? '/', 'http://x').searchParams.get('key') ?? ''
+        const given = url.searchParams.get('key') ?? ''
         const a = Buffer.from(given), b = Buffer.from(opts.key)
         if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return refuse(403, 'Forbidden: local room key missing or wrong')
       }
       wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
+      } catch (e) { opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`); refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'Internal Server Error') }
     })
     const signals = ['SIGTERM', 'SIGINT'] as const
     let closing: Promise<void> | undefined

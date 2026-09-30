@@ -9,7 +9,12 @@ COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/hub-core/package.json packages/hub-core/
 COPY packages/server/package.json packages/server/
-RUN npm install --omit=dev --no-audit --no-fund -w @room/server && npm install -g --no-audit --no-fund tsx@4
+COPY packages/roomd/package.json packages/roomd/
+COPY packages/room-mcp/package.json packages/room-mcp/
+COPY packages/relay/package.json packages/relay/
+COPY packages/agent/package.json packages/agent/
+COPY packages/web/package.json packages/web/
+RUN npm ci --omit=dev --no-audit --no-fund -w @room/server
 COPY packages/shared/src packages/shared/src
 COPY packages/hub-core/src packages/hub-core/src
 COPY packages/server/src packages/server/src
@@ -18,4 +23,4 @@ COPY packages/web/dist ./public
 # production refuses the test login issuer; a local demo overrides it with -e NODE_ENV=development
 ENV PORT=8080 HOST=0.0.0.0 NODE_ENV=production
 EXPOSE 8080
-CMD ["tsx", "packages/server/src/index.ts"]
+CMD ["node_modules/.bin/tsx", "packages/server/src/index.ts"]

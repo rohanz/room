@@ -86,6 +86,11 @@ export function filterAwareness(buf: Uint8Array, login: string, ownedClientIds?:
         stripped.push(typeof name === 'string' ? name : '(unnamed)')
         continue
       }
+      // One connection normally owns one presence ID. Bound aliases even if its frames fit maxPayload.
+      if (state !== null && ownedClientIds && !ownedClientIds.has(clientID) && ownedClientIds.size >= 16) {
+        stripped.push(`(client ${clientID})`)
+        continue
+      }
       encoding.writeVarUint(entries, clientID)
       encoding.writeVarUint(entries, clock)
       if (state) for (const key of ['host', 'model', 'effort'] as const) {

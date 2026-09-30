@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readDisk } from '../src/disk-scan.js'
 import { gitShowManyCapped } from '../src/git.js'
-import { policyFromLevel, rulesFromText } from '../src/policy.js'
+import { plan, policyFromLevel, rulesFromText } from '../src/policy.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
@@ -45,6 +45,19 @@ it('reads at most the cap plus one byte when a file grows after its first stat',
   expect(opened).toBe(true)
   expect(requested).toBeLessThanOrEqual(cap + 1)
   expect(facts.find(f => f.path === 'x')?.kind).toBe('error')
+})
+
+it('retains at most the publication budget while scanning 512 eligible changed files', async () => {
+  const { dir, head } = repo()
+  const size = 64 * 1024, budget = 8 * 1024 * 1024
+  for (let i = 0; i < 512; i++) fs.writeFileSync(path.join(dir, `changed-${String(i).padStart(3, '0')}.txt`), 'x'.repeat(size))
+  const inputs = { policy: policyFromLevel('full'), rules: rulesFromText('', 512 * 1024, budget), head }
+  const facts = await readDisk(dir, inputs, [], () => true)
+  expect(facts.reduce((total, fact) => total + Buffer.byteLength(fact.text ?? ''), 0)).toBeLessThanOrEqual(budget)
+  const desired = plan(inputs, facts, 'aa'.repeat(32))
+  expect(desired.textPaths).toHaveLength(128)
+  expect(desired.excludedReasons.size).toBe(384)
+  expect([...desired.excludedReasons.values()].every(reason => reason === 'budget')).toBe(true)
 })
 
 it('checks old blob sizes and reads only blobs within the publication cap', async () => {

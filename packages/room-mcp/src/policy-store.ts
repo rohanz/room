@@ -50,15 +50,23 @@ export class PolicyStore {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     if (record && (record.v !== 1 || record.room !== room || record.participant !== participant)) throw new Error(`invalid sharing record ${file}`)
     if (!record) {
-      let legacy: { share?: ShareLevel; warnedLevels?: Record<string, ShareLevel> } = {}
-      try { legacy = JSON.parse(fs.readFileSync(await choiceFile(dir), 'utf8')) as typeof legacy } catch { /* no legacy choice */ }
+      let legacy: { share?: unknown; warned?: unknown; warnedLevels?: Record<string, ShareLevel> } = {}
+      let unreadable = false
+      try {
+        const parsed: unknown = JSON.parse(fs.readFileSync(await choiceFile(dir), 'utf8'))
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) unreadable = true
+        else legacy = parsed as typeof legacy
+      }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable = true }
       const priorLevel = legacy.share === 'full' || legacy.share === 'declared' || legacy.share === 'intent' ? legacy.share : undefined
+      const uncertain = unreadable || legacy.share !== undefined && !priorLevel || legacy.warned !== undefined && legacy.share === undefined || legacy.warnedLevels !== undefined && legacy.share === undefined
+      if (uncertain) console.warn('[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing')
       const previousDisclosure = legacy.warnedLevels?.[`${worktree}#${server ?? ''}`]
-      record = { v: 1, room, participant, worktree, requested: priorLevel ?? requested, declared: emptyGrant(),
+      record = { v: 1, room, participant, worktree, requested: priorLevel ?? (uncertain ? 'intent' : requested), declared: emptyGrant(),
         disclosed: { level: previousDisclosure === 'intent' || previousDisclosure === 'declared' || previousDisclosure === 'full' ? previousDisclosure : 'intent', version: previousDisclosure ? 1 : 0 }, updatedAt: Date.now() }
       // The old file is a migration input only. The new record is durable before it is removed.
       writeAtomic(file, record)
-      if (legacy.share || legacy.warnedLevels) await removeSharingChoice(dir)
+      if (legacy.share !== undefined || legacy.warned !== undefined || legacy.warnedLevels !== undefined) await removeSharingChoice(dir)
     } else if (record.worktree !== worktree) {
       record = { ...record, worktree, declared: emptyGrant(), updatedAt: Date.now() }
       writeAtomic(file, record)

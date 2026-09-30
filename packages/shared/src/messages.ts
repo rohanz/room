@@ -39,6 +39,57 @@ const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalize
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
 
+/** Validate untrusted posts and replicated bus entries before formatters and trim consume them.
+ *  List lengths are bounded by the whole-message byte limit (MAX_MESSAGE_BYTES), not per list: a push can touch hundreds of paths. */
+export function validMessageShape(value: unknown): value is Msg {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const m = value as Record<string, unknown>
+  const str = (key: string, required = true) => m[key] === undefined ? !required : typeof m[key] === 'string' && (m[key] as string).length <= 64 * 1024
+  const arr = (key: string, required = true) => m[key] === undefined ? !required : Array.isArray(m[key]) && (m[key] as unknown[]).every(x => typeof x === 'string' && x.length <= 4096)
+  const num = (key: string) => Number.isSafeInteger(m[key]) && (m[key] as number) >= 0
+  const plan = (p: unknown) => !!p && typeof p === 'object' && !Array.isArray(p)
+    && Object.keys(p).every(k => ['kind', 'symbol', 'detail'].includes(k))
+    && ['rename', 'signature', 'delete', 'add'].includes((p as Plan).kind)
+    && typeof (p as Plan).symbol === 'string' && (p as Plan).symbol.length <= 512
+    && ((p as Plan).detail === undefined || (typeof (p as Plan).detail === 'string' && (p as Plan).detail!.length <= 4096))
+  const plans = (key: string) => m[key] === undefined || Array.isArray(m[key]) && (m[key] as unknown[]).every(plan)
+  if (!str('id') || !str('from') || !str('to', false) || !str('copyOf', false)
+    || typeof m.type !== 'string' || !Object.hasOwn(MessageKinds, m.type)) return false
+  if (m.priority !== undefined && !['fyi', 'notify', 'interrupt'].includes(m.priority as string)) return false
+  if (m.fromKind !== undefined && !['human', 'agent', 'bot', 'ci'].includes(m.fromKind as string)) return false
+  if (m.at !== undefined && !num('at')) return false
+  if (m.seq !== undefined && !num('seq')) return false
+  const common = ['id', 'type', 'from', 'fromKind', 'to', 'priority', 'at', 'seq', 'copyOf']
+  const fields: Record<string, string[]> = {
+    claim: ['claimId', 'path', 'from_line', 'to_line', 'intent', 'plans'],
+    release: ['claimId', 'path', 'summary', 'unfulfilled'],
+    changed: ['paths', 'summary', 'symbols'],
+    question: ['text'], note: ['text', 'inReplyTo'], answer: ['inReplyTo', 'text'],
+    conflict: ['claimId', 'otherClaimId', 'path', 'text', 'clearedFrom'],
+    'merge-conflict': ['path', 'text', 'clearedFrom'], contract: ['path', 'symbol', 'text'],
+    scope: ['area', 'summary', 'paths'], base: ['base', 'prev', 'commits', 'paths', 'summary'],
+    pushed: ['branch', 'upstream', 'fromSha', 'toSha', 'commits', 'paths', 'summary', 'rewrite'],
+    plan: ['status', 'claimId', 'path', 'plan', 'replacedBy', 'text'], done: ['tag', 'summary', 'changed'],
+  }
+  if (!fields[m.type as string] || Object.keys(m).some(k => !common.includes(k) && !fields[m.type as string].includes(k))) return false
+  switch (m.type) {
+    case 'claim': return str('claimId') && str('path') && num('from_line') && num('to_line') && str('intent') && plans('plans')
+    case 'release': return str('claimId') && str('path') && str('summary', false) && plans('unfulfilled')
+    case 'changed': return arr('paths') && str('summary') && arr('symbols', false)
+    case 'question': case 'note': return str('text') && str('inReplyTo', false)
+    case 'answer': return str('inReplyTo') && str('text')
+    case 'conflict': return str('claimId') && str('otherClaimId') && str('path') && str('text') && (m.clearedFrom === undefined || ['conflict', 'possible'].includes(m.clearedFrom as string))
+    case 'merge-conflict': return str('path') && str('text') && (m.clearedFrom === undefined || ['conflict', 'possible'].includes(m.clearedFrom as string))
+    case 'contract': return str('path') && str('symbol') && str('text')
+    case 'scope': return str('area') && str('summary') && arr('paths')
+    case 'base': return str('base') && str('prev') && num('commits') && arr('paths') && str('summary')
+    case 'pushed': return str('branch') && str('upstream') && str('fromSha') && str('toSha') && num('commits') && arr('paths') && str('summary') && (m.rewrite === undefined || ['yes', 'unknown'].includes(m.rewrite as string))
+    case 'plan': return ['cancelled', 'superseded'].includes(m.status as string) && str('claimId') && str('path') && plan(m.plan) && (m.replacedBy === undefined || plan(m.replacedBy)) && str('text')
+    case 'done': return str('tag') && str('summary') && arr('changed')
+    default: return false
+  }
+}
+
 /** Room's automatic claim release notice, shared by its producer and readers. */
 export function claimReleaseText(path: string, from: number, to: number, sha: string): string {
   return `released your claim on ${path}:${from}-${to}: that code changed in ${sha}`

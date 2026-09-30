@@ -44,7 +44,7 @@ describe('automatic session tags (registry §15: local lease, then hub lease)', 
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'next'], { cwd: s.dir })
     const toSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s.dir, encoding: 'utf8' }).trim()
     const git = participantRecord(s.daemon.roomDoc, s.me.name)!.git!
-    s.daemon.roomDoc.participants.set(`${s.me.name}\0git`, { ...git, pushedPending: { fromSha, toSha, upstream: 'origin/main' } })
+    s.daemon.roomDoc.participants.set(`${s.me.name}\0git`, { ...git, pushedPending: { fromSha, toSha, branch: 'main', upstream: 'origin/main' } })
     await (s.daemon as unknown as { postPushedPending(): Promise<void> }).postPushedPending()
     await vi.waitFor(() => expect(participantRecord(s.daemon.roomDoc, s.me.name)?.git?.pushedPending).toBeUndefined())
     expect(room.doc.messages().filter(m => m.type === 'pushed')).toHaveLength(1)

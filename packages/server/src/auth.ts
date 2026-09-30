@@ -69,7 +69,7 @@ const GH_USER = 'https://api.github.com/user'
 
 interface Discovery { authorization_endpoint: string; token_endpoint: string; jwks_uri: string; issuer?: string }
 type Pending =
-  | { provider: 'github'; code: string; exp: number; interval: number }
+  | { provider: 'github'; code: string; exp: number; interval: number; nextPoll?: number; flight?: Promise<PollResult> }
   | { provider: 'oidc'; verifier: string; nonce: string; exp: number; interval: number; result?: { session: string; login: string } | { error: string } }
 
 export const FAKE_CLIENT_ID = 'fake'
@@ -88,6 +88,7 @@ export class Auth {
   private readonly ttl: number
   private readonly loginTtl: number
   private readonly devices = new Map<string, Pending>()
+  private readonly maxPending = Number(process.env.ROOM_MAX_PENDING_LOGINS ?? 1000)
   private readonly sessions = new Map<string, StoredSession>()
   private discovery?: { doc: Discovery; jwks?: { set: JSONWebKeySet; at: number } }
 
@@ -118,6 +119,14 @@ export class Auth {
   private sweep(): void {
     for (const [k, v] of this.devices) if (v.exp < this.now()) this.devices.delete(k)
   }
+  private addPending(device: string, pending: Pending): void {
+    this.sweep()
+    if (this.devices.size >= this.maxPending) throw new Error('too many pending logins; retry later')
+    this.devices.set(device, pending)
+  }
+  private request(url: string, init: RequestInit = {}): Promise<Response> {
+    return this.fetch(url, { ...init, signal: AbortSignal.timeout(10000) })
+  }
   private newSession(s: Omit<StoredSession, 'at'>): { session: string; login: string; provider: Provider; expiresIn: number } {
     assertValidParticipantName(s.login)
     const session = crypto.randomBytes(32).toString('hex')
@@ -143,15 +152,15 @@ export class Auth {
     if (!this.o.clientId) throw new Error('device flow not configured (GITHUB_CLIENT_ID)')
     if (this.fake) {
       const device = crypto.randomBytes(16).toString('hex')
-      this.devices.set(device, { provider: 'github', code: 'fake', exp: this.now() + this.loginTtl, interval: 0 })
+      this.addPending(device, { provider: 'github', code: 'fake', exp: this.now() + this.loginTtl, interval: 0 })
       this.sweep()
       return { provider: 'github', user_code: 'FAKE-0000', verification_uri: 'fake: pass fakeLogin to /auth/poll', expires_in: Math.round(this.loginTtl / 1000), interval: 0, device }
     }
-    const res = await this.fetch(GH_DEVICE, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, scope: 'repo' }) })
+    const res = await this.request(GH_DEVICE, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, scope: 'repo' }) })
     if (!res.ok) throw new Error(`GitHub device code: HTTP ${res.status}`)
     const b = await res.json() as { device_code: string; user_code: string; verification_uri: string; expires_in: number; interval: number }
     const device = crypto.randomBytes(16).toString('hex')
-    this.devices.set(device, { provider: 'github', code: b.device_code, exp: this.now() + b.expires_in * 1000, interval: b.interval })
+    this.addPending(device, { provider: 'github', code: b.device_code, exp: this.now() + b.expires_in * 1000, interval: b.interval })
     this.sweep()
     return { provider: 'github', user_code: b.user_code, verification_uri: b.verification_uri, expires_in: b.expires_in, interval: b.interval, device }
   }
@@ -164,12 +173,12 @@ export class Auth {
       this.devices.delete(device)
       return this.newSession({ provider: 'github', login, ghToken: `fake:${login}` })
     }
-    const res = await this.fetch(GH_TOKEN, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, device_code: d.code, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' }) })
+    const res = await this.request(GH_TOKEN, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'room-server' }, body: JSON.stringify({ client_id: this.o.clientId, device_code: d.code, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' }) })
     const b = await res.json().catch(() => ({})) as { access_token?: string; error?: string; interval?: number }
-    if (b.error === 'authorization_pending' || b.error === 'slow_down') { if (b.interval) d.interval = b.interval; return { pending: true } }
+    if (b.error === 'authorization_pending' || b.error === 'slow_down') { if (b.interval) d.interval = b.interval; d.nextPoll = this.now() + Math.max(1, d.interval) * 1000; return { pending: true } }
     if (b.error || !b.access_token) { this.devices.delete(device); return { error: b.error ?? 'no token returned' } }
     this.devices.delete(device)
-    const u = await this.fetch(GH_USER, { headers: { authorization: `Bearer ${b.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' } })
+    const u = await this.request(GH_USER, { headers: { authorization: `Bearer ${b.access_token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' } })
     if (!u.ok) return { error: `could not read the GitHub user (HTTP ${u.status})` }
     const login = ((await u.json()) as { login?: string }).login
     if (!login) return { error: 'GitHub returned no login' }
@@ -183,7 +192,7 @@ export class Auth {
     if (this.discovery) return this.discovery.doc
     const oidc = this.o.oidc!
     const url = `${oidc.issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`
-    const res = await this.fetch(url, { headers: { accept: 'application/json' } })
+    const res = await this.request(url, { headers: { accept: 'application/json' } })
     if (!res.ok) throw new Error(`OIDC discovery failed: HTTP ${res.status} from ${url}`)
     const doc = await res.json() as Discovery
     if (!doc.authorization_endpoint || !doc.token_endpoint || !doc.jwks_uri) throw new Error('OIDC discovery document lacks authorization_endpoint, token_endpoint or jwks_uri')
@@ -194,7 +203,7 @@ export class Auth {
     const doc = await this.discover()
     const d = this.discovery!
     if (d.jwks && d.jwks.at + 10 * 60 * 1000 > this.now()) return d.jwks.set
-    const res = await this.fetch(doc.jwks_uri, { headers: { accept: 'application/json' } })
+    const res = await this.request(doc.jwks_uri, { headers: { accept: 'application/json' } })
     if (!res.ok) throw new Error(`OIDC JWKS failed: HTTP ${res.status}`)
     const set = await res.json() as JSONWebKeySet
     d.jwks = { set, at: this.now() }
@@ -214,7 +223,7 @@ export class Auth {
     const u = new URL(doc.authorization_endpoint)
     for (const [k, v] of Object.entries({ response_type: 'code', client_id: oidc.clientId, redirect_uri: this.redirectUri(), scope: 'openid email profile', state: device, nonce, code_challenge: challenge, code_challenge_method: 'S256' })) u.searchParams.set(k, v)
     const expires_in = Math.round(this.loginTtl / 1000)
-    this.devices.set(device, { provider: 'oidc', verifier, nonce, exp: this.now() + this.loginTtl, interval: 3 })
+    this.addPending(device, { provider: 'oidc', verifier, nonce, exp: this.now() + this.loginTtl, interval: 3 })
     this.sweep()
     return { provider: 'oidc', url: u.toString(), expires_in, interval: 3, device }
   }
@@ -233,7 +242,7 @@ export class Auth {
     const form = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: this.redirectUri(), client_id: oidc.clientId, client_secret: oidc.clientSecret, code_verifier: d.verifier })
     let idToken: string | undefined
     try {
-      const res = await this.fetch(doc.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
+      const res = await this.request(doc.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: form.toString() })
       const b = await res.json().catch(() => ({})) as { id_token?: string; error?: string; error_description?: string }
       if (!res.ok || !b.id_token) return fail(d, `token exchange failed: ${b.error_description ?? b.error ?? `HTTP ${res.status}`}`)
       idToken = b.id_token
@@ -268,7 +277,14 @@ export class Auth {
     const d = this.devices.get(device)
     if (!d) return { error: 'unknown or expired login attempt: start again' }
     if (d.exp < this.now()) { this.devices.delete(device); return { error: 'expired_token' } }
-    if (d.provider === 'github') return this.pollDevice(device, d, opts.fakeLogin)
+    if (d.provider === 'github') {
+      if (!this.fake && d.nextPoll && this.now() < d.nextPoll) return { pending: true }
+      if (d.flight) return d.flight
+      d.nextPoll = this.now() + Math.max(1, d.interval) * 1000
+      const flight = this.pollDevice(device, d, opts.fakeLogin)
+      d.flight = flight
+      try { return await flight } finally { d.flight = undefined }
+    }
     if (!d.result) return { pending: true }
     this.devices.delete(device)
     if ('error' in d.result) return d.result

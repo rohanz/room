@@ -219,10 +219,12 @@ export function contractSuite(name: string, make: MakeEnv): void {
         const c = await greeted(env)
         expect(ok(await c.hello()).incarnation).toBe(env.incarnation())
         expect(refused(await c.send({ op: 'acquire', name: 'bob', holder: holder('s2') }), 'starting').retryMs).toBe(1000)
-        ok(await c.send({ op: 'renew', name: 'cy', epoch: cy }))
-        refused(await c.send({ op: 'acquire', name: 'cy', holder: holder('other') }), 'held')
+        // The grant was never synced: an epoch alone cannot prove the original session.
+        refused(await c.send({ op: 'renew', name: 'cy', epoch: cy }), 'not-yours')
+        refused(await c.send({ op: 'acquire', name: 'cy', holder: holder('s3') }), 'starting')
 
         env.clock.advance(SETTLE_MS)
+        expect((ok(await c.send({ op: 'acquire', name: 'cy', holder: holder('s3') })).epoch as number)).toBeGreaterThan(cy)
         refused(await c.send({ op: 'renew', name: 'dee', epoch: dee }), 'stale')
         const bob = ok(await c.send({ op: 'acquire', name: 'bob', holder: holder('s2') })).epoch as number
         const seq2 = ok(await c.send({ op: 'post', lease: { name: 'bob', epoch: bob }, msg: { id: 'm2', type: 'note', from: 'ada', text: 'y' } })).seq as number

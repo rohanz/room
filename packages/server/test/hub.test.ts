@@ -116,7 +116,10 @@ describe('server hub wiring', () => {
       expect(await viewer.hello()).toMatchObject({ ok: false, reason: 'read-only' })
       full = true
       expect(await ada.send({ op: 'post', lease: { name: 'ada+w', epoch: w.epoch }, msg: { id: 'm1', type: 'note', from: 'ada', text: 'x' } })).toMatchObject({ ok: false, reason: 'room-full' })
-      expect(await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: true })
+      // A full room takes no new names; a lease already held can still be renewed and released.
+      expect(await ada.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).toMatchObject({ ok: false, reason: 'room-full' })
+      expect(await ada.send({ op: 'renew', name: 'ada+w', epoch: w.epoch })).toMatchObject({ ok: true })
+      expect(await ada.send({ op: 'release', name: 'ada+w', epoch: w.epoch })).toMatchObject({ ok: true })
       await ada.close(); await viewer.close()
     } finally { await s.close() }
   })

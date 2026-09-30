@@ -33,12 +33,18 @@ export class ExpiryTenure {
     const expired: string[] = []
     const measured = new Set<string>()
     room.doc.transact(() => {
+      for (const [id, claim] of room.claims.entries()) {
+        if (!claim || typeof claim.id !== 'string' || typeof claim.by !== 'string' || typeof claim.path !== 'string'
+          || !['human', 'agent', 'bot', 'ci'].includes(claim.byKind)) room.claims.delete(id)
+      }
       for (const participant of view) {
         const { name } = participant
         const holder = participantRecord(room, name)?.holder
         if (!holder || holder.workerId || room.workerViewOf(name)) continue
         measured.add(name)
-        const current = room.expiry.get(name)
+        const raw = room.expiry.get(name)
+        const current = raw && Number.isFinite(raw.observedMs) && raw.observedMs >= 0 && typeof raw.epoch === 'string' ? raw : undefined
+        if (raw && !current) room.expiry.delete(name)
         if (participant.fresh) {
           this.segments.delete(name)
           if (current) room.expiry.delete(name)

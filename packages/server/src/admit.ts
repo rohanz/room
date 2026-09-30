@@ -36,12 +36,14 @@ export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number 
     const hit = cache.get(token)?.get(ownerRepo)
     if (hit && hit > t) return true
     try {
-      const res = await f(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' } })
+      const res = await f(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' }, signal: AbortSignal.timeout(10000) })
       if (!res.ok) return false
       const body = await res.json() as { permissions?: { push?: boolean } }
       if (!body.permissions?.push) return false
       let m = cache.get(token); if (!m) { m = new Map(); cache.set(token, m) }
       m.set(ownerRepo, t + 10 * 60 * 1000)
+      if (cache.size > 1000) cache.delete(cache.keys().next().value!)
+      if (m.size > 100) m.delete(m.keys().next().value!)
       return true
     } catch { return false }
   }

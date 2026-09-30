@@ -16,7 +16,7 @@ import { withGuard, writeAtomic } from './leases.js'
 
 const CHOICE_FILE = 'room-choice.json'
 
-export interface RoomChoice { where: string; at: number; by?: string; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string> }
+export interface RoomChoice { where: string; at: number; by?: string; /** Explicit local room selected by room_join; absent in older choices. */ room?: string; /** Auto-selected labels keyed by canonical worktree root; empty means the bare login. */ tags?: Record<string, string>; share?: unknown; warned?: unknown; warnedLevels?: unknown }
 
 /** "team"/"hosted" → this person's team server; "local" or empty → local; anything else is a server URL. */
 export { normaliseWhere }
@@ -35,7 +35,7 @@ export async function readChoice(dir: string): Promise<RoomChoice | undefined> {
     const file = await choiceFile(dir)
     const c = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string }
     if (!c || typeof c.where !== 'string') return undefined
-    const { tag, share: _share, warned: _warned, warnedLevels: _warnedLevels, ...choice } = c as RoomChoice & { tag?: string; share?: unknown; warned?: unknown; warnedLevels?: unknown }
+    const { tag, ...choice } = c
     if (typeof tag === 'string') {
       const main = fs.realpathSync(path.dirname(path.dirname(file)))
       choice.tags = { [main]: tag, ...choice.tags }
@@ -49,9 +49,13 @@ export async function writeChoice(dir: string, where: string, by?: string, room?
   const file = await choiceFile(dir)
   return withGuard(`${file}.lock`, () => {
     let prev: RoomChoice & { tag?: string } | undefined
-    try { prev = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string } } catch { /* new choice */ }
+    try { prev = JSON.parse(fs.readFileSync(file, 'utf8')) as RoomChoice & { tag?: string } }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    if (fs.existsSync(file) && (!prev || typeof prev !== 'object' || typeof prev.where !== 'string')) throw new Error(`cannot rewrite unreadable Room choice ${file}`)
     const tags = typeof prev?.tag === 'string' ? { [fs.realpathSync(path.dirname(path.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags
-    const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(where === LOCAL && room ? { room } : {}), ...(tags ? { tags } : {}) }
+    const c: RoomChoice = { where, at: Date.now(), ...(by ? { by } : {}), ...(where === LOCAL && room ? { room } : {}), ...(tags ? { tags } : {}),
+      ...(prev && 'share' in prev ? { share: prev.share } : {}), ...(prev && 'warned' in prev ? { warned: prev.warned } : {}),
+      ...(prev && 'warnedLevels' in prev ? { warnedLevels: prev.warnedLevels } : {}) }
     writeAtomic(file, c)
     return c
   })
@@ -71,6 +75,7 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   }
   try {
     const prev = await readChoice(dir)
+    if (!prev && fs.existsSync(file)) throw new Error(`cannot rewrite unreadable Room choice ${file}`)
     const key = await worktreePath(dir)
     const c: RoomChoice = { ...(prev ?? { where: LOCAL, at: Date.now() }), tags: { ...prev?.tags, [key]: tag } }
     const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`

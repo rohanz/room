@@ -1,5 +1,6 @@
 import type { Msg, Scope, RetiredWorker } from './types.js'
 import { containsPath } from './near.js'
+import { validMessageShape } from './messages.js'
 
 export const MAX_RETIRED_WORKERS = 200
 
@@ -15,14 +16,14 @@ const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release
 
 /** Paths a bus message touches. */
 export function msgPaths(m: Msg): string[] {
-  if ('paths' in m) return m.paths
-  if ('path' in m) return [m.path]
+  if ('paths' in m) return Array.isArray(m.paths) ? m.paths.filter((p): p is string => typeof p === 'string') : []
+  if ('path' in m) return typeof m.path === 'string' ? [m.path] : []
   return []
 }
 
 /** A scope covers a path when the path equals a scope path or lives under a scope directory. */
 export function scopeCovers(scope: Pick<Scope, 'paths'>, path: string): boolean {
-  return scope.paths.some(p => containsPath(p, path))
+  return Array.isArray(scope?.paths) && scope.paths.some(p => typeof p === 'string' && containsPath(p, path))
 }
 
 export interface LedgerQuery { area?: string; path?: string; since?: number; limit?: number }
@@ -31,7 +32,7 @@ export interface LedgerQuery { area?: string; path?: string; since?: number; lim
 export function messageAreas(m: Msg, scopes: readonly Scope[]): string[] {
   const out = new Set<string>()
   if (m.type === 'scope') out.add(m.area)
-  for (const path of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path)) out.add(scope.area)
+  for (const path of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === 'string' && scopeCovers(scope, path)) out.add(scope.area)
   return Array.from(out).sort()
 }
 
@@ -43,6 +44,7 @@ export function ledger(messages: readonly Msg[], scopes: readonly Scope[], q: Le
   const areaScopes = q.area ? scopes.filter(s => s.area === q.area) : []
   const out: LedgerEntry[] = []
   for (const m of messages) {
+    if (!validMessageShape(m)) continue
     if (!LEDGER_TYPES.has(m.type)) continue
     if (q.since && m.at < q.since) continue
     const paths = msgPaths(m)

@@ -1,6 +1,6 @@
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
-import { messageForMe, type MessageRouteContext } from './messages.js'
+import { messageForMe, validMessageShape, type MessageRouteContext } from './messages.js'
 import type { ArchivedMsg, ArchivedRelease, DeliveryCursor, Identity, Msg, MsgType, Outcome, Scope } from './types.js'
 
 // The one delivery ledger: docs/superpowers/specs/2026-09-28-ledger.md ("The trim", "Message lookup").
@@ -115,8 +115,12 @@ export interface TrimOptions { busKeep?: number; origin?: unknown }
  */
 export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimReport {
   const report: TrimReport = { archived: 0, mailed: 0, expired: 0, evicted: 0, removed: 0 }
+  const rawBus = doc.messages()
+  const badBus: number[] = []
+  rawBus.forEach((m, i) => { if (!validMessageShape(m)) badBus.push(i) })
+  if (badBus.length) doc.doc.transact(() => { for (const i of badBus.reverse()) doc.bus.delete(i, 1) }, opts.origin)
   const bus = doc.messages()
-  const mail = new Map(doc.mail.entries())
+  const mail = new Map([...doc.mail.entries()].filter(([id, m]) => typeof id === 'string' && validMessageShape(m)))
   const answered = answeredIds([...bus, ...mail.values()])
   const eligible = (m: Msg) => replyEligible(m, answered, now)
 
@@ -163,20 +167,22 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
   }
 
   // 4. Retention of the archive and outcomes, over existing entries plus this trim's.
-  const scopes = doc.allScopes()
+  const scopes = [...doc.scopes.values()].filter(s => s && typeof s.area === 'string' && Array.isArray(s.paths))
   const leaving = bus.filter((m, i) => i < cutoff || ended.has(m.id))
   const archived = new Map<string, ArchivedMsg>()
   for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes))
   const archive = [...doc.archive.entries(), ...archived.entries()]
+    .filter(([id, entry]) => typeof id === 'string' && Array.isArray(entry) && typeof entry[2] === 'number' && Array.isArray(entry[3]))
     .map(([id, entry]) => ({ id, at: entry[2], size: id.length + sizeOf(entry), unfulfilled: !!entry[4] }))
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES)
   for (const id of newest(archive.filter(e => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id)
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id]) => !doc.outcomes.has(id))]
-    .filter(([, o]) => now - o.at <= OUTCOMES_TTL_MS)
+    .filter(([id, o]) => typeof id === 'string' && o && Number.isFinite(o.at) && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired'].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS)
     .map(([id, o]) => ({ id, at: o.at, size: id.length + sizeOf(o) }))
   const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES)
 
   doc.doc.transact(() => {
+    for (const [id, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id)
     for (const [id, entry] of archived) if (keepArchive.has(id)) { doc.archive.set(id, entry); report.archived++ }
     for (const id of [...doc.archive.keys()]) if (!keepArchive.has(id)) doc.archive.delete(id)
     for (const id of [...doc.mail.keys()]) if (!stored.has(id)) doc.mail.delete(id)

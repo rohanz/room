@@ -52,6 +52,7 @@ export class GitHubProxy {
       method: init.method ?? 'GET',
       headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server', ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}) },
       ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+      signal: AbortSignal.timeout(10000),
     })
     const body = await res.json().catch(() => undefined)
     return { status: res.status, body }
@@ -93,6 +94,7 @@ export class GitHubProxy {
     }
     this.cache.set(key, { exp: this.now() + this.cacheMs, prs })
     for (const [k, v] of this.cache) if (v.exp <= this.now()) this.cache.delete(k)
+    if (this.cache.size > 500) this.cache.delete(this.cache.keys().next().value!)
     return prs
   }
 
@@ -104,6 +106,7 @@ export class GitHubProxy {
     const login = (r.body as { login?: string } | undefined)?.login
     if (r.status !== 200 || !login) throw new GitHubError(r.status, `could not read the GitHub user (HTTP ${r.status})`)
     this.logins.set(token, login)
+    if (this.logins.size > 1000) this.logins.delete(this.logins.keys().next().value!)
     return login
   }
 

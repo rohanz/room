@@ -61,8 +61,10 @@ export function hubRoom(): HubRoom {
   }
   const release = async (name: string, epoch: number): Promise<void> => {
     const h = await hub, conn = {}
-    h.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId: 'other' }, { local: true })
-    h.handle(conn, { v: 1, id: 'r', op: 'release', name, epoch }, { local: true })
+    // Only the holding session may release: the same session id `hold` used by default.
+    h.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId: `other-${name}` }, { local: true })
+    const reply = h.handle(conn, { v: 1, id: 'r', op: 'release', name, epoch }, { local: true })
+    if (!reply.ok) throw new Error(`could not release ${name}: ${JSON.stringify(reply)}`)
   }
   return { doc, hub, provider, hold, release }
 }
