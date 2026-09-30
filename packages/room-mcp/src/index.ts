@@ -21,6 +21,7 @@ import { startArbitration } from './arbitration.js'
 import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
+import { runDoctor } from './doctor.js'
 import { ownWorkerNames } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 
@@ -268,5 +269,9 @@ export function installFailureHandlers(report: (message: string) => void, target
 
 if (isEntry) {
   const fatal = installFailureHandlers(log)
-  main().catch(error => fatal('startup failed', error))
+  if (process.argv[2] === 'doctor') {
+    const flag = process.argv.indexOf('--dir')
+    const dir = flag >= 0 && process.argv[flag + 1] ? process.argv[flag + 1] : process.cwd()
+    runDoctor(dir).then(report => { process.stdout.write(report + '\n'); process.exitCode = /^FAIL  /m.test(report) ? 1 : 0 }).catch(error => fatal('doctor failed', error))
+  } else main().catch(error => fatal('startup failed', error))
 }

@@ -1,4 +1,5 @@
 import { sharingDescription } from '../config.js'
+import { runDoctor } from '../doctor.js'
 import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
@@ -20,7 +21,7 @@ export const defs: ToolDef[] = [
   { name: 'room_scope', annotations: RW, description: 'Use when starting work with others: declare task and edit paths once.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('non-empty edit files or directories') }, required: ['area', 'summary', 'paths'] } },
   { name: 'room_state', annotations: RO, description: 'Use for "who’s here?", file ownership, or "is Room set up right?" check=true checks my setup (room doctor); link gets the browser URL.',
-    inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
+    inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' }, check: { type: 'boolean', description: 'setup check (room doctor)' } } } },
 ]
 
 /** A stopped worker may have lost its overlay while its worktree still holds edits. */
@@ -102,6 +103,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.join('\n')
     },
     async room_state(a) {
+      if (a.check === true) return runDoctor(state.ctx.cwd ?? process.cwd(), true)
       const s = S()
       await loadAreas(s)
       const m = s.room.meta

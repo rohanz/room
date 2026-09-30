@@ -12,6 +12,8 @@ interface Ledger { messages: string[]; claims: string[]; scopes: string[]; scope
 const empty = (): Ledger => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false })
 const ledgerFile = (common: string, room: string) => path.join(common, 'room', 'relay', `migrated-${crypto.createHash('sha256').update(room).digest('hex').slice(0, 16)}.json`)
 const legacyDir = (common: string) => path.join(common, 'room-local')
+/** A Room 0.16 relay still serving this clone (its discovery file names a live process). */
+export function legacyRelayRunning(common: string, probe: ProcessProbe = probeProcess): boolean { return oldRunning(common, probe) }
 function oldRunning(common: string, probe: ProcessProbe): boolean {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(common, 'room-local.json'), 'utf8')) as { pid?: number; startTime?: string; executable?: string }

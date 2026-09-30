@@ -5,6 +5,8 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
+export const HOOKS_VERSION = '0.17.0'
+
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
 }

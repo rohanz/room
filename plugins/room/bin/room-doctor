@@ -1,0 +1,3 @@
+#!/bin/sh
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
+exec node "$here/server/room-mcp.mjs" doctor "$@"

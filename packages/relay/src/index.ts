@@ -13,6 +13,7 @@
  */
 import { RoomMemory, memoryFile } from './memory.js'
 import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
+export { legacyRelayRunning } from './local-migrate.js'
 import { pidAlive } from './process.js'
 import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory } from './memory.js'
