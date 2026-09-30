@@ -14,7 +14,7 @@ it('places a preview checkout in a process-owned slot beneath the clone key', as
     fs.writeFileSync(path.join(root, 'app.txt'), 'base\n'); git('add', '.'); git('commit', '-qm', 'base')
     const cache = await previewCachePath(root)
     expect(path.basename(path.dirname(cache))).toMatch(/^[a-f0-9]{20}$/)
-    expect(path.basename(cache)).toMatch(new RegExp(`^${process.pid}-`))
+    expect(path.basename(cache)).toMatch(new RegExp(`^${process.pid}-.+-0$`))
     const result = await runInMergedTree({ dir: root } as Session, git('rev-parse', 'HEAD'), new Map(), 'echo "1 passed"')
     expect(result.passed, result.text).toBe(true)
     expect(git('worktree', 'list', '--porcelain')).toContain(cache)

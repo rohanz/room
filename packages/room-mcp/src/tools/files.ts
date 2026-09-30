@@ -626,17 +626,25 @@ function ownPreviewStart(): Promise<string | undefined> {
   return ownStartPromise ??= probePreviewStart(process.pid).then(start => start ?? `opaque:${randomUUID()}`)
 }
 
-function slotName(pid: number, start: string): string { return `${pid}-${encodeURIComponent(start)}` }
-function slotOwner(name: string): { pid: number; start: string } | undefined {
+let ownSlotGeneration = 0
+function slotName(pid: number, start: string, generation: number): string { return `${pid}-${encodeURIComponent(start)}-${generation}` }
+function slotOwner(name: string): { pid: number; starts: string[] } | undefined {
   const match = /^([1-9]\d*)-(.+)$/.exec(name)
   if (!match || !Number.isSafeInteger(Number(match[1]))) return undefined
-  try { return { pid: Number(match[1]), start: decodeURIComponent(match[2]) } } catch { return undefined }
+  // Two-part legacy names can themselves end in "-<digits>". Accept either
+  // interpretation for liveness, so no live legacy slot is reclaimed.
+  try {
+    const starts = [decodeURIComponent(match[2])]
+    const generation = /^(.*)-(\d+)$/.exec(match[2])
+    if (generation) starts.push(decodeURIComponent(generation[1]))
+    return { pid: Number(match[1]), starts }
+  } catch { return undefined }
 }
 async function isDeadSlot(name: string): Promise<boolean> {
   const owner = slotOwner(name)
   if (!owner) return false
   const observed = await probePreviewStart(owner.pid)
-  return observed === null || (observed !== undefined && !owner.start.startsWith('opaque:') && observed !== owner.start)
+  return observed === null || (observed !== undefined && !owner.starts.some(start => start.startsWith('opaque:') || start === observed))
 }
 
 async function isLegacyTree(key: string): Promise<boolean> {
@@ -656,7 +664,7 @@ async function slotRoot(key: string): Promise<string> {
 export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Promise<string> {
   const start = await ownPreviewStart()
   if (!start) throw new Error('preview process identity is unavailable')
-  return path.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start))
+  return path.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start, ownSlotGeneration))
 }
 
 type SlotRegistration = 'valid' | 'missing-git' | 'unregistered' | 'foreign'
@@ -684,7 +692,15 @@ async function claimPreviewSlot(slot: string): Promise<(() => Promise<void>) | u
 /** Authenticate both halves of a registration before mutating it. */
 async function slotRegistration(repoDir: string, slot: string): Promise<SlotRegistration> {
   let gitfile: string | undefined
-  try { gitfile = await fs.promises.readFile(path.join(slot, '.git'), 'utf8') }
+  const gitfilePath = path.join(slot, '.git')
+  try {
+    if (!(await fs.promises.lstat(gitfilePath)).isFile()) return 'foreign'
+    const handle = await fs.promises.open(gitfilePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    try {
+      if (!(await handle.stat()).isFile()) return 'foreign'
+      gitfile = await handle.readFile('utf8')
+    } finally { await handle.close() }
+  }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'foreign'
   }
@@ -697,13 +713,13 @@ async function slotRegistration(repoDir: string, slot: string): Promise<SlotRegi
     try { admin = await fs.promises.realpath(path.resolve(slot, match[1])) }
     catch { return 'foreign' }
     if (path.dirname(admin) !== parent) return 'foreign'
-    let backlink: string
-    try { backlink = await fs.promises.realpath((await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()) }
+    let backlink: string, ownDir: string
+    try {
+      backlink = (await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).replace(/\n$/, '')
+      ownDir = await fs.promises.realpath(slot)
+    }
     catch { return 'foreign' }
-    let ownGitfile: string
-    try { ownGitfile = await fs.promises.realpath(path.join(slot, '.git')) }
-    catch { return 'foreign' }
-    return backlink === ownGitfile ? 'valid' : 'foreign'
+    return backlink === path.join(ownDir, '.git') ? 'valid' : 'foreign'
   }
   const listed = await gitSetup(repoDir, ['worktree', 'list', '--porcelain'])
   const same = async (other: string) => {
@@ -800,6 +816,7 @@ async function deletePreviewSlot(repoDir: string, slot: string): Promise<boolean
 const PREVIEW_SWEEP_LIMIT = 4
 const PREVIEW_PROBE_LIMIT = 8
 const PREVIEW_SCAN_LIMIT = 64
+const PREVIEW_KEY_SCAN_LIMIT = 16
 const PREVIEW_SWEEP_MS = 2000
 type SweepState = { running: boolean; pending: boolean; preferred: Set<string>; cursor: number; keyCursor: number; entryCursor: Map<string, number> }
 const previewSweeps = new Map<string, SweepState>()
@@ -818,15 +835,15 @@ async function sweepPreviewCache(repoDir: string, base: string, state: SweepStat
   const keyStart = keys.length ? state.keyCursor % keys.length : 0
   let scannedKeys = 0
   let scannedSlots = 0
-  let interrupted = false
   for (const keyName of [...keys.slice(keyStart), ...keys.slice(0, keyStart)]) {
     if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break
     scannedKeys++
     const key = path.join(base, keyName)
     const entries: { slot: string; mtime: number }[] = []
     let clone: string | undefined
+    let keySlots = 0
     for (const root of [key, `${key}.slots`]) {
-      if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) { interrupted = true; break }
+      if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT) break
       await rejectPreviewLink(root)
       if (await isLegacyTree(root)) continue
       const children = await fs.promises.readdir(root).catch(error => {
@@ -839,24 +856,27 @@ async function sweepPreviewCache(repoDir: string, base: string, state: SweepStat
       } catch { /* Old caches have no metadata. */ }
       const start = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0
       let scannedHere = 0
+      let rootSlots = 0
       for (const name of [...children.slice(start), ...children.slice(0, start)]) {
-        if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) { interrupted = true; break }
+        if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT || rootSlots >= PREVIEW_KEY_SCAN_LIMIT / 2) break
         scannedHere++
         if (!slotOwner(name)) continue
         scannedSlots++
+        keySlots++
+        rootSlots++
         const slot = path.join(root, name)
         const stat = await fs.promises.lstat(slot).catch(() => undefined)
         if (stat?.isDirectory()) entries.push({ slot, mtime: stat.mtimeMs })
       }
       if (children.length) state.entryCursor.set(root, (start + scannedHere) % children.length)
-      if (interrupted) break
     }
     entries.sort((a, b) => b.mtime - a.mtime)
     const vanished = clone !== undefined && !await fs.promises.access(clone).then(() => true, () => false)
     candidates.push(...entries.map(entry => ({ slot: entry.slot, key, retainSpare: !vanished && !preferred.has(key) })))
-    if (interrupted) break
+    preferred.delete(key)
   }
-  if (keys.length) state.keyCursor = (keyStart + scannedKeys - (interrupted ? 1 : 0)) % keys.length
+  for (const key of preferred) state.preferred.add(key)
+  if (keys.length) state.keyCursor = (keyStart + scannedKeys) % keys.length
   if (!candidates.length) return
   let probes = 0, removed = 0
   const spared = new Set<string>()
@@ -967,9 +987,11 @@ async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void>
   }
 }
 
-async function resetPreviewTree(dir: string, ancestor: string): Promise<void> {
+async function resetPreviewTree(repoDir: string, dir: string, ancestor: string): Promise<void> {
+  if (await slotRegistration(repoDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal before reset')
   await gitSetup(dir, ['reset', '--hard', '--quiet', ancestor])
   // -fd removes test-created untracked paths. Ignored build caches (target/, etc.) remain warm.
+  if (await slotRegistration(repoDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal before clean')
   await gitSetup(dir, ['clean', '-fd', '-q'])
 }
 
@@ -978,12 +1000,13 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   try { stat = await fs.promises.lstat(dir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   if (stat?.isSymbolicLink()) throw new Error('unsafe preview cache link')
   if (stat) {
-    // A killed first checkout can leave a partial directory. Git itself verifies the worktree registration.
-    try {
+    const registration = await slotRegistration(cloneDir, dir)
+    if (registration === 'foreign') throw new Error('preview slot registration points outside this slot')
+    // A killed first checkout can leave a partial directory.
+    if (registration === 'valid') {
       const top = (await gitSetup(dir, ['rev-parse', '--show-toplevel'])).trim()
       if (path.resolve(top) !== dir) throw new Error('preview cache is not its own worktree')
-    }
-    catch {
+    } else {
       if (!await deletePreviewSlot(cloneDir, dir)) throw new Error('preview cache is malformed and could not be safely removed')
       stat = undefined
     }
@@ -992,14 +1015,19 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
     observe?.baseMaterialized?.()
     await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
   }
+  if (await slotRegistration(cloneDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal')
   await lockPreviewSlot(cloneDir, dir)
   // Also recovers changes left by a crashed or killed preview before applying this one.
-  await resetPreviewTree(dir, ancestor)
+  await resetPreviewTree(cloneDir, dir, ancestor)
   return !!stat
 }
 
 /** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
 export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
+  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, false)
+}
+
+async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined, forceScratch: boolean): Promise<TestResult> {
   let dir: string | undefined
   let release: (() => Promise<void>) | undefined
   let cached = false
@@ -1012,7 +1040,7 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
   try {
     await previewPhase('setup', async () => {
       let cache: string | undefined
-      try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
+      if (!forceScratch) try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
       if (cache && !previewSlotTurns.has(cache)) {
         let finish!: () => void
         const turn = new Promise<void>(resolve => { finish = resolve })
@@ -1025,10 +1053,17 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
       cached = !!release
       if (cached) {
         dir = cache!
-        await preparePreviewSlot(s.dir, dir)
-        reused = await preparePreviewCache(s.dir, dir, ancestor, observe)
-        cacheReady = true
-      } else {
+        try {
+          await preparePreviewSlot(s.dir, dir)
+          reused = await preparePreviewCache(s.dir, dir, ancestor, observe)
+          cacheReady = true
+        } catch (error) {
+          ownSlotGeneration++
+          console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
+          cached = false
+        }
+      }
+      if (!cached) {
         dir = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-')))
         observe?.baseMaterialized?.()
         await materializeGitTree(s.dir, ancestor, dir)
@@ -1062,9 +1097,17 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
     const detail = error instanceof Error ? error.message : String(error)
     return { passed: false, text: stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}` }
   } finally {
+    let rerunScratch = false
     try {
       if (dir) {
-        if (cached) { if (cacheReady) await resetPreviewTree(dir, ancestor) }
+        if (cached && cacheReady) {
+          try { await resetPreviewTree(s.dir, dir, ancestor) }
+          catch (error) {
+            ownSlotGeneration++
+            console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
+            rerunScratch = true
+          }
+        }
         else await fs.promises.rm(dir, { recursive: true, force: true })
       }
     } finally {
@@ -1075,6 +1118,7 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
         if (key) queuePreviewSweep(s.dir, path.dirname(key))
       }
     }
+    if (rerunScratch) return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, true)
   }
 }
 

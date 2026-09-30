@@ -281,6 +281,143 @@ it('does not let a wrong git pointer remove an unrelated live registration', asy
   expect(fs.existsSync(dead)).toBe(true)
 }, 30_000)
 
+it('rejects a symlinked slot gitfile without changing another checkout index', async () => {
+  const { root, git, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  const live = path.join(root, 'live-checkout')
+  git('worktree', 'add', '--detach', '-q', live, ancestor)
+  git('worktree', 'lock', live)
+  fs.writeFileSync(path.join(live, 'app.txt'), 'STAGED USER EDIT\n')
+  execFileSync('git', ['-C', live, 'add', 'app.txt'])
+  fs.writeFileSync(path.join(live, 'app.txt'), 'LIVE USER EDIT\n')
+  const dead = path.join(path.dirname(own), '999999999-symlink')
+  fs.mkdirSync(dead, { recursive: true })
+  fs.symlinkSync(path.join(live, '.git'), path.join(dead, '.git'))
+  const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), pass)
+  expect(result.passed, result.text).toBe(true)
+  expect(fs.existsSync(dead)).toBe(true)
+  expect(fs.existsSync(`${dead}.claim`)).toBe(true)
+  expect(execFileSync('git', ['-C', live, 'show', ':app.txt'], { encoding: 'utf8' })).toBe('STAGED USER EDIT\n')
+  expect(fs.readFileSync(path.join(live, 'app.txt'), 'utf8')).toBe('LIVE USER EDIT\n')
+}, 30_000)
+
+it('rejects a symlinked gitfile in an existing own slot before reset', async () => {
+  const { root, git, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  expect((await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')).passed).toBe(true)
+  const live = path.join(root, 'live-checkout')
+  git('worktree', 'add', '--detach', '-q', live, ancestor)
+  git('worktree', 'lock', live)
+  fs.writeFileSync(path.join(live, 'app.txt'), 'STAGED USER EDIT\n')
+  execFileSync('git', ['-C', live, 'add', 'app.txt'])
+  fs.unlinkSync(path.join(own, '.git'))
+  fs.symlinkSync(path.join(live, '.git'), path.join(own, '.git'))
+  const result = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(result.passed, result.text).toBe(true)
+  expect(result.text).toContain('fresh base')
+  expect(await previewCachePath(root)).not.toBe(own)
+  expect(execFileSync('git', ['-C', live, 'show', ':app.txt'], { encoding: 'utf8' })).toBe('STAGED USER EDIT\n')
+}, 30_000)
+
+it('abandons a failed own-slot cleanup and checks through scratch, then uses a new generation', async () => {
+  const { root, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  fs.mkdirSync(own, { recursive: true })
+  fs.writeFileSync(path.join(own, 'partial'), 'partial')
+  const original = fs.promises.rm.bind(fs.promises)
+  let injected = false
+  vi.spyOn(fs.promises, 'rm').mockImplementation(async (target, options) => {
+    if (String(target) === own && !injected) { injected = true; throw Object.assign(new Error('transient EBUSY'), { code: 'EBUSY' }) }
+    return original(target, options)
+  })
+  const first = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(injected).toBe(true)
+  expect(first.passed, first.text).toBe(true)
+  expect(first.text).toContain('fresh base')
+  const next = await previewCachePath(root)
+  expect(next).not.toBe(own)
+  vi.restoreAllMocks()
+  const second = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(second.passed, second.text).toBe(true)
+  expect(fs.existsSync(next)).toBe(true)
+}, 30_000)
+
+it('abandons an adoption interrupted after rename and checks next preview in a new generation', async () => {
+  const { root, git, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  const dead = path.join(path.dirname(own), '999999999-dead')
+  fs.mkdirSync(path.dirname(dead), { recursive: true })
+  git('worktree', 'add', '--detach', '-q', dead, ancestor)
+  const original = fs.promises.rename.bind(fs.promises)
+  let injected = false
+  vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+    await original(from, to)
+    if (String(from) === dead && String(to) === own && !injected) { injected = true; throw new Error('repair interrupted after rename') }
+  })
+  const first = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(injected).toBe(true)
+  expect(first.passed, first.text).toBe(true)
+  expect(first.text).toContain('fresh base')
+  expect(fs.existsSync(`${dead}.claim`)).toBe(true)
+  vi.restoreAllMocks()
+  const next = await previewCachePath(root)
+  expect(next).not.toBe(own)
+  const second = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(second.passed, second.text).toBe(true)
+  expect(fs.existsSync(next)).toBe(true)
+}, 30_000)
+
+it('recovers in the same process when git repair fails after adoption rename', () => {
+  execFileSync(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, 'fixtures/preview-repair-failure.mts')], {
+    cwd: path.join(import.meta.dirname, '../../..'), encoding: 'utf8', timeout: 30_000,
+  })
+}, 35_000)
+
+it('abandons a failed final cache clean and repeats the check in scratch', async () => {
+  const { root, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  const original = fs.promises.open.bind(fs.promises)
+  let afterSetup = false
+  let injected = false
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+    if (String(file) === path.join(own, '.git') && afterSetup && !injected) {
+      injected = true
+      throw Object.assign(new Error('transient validation failure'), { code: 'EBUSY' })
+    }
+    return original(file, flags, mode)
+  })
+  const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), pass, new Map(), {
+    mergedWrite() { afterSetup = true },
+  })
+  expect(injected).toBe(true)
+  expect(result.passed, result.text).toBe(true)
+  expect(result.text).toContain('fresh base')
+  expect(await previewCachePath(root)).not.toBe(own)
+}, 30_000)
+
+it('sweeps a later key despite more than 64 live slots in an earlier key', async () => {
+  const { root } = fixture()
+  const own = await previewCachePath(root)
+  const base = path.dirname(path.dirname(own))
+  const busy = path.join(base, '00000000000000000000')
+  const later = path.join(base, 'ffffffffffffffffffff')
+  fs.mkdirSync(busy, { recursive: true })
+  fs.mkdirSync(later, { recursive: true })
+  for (let n = 0; n < 65; n++) fs.mkdirSync(path.join(busy, `${600000 + n}-live`))
+  fs.writeFileSync(path.join(busy, 'clone.json'), JSON.stringify({ path: os.tmpdir() }))
+  fs.writeFileSync(path.join(later, 'clone.json'), JSON.stringify({ path: path.join(root, 'vanished-clone') }))
+  const dead = path.join(later, '999999999-dead')
+  fs.mkdirSync(dead)
+  let laterProbed = false
+  setPreviewProcessProbeForTests(async pid => { if (pid === 999999999) { laterProbed = true; return null }; return 'live' })
+  for (let pass = 0; pass < 12 && fs.existsSync(dead); pass++) {
+    await removePreviewCache(root)
+    await waitForPreviewSweepForTests()
+  }
+  expect(laterProbed).toBe(true)
+  expect(fs.existsSync(dead)).toBe(false)
+}, 30_000)
+
 it('skips a partial dead slot so previews run, then sweeps the partial directory', async () => {
   const { root, git, ancestor, session } = fixture()
   const own = await previewCachePath(root)
