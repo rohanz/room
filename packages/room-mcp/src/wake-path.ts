@@ -101,13 +101,14 @@ export interface WakeSenderOptions {
   queue?: (threadId: string, text: string) => Promise<void>
 }
 
-/** Codex: the queue. Claude: the socket, then the channel if the socket fails and the channel is admitted. */
+/** Codex: the queue. Claude: the socket, then the channel if the socket fails and the channel is admitted. ROOM_WAKE=off sends nothing. */
 export function createWakeSender(o: WakeSenderOptions): SendWake {
   return async (target, text) => {
-    if (target.host === 'codex') { await (o.queue ?? codexQueue)(target.id, text); return 'queue' }
     const env = o.env ?? process.env
     const selected = mode(env)
+    // ROOM_WAKE=off is the user's switch for every host; the ledger still owes the message.
     if (selected === 'off') return undefined
+    if (target.host === 'codex') { await (o.queue ?? codexQueue)(target.id, text); return 'queue' }
     const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
     const channel = async (): Promise<WakeVia> => { await sendChannelNotification(text, o.notify); return 'channel' }
     if (selected === 'channels') return o.channel === '' ? undefined : channel()

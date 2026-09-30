@@ -25,6 +25,15 @@ describe('wake paths (content-free; never a receipt)', () => {
     expect(await createWakeSender({ notify: vi.fn(), queue })({ id: 'thread-1', host: 'codex' }, TEXT)).toBe('queue')
     expect(queue).toHaveBeenCalledWith('thread-1', TEXT)
   })
+  it('ROOM_WAKE=off sends no wake on either host', async () => {
+    const queue = vi.fn(async () => {})
+    const post = vi.fn(async () => {})
+    const send = createWakeSender({ env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/unused.sock' }, notify: vi.fn(), queue, post })
+    expect(await send({ id: 'thread-1', host: 'codex' }, TEXT)).toBeUndefined()
+    expect(await send({ id: 'session-1', host: 'claude' }, TEXT)).toBeUndefined()
+    expect(queue).not.toHaveBeenCalled()
+    expect(post).not.toHaveBeenCalled()
+  })
 
   it('Claude: writes auth then user JSON lines to the inbox socket', async () => {
     const dir = tmp(); const socketPath = path.join(dir, 'inbox.sock'); const lines: string[][] = []
