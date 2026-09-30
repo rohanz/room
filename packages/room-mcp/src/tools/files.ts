@@ -579,15 +579,31 @@ const SETUP_TIMEOUT_MS = 10 * 60_000
 const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
-function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string }> {
+function previewGroupAlive(pid: number): boolean {
+  try { process.kill(-pid, 0); return true }
+  catch { return false }
+}
+
+function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: number }> {
   return new Promise((resolve, reject) => {
     const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = [], err: Buffer[] = []
     let bytes = 0, failed: Error | undefined
+    let termAt: number | undefined
+    let killTimer: NodeJS.Timeout | undefined
+    const signalGroup = (signal: NodeJS.Signals) => {
+      if (child.pid) { try { process.kill(-child.pid, signal) } catch { /* already exited */ } }
+    }
+    const terminate = () => {
+      if (termAt !== undefined) return
+      termAt = Date.now()
+      signalGroup('SIGTERM')
+      killTimer = setTimeout(() => signalGroup('SIGKILL'), 2000)
+    }
     const stop = (error: Error) => {
       if (failed) return
       failed = error
-      if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ } }
+      terminate()
     }
     const timer = setTimeout(() => stop(new Error(`timed out after ${timeout}ms`)), timeout)
     const collect = (kind: 'stdout' | 'stderr', chunk: Buffer) => {
@@ -600,12 +616,33 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
     child.stderr.on('data', (chunk: Buffer) => collect('stderr', chunk))
     child.stdin.on('error', stop)
     child.on('error', stop)
-    child.on('close', code => {
-      clearTimeout(timer)
-      if (failed) reject(failed)
-      else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() })
+    let exited = false
+    const closed = new Promise<void>(done => child.once('close', () => done()))
+    child.on('close', () => {
+      if (!exited) {
+        clearTimeout(timer)
+        if (killTimer) clearTimeout(killTimer)
+        reject(failed ?? new Error('tracked preview process closed without exiting'))
+      }
     })
-    if (child.pid) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
+    child.on('exit', code => {
+      exited = true
+      void (async () => {
+        const stopped = child.pid && previewGroupAlive(child.pid) ? 1 : 0
+        if (stopped) terminate()
+        while (child.pid && previewGroupAlive(child.pid)) {
+          if (termAt !== undefined && Date.now() - termAt >= 2000) signalGroup('SIGKILL')
+          await new Promise(done => setTimeout(done, 25))
+        }
+        await closed
+        clearTimeout(timer)
+        if (killTimer) clearTimeout(killTimer)
+        if (failed) reject(failed)
+        else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped })
+      })().catch(reject)
+    })
+    if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
+    else if (child.pid) child.stdin.end('GO\n')
   })
 }
 
@@ -1046,22 +1083,14 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
-      if (cached) {
-        const tracked = await runTrackedProcess(command, args, dir!, 5 * 60_000, 4 * 1024 * 1024, previewProcesses.getStore()!.lock!, env)
-        return { code: tracked.code, out: tracked.stdout + tracked.stderr }
-      }
-      return new Promise<{ code: number | null; out: string }>(resolve => {
-        execFile(command, args, { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
-          const raw = err ? (err as { code?: unknown }).code : 0
-          resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
-        })
-      })
+      const tracked = await runTrackedProcess(command, args, dir!, 5 * 60_000, 4 * 1024 * 1024, previewProcesses.getStore()?.lock, env)
+      return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
     completed = await previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}${result.stopped ? `\nstopped ${result.stopped} leftover process(es) from the check` : ''}` }
     })
     return completed
   } catch (error) {
