@@ -626,7 +626,7 @@ function ownPreviewStart(): Promise<string | undefined> {
   return ownStartPromise ??= probePreviewStart(process.pid).then(start => start ?? `opaque:${randomUUID()}`)
 }
 
-let ownSlotGeneration = 0
+const ownSlotGenerations = new Map<string, number>()
 function slotName(pid: number, start: string, generation: number): string { return `${pid}-${encodeURIComponent(start)}-${generation}` }
 function slotOwner(name: string): { pid: number; starts: string[] } | undefined {
   const match = /^([1-9]\d*)-(.+)$/.exec(name)
@@ -664,8 +664,38 @@ async function slotRoot(key: string): Promise<string> {
 export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Promise<string> {
   const start = await ownPreviewStart()
   if (!start) throw new Error('preview process identity is unavailable')
-  return path.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start, ownSlotGeneration))
+  const key = await previewKeyPath(cloneDir, repoDir)
+  return path.join(await slotRoot(key), slotName(process.pid, start, ownSlotGenerations.get(key) ?? 0))
 }
+
+function abandonPreviewSlot(cloneDir: string, slot: string): void {
+  const key = path.dirname(slot).endsWith('.slots') ? path.dirname(slot).slice(0, -6) : path.dirname(slot)
+  ownSlotGenerations.set(key, (ownSlotGenerations.get(key) ?? 0) + 1)
+  abandonedOwnSlots.set(slot, cloneDir)
+}
+
+const checkoutConfigKeys = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks', 'core.filemode', 'core.ignorecase', 'core.precomposeunicode'])
+async function checkoutSettings(dir: string): Promise<{ fingerprint: string; sparse: boolean; attributes: Buffer }> {
+  const output = await gitSetup(dir, ['config', '--null', '--list'])
+  const values = new Map<string, string>()
+  for (const entry of output.split('\0')) {
+    const separator = entry.indexOf('\n')
+    if (separator >= 0) values.set(entry.slice(0, separator).toLowerCase(), entry.slice(separator + 1))
+  }
+  const admin = (await gitSetup(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+  const sparseFile = path.join(admin, 'info', 'sparse-checkout')
+  const sparse = /^(true|yes|on|1)$/i.test(values.get('core.sparsecheckout') ?? '')
+    || await fs.promises.access(sparseFile).then(() => true, () => false)
+  const attributes = await fs.promises.readFile(path.join(admin, 'info', 'attributes')).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Buffer.alloc(0)
+    throw error
+  })
+  const relevant = [...values].filter(([key]) => checkoutConfigKeys.has(key) || /^filter\..+\.(smudge|clean|process|required)$/.test(key)).sort(([a], [b]) => a.localeCompare(b))
+  const fingerprint = createHash('sha256').update(JSON.stringify(relevant)).update('\0').update(attributes).digest('hex')
+  return { fingerprint, sparse, attributes }
+}
+
+function slotSettingsFile(slot: string): string { return path.join(path.dirname(slot), `.checkout-${path.basename(slot)}.json`) }
 
 type SlotRegistration = 'valid' | 'missing-git' | 'unregistered' | 'foreign'
 
@@ -804,6 +834,7 @@ async function deletePreviewSlot(repoDir: string, slot: string, retryOwnFailure 
       await fs.promises.rm(slot, { recursive: true, force: true })
     }
     complete = true
+    await fs.promises.rm(slotSettingsFile(slot), { force: true })
     return true
   } catch (error) {
     warnSlot(slot, error instanceof Error ? error.message : String(error))
@@ -1002,6 +1033,8 @@ async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void>
       await gitSetup(cloneDir, ['worktree', 'repair', slot])
       if (await slotRegistration(cloneDir, slot) !== 'valid') throw new Error('adopted slot registration is not reciprocal')
       await lockPreviewSlot(cloneDir, slot)
+      try { await fs.promises.rename(slotSettingsFile(old), slotSettingsFile(slot)) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       complete = true
       return
     } finally {
@@ -1018,7 +1051,7 @@ async function resetPreviewTree(repoDir: string, dir: string, ancestor: string):
   await gitSetup(dir, ['clean', '-fd', '-q'])
 }
 
-async function preparePreviewCache(cloneDir: string, dir: string, ancestor: string, observe?: { baseMaterialized?(): void }): Promise<boolean> {
+async function preparePreviewCache(cloneDir: string, dir: string, ancestor: string, source: Awaited<ReturnType<typeof checkoutSettings>>, observe?: { baseMaterialized?(): void }): Promise<boolean> {
   let stat: fs.Stats | undefined
   try { stat = await fs.promises.lstat(dir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   if (stat?.isSymbolicLink()) throw new Error('unsafe preview cache link')
@@ -1037,11 +1070,28 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   if (!stat) {
     observe?.baseMaterialized?.()
     await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
+    // info/attributes belongs to each worktree's admin directory. Mirror the
+    // source's checkout policy only inside our new worktree, never in the repo.
+    const admin = (await gitSetup(dir, ['rev-parse', '--absolute-git-dir'])).trim()
+    if (source.attributes.length) {
+      await fs.promises.mkdir(path.join(admin, 'info'), { recursive: true })
+      await fs.promises.writeFile(path.join(admin, 'info', 'attributes'), source.attributes)
+      await gitSetup(dir, ['checkout-index', '-a', '-f'])
+    }
   }
   if (await slotRegistration(cloneDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal')
   await lockPreviewSlot(cloneDir, dir)
+  const slotSettings = await checkoutSettings(dir)
+  if (slotSettings.sparse) throw new Error('preview slot uses sparse checkout')
+  const saved = await fs.promises.readFile(slotSettingsFile(dir), 'utf8').catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  })
+  if (saved !== undefined && saved !== source.fingerprint) throw new Error('preview checkout settings changed')
+  if (slotSettings.fingerprint !== source.fingerprint) throw new Error('preview checkout settings differ from source')
   // Also recovers changes left by a crashed or killed preview before applying this one.
   await resetPreviewTree(cloneDir, dir, ancestor)
+  if (saved === undefined) await fs.promises.writeFile(slotSettingsFile(dir), source.fingerprint, { flag: 'wx', mode: 0o600 })
   return !!stat
 }
 
@@ -1065,7 +1115,11 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   try {
     await previewPhase('setup', async () => {
       let cache: string | undefined
-      try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
+      let source: Awaited<ReturnType<typeof checkoutSettings>> | undefined
+      try {
+        source = await checkoutSettings(s.dir)
+        if (!source.sparse) cache = await previewCachePath(s.dir)
+      } catch { /* Uncertain checkout policy or identity uses a fresh tree. */ }
       if (cache && !previewSlotTurns.has(cache)) {
         let finish!: () => void
         const turn = new Promise<void>(resolve => { finish = resolve })
@@ -1080,11 +1134,10 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
         dir = cache!
         try {
           await preparePreviewSlot(s.dir, dir)
-          reused = await preparePreviewCache(s.dir, dir, ancestor, observe)
+          reused = await preparePreviewCache(s.dir, dir, ancestor, source!, observe)
           cacheReady = true
         } catch (error) {
-          ownSlotGeneration++
-          abandonedOwnSlots.set(dir, s.dir)
+          abandonPreviewSlot(s.dir, dir)
           console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
           cached = false
           cacheFailure = true
@@ -1132,8 +1185,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
         if (cached && cacheReady) {
           try { await resetPreviewTree(s.dir, dir, ancestor) }
           catch (error) {
-            ownSlotGeneration++
-            abandonedOwnSlots.set(dir, s.dir)
+            abandonPreviewSlot(s.dir, dir)
             console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
             if (completed) completed.text += '\nwarning: preview cache abandoned after the check; next preview uses a new cache'
           }
@@ -1163,7 +1215,7 @@ export async function materializeGitTree(cloneDir: string, ref: string, destinat
   const deadline = performance.now() + SETUP_TIMEOUT_MS
   const run = (args: string[]) => new Promise<void>((resolve, reject) => {
     const remaining = Math.max(1, Math.ceil(deadline - performance.now()))
-    execFile('git', ['-C', cloneDir, ...args], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {
+    execFile('git', ['-C', cloneDir, '-c', 'core.sparseCheckout=false', '-c', 'core.sparseCheckoutCone=false', ...args], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {
       if (error) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args[0]}: ${String(stderr || error.message).trim()})`))
       else resolve()
     })
