@@ -39776,7 +39776,7 @@ function runTrackedProcess(file, args3, cwd, timeout, maxBuffer, lock, env = pro
     child.on("exit", (code) => {
       exited = true;
       void (async () => {
-        const stopped = child.pid && previewGroupAlive(child.pid) ? 1 : 0;
+        const stopped = !!child.pid && previewGroupAlive(child.pid);
         if (stopped) terminate();
         while (child.pid && previewGroupAlive(child.pid)) {
           if (termAt !== void 0 && Date.now() - termAt >= 2e3) signalGroup("SIGKILL");
@@ -40200,6 +40200,12 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
     const result2 = await previewCheck(async () => {
       const command2 = bash ?? "sh";
       const args3 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
+      if (process.platform === "win32") return new Promise((resolve5) => {
+        execFile9(command2, args3, { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+          const raw = err2 ? err2.code : 0;
+          resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}`, stopped: false });
+        });
+      });
       const tracked = await runTrackedProcess(command2, args3, dir, 5 * 6e4, 4 * 1024 * 1024, previewProcesses.getStore()?.lock, env);
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped };
     });
@@ -40209,8 +40215,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
       const verdict = testVerdict(result2.out, result2.code);
       return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result2.code}; setup ${Math.round(setupMs)}ms (${reused ? "cached base" : cacheFailure ? "fresh base after cache failure" : "fresh base"}), check ${Math.round(checkMs)}ms
 ${tail}
-${verdict.text}${result2.stopped ? `
-stopped ${result2.stopped} leftover process(es) from the check` : ""}` };
+${verdict.text}${result2.stopped ? "\nstopped leftover processes from the check" : ""}` };
     });
     return completed;
   } catch (error2) {
