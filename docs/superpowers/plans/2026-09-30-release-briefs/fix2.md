@@ -1,0 +1,14 @@
+FIX ROUND 2 for the 0.17.0 release-readiness batch. Read common.md first, then docs/superpowers/specs/reviews/2026-09-30-release-review-r2.md (S1-S4; repro scripts under /tmp/room-review-r2-*.mts|mjs, recreate if missing). The lead fixes S3 and S4.
+
+TAG fx2cache: S1 (MUST).
+OWNED FILES: packages/room-mcp/src/preview-cache.ts, the preview/check path of packages/room-mcp/src/tools/files.ts, packages/room-mcp/test/preview-*.test.ts.
+- When a tracked foreground command (the check or a setup Git command) exits, end its whole process group before touching the tree: SIGTERM the group, wait up to 2 s, then SIGKILL; do this under the same check deadline (the timeout must keep running until the group is gone, not only until the foreground shell closes). Only then reset/clean the cached tree and release the lock. A preview check must not leave processes behind; say so in the reply when Room had to stop leftover processes ("stopped N leftover process(es) from the check").
+- Keep the round-1 crash guarantee (lock held by the helper until recorded groups exit).
+- Tests: a check whose shell exits while a redirected background child keeps running (child is stopped before reset; the tree is not reset while it is alive; reply mentions the stop); a child that ignores SIGTERM (SIGKILL after grace); the round-1 crash test still passes.
+
+TAG fx2doctor: S2 (MUST).
+OWNED FILES: packages/room-mcp/src/index.ts (the MCP entry: request routing before `binding.run` / initialization), packages/room-mcp/src/doctor.ts only if needed, a new test that drives the real MCP entry point (packages/room-mcp/test/doctor-entry.test.ts).
+- Route `tools/call room_state {check:true}` BEFORE initializing the ordinary runtime: if a runtime is already initialized for the request's workspace, use its active session's directory/destination as now; otherwise run the standalone doctor for the request's workspace (the same workspace resolution the binding uses, without joining, listening or auto-join). Failed runtime initialization (e.g. invalid ROOM_URL, listener EPERM) must still produce the doctor report (the doctor reports the config error as a FAIL line).
+- Test through the real entry: start the server module in-process or as a child with stdio JSON-RPC (see the reviewer's /tmp/room-review-r2-mcp*.mjs approach), send initialize then tools/call room_state {check:true} as the FIRST request; assert a doctor report comes back, no arbitration listener was started, and a recorded fetch saw only `/health` (inject fetch via a preload or an env-gated seam that already exists; do not add production-only test hooks beyond a minimal seam). Also: invalid ROOM_URL → report with a FAIL Room config line. You cannot listen on sockets: design the test so it needs none.
+
+Both: targeted tests + `npm run typecheck`; finish with room_done naming the tests.
