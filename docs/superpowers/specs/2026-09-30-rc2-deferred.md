@@ -15,8 +15,10 @@ is listed here for post-release work.
 | 4 | `e274970` | 1 / 1 | 1 / 3 |
 | 5 | `d7e7e37` | 0 / 2 | 0 / 2 |
 
-The review reports are kept outside the repository (`sec-r2` to `sec-r6` and `release-r1` to `release-r5`: security
-files are numbered one higher because of the stopped first run). The first security run of round 1 was stopped by the model provider's content filter while it ran proof-of-concept
+The review reports are kept outside the repository, in the lead session's scratchpad under `n3/rc2-reviews/`
+(`sec-r2` to `sec-r6` and `release-r1` to `release-r5`: security files are numbered one higher because of the stopped
+first run; `prop-out.md` is the proportionality review and `simp-out.md` the security re-review of the final pass,
+which found the four final changes sound). The first security run of round 1 was stopped by the model provider's content filter while it ran proof-of-concept
 inputs; it was rerun with the instruction to review by reading source and tests. Its two interim findings (relay
 ticket body of `null`, unbounded replies to repeated state requests) were fixed before the rerun.
 
