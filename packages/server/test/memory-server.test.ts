@@ -18,10 +18,10 @@ const logs: string[] = []
 const post = (route: string, body: unknown) => fetch(`${base}${route}`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 })
-const url = (room: string, schema?: number) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}?token=shared${schema ? `&schema=${schema}` : ''}`
+const url = (room: string, schema?: number) => `ws://127.0.0.1:${port}/${encodeURIComponent(room)}${schema ? `?schema=${schema}` : ''}`
 
 async function connect(room: string, schema?: number): Promise<WebSocket> {
-  const ws = new WebSocket(url(room, schema))
+  const ws = new WebSocket(url(room, schema), { headers: { 'x-room-token': 'shared' } })
   await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject) })
   return ws
 }

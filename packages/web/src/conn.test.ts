@@ -1,43 +1,62 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ provider: vi.fn(), disconnect: vi.fn() }))
+import { JSDOM } from 'jsdom'
+
+const mocks = vi.hoisted(() => ({ provider: vi.fn(), connect: vi.fn(), events: new Map<string, (...args: unknown[]) => void>() }))
 vi.mock('y-websocket', () => ({ WebsocketProvider: class {
   awareness = { setLocalState: vi.fn() }
-  on = vi.fn()
-  disconnect = mocks.disconnect
-  constructor(...args: unknown[]) { mocks.provider(...args) }
+  params: Record<string, string>
+  shouldConnect = false
+  on = vi.fn((event: string, fn: (...args: unknown[]) => void) => mocks.events.set(event, fn))
+  connect = mocks.connect
+  constructor(...args: unknown[]) { this.params = (args[3] as { params: Record<string, string> }).params; mocks.provider(...args) }
 } }))
-import { connect } from './conn.ts'
-afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks() })
-describe('read-only access preflight', () => {
-  it.each(['view=board', 'view=', 'key=local'])('skips /view-token for %s', query => {
-    const fetch = vi.fn()
-    vi.stubGlobal('fetch', fetch)
-    connect(`?room=${encodeURIComponent('wss://room.example/repo')}&${query}`)
-    expect(fetch).not.toHaveBeenCalled()
+import { connect } from './conn.js'
+
+function browser(url: string) {
+  const dom = new JSDOM('<div id="app"></div>', { url })
+  vi.stubGlobal('location', dom.window.location)
+  vi.stubGlobal('history', dom.window.history)
+  vi.stubGlobal('sessionStorage', dom.window.sessionStorage)
+  vi.stubGlobal('document', dom.window.document)
+  return dom
+}
+afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); mocks.events.clear() })
+
+describe('browser ticket connection', () => {
+  it('removes a view capability and connects with a fresh ticket', async () => {
+    const dom = browser('https://room.example/?room=wss%3A%2F%2Froom.example%2Frepo&view=secret&view=code')
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'one-use' }) })
+    vi.stubGlobal('fetch', request)
+    const conn = connect(dom.window.location.search)
+    expect(dom.window.location.href).not.toContain('secret')
+    expect(mocks.provider.mock.calls[0]![3]).toEqual({ connect: false, params: { schema: '2' } })
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
+    expect(conn.provider.params.ticket).toBe('one-use')
+    expect(request.mock.calls[0]![0]).toBe('https://room.example/ws-ticket')
+    expect(JSON.parse(request.mock.calls[0]![1].body).view).toBe('secret')
   })
-  it('shows a terminal old-link explanation for a migrated branch view link', async () => {
-    const error = { id: '', className: '', textContent: '' }
-    vi.stubGlobal('document', { getElementById: vi.fn(() => null), createElement: vi.fn(() => error), body: { appendChild: vi.fn(() => error) } })
-    const fetch = vi.fn().mockResolvedValue({ status: 410, ok: false, text: async () => '<!doctype html><body>this link was for a branch room that no longer exists; ask for a new link</body>' })
-    vi.stubGlobal('fetch', fetch)
-    connect(`?room=${encodeURIComponent('wss://room.example/github.com%2Fo%2Fr%2Fmain')}&view=old-key`)
-    await vi.waitFor(() => expect(error.textContent).toContain('ask for a new link'))
-    expect(error.textContent).not.toContain('<body>')
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('view=old-key'), expect.objectContaining({ method: 'GET' }))
-    expect(mocks.disconnect).toHaveBeenCalledOnce()
+
+  it('does not send a local key in a websocket URL', async () => {
+    const dom = browser('http://127.0.0.1/?room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&key=local-key')
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local-ticket' }) })
+    vi.stubGlobal('fetch', request)
+    const conn = connect(dom.window.location.search)
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
+    expect(dom.window.location.href).not.toContain('local-key')
+    expect(conn.provider.params).toEqual({ schema: '2', ticket: 'local-ticket' })
+    expect(JSON.parse(request.mock.calls[0]![1].body).key).toBe('local-key')
   })
-  it('keeps the read-only key as the websocket credential when Code is selected', () => {
-    connect('?room=wss%3A%2F%2Froom.example%2Frepo&view=secret&view=code')
-    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { schema: '2', view: 'secret' } })
-  })
-  it('does not send presentation values as credentials', () => {
-    connect('?room=wss%3A%2F%2Froom.example%2Frepo&view=board&token=token')
-    expect(mocks.provider.mock.calls[0][3]).toEqual({ params: { schema: '2', token: 'token' } })
-  })
-  it('still checks hosted links without read-only or local credentials', async () => {
-    const fetch = vi.fn().mockResolvedValue({ ok: true })
-    vi.stubGlobal('fetch', fetch)
-    connect('?room=wss%3A%2F%2Froom.example%2Frepo&token=token')
-    expect(fetch).toHaveBeenCalledWith('https://room.example/view-token', expect.objectContaining({ method: 'POST' }))
+
+  it('mints a new ticket after a disconnected websocket', async () => {
+    const dom = browser('https://room.example/?room=wss%3A%2F%2Froom.example%2Frepo&view=secret')
+    const request = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ticket: 'first' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ticket: 'second' }) })
+    vi.stubGlobal('fetch', request)
+    const conn = connect(dom.window.location.search)
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
+    mocks.events.get('connection-close')?.(null)
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    expect(conn.provider.params.ticket).toBe('second')
   })
 })

@@ -35,10 +35,11 @@ export function bodyReader(opts: { maxBytes?: number; maxConcurrent?: number; ti
   const maxConcurrent = opts.maxConcurrent ?? 32
   const timeoutMs = opts.timeoutMs ?? 10000
   let active = 0
-  return (req: http.IncomingMessage): Promise<string> => {
+  return (req: http.IncomingMessage, requestOpts: { maxBytes?: number } = {}): Promise<string> => {
+    const requestMaxBytes = requestOpts.maxBytes ?? maxBytes
     if (active >= maxConcurrent) return Promise.reject(new HttpFailure(503, 'too many request bodies'))
     const length = req.headers['content-length']
-    if (length && Number(length) > maxBytes) return Promise.reject(new HttpFailure(413, 'request body too large'))
+    if (length && Number(length) > requestMaxBytes) return Promise.reject(new HttpFailure(413, 'request body too large'))
     active++
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
@@ -46,13 +47,15 @@ export function bodyReader(opts: { maxBytes?: number; maxConcurrent?: number; ti
       const done = (error?: Error) => {
         if (settled) return
         settled = true; active--; clearTimeout(timer)
-        req.off('data', data); req.off('end', end); req.off('aborted', aborted); req.off('error', errorEvent); req.off('close', close)
-        if (error) reject(error); else resolve(Buffer.concat(chunks, bytes).toString('utf8'))
+        req.off('data', data); req.off('end', end); req.off('aborted', aborted); req.off('close', close)
+        const body = error ? undefined : Buffer.concat(chunks, bytes).toString('utf8')
+        chunks.length = 0
+        if (error) reject(error); else resolve(body!)
       }
       const data = (part: Buffer | string) => {
         const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part)
         bytes += chunk.length
-        if (bytes > maxBytes) { done(new HttpFailure(413, 'request body too large')); req.pause(); return }
+        if (bytes > requestMaxBytes) { done(new HttpFailure(413, 'request body too large')); req.pause(); return }
         chunks.push(chunk)
       }
       const end = () => done()
@@ -60,7 +63,7 @@ export function bodyReader(opts: { maxBytes?: number; maxConcurrent?: number; ti
       const errorEvent = () => done(new HttpFailure(400, 'request error'))
       const close = () => { if (!req.complete) done(new HttpFailure(400, 'request closed')) }
       const timer = setTimeout(() => { done(new HttpFailure(408, 'request body timed out')); req.pause() }, timeoutMs)
-      req.on('data', data); req.once('end', end); req.once('aborted', aborted); req.once('error', errorEvent); req.once('close', close)
+      req.on('data', data); req.once('end', end); req.once('aborted', aborted); req.on('error', errorEvent); req.once('close', close)
     })
   }
 }

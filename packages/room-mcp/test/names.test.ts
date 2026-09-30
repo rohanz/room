@@ -4,7 +4,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
-import WebSocket from 'ws'
+import { authorizedWebSocket } from '@room/roomd'
 import { WebsocketProvider } from 'y-websocket'
 import { LEASE_TTL_MS, SETTLE_MS } from '@room/hub-core'
 import { AuthorityLock, startRelay, type StartedRelay } from '@room/relay'
@@ -76,7 +76,7 @@ async function relayHub() {
   const room = 'local/names/main'
   const connect = async (sessionId: string, clock?: { mono: () => number; wall: () => number }) => {
     const doc = new Y.Doc()
-    const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), doc, { WebSocketPolyfill: WebSocket as any, params: { schema: '2', key: 'k' } })
+    const provider = new WebsocketProvider(`ws://127.0.0.1:${relay.port}`, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ key: 'k' }) as any, params: { schema: '2' } })
     await new Promise<void>(resolve => provider.once('sync', () => resolve()))
     const hub = new HubClient({ transport: hubTransport(provider), client: 'test', sessionId, local: true, ...clock })
     cleanup.push(() => { hub.close(); provider.destroy(); doc.destroy() })

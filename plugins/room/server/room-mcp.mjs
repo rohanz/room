@@ -8517,7 +8517,7 @@ var init_error = __esm({
 });
 
 // node_modules/lib0/decoding.js
-var errorUnexpectedEndOfArray, errorIntegerOutOfRange, Decoder, createDecoder, hasContent, readUint8Array, readVarUint8Array, readUint8, readVarUint, readVarInt, _readVarStringPolyfill, _readVarStringNative, readVarString, readFromDataView, readFloat32, readFloat64, readBigInt64, readAnyLookupTable, readAny, RleDecoder, UintOptRleDecoder, IntDiffOptRleDecoder, StringDecoder;
+var errorUnexpectedEndOfArray, errorIntegerOutOfRange, Decoder, createDecoder, hasContent, readUint8Array, readVarUint8Array, readUint8, readVarUint, readVarInt, peekVarUint, _readVarStringPolyfill, _readVarStringNative, readVarString, readFromDataView, readFloat32, readFloat64, readBigInt64, readAnyLookupTable, readAny, RleDecoder, UintOptRleDecoder, IntDiffOptRleDecoder, StringDecoder;
 var init_decoding = __esm({
   "node_modules/lib0/decoding.js"() {
     "use strict";
@@ -8584,6 +8584,12 @@ var init_decoding = __esm({
         }
       }
       throw errorUnexpectedEndOfArray;
+    };
+    peekVarUint = (decoder) => {
+      const pos = decoder.pos;
+      const s = readVarUint(decoder);
+      decoder.pos = pos;
+      return s;
     };
     _readVarStringPolyfill = (decoder) => {
       let remainingLen = readVarUint(decoder);
@@ -15911,23 +15917,24 @@ function compactRetiredWorker(record2) {
   };
 }
 function msgPaths(m) {
-  if ("paths" in m) return m.paths;
-  if ("path" in m) return [m.path];
+  if ("paths" in m) return Array.isArray(m.paths) ? m.paths.filter((p) => typeof p === "string") : [];
+  if ("path" in m) return typeof m.path === "string" ? [m.path] : [];
   return [];
 }
 function scopeCovers(scope, path50) {
-  return scope.paths.some((p) => containsPath(p, path50));
+  return Array.isArray(scope?.paths) && scope.paths.some((p) => typeof p === "string" && containsPath(p, path50));
 }
 function messageAreas(m, scopes) {
   const out2 = /* @__PURE__ */ new Set();
   if (m.type === "scope") out2.add(m.area);
-  for (const path50 of msgPaths(m)) for (const scope of scopes) if (scopeCovers(scope, path50)) out2.add(scope.area);
+  for (const path50 of msgPaths(m)) for (const scope of scopes) if (scope && typeof scope.area === "string" && scopeCovers(scope, path50)) out2.add(scope.area);
   return Array.from(out2).sort();
 }
 function ledger(messages, scopes, q = {}) {
   const areaScopes = q.area ? scopes.filter((s) => s.area === q.area) : [];
   const out2 = [];
   for (const m of messages) {
+    if (!validMessageShape(m)) continue;
     if (!LEDGER_TYPES.has(m.type)) continue;
     if (q.since && m.at < q.since) continue;
     const paths = msgPaths(m);
@@ -15954,6 +15961,7 @@ var init_ledger = __esm({
   "packages/shared/src/ledger.ts"() {
     "use strict";
     init_near();
+    init_messages();
     MAX_RETIRED_WORKERS = 200;
     LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
   }
@@ -16879,6 +16887,69 @@ var init_near = __esm({
 });
 
 // packages/shared/src/messages.ts
+function validMessageShape(value2) {
+  if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) return false;
+  const m = value2;
+  const str3 = (key2, required2 = true) => m[key2] === void 0 ? !required2 : typeof m[key2] === "string" && m[key2].length <= 64 * 1024;
+  const arr = (key2, required2 = true) => m[key2] === void 0 ? !required2 : Array.isArray(m[key2]) && m[key2].every((x) => typeof x === "string" && x.length <= 4096);
+  const num = (key2) => Number.isSafeInteger(m[key2]) && m[key2] >= 0;
+  const plan2 = (p) => !!p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).every((k) => ["kind", "symbol", "detail"].includes(k)) && ["rename", "signature", "delete", "add"].includes(p.kind) && typeof p.symbol === "string" && p.symbol.length <= 512 && (p.detail === void 0 || typeof p.detail === "string" && p.detail.length <= 4096);
+  const plans = (key2) => m[key2] === void 0 || Array.isArray(m[key2]) && m[key2].every(plan2);
+  if (!str3("id") || !str3("from") || !str3("to", false) || !str3("copyOf", false) || typeof m.type !== "string" || !Object.hasOwn(MessageKinds, m.type)) return false;
+  if (m.priority !== void 0 && !["fyi", "notify", "interrupt"].includes(m.priority)) return false;
+  if (m.fromKind !== void 0 && !["human", "agent", "bot", "ci"].includes(m.fromKind)) return false;
+  if (m.at !== void 0 && !num("at")) return false;
+  if (m.seq !== void 0 && !num("seq")) return false;
+  const common = ["id", "type", "from", "fromKind", "to", "priority", "at", "seq", "copyOf"];
+  const fields = {
+    claim: ["claimId", "path", "from_line", "to_line", "intent", "plans"],
+    release: ["claimId", "path", "summary", "unfulfilled"],
+    changed: ["paths", "summary", "symbols"],
+    question: ["text"],
+    note: ["text", "inReplyTo"],
+    answer: ["inReplyTo", "text"],
+    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom"],
+    "merge-conflict": ["path", "text", "clearedFrom"],
+    contract: ["path", "symbol", "text"],
+    scope: ["area", "summary", "paths"],
+    base: ["base", "prev", "commits", "paths", "summary"],
+    pushed: ["branch", "upstream", "fromSha", "toSha", "commits", "paths", "summary", "rewrite"],
+    plan: ["status", "claimId", "path", "plan", "replacedBy", "text"],
+    done: ["tag", "summary", "changed"]
+  };
+  if (!fields[m.type] || Object.keys(m).some((k) => !common.includes(k) && !fields[m.type].includes(k))) return false;
+  switch (m.type) {
+    case "claim":
+      return str3("claimId") && str3("path") && num("from_line") && num("to_line") && str3("intent") && plans("plans");
+    case "release":
+      return str3("claimId") && str3("path") && str3("summary", false) && plans("unfulfilled");
+    case "changed":
+      return arr("paths") && str3("summary") && arr("symbols", false);
+    case "question":
+    case "note":
+      return str3("text") && str3("inReplyTo", false);
+    case "answer":
+      return str3("inReplyTo") && str3("text");
+    case "conflict":
+      return str3("claimId") && str3("otherClaimId") && str3("path") && str3("text") && (m.clearedFrom === void 0 || ["conflict", "possible"].includes(m.clearedFrom));
+    case "merge-conflict":
+      return str3("path") && str3("text") && (m.clearedFrom === void 0 || ["conflict", "possible"].includes(m.clearedFrom));
+    case "contract":
+      return str3("path") && str3("symbol") && str3("text");
+    case "scope":
+      return str3("area") && str3("summary") && arr("paths");
+    case "base":
+      return str3("base") && str3("prev") && num("commits") && arr("paths") && str3("summary");
+    case "pushed":
+      return str3("branch") && str3("upstream") && str3("fromSha") && str3("toSha") && num("commits") && arr("paths") && str3("summary") && (m.rewrite === void 0 || ["yes", "unknown"].includes(m.rewrite));
+    case "plan":
+      return ["cancelled", "superseded"].includes(m.status) && str3("claimId") && str3("path") && plan2(m.plan) && (m.replacedBy === void 0 || plan2(m.replacedBy)) && str3("text");
+    case "done":
+      return str3("tag") && str3("summary") && arr("changed");
+    default:
+      return false;
+  }
+}
 function claimReleaseText(path50, from2, to2, sha) {
   return `released your claim on ${path50}:${from2}-${to2}: that code changed in ${sha}`;
 }
@@ -17161,8 +17232,16 @@ function newest(entries, max2, budget) {
 }
 function trim(doc, now, opts = {}) {
   const report = { archived: 0, mailed: 0, expired: 0, evicted: 0, removed: 0 };
+  const rawBus = doc.messages();
+  const badBus = [];
+  rawBus.forEach((m, i2) => {
+    if (!validMessageShape(m)) badBus.push(i2);
+  });
+  if (badBus.length) doc.doc.transact(() => {
+    for (const i2 of badBus.reverse()) doc.bus.delete(i2, 1);
+  }, opts.origin);
   const bus = doc.messages();
-  const mail = new Map(doc.mail.entries());
+  const mail = new Map([...doc.mail.entries()].filter(([id3, m]) => typeof id3 === "string" && validMessageShape(m)));
   const answered = answeredIds([...bus, ...mail.values()]);
   const eligible = (m) => replyEligible(m, answered, now);
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
@@ -17214,16 +17293,17 @@ function trim(doc, now, opts = {}) {
       report.evicted++;
     }
   }
-  const scopes = doc.allScopes();
+  const scopes = [...doc.scopes.values()].filter((s) => s && typeof s.area === "string" && Array.isArray(s.paths));
   const leaving = bus.filter((m, i2) => i2 < cutoff || ended.has(m.id));
   const archived = /* @__PURE__ */ new Map();
   for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes));
-  const archive = [...doc.archive.entries(), ...archived.entries()].map(([id3, entry]) => ({ id: id3, at: entry[2], size: id3.length + sizeOf(entry), unfulfilled: !!entry[4] }));
+  const archive = [...doc.archive.entries(), ...archived.entries()].filter(([id3, entry]) => typeof id3 === "string" && Array.isArray(entry) && typeof entry[2] === "number" && Array.isArray(entry[3])).map(([id3, entry]) => ({ id: id3, at: entry[2], size: id3.length + sizeOf(entry), unfulfilled: !!entry[4] }));
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES);
   for (const id3 of newest(archive.filter((e) => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id3);
-  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id3]) => !doc.outcomes.has(id3))].filter(([, o]) => now - o.at <= OUTCOMES_TTL_MS).map(([id3, o]) => ({ id: id3, at: o.at, size: id3.length + sizeOf(o) }));
+  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id3]) => !doc.outcomes.has(id3))].filter(([id3, o]) => typeof id3 === "string" && o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired"].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS).map(([id3, o]) => ({ id: id3, at: o.at, size: id3.length + sizeOf(o) }));
   const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES);
   doc.doc.transact(() => {
+    for (const [id3, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id3);
     for (const [id3, entry] of archived) if (keepArchive.has(id3)) {
       doc.archive.set(id3, entry);
       report.archived++;
@@ -17965,12 +18045,17 @@ var init_expiry = __esm({
         const expired = [];
         const measured = /* @__PURE__ */ new Set();
         room.doc.transact(() => {
+          for (const [id3, claim2] of room.claims.entries()) {
+            if (!claim2 || typeof claim2.id !== "string" || typeof claim2.by !== "string" || typeof claim2.path !== "string" || !["human", "agent", "bot", "ci"].includes(claim2.byKind)) room.claims.delete(id3);
+          }
           for (const participant of view) {
             const { name: name2 } = participant;
             const holder = participantRecord(room, name2)?.holder;
             if (!holder || holder.workerId || room.workerViewOf(name2)) continue;
             measured.add(name2);
-            const current = room.expiry.get(name2);
+            const raw = room.expiry.get(name2);
+            const current = raw && Number.isFinite(raw.observedMs) && raw.observedMs >= 0 && typeof raw.epoch === "string" ? raw : void 0;
+            if (raw && !current) room.expiry.delete(name2);
             if (participant.fresh) {
               this.segments.delete(name2);
               if (current) room.expiry.delete(name2);
@@ -18949,6 +19034,10 @@ function* planSteps(inputs, disk, salt) {
       continue;
     }
     const values = { change, hash: fact.hash, size: fact.size, ...fact.baseHash ? { baseHash: fact.baseHash } : {}, at: fact.at, ino: fact.ino };
+    if (fact.budgetOmitted) {
+      hide2("budget");
+      continue;
+    }
     if (fact.binary || fact.text === void 0) {
       entries.set(p, { ...values, state: "held", held: "binary" });
       continue;
@@ -19045,6 +19134,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
   const [blobs, format, gitIgnored2] = await Promise.all([gitBlobInfoMany(dir, inputs.head, paths), objectFormat(dir), ignoredTrackedPaths(dir, paths)]);
   onBaseBlobs?.(blobs);
   const facts = [];
+  let retainedTextBytes = 0;
   let lastYield = performance.now();
   let sinceYield = 0;
   for (const p of paths) {
@@ -19132,14 +19222,19 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
     } catch {
       binary2 = true;
     }
+    const isChanged = (changed.has(p) || !!baseHash) && hash2 !== baseHash;
+    const publishable = isChanged && authorizesText(inputs.policy, p) && text !== void 0;
+    const budgetOmitted = publishable && retainedTextBytes + bytes.length > inputs.rules.budget;
+    if (publishable && !budgetOmitted) retainedTextBytes += bytes.length;
     facts.push({
       path: p,
       kind: "file",
       hash: hash2,
       baseHash,
       size: bytes.length,
-      text,
+      ...budgetOmitted ? {} : { text },
       binary: binary2,
+      ...budgetOmitted ? { budgetOmitted: true } : {},
       at: stat4.mtimeMs,
       ino: stat4.ino,
       ...!changed.has(p) && !baseHash ? { changed: false } : {}
@@ -23337,6 +23432,25 @@ var init_wrapper = __esm({
   }
 });
 
+// packages/roomd/src/ws-auth.ts
+function authorizedWebSocket(credentials) {
+  const headers = {
+    ...credentials.session || credentials.key ? { authorization: `Bearer ${credentials.session ?? credentials.key}` } : {},
+    ...credentials.token ? { "x-room-token": credentials.token } : {}
+  };
+  return class AuthorizedWebSocket extends wrapper_default {
+    constructor(address, protocols) {
+      super(address, protocols, { headers });
+    }
+  };
+}
+var init_ws_auth = __esm({
+  "packages/roomd/src/ws-auth.ts"() {
+    "use strict";
+    init_wrapper();
+  }
+});
+
 // node_modules/lib0/broadcastchannel.js
 var channels, LocalStoragePolyfill, BC, getChannel, subscribe, unsubscribe, publish;
 var init_broadcastchannel = __esm({
@@ -26226,10 +26340,6 @@ function machineIdentity(log2) {
     return machineHostname;
   }
 }
-function tokenParams(token) {
-  const t = token?.trim();
-  return t ? { token: t } : {};
-}
 function splitRoomUrl(room) {
   const url = new URL(room);
   const parts2 = url.pathname.split("/").filter(Boolean);
@@ -26290,7 +26400,8 @@ var init_src2 = __esm({
     init_policy();
     init_share_level();
     init_policy();
-    init_wrapper();
+    init_ws_auth();
+    init_ws_auth();
     init_y_websocket();
     init_reanchor();
     init_yjs();
@@ -26480,8 +26591,8 @@ var init_src2 = __esm({
         }
         this.roomName = decodedRoomName;
         this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
-          WebSocketPolyfill: import_websocket.default,
-          params: { schema: "2", ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...options.localKey ? { key: options.localKey } : {}, ...options.session ? { session: options.session } : {} }
+          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
+          params: { schema: "2" }
         });
         this.publisher = new Publisher(this);
         this.setStatus("syncing", { host: options.host, model: options.model, effort: options.effort });
@@ -29793,6 +29904,17 @@ function largestRoots(update) {
 function memoryFile(commonDir, room) {
   return path15.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
 }
+function syncDirectory2(dir) {
+  let fd;
+  try {
+    fd = fs19.openSync(dir, "r");
+    fs19.fsyncSync(fd);
+  } catch (error2) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error2.code ?? "")) throw error2;
+  } finally {
+    if (fd !== void 0) fs19.closeSync(fd);
+  }
+}
 function loadMemory(commonDir, room, log2 = stderr) {
   const doc = new Doc2(), file = memoryFile(commonDir, room);
   try {
@@ -29826,7 +29948,14 @@ function saveMemory(commonDir, room, doc, log2 = stderr) {
     fs19.mkdirSync(path15.dirname(file), { recursive: true, mode: 448 });
     fs19.chmodSync(path15.dirname(file), 448);
     fs19.writeFileSync(temp, update, { mode: 384, flag: "wx" });
+    const fd = fs19.openSync(temp, "r");
+    try {
+      fs19.fsyncSync(fd);
+    } finally {
+      fs19.closeSync(fd);
+    }
     fs19.renameSync(temp, file);
+    syncDirectory2(path15.dirname(file));
     return true;
   } catch (e) {
     log2(`local room memory: cannot save ${file}: ${e}`);
@@ -30262,10 +30391,14 @@ var init_protocol = __esm({
 // packages/hub-core/src/hub.ts
 function serializedStore(record2) {
   let queue = Promise.resolve();
+  const valid = (v, ceiling = 2 ** 32 - 1) => v !== void 0 && Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 && v <= ceiling ? v : void 0;
   return {
+    current: async (ceiling) => valid(await record2.read(), ceiling),
     advance(floor2) {
       const run3 = queue.then(async () => {
-        const next = Math.max((await record2.read() ?? -1) + 1, floor2);
+        if (!Number.isSafeInteger(floor2) || floor2 < 0 || floor2 >= 2 ** 32) throw new RoomStateError("incarnation floor is out of range");
+        const next = Math.max((valid(await record2.read(), floor2 + MAX_INCARNATION_AHEAD) ?? -1) + 1, floor2);
+        if (next >= 2 ** 32) throw new RoomStateError("incarnation counter exhausted");
         await record2.write(next);
         return next;
       });
@@ -30274,30 +30407,44 @@ function serializedStore(record2) {
     }
   };
 }
-function parseHolder(v) {
-  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || !Number.isInteger(v.pid) || typeof v.startTime !== "string" || typeof v.executable !== "string" || v.workerId !== void 0 && typeof v.workerId !== "string") return void 0;
+function parseHolder(v, record2 = false) {
+  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || v.sessionId.length > MAX_HOLDER_FIELD_LENGTH || !Number.isSafeInteger(v.pid) || v.pid < 0 || v.pid > 2 ** 31 - 1 || typeof v.startTime !== "string" || v.startTime.length > MAX_HOLDER_FIELD_LENGTH || typeof v.executable !== "string" || v.executable.length > MAX_HOLDER_FIELD_LENGTH || v.workerId !== void 0 && (typeof v.workerId !== "string" || v.workerId.length > MAX_HOLDER_FIELD_LENGTH) || Object.keys(v).some((k) => !["sessionId", "pid", "startTime", "executable", "workerId", ...record2 ? ["epoch", "at", "ended", "session", "principal"] : []].includes(k))) return void 0;
   return { sessionId: v.sessionId, pid: v.pid, startTime: v.startTime, executable: v.executable, ...v.workerId !== void 0 ? { workerId: v.workerId } : {} };
 }
 function hubHolder(v) {
-  const holder = parseHolder(v);
-  if (!holder || !isObject2(v) || !isCounter(v.epoch)) return void 0;
+  const holder = parseHolder(v, true);
+  if (!holder || !isObject2(v) || !isCounter(v.epoch) || !Number.isFinite(v.at) || v.ended !== void 0 && v.ended !== "released" && v.ended !== "expired" || v.session !== void 0 && (typeof v.session !== "string" || v.session.length > MAX_HOLDER_FIELD_LENGTH) || v.principal !== void 0 && (typeof v.principal !== "string" || v.principal.length > MAX_HOLDER_FIELD_LENGTH)) return void 0;
   const ended = v.ended === "released" || v.ended === "expired" ? v.ended : void 0;
-  return { ...holder, epoch: v.epoch, at: typeof v.at === "number" ? v.at : 0, ...ended ? { ended } : {} };
+  return {
+    ...holder,
+    epoch: v.epoch,
+    at: typeof v.at === "number" ? v.at : 0,
+    ...ended ? { ended } : {},
+    ...typeof v.session === "string" ? { session: v.session } : {},
+    ...typeof v.principal === "string" ? { principal: v.principal } : {}
+  };
 }
 function knownOf(record2) {
-  const { epoch, at, ended, ...holder } = record2;
-  return { epoch, at, holder, ...ended ? { ended } : {} };
+  const { epoch, at, ended, session, principal, ...holder } = record2;
+  return { epoch, at, holder, session, principal, ...ended ? { ended } : {} };
 }
 function hydrate(known, record2) {
   if (known.holder || record2.epoch !== known.epoch) return;
-  const { at, holder } = knownOf(record2);
+  const { at, holder, session, principal } = knownOf(record2);
   known.at = at;
   known.holder = holder;
+  known.session = session;
+  known.principal = principal;
 }
 function visible(doc) {
   let epoch, seq;
+  let invalid = false;
   const see = (v, kind) => {
-    if (!isCounter(v)) return;
+    if (v === void 0) return;
+    if (!isCounter(v)) {
+      invalid = true;
+      return;
+    }
     if (kind === "epoch") epoch = higher(epoch, v);
     else seq = higher(seq, v);
   };
@@ -30306,32 +30453,56 @@ function visible(doc) {
   see(meta2.get("hubSeq"), "seq");
   for (const m of doc.bus.toArray()) see(m?.seq, "seq");
   for (const m of doc.mail.values()) see(m?.seq, "seq");
-  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) see(value2?.epoch, "epoch");
+  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) {
+    if (!isObject2(value2) || value2.epoch === void 0) continue;
+    if (!isCounter(value2.epoch)) {
+      invalid = true;
+      continue;
+    }
+    see(value2.epoch, "epoch");
+  }
+  const rawIncarnation = meta2.get("hubIncarnation");
+  if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid = true;
   const incarnation = Math.max(
-    isCounter(meta2.get("hubIncarnation")) ? meta2.get("hubIncarnation") : -1,
+    isCounter(rawIncarnation) ? rawIncarnation : -1,
     ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
   );
-  return { epoch, seq, incarnation };
+  return { epoch, seq, incarnation, invalid };
 }
 async function startHub(host) {
   const hub = new RoomHub(host);
   await hub.start();
   return hub;
 }
-var MAINTENANCE_MS, HOLDER, holderKey, encoder2, sizeOf2, isObject2, isName, isCounter, sameRecord, higher, RoomHub;
+var MAINTENANCE_MS, MAX_HUB_FRAME_BYTES, MAX_HOLDER_FIELD_LENGTH, MAX_LEASES_PER_ROOM, MAX_LEASES_PER_PRINCIPAL, MAX_RETAINED_NAMES, MAX_RETAINED_NAMES_PER_PRINCIPAL, POST_RATE_PER_LEASE, POST_RATE_PER_PRINCIPAL, POST_RATE_PER_ROOM, POST_RATE_WINDOW_MS, MAX_RATE_KEYS, MAX_INCARNATION_AHEAD, RoomStateError, HOLDER, holderKey, encoder2, sizeOf2, isObject2, isName, isCounter, sameRecord, higher, RoomHub;
 var init_hub = __esm({
   "packages/hub-core/src/hub.ts"() {
     "use strict";
     init_src();
     init_protocol();
     MAINTENANCE_MS = 6e4;
+    MAX_HUB_FRAME_BYTES = 96 * 1024;
+    MAX_HOLDER_FIELD_LENGTH = 512;
+    MAX_LEASES_PER_ROOM = 512;
+    MAX_LEASES_PER_PRINCIPAL = 64;
+    MAX_RETAINED_NAMES = 1024;
+    MAX_RETAINED_NAMES_PER_PRINCIPAL = 128;
+    POST_RATE_PER_LEASE = 250;
+    POST_RATE_PER_PRINCIPAL = 500;
+    POST_RATE_PER_ROOM = 1e3;
+    POST_RATE_WINDOW_MS = 1e3;
+    MAX_RATE_KEYS = 2048;
+    MAX_INCARNATION_AHEAD = 1e6;
+    RoomStateError = class extends Error {
+      name = "RoomStateError";
+    };
     HOLDER = "\0holder";
     holderKey = (name2) => `${name2}${HOLDER}`;
     encoder2 = new TextEncoder();
     sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
     isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
     isName = (v) => typeof v === "string" && validParticipantName(v) && v.length <= 200;
-    isCounter = (v) => Number.isSafeInteger(v) && v >= 0;
+    isCounter = (v) => Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 * COUNTER_LIMIT;
     sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
     higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
     RoomHub = class {
@@ -30354,22 +30525,29 @@ var init_hub = __esm({
       dirty = false;
       stopped = false;
       unauthorized = false;
+      unavailableSince;
       tenure;
       leases = /* @__PURE__ */ new Map();
       records = /* @__PURE__ */ new Map();
       greeted = /* @__PURE__ */ new Set();
+      sessions = /* @__PURE__ */ new Map();
+      rates = /* @__PURE__ */ new Map();
       push = () => {
       };
       onUpdate = (_update, origin) => {
         if (origin === HUB_ORIGIN) return;
         this.dirty = true;
-        if (this.settling()) this.adoptSynced();
+        if (this.settling() && !this.storageUnavailable()) this.adoptSynced();
       };
       get doc() {
         return this.host.doc;
       }
       async start() {
+        if (this.host.unavailable?.()) throw new Error("hub storage unavailable at startup");
         const before = visible(this.doc);
+        const wallFloor = Math.floor(this.host.wall() / 1e3);
+        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
+        if (before.invalid || before.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
         this.freshAtStart = this.host.fresh === true && before.epoch === void 0 && before.seq === void 0 && before.incarnation < 0;
         await this.incarnate();
         this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
@@ -30380,7 +30558,11 @@ var init_hub = __esm({
       }
       /** Take a new incarnation (§3): durable before anything is issued under it. */
       async incarnate() {
-        const floor2 = Math.max(visible(this.doc).incarnation + 1, this.incarnation + 1, Math.floor(this.host.wall() / 1e3));
+        const seen = visible(this.doc);
+        const wallFloor = Math.floor(this.host.wall() / 1e3);
+        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
+        if (seen.invalid || seen.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
+        const floor2 = Math.max(seen.incarnation + 1, this.incarnation + 1, wallFloor);
         const next = await this.host.store.advance(floor2);
         if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
         this.incarnation = next;
@@ -30398,6 +30580,7 @@ var init_hub = __esm({
       }
       closed(conn) {
         this.greeted.delete(conn);
+        this.sessions.delete(conn);
         for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
       }
       settling() {
@@ -30425,13 +30608,89 @@ var init_hub = __esm({
       }
       /** The doc record for what the hub knows of a name, when it knows the holder. */
       recordOf(k) {
-        return k.holder && { ...k.holder, epoch: k.epoch, at: k.at, ...k.ended ? { ended: k.ended } : {} };
+        return k.holder && {
+          ...k.holder,
+          epoch: k.epoch,
+          at: k.at,
+          ...k.ended ? { ended: k.ended } : {},
+          ...k.session ? { session: k.session } : {},
+          ...k.principal ? { principal: k.principal } : {}
+        };
       }
       /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
       hold(name2, lease) {
         this.leases.set(name2, lease);
         this.records.set(name2, lease);
         this.tenure.present(this.doc, name2, HUB_ORIGIN);
+      }
+      principal(p) {
+        return "login" in p ? `login:${p.login ?? ""}` : "local";
+      }
+      owner(conn, p, name2, lease) {
+        if (this.host.owns && !this.host.owns(p, name2)) return false;
+        if (lease?.principal && lease.principal !== this.principal(p)) return false;
+        const session = this.sessions.get(conn);
+        return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
+      }
+      storageUnavailable() {
+        const text = this.host.unavailable?.();
+        if (text) {
+          this.unavailableSince ??= this.host.mono();
+          return text;
+        }
+        if (this.unavailableSince !== void 0) {
+          this.unavailableSince = void 0;
+          const now = this.host.mono();
+          for (const lease of this.leases.values()) lease.renewed = now;
+          this.maintainedAt = now;
+          this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
+        }
+        return void 0;
+      }
+      unavailable(fail) {
+        const text = this.storageUnavailable();
+        return text ? fail("unavailable", text, { retryMs: 1e3 }) : void 0;
+      }
+      limited(key2, limit) {
+        const now = this.host.mono();
+        const rate = this.rates.get(key2);
+        if (!rate || now - rate.at >= POST_RATE_WINDOW_MS) {
+          if (!rate && this.rates.size >= MAX_RATE_KEYS) {
+            for (const [k, v] of this.rates) if (now - v.at >= POST_RATE_WINDOW_MS) this.rates.delete(k);
+            if (this.rates.size >= MAX_RATE_KEYS) {
+              const oldLease = [...this.rates.keys()].find((k) => k.startsWith("lease:"));
+              if (oldLease) this.rates.delete(oldLease);
+            }
+          }
+          this.rates.set(key2, { at: now, count: 1 });
+          return void 0;
+        }
+        if (rate.count >= limit) return Math.max(1, POST_RATE_WINDOW_MS - (now - rate.at));
+        rate.count++;
+        return void 0;
+      }
+      pruneRecords() {
+        if (this.records.size < MAX_RETAINED_NAMES) return;
+        const ended = [...this.records].filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
+        for (const [name2] of ended) {
+          if (this.records.size < MAX_RETAINED_NAMES) break;
+          this.records.delete(name2);
+          this.doc.doc.transact(() => {
+            this.doc.participants.delete(holderKey(name2));
+          }, HUB_ORIGIN);
+        }
+      }
+      prunePrincipal(principal) {
+        const mine = [...this.records].filter(([, r]) => r.principal === principal);
+        if (mine.length < MAX_RETAINED_NAMES_PER_PRINCIPAL) return;
+        const ended = mine.filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
+        for (const [name2] of ended) {
+          if ([...this.records.values()].filter((r) => r.principal === principal).length < MAX_RETAINED_NAMES_PER_PRINCIPAL) break;
+          this.records.delete(name2);
+          this.doc.doc.transact(() => {
+            this.doc.participants.delete(holderKey(name2));
+          }, HUB_ORIGIN);
+        }
       }
       /**
        * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
@@ -30452,7 +30711,7 @@ var init_hub = __esm({
         this.leases.delete(name2);
         const current = this.record(name2);
         if (current) hydrate(lease, current);
-        const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, ended: how };
+        const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, principal: lease.principal, session: lease.session, ended: how };
         this.records.set(name2, ended);
         const record2 = this.recordOf(ended);
         if (record2) this.doc.doc.transact(() => {
@@ -30476,6 +30735,7 @@ var init_hub = __esm({
           const name2 = key2.slice(0, -HOLDER.length);
           const known = this.records.get(name2);
           const lease = this.leases.get(name2);
+          if (!known && this.records.size >= MAX_RETAINED_NAMES) continue;
           if (known && record2.epoch <= known.epoch) {
             if (lease) hydrate(lease, record2);
             continue;
@@ -30485,7 +30745,7 @@ var init_hub = __esm({
             this.notify(name2, lease, "superseded");
           }
           if (record2.ended) this.records.set(name2, knownOf(record2));
-          else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
+          else if (this.leases.size < MAX_LEASES_PER_ROOM) this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
         }
       }
       /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
@@ -30518,12 +30778,31 @@ var init_hub = __esm({
       }
       // ---- requests ----
       handle(conn, frame, p) {
-        const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
+        const re = isObject2(frame) && typeof frame.id === "string" && frame.id.length <= 128 ? frame.id : "";
         const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
-        if (!isObject2(frame) || frame.v !== 1 || !re || typeof frame.op !== "string") {
+        try {
+          return this.handleSafe(conn, frame, p, fail);
+        } catch (error2) {
+          this.host.log(`hub: rejected request: ${error2 instanceof Error ? error2.message : String(error2)}`);
+          return fail("invalid", "invalid hub request");
+        }
+      }
+      handleSafe(conn, frame, p, fail) {
+        const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
+        if (sizeOf2(frame) > MAX_HUB_FRAME_BYTES) return fail("too-large", "hub request exceeds the frame limit");
+        if (!isObject2(frame) || frame.v !== 1 || !re || re.length > 128 || typeof frame.op !== "string") {
           this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`);
           return fail("invalid", "a hub request needs v: 1, an id and an op");
         }
+        const fields = {
+          hello: ["proto", "schema", "client", "sessionId"],
+          acquire: ["name", "holder", "supersedes"],
+          renew: ["name", "epoch"],
+          release: ["name", "epoch"],
+          post: ["lease", "msg", "auto"]
+        };
+        const op = frame.op;
+        if (fields[op] && Object.keys(frame).some((k) => !["v", "id", "op", ...fields[op]].includes(k))) return fail("invalid", "unknown hub request field");
         if (!this.authorized()) return fail("not-authority", "not the authority; reconnect");
         if ("readOnly" in p && p.readOnly) return fail("read-only", "this connection is read-only");
         const req = frame;
@@ -30536,9 +30815,9 @@ var init_hub = __esm({
           case "renew":
             return this.renew(conn, req, p, fail);
           case "release":
-            return this.release(req, fail);
+            return this.release(conn, req, p, fail);
           case "post":
-            return this.post(req, p, fail, starting);
+            return this.post(conn, req, p, fail, starting);
           default:
             return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
         }
@@ -30547,7 +30826,9 @@ var init_hub = __esm({
         if (req.proto !== HUB_PROTO) {
           return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
         }
+        if (typeof req.sessionId !== "string" || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH || typeof req.client !== "string" || req.client.length > 128 || req.schema !== 2) return fail("invalid", "hello needs a supported schema, client and session");
         this.greeted.add(conn);
+        this.sessions.set(conn, req.sessionId);
         return { v: 1, re: req.id, ok: true, proto: HUB_PROTO, incarnation: this.incarnation, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true };
       }
       acquire(conn, req, p, fail, starting) {
@@ -30555,15 +30836,30 @@ var init_hub = __esm({
         if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
         const { name: name2 } = req;
         if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
+        if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
         const live = this.live(name2);
         if (!live && this.settling()) return starting();
-        if (live && live.holder?.sessionId !== holder.sessionId && req.supersedes !== live.epoch) {
+        if (live && req.supersedes !== live.epoch && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
           return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
+        }
+        if (live && live.principal && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
+        if (!live && this.leases.size >= MAX_LEASES_PER_ROOM) return fail("room-full", "the room has too many live leases");
+        const owned = [...this.leases.values()].filter((l) => l.principal === this.principal(p)).length;
+        if (!live && owned >= MAX_LEASES_PER_PRINCIPAL) return fail("room-full", "this principal has too many live leases");
+        if (!live) {
+          this.prunePrincipal(this.principal(p));
+          if ([...this.records.values()].filter((r) => r.principal === this.principal(p)).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return fail("room-full", "this principal has too many retained names");
+        }
+        if (!live && this.records.size >= MAX_RETAINED_NAMES) {
+          this.pruneRecords();
+          if (this.records.size >= MAX_RETAINED_NAMES) return fail("room-full", "the room has too many retained names");
         }
         const epoch = this.issue("epoch");
         if (epoch === void 0) return starting();
         if (live) this.notify(name2, live, "superseded");
-        const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn };
+        const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn, principal: this.principal(p), session: this.sessions.get(conn) };
         this.lastEpoch = epoch;
         this.doc.doc.transact(() => {
           this.hold(name2, lease);
@@ -30576,37 +30872,69 @@ var init_hub = __esm({
       renew(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
         const { name: name2, epoch } = req;
+        const existing = this.leases.get(name2) ?? this.records.get(name2);
+        if (this.host.owns && !this.host.owns(p, name2) || existing?.epoch === epoch && !this.owner(conn, p, name2, existing)) {
+          return fail("not-yours", `${name2} belongs to another holder session`);
+        }
+        const outage = this.unavailable(fail);
+        if (outage) {
+          const lease = this.leases.get(name2);
+          if (lease?.epoch !== epoch) return outage;
+          lease.renewed = this.host.mono();
+          lease.conn = conn;
+          return { v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS };
+        }
         const live = this.live(name2);
         const ok = () => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS });
         if (live?.epoch === epoch) {
+          if (!this.owner(conn, p, name2, live)) return fail("not-yours", `${name2} belongs to another holder session`);
           live.renewed = this.host.mono();
           live.conn = conn;
           return ok();
         }
         const known = this.records.get(name2);
         if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
-          if (live) this.notify(name2, live, "superseded");
           const record2 = this.record(name2);
+          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal && record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
+          if (live) this.notify(name2, live, "superseded");
           const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
-          this.hold(name2, { ...synced, renewed: this.host.mono(), conn });
+          this.hold(name2, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn });
           this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
           return ok();
         }
         return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
       }
-      release(req, fail) {
+      release(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
+        const existing = this.leases.get(req.name) ?? this.records.get(req.name);
+        if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
+          return fail("not-yours", `${req.name} belongs to another holder session`);
+        }
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
         const live = this.live(req.name);
         const known = this.records.get(req.name);
+        if ((live?.epoch === req.epoch || known?.epoch === req.epoch) && !this.owner(conn, p, req.name, live ?? known)) return fail("not-yours", `${req.name} belongs to another holder session`);
         if (live?.epoch === req.epoch) this.end(req.name, live, "released");
         else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
         return { v: 1, re: req.id, ok: true };
       }
-      post(req, p, fail, starting) {
+      post(conn, req, p, fail, starting) {
         const msg = req.msg;
-        if (!isObject2(msg) || typeof msg.id !== "string" || !msg.id || typeof msg.type !== "string" || !MessageKinds[msg.type] || !isName(msg.from) || msg.to !== void 0 && typeof msg.to !== "string") return fail("invalid", "post needs a message with an id, a known type and a sender");
-        if (!isObject2(req.lease) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
-        if (this.live(req.lease.name)?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
+        if (sizeOf2(msg) > MAX_MESSAGE_BYTES) return fail("too-large", `the message exceeds ${MAX_MESSAGE_BYTES / 1024} KiB`);
+        if (!validMessageShape(msg) || !msg.id || !isName(msg.from) || msg.to !== void 0 && !isName(msg.to) || msg.at !== void 0 || msg.seq !== void 0 || req.auto !== void 0 && typeof req.auto !== "boolean") return fail("invalid", "post has invalid message fields");
+        if (!isObject2(req.lease) || Object.keys(req.lease).some((k) => k !== "name" && k !== "epoch") || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
+        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name);
+        if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
+          return fail("not-yours", `${req.lease.name} belongs to another holder session`);
+        }
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
+        const live = this.live(req.lease.name);
+        if (live?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
+        if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
+        const retryMs = this.limited(`lease:${req.lease.name}`, POST_RATE_PER_LEASE) ?? this.limited(`principal:${this.principal(p)}`, POST_RATE_PER_PRINCIPAL) ?? this.limited("room", POST_RATE_PER_ROOM);
+        if (retryMs) return fail("rate-limited", "posting too quickly; retry shortly", { retryMs });
         const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
         if (found) {
           const seq = found.seq;
@@ -30634,7 +30962,15 @@ var init_hub = __esm({
       }
       // ---- maintenance ----
       tick() {
+        try {
+          this.tickSafe();
+        } catch (error2) {
+          this.host.log(`hub: maintenance failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        }
+      }
+      tickSafe() {
         if (!this.authorized()) return;
+        if (this.storageUnavailable()) return;
         for (const name2 of [...this.leases.keys()]) this.live(name2);
         if (this.settling()) return;
         if (!this.settled) {
@@ -30660,7 +30996,7 @@ var init_hub = __esm({
           for (const name2 of names) {
             const current = this.record(name2);
             let known = this.records.get(name2);
-            if (current && !this.leases.has(name2) && (!known || current.epoch > known.epoch)) {
+            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
               known = knownOf(current.ended ? current : { ...current, ended: "expired" });
               this.records.set(name2, known);
             }
@@ -30813,6 +31149,14 @@ import crypto3 from "node:crypto";
 import fs22 from "node:fs";
 import http from "node:http";
 import path18 from "node:path";
+function safeUrl(target) {
+  if (!target || !target.startsWith("/") || target.startsWith("//") || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, "Bad Request");
+  try {
+    return new URL(target, "http://x");
+  } catch {
+    throw new HttpFailure(400, "Bad Request");
+  }
+}
 async function observeTakeover(work, report) {
   try {
     await work();
@@ -30884,7 +31228,7 @@ function startRoomHub(d, room, rt, log2) {
     d.hub = hub;
   }).catch((e) => log2(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`));
 }
-function hubReply(d, conn, dec, hubOn) {
+function hubReply(d, conn, dec, hubOn, readOnly = false) {
   let frame;
   try {
     frame = decodeFrame(dec);
@@ -30895,7 +31239,7 @@ function hubReply(d, conn, dec, hubOn) {
   const re = typeof id3 === "string" ? id3 : "";
   if (!hubOn) return { v: 1, re, ok: false, reason: "not-authority", text: "not the authority; reconnect" };
   if (!d.hub) return { v: 1, re, ok: false, reason: "starting", text: "the hub is starting", retryMs: STARTING_RETRY_MS };
-  return d.hub.handle(conn, frame, { local: true });
+  return d.hub.handle(conn, frame, readOnly ? { readOnly: true } : { local: true });
 }
 function attach(docs, conn, req, opts) {
   const name2 = encodeURIComponent(decodeURIComponent((req.url ?? "/").slice(1).split("?")[0]));
@@ -30909,15 +31253,17 @@ function attach(docs, conn, req, opts) {
       const enc2 = createEncoder();
       switch (readVarUint(dec)) {
         case MSG_SYNC:
+          if (opts.readOnly && peekVarUint(dec) !== messageYjsSyncStep1) break;
           writeVarUint(enc2, MSG_SYNC);
           readSyncMessage(dec, enc2, d.doc, conn);
           if (length(enc2) > 1) send(conn, toUint8Array(enc2));
           break;
         case MSG_AWARENESS:
+          if (opts.readOnly) break;
           applyAwarenessUpdate(d.awareness, readVarUint8Array(dec), conn);
           break;
         case MSG_HUB:
-          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub)));
+          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub, opts.readOnly)));
           break;
       }
     } catch {
@@ -31026,52 +31372,134 @@ function startRelay(port, opts = {}) {
       ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
     };
     const staticDir = opts.staticDir ? path18.resolve(opts.staticDir) : findWebDist();
+    const requestedTicketTtl = opts.ticketTtlMs ?? 6e4;
+    const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(6e4, requestedTicketTtl)) : 6e4;
+    const tickets = /* @__PURE__ */ new Map();
+    const ticketRate = /* @__PURE__ */ new Map();
+    const sameSecret = (given, wanted) => {
+      const a = Buffer.from(typeof given === "string" ? given : ""), b = Buffer.from(wanted);
+      return a.length === b.length && crypto3.timingSafeEqual(a, b);
+    };
+    const bearerOk = (req) => !!opts.key && sameSecret(req.headers.authorization, `Bearer ${opts.key}`);
     const server = http.createServer((req, res) => {
-      const url = new URL(req.url ?? "/", "http://x");
-      if (url.pathname === "/health") {
-        const keyOk = !!opts.key && isLoopback(req.socket.remoteAddress) && req.headers.authorization === "Bearer " + opts.key;
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...keyOk ? { key: true } : {} }));
-        return;
-      }
-      if (req.method === "DELETE" && url.pathname === "/memory") {
-        if (!opts.key || req.headers.authorization !== "Bearer " + opts.key || !isLoopback(req.socket.remoteAddress)) {
-          res.writeHead(403);
-          res.end();
+      try {
+        res.setHeader("Referrer-Policy", "no-referrer");
+        const url = safeUrl(req.url);
+        if (req.method === "POST" && url.pathname === "/ws-ticket") {
+          if (!isLoopback(req.socket.remoteAddress)) {
+            res.writeHead(403);
+            res.end("Forbidden");
+            return;
+          }
+          const ip = req.socket.remoteAddress ?? "?", now = Date.now(), prior = ticketRate.get(ip);
+          const budget = prior && prior.until > now ? prior : { count: 0, until: now + 6e4 };
+          ticketRate.set(ip, budget);
+          if (++budget.count > 60) {
+            res.writeHead(429);
+            res.end("rate limited");
+            return;
+          }
+          let body2 = "";
+          req.on("data", (part) => {
+            body2 += part;
+            if (body2.length > 4096) req.destroy();
+          });
+          req.on("end", () => {
+            let value2;
+            try {
+              value2 = JSON.parse(body2);
+            } catch {
+              res.writeHead(400);
+              res.end("bad request");
+              return;
+            }
+            if (!opts.key || !(bearerOk(req) || sameSecret(value2.key, opts.key))) {
+              res.writeHead(403);
+              res.end("Forbidden");
+              return;
+            }
+            if (value2.schema !== 2 || !value2.room || !value2.room.startsWith("local/")) {
+              res.writeHead(400);
+              res.end("schema 2 local room required");
+              return;
+            }
+            for (const [key2, t] of tickets) if (t.expires <= now) tickets.delete(key2);
+            if (tickets.size >= 1e4) {
+              res.writeHead(503);
+              res.end("too many pending tickets");
+              return;
+            }
+            const ticket = crypto3.randomBytes(16).toString("hex");
+            tickets.set(ticket, { room: value2.room, expires: now + ticketTtl });
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
+          });
           return;
         }
-        try {
-          const room = url.searchParams.get("room") ?? "";
-          const d = docs.get(encodeURIComponent(room));
-          if (d?.memory) d.memory.forget();
-          else if (opts.commonDir) fs22.rmSync(memoryFile(opts.commonDir, room), { force: true });
-          if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
-          res.writeHead(204);
-          res.end();
-        } catch {
-          res.writeHead(500);
-          res.end("could not forget local memory");
-        }
-        return;
-      }
-      if (staticDir) {
-        const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-        const file = path18.resolve(staticDir, rel);
-        if (file.startsWith(staticDir + path18.sep) && fs22.existsSync(file) && fs22.statSync(file).isFile()) {
-          res.writeHead(200, { "content-type": MIME[path18.extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" });
-          fs22.createReadStream(file).pipe(res);
+        if (url.pathname === "/health") {
+          const keyOk = isLoopback(req.socket.remoteAddress) && bearerOk(req);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...keyOk ? { key: true } : {} }));
           return;
         }
+        if (req.method === "DELETE" && url.pathname === "/memory") {
+          if (!bearerOk(req) || !isLoopback(req.socket.remoteAddress)) {
+            res.writeHead(403);
+            res.end();
+            return;
+          }
+          try {
+            const room = url.searchParams.get("room") ?? "";
+            const d = docs.get(encodeURIComponent(room));
+            if (d?.memory) d.memory.forget();
+            else if (opts.commonDir) fs22.rmSync(memoryFile(opts.commonDir, room), { force: true });
+            if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
+            res.writeHead(204);
+            res.end();
+          } catch {
+            res.writeHead(500);
+            res.end("could not forget local memory");
+          }
+          return;
+        }
+        if (staticDir) {
+          const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+          const file = path18.resolve(staticDir, rel);
+          if (file.startsWith(staticDir + path18.sep) && fs22.existsSync(file) && fs22.statSync(file).isFile()) {
+            res.writeHead(200, { "content-type": MIME[path18.extname(file)] ?? "application/octet-stream", "cache-control": rel === "index.html" ? "no-store" : "no-cache" });
+            fs22.createReadStream(file).pipe(res);
+            return;
+          }
+        }
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
+      } catch (e) {
+        opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`);
+        if (!res.writableEnded) {
+          res.writeHead(e instanceof HttpFailure ? e.status : 500);
+          res.end(e instanceof HttpFailure ? e.message : "Internal Server Error");
+        }
       }
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
     });
     const wss = new import_websocket_server.default({ noServer: true });
+    wss.on("headers", (headers) => headers.push("Referrer-Policy: no-referrer"));
     const docs = relayDocs();
-    wss.on("connection", (conn, req) => attach(docs, conn, req, docOptions));
+    wss.on("connection", (conn, req) => {
+      try {
+        safeUrl(req.url);
+        attach(docs, conn, req, { ...docOptions, readOnly: !!req.ticketView });
+      } catch (e) {
+        opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
+        conn.close(1008, "Bad Request");
+      }
+    });
     const ticker = setInterval(() => {
       for (const [name2, d] of docs) {
-        d.hub?.tick();
+        try {
+          d.hub?.tick();
+        } catch (error2) {
+          opts.log?.(`hub maintenance ${name2}: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        }
         if (opts.commonDir && d.memory) try {
           catchUpLocal(opts.commonDir, decodeURIComponent(name2), d.doc, opts.log);
         } catch (error2) {
@@ -31081,26 +31509,41 @@ function startRelay(port, opts = {}) {
     }, 1e3);
     ticker.unref?.();
     server.on("upgrade", (req, socket, head) => {
+      socket.on("error", () => {
+      });
       const refuse = (code, why) => {
         socket.write(`HTTP/1.1 ${code} ${why}\r
+Referrer-Policy: no-referrer\r
 Connection: close\r
 \r
 `);
         socket.destroy();
       };
-      if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
-      if (new URL(req.url ?? "/", "http://x").searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
       try {
-        decodeURIComponent((req.url ?? "/").split("?")[0]);
-      } catch {
-        return refuse(400, "Bad Request");
+        const url = safeUrl(req.url);
+        if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
+        if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
+        try {
+          decodeURIComponent((req.url ?? "/").split("?")[0]);
+        } catch {
+          return refuse(400, "Bad Request");
+        }
+        if (url.searchParams.has("key")) return refuse(400, "send local key in Authorization or exchange at POST /ws-ticket");
+        if (opts.key) {
+          const issued = url.searchParams.get("ticket");
+          const ticket = issued ? tickets.get(issued) : void 0;
+          if (issued) tickets.delete(issued);
+          const room = decodeURIComponent(url.pathname.slice(1));
+          const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room;
+          if (issued && !ticketOk) return refuse(403, "websocket ticket invalid or expired");
+          if (!ticketOk && !bearerOk(req)) return refuse(403, "Forbidden: local room key missing or wrong");
+          if (ticketOk) req.ticketView = true;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      } catch (e) {
+        opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`);
+        refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : "Internal Server Error");
       }
-      if (opts.key) {
-        const given = new URL(req.url ?? "/", "http://x").searchParams.get("key") ?? "";
-        const a = Buffer.from(given), b = Buffer.from(opts.key);
-        if (a.length !== b.length || !crypto3.timingSafeEqual(a, b)) return refuse(403, "Forbidden: local room key missing or wrong");
-      }
-      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
     });
     const signals = ["SIGTERM", "SIGINT"];
     let closing;
@@ -31290,7 +31733,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     }
   };
 }
-var MSG_SYNC, MSG_AWARENESS, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
+var HttpFailure, MSG_SYNC, MSG_AWARENESS, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
 var init_src4 = __esm({
   "packages/relay/src/index.ts"() {
     "use strict";
@@ -31309,6 +31752,13 @@ var init_src4 = __esm({
     init_awareness();
     init_src3();
     init_src();
+    HttpFailure = class extends Error {
+      constructor(status, message2) {
+        super(message2);
+        this.status = status;
+      }
+      status;
+    };
     MSG_SYNC = 0;
     MSG_AWARENESS = 1;
     LOCAL_FILE = path18.join("room", "relay.json");
@@ -36348,7 +36798,7 @@ async function readChoice(dir) {
     const file = await choiceFile(dir);
     const c = JSON.parse(fs27.readFileSync(file, "utf8"));
     if (!c || typeof c.where !== "string") return void 0;
-    const { tag, share: _share, warned: _warned, warnedLevels: _warnedLevels, ...choice } = c;
+    const { tag, ...choice } = c;
     if (typeof tag === "string") {
       const main2 = fs27.realpathSync(path24.dirname(path24.dirname(file)));
       choice.tags = { [main2]: tag, ...choice.tags };
@@ -36365,10 +36815,21 @@ async function writeChoice(dir, where, by, room) {
     let prev;
     try {
       prev = JSON.parse(fs27.readFileSync(file, "utf8"));
-    } catch {
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
     }
+    if (fs27.existsSync(file) && (!prev || typeof prev !== "object" || typeof prev.where !== "string")) throw new Error(`cannot rewrite unreadable Room choice ${file}`);
     const tags = typeof prev?.tag === "string" ? { [fs27.realpathSync(path24.dirname(path24.dirname(file)))]: prev.tag, ...prev.tags } : prev?.tags;
-    const c = { where, at: Date.now(), ...by ? { by } : {}, ...where === LOCAL && room ? { room } : {}, ...tags ? { tags } : {} };
+    const c = {
+      where,
+      at: Date.now(),
+      ...by ? { by } : {},
+      ...where === LOCAL && room ? { room } : {},
+      ...tags ? { tags } : {},
+      ...prev && "share" in prev ? { share: prev.share } : {},
+      ...prev && "warned" in prev ? { warned: prev.warned } : {},
+      ...prev && "warnedLevels" in prev ? { warnedLevels: prev.warnedLevels } : {}
+    };
     writeAtomic(file, c);
     return c;
   });
@@ -36386,6 +36847,7 @@ async function rememberTag(dir, tag) {
   }
   try {
     const prev = await readChoice(dir);
+    if (!prev && fs27.existsSync(file)) throw new Error(`cannot rewrite unreadable Room choice ${file}`);
     const key2 = await worktreePath(dir);
     const c = { ...prev ?? { where: LOCAL, at: Date.now() }, tags: { ...prev?.tags, [key2]: tag } };
     const temp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -36490,24 +36952,30 @@ var init_policy_store = __esm({
         if (record2 && (record2.v !== 1 || record2.room !== room || record2.participant !== participant)) throw new Error(`invalid sharing record ${file}`);
         if (!record2) {
           let legacy = {};
+          let unreadable = false;
           try {
-            legacy = JSON.parse(fs28.readFileSync(await choiceFile(dir), "utf8"));
-          } catch {
+            const parsed = JSON.parse(fs28.readFileSync(await choiceFile(dir), "utf8"));
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) unreadable = true;
+            else legacy = parsed;
+          } catch (error2) {
+            if (error2.code !== "ENOENT") unreadable = true;
           }
           const priorLevel = legacy.share === "full" || legacy.share === "declared" || legacy.share === "intent" ? legacy.share : void 0;
+          const uncertain = unreadable || legacy.share !== void 0 && !priorLevel || legacy.warned !== void 0 && legacy.share === void 0 || legacy.warnedLevels !== void 0 && legacy.share === void 0;
+          if (uncertain) console.warn("[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing");
           const previousDisclosure = legacy.warnedLevels?.[`${worktree}#${server ?? ""}`];
           record2 = {
             v: 1,
             room,
             participant,
             worktree,
-            requested: priorLevel ?? requested,
+            requested: priorLevel ?? (uncertain ? "intent" : requested),
             declared: emptyGrant(),
             disclosed: { level: previousDisclosure === "intent" || previousDisclosure === "declared" || previousDisclosure === "full" ? previousDisclosure : "intent", version: previousDisclosure ? 1 : 0 },
             updatedAt: Date.now()
           };
           writeAtomic(file, record2);
-          if (legacy.share || legacy.warnedLevels) await removeSharingChoice(dir);
+          if (legacy.share !== void 0 || legacy.warned !== void 0 || legacy.warnedLevels !== void 0) await removeSharingChoice(dir);
         } else if (record2.worktree !== worktree) {
           record2 = { ...record2, worktree, declared: emptyGrant(), updatedAt: Date.now() };
           writeAtomic(file, record2);
@@ -36862,7 +37330,7 @@ var init_hub_client = __esm({
           }
           this.leases.set(name2, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
         } catch (error2) {
-          if (error2 instanceof HubError && error2.reason === "stale" && this.leases.get(name2) === lease) this.lose(name2);
+          if (error2 instanceof HubError && (error2.reason === "stale" || error2.reason === "not-yours") && this.leases.get(name2) === lease) this.lose(name2);
           throw error2;
         }
       }
@@ -36873,12 +37341,9 @@ var init_hub_client = __esm({
           this.lostLeases.delete(name2);
           return;
         }
-        try {
-          await this.request({ op: "release", name: name2, epoch: lease.epoch });
-        } finally {
-          if (this.leases.get(name2) === lease) this.leases.delete(name2);
-          this.lostLeases.delete(name2);
-        }
+        await this.request({ op: "release", name: name2, epoch: lease.epoch });
+        if (this.leases.get(name2) === lease) this.leases.delete(name2);
+        this.lostLeases.delete(name2);
       }
       /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
       async post(msg, options) {
@@ -36892,7 +37357,7 @@ var init_hub_client = __esm({
             }
           });
         } catch (error2) {
-          if (error2 instanceof HubError && error2.reason === "stale" && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name);
+          if (error2 instanceof HubError && (error2.reason === "stale" || error2.reason === "not-yours") && this.leases.get(options.lease.name)?.epoch === options.lease.epoch) this.lose(options.lease.name);
           throw error2;
         }
       }
@@ -36952,12 +37417,12 @@ var init_hub_client = __esm({
           const t = await this.requestOnce(body2, onSend);
           this.assertOpen();
           if (t.ok) return t;
-          if (t.reason === "starting") {
+          if (t.reason === "starting" || t.reason === "unavailable" || t.reason === "rate-limited") {
             const remaining = startingBudget - elapsed();
-            if (remaining <= 0) throw new HubError("starting", t.text);
+            if (remaining <= 0) throw new HubError(t.reason, t.text);
             await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), remaining));
             this.assertOpen();
-            if (elapsed() >= startingBudget) throw new HubError("starting", t.text);
+            if (elapsed() >= startingBudget) throw new HubError(t.reason, t.text);
             continue;
           }
           if (t.reason === "hello-first" && body2.op !== "hello") {
@@ -37066,7 +37531,7 @@ var init_post = __esm({
     init_src();
     init_hub_client();
     NOT_SENT2 = "not sent: hub unreachable";
-    TOLD = /* @__PURE__ */ new Set(["too-large", "over-cap", "room-full", "read-only", "version"]);
+    TOLD = /* @__PURE__ */ new Set(["too-large", "over-cap", "room-full", "read-only", "version", "unavailable", "rate-limited"]);
     greetings = /* @__PURE__ */ new WeakMap();
   }
 });
@@ -37979,6 +38444,12 @@ async function pollLogin(server, p, opts = {}) {
   const deadline = Date.now() + (opts.maxMs ?? 9e4);
   for (; ; ) {
     const res = await fetch(`${httpOf(server)}/auth/poll`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ device: p.device }), signal: AbortSignal.timeout(15e3) });
+    if (res.status === 429) {
+      const retry = Math.max(1, Number(res.headers.get("retry-after")) || p.interval);
+      if (Date.now() + retry * 1e3 >= deadline) return { pending: true };
+      await sleep(retry * 1e3);
+      continue;
+    }
     if (!res.ok) return { error: (await res.text()).trim() || `HTTP ${res.status}` };
     const b = await res.json();
     if (b.session && b.login) {
@@ -38130,8 +38601,8 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   const encodedRoom = url.pathname.split("/").pop();
   url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
   const probe = await timed("connect", () => options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), encodedRoom, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), encodedRoom, doc, {
-    WebSocketPolyfill: wrapper_default,
-    params: { schema: "2", ...options.token ? { token: options.token } : {}, ...options.session ? { session: options.session } : {}, ...options.localKey ? { key: options.localKey } : {} }
+    WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
+    params: { schema: "2" }
   }));
   const closeProbe = () => {
     probe.destroy();
@@ -38471,7 +38942,7 @@ async function joinSession(opts) {
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
   const view = await timed("view token", () => viewToken(server, roomName, creds));
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ""}`;
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
@@ -38607,10 +39078,12 @@ function watchClosed(s, log2) {
       log2?.(`${s.roomName}: ${s.rejected.reason}; your last edits are not in the room; retrying in 60 seconds`);
       return;
     }
-    if (close?.code !== ROOM_CLOSED_CODE) return;
+    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403) return;
     if (retry) clearTimeout(retry);
     if (verify) clearTimeout(verify);
-    s.closed = { reason: close.reason || "room closed" };
+    const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf("/"));
+    const reason = close.code === 4401 ? `logged out of ${server}: run room_login` : close.code === 4403 ? `access to ${s.roomName} was revoked` : close.reason || "room closed";
+    s.closed = { reason };
     try {
       p.disconnect?.();
     } catch {
@@ -38733,7 +39206,6 @@ var init_session = __esm({
     "use strict";
     init_connection();
     init_y_websocket();
-    init_wrapper();
     init_yjs();
     init_src2();
     init_src4();
@@ -38843,13 +39315,18 @@ async function fetchPrs(s, opts = {}) {
   const branch = opts.branch ?? acceptedPrBranch(s);
   if (!branch || branch === "updating") return [];
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, session: a.session, token: a.token, branch, head: opts.head ? "1" : void 0 })}`, { signal: AbortSignal.timeout(2e4) });
+  const res = await fetch(`${httpOf2(a.server)}/github/prs?${query({ room: s.roomName, branch, head: opts.head ? "1" : void 0 })}`, {
+    headers: { ...a.session ? { authorization: `Bearer ${a.session}` } : {}, ...a.token ? { "x-room-token": a.token } : {} },
+    signal: AbortSignal.timeout(2e4)
+  });
   if (!res.ok) throw new Error(`${a.server} would not list pull requests: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   return await res.json();
 }
 async function postPrNote(s, number3, body2) {
   const a = await authFor(s);
-  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ room: s.roomName, session: a.session, token: a.token, number: number3, body: body2 }), signal: AbortSignal.timeout(3e4) });
+  const payload = JSON.stringify({ room: s.roomName, session: a.session, token: a.token, number: number3, body: body2 });
+  if (Buffer.byteLength(payload) > 4 * 1024 * 1024) throw new Error("PR note exceeds the server request limit");
+  const res = await fetch(`${httpOf2(a.server)}/github/pr-note`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${a.session}` }, body: payload, signal: AbortSignal.timeout(3e4) });
   if (!res.ok) throw new Error(`${a.server} would not post the PR note: ${(await res.text()).trim() || `HTTP ${res.status}`}`);
   const b = await res.json().catch(() => ({}));
   return { url: b.url ?? "", updated: !!b.updated };
@@ -38930,9 +39407,10 @@ function renderPrNote(room, opts) {
         lines.push(`- ${t(m.at)} ${who2(m)} changed ${m.paths.map((p) => `\`${p}\``).join(", ")} \u2014 ${m.summary}${m.symbols?.length ? ` (${m.symbols.join(", ")})` : ""}`);
         break;
       case "question": {
-        lines.push(`- ${t(m.at)} ${who2(m)} asked ${m.to ? displayName({ name: m.to, kind: "agent" }) : "the room"}: ${m.text}`);
-        for (const a of answers.get(m.id) ?? []) lines.push(`  - ${t(a.at)} ${who2(a)} answered: ${a.text}`);
-        if (!(answers.get(m.id) ?? []).length) lines.push("  - (unanswered)");
+        const question = [`- ${t(m.at)} ${who2(m)} asked ${m.to ? displayName({ name: m.to, kind: "agent" }) : "the room"}: ${m.text}`];
+        for (const a of answers.get(m.id) ?? []) question.push(`  - ${t(a.at)} ${who2(a)} answered: ${a.text}`);
+        if (!(answers.get(m.id) ?? []).length) question.push("  - (unanswered)");
+        lines.push(question.join("\n"));
         break;
       }
       case "conflict":
@@ -38950,19 +39428,39 @@ function renderPrNote(room, opts) {
     }
   }
   const stillOpen = Array.from(open3.values()).filter((c) => !isPrName(c.by));
-  const out2 = [
+  const header = [
     `### Room ${opts.history ? "history" : "ledger"} for \`${opts.branch || opts.roomName}\``,
     `_Generated by the room at ${t(now)} UTC from ${opts.roomName}.${opts.history ? "" : " One comment per PR, updated in place."}_`,
-    "",
-    ...lines.length ? lines : ["- (nothing recorded on the bus yet)"]
+    ""
   ];
-  if (stillOpen.length) {
-    out2.push("", "**Still claimed:**");
-    for (const c of stillOpen) out2.push(`- ${displayName({ name: c.by, kind: c.byKind })}: \`${c.path}:${c.from}-${c.to}\` \u2014 ${c.intent}`);
+  const claims = stillOpen.map((c) => `- ${displayName({ name: c.by, kind: c.byKind })}: \`${c.path}:${c.from}-${c.to}\` \u2014 ${c.intent}`);
+  const assemble = (messagesOmitted, claimsOmitted) => {
+    const out2 = [...header];
+    if (messagesOmitted) out2.push(`- ${messagesOmitted} earlier messages omitted to keep this PR note within the size limit`);
+    out2.push(...lines.length > messagesOmitted ? lines.slice(messagesOmitted) : messagesOmitted ? [] : ["- (nothing recorded on the bus yet)"]);
+    if (claims.length > claimsOmitted) out2.push("", "**Still claimed:**", ...claims.slice(claimsOmitted));
+    if (claimsOmitted) out2.push(`- ${claimsOmitted} earlier claims omitted to keep this PR note within the size limit`);
+    return out2.join("\n") + "\n";
+  };
+  if (opts.history) return assemble(0, 0);
+  const fits = (messagesOmitted, claimsOmitted) => Buffer.byteLength(JSON.stringify(assemble(messagesOmitted, claimsOmitted))) <= PR_NOTE_MAX_JSON_BYTES;
+  if (fits(0, 0)) return assemble(0, 0);
+  let lo = 0, hi = lines.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (fits(mid, 0)) hi = mid;
+    else lo = mid + 1;
   }
-  return out2.join("\n") + "\n";
+  if (fits(lo, 0)) return assemble(lo, 0);
+  let claimLo = 0, claimHi = claims.length;
+  while (claimLo < claimHi) {
+    const mid = Math.floor((claimLo + claimHi) / 2);
+    if (fits(lines.length, mid)) claimHi = mid;
+    else claimLo = mid + 1;
+  }
+  return assemble(lines.length, claimLo);
 }
-var PR_PREFIX, isPrName, prName, prMap, sameList, httpOf2, query;
+var PR_PREFIX, PR_NOTE_MAX_JSON_BYTES, isPrName, prName, prMap, sameList, httpOf2, query;
 var init_prs = __esm({
   "packages/room-mcp/src/prs.ts"() {
     "use strict";
@@ -38970,6 +39468,7 @@ var init_prs = __esm({
     init_yjs();
     init_session();
     PR_PREFIX = "pr#";
+    PR_NOTE_MAX_JSON_BYTES = 3 * 1024 * 1024;
     isPrName = (name2) => name2.startsWith(PR_PREFIX);
     prName = (number3) => `${PR_PREFIX}${number3}`;
     prMap = (room) => room.doc.getMap("prs");
@@ -55579,8 +56078,18 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   }
   if (f.configError) add2("FAIL", "Room config", f.configError, "Correct ROOM_SERVER or ROOM_URL, then retry");
   else if (f.server) {
-    add2(f.serverHealth ? "PASS" : "WARN", "team server", f.serverRedirect ? `server redirected /health (${f.serverRedirect}); check ROOM_SERVER` : f.serverHealth ? "/health answered" : "/health unavailable", "Check ROOM_SERVER and server status");
-    add2(f.credential ? "PASS" : "WARN", "team login", f.credential ? "login present" : "login missing", "Run room_login");
+    if (f.serverRedirect) add2("WARN", "team server", `server redirected /health (${f.serverRedirect}); check ROOM_SERVER`, "Check ROOM_SERVER and server status");
+    else if (!f.serverHealth) add2("WARN", "team server", "/health unavailable", "Check ROOM_SERVER and server status");
+    else if (f.serverStorage === "failing") add2("FAIL", "team server", "the server's storage is failing", "Check server storage before joining");
+    else if (f.serverSchema === void 0) add2("FAIL", "team server", "the server is older than Room 0.17: deploy 0.17", "Deploy Room 0.17 on the server");
+    else if (f.serverSchema !== 2 || f.serverHub !== 1) add2("FAIL", "team server", `server schema ${f.serverSchema}, hub ${f.serverHub ?? "missing"}; need schema 2, hub 1`, "Deploy a compatible Room 0.17 server");
+    else add2("PASS", "team server", "schema 2, hub 1; storage healthy");
+    if (!f.credential && f.sharedToken) add2("PASS", "team login", "shared token configured; login check does not apply");
+    else if (!f.credential) add2("WARN", "team login", "login missing", "Run room_login");
+    else if (f.credentialStatus === "valid") add2("PASS", "team login", `logged in as ${f.credentialLogin}`);
+    else if (f.credentialStatus === "rejected" && f.serverSchema === 2 && f.serverHub === 1) add2("FAIL", "team login", "saved credential was rejected; log in again (room_login)", "Run room_login");
+    else if (f.credentialStatus === "rejected") add2("WARN", "team login", "credential present; the server did not confirm it", "Deploy Room 0.17, then retry room doctor");
+    else add2("WARN", "team login", "credential present (not verified)", "Check server connection, then retry room doctor");
   } else add2(f.relayFile ? f.relayHealth ? "PASS" : "WARN" : "PASS", "local relay", f.relayFile ? f.relayHealth ? "discovery and /health OK" : "discovery exists; /health unavailable" : "not started yet", "Join the local room to start its relay");
   if (f.legacyRelay) add2("WARN", "Room 0.16 session", "a Room 0.16 local relay is still running in this clone", "End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)");
   add2(f.inSession ? f.stale ? "WARN" : "PASS" : "PASS", "running session", f.inSession ? f.stale ?? "matches installed bundle" : "n/a", "Restart the host session or reconnect Room (/mcp)");
@@ -55637,9 +56146,22 @@ function codexHooksRoot(marketplaces, name2) {
 async function probeHealth(url, fetcher = fetch) {
   try {
     const r = await fetcher(url, { signal: AbortSignal.timeout(3e3), redirect: "manual" });
-    return { ok: r.ok, ...r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {} };
+    if (!r.ok) return { ok: false, ...r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {} };
+    const body2 = await r.json();
+    return { ok: body2.ok === true, schema: body2.schema, hub: body2.hub, storage: body2.storage };
   } catch {
     return { ok: false };
+  }
+}
+async function probeCredential(url, session, fetcher = fetch) {
+  try {
+    const r = await fetcher(url, { headers: { Authorization: `Bearer ${session}` }, signal: AbortSignal.timeout(3e3), redirect: "manual" });
+    if (r.status === 401) return { status: "rejected" };
+    if (!r.ok) return { status: "unverified" };
+    const body2 = await r.json();
+    return typeof body2.login === "string" && body2.login ? { status: "valid", login: body2.login } : { status: "unverified" };
+  } catch {
+    return { status: "unverified" };
   }
 }
 async function collectDoctorFacts(dir, inSession = false, selected) {
@@ -55697,7 +56219,9 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
     if (config2.server !== "local") {
       f.server = config2.server;
       configureCredentials(config2.credentialsPath);
-      f.credential = !!config2.token || !!getCredential(config2.server);
+      const session = getCredential(config2.server)?.session;
+      f.credential = !!session;
+      f.sharedToken = !!config2.token;
       const u = new URL(config2.server);
       u.protocol = u.protocol === "wss:" ? "https:" : "http:";
       u.pathname = "/health";
@@ -55705,6 +56229,15 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
       const health2 = await probeHealth(u.toString());
       f.serverHealth = health2.ok;
       f.serverRedirect = health2.redirect;
+      f.serverSchema = health2.schema;
+      f.serverHub = health2.hub;
+      f.serverStorage = health2.storage;
+      if (session) {
+        u.pathname = "/auth/me";
+        const credential = await probeCredential(u.toString(), session);
+        f.credentialStatus = credential.status;
+        f.credentialLogin = credential.login;
+      }
     } else if (f.repo) {
       const common = await gitCommonDir(dir);
       const info2 = readRelayInfo(common);
@@ -55843,7 +56376,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
         const wakeNote = claudeWakeNote(s, "company");
         if (wakeNote) out2.unshift(wakeNote);
       }
-      if (s.closed) out2.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}; room_leave, then room_create to reopen`);
+      if (s.closed) out2.push(`CLOSED: ${s.closed.reason}; showing the last known state in ${s.roomName}`);
       if (typeof a.path === "string" && a.path) {
         out2.push(await pathState(a));
         if (a.link === true) out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
@@ -59229,7 +59762,7 @@ function createTools(ctx) {
     current?.daemon.touch();
     const closed = current?.closed;
     const offlineTool = name2 === "room_state" || name2 === "room_send" || name2 === "room_wait" || name2 === "room_collect";
-    if (closed && name2 !== "room_leave" && !offlineTool) return `error: the room for ${current.roomName} was closed (${closed.reason}); room_leave, then room_create to reopen`;
+    if (closed && name2 !== "room_leave" && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith("logged out") ? "run room_login, then room_leave and room_join" : closed.reason.includes("revoked") ? "ask for access, then room_leave and room_join" : "room_leave, then room_create to reopen"}`;
     if (toolCallAborted()) return "error: tool call cancelled";
     const s = ctx.getSession();
     if (s) ledger2.acceptPrompt(s);

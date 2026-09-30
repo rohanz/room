@@ -41,7 +41,6 @@ export function parseRoomName(input: string, schema2 = false): ParsedRoom | unde
   if (parts[0] === 'local' && parts.length >= 2) return { name, repo: name }
   return undefined
 }
-export function validRoomName(input: string, schema2 = false): boolean { return !!parseRoomName(input, schema2) }
 export function archiveOwnerOf(name: string): string | undefined {
   const m = /^archive:(.+):([0-9a-f]{8}-[0-9a-f-]{27,})$/i.exec(name)
   if (!m) return undefined
@@ -52,14 +51,4 @@ export function archiveOwnerOf(name: string): string | undefined {
  *  it must never fall through to the rules for non-GitHub rooms, which do not check push access. */
 export function githubRepoOf(roomPath: string): string | undefined {
   return parseRoomName(roomPath)?.github
-}
-
-
-/** Compatibility helper: only GitHub's fixed owner/repo shape can discard a branch suffix. */
-export function repoRoomOf(roomName: string, isOpen: (name: string) => boolean): string {
-  const parsed = parseRoomName(roomName)
-  if (!parsed) return roomNameOf(roomName)
-  if (parsed.github) return parsed.repo
-  void isOpen
-  return parsed.name
 }

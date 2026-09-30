@@ -39,8 +39,16 @@ server is open (fine on a laptop, not on the internet).
 | `OIDC_ISSUER` | OIDC issuer URL; discovery is read from `<issuer>/.well-known/openid-configuration`. Enables OIDC login. | — |
 | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | The OIDC client registered at the issuer. Required with `OIDC_ISSUER`. | — |
 | `OIDC_ALLOWED_DOMAINS` | Comma list of email domains allowed to log in (`example.com,example.org`). Empty: anyone the issuer authenticates. | any |
-| `ROOM_ADMINS` | Comma list of logins allowed to read `GET /audit`. | nobody |
-| `ROOM_TOKEN` | Shared secret: `?token=<value>` admits non-GitHub rooms (`local/...`, `git/...`). It never admits a `github.com/...` room. | — |
+| `ROOM_ADMINS` | Comma list of identities allowed to read `GET /audit`: a GitHub login for GitHub sessions, `oidc:<issuer-host>:<sub>` for OIDC sessions. An OIDC display name or email never matches. | nobody |
+| `ROOM_TRUST_PROXY` | Set to `true` only when a reverse proxy fronts every request. Rate limits and per-address budgets then key on `Fly-Client-IP`, else the last `X-Forwarded-For` entry; without it they key on the socket address, which behind a proxy is the proxy for everyone. | off |
+| `ROOM_MAX_BODY_KB`, `ROOM_MAX_BODY_READS`, `ROOM_BODY_TIMEOUT_MS` | HTTP request bodies: size limit read while streaming (413), concurrent body reads (503), and read deadline (408). | `64`, `32`, `10000` |
+| `ROOM_MAX_PR_NOTE_MB` | Body limit for `POST /github/pr-note`, applied only when the `Authorization` header is a live session. | `4` |
+| `ROOM_MAX_ROOMS` | Open repositories this server holds; opening another is refused with 503. | `100` |
+| `ROOM_MAX_CONNECTIONS`, `ROOM_MAX_CONNECTIONS_PER_ROOM`, `ROOM_MAX_CONNECTIONS_PER_PRINCIPAL` | Live websockets overall, per room, and per login (per address for view links). Every session, worker and browser view is one connection. | `4000`, `200`, `100` |
+| `ROOM_MAX_PENDING_LOGINS` | Login attempts awaiting completion. | `1000` |
+| `ROOM_TOKEN` | Shared secret sent as `X-Room-Token: <value>` on HTTP and websocket upgrades; admits non-GitHub rooms (`local/...`, `git/...`). It never admits a `github.com/...` room. | — |
+| `ROOM_REVALIDATE_MINUTES` | Recheck each live GitHub session's push access, bypassing the positive cache. `0` disables periodic checks; logout and expiry still close sockets. | `10` |
+| `ROOM_WS_TICKET_TTL_MS` | Browser websocket ticket lifetime, clamped to 1–60,000 ms. Shorter values are useful in tests. | `60000` |
 | `ROOM_SHARE_MAX` | Ceiling on what clients may share into a room: `intent`, `declared` or `full`. | `full` |
 | `ROOM_IDENTITY_GUARD` | Member identity-guard mode. Only literal `enforce` blocks objected document packets; every other value observes them, rate-limits logs and `identity_violation` audits to once per login per minute, and applies the packet unchanged. `enforce` is experimental and can desynchronise a client's causal stream. Read-only viewer document and awareness writes remain blocked in either mode. | observe-only |
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
@@ -129,7 +137,7 @@ Every login, logout, room opened/closed, websocket accepted (`join`: login + roo
 `room_audit` table). Admins listed in `ROOM_ADMINS` read it over HTTP with their own session:
 
 ```sh
-curl "https://room.example.com/audit?session=<session id>&since=$(($(date +%s%3N) - 86400000))"
+curl -H "Authorization: Bearer <session id>" "https://room.example.com/audit?since=$(($(date +%s%3N) - 86400000))"
 ```
 
 The session id is in `~/.config/room/credentials.json` on a machine that ran `room_login`.
@@ -169,3 +177,14 @@ under systemd, with the same environment.
 ## Local path boundary
 
 Room reads and collects paths inside the user's checkout and Room worktrees, which only the user's own processes write. Each operation captures its canonical roots once, and a root that has become a symlink is refused. A directory swap racing between a check and its use is not closed because Node's fs has no openat/O_NOFOLLOW directory-relative operations. A process able to swap those directories already has the user's write access.
+
+## Limits the server applies on its own
+
+These have no setting. Per address and minute: 10 login starts, 120 login polls, 30 OIDC callbacks, 600 websocket
+upgrade attempts, 60 browser tickets, 30 failed admissions; past a limit the server answers 429 with `Retry-After`. A device-flow poll
+earlier than GitHub's interval is answered `pending` without calling GitHub. Per room, the hub allows 512 live name
+leases (64 per login), keeps at most 1,024 ended names, accepts hub frames up to 96 KiB with holder fields up to 512
+characters, and takes 250 posts a second per lease, 500 per login and 1,000 per room; past those it answers
+`room-full` or `rate-limited` and clients retry. A room whose document cannot be written to disk refuses new
+coordination writes (`unavailable`, websocket close 4507, `"storage":"failing"` in `/health`) and retries the full
+state with backoff until the disk accepts it; at most 16 rooms may be in that state before further writes are refused.

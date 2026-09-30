@@ -67,3 +67,15 @@ it('shows a 4413 rejection, pauses publication, and retries once a minute until 
     expect(reconcileGitChanges).toHaveBeenCalledOnce()
   } finally { vi.useRealTimers() }
 })
+
+it.each([[4401, 'logged out of ws://room.test:1234: run room_login'], [4403, 'access to github.com/o/r was revoked']])('stops reconnecting and explains close code %i', (code, message) => {
+  const provider = Object.assign(new EventEmitter(), { disconnect: vi.fn(), connect: vi.fn() })
+  const log = vi.fn()
+  const s = { provider, roomName: 'github.com/o/r', roomUrl: 'ws://room.test:1234/github.com%2Fo%2Fr' } as unknown as Session
+  watchClosed(s, log)
+  provider.emit('connection-close', { code, reason: 'revoked' })
+  expect(s.closed?.reason).toBe(message)
+  expect(provider.disconnect).toHaveBeenCalledOnce()
+  expect(provider.connect).not.toHaveBeenCalled()
+  expect(log).toHaveBeenCalledWith(expect.stringContaining(message))
+})

@@ -119,4 +119,35 @@ describe('device-flow auth', () => {
     await new Promise(r => setTimeout(r, 10)) // session writes are queued, in order
     expect(fs.readFileSync(file, 'utf8')).not.toContain('gho_2')
   })
+
+  it('sweeps idle sessions and announces revocation with an injected clock', async () => {
+    let now = 1000
+    const removed: string[] = []
+    const auth = new Auth({ clientId: 'fake', now: () => now, sessionTtlMs: 1000,
+      onSessionRemoved: (id, reason) => removed.push(`${id}:${reason}`) })
+    await auth.ready
+    const start = await auth.startDevice()
+    const { session } = await auth.poll(start.device, { fakeLogin: 'octo' }) as { session: string }
+    now = 2001
+    auth.sweepSessions()
+    expect(removed).toEqual([`${session}:session expired`])
+    expect(auth.peek(session)).toBeUndefined()
+  })
+
+  it('notices an operator deleting a persisted session', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-auth-delete-'))
+    const file = path.join(dir, 'sessions.json')
+    try {
+      const removed: string[] = []
+      const auth = new Auth({ clientId: 'fake', sessionsFile: file,
+        onSessionRemoved: (id, reason) => removed.push(`${id}:${reason}`) })
+      await auth.ready
+      const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
+      await new Promise(r => setTimeout(r, 10))
+      fs.writeFileSync(file, '{}')
+      await auth.reconcileSessions()
+      expect(removed).toEqual([`${session}:logged out`])
+      expect(auth.peek(session)).toBeUndefined()
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
 })

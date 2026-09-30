@@ -41,9 +41,11 @@ async function startServer(env: Record<string, string>): Promise<ChildProcess> {
 const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 /** Connect a websocket to the room; resolves with the HTTP status of a refusal, or 101 when accepted. */
 function join(room: string, query: Record<string, string>): Promise<number> {
-  const q = new URLSearchParams(query).toString()
+  const { session, token, ...params } = query
+  const schema2 = params.schema === '2'
+  const q = new URLSearchParams(schema2 || token ? params : query).toString()
   return new Promise(resolve => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}${q ? `?${q}` : ''}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}${q ? `?${q}` : ''}`, { headers: { ...(schema2 && session ? { authorization: `Bearer ${session}` } : {}), ...(token ? { 'x-room-token': token } : {}) } })
     ws.on('open', () => { ws.close(); resolve(101) })
     ws.on('unexpected-response', (_req, res) => { resolve(res.statusCode ?? 0); ws.terminate() })
     ws.on('error', () => resolve(0))
@@ -88,9 +90,9 @@ describe('room server with the fake GitHub issuer', () => {
     for (const parent of ['github.com', 'github.com/namespace-victim']) {
       expect((await post('/rooms', { room: parent, session, schema: 2 })).status).toBe(400)
       expect((await post('/view-token', { room: parent, session, schema: 2 })).status).toBe(400)
-      expect((await fetch(`${base}/archive?repo=${encodeURIComponent(parent)}&session=${session}`)).status).toBe(400)
+      expect((await fetch(`${base}/archive?repo=${encodeURIComponent(parent)}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(400)
       expect((await post('/archive/export', { room: parent, session, schema: 2 })).status).toBe(400)
-      expect((await fetch(`${base}/github/prs?room=${encodeURIComponent(parent)}&session=${session}`)).status).toBe(400)
+      expect((await fetch(`${base}/github/prs?room=${encodeURIComponent(parent)}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(400)
       expect((await post('/github/pr-note', { room: parent, session, number: 1, body: 'note' })).status).toBe(400)
       expect((await fetch(`${base}/?view=x&room=${encodeURIComponent(`${base}/${encodeURIComponent(parent)}`)}`)).status).toBe(400)
       expect((await fetch(`${base}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: parent, session, schema: 2 }) })).status).toBe(400)
@@ -146,13 +148,13 @@ describe('room server with the fake GitHub issuer', () => {
     expect((await post('/rooms', { room, session })).status).toBe(201)
     const old = await (await post('/view-token', { room, session })).json() as { view: string }
     expect(await join(room, { session })).toBe(101)
-    expect(await join(room, { schema: '2', view: old.view })).toBe(410)
+    expect(await join(room, { schema: '2', view: old.view })).toBe(400)
     // A rejected bearer must not trigger migration; 0.16 can still use the branch-mode room.
     expect(await join(room, { session })).toBe(101)
     expect((await post('/view-token', { room, session })).status).toBe(200)
     expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
     expect(await join(room, { session })).toBe(403)
-    expect(await join(room, { schema: '2', view: old.view })).toBe(410)
+    expect(await join(room, { schema: '2', view: old.view })).toBe(400)
   })
 
   it('returns an actionable 410 page and websocket refusal for an archived branch link', async () => {
@@ -166,7 +168,7 @@ describe('room server with the fake GitHub issuer', () => {
     const page = await fetch(link)
     expect(page.status).toBe(410)
     expect(await page.text()).toContain('this link was for a branch room that no longer exists; ask a teammate for a new link')
-    expect(await join(branch, { schema: '2', view })).toBe(410)
+    expect(await join(branch, { schema: '2', view })).toBe(400)
   })
 
   it('exports an archive only to an admitted member and closes the repo while unjoined', async () => {
@@ -190,23 +192,23 @@ describe('room server with the fake GitHub issuer', () => {
 
   it('fake login -> open a github.com repo -> join its branch room', async () => {
     const session = await login('octo')
-    expect(await (await fetch(`${base}/auth/me?session=${session}`)).json()).toEqual({ login: 'octo', provider: 'github' })
+    expect(await (await fetch(`${base}/auth/me`, { headers: { authorization: `Bearer ${session}` } })).json()).toEqual({ login: 'octo', provider: 'github' })
     const open = await post('/rooms', { room: 'github.com/o/r/main', session })
     expect(open.status).toBe(201)
     expect(await open.json()).toMatchObject({ repo: 'github.com/o/r', created: true, login: 'octo' })
     expect(await join('github.com/o/r/main', { session })).toBe(101)
     expect(await join('github.com/o/r/feature/x', { session })).toBe(101) // any branch of an open repo
-    const listed = await (await fetch(`${base}/rooms?session=${session}`)).json() as { repo: string }[]
+    const listed = await (await fetch(`${base}/rooms`, { headers: { authorization: `Bearer ${session}` } })).json() as { repo: string }[]
     expect(listed.map(r => r.repo)).toContain('github.com/o/r')
     // the fake issuer holds no real GitHub token: the PR proxy refuses rather than calling GitHub
-    expect((await fetch(`${base}/github/prs?room=${encodeURIComponent('github.com/o/r/main')}&session=${session}`)).status).toBe(403)
+    expect((await fetch(`${base}/github/prs?room=${encodeURIComponent('github.com/o/r/main')}`, { headers: { authorization: `Bearer ${session}` } })).status).toBe(403)
   })
 
   it('a forwarded GitHub token is refused with 401 at every entry point', async () => {
     const open = await post('/rooms', { room: 'github.com/o/r/main', gh: 'gho_real' })
     expect(open.status).toBe(401)
     expect(await open.text()).toContain('room_login')
-    expect(await join('github.com/o/r/main', { gh: 'gho_real' })).toBe(401)
+    expect(await join('github.com/o/r/main', { gh: 'gho_real' })).toBe(400)
     expect((await post('/view-token', { room: 'github.com/o/r/main', gh: 'gho_real' })).status).toBe(401)
   })
 
@@ -238,7 +240,7 @@ describe('room server with the fake GitHub issuer', () => {
 
     let entries: { event: string; room?: string; login?: string; reason?: string }[] = []
     for (let i = 0; i < 20; i++) {
-      entries = await (await fetch(`${base}/audit?session=${session}`)).json() as typeof entries
+      entries = await (await fetch(`${base}/audit`, { headers: { authorization: `Bearer ${session}` } })).json() as typeof entries
       if (entries.some(entry => entry.event === 'identity_violation' && entry.room === repo)) break
       await new Promise(resolve => setTimeout(resolve, 25))
     }
@@ -269,6 +271,30 @@ describe('room server with the fake GitHub issuer', () => {
     // A path that escapes to a sibling directory sharing the static root's prefix is not served (S3).
     expect((await raw('GET /x/..//etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))).not.toMatch(/root:/)
     expect(await (await fetch(`${base}/health`)).json()).toEqual({ ok: true, schema: 2, hub: 1 })
+  })
+
+  it('survives clients that reset the connection while an upgrade is being refused', async () => {
+    const reset = (request: string) => new Promise<void>((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1')
+      socket.on('error', reject)
+      socket.on('connect', () => socket.write(request, () => { socket.resetAndDestroy(); resolve() }))
+    })
+    const upgrade = (target: string) => `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`
+    // Malformed target (400), invalid room name (400) and failed admission (401/403/404): each refusal writes to a reset socket.
+    for (let i = 0; i < 10; i++) for (const target of ['//[', '/github.com', '/github.com%2Fnobody%2Fnothing?schema=2']) await reset(upgrade(target))
+    await new Promise(r => setTimeout(r, 300))
+    expect((await fetch(`${base}/health`)).status).toBe(200)
+    expect(proc.exitCode).toBeNull()
+  })
+
+  it('reads a large PR-note body only for a live session in the Authorization header', async () => {
+    const session = await login('note-size')
+    const body = JSON.stringify({ room: 'github.com/note-size/project', schema: 2, number: 1, body: 'x'.repeat(1024 * 1024) })
+    const send = (headers: Record<string, string>) => fetch(`${base}/github/pr-note`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body }).then(r => r.status, () => 413)
+    expect(await send({})).toBe(413)
+    expect(await send({ authorization: 'Bearer not-a-session' })).toBe(413)
+    // Read in full and then judged on its merits (this room was never opened).
+    expect(await send({ authorization: `Bearer ${session}` })).not.toBe(413)
   })
 })
 

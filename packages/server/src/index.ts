@@ -5,7 +5,7 @@
  *    access to the repo (checked against the GitHub API, cached 10 min). Read access is not
  *    enough: a public repo must not be an open room.
  *  - GITHUB_CLIENT_ID: clients log in with GitHub's device flow (POST /auth/start, /auth/poll) and the
- *    server keeps the GitHub token; clients hold only an opaque ?session=. That session is the only
+ *    server keeps the GitHub token; clients hold only an opaque session sent in Authorization. That session is the only
  *    way into a github.com room: forwarded GitHub tokens (?gh=) are refused with 401 in every mode,
  *    and without a client id github.com rooms cannot be entered at all. GITHUB_CLIENT_ID=fake is a
  *    test issuer (refused with NODE_ENV=production): /auth/poll confirms with the body's `fakeLogin`.
@@ -14,17 +14,17 @@
  *    PKCE; GET /auth/callback is the redirect URI). OIDC_ALLOWED_DOMAINS limits who may log in.
  *    Any logged-in user is admitted to non-GitHub rooms (local/..., git/<host>/<owner>/<repo>);
  *    github.com rooms still need a GitHub login with push access.
- *  - ROOM_TOKEN: if set, ?token=<same> admits non-GitHub rooms (local/..., git/...) only; it never
+ *  - ROOM_TOKEN: if set, X-Room-Token admits non-GitHub rooms (local/..., git/...) only; it never
  *    admits a github.com room.
  *  - With no login provider and no ROOM_TOKEN configured, non-GitHub rooms are open.
  *  - YPERSISTENCE: if set to a directory, rooms are stored in LevelDB there and survive restarts;
  *    the repo registry, sessions and the audit log (audit.log, JSON lines) live there too unless
- *    DATABASE_URL points at Postgres (see store.ts). GET /audit?session=<admin session>&since=<ms>
+ *    DATABASE_URL points at Postgres (see store.ts). GET /audit with Authorization: Bearer <admin session>
  *    for logins in ROOM_ADMINS.
  *  - A repo is opened explicitly once (POST /rooms) before anyone can connect. A websocket
  *    to a repo nobody opened is refused with 404. GET /rooms lists open repos; DELETE /rooms
  *    closes one, dropping live connections and persisted legacy archives.
- *  - Browser view keys (?view=) are read-only: inbound document and awareness writes are discarded.
+ *  - Browser view keys are exchanged for one-use websocket tickets; those sockets are read-only.
  * All coordination state lives inside the Y.Doc; room name = URL path.
  * Each loaded room also runs its hub (hub.ts, @room/hub-core) on message type 7 of the same websocket:
  * name leases, message order, trim and expiry.
@@ -40,7 +40,8 @@ import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } fr
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
-import { makeAdmitted, type Creds } from './admit.js'
+import { githubPushChecker, makeAdmitted, type Creds } from './admit.js'
+import { CredentialSockets, PermissionRevalidator, type Credential } from './sockets.js'
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
@@ -71,12 +72,16 @@ if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET
 const store = storeFromEnv()
 const clientId = process.env.GITHUB_CLIENT_ID?.trim() || undefined
 if (clientId === FAKE_CLIENT_ID && process.env.NODE_ENV === 'production') { console.error(`GITHUB_CLIENT_ID=${FAKE_CLIENT_ID} is the test issuer; it cannot run with NODE_ENV=production`); process.exit(1) }
+const ticketTtlSetting = Number(process.env.ROOM_WS_TICKET_TTL_MS ?? 60_000)
+const credentialSockets = new CredentialSockets(Date.now, 10000, Number.isFinite(ticketTtlSetting) ? Math.max(1, Math.min(60_000, ticketTtlSetting)) : 60_000)
 const auth = new Auth({
   clientId,
   oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
   store,
   log: l => console.log(l),
+  onSessionRemoved: (session, reason) => { credentialSockets.close({ kind: 'session', value: session }, 4401, reason); revalidator.forget(session) },
 })
+setInterval(() => { auth.sweepSessions(); void auth.reconcileSessions().catch(e => console.log(`session store check failed: ${e instanceof Error ? e.message : e}`)) }, 60_000).unref()
 /** Append-only audit trail: who logged in, which rooms were opened/closed, every websocket accepted or refused. */
 function audit(e: Omit<AuditEntry, 'at'>): void {
   store.audit({ at: Date.now(), ...e }).catch(err => console.log(`audit: could not write: ${err instanceof Error ? err.message : err}`))
@@ -170,7 +175,8 @@ const oldLinkText = 'this link was for a branch room that no longer exists; ask 
 
 /** Is this caller allowed into `room`? Same rule for opening, listing, closing, viewing and connecting;
  *  the verdict carries the verified login when the caller is logged in. See admit.ts. */
-const admitted = makeAdmitted({ auth, token: TOKEN })
+const pushChecker = githubPushChecker()
+const admitted = makeAdmitted({ auth, token: TOKEN, canPush: pushChecker })
 const memoryDocs = new Map<string, Uint8Array>()
 const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]> } = {
   getAllDocNames: async () => [...memoryDocs.keys()],
@@ -234,7 +240,7 @@ async function migrateOpenRepo(repo: string): Promise<void> {
       freeze: names => freezeDocs(names, upgradeText(repo)),
       revoke: async names => {
         const set = new Set(names)
-        for (const [token, value] of viewTokens) if (set.has(value.room) || parseRoomName(value.room)?.repo === repo) viewTokens.delete(token)
+        for (const [token, value] of viewTokens) if (set.has(value.room) || parseRoomName(value.room)?.repo === repo) { viewTokens.delete(token); credentialSockets.close({ kind: 'view', value: token }, 4403, 'view access revoked') }
         saveViewTokens()
       },
     }, new Set(rooms.keys()))
@@ -273,7 +279,7 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
     const names = new Set(closeDocumentNames(repo, r, await listDocs(), new Set(rooms.keys())))
     for (const name of names) await hubs.flushName(name)
     rooms.delete(repo); await saveRooms()
-    for (const [key, value] of viewTokens) if (names.has(value.room)) viewTokens.delete(key)
+    for (const [key, value] of viewTokens) if (names.has(value.room)) { viewTokens.delete(key); credentialSockets.close({ kind: 'view', value: key }, 4403, 'view access revoked') }
     saveViewTokens()
     await freezeDocs([...names], 'room closed')
     for (const name of names) await clearDoc(name)
@@ -284,11 +290,38 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
 const str = (v: unknown): string | undefined => typeof v === 'string' && v ? v : undefined
 const readBody = bodyReader({ maxBytes: Number(process.env.ROOM_MAX_BODY_KB ?? 64) * 1024,
   maxConcurrent: Number(process.env.ROOM_MAX_BODY_READS ?? 32), timeoutMs: Number(process.env.ROOM_BODY_TIMEOUT_MS ?? 10000) })
+/** A PR note carries a room's ledger, so its body may be larger (ROOM_MAX_PR_NOTE_MB, default 4), but only for a
+ *  request whose Authorization header is a live session: nobody unauthenticated is read past the small limit. */
+const PR_NOTE_MAX_BYTES = Number(process.env.ROOM_MAX_PR_NOTE_MB ?? 4) * 1048576
 const authStartLimit = new RateLimit(10, 60_000)
 const authPollLimit = new RateLimit(120, 60_000)
 const authCallbackLimit = new RateLimit(30, 60_000)
-const upgradeLimit = new RateLimit(120, 60_000)
+// A team behind one office address reconnects all its sessions at once after a deploy.
+const upgradeLimit = new RateLimit(600, 60_000)
 const failedAdmissionLimit = new RateLimit(30, 60_000)
+const ticketLimit = new RateLimit(60, 60_000)
+setInterval(() => {
+  credentialSockets.sweep()
+  for (const [key, value] of viewTokens) if (value.exp <= Date.now()) { viewTokens.delete(key); credentialSockets.close({ kind: 'view', value: key }, 4403, 'view key expired') }
+}, 60_000).unref()
+const revalidateSetting = Number(process.env.ROOM_REVALIDATE_MINUTES ?? 10)
+const revalidateMinutes = Number.isFinite(revalidateSetting) && revalidateSetting >= 0 ? revalidateSetting : 10
+const revalidator = new PermissionRevalidator(
+  async (session, repo) => {
+    const st = auth.peek(session)
+    if (!st) return true // peek already closed an expired session with 4401
+    if (!st.ghToken) return false
+    const ownerRepo = githubRepoOf(repo)
+    return !ownerRepo || st.ghToken.startsWith('fake:') ? true : pushChecker(st.ghToken, ownerRepo, true)
+  },
+  (session, repo) => {
+    const st = auth.peek(session)
+    credentialSockets.closeRoom({ kind: 'session', value: session }, repo, 4403, 'access revoked')
+    audit({ event: 'refused', room: repo, login: st?.login, reason: 'access revoked' })
+  },
+  (_session, repo) => console.log(`permission revalidation unavailable for ${repo}; retaining connections`),
+)
+if (revalidateMinutes > 0) setInterval(() => { void revalidator.run() }, revalidateMinutes * 60_000).unref()
 /** Behind a reverse proxy every socket has the proxy's address: ROOM_TRUST_PROXY=true keys the limits on the
  *  address the proxy reports (Fly-Client-IP, else the LAST X-Forwarded-For entry, the one the proxy appended;
  *  earlier entries are the client's to forge). Never set it on a server clients reach directly. */
@@ -302,24 +335,27 @@ const clientIp = (req: http.IncomingMessage) => {
 
 const server = http.createServer((req, res) => {
   try {
+  res.setHeader('Referrer-Policy', 'no-referrer')
   let url: URL
   try { url = safeUrl(req.url) } catch { res.writeHead(400); res.end('Bad Request'); return }
   const limited = (limiter: RateLimit) => { const retry = limiter.check(clientIp(req)); if (!retry) return false; res.writeHead(429, { 'retry-after': String(retry) }); res.end('rate limited'); return true }
   if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
-  const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token), session: str(o.session) })
-  const queryCreds = (): Creds => creds({ gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined })
+  const headerCreds = (): Creds => ({ session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1], token: str(req.headers['x-room-token']) })
+  const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token) ?? headerCreds().token, session: str(o.session) ?? headerCreds().session })
+  if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') { res.writeHead(400); res.end('send credentials in Authorization or X-Room-Token headers'); return }
   const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
   const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
-  const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
-  const withBody = (fn: (o: Record<string, unknown>) => Promise<void>) => { void readBody(req).then(async body => {
+  const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
+  const withBody = (fn: (o: Record<string, unknown>) => Promise<void>, maxBytes?: number) => { void readBody(req, { maxBytes }).then(async body => {
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(body || '{}') as Record<string, unknown> } catch { text(400, 'bad request'); return }
-    try { await fn(parsed) }
+    try { await fn({ ...headerCreds(), ...parsed }) }
     catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, 'room server operation failed; retry') }
   }).catch(e => { if (!res.writableEnded && !res.destroyed) text(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'request body failed') }); return }
 
   // A retired browser URL must explain the terminal state before the static app reconnects.
-  if (req.method === 'GET' && url.pathname === '/' && url.searchParams.has('view') && url.searchParams.has('room')) {
+  if (req.method === 'GET' && url.pathname === '/' && (url.searchParams.has('view') || url.searchParams.has('key')) && url.searchParams.has('room')) {
+    res.setHeader('Cache-Control', 'no-store')
     try {
       const linked = new URL(url.searchParams.get('room')!)
       const name = roomNameOf(linked.pathname)
@@ -368,12 +404,12 @@ const server = http.createServer((req, res) => {
     json(200, { ok: !!was })
   })
   if (url.pathname === '/auth/me' && req.method === 'GET') {
-    const st = auth.resolve(url.searchParams.get('session') ?? undefined)
+    const st = auth.resolve(headerCreds().session)
     return st ? json(200, { login: st.login, provider: st.provider }) : text(401, 'not logged in')
   }
   if (url.pathname === '/audit' && req.method === 'GET') {
-    const st = auth.resolve(url.searchParams.get('session') ?? undefined)
-    if (!st) return text(401, 'not logged in: pass ?session=')
+    const st = auth.resolve(headerCreds().session)
+    if (!st) return text(401, 'not logged in: send Authorization: Bearer <session>')
     if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
     const since = Number(url.searchParams.get('since') ?? 0) || 0
     const limit = Math.min(10_000, Number(url.searchParams.get('limit') ?? 1000) || 1000)
@@ -384,7 +420,7 @@ const server = http.createServer((req, res) => {
   // ---- rooms ----
   if (url.pathname === '/rooms' && req.method === 'GET') {
     if (url.searchParams.has('room') && !parseRoomName(url.searchParams.get('room') ?? '', url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
-    const c = queryCreds()
+    const c = headerCreds()
     void (async () => {
       const out: ({ repo: string } & OpenRepo)[] = []
       for (const [repo, r] of rooms) if ((await admitted(repo, c)).ok) out.push({ repo, ...r })
@@ -446,6 +482,25 @@ const server = http.createServer((req, res) => {
     json(created ? 201 : 200, { repo: name, created, ...rooms.get(name),
       ...(o.schema === 2 ? { room: name, hub: 1 } : {}), ...(v.login ? { login: v.login } : {}) })
   })
+  if (url.pathname === '/ws-ticket' && req.method === 'POST') return withBody(async o => {
+    if (limited(ticketLimit)) return
+    const room = str(o.room)
+    if (!room || o.schema !== 2 || !parseRoomName(room, true)) return text(400, 'schema 2 room required')
+    const repo = canonical(room, true)
+    if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
+    const view = str(o.view)
+    if (view) {
+      const key = viewTokens.get(view)
+      if (!key || key.exp <= Date.now() || key.room !== repo) return text(403, 'view key invalid or expired')
+      return json(200, credentialSockets.mint(repo, { kind: 'view', value: view }, true))
+    }
+    const c = { ...headerCreds(), ...creds(o) }
+    const v = await admitted(repo, c)
+    if (!v.ok) return text(v.status, v.why)
+    const credential: Credential | undefined = c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined
+    if (!credential) return text(401, 'credential required')
+    return json(200, credentialSockets.mint(repo, credential, false))
+  })
   if (url.pathname === '/view-token' && req.method === 'POST') return withBody(async o => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
@@ -480,7 +535,7 @@ const server = http.createServer((req, res) => {
       const repo = canonical(url.searchParams.get('repo') ?? '')
       const entry = rooms.get(repo)
       if (!entry) return text(404, NOT_OPEN(repo))
-      const v = await admitted(repo, queryCreds())
+      const v = await admitted(repo, headerCreds())
       if (!v.ok) return text(v.status, v.why)
       const unresolved = (await loadDoc(repo)).getMap('unresolved')
       json(200, { repo, legacy: entry.legacy ?? [], unresolved: [...unresolved.keys()] })
@@ -514,7 +569,7 @@ const server = http.createServer((req, res) => {
     const room = str(url.searchParams.get('room') ?? undefined)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo')
-    const c = queryCreds()
+    const c = headerCreds()
     void (async () => {
       const name = roomNameOf(room)
       const repo = githubRepoOf(name)
@@ -548,18 +603,18 @@ const server = http.createServer((req, res) => {
     if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to comment on pull requests')
     try { json(200, { repo, number, ...(await github.upsertNote(token, repo, number, body)), ...(v.login ? { login: v.login } : {}) }) }
     catch (e) { githubFail('github/pr-note', e) }
-  })
+  }, auth.resolve(headerCreds().session) ? PR_NOTE_MAX_BYTES : undefined)
   if (fs.existsSync(STATIC)) {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
     const file = staticFile(STATIC, url.pathname)
     if (file) {
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable' })
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-store' : 'public, max-age=31536000, immutable' })
       fs.createReadStream(file).pipe(res)
       return
     }
   }
   res.writeHead(200, { 'content-type': 'text/plain' })
-  res.end(`room server: connect a y-websocket client to ws://host:port/<room>${TOKEN ? '?token=...' : ''}\n`)
+  res.end('room server: connect a y-websocket client to ws://host:port/<room> with authorization headers\n')
   } catch (e) {
     console.log(`http request failed: ${e instanceof Error ? e.message : e}`)
     if (!res.writableEnded && !res.destroyed) { res.writeHead(e instanceof HttpFailure ? e.status : 500); res.end(e instanceof HttpFailure ? e.message : 'Internal Server Error') }
@@ -585,6 +640,7 @@ function docMeter(roomName: string): DocSizeMeter {
  *  a room, such as a browser tab left open, would otherwise push the whole thing back in one frame. */
 const MAX_MESSAGE_BYTES = Number(process.env.ROOM_MAX_MESSAGE_MB ?? 16) * 1048576
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
+wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
 /** One log line per room per minute at most: a misbehaving viewer must not flood the log. */
 const dropLog = new Map<string, number>()
 const droppedWrite = (room: string) => () => {
@@ -627,7 +683,7 @@ function auditRefused(remote: string | undefined, room: string | undefined, reas
 const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
   console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
   auditRefused((socket as import('node:net').Socket).remoteAddress, room, `${code} ${why}`)
-  socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`)
+  socket.write(`HTTP/1.1 ${code} ${why}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n`)
   socket.destroy()
 }
 const identityLog = new Map<string, number>()
@@ -644,6 +700,8 @@ function awarenessOwnerMap(roomName: string): Map<number, string> {
   return owners
 }
 server.on('upgrade', (req, socket, head) => {
+  // First, before anything can refuse: a refusal writes to a socket the client may already have reset (EPIPE).
+  socket.on('error', () => {})
   try {
   const url = safeUrl(req.url)
   const retry = upgradeLimit.check(clientIp(req))
@@ -654,8 +712,10 @@ server.on('upgrade', (req, socket, head) => {
   const repo = canonical(roomName)
   const schema2 = url.searchParams.get('schema') === '2'
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
+  if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
+  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 400, 'send credentials in headers', roomName)
   if (!schema2 && rooms.get(repo)?.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
-  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider } = {}) => {
+  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential } = {}) => {
     void locks.run(repo, async () => {
       const current = rooms.get(repo)
       if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
@@ -663,7 +723,7 @@ server.on('upgrade', (req, socket, head) => {
       if (schema2 && !current.migratedAt) return refuse(socket, 503, 'room migration is not complete; retry', roomName)
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       if (opts.readOnly) {
-        const token = viewTokens.get(url.searchParams.get('view')!)
+        const token = viewTokens.get(opts.credential?.value ?? '')
         if (!token || token.exp <= Date.now() || token.room !== docKey)
           return refuse(socket, current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? 410 : 403,
             current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? oldLinkText : 'Forbidden: view token invalid for this room', roomName)
@@ -678,6 +738,8 @@ server.on('upgrade', (req, socket, head) => {
       await hubs.flush(getYDoc(docKey, true))
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       wss.handleUpgrade(req, socket, head, ws => {
+        if (opts.credential) credentialSockets.track(opts.credential, ws, docKey)
+        if (opts.credential?.kind === 'session' && githubRepoOf(repo)) ws.once('close', revalidator.track(opts.credential.value, repo))
         connectionCounts.total++
         connectionCounts.room.set(repo, (connectionCounts.room.get(repo) ?? 0) + 1)
         connectionCounts.principal.set(principal, (connectionCounts.principal.get(principal) ?? 0) + 1)
@@ -728,17 +790,33 @@ server.on('upgrade', (req, socket, head) => {
       })
     }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) })
   }
+  const ticket = url.searchParams.get('ticket')
+  if (ticket) {
+    const issued = credentialSockets.take(ticket, docKey)
+    if (!issued) return refuse(socket, 403, 'websocket ticket invalid or expired', roomName)
+    const c = issued.credential
+    if (issued.readOnly) {
+      const view = viewTokens.get(c.value)
+      if (!view || view.exp <= Date.now() || view.room !== docKey) return refuse(socket, 403, 'view key invalid or expired', roomName)
+      return accept({ readOnly: true, credential: c })
+    }
+    const creds: Creds = c.kind === 'session' ? { session: c.value } : { token: c.value }
+    return admitted(roomName, creds).then(v => v.ok ? accept({ login: v.login, id: v.id, provider: v.provider, credential: c }) : refuse(socket, v.status, v.why, roomName))
+      .catch(() => refuse(socket, 503, 'room unavailable; retry', roomName))
+  }
   const view = url.searchParams.get('view')
   if (view) {
     const v = viewTokens.get(view)
     const entry = rooms.get(repo)
     if (url.searchParams.get('schema') === '2' && !entry?.migratedAt) return refuse(socket, 410, oldLinkText, roomName)
-    if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true })
+    if (v && v.exp > Date.now() && v.room === docKey) return accept({ readOnly: true, credential: { kind: 'view', value: view } })
     if (entry?.mode === 'repo' && (roomName !== repo || entry.plan?.moved))
       return refuse(socket, 410, oldLinkText, roomName)
     return refuse(socket, 403, 'Forbidden: view token invalid for this room')
   }
-  const c: Creds = { gh: url.searchParams.get('gh') ?? undefined, token: url.searchParams.get('token') ?? undefined, session: url.searchParams.get('session') ?? undefined }
+  const c: Creds = { token: str(req.headers['x-room-token']), session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1],
+    ...(!schema2 ? { gh: url.searchParams.get('gh') ?? undefined, token: str(req.headers['x-room-token']) ?? url.searchParams.get('token') ?? undefined,
+      session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? url.searchParams.get('session') ?? undefined } : {}) }
   admitted(roomName, c)
     .then(async v => {
       if (!v.ok) {
@@ -749,11 +827,11 @@ server.on('upgrade', (req, socket, head) => {
       if (!entry) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
       if (url.searchParams.get('schema') !== '2') {
         if (entry.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
-        return accept({ login: v.login, id: v.id, provider: v.provider })
+        return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
       }
       await migrateOpenRepo(repo)
       if (!rooms.has(repo)) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
-      return accept({ login: v.login, id: v.id, provider: v.provider })
+      return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
     })
     .catch(e => { console.log(`upgrade admission: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room unavailable; retry', roomName) })
   } catch (e) { console.log(`upgrade failed: ${e instanceof Error ? e.message : e}`); refuse(socket, e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'Internal Server Error') }

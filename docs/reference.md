@@ -24,7 +24,9 @@ At `declared`, a changed file that was declared stays shared while it differs fr
 
 Areas come from `CODEOWNERS` at each participant's HEAD. If no rule matches, an uncommitted file gives its top-level directory an area for its editor. `room_scope` states intended work. Claims are advisory and can include planned public interface changes. Room indexes definitions and references with tree-sitter and reports likely consumers of changed signatures; a body-only edit does not become a contract change. Announced plans take precedence over observed signatures. Routine scopes and releases stay in the feed. An inbox receives addressed messages, relevant conflicts and interrupts; `room_state` gives full detail near your work and one line for unrelated people. The bus keeps a rolling window and archives older messages in the ledger.
 
-The local browser link is `http://127.0.0.1:<port>/?room=…&key=…`. It accepts loopback connections only; anyone on this machine holding its key can read the local room. When another session uses your login, Room assigns a stable clone tag such as `rohanz+claude` so an offline overlay cannot be confused with another clone's work.
+The local browser link is `http://127.0.0.1:<port>/?room=…&key=…`. The link must carry the key once when opened; the browser removes it from the address bar and exchanges it for single-use 60-second websocket tickets. The relay accepts loopback connections only; anyone on this machine holding its key can read and write the local room. When another session uses your login, Room assigns a stable clone tag such as `rohanz+claude` so an offline overlay cannot be confused with another clone's work.
+
+Team HTTP requests send a login session as `Authorization: Bearer <session>` or a shared token as `X-Room-Token: <token>`. Node websocket upgrades use the same headers. Browser view links carry a read-only capability on their first navigation; the page strips it from the address bar, keeps it in session storage, and calls `POST /ws-ticket` before each connection. Tickets are single-use, bound to one room and credential, and expire within 60 seconds.
 
 At-least-once delivery applies to messages retained in a surviving replica's ledger. An acknowledged post can be lost if every replica holding it disappears before persistence; local snapshots are delayed. Expiry and caps can remove retained messages. The team server enforces its live room document cap. A local relay has no live document cap: it skips snapshots above 64 MiB and keeps the previous file, while the live document can keep growing.
 
@@ -89,7 +91,10 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_CREDENTIALS`, `ROOM_LOG_FILE` | Alternate credential and log paths. |
 | `ROOM_TOKEN` | Shared server token for non-GitHub rooms. |
 | `ROOM_IDLE_DAYS`, `ROOM_LEGACY_DAYS` | Server cleanup thresholds; both default to 30 days. |
+| `ROOM_REVALIDATE_MINUTES` | Server GitHub push-permission recheck interval; default 10 minutes, `0` disables. |
+| `ROOM_WS_TICKET_TTL_MS` | Browser websocket ticket lifetime in milliseconds; default and maximum 60,000. |
 | `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, `ROOM_IDENTITY_GUARD` | Server size caps and experimental identity enforcement. |
+| `ROOM_TRUST_PROXY`, `ROOM_MAX_BODY_KB`, `ROOM_MAX_PR_NOTE_MB`, `ROOM_MAX_ROOMS`, `ROOM_MAX_CONNECTIONS` (and `_PER_ROOM`, `_PER_PRINCIPAL`), `ROOM_MAX_PENDING_LOGINS` | Server request, room and connection budgets; defaults and meanings in [self-hosting](../deploy/self-hosting.md). |
 | `YPERSISTENCE` | Server state directory. |
 
 ## Updating plugins

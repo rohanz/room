@@ -87,6 +87,17 @@ describe('admission: github.com rooms', () => {
     expect(await canPush('gho_ok', 'o/r')).toBe(true)
     expect(calls).toBe(4)
   })
+
+  it('a fresh denial clears a previously cached push grant', async () => {
+    let allowed = true, calls = 0
+    const check = githubPushChecker({ fetch: (async () => { calls++; return new Response(JSON.stringify({ permissions: { push: allowed } }), { status: 200 }) }) as typeof fetch })
+    expect(await check('token', 'o/r')).toBe(true)
+    allowed = false
+    expect(await check('token', 'o/r')).toBe(true) // ordinary admission uses the positive cache
+    expect(await check('token', 'o/r', true)).toBe(false)
+    expect(await check('token', 'o/r')).toBe(false)
+    expect(calls).toBe(3)
+  })
 })
 
 describe('admission: non-GitHub rooms', () => {

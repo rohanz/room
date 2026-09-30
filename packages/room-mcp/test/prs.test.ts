@@ -177,6 +177,17 @@ describe('ledger to PR', () => {
     expect(renderPrNote(a, { roomName: ROOM })).toContain('- (nothing recorded on the bus yet)')
   })
 
+  it('keeps a large PR ledger under the request budget and names omitted history', () => {
+    const { a } = pair()
+    const alice: Identity = { name: 'alice', kind: 'agent' }
+    for (let i = 0; i < 2000; i++) hubAppend<QuestionMsg>(a, alice, { type: 'question', to: 'bob', text: `${i}: ${'x'.repeat(1900)}` })
+    const md = renderPrNote(a, { roomName: ROOM })
+    expect(Buffer.byteLength(JSON.stringify(md))).toBeLessThanOrEqual(3 * 1024 * 1024)
+    expect(md).toMatch(/\d+ earlier messages omitted/)
+    expect(md).toContain('1999:')
+    expect(md).not.toMatch(/asked bob's agent: 0: /)
+  })
+
   it('exports automatic claim releases in third person without calling them done', () => {
     const { a } = pair()
     const alice: Identity = { name: 'alice', kind: 'agent' }

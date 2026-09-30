@@ -1,11 +1,10 @@
 #!/usr/bin/env tsx
-import { readRoomFile } from '@room/roomd'
+import { readRoomFile, authorizedWebSocket } from '@room/roomd'
 import { boundedGitSync } from '@room/roomd/baseline'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import WebSocket from 'ws'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createPost, HubClient, hubTransport } from '@room/room-mcp'
@@ -66,7 +65,7 @@ const mcpEntry = resolve(here, '../../room-mcp/src/index.ts')
 
 const doc = new Y.Doc()
 const room = new RoomDoc(doc)
-const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket, params })
+const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof globalThis.WebSocket, params: { schema: '2' } })
 const sessionId = `roomagent:${process.pid}`
 provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(name) }, sessionId, status: 'idle' })
 

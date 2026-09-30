@@ -1,6 +1,6 @@
 /**
  * Login for the room server. Two providers, both ending in the same opaque Room session id
- * that clients hold and send as ?session=:
+ * that clients send in the Authorization header:
  *
  *  - GitHub device flow (GITHUB_CLIENT_ID): the server keeps the GitHub token itself and
  *    proves push access to github.com rooms with it. This is the only way into a github.com
@@ -50,6 +50,7 @@ export interface AuthOptions {
   /** How long a started login may take before the client must start again. Default 15 min. */
   loginTtlMs?: number
   log?: (line: string) => void
+  onSessionRemoved?: (session: string, reason: 'session expired' | 'logged out') => void
 }
 export type DeviceStart = { provider: 'github'; user_code: string; verification_uri: string; expires_in: number; interval: number; device: string }
 export type OidcStart = { provider: 'oidc'; url: string; expires_in: number; interval: number; device: string }
@@ -292,11 +293,16 @@ export class Auth {
   }
 
   /** The session behind an id (login, provider, GitHub token if any); slides the expiry. */
-  resolve(session: string | undefined): StoredSession | undefined {
+  peek(session: string | undefined): StoredSession | undefined {
     if (!session) return undefined
     const s = this.sessions.get(session)
     if (!s) return undefined
-    if (s.at + this.ttl < this.now()) { this.sessions.delete(session); this.persist(this.store.deleteSession(session)); return undefined }
+    if (s.at + this.ttl < this.now()) { this.sessions.delete(session); this.persist(this.store.deleteSession(session)); this.o.onSessionRemoved?.(session, 'session expired'); return undefined }
+    return s
+  }
+  resolve(session: string | undefined): StoredSession | undefined {
+    const s = this.peek(session)
+    if (!s || !session) return undefined
     const now = this.now()
     if (now - s.at > Math.min(60 * 60 * 1000, this.ttl / 10)) { s.at = now; this.persist(this.store.putSession(session, s)) } // slide, but not on every request
     return s
@@ -308,7 +314,22 @@ export class Auth {
     const s = this.sessions.get(session)
     if (!s) return undefined
     this.sessions.delete(session); this.persist(this.store.deleteSession(session))
+    this.o.onSessionRemoved?.(session, 'logged out')
     return s
+  }
+
+  /** Expire idle sessions even when no new HTTP request or upgrade arrives. */
+  sweepSessions(): void {
+    for (const id of this.sessions.keys()) if ((this.sessions.get(id)?.at ?? 0) + this.ttl < this.now()) this.peek(id)
+  }
+
+  /** Detect session deletion in the persistent store (for operator revocation). */
+  async reconcileSessions(): Promise<void> {
+    const stored = await this.store.loadSessions()
+    for (const id of this.sessions.keys()) if (!(id in stored)) {
+      this.sessions.delete(id)
+      this.o.onSessionRemoved?.(id, 'logged out')
+    }
   }
 
   /** Number of live sessions (diagnostics/tests). */

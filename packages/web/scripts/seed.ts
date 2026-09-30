@@ -2,7 +2,7 @@
  * Seed a room with v2 overlays, scopes, claims and feed entries for a manual smoke test.
  * Usage: npx tsx packages/web/scripts/seed.ts [ws://localhost:1234/demo] [--keep]
  */
-import WebSocket from 'ws'
+import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { RoomDoc, colorFor, type ChangedMsg, type ClaimMsg, type ScopeMsg } from '@room/shared'
@@ -13,10 +13,11 @@ const url = new URL(raw)
 const slash = url.pathname.lastIndexOf('/')
 const encodedRoomName = url.pathname.slice(slash + 1) || 'demo'
 url.pathname = url.pathname.slice(0, slash) || '/'
+url.search = ''
 const serverUrl = url.toString().replace(/\/$/, '')
 const doc = new Y.Doc()
 const room = new RoomDoc(doc)
-const provider = new WebsocketProvider(serverUrl, encodedRoomName, doc, { WebSocketPolyfill: WebSocket as never })
+const provider = new WebsocketProvider(serverUrl, encodedRoomName, doc, { WebSocketPolyfill: authorizedWebSocket({ session: process.env.ROOM_SESSION, token: process.env.ROOM_TOKEN, key: process.env.ROOM_LOCAL_KEY }) as never, params: { schema: '2' } })
 
 provider.once('sync', () => {
   const now = Date.now()

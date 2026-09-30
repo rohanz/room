@@ -36,6 +36,32 @@ function roomLocationFromQuery(search = location.search): RoomLocation {
   return parseRoomUrl(raw)
 }
 
+/** A human link necessarily carries its capability once; remove it before navigation or referrers can copy it. */
+export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getItem' | 'setItem'>, replace: (url: string) => void): { view: string; key: string; token: string } {
+  const url = new URL(location.href)
+  const q = new URLSearchParams(search)
+  const room = q.get('room') ?? ''
+  const slot = `room-credential:${room}`
+  const incoming = { view: q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: q.get('token') ?? '' }
+  if (incoming.view || incoming.key || incoming.token) try { storage.setItem(slot, JSON.stringify(incoming)) } catch { /* this tab still holds it in memory */ }
+  for (const name of ['view', 'key', 'token']) {
+    const values = url.searchParams.getAll(name).filter(v => name === 'view' && (v === 'board' || v === 'code'))
+    url.searchParams.delete(name)
+    for (const value of values) url.searchParams.append(name, value)
+  }
+  if (incoming.view || incoming.key || incoming.token) replace(url.toString())
+  try { return incoming.view || incoming.key || incoming.token ? incoming : JSON.parse(storage.getItem(slot) ?? '{}') }
+  catch { return { view: '', key: '', token: '' } }
+}
+
+export async function mintTicket(loc: RoomLocation, auth: { view: string; key: string; token: string }, request: typeof fetch = fetch): Promise<string> {
+  const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+  const response = await request(`${http}/ws-ticket`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth.token ? { 'x-room-token': auth.token } : {}) },
+    body: JSON.stringify({ room: loc.displayRoomName, schema: 2, ...(auth.key ? { key: auth.key } : auth.view ? { view: auth.view } : {}) }) })
+  if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
+  return ((await response.json()) as { ticket: string }).ticket
+}
+
 export interface Conn extends RoomLocation {
   room: RoomDoc
   provider: WebsocketProvider
@@ -47,17 +73,33 @@ export function connect(search = location.search): Conn {
   const roomLocation = roomLocationFromQuery(search)
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
-  const q = new URLSearchParams(search)
-  const token = q.get('token') ?? '', view = q.getAll('view').find(value => value !== 'board' && value !== 'code') ?? '', key = q.get('key') ?? ''
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { params: { schema: '2', ...(key ? { key } : view ? { view } : token ? { token } : {}) } })
-  // A refused websocket never surfaces a status code; ask the server over HTTP why, and say so.
-  // A legacy view link receives a terminal 410 from the server's browser route.
-  // Local keys already carry access and have no server-side browser route.
-  // A local relay has no /view-token endpoint.
+  const storage = (() => { try { return sessionStorage } catch { return { getItem: () => null, setItem: () => {} } } })()
+  const auth = takeLinkCredentials(search, storage, url => history.replaceState(history.state, '', url))
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { connect: false, params: { schema: '2' } })
+  let stopped = false
+  const showError = (why: string) => {
+    const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))
+    el.className = 'access-error'; el.textContent = `Cannot open ${roomLocation.displayRoomName}: ${why}`
+  }
+  const reconnect = async () => {
+    try {
+      if (!auth.view && !auth.key && !auth.token) { provider.connect(); return }
+      const ticket = await mintTicket(roomLocation, auth)
+      if (stopped) return
+      provider.params.ticket = ticket
+      provider.connect()
+    } catch (e) { showError(e instanceof Error ? e.message : String(e)); setTimeout(() => { if (!stopped) void reconnect() }, 5000) }
+  }
+  provider.on('connection-close', (event: CloseEvent | null) => {
+    provider.shouldConnect = false
+    if (event?.code === 4401 || event?.code === 4403) { stopped = true; showError(event.reason || 'access revoked'); return }
+    setTimeout(() => { if (!stopped) void reconnect() }, 1000)
+  })
+  void reconnect()
+  // For hosted links without a view key, explain admission errors via HTTP.
   const host = new URL(roomLocation.serverUrl).hostname
   const hosted = host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]'
-  if (hosted && view) void explainLegacyView(roomLocation, view, provider)
-  else if (hosted && !q.has('view') && !q.has('key')) void explainAccess(roomLocation, { view, token }, provider)
+  if (hosted && !auth.view && !auth.key) void explainAccess(roomLocation, { view: auth.view, token: auth.token }, provider)
   // A successful sync supersedes any earlier HTTP preflight error.
   provider.on('sync', (synced: boolean) => {
     if (synced) {
@@ -92,21 +134,6 @@ export function connect(search = location.search): Conn {
     for (const listener of listeners) listener(conn.connected)
   })
   return conn
-}
-
-async function explainLegacyView(loc: RoomLocation, view: string, provider: WebsocketProvider): Promise<void> {
-  const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
-  const roomUrl = `${loc.serverUrl}/${loc.encodedRoomName}`
-  try {
-    const res = await fetch(`${http}/?room=${encodeURIComponent(roomUrl)}&view=${encodeURIComponent(view)}`, { method: 'GET' })
-    if (res.status !== 410 || provider.synced) return
-    const why = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-      || 'this link was for a branch room that no longer exists; ask for a new link'
-    const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))
-    el.className = 'access-error'
-    el.textContent = why
-    provider.disconnect()
-  } catch { /* websocket status handles transient network failure */ }
 }
 
 /** Read awareness states defensively: other clients may publish arbitrary data. */

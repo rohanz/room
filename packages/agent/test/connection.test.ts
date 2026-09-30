@@ -5,9 +5,9 @@ import { roomConnectionParams, waitForRoomSync } from '../src/connection.js'
 class Provider extends EventEmitter { synced = false }
 
 describe('Room client connections', () => {
-  it('preserves token, session, and local key query credentials with explicit overrides', () => {
-    expect(roomConnectionParams('ws://room.test/name?token=url-token&session=url-session&key=url-key', { session: 'explicit-session' }))
-      .toEqual({ token: 'url-token', session: 'explicit-session', key: 'url-key' })
+  it('keeps explicit credentials out of the websocket URL', () => {
+    expect(roomConnectionParams('ws://room.test/name', { token: 'shared', session: 'explicit-session', key: 'local' }))
+      .toEqual({ token: 'shared', session: 'explicit-session', key: 'local' })
   })
 
   it('fails a connection that never syncs within the deadline and removes its listener', async () => {

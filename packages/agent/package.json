@@ -18,12 +18,8 @@
     "@room/room-mcp": "*",
     "@room/roomd": "*",
     "@room/shared": "*",
-    "ws": "^8.21.0",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.32"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.5.0"
   },
   "license": "PolyForm-Noncommercial-1.0.0"
 }

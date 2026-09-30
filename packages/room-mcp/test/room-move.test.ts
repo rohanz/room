@@ -251,7 +251,8 @@ it('remembers the concrete server "team" resolved to, so a restart goes back to 
   const server = teamServer('self-hosted.example:1266')
   await writeChoice(dir, server)
   await writeChoice(dir, 'local') // went local; ROOM_SERVER names the team's own server
-  vi.stubEnv('ROOM_SERVER', `${server}/?token=secret`)
+  vi.stubEnv('ROOM_SERVER', server)
+  vi.stubEnv('ROOM_TOKEN', 'secret')
   const t = setup(async () => fakeSession('github.com/example/repo', false))
   expect(await t.tools.call('room_join', { where: 'team' })).toContain('moved from')
   vi.stubEnv('ROOM_SERVER', undefined)

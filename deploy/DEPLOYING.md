@@ -81,7 +81,10 @@ Secrets (`flyctl secrets list -a room-rohanz`):
   nobody can join a GitHub room. `fake` is the test issuer and is refused under `NODE_ENV=production`.
 - `ROOM_TOKEN` — unset on purpose. It only ever admits non-GitHub rooms (`local/…`, `git/…`).
 
-Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `room_data`, 1 GB).
+Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `room_data`, 1 GB),
+`ROOM_TRUST_PROXY=true`. The last one matters: Fly's proxy fronts every request, so without it the
+per-address rate limits (login starts, websocket upgrades) would count every user as one address.
+Any other Fly app running this image (staging) needs the same line.
 Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DOC_MAX_MB`,
 `ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
 is observe-only unless `ROOM_IDENTITY_GUARD` is literally `enforce`: objected updates are applied
@@ -105,7 +108,7 @@ SESSION=$(python3 -c "import json;print(json.load(open('$HOME/.config/room/crede
 # open (idempotent)
 curl -s -X POST https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -d "{\"room\":\"github.com/<owner>/<repo>/<branch>\",\"session\":\"$SESSION\"}"
 # list what I can see
-curl -s "https://room-rohanz.fly.dev/rooms?session=$SESSION"
+curl -s -H "Authorization: Bearer $SESSION" "https://room-rohanz.fly.dev/rooms"
 # close a repo: drops every branch room, deletes their documents, invalidates their view links
 curl -s -X DELETE https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -d "{\"room\":\"github.com/<owner>/<repo>/<branch>\",\"session\":\"$SESSION\"}"
 ```

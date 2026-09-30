@@ -42,8 +42,8 @@ export type MakeEnv = (clock: FakeClock) => Promise<ContractEnv>
 export const holder = (sessionId: string, extra: Partial<HolderIn> = {}): HolderIn => ({ sessionId, pid: process.pid, startTime: '', executable: '', ...extra })
 
 /** A hub client over a real websocket: replies matched by id, pushes collected. */
-export async function socketClient(url: string): Promise<ContractClient & { ws: WebSocket }> {
-  const ws = new WebSocket(url)
+export async function socketClient(url: string, headers: Record<string, string> = {}): Promise<ContractClient & { ws: WebSocket }> {
+  const ws = new WebSocket(url, { headers })
   ws.binaryType = 'arraybuffer'
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject) })
   const pending = new Map<string, (r: Reply) => void>()

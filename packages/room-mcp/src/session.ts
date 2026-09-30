@@ -9,10 +9,9 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
 import { WebsocketProvider } from 'y-websocket'
-import WebSocket from 'ws'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
-import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
+import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
@@ -523,8 +522,8 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const probe = await timed('connect', () => options.providerFactory
     ? options.providerFactory(url.toString().replace(/\/$/, ''), encodedRoom, doc)
     : new WebsocketProvider(url.toString().replace(/\/$/, ''), encodedRoom, doc, {
-        WebSocketPolyfill: WebSocket as any,
-        params: { schema: '2', ...(options.token ? { token: options.token } : {}), ...(options.session ? { session: options.session } : {}), ...(options.localKey ? { key: options.localKey } : {}) },
+        WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
+        params: { schema: '2' },
       }))
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
   const binding = createSessionBinding(options.dir)
@@ -778,7 +777,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds))
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : token ? `&token=${encodeURIComponent(token)}` : ''}`
+  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
@@ -851,7 +850,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   replica = daemon.roomDoc.doc
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
-  // The link carries the relay key: it is machine-local, and anyone holding it can read the room.
+  // The human link carries the relay key once; the browser removes it from the address bar and
+  // exchanges it for read-only tickets. The underlying key still grants local write access.
   const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
@@ -902,10 +902,14 @@ export function watchClosed(s: Session, log?: (line: string) => void): void {
       log?.(`${s.roomName}: ${s.rejected.reason}; your last edits are not in the room; retrying in 60 seconds`)
       return
     }
-    if (close?.code !== ROOM_CLOSED_CODE) return
+    if (close?.code !== ROOM_CLOSED_CODE && close?.code !== 4401 && close?.code !== 4403) return
     if (retry) clearTimeout(retry)
     if (verify) clearTimeout(verify)
-    s.closed = { reason: close.reason || 'room closed' }
+    const server = s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/'))
+    const reason = close.code === 4401 ? `logged out of ${server}: run room_login`
+      : close.code === 4403 ? `access to ${s.roomName} was revoked`
+      : close.reason || 'room closed'
+    s.closed = { reason }
     try { p.disconnect?.() } catch { /* already gone */ }
     log?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`)
   })

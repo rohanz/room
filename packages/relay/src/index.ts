@@ -47,7 +47,7 @@ interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: 
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array } }
+interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 function send(conn: WebSocket, buf: Uint8Array): void {
   if (conn.readyState !== conn.OPEN) return
@@ -99,14 +99,14 @@ function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, log: (line
     })
     .catch(e => log(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`))
 }
-function hubReply(d: RelayDoc, conn: WebSocket, dec: decoding.Decoder, hubOn: boolean): Reply {
+function hubReply(d: RelayDoc, conn: WebSocket, dec: decoding.Decoder, hubOn: boolean, readOnly = false): Reply {
   let frame: unknown
   try { frame = decodeFrame(dec) } catch { frame = undefined }
   const id = (frame as { id?: unknown } | undefined)?.id
   const re = typeof id === 'string' ? id : ''
   if (!hubOn) return { v: 1, re, ok: false, reason: 'not-authority', text: 'not the authority; reconnect' }
   if (!d.hub) return { v: 1, re, ok: false, reason: 'starting', text: 'the hub is starting', retryMs: STARTING_RETRY_MS }
-  return d.hub.handle(conn, frame, { local: true })
+  return d.hub.handle(conn, frame, readOnly ? { readOnly: true } : { local: true })
 }
 function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.IncomingMessage, opts: DocOptions): void {
   const name = encodeURIComponent(decodeURIComponent((req.url ?? '/').slice(1).split('?')[0]))
@@ -120,15 +120,17 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
       const enc = encoding.createEncoder()
       switch (decoding.readVarUint(dec)) {
         case MSG_SYNC:
+          if (opts.readOnly && decoding.peekVarUint(dec) !== syncProtocol.messageYjsSyncStep1) break
           encoding.writeVarUint(enc, MSG_SYNC)
           syncProtocol.readSyncMessage(dec, enc, d.doc, conn)
           if (encoding.length(enc) > 1) send(conn, encoding.toUint8Array(enc))
           break
         case MSG_AWARENESS:
+          if (opts.readOnly) break
           awarenessProtocol.applyAwarenessUpdate(d.awareness, decoding.readVarUint8Array(dec), conn)
           break
         case MSG_HUB:
-          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub)))
+          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub, opts.readOnly)))
           break
       }
     } catch { /* malformed message: ignore */ }
@@ -164,7 +166,7 @@ export interface LocalRelay {
   /** http://127.0.0.1:<port>: the browser view (same machine only). */
   httpUrl: string
   port: number
-  /** Secret every websocket to this relay must carry as ?key=; lives in room/relay.json (0600). */
+  /** Secret every websocket sends in Authorization; lives in room/relay.json (0600). */
   key: string
   /** True when this process runs the relay. */
   owned: boolean
@@ -250,6 +252,8 @@ function isLoopback(addr: string | undefined): boolean { return !!addr && LOOPBA
 export interface RelayOptions {
   staticDir?: string
   key?: string
+  /** Browser ticket lifetime; default 60 seconds, capped at 60 seconds. */
+  ticketTtlMs?: number
   commonDir?: string
   log?: (line: string) => void
   /** The clone's authority lock (needs `commonDir`): each room runs its hub, and closing releases the lock.
@@ -268,7 +272,7 @@ export interface StartedRelay {
 /** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
  *  Also serves the browser view (staticDir, default findWebDist()) at / and a /health line, so a local
  *  room has a projector link like a hosted one. Websockets are accepted from loopback only, and when
- *  `key` is set they must carry it as ?key= (the /health line stays open so joiners can recognise a relay). */
+ *  `key` is set they must carry it in Authorization (the /health line stays open so joiners can recognise a relay). */
 export function startRelay(port: number, opts: RelayOptions = {}): Promise<StartedRelay> {
   return new Promise((resolve, reject) => {
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
@@ -277,18 +281,50 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
     const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
+    const requestedTicketTtl = opts.ticketTtlMs ?? 60_000
+    const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(60_000, requestedTicketTtl)) : 60_000
+    const tickets = new Map<string, { room: string; expires: number }>()
+    const ticketRate = new Map<string, { count: number; until: number }>()
+    /** Constant-time comparison of a presented local key (or `Bearer <key>` header) with the clone's. */
+    const sameSecret = (given: unknown, wanted: string): boolean => {
+      const a = Buffer.from(typeof given === 'string' ? given : ''), b = Buffer.from(wanted)
+      return a.length === b.length && crypto.timingSafeEqual(a, b)
+    }
+    const bearerOk = (req: http.IncomingMessage): boolean => !!opts.key && sameSecret(req.headers.authorization, `Bearer ${opts.key}`)
     const server = http.createServer((req, res) => {
       try {
+      res.setHeader('Referrer-Policy', 'no-referrer')
       const url = safeUrl(req.url)
+      if (req.method === 'POST' && url.pathname === '/ws-ticket') {
+        if (!isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end('Forbidden'); return }
+        const ip = req.socket.remoteAddress ?? '?', now = Date.now(), prior = ticketRate.get(ip)
+        const budget = prior && prior.until > now ? prior : { count: 0, until: now + 60_000 }
+        ticketRate.set(ip, budget)
+        if (++budget.count > 60) { res.writeHead(429); res.end('rate limited'); return }
+        let body = ''
+        req.on('data', part => { body += part; if (body.length > 4096) req.destroy() })
+        req.on('end', () => {
+          let value: { room?: string; schema?: number; key?: string }
+          try { value = JSON.parse(body) } catch { res.writeHead(400); res.end('bad request'); return }
+          if (!opts.key || !(bearerOk(req) || sameSecret(value.key, opts.key))) { res.writeHead(403); res.end('Forbidden'); return }
+          if (value.schema !== 2 || !value.room || !value.room.startsWith('local/')) { res.writeHead(400); res.end('schema 2 local room required'); return }
+          for (const [key, t] of tickets) if (t.expires <= now) tickets.delete(key)
+          if (tickets.size >= 10000) { res.writeHead(503); res.end('too many pending tickets'); return }
+          const ticket = crypto.randomBytes(16).toString('hex')
+          tickets.set(ticket, { room: value.room, expires: now + ticketTtl })
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1000) }))
+        })
+        return
+      }
       if (url.pathname === '/health') {
         // Open to joiners; with the clone's key it also confirms the key, so a stale discovery file is never trusted.
-        const keyOk = !!opts.key && isLoopback(req.socket.remoteAddress) && req.headers.authorization === 'Bearer ' + opts.key
+        const keyOk = isLoopback(req.socket.remoteAddress) && bearerOk(req)
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(keyOk ? { key: true } : {}) }))
         return
       }
       if (req.method === 'DELETE' && url.pathname === '/memory') {
-        if (!opts.key || req.headers.authorization !== 'Bearer ' + opts.key || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
+        if (!bearerOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
         try {
           const room = url.searchParams.get('room') ?? ''
           const d = docs.get(encodeURIComponent(room))
@@ -303,7 +339,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
         const file = path.resolve(staticDir, rel)
         if (file.startsWith(staticDir + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
-          res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
+          res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-store' : 'no-cache' })
           fs.createReadStream(file).pipe(res)
           return
         }
@@ -313,9 +349,10 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       } catch (e) { opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) { res.writeHead(e instanceof HttpFailure ? e.status : 500); res.end(e instanceof HttpFailure ? e.message : 'Internal Server Error') } }
     })
     const wss = new WebSocketServer({ noServer: true })
+    wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
     const docs = relayDocs()
     wss.on('connection', (conn, req) => {
-      try { safeUrl(req.url); attach(docs, conn, req, docOptions) }
+      try { safeUrl(req.url); attach(docs, conn, req, { ...docOptions, readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
       catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
     })
     const ticker = setInterval(() => {
@@ -328,16 +365,24 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     }, 1000)
     ticker.unref?.()
     server.on('upgrade', (req, socket, head) => {
-      const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nConnection: close\r\n\r\n`); socket.destroy() }
+      // First, before anything can refuse: a refusal writes to a socket the client may already have reset (EPIPE).
+      socket.on('error', () => {})
+      const refuse = (code: number, why: string) => { socket.write(`HTTP/1.1 ${code} ${why}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n`); socket.destroy() }
       try {
       const url = safeUrl(req.url)
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
       if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
+      if (url.searchParams.has('key')) return refuse(400, 'send local key in Authorization or exchange at POST /ws-ticket')
       if (opts.key) {
-        const given = url.searchParams.get('key') ?? ''
-        const a = Buffer.from(given), b = Buffer.from(opts.key)
-        if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return refuse(403, 'Forbidden: local room key missing or wrong')
+        const issued = url.searchParams.get('ticket')
+        const ticket = issued ? tickets.get(issued) : undefined
+        if (issued) tickets.delete(issued)
+        const room = decodeURIComponent(url.pathname.slice(1))
+        const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room
+        if (issued && !ticketOk) return refuse(403, 'websocket ticket invalid or expired')
+        if (!ticketOk && !bearerOk(req)) return refuse(403, 'Forbidden: local room key missing or wrong')
+        if (ticketOk) (req as http.IncomingMessage & { ticketView?: boolean }).ticketView = true
       }
       wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
       } catch (e) { opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`); refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'Internal Server Error') }

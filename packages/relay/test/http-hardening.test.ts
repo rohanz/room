@@ -26,6 +26,15 @@ describe('relay sockets', () => {
       expect(await raw('GET //[?key=test-key&schema=2 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 400 /)
       // A well-formed upgrade without the key is still refused: the parser change does not bypass the key check.
       expect(await raw('GET /local%2Fx?schema=2 HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')).toMatch(/^HTTP\/1\.1 403 /)
+      // A client that resets while its upgrade is being refused must not raise an unhandled EPIPE.
+      const reset = (request: string) => new Promise<void>((resolve, reject) => {
+        const socket = net.connect(relay.port, '127.0.0.1')
+        socket.on('error', reject)
+        socket.on('connect', () => socket.write(request, () => { socket.resetAndDestroy(); resolve() }))
+      })
+      const upgrade = (target: string) => `GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`
+      for (let i = 0; i < 10; i++) for (const target of ['//[', '/local%2Fx?schema=2', '/local%2Fx']) await reset(upgrade(target))
+      await new Promise(r => setTimeout(r, 300))
       expect((await fetch(`http://127.0.0.1:${relay.port}/health`)).status).toBe(200)
     } finally { await relay.close() }
   })

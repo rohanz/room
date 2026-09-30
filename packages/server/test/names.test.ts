@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { validParticipantName as sharedValidParticipantName } from '@room/shared'
-import { docNameOf, roomNameOf, repoRoomOf, githubRepoOf, parseRoomName, archiveOwnerOf, validParticipantName, assertValidParticipantName } from '../src/names.js'
+import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf, validParticipantName, assertValidParticipantName } from '../src/names.js'
 
 describe('participant names', () => {
   it.each([
@@ -32,8 +32,8 @@ describe('room names', () => {
     expect(docNameOf('/github.com%2Fa%2Fb%2Fmain?view=x')).toBe(roomNameOf('/github.com%2Fa%2Fb%2Fmain'))
   })
   it('never infers non-GitHub ownership from an open prefix', () => {
-    const open = new Set(['git/h/grp/repo', 'github.com/o/r'])
-    const repo = (name: string) => repoRoomOf(name, key => open.has(key))
+    // git/h/grp/repo and github.com/o/r may be open: an open prefix decides nothing, only the name's own shape.
+    const repo = (name: string) => parseRoomName(name)?.repo
     expect(repo('git/h/grp/repo/main')).toBe('git/h/grp/repo/main')
     expect(repo('git/h/repo/main')).toBe('git/h/repo/main')
     expect(repo('git/h/grp/app')).toBe('git/h/grp/app')

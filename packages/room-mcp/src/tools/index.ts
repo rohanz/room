@@ -131,7 +131,7 @@ export function createTools(ctx: ToolCtx): Tools {
       current?.daemon.touch()
       const closed = current?.closed
       const offlineTool = name === 'room_state' || name === 'room_send' || name === 'room_wait' || name === 'room_collect'
-      if (closed && name !== 'room_leave' && !offlineTool) return `error: the room for ${current!.roomName} was closed (${closed.reason}); room_leave, then room_create to reopen`
+      if (closed && name !== 'room_leave' && !offlineTool) return `error: ${closed.reason}; ${closed.reason.startsWith('logged out') ? 'run room_login, then room_leave and room_join' : closed.reason.includes('revoked') ? 'ask for access, then room_leave and room_join' : 'room_leave, then room_create to reopen'}`
       if (toolCallAborted()) return 'error: tool call cancelled'
       const s = ctx.getSession()
       if (s) ledger.acceptPrompt(s)

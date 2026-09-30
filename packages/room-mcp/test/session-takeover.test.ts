@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import WebSocket from 'ws'
+import { authorizedWebSocket } from '@room/roomd'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
@@ -39,7 +39,7 @@ describe('local relay takeover (hub.md §5, R-H2)', () => {
     await vi.waitFor(() => expect(b.local?.owned).toBe(true), { timeout: 15_000, interval: 100 })
     // A fresh client of the successor relay sees the value; b's provider is still disconnected.
     const fresh = new Y.Doc()
-    const provider = new WebsocketProvider(b.local!.url, b.roomUrl.slice(b.local!.url.length + 1), fresh, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: b.local!.key } })
+    const provider = new WebsocketProvider(b.local!.url, b.roomUrl.slice(b.local!.url.length + 1), fresh, { WebSocketPolyfill: authorizedWebSocket({ key: b.local!.key }) as never, params: { schema: '2' } })
     cleanups.push(() => { provider.destroy(); fresh.destroy() })
     await vi.waitFor(() => expect(provider.synced).toBe(true), { timeout: 10_000, interval: 50 })
     expect(b.provider.wsconnected).toBe(false)

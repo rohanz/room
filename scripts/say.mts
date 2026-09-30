@@ -1,7 +1,7 @@
 // Usage: ROOM_URL=ws://host:port/room npx tsx scripts/say.mts <Name> ["message"] [seconds-to-watch]
 // Posts a human message into <Name>'s agent chat and prints chat + bus activity.
 import * as Y from 'yjs'
-import { WebSocket } from 'ws'
+import { authorizedWebSocket } from '../packages/roomd/src/ws-auth.js'
 import { WebsocketProvider } from 'y-websocket'
 import { RoomDoc, formatMsg } from '@room/shared'
 import { roomConnectionParams, waitForRoomSync } from '../packages/agent/src/connection.js'
@@ -12,7 +12,7 @@ if (!name) throw new Error('Usage: scripts/say.mts <Name> ["message"] [seconds-t
 const u = new URL(ROOM_URL); const serverUrl = `${u.protocol}//${u.host}`; const roomName = u.pathname.replace(/^\//, '')
 const doc = new Y.Doc(); const room = new RoomDoc(doc)
 const params = roomConnectionParams(u, { token: process.env.ROOM_TOKEN, session: process.env.ROOM_SESSION, key: process.env.ROOM_LOCAL_KEY })
-const p = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: WebSocket, params })
+const p = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof WebSocket, params: { schema: '2' } })
 try { await waitForRoomSync(p, Number(process.env.ROOM_CONNECT_TIMEOUT_MS ?? 15_000), `${serverUrl}/${roomName}`) }
 catch (error) { p.destroy(); throw error }
 if (text) room.say(name, { role: 'human', text })

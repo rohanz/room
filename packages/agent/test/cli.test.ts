@@ -39,11 +39,11 @@ it('uses explicit room before explicit server and environment', async () => {
   await expect(run()).rejects.toThrow('connection boundary')
   expect(boundary).toHaveBeenCalledWith('ws://argument', 'chosen', expect.anything())
 })
-it('passes every explicit room credential to the websocket instead of dropping the query', async () => {
-  process.argv.push('--room', 'ws://argument/chosen?session=session-id&token=shared-token&key=local-key')
+it('passes explicit room credentials through websocket headers', async () => {
+  process.argv.push('--room', 'ws://argument/chosen', '--session', 'session-id', '--token', 'shared-token', '--key', 'local-key')
   await expect(run()).rejects.toThrow('connection boundary')
   expect(boundary).toHaveBeenCalledWith('ws://argument', 'chosen', expect.objectContaining({
-    params: { session: 'session-id', token: 'shared-token', key: 'local-key' },
+    params: { schema: '2' }, WebSocketPolyfill: expect.any(Function),
   }))
 })
 it('uses ROOM_URL before saved metadata', async () => {

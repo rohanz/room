@@ -5,6 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
+const keyedSocket = (key: string) => class extends WebSocket {
+  constructor(address: string | URL, protocols?: string | string[]) { super(address, protocols, { headers: { authorization: `Bearer ${key}` } }) }
+} as typeof WebSocket
 import { WebsocketProvider } from 'y-websocket'
 import { deterministicPort, ensureLocalRelay, LOCAL_FILE, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
 import { portAnswers, relayAnswers } from './probes.js'
@@ -39,8 +42,8 @@ describe('local relay', () => {
     // Two providers through the relay converge.
     const d1 = new Y.Doc(), d2 = new Y.Doc()
     expect(b.key).toBe(a.key)
-    const p1 = new WebsocketProvider(a.url, 'local%2Fx', d1, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: a.key } })
-    const p2 = new WebsocketProvider(b.url, 'local%2Fx', d2, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: b.key } })
+    const p1 = new WebsocketProvider(a.url, 'local%2Fx', d1, { WebSocketPolyfill: keyedSocket(a.key) as never, params: { schema: '2' } })
+    const p2 = new WebsocketProvider(b.url, 'local%2Fx', d2, { WebSocketPolyfill: keyedSocket(b.key) as never, params: { schema: '2' } })
     await until(() => p1.synced && p2.synced)
     d1.getText('t').insert(0, 'hello')
     await until(() => d2.getText('t').toString() === 'hello')
@@ -142,7 +145,7 @@ describe('local relay hardening', () => {
     })
     expect(refused).toBe(403)
     const doc = new Y.Doc()
-    const ok = new WebsocketProvider(a.url, 'local%2Fx', doc, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: a.key } })
+    const ok = new WebsocketProvider(a.url, 'local%2Fx', doc, { WebSocketPolyfill: keyedSocket(a.key) as never, params: { schema: '2' } })
     await until(() => ok.synced)
     ok.destroy()
     await a.stop()
@@ -158,7 +161,7 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
   const connect = async () => {
     const doc = new Y.Doc(); docs.push(doc)
     provider = new WebsocketProvider(`ws://127.0.0.1:${relay!.port}`, encodeURIComponent(room), doc, {
-      WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: 'test-key' }, disableBc: true,
+      WebSocketPolyfill: keyedSocket('test-key') as never, params: { schema: '2' }, disableBc: true,
     })
     await until(() => provider!.synced)
     return doc

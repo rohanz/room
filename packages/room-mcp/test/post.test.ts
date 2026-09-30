@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import WebSocket from 'ws'
+import { authorizedWebSocket } from '@room/roomd'
 import { WebsocketProvider } from 'y-websocket'
 import { OWED_PER_RECIPIENT, RoomDoc, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
@@ -92,7 +92,7 @@ describe('Session.post through the hub (hub §11)', () => {
     cleanups.push(() => relay.stop())
     const open = () => {
       const doc = new Y.Doc()
-      const provider = new WebsocketProvider(relay.url, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: WebSocket as never, params: { schema: '2', key: relay.key } })
+      const provider = new WebsocketProvider(relay.url, encodeURIComponent('local/post/main'), doc, { WebSocketPolyfill: authorizedWebSocket({ key: relay.key }) as never, params: { schema: '2' } })
       cleanups.push(() => { provider.destroy(); doc.destroy() })
       return { room: new RoomDoc(doc), provider }
     }

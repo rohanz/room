@@ -23,7 +23,8 @@ import { authorizesText, rulesFromText, defaultIgnoredPath, DEFAULT_IGNORED_DIRS
 import type { ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 export { policyFromLevel, authorizesText, rulesFromText, plan, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
-import { WebSocket } from 'ws'
+import { authorizedWebSocket } from './ws-auth.js'
+export { authorizedWebSocket } from './ws-auth.js'
 import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease, type ClaimSearchProgress } from './reanchor.js'
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
@@ -103,9 +104,9 @@ export interface RoomdOptions {
   host?: string
   model?: string
   effort?: string
-  /** Shared room token, sent as ?token= on the websocket. Default: ROOM_TOKEN env. */
+  /** Shared room token, sent as X-Room-Token on the websocket. Default: ROOM_TOKEN env. */
   token?: string
-  /** Room session id from GitHub device login, sent as ?session= (servers with GITHUB_CLIENT_ID). */
+  /** Room session id from GitHub device login, sent as Authorization: Bearer (servers with GITHUB_CLIENT_ID). */
   session?: string
   /** The bound host session (registry §17): published in presence, where it makes the holder fresh. */
   sessionId?: string
@@ -118,7 +119,7 @@ export interface RoomdOptions {
   lease?: () => string | undefined
   /** A worker daemon's carried baseline from its lead's registry record. */
   carried?: BaselineSource
-  /** Local relay key (room/relay.json): sent as ?key= so only sessions that can read the clone's git dir connect. */
+  /** Local relay key (room/relay.json): sent as Authorization: Bearer so only sessions that can read the clone's git dir connect. */
   localKey?: string
   log?: (line: string) => void
   /** Test hook: awaited inside the publish path after the base text is read, before the room is written. */
@@ -406,8 +407,8 @@ class Daemon implements Roomd {
     this.provider = options.providerFactory
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
-          WebSocketPolyfill: WebSocket as any,
-          params: { schema: '2', ...tokenParams(options.token ?? process.env.ROOM_TOKEN), ...(options.localKey ? { key: options.localKey } : {}), ...(options.session ? { session: options.session } : {}) },
+          WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
+          params: { schema: '2' },
         })
     this.publisher = new Publisher(this)
     this.setStatus('syncing', { host: options.host, model: options.model, effort: options.effort })
