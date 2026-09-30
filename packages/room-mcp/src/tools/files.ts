@@ -659,123 +659,268 @@ export async function previewCachePath(cloneDir: string, repoDir = cloneDir): Pr
   return path.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start))
 }
 
-async function renameDeadSlot(slot: string, destination: string): Promise<boolean> {
-  if (!await isDeadSlot(path.basename(slot))) return false
-  try { await fs.promises.rename(slot, destination); return true }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
+type SlotRegistration = 'valid' | 'missing-git' | 'unregistered' | 'foreign'
+
+/** The link publishes the entire token at once. No process ever steals a stale claim. */
+async function claimPreviewSlot(slot: string): Promise<(() => Promise<void>) | undefined> {
+  const claim = `${slot}.claim`
+  const temporary = `${claim}.${randomUUID()}.tmp`
+  const token = JSON.stringify({ pid: process.pid, start: await ownPreviewStart(), nonce: randomUUID() })
+  await fs.promises.writeFile(temporary, token, { flag: 'wx', mode: 0o600 })
+  try {
+    try { await fs.promises.link(temporary, claim) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return undefined
+      throw error
+    }
+  } finally { await fs.promises.rm(temporary, { force: true }) }
+  return async () => {
+    try {
+      if (await fs.promises.readFile(claim, 'utf8') === token) await fs.promises.unlink(claim)
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
   }
 }
 
-async function previewAdminDir(repoDir: string, slot: string): Promise<string | undefined> {
-  let gitfile: string
+/** Authenticate both halves of a registration before mutating it. */
+async function slotRegistration(repoDir: string, slot: string): Promise<SlotRegistration> {
+  let gitfile: string | undefined
   try { gitfile = await fs.promises.readFile(path.join(slot, '.git'), 'utf8') }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') gitfile = ''; else throw error }
-  const common = await fs.promises.realpath(await gitCommonDir(repoDir))
-  const parent = path.join(common, 'worktrees')
-  const match = /^gitdir: (.+)\s*$/m.exec(gitfile)
-  if (match) {
-    const admin = path.resolve(slot, match[1])
-    return path.dirname(admin) === parent && path.basename(admin) !== '.' ? admin : undefined
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'foreign'
   }
-  // A crashed checkout may have lost its .git file while its locked registration remains.
-  let names: string[]
-  try { names = await fs.promises.readdir(parent) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }
+  if (gitfile !== undefined) {
+    const match = /^gitdir: (.+)\s*$/m.exec(gitfile)
+    if (!match) return 'foreign'
+    const common = await fs.promises.realpath(await gitCommonDir(repoDir))
+    const parent = path.join(common, 'worktrees')
+    let admin: string
+    try { admin = await fs.promises.realpath(path.resolve(slot, match[1])) }
+    catch { return 'foreign' }
+    if (path.dirname(admin) !== parent) return 'foreign'
+    let backlink: string
+    try { backlink = await fs.promises.realpath((await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()) }
+    catch { return 'foreign' }
+    let ownGitfile: string
+    try { ownGitfile = await fs.promises.realpath(path.join(slot, '.git')) }
+    catch { return 'foreign' }
+    return backlink === ownGitfile ? 'valid' : 'foreign'
+  }
+  const listed = await gitSetup(repoDir, ['worktree', 'list', '--porcelain'])
+  const same = async (other: string) => {
+    try { return await fs.promises.realpath(other) === await fs.promises.realpath(slot) }
+    catch { return false }
+  }
+  for (const line of listed.split(/\n/)) {
+    if (line.startsWith('worktree ') && await same(line.slice(9))) return 'missing-git'
+  }
+  return 'unregistered'
+}
+
+/** A missing .git may be rebuilt only from a registration pointing at this exact slot. */
+async function registeredAdmin(repoDir: string, slot: string): Promise<string | undefined> {
+  const parent = path.join(await fs.promises.realpath(await gitCommonDir(repoDir)), 'worktrees')
+  const own = await fs.promises.realpath(slot)
+  const names = await fs.promises.readdir(parent).catch(() => [] as string[])
+  let found: string | undefined
   for (const name of names) {
     const admin = path.join(parent, name)
     try {
-      if (path.resolve((await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()) === path.join(slot, '.git')) return admin
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      const link = (await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()
+      if (path.basename(link) === '.git' && await fs.promises.realpath(path.dirname(link)) === own) {
+        if (found) return undefined // Multiple registrations for one path are ambiguous.
+        found = admin
+      }
+    } catch { /* An unrelated or broken registration is not authority. */ }
   }
-  return undefined
+  return found
 }
 
 async function lockPreviewSlot(repoDir: string, slot: string): Promise<void> {
   try { await gitSetup(repoDir, ['worktree', 'lock', '--reason', 'room preview slot', slot]) }
   catch (error) {
-    const admin = await previewAdminDir(repoDir, slot)
-    if (!admin || !fs.existsSync(path.join(admin, 'locked'))) throw error
+    if (await slotRegistration(repoDir, slot) !== 'valid') throw error
+    const gitfile = await fs.promises.readFile(path.join(slot, '.git'), 'utf8')
+    const match = /^gitdir: (.+)\s*$/m.exec(gitfile)
+    if (!match || !await fs.promises.stat(path.join(path.resolve(slot, match[1]), 'locked')).catch(() => undefined)) throw error
   }
 }
 
-async function deleteClaimedSlot(repoDir: string, trash: string): Promise<void> {
-  const admin = await previewAdminDir(repoDir, trash)
+const warnedSlots = new Set<string>()
+function warnSlot(slot: string, reason: string): void {
+  if (warnedSlots.has(slot)) return
+  warnedSlots.add(slot)
+  console.warn(`room preview: leaving ${slot}: ${reason}`)
+}
+
+/** Git removes registrations by their original slot path; no admin path is ever deleted directly. */
+async function deletePreviewSlot(repoDir: string, slot: string): Promise<boolean> {
+  const release = await claimPreviewSlot(slot)
+  if (!release) return false
+  let complete = false
   try {
-    await gitSetup(repoDir, ['worktree', 'repair', trash])
-    try { await gitSetup(repoDir, ['worktree', 'unlock', trash]) } catch { /* Already unlocked or removed. */ }
-    await gitSetup(repoDir, ['worktree', 'remove', '--force', trash])
-  } catch {
-    await fs.promises.rm(trash, { recursive: true, force: true })
-    if (admin) await fs.promises.rm(admin, { recursive: true, force: true })
+    const state = await slotRegistration(repoDir, slot)
+    if (state === 'foreign') {
+      warnSlot(slot, 'registration pointer does not point back to this slot; manual inspection required')
+      return false
+    }
+    if (state === 'missing-git') {
+      const admin = await registeredAdmin(repoDir, slot)
+      if (!admin) throw new Error('missing .git has no reciprocal registration')
+      await fs.promises.writeFile(path.join(slot, '.git'), `gitdir: ${admin}\n`, { flag: 'wx' })
+      if (await slotRegistration(repoDir, slot) !== 'valid') throw new Error('rebuilt .git is not reciprocal')
+      await gitSetup(repoDir, ['worktree', 'repair', slot])
+      if (await slotRegistration(repoDir, slot) !== 'valid') throw new Error('repair did not restore reciprocal registration')
+    }
+    if (state === 'valid' || state === 'missing-git') {
+      if (await slotRegistration(repoDir, slot) !== 'valid') throw new Error('registration changed before unlock')
+      try { await gitSetup(repoDir, ['worktree', 'unlock', slot]) }
+      catch {
+        if (await slotRegistration(repoDir, slot) !== 'valid') throw new Error('registration changed during unlock')
+      }
+      if (await slotRegistration(repoDir, slot) !== 'valid') throw new Error('registration changed before removal')
+      await gitSetup(repoDir, ['worktree', 'remove', '--force', slot])
+    } else {
+      const stat = await fs.promises.lstat(slot).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+        throw error
+      })
+      if (stat?.isSymbolicLink()) throw new Error('unsafe preview slot link')
+      await fs.promises.rm(slot, { recursive: true, force: true })
+    }
+    complete = true
+    return true
+  } catch (error) {
+    warnSlot(slot, error instanceof Error ? error.message : String(error))
+    return false
+  } finally {
+    if (complete) await release()
   }
 }
 
 const PREVIEW_SWEEP_LIMIT = 4
-/** Reclaim a bounded number of abandoned registrations across the whole common directory. */
-async function sweepPreviewCache(repoDir: string, preferredKey?: string): Promise<void> {
-  const base = path.join(await fs.promises.realpath(await gitCommonDir(repoDir)), 'room-preview')
-  let names: string[]
-  try { names = await fs.promises.readdir(base) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
-  let removed = 0
-  const keys = [...new Set(names.filter(name => /^[a-f0-9]{20}(?:\.slots)?$/.test(name)).map(name => name.slice(0, 20)))]
-  const sweepKey = async (keyName: string) => {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return
+const PREVIEW_PROBE_LIMIT = 8
+const PREVIEW_SCAN_LIMIT = 64
+const PREVIEW_SWEEP_MS = 2000
+type SweepState = { running: boolean; pending: boolean; preferred: Set<string>; cursor: number; keyCursor: number; entryCursor: Map<string, number> }
+const previewSweeps = new Map<string, SweepState>()
+
+/** One bounded pass. The cursor rotates across candidate slots, even when none is deleted. */
+async function sweepPreviewCache(repoDir: string, base: string, state: SweepState): Promise<void> {
+  const began = performance.now()
+  const preferred = new Set(state.preferred)
+  state.preferred.clear()
+  const names = await fs.promises.readdir(base).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
+    throw error
+  })
+  const keys = [...new Set(names.filter(name => /^[a-f0-9]{20}(?:\.slots)?$/.test(name)).map(name => name.slice(0, 20)))].sort()
+  const candidates: { slot: string; key: string; retainSpare: boolean }[] = []
+  const keyStart = keys.length ? state.keyCursor % keys.length : 0
+  let scannedKeys = 0
+  let scannedSlots = 0
+  let interrupted = false
+  for (const keyName of [...keys.slice(keyStart), ...keys.slice(0, keyStart)]) {
+    if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break
+    scannedKeys++
     const key = path.join(base, keyName)
-    const dead: { slot: string; mtime: number }[] = []
+    const entries: { slot: string; mtime: number }[] = []
     let clone: string | undefined
     for (const root of [key, `${key}.slots`]) {
+      if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) { interrupted = true; break }
       await rejectPreviewLink(root)
       if (await isLegacyTree(root)) continue
-      let entries: string[]
-      try { entries = await fs.promises.readdir(root) }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
+      const children = await fs.promises.readdir(root).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
+        throw error
+      })
       try {
         const parsed = JSON.parse(await fs.promises.readFile(path.join(root, 'clone.json'), 'utf8')) as { path?: unknown }
-        if (typeof parsed.path === 'string') clone = parsed.path
-      } catch { /* Older slots may not have metadata; retain one for adoption. */ }
-      for (const entry of entries) {
-        if (!slotOwner(entry) || !await isDeadSlot(entry)) continue
-        const slot = path.join(root, entry)
-        try { dead.push({ slot, mtime: (await fs.promises.lstat(slot)).mtimeMs }) }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+        if (typeof parsed.path === 'string' && path.isAbsolute(parsed.path)) clone = parsed.path
+      } catch { /* Old caches have no metadata. */ }
+      const start = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0
+      let scannedHere = 0
+      for (const name of [...children.slice(start), ...children.slice(0, start)]) {
+        if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) { interrupted = true; break }
+        scannedHere++
+        if (!slotOwner(name)) continue
+        scannedSlots++
+        const slot = path.join(root, name)
+        const stat = await fs.promises.lstat(slot).catch(() => undefined)
+        if (stat?.isDirectory()) entries.push({ slot, mtime: stat.mtimeMs })
       }
+      if (children.length) state.entryCursor.set(root, (start + scannedHere) % children.length)
+      if (interrupted) break
     }
-    dead.sort((a, b) => b.mtime - a.mtime)
-    const vanished = clone !== undefined && !fs.existsSync(clone)
-    for (const { slot } of (vanished || key === preferredKey ? dead : dead.slice(1))) {
-      if (removed >= PREVIEW_SWEEP_LIMIT) break
-      const trash = path.join(base, `${keyName}.trash-${randomUUID()}`)
-      if (!await renameDeadSlot(slot, trash)) continue
-      await deleteClaimedSlot(repoDir, trash)
-      removed++
+    entries.sort((a, b) => b.mtime - a.mtime)
+    const vanished = clone !== undefined && !await fs.promises.access(clone).then(() => true, () => false)
+    candidates.push(...entries.map(entry => ({ slot: entry.slot, key, retainSpare: !vanished && !preferred.has(key) })))
+    if (interrupted) break
+  }
+  if (keys.length) state.keyCursor = (keyStart + scannedKeys - (interrupted ? 1 : 0)) % keys.length
+  if (!candidates.length) return
+  let probes = 0, removed = 0
+  const spared = new Set<string>()
+  const start = state.cursor % candidates.length
+  let visited = 0
+  while (visited < candidates.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance.now() - began < PREVIEW_SWEEP_MS) {
+    const { slot, key, retainSpare } = candidates[(start + visited++) % candidates.length]
+    probes++
+    const remaining = PREVIEW_SWEEP_MS - (performance.now() - began)
+    let deadline: NodeJS.Timeout | undefined
+    const dead = await Promise.race([
+      isDeadSlot(path.basename(slot)),
+      new Promise<false>(resolve => { deadline = setTimeout(() => resolve(false), Math.max(1, remaining)) }),
+    ]).finally(() => { if (deadline) clearTimeout(deadline) })
+    if (!dead) continue
+    if (retainSpare && !spared.has(key) && await slotRegistration(repoDir, slot) === 'valid') {
+      spared.add(key)
+      continue
     }
+    if (await deletePreviewSlot(repoDir, slot)) removed++
   }
-  const preferredName = preferredKey && path.basename(preferredKey)
-  if (preferredName && keys.includes(preferredName)) await sweepKey(preferredName)
-  for (const name of names.filter(name => /^[a-f0-9]{20}\.trash-/.test(name))) {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return
-    const trash = path.join(base, name)
-    await rejectPreviewLink(trash)
-    await deleteClaimedSlot(repoDir, trash)
-    removed++
-  }
-  for (const keyName of keys) {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return
-    if (keyName !== preferredName) await sweepKey(keyName)
-  }
+  state.cursor = (start + visited) % candidates.length
 }
 
-/** Delete provably dead slots for this clone and sweep abandoned slots elsewhere. */
+/** Requests during a pass collapse into one follow-up pass for this common directory. */
+function queuePreviewSweep(repoDir: string, base: string, preferred?: string): void {
+  let state = previewSweeps.get(base)
+  if (!state) {
+    state = { running: false, pending: false, preferred: new Set(), cursor: 0, keyCursor: 0, entryCursor: new Map() }
+    previewSweeps.set(base, state)
+  }
+  if (preferred) state.preferred.add(preferred)
+  if (state.running) { state.pending = true; return }
+  state.running = true
+  setImmediate(() => {
+    void (async () => {
+      do {
+        state!.pending = false
+        try { await sweepPreviewCache(repoDir, base, state!) }
+        catch (error) { console.warn('room preview sweep:', error) }
+      } while (state!.pending)
+      state!.running = false
+    })()
+  })
+}
+
+/** Worker cleanup schedules maintenance without waiting for a common-directory scan. */
 export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
-  await sweepPreviewCache(repoDir, await previewKeyPath(cloneDir, repoDir))
+  const key = await previewKeyPath(cloneDir, repoDir)
+  queuePreviewSweep(repoDir, path.dirname(key), key)
+}
+
+/** Test seam for observing asynchronous maintenance without making worker cleanup wait. */
+export async function waitForPreviewSweepForTests(): Promise<void> {
+  for (let n = 0; n < 1000; n++) {
+    if (![...previewSweeps.values()].some(state => state.running)) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('preview sweep did not finish')
 }
 
 const previewSlotTurns = new Map<string, Promise<void>>()
 
-/** Atomically claim one dead checkout by renaming it out of its old owner name. */
+/** Adopt only a dead, reciprocally registered checkout whose claim we own. */
 async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void> {
   const key = await previewKeyPath(cloneDir)
   const root = path.dirname(slot)
@@ -789,14 +934,36 @@ async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void>
     if (name === path.basename(slot) || !slotOwner(name)) continue
     const old = path.join(root, name)
     if (!await isDeadSlot(name)) continue
-    try { await lockPreviewSlot(cloneDir, old) }
-    catch (error) {
-      if (!fs.existsSync(old)) continue
-      throw error
+    const oldStat = await fs.promises.lstat(old).catch(() => undefined)
+    if (!oldStat?.isDirectory()) continue
+    const release = await claimPreviewSlot(old)
+    if (!release) continue
+    let complete = false
+    try {
+      const registration = await slotRegistration(cloneDir, old)
+      if (registration !== 'valid') {
+        if (registration === 'foreign') {
+          warnSlot(old, 'registration pointer does not point back to this slot; manual inspection required')
+          continue
+        }
+        complete = true // Incomplete slots are swept; they cannot block a fresh preview.
+        continue
+      }
+      await lockPreviewSlot(cloneDir, old) // Protect the registration during the rename/repair gap.
+      if (!await isDeadSlot(name)) { complete = true; continue }
+      try { await fs.promises.rename(old, slot) }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') { complete = true; continue }
+        throw error
+      }
+      await gitSetup(cloneDir, ['worktree', 'repair', slot])
+      if (await slotRegistration(cloneDir, slot) !== 'valid') throw new Error('adopted slot registration is not reciprocal')
+      await lockPreviewSlot(cloneDir, slot)
+      complete = true
+      return
+    } finally {
+      if (complete) await release()
     }
-    if (!await renameDeadSlot(old, slot)) continue
-    await gitSetup(cloneDir, ['worktree', 'repair', slot])
-    return
   }
 }
 
@@ -817,11 +984,7 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
       if (path.resolve(top) !== dir) throw new Error('preview cache is not its own worktree')
     }
     catch {
-      const admin = await previewAdminDir(cloneDir, dir)
-      try { await gitSetup(cloneDir, ['worktree', 'unlock', dir]) } catch { /* Broken registration. */ }
-      try { await gitSetup(cloneDir, ['worktree', 'remove', '--force', dir]) } catch { /* Remove its files below. */ }
-      await fs.promises.rm(dir, { recursive: true, force: true })
-      if (admin) await fs.promises.rm(admin, { recursive: true, force: true })
+      if (!await deletePreviewSlot(cloneDir, dir)) throw new Error('preview cache is malformed and could not be safely removed')
       stat = undefined
     }
   }
@@ -907,7 +1070,10 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
     } finally {
       await release?.()
       // Maintenance never delays the preview reply and is bounded per pass.
-      if (cached) setImmediate(() => { void sweepPreviewCache(s.dir).catch(() => undefined) })
+      if (cached) {
+        const key = await previewKeyPath(s.dir).catch(() => undefined)
+        if (key) queuePreviewSweep(s.dir, path.dirname(key))
+      }
     }
   }
 }

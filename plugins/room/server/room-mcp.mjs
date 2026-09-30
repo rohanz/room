@@ -39013,7 +39013,8 @@ __export(files_exports, {
   suggestedTestCommand: () => suggestedTestCommand,
   supersetSide: () => supersetSide,
   testCommandFor: () => testCommandFor,
-  testVerdict: () => testVerdict
+  testVerdict: () => testVerdict,
+  waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
 import { execFile as execFile8, spawn as spawn4 } from "node:child_process";
 import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
@@ -39656,137 +39657,275 @@ async function previewCachePath(cloneDir, repoDir = cloneDir) {
   if (!start2) throw new Error("preview process identity is unavailable");
   return path30.join(await slotRoot(await previewKeyPath(cloneDir, repoDir)), slotName(process.pid, start2));
 }
-async function renameDeadSlot(slot, destination) {
-  if (!await isDeadSlot(path30.basename(slot))) return false;
+async function claimPreviewSlot(slot) {
+  const claim2 = `${slot}.claim`;
+  const temporary = `${claim2}.${randomUUID5()}.tmp`;
+  const token = JSON.stringify({ pid: process.pid, start: await ownPreviewStart(), nonce: randomUUID5() });
+  await fs34.promises.writeFile(temporary, token, { flag: "wx", mode: 384 });
   try {
-    await fs34.promises.rename(slot, destination);
-    return true;
-  } catch (error2) {
-    if (error2.code === "ENOENT") return false;
-    throw error2;
+    try {
+      await fs34.promises.link(temporary, claim2);
+    } catch (error2) {
+      if (error2.code === "EEXIST") return void 0;
+      throw error2;
+    }
+  } finally {
+    await fs34.promises.rm(temporary, { force: true });
   }
+  return async () => {
+    try {
+      if (await fs34.promises.readFile(claim2, "utf8") === token) await fs34.promises.unlink(claim2);
+    } catch (error2) {
+      if (error2.code !== "ENOENT") throw error2;
+    }
+  };
 }
-async function previewAdminDir(repoDir, slot) {
+async function slotRegistration(repoDir, slot) {
   let gitfile;
   try {
     gitfile = await fs34.promises.readFile(path30.join(slot, ".git"), "utf8");
   } catch (error2) {
-    if (error2.code === "ENOENT") gitfile = "";
-    else throw error2;
+    if (error2.code !== "ENOENT") return "foreign";
   }
-  const common = await fs34.promises.realpath(await gitCommonDir(repoDir));
-  const parent = path30.join(common, "worktrees");
-  const match = /^gitdir: (.+)\s*$/m.exec(gitfile);
-  if (match) {
-    const admin = path30.resolve(slot, match[1]);
-    return path30.dirname(admin) === parent && path30.basename(admin) !== "." ? admin : void 0;
+  if (gitfile !== void 0) {
+    const match = /^gitdir: (.+)\s*$/m.exec(gitfile);
+    if (!match) return "foreign";
+    const common = await fs34.promises.realpath(await gitCommonDir(repoDir));
+    const parent = path30.join(common, "worktrees");
+    let admin;
+    try {
+      admin = await fs34.promises.realpath(path30.resolve(slot, match[1]));
+    } catch {
+      return "foreign";
+    }
+    if (path30.dirname(admin) !== parent) return "foreign";
+    let backlink;
+    try {
+      backlink = await fs34.promises.realpath((await fs34.promises.readFile(path30.join(admin, "gitdir"), "utf8")).trim());
+    } catch {
+      return "foreign";
+    }
+    let ownGitfile;
+    try {
+      ownGitfile = await fs34.promises.realpath(path30.join(slot, ".git"));
+    } catch {
+      return "foreign";
+    }
+    return backlink === ownGitfile ? "valid" : "foreign";
   }
-  let names;
-  try {
-    names = await fs34.promises.readdir(parent);
-  } catch (error2) {
-    if (error2.code === "ENOENT") return void 0;
-    throw error2;
+  const listed = await gitSetup(repoDir, ["worktree", "list", "--porcelain"]);
+  const same2 = async (other) => {
+    try {
+      return await fs34.promises.realpath(other) === await fs34.promises.realpath(slot);
+    } catch {
+      return false;
+    }
+  };
+  for (const line of listed.split(/\n/)) {
+    if (line.startsWith("worktree ") && await same2(line.slice(9))) return "missing-git";
   }
+  return "unregistered";
+}
+async function registeredAdmin(repoDir, slot) {
+  const parent = path30.join(await fs34.promises.realpath(await gitCommonDir(repoDir)), "worktrees");
+  const own2 = await fs34.promises.realpath(slot);
+  const names = await fs34.promises.readdir(parent).catch(() => []);
+  let found;
   for (const name2 of names) {
     const admin = path30.join(parent, name2);
     try {
-      if (path30.resolve((await fs34.promises.readFile(path30.join(admin, "gitdir"), "utf8")).trim()) === path30.join(slot, ".git")) return admin;
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
+      const link = (await fs34.promises.readFile(path30.join(admin, "gitdir"), "utf8")).trim();
+      if (path30.basename(link) === ".git" && await fs34.promises.realpath(path30.dirname(link)) === own2) {
+        if (found) return void 0;
+        found = admin;
+      }
+    } catch {
     }
   }
-  return void 0;
+  return found;
 }
 async function lockPreviewSlot(repoDir, slot) {
   try {
     await gitSetup(repoDir, ["worktree", "lock", "--reason", "room preview slot", slot]);
   } catch (error2) {
-    const admin = await previewAdminDir(repoDir, slot);
-    if (!admin || !fs34.existsSync(path30.join(admin, "locked"))) throw error2;
+    if (await slotRegistration(repoDir, slot) !== "valid") throw error2;
+    const gitfile = await fs34.promises.readFile(path30.join(slot, ".git"), "utf8");
+    const match = /^gitdir: (.+)\s*$/m.exec(gitfile);
+    if (!match || !await fs34.promises.stat(path30.join(path30.resolve(slot, match[1]), "locked")).catch(() => void 0)) throw error2;
   }
 }
-async function deleteClaimedSlot(repoDir, trash) {
-  const admin = await previewAdminDir(repoDir, trash);
+function warnSlot(slot, reason) {
+  if (warnedSlots.has(slot)) return;
+  warnedSlots.add(slot);
+  console.warn(`room preview: leaving ${slot}: ${reason}`);
+}
+async function deletePreviewSlot(repoDir, slot) {
+  const release = await claimPreviewSlot(slot);
+  if (!release) return false;
+  let complete = false;
   try {
-    await gitSetup(repoDir, ["worktree", "repair", trash]);
-    try {
-      await gitSetup(repoDir, ["worktree", "unlock", trash]);
-    } catch {
+    const state = await slotRegistration(repoDir, slot);
+    if (state === "foreign") {
+      warnSlot(slot, "registration pointer does not point back to this slot; manual inspection required");
+      return false;
     }
-    await gitSetup(repoDir, ["worktree", "remove", "--force", trash]);
-  } catch {
-    await fs34.promises.rm(trash, { recursive: true, force: true });
-    if (admin) await fs34.promises.rm(admin, { recursive: true, force: true });
+    if (state === "missing-git") {
+      const admin = await registeredAdmin(repoDir, slot);
+      if (!admin) throw new Error("missing .git has no reciprocal registration");
+      await fs34.promises.writeFile(path30.join(slot, ".git"), `gitdir: ${admin}
+`, { flag: "wx" });
+      if (await slotRegistration(repoDir, slot) !== "valid") throw new Error("rebuilt .git is not reciprocal");
+      await gitSetup(repoDir, ["worktree", "repair", slot]);
+      if (await slotRegistration(repoDir, slot) !== "valid") throw new Error("repair did not restore reciprocal registration");
+    }
+    if (state === "valid" || state === "missing-git") {
+      if (await slotRegistration(repoDir, slot) !== "valid") throw new Error("registration changed before unlock");
+      try {
+        await gitSetup(repoDir, ["worktree", "unlock", slot]);
+      } catch {
+        if (await slotRegistration(repoDir, slot) !== "valid") throw new Error("registration changed during unlock");
+      }
+      if (await slotRegistration(repoDir, slot) !== "valid") throw new Error("registration changed before removal");
+      await gitSetup(repoDir, ["worktree", "remove", "--force", slot]);
+    } else {
+      const stat4 = await fs34.promises.lstat(slot).catch((error2) => {
+        if (error2.code === "ENOENT") return void 0;
+        throw error2;
+      });
+      if (stat4?.isSymbolicLink()) throw new Error("unsafe preview slot link");
+      await fs34.promises.rm(slot, { recursive: true, force: true });
+    }
+    complete = true;
+    return true;
+  } catch (error2) {
+    warnSlot(slot, error2 instanceof Error ? error2.message : String(error2));
+    return false;
+  } finally {
+    if (complete) await release();
   }
 }
-async function sweepPreviewCache(repoDir, preferredKey) {
-  const base = path30.join(await fs34.promises.realpath(await gitCommonDir(repoDir)), "room-preview");
-  let names;
-  try {
-    names = await fs34.promises.readdir(base);
-  } catch (error2) {
-    if (error2.code === "ENOENT") return;
+async function sweepPreviewCache(repoDir, base, state) {
+  const began = performance4.now();
+  const preferred = new Set(state.preferred);
+  state.preferred.clear();
+  const names = await fs34.promises.readdir(base).catch((error2) => {
+    if (error2.code === "ENOENT") return [];
     throw error2;
-  }
-  let removed = 0;
-  const keys2 = [...new Set(names.filter((name2) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name2)).map((name2) => name2.slice(0, 20)))];
-  const sweepKey = async (keyName) => {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return;
+  });
+  const keys2 = [...new Set(names.filter((name2) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name2)).map((name2) => name2.slice(0, 20)))].sort();
+  const candidates = [];
+  const keyStart = keys2.length ? state.keyCursor % keys2.length : 0;
+  let scannedKeys = 0;
+  let scannedSlots = 0;
+  let interrupted = false;
+  for (const keyName of [...keys2.slice(keyStart), ...keys2.slice(0, keyStart)]) {
+    if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break;
+    scannedKeys++;
     const key2 = path30.join(base, keyName);
-    const dead = [];
+    const entries = [];
     let clone2;
     for (const root of [key2, `${key2}.slots`]) {
+      if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) {
+        interrupted = true;
+        break;
+      }
       await rejectPreviewLink(root);
       if (await isLegacyTree(root)) continue;
-      let entries;
-      try {
-        entries = await fs34.promises.readdir(root);
-      } catch (error2) {
-        if (error2.code === "ENOENT") continue;
+      const children = await fs34.promises.readdir(root).catch((error2) => {
+        if (error2.code === "ENOENT") return [];
         throw error2;
-      }
+      });
       try {
         const parsed = JSON.parse(await fs34.promises.readFile(path30.join(root, "clone.json"), "utf8"));
-        if (typeof parsed.path === "string") clone2 = parsed.path;
+        if (typeof parsed.path === "string" && path30.isAbsolute(parsed.path)) clone2 = parsed.path;
       } catch {
       }
-      for (const entry of entries) {
-        if (!slotOwner(entry) || !await isDeadSlot(entry)) continue;
-        const slot = path30.join(root, entry);
-        try {
-          dead.push({ slot, mtime: (await fs34.promises.lstat(slot)).mtimeMs });
-        } catch (error2) {
-          if (error2.code !== "ENOENT") throw error2;
+      const start3 = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0;
+      let scannedHere = 0;
+      for (const name2 of [...children.slice(start3), ...children.slice(0, start3)]) {
+        if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) {
+          interrupted = true;
+          break;
         }
+        scannedHere++;
+        if (!slotOwner(name2)) continue;
+        scannedSlots++;
+        const slot = path30.join(root, name2);
+        const stat4 = await fs34.promises.lstat(slot).catch(() => void 0);
+        if (stat4?.isDirectory()) entries.push({ slot, mtime: stat4.mtimeMs });
       }
+      if (children.length) state.entryCursor.set(root, (start3 + scannedHere) % children.length);
+      if (interrupted) break;
     }
-    dead.sort((a, b) => b.mtime - a.mtime);
-    const vanished = clone2 !== void 0 && !fs34.existsSync(clone2);
-    for (const { slot } of vanished || key2 === preferredKey ? dead : dead.slice(1)) {
-      if (removed >= PREVIEW_SWEEP_LIMIT) break;
-      const trash = path30.join(base, `${keyName}.trash-${randomUUID5()}`);
-      if (!await renameDeadSlot(slot, trash)) continue;
-      await deleteClaimedSlot(repoDir, trash);
-      removed++;
+    entries.sort((a, b) => b.mtime - a.mtime);
+    const vanished = clone2 !== void 0 && !await fs34.promises.access(clone2).then(() => true, () => false);
+    candidates.push(...entries.map((entry) => ({ slot: entry.slot, key: key2, retainSpare: !vanished && !preferred.has(key2) })));
+    if (interrupted) break;
+  }
+  if (keys2.length) state.keyCursor = (keyStart + scannedKeys - (interrupted ? 1 : 0)) % keys2.length;
+  if (!candidates.length) return;
+  let probes = 0, removed = 0;
+  const spared = /* @__PURE__ */ new Set();
+  const start2 = state.cursor % candidates.length;
+  let visited = 0;
+  while (visited < candidates.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance4.now() - began < PREVIEW_SWEEP_MS) {
+    const { slot, key: key2, retainSpare } = candidates[(start2 + visited++) % candidates.length];
+    probes++;
+    const remaining = PREVIEW_SWEEP_MS - (performance4.now() - began);
+    let deadline;
+    const dead = await Promise.race([
+      isDeadSlot(path30.basename(slot)),
+      new Promise((resolve5) => {
+        deadline = setTimeout(() => resolve5(false), Math.max(1, remaining));
+      })
+    ]).finally(() => {
+      if (deadline) clearTimeout(deadline);
+    });
+    if (!dead) continue;
+    if (retainSpare && !spared.has(key2) && await slotRegistration(repoDir, slot) === "valid") {
+      spared.add(key2);
+      continue;
     }
-  };
-  const preferredName = preferredKey && path30.basename(preferredKey);
-  if (preferredName && keys2.includes(preferredName)) await sweepKey(preferredName);
-  for (const name2 of names.filter((name3) => /^[a-f0-9]{20}\.trash-/.test(name3))) {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return;
-    const trash = path30.join(base, name2);
-    await rejectPreviewLink(trash);
-    await deleteClaimedSlot(repoDir, trash);
-    removed++;
+    if (await deletePreviewSlot(repoDir, slot)) removed++;
   }
-  for (const keyName of keys2) {
-    if (removed >= PREVIEW_SWEEP_LIMIT) return;
-    if (keyName !== preferredName) await sweepKey(keyName);
+  state.cursor = (start2 + visited) % candidates.length;
+}
+function queuePreviewSweep(repoDir, base, preferred) {
+  let state = previewSweeps.get(base);
+  if (!state) {
+    state = { running: false, pending: false, preferred: /* @__PURE__ */ new Set(), cursor: 0, keyCursor: 0, entryCursor: /* @__PURE__ */ new Map() };
+    previewSweeps.set(base, state);
   }
+  if (preferred) state.preferred.add(preferred);
+  if (state.running) {
+    state.pending = true;
+    return;
+  }
+  state.running = true;
+  setImmediate(() => {
+    void (async () => {
+      do {
+        state.pending = false;
+        try {
+          await sweepPreviewCache(repoDir, base, state);
+        } catch (error2) {
+          console.warn("room preview sweep:", error2);
+        }
+      } while (state.pending);
+      state.running = false;
+    })();
+  });
 }
 async function removePreviewCache(cloneDir, repoDir = cloneDir) {
-  await sweepPreviewCache(repoDir, await previewKeyPath(cloneDir, repoDir));
+  const key2 = await previewKeyPath(cloneDir, repoDir);
+  queuePreviewSweep(repoDir, path30.dirname(key2), key2);
+}
+async function waitForPreviewSweepForTests() {
+  for (let n = 0; n < 1e3; n++) {
+    if (![...previewSweeps.values()].some((state) => state.running)) return;
+    await new Promise((resolve5) => setTimeout(resolve5, 10));
+  }
+  throw new Error("preview sweep did not finish");
 }
 async function preparePreviewSlot(cloneDir, slot) {
   const key2 = await previewKeyPath(cloneDir);
@@ -39805,15 +39944,43 @@ async function preparePreviewSlot(cloneDir, slot) {
     if (name2 === path30.basename(slot) || !slotOwner(name2)) continue;
     const old = path30.join(root, name2);
     if (!await isDeadSlot(name2)) continue;
+    const oldStat = await fs34.promises.lstat(old).catch(() => void 0);
+    if (!oldStat?.isDirectory()) continue;
+    const release = await claimPreviewSlot(old);
+    if (!release) continue;
+    let complete = false;
     try {
+      const registration = await slotRegistration(cloneDir, old);
+      if (registration !== "valid") {
+        if (registration === "foreign") {
+          warnSlot(old, "registration pointer does not point back to this slot; manual inspection required");
+          continue;
+        }
+        complete = true;
+        continue;
+      }
       await lockPreviewSlot(cloneDir, old);
-    } catch (error2) {
-      if (!fs34.existsSync(old)) continue;
-      throw error2;
+      if (!await isDeadSlot(name2)) {
+        complete = true;
+        continue;
+      }
+      try {
+        await fs34.promises.rename(old, slot);
+      } catch (error2) {
+        if (error2.code === "ENOENT") {
+          complete = true;
+          continue;
+        }
+        throw error2;
+      }
+      await gitSetup(cloneDir, ["worktree", "repair", slot]);
+      if (await slotRegistration(cloneDir, slot) !== "valid") throw new Error("adopted slot registration is not reciprocal");
+      await lockPreviewSlot(cloneDir, slot);
+      complete = true;
+      return;
+    } finally {
+      if (complete) await release();
     }
-    if (!await renameDeadSlot(old, slot)) continue;
-    await gitSetup(cloneDir, ["worktree", "repair", slot]);
-    return;
   }
 }
 async function resetPreviewTree(dir, ancestor) {
@@ -39833,17 +40000,7 @@ async function preparePreviewCache(cloneDir, dir, ancestor, observe) {
       const top = (await gitSetup(dir, ["rev-parse", "--show-toplevel"])).trim();
       if (path30.resolve(top) !== dir) throw new Error("preview cache is not its own worktree");
     } catch {
-      const admin = await previewAdminDir(cloneDir, dir);
-      try {
-        await gitSetup(cloneDir, ["worktree", "unlock", dir]);
-      } catch {
-      }
-      try {
-        await gitSetup(cloneDir, ["worktree", "remove", "--force", dir]);
-      } catch {
-      }
-      await fs34.promises.rm(dir, { recursive: true, force: true });
-      if (admin) await fs34.promises.rm(admin, { recursive: true, force: true });
+      if (!await deletePreviewSlot(cloneDir, dir)) throw new Error("preview cache is malformed and could not be safely removed");
       stat4 = void 0;
     }
   }
@@ -39933,9 +40090,10 @@ ${verdict.text}` };
       }
     } finally {
       await release?.();
-      if (cached2) setImmediate(() => {
-        void sweepPreviewCache(s.dir).catch(() => void 0);
-      });
+      if (cached2) {
+        const key2 = await previewKeyPath(s.dir).catch(() => void 0);
+        if (key2) queuePreviewSweep(s.dir, path30.dirname(key2));
+      }
     }
   }
 }
@@ -40007,7 +40165,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     archive.stdout.pipe(extract.stdin);
   });
 }
-var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, PREVIEW_SWEEP_LIMIT, previewSlotTurns, CLOSED_ARCHIVE_PIPE_ERRORS;
+var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, warnedSlots, PREVIEW_SWEEP_LIMIT, PREVIEW_PROBE_LIMIT, PREVIEW_SCAN_LIMIT, PREVIEW_SWEEP_MS, previewSweeps, previewSlotTurns, CLOSED_ARCHIVE_PIPE_ERRORS;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -40052,7 +40210,12 @@ var init_files = __esm({
     SETUP_TIMEOUT_MS = 10 * 6e4;
     gitSetup = (dir, args3) => git(dir, args3, SETUP_TIMEOUT_MS);
     PROBE_TIMEOUT_MS = 3e3;
+    warnedSlots = /* @__PURE__ */ new Set();
     PREVIEW_SWEEP_LIMIT = 4;
+    PREVIEW_PROBE_LIMIT = 8;
+    PREVIEW_SCAN_LIMIT = 64;
+    PREVIEW_SWEEP_MS = 2e3;
+    previewSweeps = /* @__PURE__ */ new Map();
     previewSlotTurns = /* @__PURE__ */ new Map();
     CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
   }

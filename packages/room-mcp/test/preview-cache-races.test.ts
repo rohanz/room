@@ -3,11 +3,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, expect, it, vi } from 'vitest'
-import { previewCachePath, removePreviewCache, runInMergedTree, setPreviewProcessProbeForTests } from '../src/tools/files.js'
+import { previewCachePath, removePreviewCache, runInMergedTree, setPreviewProcessProbeForTests, waitForPreviewSweepForTests } from '../src/tools/files.js'
 import type { Session } from '../src/session.js'
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
+  await waitForPreviewSweepForTests()
   setPreviewProcessProbeForTests()
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -45,7 +46,7 @@ it('keeps live and uncertain owners in separate slots through preview and cleanu
   const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), pass)
   expect(result.passed, result.text).toBe(true)
   expect(fs.existsSync(own)).toBe(true)
-  await removePreviewCache(root)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
   expect(fs.existsSync(other)).toBe(true)
   expect(fs.existsSync(third)).toBe(true)
   expect(fs.existsSync(own)).toBe(true)
@@ -53,20 +54,20 @@ it('keeps live and uncertain owners in separate slots through preview and cleanu
   expect(fs.readFileSync(path.join(third, 'app.txt'), 'utf8')).toBe('second owner\n')
 }, 30_000)
 
-it('one reclaimer wins a dead slot rename and removes its Git registration', async () => {
+it('one reclaimer wins a dead slot claim and removes its Git registration', async () => {
   const { root, git, ancestor } = fixture()
   const own = await previewCachePath(root)
   const dead = path.join(path.dirname(own), '999999999-old-start')
   fs.mkdirSync(path.dirname(dead), { recursive: true })
   git('worktree', 'add', '--detach', '-q', dead, ancestor)
-  const rename = fs.promises.rename.bind(fs.promises)
+  const link = fs.promises.link.bind(fs.promises)
   let wins = 0
-  vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
-    const result = await rename(from, to)
-    if (String(from) === dead) wins++
+  vi.spyOn(fs.promises, 'link').mockImplementation(async (from, to) => {
+    const result = await link(from, to)
+    if (String(to) === `${dead}.claim`) wins++
     return result
   })
-  await Promise.all([removePreviewCache(root), removePreviewCache(root)])
+  await Promise.all([removePreviewCache(root), removePreviewCache(root)]); await waitForPreviewSweepForTests()
   expect(wins).toBe(1)
   expect(fs.existsSync(dead)).toBe(false)
   expect(git('worktree', 'list', '--porcelain')).not.toContain(dead)
@@ -113,7 +114,7 @@ it('keeps an adopting slot registered while another dead slot is deleted', async
   expect(git('worktree', 'list', '--porcelain')).toMatch(/locked room preview slot/)
   // Worker cleanup has another prune caller; Git must preserve this locked registration.
   git('worktree', 'prune')
-  await removePreviewCache(root)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
   resume()
   const result = await pending
   expect(result.passed, result.text).toBe(true)
@@ -134,7 +135,7 @@ it('leaves a dead old-format worktree untouched and uses a sidecar slot', async 
   const slot = await previewCachePath(root)
   expect(path.dirname(slot)).toBe(`${key}.slots`)
   expect(fs.existsSync(slot)).toBe(true)
-  await removePreviewCache(root)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
   expect(fs.readFileSync(path.join(key, 'target', 'marker'), 'utf8')).toBe('legacy')
   expect(git('worktree', 'list', '--porcelain')).toContain(key)
 }, 30_000)
@@ -194,7 +195,7 @@ it('keeps the loop responsive during a slow asynchronous owner probe', async () 
   expect(maxDelay).toBeLessThan(50)
 }, 30_000)
 
-it('recovers interrupted trash and removes only its registration', async () => {
+it('leaves legacy trash with an old registration for manual cleanup', async () => {
   const { root, git, ancestor } = fixture()
   const own = await previewCachePath(root)
   const dead = path.join(path.dirname(own), '999999999-old-start')
@@ -202,10 +203,10 @@ it('recovers interrupted trash and removes only its registration', async () => {
   fs.mkdirSync(path.dirname(dead), { recursive: true })
   git('worktree', 'add', '--detach', '-q', dead, ancestor)
   fs.renameSync(dead, trash)
-  await removePreviewCache(root)
-  expect(fs.existsSync(trash)).toBe(false)
-  await removePreviewCache(root)
-  expect(git('worktree', 'list', '--porcelain')).not.toContain(dead)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  expect(fs.existsSync(trash)).toBe(true)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  expect(git('worktree', 'list', '--porcelain')).toContain(dead)
   expect(git('worktree', 'list', '--porcelain')).toContain(root)
 }, 30_000)
 
@@ -237,19 +238,20 @@ it('removes all dead slots for a vanished clone using recorded clone metadata', 
     const slot = await previewCachePath(clone)
     const result = await runInMergedTree({ dir: clone } as Session, ancestor, new Map(), 'echo "1 passed"')
     expect(result.passed, result.text).toBe(true)
+    await waitForPreviewSweepForTests()
     const metadata = JSON.parse(fs.readFileSync(path.join(path.dirname(slot), 'clone.json'), 'utf8')) as { path: string }
     expect(metadata.path).toBe(fs.realpathSync(clone))
     const dead = path.join(path.dirname(slot), '999999999-dead-start')
     fs.renameSync(slot, dead)
     git('worktree', 'repair', dead)
     git('worktree', 'remove', '--force', clone)
-    await removePreviewCache(root)
+    await removePreviewCache(root); await waitForPreviewSweepForTests()
     expect(fs.existsSync(dead)).toBe(false)
     expect(git('worktree', 'list', '--porcelain')).not.toContain(dead)
   } finally { fs.rmSync(clone, { recursive: true, force: true }) }
 }, 30_000)
 
-it('deletes at most four abandoned trash directories per sweep', async () => {
+it('leaves legacy trash with registrations instead of deleting their Git admin state', async () => {
   const { root, git, ancestor } = fixture()
   const own = await previewCachePath(root)
   const base = path.dirname(path.dirname(own))
@@ -259,6 +261,110 @@ it('deletes at most four abandoned trash directories per sweep', async () => {
     git('worktree', 'add', '--detach', '-q', slot, ancestor)
     fs.renameSync(slot, path.join(base, `${path.basename(path.dirname(own))}.trash-${n}`))
   }
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  expect(fs.readdirSync(base).filter(name => name.includes('.trash-'))).toHaveLength(6)
+}, 30_000)
+
+it('does not let a wrong git pointer remove an unrelated live registration', async () => {
+  const { root, git, ancestor } = fixture()
+  const own = await previewCachePath(root)
+  const live = path.join(root, 'live-checkout')
+  git('worktree', 'add', '--detach', '-q', live, ancestor)
+  git('worktree', 'lock', live)
+  const dead = path.join(path.dirname(own), '999999999-wrong-pointer')
+  fs.mkdirSync(dead, { recursive: true })
+  fs.copyFileSync(path.join(live, '.git'), path.join(dead, '.git'))
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  await until(() => fs.existsSync(`${dead}.claim`))
+  expect(git('worktree', 'list', '--porcelain')).toContain(live)
+  expect(execFileSync('git', ['-C', live, 'status', '--porcelain'], { encoding: 'utf8' })).toBe('')
+  expect(fs.existsSync(dead)).toBe(true)
+}, 30_000)
+
+it('skips a partial dead slot so previews run, then sweeps the partial directory', async () => {
+  const { root, git, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  const dead = path.join(path.dirname(own), '999999999-partial')
+  fs.mkdirSync(dead, { recursive: true })
+  fs.writeFileSync(path.join(dead, 'partial'), 'incomplete')
+  const result = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(result.passed, result.text).toBe(true)
+  expect(fs.existsSync(own)).toBe(true)
+  await waitForPreviewSweepForTests()
+  await until(() => !fs.existsSync(dead))
+}, 30_000)
+
+it('repairs and removes a dead locked registration whose git file is missing', async () => {
+  const { root, git, ancestor } = fixture()
+  const own = await previewCachePath(root)
+  const dead = path.join(path.dirname(own), '999999999-missing-git')
+  fs.mkdirSync(path.dirname(dead), { recursive: true })
+  git('worktree', 'add', '--detach', '-q', dead, ancestor)
+  git('worktree', 'lock', dead)
+  fs.unlinkSync(path.join(dead, '.git'))
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  await until(() => !fs.existsSync(dead))
+  expect(git('worktree', 'list', '--porcelain')).not.toContain(dead)
+}, 30_000)
+
+it('leaves a dead slot untouched while another process holds its claim', async () => {
+  const { root, git, ancestor } = fixture()
+  const own = await previewCachePath(root)
+  const dead = path.join(path.dirname(own), '999999999-claimed')
+  fs.mkdirSync(path.dirname(dead), { recursive: true })
+  git('worktree', 'add', '--detach', '-q', dead, ancestor)
+  fs.writeFileSync(`${dead}.claim`, 'dead-owner:full-token')
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(fs.existsSync(dead)).toBe(true)
+  expect(fs.readFileSync(`${dead}.claim`, 'utf8')).toBe('dead-owner:full-token')
+  expect(git('worktree', 'list', '--porcelain')).toContain(dead)
+}, 30_000)
+
+it('does not touch a later Git registration that reuses a removed slot admin name', async () => {
+  const { root, git, ancestor } = fixture()
+  const own = await previewCachePath(root)
+  const dead = path.join(path.dirname(own), '999999999-reusable')
+  fs.mkdirSync(path.dirname(dead), { recursive: true })
+  git('worktree', 'add', '--detach', '-q', dead, ancestor)
+  const pointer = fs.readFileSync(path.join(dead, '.git'), 'utf8').match(/^gitdir: (.+)$/m)![1]
+  const reusedName = path.basename(path.resolve(dead, pointer))
+  await Promise.all([removePreviewCache(root), removePreviewCache(root)])
+  await waitForPreviewSweepForTests()
+  expect(fs.existsSync(dead)).toBe(false)
+  const replacement = path.join(root, 'replacement', reusedName)
+  git('worktree', 'add', '--detach', '-q', replacement, ancestor)
+  git('worktree', 'lock', replacement)
+  fs.writeFileSync(path.join(replacement, 'app.txt'), 'LIVE UNCOMMITTED\n')
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  expect(git('worktree', 'list', '--porcelain')).toContain(replacement)
+  expect(execFileSync('git', ['-C', replacement, 'status', '--porcelain'], { encoding: 'utf8' })).toContain('app.txt')
+  expect(fs.readFileSync(path.join(replacement, 'app.txt'), 'utf8')).toBe('LIVE UNCOMMITTED\n')
+}, 30_000)
+
+it('limits owner probes per sweep and coalesces overlapping requests into one follow-up', async () => {
+  const { root } = fixture()
+  const seen: number[] = []
+  let active = 0, maxActive = 0
+  for (let n = 0; n < 20; n++) {
+    const slot = await previewCachePath(path.join(root, `clone-${n}`), root)
+    fs.mkdirSync(path.join(path.dirname(slot), `${600000 + n}-live-${n}`), { recursive: true })
+  }
+  setPreviewProcessProbeForTests(async pid => {
+    active++
+    maxActive = Math.max(maxActive, active)
+    seen.push(pid)
+    await new Promise(resolve => setTimeout(resolve, 40))
+    active--
+    return `live-${pid - 600000}`
+  })
   await removePreviewCache(root)
-  expect(fs.readdirSync(base).filter(name => name.includes('.trash-'))).toHaveLength(2)
+  await until(() => seen.length > 0)
+  await Promise.all([removePreviewCache(root), removePreviewCache(root), removePreviewCache(root)])
+  await waitForPreviewSweepForTests()
+  expect(seen.length).toBeLessThanOrEqual(16)
+  expect(seen.length).toBeGreaterThanOrEqual(9)
+  expect(maxActive).toBe(1)
+  await removePreviewCache(root); await waitForPreviewSweepForTests()
+  expect(new Set(seen).size).toBeGreaterThan(16)
 }, 30_000)
