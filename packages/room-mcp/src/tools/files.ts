@@ -575,7 +575,6 @@ async function rejectPreviewLink(file: string): Promise<void> {
 
 const SETUP_TIMEOUT_MS = 10 * 60_000
 const gitSetup = (dir: string, args: string[]) => git(dir, args, SETUP_TIMEOUT_MS)
-const LEGACY_PREVIEW_RESIDUE_MS = 10 * 60_000
 const PROBE_TIMEOUT_MS = 3000
 let ownStartPromise: Promise<string | undefined> | undefined
 let processProbeForTests: ((pid: number) => Promise<string | null | undefined>) | undefined
@@ -645,44 +644,7 @@ async function isLegacyTree(key: string): Promise<boolean> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
 }
 
-async function legacyIsDead(key: string): Promise<boolean> {
-  // A live old recovery gate may still be replacing the lock. Preserve that tree.
-  const gate = `${key}.lock.recover`
-  try {
-    const gateStat = await fs.promises.lstat(gate)
-    let gateToken = ''
-    if (gateStat.isFile()) gateToken = await fs.promises.readFile(gate, 'utf8')
-    if (!await legacyOwnerDead(gateToken, gateStat.mtimeMs)) return false
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  let stat: fs.Stats
-  try { stat = await fs.promises.lstat(`${key}.lock`) }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    stat = await fs.promises.lstat(key)
-  }
-  let token = ''
-  try { token = await fs.promises.readFile(`${key}.lock`, 'utf8') }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  return legacyOwnerDead(token, stat.mtimeMs)
-}
-
-async function legacyOwnerDead(token: string, mtimeMs: number): Promise<boolean> {
-  let pid: number | undefined
-  try {
-    const parsed = JSON.parse(token) as { pid?: number }
-    if (Number.isSafeInteger(parsed.pid) && parsed.pid! > 0) pid = parsed.pid
-  } catch { /* Legacy PID-only lock. */ }
-  if (!pid) {
-    const match = /^([1-9]\d*)(?::\d+:[0-9a-f-]+)?$/.exec(token.trim())
-    if (match) pid = Number(match[1])
-  }
-  // Older builds recorded start times in another format, so a live pid never proves a different
-  // process here: only a missing process makes a legacy owner dead.
-  if (pid) return await probePreviewStart(pid) === null
-  return Date.now() - mtimeMs > LEGACY_PREVIEW_RESIDUE_MS
-}
-
-/** A legacy live worktree occupies the key, so new slots temporarily use its sidecar. */
+/** Legacy clients can reacquire their tree at any time; slots always use its sidecar. */
 async function slotRoot(key: string): Promise<string> {
   await rejectPreviewLink(key)
   if (await isLegacyTree(key)) { await rejectPreviewLink(`${key}.slots`); return `${key}.slots` }
@@ -706,34 +668,109 @@ async function renameDeadSlot(slot: string, destination: string): Promise<boolea
   }
 }
 
-async function deleteClaimedSlot(repoDir: string, trash: string): Promise<void> {
-  try {
-    await gitSetup(repoDir, ['worktree', 'repair', trash])
-    await gitSetup(repoDir, ['worktree', 'remove', '--force', trash])
-  } catch { await fs.promises.rm(trash, { recursive: true, force: true }) }
-  await gitSetup(repoDir, ['worktree', 'prune'])
+async function previewAdminDir(repoDir: string, slot: string): Promise<string | undefined> {
+  let gitfile: string
+  try { gitfile = await fs.promises.readFile(path.join(slot, '.git'), 'utf8') }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') gitfile = ''; else throw error }
+  const common = await fs.promises.realpath(await gitCommonDir(repoDir))
+  const parent = path.join(common, 'worktrees')
+  const match = /^gitdir: (.+)\s*$/m.exec(gitfile)
+  if (match) {
+    const admin = path.resolve(slot, match[1])
+    return path.dirname(admin) === parent && path.basename(admin) !== '.' ? admin : undefined
+  }
+  // A crashed checkout may have lost its .git file while its locked registration remains.
+  let names: string[]
+  try { names = await fs.promises.readdir(parent) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }
+  for (const name of names) {
+    const admin = path.join(parent, name)
+    try {
+      if (path.resolve((await fs.promises.readFile(path.join(admin, 'gitdir'), 'utf8')).trim()) === path.join(slot, '.git')) return admin
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
+  return undefined
 }
 
-/** Delete only provably dead slots; a live preview may outlast worker cleanup. */
-export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
-  const key = await previewKeyPath(cloneDir, repoDir)
-  for (const root of [key, `${key}.slots`]) {
-    await rejectPreviewLink(root)
-    if (await isLegacyTree(root)) continue
-    let names: string[]
-    try { names = await fs.promises.readdir(root) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
-    for (const name of names) {
-      if (!slotOwner(name)) continue
-      const trash = path.join(path.dirname(key), `${path.basename(key)}.trash-${randomUUID()}`)
-      if (await renameDeadSlot(path.join(root, name), trash)) await deleteClaimedSlot(repoDir, trash)
+async function lockPreviewSlot(repoDir: string, slot: string): Promise<void> {
+  try { await gitSetup(repoDir, ['worktree', 'lock', '--reason', 'room preview slot', slot]) }
+  catch (error) {
+    const admin = await previewAdminDir(repoDir, slot)
+    if (!admin || !fs.existsSync(path.join(admin, 'locked'))) throw error
+  }
+}
+
+async function deleteClaimedSlot(repoDir: string, trash: string): Promise<void> {
+  const admin = await previewAdminDir(repoDir, trash)
+  try {
+    await gitSetup(repoDir, ['worktree', 'repair', trash])
+    try { await gitSetup(repoDir, ['worktree', 'unlock', trash]) } catch { /* Already unlocked or removed. */ }
+    await gitSetup(repoDir, ['worktree', 'remove', '--force', trash])
+  } catch {
+    await fs.promises.rm(trash, { recursive: true, force: true })
+    if (admin) await fs.promises.rm(admin, { recursive: true, force: true })
+  }
+}
+
+const PREVIEW_SWEEP_LIMIT = 4
+/** Reclaim a bounded number of abandoned registrations across the whole common directory. */
+async function sweepPreviewCache(repoDir: string, preferredKey?: string): Promise<void> {
+  const base = path.join(await fs.promises.realpath(await gitCommonDir(repoDir)), 'room-preview')
+  let names: string[]
+  try { names = await fs.promises.readdir(base) }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
+  let removed = 0
+  const keys = [...new Set(names.filter(name => /^[a-f0-9]{20}(?:\.slots)?$/.test(name)).map(name => name.slice(0, 20)))]
+  const sweepKey = async (keyName: string) => {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return
+    const key = path.join(base, keyName)
+    const dead: { slot: string; mtime: number }[] = []
+    let clone: string | undefined
+    for (const root of [key, `${key}.slots`]) {
+      await rejectPreviewLink(root)
+      if (await isLegacyTree(root)) continue
+      let entries: string[]
+      try { entries = await fs.promises.readdir(root) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
+      try {
+        const parsed = JSON.parse(await fs.promises.readFile(path.join(root, 'clone.json'), 'utf8')) as { path?: unknown }
+        if (typeof parsed.path === 'string') clone = parsed.path
+      } catch { /* Older slots may not have metadata; retain one for adoption. */ }
+      for (const entry of entries) {
+        if (!slotOwner(entry) || !await isDeadSlot(entry)) continue
+        const slot = path.join(root, entry)
+        try { dead.push({ slot, mtime: (await fs.promises.lstat(slot)).mtimeMs }) }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      }
+    }
+    dead.sort((a, b) => b.mtime - a.mtime)
+    const vanished = clone !== undefined && !fs.existsSync(clone)
+    for (const { slot } of (vanished || key === preferredKey ? dead : dead.slice(1))) {
+      if (removed >= PREVIEW_SWEEP_LIMIT) break
+      const trash = path.join(base, `${keyName}.trash-${randomUUID()}`)
+      if (!await renameDeadSlot(slot, trash)) continue
+      await deleteClaimedSlot(repoDir, trash)
+      removed++
     }
   }
-  if (await isLegacyTree(key) && await legacyIsDead(key)) {
-    const trash = path.join(path.dirname(key), `${path.basename(key)}.trash-${randomUUID()}`)
-    try { await fs.promises.rename(key, trash); await deleteClaimedSlot(repoDir, trash) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  const preferredName = preferredKey && path.basename(preferredKey)
+  if (preferredName && keys.includes(preferredName)) await sweepKey(preferredName)
+  for (const name of names.filter(name => /^[a-f0-9]{20}\.trash-/.test(name))) {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return
+    const trash = path.join(base, name)
+    await rejectPreviewLink(trash)
+    await deleteClaimedSlot(repoDir, trash)
+    removed++
   }
+  for (const keyName of keys) {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return
+    if (keyName !== preferredName) await sweepKey(keyName)
+  }
+}
+
+/** Delete provably dead slots for this clone and sweep abandoned slots elsewhere. */
+export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): Promise<void> {
+  await sweepPreviewCache(repoDir, await previewKeyPath(cloneDir, repoDir))
 }
 
 const previewSlotTurns = new Map<string, Promise<void>>()
@@ -744,19 +781,20 @@ async function preparePreviewSlot(cloneDir: string, slot: string): Promise<void>
   const root = path.dirname(slot)
   await fs.promises.mkdir(root === key ? path.dirname(key) : root, { recursive: true, mode: 0o700 })
   await rejectPreviewLink(root)
+  await fs.promises.mkdir(root, { recursive: true, mode: 0o700 })
+  await fs.promises.writeFile(path.join(root, 'clone.json'), JSON.stringify({ path: canonicalPreviewClonePath(cloneDir) }))
   try { await fs.promises.lstat(slot); return }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  if (root === `${key}.slots` && await isLegacyTree(key) && await legacyIsDead(key)) {
-    try {
-      await fs.promises.rename(key, slot)
-      await gitSetup(cloneDir, ['worktree', 'repair', slot])
-      return
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-  }
-  await fs.promises.mkdir(root, { recursive: true, mode: 0o700 })
   for (const name of await fs.promises.readdir(root)) {
     if (name === path.basename(slot) || !slotOwner(name)) continue
-    if (!await renameDeadSlot(path.join(root, name), slot)) continue
+    const old = path.join(root, name)
+    if (!await isDeadSlot(name)) continue
+    try { await lockPreviewSlot(cloneDir, old) }
+    catch (error) {
+      if (!fs.existsSync(old)) continue
+      throw error
+    }
+    if (!await renameDeadSlot(old, slot)) continue
     await gitSetup(cloneDir, ['worktree', 'repair', slot])
     return
   }
@@ -779,8 +817,11 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
       if (path.resolve(top) !== dir) throw new Error('preview cache is not its own worktree')
     }
     catch {
+      const admin = await previewAdminDir(cloneDir, dir)
+      try { await gitSetup(cloneDir, ['worktree', 'unlock', dir]) } catch { /* Broken registration. */ }
+      try { await gitSetup(cloneDir, ['worktree', 'remove', '--force', dir]) } catch { /* Remove its files below. */ }
       await fs.promises.rm(dir, { recursive: true, force: true })
-      await gitSetup(cloneDir, ['worktree', 'prune'])
+      if (admin) await fs.promises.rm(admin, { recursive: true, force: true })
       stat = undefined
     }
   }
@@ -788,6 +829,7 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
     observe?.baseMaterialized?.()
     await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
   }
+  await lockPreviewSlot(cloneDir, dir)
   // Also recovers changes left by a crashed or killed preview before applying this one.
   await resetPreviewTree(dir, ancestor)
   return !!stat
@@ -862,7 +904,11 @@ export async function runInMergedTree(s: Session, ancestor: string, merged: Map<
         if (cached) { if (cacheReady) await resetPreviewTree(dir, ancestor) }
         else await fs.promises.rm(dir, { recursive: true, force: true })
       }
-    } finally { await release?.() }
+    } finally {
+      await release?.()
+      // Maintenance never delays the preview reply and is bounded per pass.
+      if (cached) setImmediate(() => { void sweepPreviewCache(s.dir).catch(() => undefined) })
+    }
   }
 }
 

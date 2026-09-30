@@ -18,5 +18,6 @@ it('places a preview checkout in a process-owned slot beneath the clone key', as
     const result = await runInMergedTree({ dir: root } as Session, git('rev-parse', 'HEAD'), new Map(), 'echo "1 passed"')
     expect(result.passed, result.text).toBe(true)
     expect(git('worktree', 'list', '--porcelain')).toContain(cache)
+    expect(git('worktree', 'list', '--porcelain')).toMatch(/locked room preview slot/)
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 }, 30_000)

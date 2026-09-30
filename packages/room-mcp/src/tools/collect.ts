@@ -611,19 +611,23 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if ((before?.equals(after ?? Buffer.alloc(0)) && after !== null && mode === oldMode) || (before === null && after === null)) continue
         changes.push({ p, file, before, after, mode, oldMode })
       }
-      // Preflight every destination before writes. Restore originals on any write failure.
+      // Start collection and publish the source metadata before the final destination
+      // gate. An aborted attempt may leave these refs; the next collection overwrites
+      // them, and worker cleanup removes them.
       for (const { w } of selected) if (w.id) {
         await registry.beginCollect(w.id)
         collectStarted.add(w.id)
-      }
-      for (const { p, identity } of destinations) {
-        if (!sameIdentity(identity, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
       }
       // Keep the exact source HEAD and merge baseline used by this collection. A
       // retained shared checkout may receive another commit before its last user exits.
       for (const { w } of selected) {
         await git(lead.dir, ['update-ref', collectHeadRef(w.tag, w.id), heads.get(w.name)!])
         await git(lead.dir, ['update-ref', collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!])
+      }
+      // No await from this final identity gate through the last destination write.
+      // Restore originals on any write failure.
+      for (const { p, identity } of destinations) {
+        if (!sameIdentity(identity, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
       }
       const written: typeof changes = []
       try {

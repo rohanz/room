@@ -25,6 +25,15 @@ import { testPolicyStore } from './policy-fixture.js'
 // Collection runs real Git and filesystem cleanup; wait for outcomes, not a 5 s wall-clock cap.
 vi.setConfig({ testTimeout: 30_000 })
 
+const collectRefHook = vi.hoisted(() => ({ call: undefined as undefined | ((ref: string) => void) }))
+vi.mock('@room/roomd/git', async importOriginal => {
+  const actual = await importOriginal<typeof import('@room/roomd/git')>()
+  return { ...actual, git: async (...args: Parameters<typeof actual.git>) => {
+    const result = await actual.git(...args)
+    if (args[1][0] === 'update-ref' && args[1][1]?.startsWith('refs/room/collect-head/')) collectRefHook.call?.(args[1][1])
+    return result
+  } }
+})
 const release = vi.hoisted(() => vi.fn())
 vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
 let root: string, lead: string, worker: string, base: string
@@ -40,7 +49,7 @@ beforeEach(() => {
   git(lead, 'add', '.'); git(lead, 'commit', '-qm', 'base'); base = git(lead, 'rev-parse', 'HEAD')
   git(lead, 'worktree', 'add', '-qb', 'room/test', worker)
 })
-afterEach(async () => { await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { collectRefHook.call = undefined; await closeRegistryForDir(lead); fs.rmSync(root, { recursive: true, force: true }) })
 
 /** Every lead's projector in the session's room, as each lead session would run it. */
 async function projectAll(s: Session): Promise<void> {
@@ -1228,6 +1237,36 @@ describe('room_collect', () => {
       expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
       expect(workerByTag(lead, 'test')).toBeDefined()
     } finally { seam.mockRestore() }
+  })
+  it('preserves a lead edit made while publishing collection refs', async () => {
+    put(worker, 'file.txt', 'worker edit\n')
+    const t = setup()
+    let fired = false
+    collectRefHook.call = () => { fired = true; put(lead, 'file.txt', 'new human edit\n') }
+    const reply = await t.call({ tag: 'test' })
+    expect(fired).toBe(true)
+    expect(reply).toMatch(/file\.txt changed during collection; nothing written, retry/)
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('new human edit\n')
+    expect(workerByTag(lead, 'test')).toBeDefined()
+    expect(release).not.toHaveBeenCalled()
+  })
+  it('preserves all destinations when a lead edit arrives during multi-worker ref publication', async () => {
+    const t = setup(), other = second(t)
+    put(worker, 'file.txt', 'worker edit\n')
+    put(other, 'new.txt', 'other worker edit\n')
+    const published: string[] = []
+    collectRefHook.call = ref => {
+      published.push(ref)
+      if (ref.includes('/test/')) put(lead, 'file.txt', 'new human edit\n')
+    }
+    const reply = await t.call({})
+    expect(published).toHaveLength(2)
+    expect(reply).toMatch(/file\.txt changed during collection; nothing written, retry/)
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('new human edit\n')
+    expect(fs.existsSync(path.join(lead, 'new.txt'))).toBe(false)
+    expect(workerByTag(lead, 'test')).toBeDefined()
+    expect(workerByTag(lead, 'second')).toBeDefined()
+    expect(release).not.toHaveBeenCalled()
   })
   it('treats an oversized matching copy destination as a conflict until force is explicit', async () => {
     const large = Buffer.alloc(512 * 1024 + 1, 65)

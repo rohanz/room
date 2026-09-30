@@ -39636,45 +39636,6 @@ async function isLegacyTree(key2) {
     throw error2;
   }
 }
-async function legacyIsDead(key2) {
-  const gate = `${key2}.lock.recover`;
-  try {
-    const gateStat = await fs34.promises.lstat(gate);
-    let gateToken = "";
-    if (gateStat.isFile()) gateToken = await fs34.promises.readFile(gate, "utf8");
-    if (!await legacyOwnerDead(gateToken, gateStat.mtimeMs)) return false;
-  } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
-  }
-  let stat4;
-  try {
-    stat4 = await fs34.promises.lstat(`${key2}.lock`);
-  } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
-    stat4 = await fs34.promises.lstat(key2);
-  }
-  let token = "";
-  try {
-    token = await fs34.promises.readFile(`${key2}.lock`, "utf8");
-  } catch (error2) {
-    if (error2.code !== "ENOENT") throw error2;
-  }
-  return legacyOwnerDead(token, stat4.mtimeMs);
-}
-async function legacyOwnerDead(token, mtimeMs) {
-  let pid;
-  try {
-    const parsed = JSON.parse(token);
-    if (Number.isSafeInteger(parsed.pid) && parsed.pid > 0) pid = parsed.pid;
-  } catch {
-  }
-  if (!pid) {
-    const match = /^([1-9]\d*)(?::\d+:[0-9a-f-]+)?$/.exec(token.trim());
-    if (match) pid = Number(match[1]);
-  }
-  if (pid) return await probePreviewStart(pid) === null;
-  return Date.now() - mtimeMs > LEGACY_PREVIEW_RESIDUE_MS;
-}
 async function slotRoot(key2) {
   await rejectPreviewLink(key2);
   if (await isLegacyTree(key2)) {
@@ -39705,67 +39666,152 @@ async function renameDeadSlot(slot, destination) {
     throw error2;
   }
 }
-async function deleteClaimedSlot(repoDir, trash) {
+async function previewAdminDir(repoDir, slot) {
+  let gitfile;
   try {
-    await gitSetup(repoDir, ["worktree", "repair", trash]);
-    await gitSetup(repoDir, ["worktree", "remove", "--force", trash]);
-  } catch {
-    await fs34.promises.rm(trash, { recursive: true, force: true });
+    gitfile = await fs34.promises.readFile(path30.join(slot, ".git"), "utf8");
+  } catch (error2) {
+    if (error2.code === "ENOENT") gitfile = "";
+    else throw error2;
   }
-  await gitSetup(repoDir, ["worktree", "prune"]);
-}
-async function removePreviewCache(cloneDir, repoDir = cloneDir) {
-  const key2 = await previewKeyPath(cloneDir, repoDir);
-  for (const root of [key2, `${key2}.slots`]) {
-    await rejectPreviewLink(root);
-    if (await isLegacyTree(root)) continue;
-    let names;
-    try {
-      names = await fs34.promises.readdir(root);
-    } catch (error2) {
-      if (error2.code === "ENOENT") continue;
-      throw error2;
-    }
-    for (const name2 of names) {
-      if (!slotOwner(name2)) continue;
-      const trash = path30.join(path30.dirname(key2), `${path30.basename(key2)}.trash-${randomUUID5()}`);
-      if (await renameDeadSlot(path30.join(root, name2), trash)) await deleteClaimedSlot(repoDir, trash);
-    }
+  const common = await fs34.promises.realpath(await gitCommonDir(repoDir));
+  const parent = path30.join(common, "worktrees");
+  const match = /^gitdir: (.+)\s*$/m.exec(gitfile);
+  if (match) {
+    const admin = path30.resolve(slot, match[1]);
+    return path30.dirname(admin) === parent && path30.basename(admin) !== "." ? admin : void 0;
   }
-  if (await isLegacyTree(key2) && await legacyIsDead(key2)) {
-    const trash = path30.join(path30.dirname(key2), `${path30.basename(key2)}.trash-${randomUUID5()}`);
+  let names;
+  try {
+    names = await fs34.promises.readdir(parent);
+  } catch (error2) {
+    if (error2.code === "ENOENT") return void 0;
+    throw error2;
+  }
+  for (const name2 of names) {
+    const admin = path30.join(parent, name2);
     try {
-      await fs34.promises.rename(key2, trash);
-      await deleteClaimedSlot(repoDir, trash);
+      if (path30.resolve((await fs34.promises.readFile(path30.join(admin, "gitdir"), "utf8")).trim()) === path30.join(slot, ".git")) return admin;
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
   }
+  return void 0;
+}
+async function lockPreviewSlot(repoDir, slot) {
+  try {
+    await gitSetup(repoDir, ["worktree", "lock", "--reason", "room preview slot", slot]);
+  } catch (error2) {
+    const admin = await previewAdminDir(repoDir, slot);
+    if (!admin || !fs34.existsSync(path30.join(admin, "locked"))) throw error2;
+  }
+}
+async function deleteClaimedSlot(repoDir, trash) {
+  const admin = await previewAdminDir(repoDir, trash);
+  try {
+    await gitSetup(repoDir, ["worktree", "repair", trash]);
+    try {
+      await gitSetup(repoDir, ["worktree", "unlock", trash]);
+    } catch {
+    }
+    await gitSetup(repoDir, ["worktree", "remove", "--force", trash]);
+  } catch {
+    await fs34.promises.rm(trash, { recursive: true, force: true });
+    if (admin) await fs34.promises.rm(admin, { recursive: true, force: true });
+  }
+}
+async function sweepPreviewCache(repoDir, preferredKey) {
+  const base = path30.join(await fs34.promises.realpath(await gitCommonDir(repoDir)), "room-preview");
+  let names;
+  try {
+    names = await fs34.promises.readdir(base);
+  } catch (error2) {
+    if (error2.code === "ENOENT") return;
+    throw error2;
+  }
+  let removed = 0;
+  const keys2 = [...new Set(names.filter((name2) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name2)).map((name2) => name2.slice(0, 20)))];
+  const sweepKey = async (keyName) => {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return;
+    const key2 = path30.join(base, keyName);
+    const dead = [];
+    let clone2;
+    for (const root of [key2, `${key2}.slots`]) {
+      await rejectPreviewLink(root);
+      if (await isLegacyTree(root)) continue;
+      let entries;
+      try {
+        entries = await fs34.promises.readdir(root);
+      } catch (error2) {
+        if (error2.code === "ENOENT") continue;
+        throw error2;
+      }
+      try {
+        const parsed = JSON.parse(await fs34.promises.readFile(path30.join(root, "clone.json"), "utf8"));
+        if (typeof parsed.path === "string") clone2 = parsed.path;
+      } catch {
+      }
+      for (const entry of entries) {
+        if (!slotOwner(entry) || !await isDeadSlot(entry)) continue;
+        const slot = path30.join(root, entry);
+        try {
+          dead.push({ slot, mtime: (await fs34.promises.lstat(slot)).mtimeMs });
+        } catch (error2) {
+          if (error2.code !== "ENOENT") throw error2;
+        }
+      }
+    }
+    dead.sort((a, b) => b.mtime - a.mtime);
+    const vanished = clone2 !== void 0 && !fs34.existsSync(clone2);
+    for (const { slot } of vanished || key2 === preferredKey ? dead : dead.slice(1)) {
+      if (removed >= PREVIEW_SWEEP_LIMIT) break;
+      const trash = path30.join(base, `${keyName}.trash-${randomUUID5()}`);
+      if (!await renameDeadSlot(slot, trash)) continue;
+      await deleteClaimedSlot(repoDir, trash);
+      removed++;
+    }
+  };
+  const preferredName = preferredKey && path30.basename(preferredKey);
+  if (preferredName && keys2.includes(preferredName)) await sweepKey(preferredName);
+  for (const name2 of names.filter((name3) => /^[a-f0-9]{20}\.trash-/.test(name3))) {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return;
+    const trash = path30.join(base, name2);
+    await rejectPreviewLink(trash);
+    await deleteClaimedSlot(repoDir, trash);
+    removed++;
+  }
+  for (const keyName of keys2) {
+    if (removed >= PREVIEW_SWEEP_LIMIT) return;
+    if (keyName !== preferredName) await sweepKey(keyName);
+  }
+}
+async function removePreviewCache(cloneDir, repoDir = cloneDir) {
+  await sweepPreviewCache(repoDir, await previewKeyPath(cloneDir, repoDir));
 }
 async function preparePreviewSlot(cloneDir, slot) {
   const key2 = await previewKeyPath(cloneDir);
   const root = path30.dirname(slot);
   await fs34.promises.mkdir(root === key2 ? path30.dirname(key2) : root, { recursive: true, mode: 448 });
   await rejectPreviewLink(root);
+  await fs34.promises.mkdir(root, { recursive: true, mode: 448 });
+  await fs34.promises.writeFile(path30.join(root, "clone.json"), JSON.stringify({ path: canonicalPreviewClonePath(cloneDir) }));
   try {
     await fs34.promises.lstat(slot);
     return;
   } catch (error2) {
     if (error2.code !== "ENOENT") throw error2;
   }
-  if (root === `${key2}.slots` && await isLegacyTree(key2) && await legacyIsDead(key2)) {
-    try {
-      await fs34.promises.rename(key2, slot);
-      await gitSetup(cloneDir, ["worktree", "repair", slot]);
-      return;
-    } catch (error2) {
-      if (error2.code !== "ENOENT") throw error2;
-    }
-  }
-  await fs34.promises.mkdir(root, { recursive: true, mode: 448 });
   for (const name2 of await fs34.promises.readdir(root)) {
     if (name2 === path30.basename(slot) || !slotOwner(name2)) continue;
-    if (!await renameDeadSlot(path30.join(root, name2), slot)) continue;
+    const old = path30.join(root, name2);
+    if (!await isDeadSlot(name2)) continue;
+    try {
+      await lockPreviewSlot(cloneDir, old);
+    } catch (error2) {
+      if (!fs34.existsSync(old)) continue;
+      throw error2;
+    }
+    if (!await renameDeadSlot(old, slot)) continue;
     await gitSetup(cloneDir, ["worktree", "repair", slot]);
     return;
   }
@@ -39787,8 +39833,17 @@ async function preparePreviewCache(cloneDir, dir, ancestor, observe) {
       const top = (await gitSetup(dir, ["rev-parse", "--show-toplevel"])).trim();
       if (path30.resolve(top) !== dir) throw new Error("preview cache is not its own worktree");
     } catch {
+      const admin = await previewAdminDir(cloneDir, dir);
+      try {
+        await gitSetup(cloneDir, ["worktree", "unlock", dir]);
+      } catch {
+      }
+      try {
+        await gitSetup(cloneDir, ["worktree", "remove", "--force", dir]);
+      } catch {
+      }
       await fs34.promises.rm(dir, { recursive: true, force: true });
-      await gitSetup(cloneDir, ["worktree", "prune"]);
+      if (admin) await fs34.promises.rm(admin, { recursive: true, force: true });
       stat4 = void 0;
     }
   }
@@ -39796,6 +39851,7 @@ async function preparePreviewCache(cloneDir, dir, ancestor, observe) {
     observe?.baseMaterialized?.();
     await gitSetup(cloneDir, ["worktree", "add", "--detach", "--quiet", dir, ancestor]);
   }
+  await lockPreviewSlot(cloneDir, dir);
   await resetPreviewTree(dir, ancestor);
   return !!stat4;
 }
@@ -39877,6 +39933,9 @@ ${verdict.text}` };
       }
     } finally {
       await release?.();
+      if (cached2) setImmediate(() => {
+        void sweepPreviewCache(s.dir).catch(() => void 0);
+      });
     }
   }
 }
@@ -39948,7 +40007,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     archive.stdout.pipe(extract.stdin);
   });
 }
-var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, LEGACY_PREVIEW_RESIDUE_MS, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, previewSlotTurns, CLOSED_ARCHIVE_PIPE_ERRORS;
+var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, PREVIEW_SWEEP_LIMIT, previewSlotTurns, CLOSED_ARCHIVE_PIPE_ERRORS;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -39992,8 +40051,8 @@ var init_files = __esm({
     previewGenerations = /* @__PURE__ */ new WeakMap();
     SETUP_TIMEOUT_MS = 10 * 6e4;
     gitSetup = (dir, args3) => git(dir, args3, SETUP_TIMEOUT_MS);
-    LEGACY_PREVIEW_RESIDUE_MS = 10 * 6e4;
     PROBE_TIMEOUT_MS = 3e3;
+    PREVIEW_SWEEP_LIMIT = 4;
     previewSlotTurns = /* @__PURE__ */ new Map();
     CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
   }
@@ -58405,12 +58464,12 @@ repeat with force=true to delete them`;
         await registry2.beginCollect(w.id);
         collectStarted.add(w.id);
       }
-      for (const { p, identity: identity2 } of destinations) {
-        if (!sameIdentity(identity2, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + " changed during collection; nothing written, retry");
-      }
       for (const { w } of selected) {
         await git(lead.dir, ["update-ref", collectHeadRef(w.tag, w.id), heads.get(w.name)]);
         await git(lead.dir, ["update-ref", collectBaseRef(w.tag, w.id), result2.deltaBases.get(w.name)]);
+      }
+      for (const { p, identity: identity2 } of destinations) {
+        if (!sameIdentity(identity2, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + " changed during collection; nothing written, retry");
       }
       const written = [];
       try {

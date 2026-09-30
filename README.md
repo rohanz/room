@@ -397,7 +397,7 @@ Developer A’s clone                                  Developer B’s clone
 5. **Integrate with Git.** Merge previews happen in memory or, when tests are requested,
    a temporary workspace. The shared base advances only when the new commit is on the
    remote. Teammates see that their clone is behind and can pull.
-   Previews with `run=` keep one reusable checkout per clone under `.git/room-preview/` (ignored build output stays warm between previews); `git worktree remove --force <path>` reclaims it.
+   Previews with `run=` keep one locked worktree slot per live Room process per clone under the Git common directory's `room-preview/<clone-key>/` (or `<clone-key>.slots/` beside a legacy tree). Ignored build output stays warm; dead slots are adopted or swept, retaining at most one per clone key. To reclaim space manually, stop Room processes and run `git worktree unlock <slot>; git worktree remove --force <slot>`. Once no pre-0.17 Room session is running, remove a legacy single-cache tree with `git worktree remove --force <path>`.
 
 The server uses `@y/websocket-server` with GitHub device-login (or OIDC) admission, read-only
 view keys, size caps, optional LevelDB or Postgres persistence, and static browser hosting.
