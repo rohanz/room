@@ -1,9 +1,11 @@
-import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS } from './limits.js'
+import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS, LOAD_MAX_BYTES } from './limits.js'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
 import type { OpenRepo } from './store.js'
 import { archiveOwnerOf, parseRoomName } from './names.js'
+import { servedBy016, classifyDoc } from './inventory.js'
+import type { StoredSize } from './stored.js'
 
 /** A source is either recorded by the old registry or a GitHub document with the same exact repo identity. */
 export function migrationSources(repo: string, entry: OpenRepo, docs: string[], registered: ReadonlySet<string> = new Set()): string[] {
@@ -14,7 +16,7 @@ export function migrationSources(repo: string, entry: OpenRepo, docs: string[], 
     if (name === repo || registered.has(name) && parseRoomName(name)?.repo !== repo) return false
     if (name.startsWith('archive:')) return recorded.has(name) && archiveOwnerOf(name) === repo
     const source = parseRoomName(name)
-    if (!source) return false
+    if (!source || !servedBy016(name)) return false
     if (!parsed.github && [...registered].some(key => key.startsWith(`${repo}/`) && (name === key || name.startsWith(`${key}/`)))) return false
     return parsed.github ? source.repo === repo : recorded.has(name) && name.startsWith(`${repo}/`)
   })
@@ -43,8 +45,9 @@ export function safeRoomRegistry(all: Record<string, OpenRepo>, log: (line: stri
 export interface MigrationIO {
   list(): Promise<string[]>
   load(name: string): Promise<Y.Doc>
-  /** Stored update size, when the provider can report it without loading/encoding a document. */
-  size?(name: string): Promise<number | undefined>
+  /** Measure raw storage before decoding, with early exit above limit. */
+  stored(name: string, limit: number): Promise<StoredSize>
+  copyRaw(from: string, to: string): Promise<void>
   /** A live Y.Doc belongs to the websocket server; only temporary loads are destroyed. */
   release?(name: string, doc: Y.Doc): void
   write(name: string, update: Uint8Array): Promise<unknown>
@@ -76,14 +79,12 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
   let workBytes = 0, workRecords = 0
   const release = (name: string, doc: Y.Doc) => io.release ? io.release(name, doc) : doc.destroy()
   const checkedLoad = async (name: string): Promise<Y.Doc | undefined> => {
-    const known = await io.size?.(name)
-    if (known !== undefined && (!Number.isFinite(known) || known < 0 || workBytes + known > maxReadBytes)) return undefined
-    if (workBytes >= maxReadBytes) return undefined
-    const doc = await io.load(name)
-    const measured = Y.encodeStateAsUpdate(doc).byteLength
-    workBytes += measured
-    if (workBytes > maxReadBytes) { release(name, doc); return undefined }
-    return doc
+    const limit = Math.min(LOAD_MAX_BYTES, maxReadBytes - workBytes)
+    if (limit <= 0) return undefined
+    const known = await io.stored(name, limit)
+    if (known.over || !Number.isFinite(known.bytes) || known.bytes < 0 || known.bytes > limit) return undefined
+    workBytes += known.bytes
+    return io.load(name)
   }
   const requiredCanonical = async (): Promise<Y.Doc> => {
     try {
@@ -92,31 +93,54 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       return doc
     } catch { throw new MigrationReadFailure() }
   }
+  const allNames = [...new Set([...entry.branches, ...entry.legacy ?? [], ...entry.plan?.sources ?? [], ...await io.list()])]
+  const quarantined = new Map((entry.quarantined ?? []).map(item => [item.name, item]))
+  for (const name of allNames) {
+    const found = classifyDoc(name, { [repo]: entry })
+    if (found.repo !== repo) continue
+    if (found.kind !== 'never-served' && found.kind !== 'served' && found.kind !== 'canonical' && found.kind !== 'archive') continue
+    let size: StoredSize
+    try { size = await io.stored(name, LOAD_MAX_BYTES) }
+    catch { throw new MigrationReadFailure() }
+    if (found.kind !== 'never-served' && !size.over) continue
+    const reason = found.kind === 'never-served' ? found.reason! : 'over the per-document load budget: kept as an archive without loading'
+    const item = { name, bytes: size.bytes, over: size.over, reason }
+    if (!quarantined.has(name)) console.log(`migration quarantine: ${repo} ${JSON.stringify(name)} ${size.over ? '>' : ''}${size.bytes}bytes ${reason}`)
+    quarantined.set(name, item)
+  }
+  const publishQuarantine = () => { if (quarantined.size) entry.quarantined = [...quarantined.values()] }
+  const canonicalOversized = async () => (await io.stored(repo, LOAD_MAX_BYTES)).over
   const save = () => io.save()
   if (!entry.plan) {
     const names = new Set([...entry.branches, ...(entry.legacy ?? []), ...await io.list()])
     workRecords += names.size
     const sources = migrationSources(repo, entry, [...names], registered)
-    const canonicalDoc = names.has(repo) ? await requiredCanonical() : undefined
-    const moved = canonicalDoc && new RoomDoc(canonicalDoc).meta.schemaVersion !== 2
+    const oversized = names.has(repo) && await canonicalOversized()
+    const canonicalDoc = names.has(repo) && !oversized ? await requiredCanonical() : undefined
+    const moved = oversized || canonicalDoc && new RoomDoc(canonicalDoc).meta.schemaVersion !== 2
       ? `archive:${repo}:${crypto.randomUUID()}` : undefined
     if (canonicalDoc) release(repo, canonicalDoc)
     if (moved) sources.push(moved)
+    publishQuarantine()
     entry.plan = { id: moved?.split(':').at(-1) ?? crypto.randomUUID(), sources: [...new Set(sources)], ...(moved ? { moved } : {}) }
     entry.legacy = [...entry.plan.sources]
     entry.mode = 'repo'; entry.step = 'planned'
     await save()
   }
   const plan = entry.plan
+  publishQuarantine()
   plan.sources = migrationSources(repo, entry, plan.sources, registered)
+  entry.legacy = migrationSources(repo, entry, entry.legacy ?? [], registered)
   if (plan.moved && archiveOwnerOf(plan.moved) !== repo) plan.moved = undefined
   // e274970 could persist a plan without a move after rejecting an oversized canonical read.
   // Inspect before advancing any step; reset to a replayable move when that old key is legacy.
   if (!plan.moved && (await io.list()).includes(repo)) {
-    const canonicalDoc = await requiredCanonical()
-    let legacy: boolean
-    try { legacy = new RoomDoc(canonicalDoc).meta.schemaVersion !== 2 }
-    finally { release(repo, canonicalDoc) }
+    let legacy = await canonicalOversized()
+    if (!legacy) {
+      const canonicalDoc = await requiredCanonical()
+      try { legacy = new RoomDoc(canonicalDoc).meta.schemaVersion !== 2 }
+      finally { release(repo, canonicalDoc) }
+    }
     if (legacy) {
       const moved = `archive:${repo}:${plan.id}`
       plan.moved = archiveOwnerOf(moved) === repo ? moved : `archive:${repo}:${crypto.randomUUID()}`
@@ -136,9 +160,12 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       const archived = await io.list()
       workRecords += archived.length
       if (!archived.includes(plan.moved)) {
-        const source = await requiredCanonical()
-        try { await io.write(plan.moved, Y.encodeStateAsUpdate(source)) }
-        finally { release(repo, source) }
+        if (await canonicalOversized()) await io.copyRaw(repo, plan.moved)
+        else {
+          const source = await requiredCanonical()
+          try { await io.write(plan.moved, Y.encodeStateAsUpdate(source)) }
+          finally { release(repo, source) }
+        }
       }
       await io.clear(repo)
     }

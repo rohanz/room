@@ -11,7 +11,7 @@ import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
 import type { Session } from '../src/session.js'
 import { testPolicyStore } from './policy-fixture.js'
-import { exportRoomLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
+import { exportRoomLedger, exportArchiveLedger, isPrName, openPrs, prArea, prIdentity, prLeader, renderPrNote, syncPrs, type PrInfo } from '../src/prs.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
@@ -293,7 +293,7 @@ it('room_export loads an authenticated legacy archive instead of the current roo
   const s = session(current, { name: 'alice', kind: 'agent', owner: 'alice' }, legacyRepo)
   s.token = 'token'
   const update = Y.encodeStateAsUpdate(archived.doc)
-  const fetch = vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength) })
+  const fetch = vi.fn().mockResolvedValue({ ok: true, headers: new Headers({ 'content-type': 'application/octet-stream' }), arrayBuffer: async () => update.buffer.slice(update.byteOffset, update.byteOffset + update.byteLength) })
   vi.stubGlobal('fetch', fetch)
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
   const output = join(dir, 'legacy-export.md')
@@ -303,4 +303,31 @@ it('room_export loads an authenticated legacy archive instead of the current roo
     expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:9/archive/export', expect.objectContaining({ method: 'POST' }))
     expect(await tools.call('room_export', { room: `archive:${legacyRepo}:old-id`, path: output })).toContain('exported archive')
   } finally { vi.unstubAllGlobals(); await tools.shutdown() }
+})
+
+
+it('reads framed archive updates split across arbitrary transport chunks', async () => {
+  const archived = new RoomDoc(), updates: Uint8Array[] = []
+  archived.doc.on('update', update => updates.push(update))
+  archived.bus.push([{ id: 'first', type: 'changed', from: 'ben', fromKind: 'agent', paths: ['a.py'], summary: 'first archive record', at: 1, priority: 'fyi' }])
+  archived.bus.push([{ id: 'second', type: 'changed', from: 'ben', fromKind: 'agent', paths: ['b.py'], summary: 'second archive record', at: 2, priority: 'fyi' }])
+  const frames = Buffer.concat(updates.map(update => { const header = Buffer.alloc(4); header.writeUInt32BE(update.length); return Buffer.concat([header, update]) }))
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new ReadableStream({ start(controller) {
+    for (let at = 0; at < frames.length; at += 3) controller.enqueue(frames.subarray(at, at + 3))
+    controller.close()
+  } }), { headers: { 'content-type': 'application/vnd.room.updates' } })))
+  try {
+    const output = join(dir, 'framed-export.md')
+    await exportArchiveLedger(s, 'git/x/o/r/main', { path: output })
+    expect(readFileSync(output, 'utf8')).toContain('first archive record')
+    expect(readFileSync(output, 'utf8')).toContain('second archive record')
+  } finally { archived.doc.destroy(); s.room.doc.destroy(); vi.unstubAllGlobals() }
+})
+
+it.each([Buffer.from([0, 0]), Buffer.from([0, 0, 0, 10, 1]), Buffer.from([127, 255, 255, 255])])('rejects truncated or oversized archive frames without writing a ledger', async body => {
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/vnd.room.updates' } })))
+  try { await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: join(dir, 'bad-frame.md') })).rejects.toThrow(/archive frame/) }
+  finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
 })

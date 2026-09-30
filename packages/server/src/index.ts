@@ -46,11 +46,13 @@ import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from '.
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
+import { levelDbOf, levelStoredSize, levelStoredUpdates, levelCopyRaw, isLevelProvider, type StoredSize } from './stored.js'
+import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 import {
-  MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
+  LOAD_MAX_BYTES, MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
   AWARENESS_MAX_IDS_PER_CONNECTION, VIEW_MAX_PER_PRINCIPAL, VIEW_ISSUE_PER_HOUR, MAX_EXPORTS_PER_PRINCIPAL,
   EXPORT_CHUNK_BYTES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, HTTP_RESPONSE_DEADLINE_MS, LISTS_PER_MINUTE,
   MAX_PR_NOTES_PER_PRINCIPAL, MAX_PR_LISTS_PER_PRINCIPAL, PR_OPERATIONS_PER_MINUTE, limits,
@@ -228,9 +230,28 @@ const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]
 }
 const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
 const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...docs.keys()])]
+const storedSize = async (name: string, limit = LOAD_MAX_BYTES): Promise<StoredSize> => {
+  const p = provider()
+  if (isLevelProvider(p)) return levelStoredSize(await levelDbOf(p), name, limit)
+  const bytes = memoryDocs.get(name)?.byteLength ?? 0
+  return { bytes, updates: memoryDocs.has(name) ? 1 : 0, over: bytes > limit }
+}
+const copyRaw = async (from: string, to: string): Promise<void> => {
+  const p = provider()
+  if (isLevelProvider(p)) return levelCopyRaw(await levelDbOf(p), from, to)
+  const update = memoryDocs.get(from)
+  if (!update) throw new Error('raw copy source missing')
+  memoryDocs.set(to, update)
+}
+void roomsLoaded.then(async () => {
+  const inventory = await takeInventory(await listDocs(), Object.fromEntries(rooms), storedSize, LOAD_MAX_BYTES)
+  for (const line of formatInventory(inventory).split('\n')) if (line.startsWith('  !')) console.log(`stored inventory: ${line.trim()}`)
+}).catch(error => console.log(`stored inventory failed: ${error instanceof Error ? error.message : error}`))
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)
   if (live) return live
+  // Migration applies the stricter ROOM_LOAD_MAX_MB itself; a schema-2 room may grow to ROOM_DOC_MAX_MB.
+  if ((await storedSize(name, Math.max(LOAD_MAX_BYTES, DOC_MAX_BYTES))).over) throw new HttpFailure(507, 'room document too large to load')
   return provider()!.getYDoc(name)
 }
 let testArchiveLoads = 0
@@ -296,8 +317,7 @@ async function migrateOpenRepo(repo: string): Promise<void> {
     if (!r || r.migratedAt) return
     await migrateRepo(repo, r, {
       list: listDocs, load: loadDoc, write: writeDoc, clear: clearDoc, save: saveRooms,
-      // The in-memory store has direct update sizes; y-leveldb offers no cheap size lookup.
-      size: async name => process.env.YPERSISTENCE ? undefined : memoryDocs.get(name)?.byteLength,
+      stored: storedSize, copyRaw,
       release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
       freeze: names => freezeDocs(names, upgradeText(repo)),
       revoke: async names => {
@@ -318,10 +338,13 @@ async function expireIdle() {
       await locks.run(repo, async () => {
         const current = rooms.get(repo)
         if (!current?.legacy?.length || !current.migratedAt) return
-        for (const name of migrationSources(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
+        const live = docs.get(repo)
         const doc = await loadDoc(repo)
-        doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
-        await writeDoc(repo, Y.encodeStateAsUpdate(doc))
+        try {
+          for (const name of migrationSources(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
+          doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
+          await writeDoc(repo, Y.encodeStateAsUpdate(doc))
+        } finally { if (!live) doc.destroy() }
         current.legacy = []; current.unresolved = 0
         await saveRooms()
       })
@@ -421,7 +444,7 @@ const server = http.createServer((req, res) => {
   }
   let responseWork: ResponseWork | undefined
   const stateLink = url.pathname === '/' && url.searchParams.has('room') && (url.searchParams.has('view') || url.searchParams.has('key'))
-  const stateRoute = stateLink || ['/rooms', '/archive', '/archive/export', '/audit', '/github/prs', '/github/pr-note', '/view-token', '/ws-ticket'].includes(url.pathname)
+  const stateRoute = stateLink || ['/rooms', '/archive', '/archive/export', '/audit', '/admin/inventory', '/admin/purge', '/github/prs', '/github/pr-note', '/view-token', '/ws-ticket'].includes(url.pathname)
   const reserveResponse = (c: Creds): boolean => {
     if (res.destroyed || res.writableEnded || req.aborted) return false
     if (responseWork) return !res.destroyed
@@ -463,7 +486,7 @@ const server = http.createServer((req, res) => {
     if (stateRoute && !reserveResponse(creds(o))) return
     const releaseWork = responseWork?.hold()
     try { await fn(o) }
-    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(e instanceof MigrationReadFailure || e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, e instanceof MigrationReadFailure ? e.message : 'room server operation failed; retry') }
+    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (res.headersSent) { if (!res.writableEnded) res.destroy(); return } if (!res.writableEnded) text(e instanceof HttpFailure ? e.status : e instanceof MigrationReadFailure || e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, e instanceof HttpFailure || e instanceof MigrationReadFailure ? e.message : 'room server operation failed; retry') }
     finally { releaseWork?.() }
   }).catch(e => { if (!res.writableEnded && !res.destroyed) text(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'request body failed') }); return }
 
@@ -531,6 +554,35 @@ const server = http.createServer((req, res) => {
     void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
     return
   }
+
+  if (url.pathname === '/admin/inventory' && req.method === 'GET') {
+    const st = auth.resolve(headerCreds().session)
+    if (!st) return text(401, 'not logged in: send Authorization: Bearer <session>')
+    if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
+    const releaseWork = responseWork?.hold()
+    void roomsLoaded.then(async () => json(200, await takeInventory(await listDocs(), Object.fromEntries(rooms), storedSize, LOAD_MAX_BYTES)))
+      .catch(e => text(500, `inventory unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
+    return
+  }
+  if (url.pathname === '/admin/purge' && req.method === 'POST') return withBody(async o => {
+    const st = auth.resolve(headerCreds().session)
+    if (!st) return text(401, 'not logged in: send Authorization: Bearer <session>')
+    if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
+    const name = str(o.name)
+    if (!name || o.confirm !== name) return text(400, 'confirm must equal the exact stored name')
+    await roomsLoaded
+    const owner = classifyDoc(name, Object.fromEntries(rooms)).repo ?? name
+    await locks.run(owner, async () => {
+      const found = classifyDoc(name, Object.fromEntries(rooms))
+      if (!['never-served', 'unregistered'].includes(found.kind)) return text(403, 'only never-served or unregistered documents may be purged')
+      if (docs.has(name)) return text(409, 'live documents cannot be purged')
+      if (!(await listDocs()).includes(name)) return text(404, 'stored document not found')
+      await clearDoc(name)
+      audit({ event: 'document_purged', login: st.login, id: st.id, provider: st.provider, room: name, reason: found.kind })
+      console.log(`admin purge: ${st.login} ${JSON.stringify(name)} ${found.kind}`)
+      json(200, { purged: name })
+    })
+  })
 
   // ---- rooms ----
   if (url.pathname === '/rooms' && req.method === 'GET') {
@@ -703,28 +755,34 @@ const server = http.createServer((req, res) => {
     if (!v.ok) return text(v.status, v.why)
     const c = creds(o)
     const principal = workPrincipal(auth.resolve(c.session), !!c.token, clientIp(req))
-    const slot = exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
+    const slot = exportsInFlight.reserve(principal, 0)
     if (!slot) { res.setHeader('Retry-After', '5'); return text(429, 'archive export busy; retry') }
-    let update: Uint8Array | undefined
     try {
-      const live = docs.get(name)
-      const doc = live ?? await loadArchiveDoc(name)
-      try { if (!cancellation.cancelled()) update = Y.encodeStateAsUpdate(doc) }
-      finally { if (!live) doc.destroy() }
-      if (cancellation.cancelled() || !update) return
-      if (!slot.resize(update.byteLength) || !responseWork?.resize(update.byteLength)) return text(503, 'server output budget exhausted; retry')
-      if (cancellation.cancelled()) return
-      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
-      for (let at = 0; at < update.byteLength && !cancellation.cancelled(); at += EXPORT_CHUNK_BYTES) {
-        if (!res.write(update.subarray(at, at + EXPORT_CHUNK_BYTES))) {
-          await waitForDrain(res, cancellation.signal)
+      const p = provider(), live = docs.get(name)
+      const updates = async function* () {
+        if (!live && isLevelProvider(p)) yield* levelStoredUpdates(await levelDbOf(p), name)
+        else {
+          yield live ? Y.encodeStateAsUpdate(live) : memoryDocs.get(name) ?? new Uint8Array([0, 0])
+        }
+      }
+      for await (const update of updates()) {
+        if (cancellation.cancelled()) return
+        if (update.byteLength > MAX_MESSAGE_BYTES) throw new HttpFailure(507, 'stored archive update too large to export')
+        const bytes = update.byteLength + 4 + res.writableLength
+        if (!slot.resize(bytes) || !responseWork?.resize(bytes)) throw new HttpFailure(503, 'server output budget exhausted; retry')
+        if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/vnd.room.updates' })
+        const header = Buffer.alloc(4); header.writeUInt32BE(update.byteLength)
+        if (!res.write(header)) await waitForDrain(res, cancellation.signal)
+        for (let at = 0; at < update.byteLength && !cancellation.cancelled(); at += EXPORT_CHUNK_BYTES) {
+          if (!res.write(update.subarray(at, at + EXPORT_CHUNK_BYTES))) await waitForDrain(res, cancellation.signal)
         }
       }
       if (!cancellation.cancelled()) {
+        if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/vnd.room.updates' })
         res.end()
         await waitForResponse(res)
       }
-    } finally { update = undefined; slot.release() }
+    } finally { slot.release() }
     } finally { cancellation.dispose() }
   })
 
@@ -938,6 +996,8 @@ server.on('upgrade', (req, socket, head) => {
       }
       // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
       // Holding the repo lock also makes the socket visible to migration's freeze step.
+      if (!docs.has(docKey) && (await storedSize(docKey, Math.max(LOAD_MAX_BYTES, DOC_MAX_BYTES))).over)
+        return refuse(socket, 507, 'room document too large to load', roomName)
       await hubs.flush(getYDoc(docKey, true))
       if (abandoned()) return
       // Test-only suspension makes the logout/expiry interval reproducible in a child server.

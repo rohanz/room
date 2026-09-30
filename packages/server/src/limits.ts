@@ -1,3 +1,6 @@
+// Stored bytes can expand several times in a Y.Doc; bound every cold load before decoding.
+const loadMb = Number(process.env.ROOM_LOAD_MAX_MB ?? 32)
+export const LOAD_MAX_BYTES = (Number.isFinite(loadMb) && loadMb > 0 ? loadMb : 32) * 1048576
 // Bounds unauthenticated buffering while allowing login, room and view-key JSON requests.
 export const MAX_BODY_BYTES = 64 * 1024
 // Frees slow body readers after ten seconds, enough for small control requests to arrive.

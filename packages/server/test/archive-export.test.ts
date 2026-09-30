@@ -65,30 +65,33 @@ it('holds one principal slot for a stalled client, then releases it on deadline'
   if (!raw.destroyed) await new Promise<void>(resolve => raw.once('close', () => resolve()))
   const later = await post('/archive/export', { room: archive, schema: 2, session })
   expect(later.status).toBe(200)
-  await later.arrayBuffer()
+  expect(later.headers.get('content-type')).toBe('application/vnd.room.updates')
+  const framed = Buffer.from(await later.arrayBuffer()), doc = new Y.Doc()
+  for (let at = 0; at < framed.length;) { const length = framed.readUInt32BE(at); at += 4; Y.applyUpdate(doc, framed.subarray(at, at + length)); at += length }
+  expect(doc.getText('padding').length).toBe(8 * 1024 * 1024); doc.destroy()
 }, 15_000)
 
-it('keeps export slots after clients disconnect during storage loading', async () => {
+it('holds streaming slots for stalled readers and releases them on disconnect', async () => {
   const sessions: string[] = []
   for (const login of ['archiver-a', 'archiver-b', 'archiver-c']) {
     const started = await (await post('/auth/device', {})).json() as { device: string }
     sessions.push(((await (await post('/auth/poll', { device: started.device, fakeLogin: login })).json()) as { session: string }).session)
   }
-  const raw = sessions.slice(0, 2).map(session => {
-    const body = JSON.stringify({ room: archive, schema: 2, session })
-    const socket = net.connect(port, '127.0.0.1')
-    socket.on('error', () => {})
-    socket.once('connect', () => socket.write(`POST /archive/export HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`))
-    return socket
-  })
-  await new Promise(resolve => setTimeout(resolve, 150))
-  raw.forEach(socket => socket.destroy())
-  const busy = await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })
-  expect(busy.status).toBe(429)
-  await new Promise(resolve => setTimeout(resolve, 800))
-  const later = await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })
-  expect(later.status).toBe(200)
-  await later.arrayBuffer()
+  const raw = sessions.slice(0, 2).map(() => net.connect(port, '127.0.0.1'))
+  try {
+    await Promise.all(raw.map((socket, i) => new Promise<void>((resolve, reject) => {
+      const body = JSON.stringify({ room: archive, schema: 2, session: sessions[i] })
+      socket.once('error', reject)
+      socket.once('data', () => { socket.pause(); resolve() })
+      socket.write(`POST /archive/export HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
+    })))
+    expect((await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })).status).toBe(429)
+    raw.forEach(socket => socket.destroy())
+    await new Promise(resolve => setTimeout(resolve, 150))
+    const later = await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })
+    expect(later.status).toBe(200)
+    await later.arrayBuffer()
+  } finally { raw.forEach(socket => socket.destroy()) }
 }, 15_000)
 
 it('coalesces concurrent archive listings into one canonical load', async () => {

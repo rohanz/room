@@ -6,6 +6,7 @@
   ],
   "workspaces": {
     ".": {
+      "ignoreDependencies": ["y-leveldb"],
       "entry": [
         "scripts/*.{mjs,mts}",
         "plugins/room/hooks/*.{mjs,mts}",

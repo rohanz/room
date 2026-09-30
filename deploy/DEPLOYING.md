@@ -47,6 +47,19 @@ fly volumes snapshots list <volume id> -a room-rohanz
 pg_dump "$DATABASE_URL" --format=custom --file=room-registry-pre-017.dump
 ```
 
+**Inventory pre-flight, still before deploying:** restore that snapshot onto a staging volume/machine with the Room server stopped, or copy its LevelDB directory to an operator machine. Run `npm ci` in a 0.17 development checkout and run the script against the restored/copied directory:
+
+```sh
+npx tsx scripts/room-inventory.mts <snapshot directory> --budget-mb 32
+# If DATABASE_URL supplies the registry, export it at the snapshot's stopped-server point:
+psql "$DATABASE_URL" -Atc "SELECT COALESCE(jsonb_object_agg(repo, data), '{}'::jsonb) FROM room_repos" > rooms-pre-017.json
+npx tsx scripts/room-inventory.mts <snapshot directory> --registry rooms-pre-017.json --budget-mb 32
+```
+
+The root `Dockerfile` does not ship `scripts/` or the server's development dependency `y-leveldb`; the command runs in a development checkout, not the server image. A staging machine needs that checkout and its dependencies, or transfer the snapshot directory out first. Keep the matching exported registry with the snapshot; default registry is `<directory>/rooms.json`.
+
+The script copies LevelDB files to disposable scratch beside the source (needs free space equal to the database), leaving source files unchanged. `--scratch <new directory>` overrides its location. A hard-linked `LOCK` refuses a running server on the same filesystem; if another filesystem prevents the check, it warns and the operator must ensure the source server is stopped. `--json` emits structured output. Exit **0** is clean, **2** means flagged documents to review, **1** is an error. The [upgrade guide](../docs/upgrading.md) explains each kind and includes fixture output. Match the budget to `ROOM_LOAD_MAX_MB` (default 32 MB stored per document). Never-served/unregistered keys stay in place without loading; oversized served keys remain exportable archives. Check `migration quarantine:` logs and `GET /admin/inventory` after cutover.
+
 Deploy 0.17 using the command in [Deploy](#deploy), then update all clients together using [the upgrade guide](../docs/upgrading.md). A **0.16 server cannot safely serve a volume migrated by 0.17**. Putting the 0.16 image back on the migrated volume is not a rollback; legacy Markdown exports are not a rollback image.
 
 **Rollback:** stop the 0.17 machine. Restore the pre-upgrade snapshot to a new `room_data` volume at least as large as the original (1 GB here), in `sin`. If `DATABASE_URL` was used, restore the matching pre-upgrade `pg_dump` while the server is stopped. Attach the restored volume at `/data` to a new machine, retire the old machine, then deploy the **0.16.40 image**. Alternatively, use Fly's scale command to create a machine and new volume from the snapshot. Reinstall 0.16.40 clients on Claude Code and Codex with the commands in [the upgrade guide](../docs/upgrading.md#roll-back-the-cutover), and restart their sessions. Check rooms and logins before destroying the old volume; destruction is permanent and has no undo.
@@ -86,7 +99,7 @@ Environment in `deploy/fly.toml`: `PORT=8080`, `YPERSISTENCE=/data` (volume `roo
 per-address rate limits (login starts, websocket upgrades) would count every user as one address.
 Any other Fly app running this image (staging) needs the same line.
 Optional tuning, all with defaults in `.env.example`: `ROOM_IDLE_DAYS`, `ROOM_DOC_MAX_MB`,
-`ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
+`ROOM_LOAD_MAX_MB` (32 MB stored per loaded document), `ROOM_MAX_MESSAGE_MB`, `ROOM_SHARE_MAX`, `ROOM_ADMINS`, OIDC variables. The member identity guard
 is observe-only unless `ROOM_IDENTITY_GUARD` is literally `enforce`: objected updates are applied
 unchanged and their logs and `identity_violation` audits are limited to once per login per minute.
 `enforce` is experimental because rejecting a causal update can desynchronise that client.
@@ -117,6 +130,20 @@ Both calls need `"schema":2` and the repository name without a branch: a request
 client's and is refused with the upgrade text, and a branch-qualified GitHub name is a 400.
 
 Repos idle for `ROOM_IDLE_DAYS` (30) close themselves.
+
+## Purging quarantined documents
+
+Only identities in `ROOM_ADMINS` can read `GET /admin/inventory` or call `POST /admin/purge`, using their own Room session as with `GET /audit`. Use the verified GitHub login or the full OIDC identity (`oidc:<issuer-host>:<sub>`), not an OIDC display name or email.
+
+```sh
+curl -sS https://room-rohanz.fly.dev/admin/inventory -H 'Authorization: Bearer <admin session>'
+# Only after exporting anything needed and reviewing the exact stored name:
+curl -sS -X POST https://room-rohanz.fly.dev/admin/purge \
+  -H 'Authorization: Bearer <admin session>' -H 'content-type: application/json' \
+  -d '{"name":"github.com%2Frohanz%2Froom%2Fenterprise","confirm":"github.com%2Frohanz%2Froom%2Fenterprise"}'
+```
+
+Purging is an explicit destructive admin action, never automatic. The `confirm` field must equal `name` exactly. Only `never-served` or `unregistered` documents can be purged; being over budget alone does not make a served document eligible. Export any needed archives with `room_export` before deleting data, and retain the pre-upgrade snapshot for quarantined keys that have no exportable registry owner.
 
 ## Logs, status, incidents
 

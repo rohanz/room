@@ -29,13 +29,14 @@ export interface OpenRepo {
   by?: string; at: number; branches: string[]; lastSeen?: number
   mode?: 'branch' | 'repo'; legacy?: string[]; plan?: MigrationPlan
   step?: 'planned' | 'frozen' | 'moved' | 'written'; migratedAt?: number; unresolved?: number
+  quarantined?: { name: string; bytes: number; over: boolean; reason: string }[]
   migrationSkippedSources?: number; migrationSkippedRecords?: number; migrationSkippedRecordCountsUnknown?: number
 }
 /** `login` is the display name (GitHub login, verified email or preferred_username). `id` is the
  *  namespaced identity used for admission and admin checks: `oidc:<issuer-host>:<sub>` for OIDC
  *  sessions; absent (same as the login) for GitHub sessions and sessions written before it existed. */
 export interface StoredSession { login: string; id?: string; provider: 'github' | 'oidc'; ghToken?: string; at: number }
-type AuditEvent = 'login' | 'logout' | 'room_opened' | 'room_closed' | 'join' | 'refused' | 'identity_violation'
+type AuditEvent = 'login' | 'logout' | 'room_opened' | 'room_closed' | 'join' | 'refused' | 'identity_violation' | 'document_purged'
 export interface AuditEntry { at: number; event: AuditEvent; login?: string; id?: string; provider?: string; room?: string; reason?: string; readOnly?: boolean }
 
 /** Most in-memory audit entries kept when there is no audit file: oldest are dropped past this. */

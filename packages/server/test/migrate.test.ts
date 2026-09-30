@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc, type Msg } from '@room/shared'
 import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry, type MigrationIO } from '../src/migrate.js'
@@ -23,6 +23,8 @@ function fixture(failAfter?: string) {
   let crashed = false
   const io: MigrationIO = {
     list: async () => [...docs.keys()],
+    stored: async (name, limit) => ({ bytes: docs.get(name)?.byteLength ?? 0, updates: docs.has(name) ? 1 : 0, over: (docs.get(name)?.byteLength ?? 0) > limit }),
+    copyRaw: async (from, to) => { docs.set(to, docs.get(from)!) },
     load: async name => { const doc = new Y.Doc(); const update = docs.get(name); if (update) Y.applyUpdate(doc, update); return doc },
     write: async (name, update) => { const before = docs.get(name); docs.set(name, before ? Y.mergeUpdates([before, update]) : update) },
     clear: async name => { docs.delete(name) },
@@ -99,7 +101,7 @@ describe('migrateRepo', () => {
     const f = fixture()
     const loaded: string[] = []
     const load = f.io.load
-    f.io.size = async name => name === two ? 10_000 : f.docs.get(name)?.byteLength
+    f.io.stored = async (name, limit) => { const bytes = name === two ? 10_000 : f.docs.get(name)?.byteLength ?? 0; return { bytes, updates: 1, over: bytes > limit } }
     f.io.load = async name => { loaded.push(name); return load(name) }
     f.io.maxReadBytes = 1000
     let timerFired = false
@@ -117,7 +119,6 @@ describe('migrateRepo', () => {
     }
     let builds = 0, reads = 0, yielded = false
     f.io.onBuild = () => { builds++ }
-    f.io.size = async name => f.docs.get(name)?.byteLength
     const load = f.io.load
     f.io.load = async name => { reads += f.docs.get(name)?.byteLength ?? 0; return load(name) }
     f.io.maxReadBytes = 20_000
@@ -233,17 +234,16 @@ function canonicalFixture() {
 
 it.each(['known-size', 'measured-size', 'load-error', 'size-error'])('canonical inspection %s failure persists nothing; larger-budget retry archives and translates identities', async failure => {
   const f = canonicalFixture(), before = structuredClone(f.entry), saved: OpenRepo[] = []
-  const save = f.io.save, load = f.io.load
+  const save = f.io.save, load = f.io.load, stored = f.io.stored
   f.io.save = async () => { saved.push(structuredClone(f.entry)); await save() }
   f.io.maxReadBytes = failure.includes('size') ? 10 : 100_000
-  if (failure === 'known-size') f.io.size = async name => f.docs.get(name)?.byteLength
-  if (failure === 'size-error') f.io.size = async () => { throw Error('size unavailable') }
+  if (failure === 'size-error') f.io.stored = async () => { throw Error('size unavailable') }
   if (failure === 'load-error') f.io.load = async name => { if (name === repo) throw Error('unreadable'); return load(name) }
   await expect(migrateRepo(repo, f.entry, f.io)).rejects.toThrow('room migration could not read the existing room within ROOM_MIGRATION_MAX_READ_MB; raise it and retry')
   expect(saved).toEqual([])
   expect(f.entry).toEqual(before)
   expect([...f.docs.keys()]).toEqual([repo, two])
-  f.io.maxReadBytes = 100_000; f.io.load = load; f.io.size = undefined
+  f.io.maxReadBytes = 100_000; f.io.load = load; f.io.stored = stored
   await migrateRepo(repo, f.entry, f.io)
   const moved = f.entry.plan!.moved!
   expect(f.docs.has(moved)).toBe(true)
@@ -280,4 +280,60 @@ it('cannot advance the mandatory canonical archive move when its budget is insuf
   await migrateRepo(repo, f.entry, f.io)
   expect(f.docs.has(f.entry.plan.moved!)).toBe(true)
   expect(f.entry.unresolved).toBe(2)
+})
+
+
+describe('stored load containment', () => {
+  const encoded = 'github.com%2Fo%2Fr%2Fenterprise'
+  it('excludes never-served keys and records their quarantine without loading', async () => {
+    const f = fixture()
+    f.docs.set(encoded, f.docs.get(one)!)
+    f.entry.branches.push(encoded)
+    const load = vi.spyOn(f.io, 'load')
+    await migrateRepo(repo, f.entry, f.io)
+    expect(f.entry.legacy).not.toContain(encoded)
+    expect(f.entry.plan?.sources).not.toContain(encoded)
+    expect(f.entry.quarantined).toContainEqual(expect.objectContaining({ name: encoded, reason: expect.stringContaining('encoded') }))
+    expect(load.mock.calls.flat()).not.toContain(encoded)
+    expect(f.docs.has(encoded)).toBe(true)
+  })
+  it('skips oversized served sources before load and keeps them exportable', async () => {
+    const f = fixture()
+    f.io.stored = async (name, limit) => ({ bytes: name === two ? 40 * 1048576 : f.docs.get(name)?.byteLength ?? 0, updates: 1, over: name === two || (f.docs.get(name)?.byteLength ?? 0) > limit })
+    const load = vi.spyOn(f.io, 'load')
+    await migrateRepo(repo, f.entry, f.io)
+    expect(load.mock.calls.flat()).not.toContain(two)
+    expect(f.entry.legacy).toContain(two)
+    expect(f.entry.migrationSkippedRecordCountsUnknown).toBeGreaterThan(0)
+    expect(f.entry.quarantined).toContainEqual(expect.objectContaining({ name: two, over: true }))
+  })
+  it('completes a moved replay with an oversized never-served key in the persisted plan', async () => {
+    const f = fixture()
+    f.entry.mode = 'repo'; f.entry.step = 'moved'
+    f.entry.plan = { id: 'replay', sources: [one, two, encoded] }; f.entry.legacy = [one, two, encoded]
+    f.docs.set(encoded, f.docs.get(one)!)
+    f.io.load = async name => { if (name === encoded) throw Error('must never load'); const doc = new Y.Doc(); if (f.docs.has(name)) Y.applyUpdate(doc, f.docs.get(name)!); return doc }
+    await migrateRepo(repo, f.entry, f.io)
+    expect(f.entry.migratedAt).toBe(100)
+    expect(f.entry.legacy).not.toContain(encoded)
+    expect(safeRoomRegistry({ [repo]: { ...f.entry, legacy: [encoded], plan: { id: 'x', sources: [encoded] } } })[repo].legacy).toEqual([])
+  })
+})
+
+
+it('raw-copies an oversized canonical legacy document without decoding it', async () => {
+  const f = fixture()
+  f.docs.set(repo, f.docs.get(one)!)
+  f.io.stored = async (name, limit) => {
+    const bytes = f.docs.has(name) && (name === repo || name.startsWith('archive:')) ? 40 * 1048576 : f.docs.get(name)?.byteLength ?? 0
+    return { bytes, updates: 1, over: bytes > limit }
+  }
+  const load = vi.spyOn(f.io, 'load'), copy = vi.spyOn(f.io, 'copyRaw')
+  await migrateRepo(repo, f.entry, f.io)
+  const moved = f.entry.plan!.moved!
+  expect(copy).toHaveBeenCalledWith(repo, moved)
+  expect(load.mock.calls.filter(([name]) => name === repo)).toHaveLength(1) // fresh canonical, after raw move
+  expect(f.entry.legacy).toContain(moved)
+  expect(f.docs.has(moved)).toBe(true)
+  expect(f.entry.migratedAt).toBe(100)
 })

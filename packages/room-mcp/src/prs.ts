@@ -130,6 +130,34 @@ export function exportRoomLedger(s: Session, opts: { path?: string; now?: number
   return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
 }
 
+/** Decode length-prefixed updates incrementally; bound a malicious frame before allocation. */
+async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> | null): Promise<void> {
+  if (!body) throw new Error('archive frame stream missing')
+  const reader = body.getReader(), header = new Uint8Array(4)
+  let headerAt = 0, update: Uint8Array | undefined, updateAt = 0, complete = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      for (let at = 0; at < value.byteLength;) {
+        if (!update) {
+          const count = Math.min(4 - headerAt, value.byteLength - at)
+          header.set(value.subarray(at, at + count), headerAt); headerAt += count; at += count
+          if (headerAt < 4) continue
+          const length = new DataView(header.buffer).getUint32(0)
+          if (!length || length > 64 * 1048576) throw new Error('archive frame too large or empty')
+          update = new Uint8Array(length); updateAt = 0; headerAt = 0
+        }
+        const count = Math.min(update.byteLength - updateAt, value.byteLength - at)
+        update.set(value.subarray(at, at + count), updateAt); updateAt += count; at += count
+        if (updateAt === update.byteLength) { Y.applyUpdate(doc, update); update = undefined }
+      }
+    }
+    if (headerAt || update) throw new Error('truncated archive frame')
+    complete = true
+  } finally { if (!complete) await reader.cancel().catch(() => {}); reader.releaseLock() }
+}
+
 /** Authenticate as a repo member and render the frozen branch-room archive in a scratch document. */
 export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: { path?: string; now?: number } = {}): Promise<{ path: string; lines: number }> {
   if (s.local) throw new Error('local legacy snapshots are kept on this machine; archive export requires a team server')
@@ -139,7 +167,8 @@ export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: 
   if (!res.ok) throw new Error(`archive ${legacyRoom} unavailable: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
   const doc = new Y.Doc()
   try {
-    Y.applyUpdate(doc, new Uint8Array(await res.arrayBuffer()))
+    if (res.headers.get('content-type')?.split(';')[0] === 'application/vnd.room.updates') await applyArchiveFrames(doc, res.body)
+    else Y.applyUpdate(doc, new Uint8Array(await res.arrayBuffer()))
     const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
     const outputPath = opts.path ? path.resolve(s.dir, opts.path)
       : path.join(s.dir, '.room', 'ledger', `${legacyRoom.replaceAll('/', '_')}-${timestamp}.md`)
