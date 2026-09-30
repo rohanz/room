@@ -28,15 +28,20 @@ async function fixture() {
   for (const update of updates) await provider.storeUpdate('from', update)
   return { provider, db: await levelDbOf(provider), doc, updates }
 }
-it('replaces snapshots with a matching discovery vector, preserving content across interrupted clear and replay', async () => {
+it('replaces snapshots atomically with a matching discovery vector: an interrupted write changes nothing', async () => {
   const f = await fixture(), snapshot = Y.encodeStateAsUpdate(f.doc)
-  const clear = vi.spyOn(f.db, 'clear').mockRejectedValueOnce(new Error('interrupted clear'))
-  await expect(levelReplace(f.provider, 'from', snapshot)).rejects.toThrow('interrupted clear')
-  expect((await levelStoredSize(f.db, 'from')).updates).toBe(f.updates.length + 1)
+  const before = await levelStoredSize(f.db, 'from')
+  const batch = vi.spyOn(f.db, 'batch').mockRejectedValueOnce(new Error('interrupted batch'))
+  await expect(levelReplace(f.provider, 'from', snapshot)).rejects.toThrow('interrupted batch')
+  // Nothing was published: a crash cannot leave the snapshot beside the records it covers.
+  expect(await levelStoredSize(f.db, 'from')).toEqual(before)
   let loaded = await f.provider.getYDoc('from')
   expect(Y.encodeStateAsUpdate(loaded)).toEqual(snapshot); loaded.destroy()
   expect(await f.provider.getAllDocNames()).toContain('from')
+  batch.mockClear()
+  const clear = vi.spyOn(f.db, 'clear')
   await levelReplace(f.provider, 'from', snapshot)
+  expect(batch).toHaveBeenCalledTimes(1); expect(clear).not.toHaveBeenCalled()
   expect(await levelStoredSize(f.db, 'from')).toEqual({ bytes: snapshot.byteLength, updates: 1, over: false })
   expect(await f.provider.getStateVector('from')).toEqual(Y.encodeStateVectorFromUpdate(snapshot))
   loaded = await f.provider.getYDoc('from')

@@ -19,8 +19,7 @@ export interface LevelDb {
   db?: { db?: { getProperty?(name: string): string } }
   createReadStream(opts: { gte: Key; lt: Key; keys: boolean; values: boolean; limit?: number; highWaterMark?: number }): ReadStream
   get(key: Key): Promise<Uint8Array>
-  clear(opts: { gte: Key; lt: Key }): Promise<unknown>
-  batch(ops: { type: 'put'; key: Key; value: Uint8Array }[]): Promise<unknown>
+  batch(ops: ({ type: 'put'; key: Key; value: Uint8Array } | { type: 'del'; key: Key })[]): Promise<unknown>
 }
 /** y-leveldb's LeveldbPersistence exposes its db only through `_transact`. */
 export interface LevelProvider { _transact<T>(f: (db: LevelDb) => Promise<T>): Promise<T> }
@@ -41,9 +40,16 @@ export async function levelReplace(provider: LevelProvider, name: string, snapsh
       const vector = encoding.createEncoder()
       encoding.writeVarUint(vector, clock)
       encoding.writeVarUint8Array(vector, Y.encodeStateVectorFromUpdate(snapshot))
-      await db.batch([{ type: 'put', key: ['v1', name, 'update', clock], value: Buffer.from(snapshot) },
+      // One atomic batch: a crash leaves either the old records or the snapshot alone, never both.
+      // The caller holds this document loaded, so listing its keys is bounded by the size guard.
+      const covered = await new Promise<Key[]>((resolve, reject) => {
+        const keys: Key[] = []
+        db.createReadStream({ gte: updateRange(name).gte, lt: ['v1', name, 'update', clock], keys: true, values: false })
+          .on('data', key => { keys.push(key as Key) }).on('error', reject).on('end', () => resolve(keys))
+      })
+      await db.batch([...covered.map(key => ({ type: 'del' as const, key })),
+        { type: 'put', key: ['v1', name, 'update', clock], value: Buffer.from(snapshot) },
         { type: 'put', key: ['v1_sv', name], value: Buffer.from(encoding.toUint8Array(vector)) }])
-      await db.clear({ gte: updateRange(name).gte, lt: ['v1', name, 'update', clock] })
     } catch (error) { return { error } }
   })
   if (result) throw result.error

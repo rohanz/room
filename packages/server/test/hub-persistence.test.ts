@@ -229,3 +229,22 @@ it.each(['cold', 'burst', 'incremental'])('bounds stored snapshots through repea
     expect(replace.mock.calls.length).toBeGreaterThan(kind === 'incremental' ? 1 : 20)
   } finally { live?.destroy(); await provider.destroy(); await fs.rm(dir, { recursive: true, force: true }) }
 }, 30_000)
+
+it('treats a y-leveldb append whose error was swallowed (null result) as a storage failure', async () => {
+  let swallow = false
+  const provider: PersistenceProvider = {
+    getYDoc: async () => new Y.Doc(),
+    // y-leveldb's _transact catches the callback's error and resolves null instead of the new clock.
+    storeUpdate: async () => swallow ? null : 1,
+  }
+  const hubs = new ServerHubs({ store: { advance: async floor => floor }, log: () => {}, full: () => false })
+  const persistence = hubs.persistence(provider), doc = new Y.Doc()
+  await persistence.bindState('room', doc)
+  await hubs.flush(doc)
+  swallow = true
+  doc.getMap('scopes').set('late', { summary: 'must be retried' })
+  await vi.waitFor(() => expect(hubs.storageFailure('room')).toBeTruthy())
+  swallow = false
+  await vi.waitFor(() => expect(hubs.storageFailure('room')).toBeUndefined(), { timeout: 2_000 })
+  doc.destroy()
+})

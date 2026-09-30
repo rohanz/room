@@ -369,12 +369,19 @@ async function expireIdle() {
       await locks.run(repo, async () => {
         const current = rooms.get(repo)
         if (!current?.legacy?.length || !current.migratedAt) return
+        // A live room's hub persists the edit itself; a cold one is drained, then replaced, never appended to.
         const live = docs.get(repo)
+        if (!live) await hubs.flushName(repo)
         const doc = await loadDoc(repo)
         try {
           for (const name of migrationSources(repo, current, current.legacy, new Set(rooms.keys()))) await clearDoc(name)
-          doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
-          await writeDoc(repo, Y.encodeStateAsUpdate(doc))
+          if (doc.getMap('unresolved').size) {
+            doc.transact(() => doc.getMap('unresolved').clear(), HUB_ORIGIN)
+            if (!live) {
+              const p = provider()!, snapshot = Y.encodeStateAsUpdate(doc)
+              await (p.replace ? p.replace(repo, snapshot) : writeDoc(repo, snapshot))
+            }
+          }
         } finally { if (!live) doc.destroy() }
         current.legacy = []; current.unresolved = 0
         await saveRooms()

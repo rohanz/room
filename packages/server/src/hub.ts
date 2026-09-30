@@ -156,7 +156,8 @@ export class ServerHubs {
             await state.provider.replace(name, update)
             state.appendedBytes = 0; state.snapshotBytes = update.byteLength
           } else {
-            await state.provider.storeUpdate(name, update)
+            // y-leveldb's _transact swallows the write's error and resolves null instead of the clock.
+            if (await state.provider.storeUpdate(name, update) === null) throw new Error('document write failed')
             state.appendedBytes += update.byteLength
           }
           if (state.error) {
