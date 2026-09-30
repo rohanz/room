@@ -1,3 +1,4 @@
+import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS } from './limits.js'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
@@ -65,7 +66,6 @@ export class MigrationReadFailure extends Error {
   constructor() { super('room migration could not read the existing room within ROOM_MIGRATION_MAX_READ_MB; raise it and retry') }
 }
 
-const MAX_REBUILDS = Math.min(8, Math.max(1, Number(process.env.ROOM_MIGRATION_MAX_REBUILDS ?? 4) || 4))
 const nextTurn = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 /** The caller holds repoLock. A persisted plan makes every replay use the same sources and archive key. */
@@ -147,7 +147,6 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
   if (entry.step === 'moved') {
     const maxTargetBytes = io.maxTargetBytes ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
     const maxSources = io.maxSources ?? Number(process.env.ROOM_MIGRATION_MAX_SOURCES ?? 1000)
-    const maxRecordBytes = Number(process.env.ROOM_MIGRATION_MAX_RECORD_KB ?? 64) * 1024
     const candidates = plan.sources.slice(0, maxSources)
     let skippedSources = plan.sources.length - candidates.length, skippedRecords = 0
     let unknownCounts = skippedSources
@@ -159,7 +158,7 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     const sources: Records[] = []
     const valid = (value: unknown, fields: string[]): boolean => {
       if (!value || typeof value !== 'object' || fields.some(f => typeof (value as Record<string, unknown>)[f] !== 'string')) return false
-      try { return Buffer.byteLength(JSON.stringify(value)) <= maxRecordBytes } catch { return false }
+      try { return Buffer.byteLength(JSON.stringify(value)) <= MIGRATION_MAX_RECORD_BYTES } catch { return false }
     }
     for (const [index, name] of candidates.entries()) {
       if (workBytes >= maxReadBytes || workRecords >= maxRecords) { skippedSources += candidates.length - index; unknownCounts += candidates.length - index; break }
@@ -242,7 +241,7 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     skippedRecords += sources.filter(source => !included.includes(source)).reduce((n, source) => n + source.scopes.length + source.claims.length + source.messages.length, 0)
     await nextTurn()
     let result = makeTarget(included)
-    for (let pass = 0; result.update.byteLength > maxTargetBytes && included.length && pass < MAX_REBUILDS; pass++) {
+    for (let pass = 0; result.update.byteLength > maxTargetBytes && included.length && pass < MIGRATION_MAX_REBUILDS; pass++) {
       result.target.doc.destroy()
       const kept = included.slice(0, Math.floor(included.length / 2))
       const dropped = included.slice(kept.length)

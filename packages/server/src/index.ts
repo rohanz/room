@@ -49,6 +49,13 @@ import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
+import {
+  MAX_BODY_BYTES, BODY_TIMEOUT_MS, PR_NOTE_MAX_BYTES, AWARENESS_MAX_MESSAGE_BYTES, AWARENESS_MAX_STATE_BYTES,
+  AWARENESS_MAX_IDS_PER_CONNECTION, VIEW_MAX_PER_PRINCIPAL, VIEW_ISSUE_PER_HOUR, MAX_EXPORTS_PER_PRINCIPAL,
+  EXPORT_CHUNK_BYTES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, HTTP_RESPONSE_DEADLINE_MS, LISTS_PER_MINUTE,
+  MAX_PR_NOTES_PER_PRINCIPAL, MAX_PR_LISTS_PER_PRINCIPAL, PR_OPERATIONS_PER_MINUTE, limits,
+} from './limits.js'
+
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
 const TOKEN = process.env.ROOM_TOKEN?.trim() || undefined
@@ -72,8 +79,7 @@ if (oidcIssuer && !(process.env.OIDC_CLIENT_ID && process.env.OIDC_CLIENT_SECRET
 const store = storeFromEnv()
 const clientId = process.env.GITHUB_CLIENT_ID?.trim() || undefined
 if (clientId === FAKE_CLIENT_ID && process.env.NODE_ENV === 'production') { console.error(`GITHUB_CLIENT_ID=${FAKE_CLIENT_ID} is the test issuer; it cannot run with NODE_ENV=production`); process.exit(1) }
-const ticketTtlSetting = Number(process.env.ROOM_WS_TICKET_TTL_MS ?? 60_000)
-const credentialSockets = new CredentialSockets(Date.now, 10000, Number.isFinite(ticketTtlSetting) ? Math.max(1, Math.min(60_000, ticketTtlSetting)) : 60_000)
+const credentialSockets = new CredentialSockets(Date.now, 10000, limits.WS_TICKET_TTL_MS)
 const auth = new Auth({
   clientId,
   oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
@@ -96,7 +102,6 @@ const github = new GitHubProxy({ log: l => console.log(l) })
  *  room data so a redeploy does not invalidate links people already opened. */
 const viewTokens = new Map<string, { room: string; exp: number; issuer?: string }>()
 const VIEW_TTL = Number(process.env.ROOM_VIEW_TTL_MS ?? 7 * 24 * 60 * 60 * 1000)
-const VIEW_MAX_PER_PRINCIPAL = Number(process.env.ROOM_VIEW_MAX_PER_PRINCIPAL ?? 5)
 const VIEW_MAX_PER_ROOM = Number(process.env.ROOM_VIEW_MAX_PER_ROOM ?? 200)
 const VIEW_MAX_TOTAL = Number(process.env.ROOM_VIEW_MAX_TOTAL ?? 10000)
 const VIEW_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'view-tokens.json') : undefined
@@ -136,27 +141,19 @@ const MAX_QUEUED_BYTES = Number(process.env.ROOM_MAX_QUEUED_MB ?? Number(process
 const MAX_TOTAL_QUEUED_BYTES = Number(process.env.ROOM_MAX_TOTAL_QUEUED_MB ?? 256) * 1048576
 const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
 const MAX_EXPORTS = Number(process.env.ROOM_MAX_EXPORTS ?? 2)
-const EXPORT_DEADLINE_MS = Number(process.env.ROOM_EXPORT_DEADLINE_MS ?? 120_000)
-const EXPORT_CHUNK_BYTES = Number(process.env.ROOM_EXPORT_CHUNK_KB ?? 64) * 1024
 const DOC_MAX_RESERVATION_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
-const exportsInFlight = new WorkSlots(MAX_EXPORTS, Number(process.env.ROOM_MAX_EXPORTS_PER_PRINCIPAL ?? 1), outbound)
+const exportsInFlight = new WorkSlots(MAX_EXPORTS, MAX_EXPORTS_PER_PRINCIPAL, outbound)
 const MAX_PR_OPERATIONS = Number(process.env.ROOM_MAX_PR_OPERATIONS ?? 8)
-const MAX_PR_NOTES_PER_PRINCIPAL = Number(process.env.ROOM_MAX_PR_NOTES_PER_PRINCIPAL ?? 2)
-const MAX_PR_LISTS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_PR_LISTS_PER_PRINCIPAL ?? 4)
 const prOperations = new WorkSlots(MAX_PR_OPERATIONS, MAX_PR_LISTS_PER_PRINCIPAL, outbound)
-const PR_OPERATIONS_PER_MINUTE = Number(process.env.ROOM_PR_OPERATIONS_PER_MINUTE ?? 30)
 const prOperationRate = new RateLimit(PR_OPERATIONS_PER_MINUTE, 60_000)
 const MAX_HTTP_RESPONSES = Number(process.env.ROOM_MAX_HTTP_RESPONSES ?? 32)
-const MAX_HTTP_RESPONSES_PER_PRINCIPAL = Number(process.env.ROOM_MAX_HTTP_RESPONSES_PER_PRINCIPAL ?? 4)
-const HTTP_RESPONSE_DEADLINE_MS = Number(process.env.ROOM_HTTP_RESPONSE_DEADLINE_MS ?? 120_000)
 const MAX_ROOM_LISTS = Number(process.env.ROOM_MAX_ROOM_LISTS ?? 8)
 const MAX_ROOM_LISTS_PER_PRINCIPAL = 1
-const ROOM_LISTS_PER_MINUTE = Number(process.env.ROOM_LISTS_PER_MINUTE ?? 10)
 const archiveListSetting = Number(process.env.ROOM_ARCHIVE_LIST_MAX_KEYS ?? 1000)
 const ARCHIVE_LIST_MAX_KEYS = Number.isFinite(archiveListSetting) ? Math.min(1000, Math.max(0, Math.floor(archiveListSetting))) : 1000
 const httpResponses = new WorkSlots(MAX_HTTP_RESPONSES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, outbound)
 const roomListResponses = new WorkSlots(MAX_ROOM_LISTS, MAX_ROOM_LISTS_PER_PRINCIPAL, outbound)
-const roomListRate = new RateLimit(ROOM_LISTS_PER_MINUTE, 60_000)
+const roomListRate = new RateLimit(LISTS_PER_MINUTE, 60_000)
 const locks = new RepoLocks()
 let pendingRoomCreations = 0
 const canonical = (name: string, schema2 = false) => {
@@ -355,11 +352,10 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
   })
 }
 const str = (v: unknown): string | undefined => typeof v === 'string' && v ? v : undefined
-const readBody = bodyReader({ maxBytes: Number(process.env.ROOM_MAX_BODY_KB ?? 64) * 1024,
-  maxConcurrent: Number(process.env.ROOM_MAX_BODY_READS ?? 32), timeoutMs: Number(process.env.ROOM_BODY_TIMEOUT_MS ?? 10000) })
-/** A PR note carries a room's ledger, so its body may be larger (ROOM_MAX_PR_NOTE_MB, default 4), but only for a
+const readBody = bodyReader({ maxBytes: MAX_BODY_BYTES,
+  maxConcurrent: Number(process.env.ROOM_MAX_BODY_READS ?? 32), timeoutMs: BODY_TIMEOUT_MS })
+/** A PR note carries a room's ledger, so its body may be larger (fixed at 4 MiB), but only for a
  *  request whose Authorization header is a live session: nobody unauthenticated is read past the small limit. */
-const PR_NOTE_MAX_BYTES = Number(process.env.ROOM_MAX_PR_NOTE_MB ?? 4) * 1048576
 const authStartLimit = new RateLimit(10, 60_000)
 const authPollLimit = new RateLimit(120, 60_000)
 const authCallbackLimit = new RateLimit(30, 60_000)
@@ -367,7 +363,7 @@ const authCallbackLimit = new RateLimit(30, 60_000)
 const upgradeLimit = new RateLimit(600, 60_000)
 const failedAdmissionLimit = new RateLimit(30, 60_000)
 const ticketLimit = new RateLimit(60, 60_000)
-const viewIssueLimit = new RateLimit(Number(process.env.ROOM_VIEW_ISSUE_PER_HOUR ?? 20), 60 * 60_000)
+const viewIssueLimit = new RateLimit(VIEW_ISSUE_PER_HOUR, 60 * 60_000)
 setInterval(() => {
   credentialSockets.sweep()
   for (const [key, value] of viewTokens) if (value.exp <= Date.now()) { viewTokens.delete(key); credentialSockets.close({ kind: 'view', value: key }, 4403, 'view key expired') }
@@ -433,7 +429,7 @@ const server = http.createServer((req, res) => {
     const listing = url.pathname === '/rooms' && req.method === 'GET'
     const retry = listing ? roomListRate.check(principal) : 0
     responseWork = retry ? undefined : ResponseWork.reserve(listing ? roomListResponses : httpResponses, principal, res,
-      url.pathname.startsWith('/archive') ? Math.min(HTTP_RESPONSE_DEADLINE_MS, EXPORT_DEADLINE_MS) : HTTP_RESPONSE_DEADLINE_MS)
+      url.pathname.startsWith('/archive') ? Math.min(HTTP_RESPONSE_DEADLINE_MS, limits.EXPORT_DEADLINE_MS) : HTTP_RESPONSE_DEADLINE_MS)
     if (responseWork) return true
     res.writeHead(429, { 'Retry-After': String(retry || 5) }); res.end('room server busy; retry')
     return false
@@ -891,11 +887,8 @@ const identityLog = new Map<string, number>()
 const documentGuards = new Map<string, DocumentIdentityGuard>()
 const awarenessOwners = new Map<string, Map<number, string>>()
 const awarenessBudgets = new Map<string, AwarenessBudget>()
-const AWARENESS_MAX_MESSAGE_BYTES = Number(process.env.ROOM_AWARENESS_MAX_MESSAGE_KB ?? 64) * 1024
-const AWARENESS_MAX_STATE_BYTES = Number(process.env.ROOM_AWARENESS_MAX_STATE_KB ?? 16) * 1024
 // y-websocket clients send back every presence change they hear: a client in a room of 200 relays some 800 heartbeats a minute.
 const AWARENESS_MAX_MESSAGES_PER_MINUTE = Number(process.env.ROOM_AWARENESS_MESSAGES_PER_MINUTE ?? 6000)
-const AWARENESS_MAX_IDS_PER_CONNECTION = Number(process.env.ROOM_AWARENESS_IDS_PER_CONNECTION ?? 16)
 const AWARENESS_MAX_IDS_PER_ROOM = Number(process.env.ROOM_AWARENESS_IDS_PER_ROOM ?? 4096)
 function documentGuard(roomName: string): DocumentIdentityGuard {
   let guard = documentGuards.get(roomName)

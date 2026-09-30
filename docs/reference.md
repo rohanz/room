@@ -92,10 +92,11 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_TOKEN` | Shared server token for non-GitHub rooms. |
 | `ROOM_IDLE_DAYS`, `ROOM_LEGACY_DAYS` | Server cleanup thresholds; both default to 30 days. |
 | `ROOM_REVALIDATE_MINUTES` | Server GitHub push-permission recheck interval; default 10 minutes, `0` disables. |
-| `ROOM_WS_TICKET_TTL_MS` | Browser websocket ticket lifetime in milliseconds; default and maximum 60,000. |
 | `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, `ROOM_IDENTITY_GUARD` | Server size caps and experimental identity enforcement. |
-| `ROOM_TRUST_PROXY`, `ROOM_MAX_BODY_KB`, `ROOM_MAX_PR_NOTE_MB`, `ROOM_MAX_ROOMS`, `ROOM_MAX_CONNECTIONS` (and `_PER_ROOM`, `_PER_PRINCIPAL`), `ROOM_MAX_PENDING_LOGINS` | Server request, room and connection budgets; defaults and meanings in [self-hosting](../deploy/self-hosting.md). |
+| `ROOM_TRUST_PROXY`, `ROOM_MAX_BODY_READS`, `ROOM_MAX_ROOMS`, `ROOM_MAX_CONNECTIONS` (and `_PER_ROOM`, `_PER_PRINCIPAL`), `ROOM_MAX_PENDING_LOGINS` | Server request, room and connection budgets; defaults and meanings in [self-hosting](../deploy/self-hosting.md). |
 | `YPERSISTENCE` | Server state directory. |
+
+HTTP bodies are fixed at 64 KiB, or 4 MiB for a PR note authenticated by a live session, with a 10 s read deadline. Browser websocket tickets expire after a fixed 60 s. Other fixed presence, migration and per-identity limits are listed in [self-hosting](../deploy/self-hosting.md).
 
 ## Updating plugins
 

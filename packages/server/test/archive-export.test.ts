@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { LeveldbPersistence } from 'y-leveldb'
+import { MAX_HTTP_RESPONSES_PER_PRINCIPAL } from '../src/limits.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -35,7 +36,7 @@ beforeAll(async () => {
   })
   base = `http://127.0.0.1:${port}`
   const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '',
-    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_EXPORT_DEADLINE_MS: '3000', ROOM_MAX_HTTP_RESPONSES_PER_PRINCIPAL: '2', ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' })
+    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' }, { EXPORT_DEADLINE_MS: 3000 })
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error('export test server exited')
     try { if ((await fetch(`${base}/health`)).ok) return } catch { /* starting */ }
@@ -113,13 +114,13 @@ it('bounds coalesced listing waiters before load completion', async () => {
   const started = await (await post('/auth/device', {})).json() as { device: string }
   const session = ((await (await post('/auth/poll', { device: started.device, fakeLogin: 'archiver-bounded' })).json()) as { session: string }).session
   const url = `${base}/archive?repo=${encodeURIComponent(repo)}`, headers = { authorization: `Bearer ${session}` }
-  const a = fetch(url, { headers }), b = fetch(url, { headers })
+  const pending = Array.from({ length: MAX_HTTP_RESPONSES_PER_PRINCIPAL }, () => fetch(url, { headers }))
   await new Promise(resolve => setTimeout(resolve, 150))
   const excess = await fetch(url, { headers })
   expect(excess.status).toBe(429)
   expect(excess.headers.get('retry-after')).toBeTruthy()
-  const responses = await Promise.all([a, b])
-  expect(responses.map(r => r.status)).toEqual([200, 200])
+  const responses = await Promise.all(pending)
+  expect(responses.map(r => r.status)).toEqual(Array(MAX_HTTP_RESPONSES_PER_PRINCIPAL).fill(200))
   await Promise.all(responses.map(r => r.arrayBuffer()))
 }, 15_000)
 
@@ -127,7 +128,7 @@ it('ends stalled listing readers on the response deadline and releases their ide
   const started = await (await post('/auth/device', {})).json() as { device: string }
   const session = ((await (await post('/auth/poll', { device: started.device, fakeLogin: 'archiver-stalled-list' })).json()) as { session: string }).session
   const path = `/archive?repo=${encodeURIComponent(repo)}`
-  const sockets = Array.from({ length: 2 }, () => net.connect(port, '127.0.0.1'))
+  const sockets = Array.from({ length: MAX_HTTP_RESPONSES_PER_PRINCIPAL }, () => net.connect(port, '127.0.0.1'))
   await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => {
     socket.once('error', reject)
     socket.once('data', () => { socket.pause(); resolve() })

@@ -25,7 +25,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${port}`
   const logs: string[] = []
   const { YPERSISTENCE: _volume, ...inherited } = process.env // in-memory: an empty YPERSISTENCE is a path to LevelDB
-  const proc = servers.start({ env: { ...inherited, PORT: String(port), HOST: '127.0.0.1', ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_WS_TICKET_TTL_MS: '2000', ROOM_TEST_UPGRADE_DELAY_MS: '150', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = servers.start({ env: { ...inherited, PORT: String(port), HOST: '127.0.0.1', ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_TEST_UPGRADE_DELAY_MS: '150', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] }, { WS_TICKET_TTL_MS: 2000 })
   proc.stdout!.on('data', d => logs.push(String(d))); proc.stderr!.on('data', d => logs.push(String(d)))
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error(`server exited: ${logs.join('')}`)

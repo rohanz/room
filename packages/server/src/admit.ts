@@ -7,6 +7,7 @@
  *  - Other rooms (local/..., git/<host>/...) admit ROOM_TOKEN when one is set, any login session when
  *    the server has a login provider, and are open when it has neither.
  */
+import { GH_DENIAL_CACHE_MS } from './limits.js'
 import type { Auth, Provider } from './auth.js'
 import { githubRepoOf, roomNameOf } from './names.js'
 
@@ -26,8 +27,6 @@ export interface AdmitOptions {
   now?: () => number
 }
 
-/** Can the token push to the repo? Read access alone would make every public repo an open room. */
-const GH_DENIAL_CACHE_MS = Math.min(60_000, Math.max(0, Number(process.env.ROOM_GH_DENIAL_CACHE_MS ?? 60_000)))
 const GH_POSITIVE_CACHE_MS = 10 * 60 * 1000
 /** A throttled GitHub answer: no allowance left, a Retry-After, or a rate-limit message in the (bounded) body. */
 async function rateLimited(res: Response): Promise<boolean> {

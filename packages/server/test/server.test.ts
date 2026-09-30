@@ -13,6 +13,7 @@ import WebSocket from 'ws'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 import * as syncProtocol from 'y-protocols/sync'
+import { LISTS_PER_MINUTE } from '../src/limits.js'
 import { devServers } from './dev-server.js'
 
 const servers = devServers()
@@ -339,7 +340,7 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
   try {
     const scanPort = await freePort(), scanBase = `http://127.0.0.1:${scanPort}`
     child = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(scanPort), ROOM_SERVER: '', ROOM_TOKEN: '',
-      GITHUB_CLIENT_ID: 'synthetic-client', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_MAX_ROOM_LISTS: '2', ROOM_LISTS_PER_MINUTE: '3',
+      GITHUB_CLIENT_ID: 'synthetic-client', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_MAX_ROOM_LISTS: '2',
       NODE_OPTIONS: `--import=${preload}` }, stdio: 'ignore' })
     for (let i = 0; i < 200; i++) {
       if (child.exitCode !== null) throw new Error('scan server exited')
@@ -366,7 +367,8 @@ it('bounds rooms scans per identity and globally, shares admission checks, and s
     const calls = () => fs.readFileSync(callsFile, 'utf8').trim().split('\n')
     const before = calls()
     expect(before.filter(line => line === 'holder-1 https://api.github.com/repos/scans/a')).toHaveLength(1)
-    expect((await list(sessions[0])).status).toBe(200)
+    // The first scan and the refused concurrent scan both count toward the real rate limit.
+    for (let i = 2; i < LISTS_PER_MINUTE; i++) expect((await list(sessions[0])).status).toBe(200)
     expect(calls()).toEqual(before) // definite denials reused
     const rateLimited = await list(sessions[0])
     expect(rateLimited.status).toBe(429)
