@@ -114,7 +114,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const joinDir = CHOOSES_ROOM.has(name) && typeof args?.dir === 'string' && args.dir ? args.dir : undefined
       // An existing session has already passed the join preflight. Recheck only when
       // choosing another checkout or before the first join.
-      if (name !== 'room_login' && !(name === 'room_state' && args.check === true) && (joinDir || !ctx.getSession())) {
+      if (name !== 'room_login' && !(name === 'room_state' && args?.check === true) && (joinDir || !ctx.getSession())) {
         const problem = await repositoryProblem(joinDir ?? ctx.cwd ?? process.cwd())
         if (problem) return problem
       }

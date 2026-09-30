@@ -277,7 +277,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const defaults = hostDefaultRuntime(host, dir)
         const shownModel = model ?? (defaults.model ? `(host default: ${defaults.model})` : '(host default)')
         const shownEffort = effort ?? (defaults.effort ? `(host default: ${defaults.effort})` : '(host default)')
-        const out = [`spawned ${tag}: ${name} (${host}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
+        const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
         out.push(`model ${shownModel} · effort ${shownEffort}; name a model or effort in the request, or set ROOM_WORKER_MODEL / ROOM_WORKER_EFFORT.`)
         const wakeNote = claudeWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
