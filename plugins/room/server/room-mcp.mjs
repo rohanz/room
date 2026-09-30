@@ -39666,23 +39666,63 @@ function abandonPreviewSlot(cloneDir, slot) {
   ownSlotGenerations.set(key2, (ownSlotGenerations.get(key2) ?? 0) + 1);
   abandonedOwnSlots.set(slot, cloneDir);
 }
+function checkoutConfigKey(key2) {
+  const first = key2.indexOf("."), last2 = key2.lastIndexOf(".");
+  if (first < 0) return key2.toLowerCase();
+  if (first === last2) return `${key2.slice(0, first).toLowerCase()}.${key2.slice(first + 1).toLowerCase()}`;
+  return `${key2.slice(0, first).toLowerCase()}.${key2.slice(first + 1, last2)}.${key2.slice(last2 + 1).toLowerCase()}`;
+}
+async function optionalAttributeFile(file) {
+  return fs34.promises.readFile(file).catch((error2) => {
+    if (error2.code === "ENOENT") return Buffer.alloc(0);
+    throw error2;
+  });
+}
+async function systemAttributePaths(dir) {
+  if (/^(true|yes|on|1)$/i.test(process.env.GIT_ATTR_NOSYSTEM ?? "")) return [];
+  try {
+    return [(await gitSetup(dir, ["var", "GIT_ATTR_SYSTEM"])).trim()];
+  } catch {
+    const execPath = (await gitSetup(dir, ["--exec-path"])).trim();
+    return [.../* @__PURE__ */ new Set([path30.resolve(execPath, "../../etc/gitattributes"), path30.resolve(execPath, "../../../etc/gitattributes")])];
+  }
+}
 async function checkoutSettings(dir) {
   const output = await gitSetup(dir, ["config", "--null", "--list"]);
   const values = /* @__PURE__ */ new Map();
   for (const entry of output.split("\0")) {
     const separator = entry.indexOf("\n");
-    if (separator >= 0) values.set(entry.slice(0, separator).toLowerCase(), entry.slice(separator + 1));
+    if (separator >= 0) values.set(checkoutConfigKey(entry.slice(0, separator)), entry.slice(separator + 1));
   }
   const admin = (await gitSetup(dir, ["rev-parse", "--absolute-git-dir"])).trim();
   const sparseFile = path30.join(admin, "info", "sparse-checkout");
   const sparse = /^(true|yes|on|1)$/i.test(values.get("core.sparsecheckout") ?? "") || await fs34.promises.access(sparseFile).then(() => true, () => false);
-  const attributes = await fs34.promises.readFile(path30.join(admin, "info", "attributes")).catch((error2) => {
-    if (error2.code === "ENOENT") return Buffer.alloc(0);
-    throw error2;
-  });
-  const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a.localeCompare(b));
-  const fingerprint = createHash11("sha256").update(JSON.stringify(relevant)).update("\0").update(attributes).digest("hex");
-  return { fingerprint, sparse, attributes };
+  const infoAttributes = (await gitSetup(dir, ["rev-parse", "--path-format=absolute", "--git-path", "info/attributes"])).trim();
+  const configured = values.get("core.attributesfile");
+  let userAttributes;
+  let userIdentity;
+  if (configured !== void 0) {
+    const expanded = (await gitSetup(dir, ["config", "--path", "--get", "core.attributesFile"])).trim();
+    userAttributes = path30.resolve(dir, expanded);
+    userIdentity = path30.isAbsolute(expanded) ? expanded : `relative:${expanded}`;
+  } else {
+    const home = process.env.HOME || os6.homedir();
+    const xdg = process.env.XDG_CONFIG_HOME || path30.join(home, ".config");
+    userAttributes = path30.join(xdg, "git", "attributes");
+    userIdentity = userAttributes;
+  }
+  const systemAttributes = await systemAttributePaths(dir);
+  const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const hash2 = createHash11("sha256").update(JSON.stringify(relevant)).update("\0");
+  for (const [kind, identity2, file] of [
+    ["info", infoAttributes, infoAttributes],
+    ["user", userIdentity, userAttributes],
+    ...systemAttributes.map((file2) => ["system", file2, file2])
+  ]) {
+    const bytes = await optionalAttributeFile(file);
+    hash2.update(JSON.stringify([kind, identity2, bytes.length])).update("\0").update(bytes).update("\0");
+  }
+  return { fingerprint: hash2.digest("hex"), sparse };
 }
 function slotSettingsFile(slot) {
   return path30.join(path30.dirname(slot), `.checkout-${path30.basename(slot)}.json`);
@@ -40066,12 +40106,6 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   if (!stat4) {
     observe?.baseMaterialized?.();
     await gitSetup(cloneDir, ["worktree", "add", "--detach", "--quiet", dir, ancestor]);
-    const admin = (await gitSetup(dir, ["rev-parse", "--absolute-git-dir"])).trim();
-    if (source.attributes.length) {
-      await fs34.promises.mkdir(path30.join(admin, "info"), { recursive: true });
-      await fs34.promises.writeFile(path30.join(admin, "info", "attributes"), source.attributes);
-      await gitSetup(dir, ["checkout-index", "-a", "-f"]);
-    }
   }
   if (await slotRegistration(cloneDir, dir) !== "valid") throw new Error("preview slot registration is not reciprocal");
   await lockPreviewSlot(cloneDir, dir);
@@ -40266,7 +40300,7 @@ var init_files = __esm({
     gitSetup = (dir, args3) => git(dir, args3, SETUP_TIMEOUT_MS);
     PROBE_TIMEOUT_MS = 3e3;
     ownSlotGenerations = /* @__PURE__ */ new Map();
-    checkoutConfigKeys = /* @__PURE__ */ new Set(["core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.filemode", "core.ignorecase", "core.precomposeunicode"]);
+    checkoutConfigKeys = /* @__PURE__ */ new Set(["core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.filemode", "core.ignorecase", "core.precomposeunicode", "core.attributesfile"]);
     warnedSlots = /* @__PURE__ */ new Set();
     abandonedOwnSlots = /* @__PURE__ */ new Map();
     ownCleanup = Promise.resolve();

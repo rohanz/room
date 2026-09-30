@@ -2,15 +2,33 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
-import { previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '../src/tools/files.js'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { materializeGitTree, previewCachePath, runInMergedTree, waitForPreviewSweepForTests } from '../src/tools/files.js'
 import type { Session } from '../src/session.js'
 
 const roots: string[] = []
+const gitEnvKeys = ['HOME', 'XDG_CONFIG_HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_ATTR_NOSYSTEM'] as const
+let previousGitEnv: Record<string, string | undefined>
+let isolatedHome: string
+beforeEach(() => {
+  previousGitEnv = Object.fromEntries(gitEnvKeys.map(key => [key, process.env[key]]))
+  isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-git-home-'))
+  roots.push(isolatedHome)
+  process.env.HOME = isolatedHome
+  process.env.XDG_CONFIG_HOME = path.join(isolatedHome, '.config')
+  process.env.GIT_CONFIG_GLOBAL = path.join(isolatedHome, 'global.gitconfig')
+  process.env.GIT_CONFIG_NOSYSTEM = '1'
+  process.env.GIT_ATTR_NOSYSTEM = '1'
+})
 afterEach(async () => {
   await waitForPreviewSweepForTests()
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+  for (const key of gitEnvKeys) {
+    const value = previousGitEnv[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
 })
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-config-'))
@@ -18,6 +36,20 @@ function fixture() {
   const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
   return { root, git, session: { dir: root } as Session }
+}
+
+const rejectsChangedCheckout = `node -e 'const x=require("fs").readFileSync("x","utf8");const bad=x.includes("\\r\\n")||x.includes("BAD");console.log(bad?"1 failed":"1 passed");process.exit(bad?1:0)'`
+
+async function expectPolicyChangeToAbandon(root: string, session: Session, head: string, old: string) {
+  const result = await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)
+  expect(result.passed, result.text).toBe(false)
+  expect(await previewCachePath(root)).not.toBe(old)
+  await waitForPreviewSweepForTests()
+  expect(fs.existsSync(old)).toBe(false)
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-fresh-'))
+  roots.push(fresh)
+  await materializeGitTree(root, head, fresh)
+  expect(fs.readFileSync(path.join(fresh, 'x'), 'utf8')).toMatch(/\r\n|BAD/)
 }
 
 it('checks the full tracked tree for sparse sources and leaves their sparse settings intact', async () => {
@@ -111,6 +143,135 @@ it('replaces a slot when source info attributes change after warming', async () 
   expect(await previewCachePath(root)).not.toBe(old)
   await waitForPreviewSweepForTests()
   expect(fs.existsSync(old)).toBe(false)
+}, 30_000)
+
+it('abandons a linked worktree slot when shared info attributes change', async () => {
+  const { root, git } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const linked = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-linked-'))
+  roots.push(linked)
+  git('worktree', 'add', '--detach', linked)
+  const head = git('rev-parse', 'HEAD')
+  const session = { dir: linked } as Session
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(linked)
+  const effective = execFileSync('git', ['-C', linked, 'rev-parse', '--path-format=absolute', '--git-path', 'info/attributes'], { encoding: 'utf8' }).trim()
+  expect(fs.realpathSync(path.dirname(effective))).toBe(fs.realpathSync(path.join(root, '.git', 'info')))
+  fs.writeFileSync(effective, 'x text eol=crlf\n')
+  await expectPolicyChangeToAbandon(linked, session, head, old)
+}, 30_000)
+
+it.each(['contents', 'path'] as const)('abandons a slot when core.attributesFile %s changes', async change => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  const first = path.join(isolatedHome, 'attributes-first')
+  fs.writeFileSync(first, '')
+  git('config', 'core.attributesFile', first)
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  if (change === 'contents') fs.writeFileSync(first, 'x text eol=crlf\n')
+  else {
+    const second = path.join(isolatedHome, 'attributes-second')
+    fs.writeFileSync(second, 'x text eol=crlf\n')
+    git('config', 'core.attributesFile', second)
+  }
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+it('expands a ~/ core.attributesFile path', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  const file = path.join(isolatedHome, 'attributes')
+  fs.writeFileSync(file, '')
+  git('config', 'core.attributesFile', '~/attributes')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  fs.writeFileSync(file, 'x text eol=crlf\n')
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+it('abandons a slot when a relative core.attributesFile path changes', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  fs.writeFileSync(path.join(root, 'attrs-one'), '')
+  fs.writeFileSync(path.join(root, 'attrs-two'), 'x text eol=crlf\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  git('config', 'core.attributesFile', 'attrs-one')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  git('config', 'core.attributesFile', 'attrs-two')
+  const result = await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)
+  expect(await previewCachePath(root)).not.toBe(old)
+  const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-fresh-'))
+  roots.push(fresh)
+  await materializeGitTree(root, head, fresh)
+  expect(result.passed, result.text).toBe(!fs.readFileSync(path.join(fresh, 'x'), 'utf8').includes('\r\n'))
+}, 30_000)
+
+it('abandons a slot when the default XDG attributes file changes', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  const file = path.join(process.env.XDG_CONFIG_HOME!, 'git', 'attributes')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, 'x text eol=crlf\n')
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+it('uses HOME/.config/git/attributes when XDG_CONFIG_HOME is unset', async () => {
+  delete process.env.XDG_CONFIG_HOME
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  const file = path.join(isolatedHome, '.config', 'git', 'attributes')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, 'x text eol=crlf\n')
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+it('preserves filter driver subsection case in the checkout fingerprint', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  fs.writeFileSync(path.join(root, '.gitattributes'), 'x filter=Upper\n')
+  git('config', 'filter.Upper.smudge', 'cat')
+  git('config', 'filter.upper.smudge', 'cat')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  git('config', 'filter.Upper.smudge', 'sed s/base/BAD/')
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+it('keeps the same slot and fingerprint for unrelated config changes', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const slot = await previewCachePath(root)
+  const settings = path.join(path.dirname(slot), `.checkout-${path.basename(slot)}.json`)
+  const fingerprint = fs.readFileSync(settings, 'utf8')
+  git('config', 'user.name', 'Changed')
+  for (let i = 0; i < 3; i++) {
+    const result = await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)
+    expect(result.passed, result.text).toBe(true)
+    expect(result.text).toContain('cached base')
+    expect(await previewCachePath(root)).toBe(slot)
+    expect(fs.readFileSync(settings, 'utf8')).toBe(fingerprint)
+  }
 }, 30_000)
 
 it('keeps a healthy clone slot reachable after another clone abandons a generation', async () => {

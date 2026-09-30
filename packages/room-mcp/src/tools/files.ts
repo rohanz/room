@@ -674,25 +674,74 @@ function abandonPreviewSlot(cloneDir: string, slot: string): void {
   abandonedOwnSlots.set(slot, cloneDir)
 }
 
-const checkoutConfigKeys = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks', 'core.filemode', 'core.ignorecase', 'core.precomposeunicode'])
-async function checkoutSettings(dir: string): Promise<{ fingerprint: string; sparse: boolean; attributes: Buffer }> {
+const checkoutConfigKeys = new Set(['core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks', 'core.filemode', 'core.ignorecase', 'core.precomposeunicode', 'core.attributesfile'])
+
+/** Git folds the section and variable, but preserves a subsection such as filter.Upper. */
+function checkoutConfigKey(key: string): string {
+  const first = key.indexOf('.'), last = key.lastIndexOf('.')
+  if (first < 0) return key.toLowerCase()
+  if (first === last) return `${key.slice(0, first).toLowerCase()}.${key.slice(first + 1).toLowerCase()}`
+  return `${key.slice(0, first).toLowerCase()}.${key.slice(first + 1, last)}.${key.slice(last + 1).toLowerCase()}`
+}
+
+async function optionalAttributeFile(file: string): Promise<Buffer> {
+  return fs.promises.readFile(file).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Buffer.alloc(0)
+    throw error
+  })
+}
+
+async function systemAttributePaths(dir: string): Promise<string[]> {
+  if (/^(true|yes|on|1)$/i.test(process.env.GIT_ATTR_NOSYSTEM ?? '')) return []
+  try { return [(await gitSetup(dir, ['var', 'GIT_ATTR_SYSTEM'])).trim()] }
+  catch {
+    // Older Git without GIT_ATTR_SYSTEM: probe both common prefix layouts.
+    // If Git cannot report its path, these are conservative candidates.
+    const execPath = (await gitSetup(dir, ['--exec-path'])).trim()
+    return [...new Set([path.resolve(execPath, '../../etc/gitattributes'), path.resolve(execPath, '../../../etc/gitattributes')])]
+  }
+}
+
+async function checkoutSettings(dir: string): Promise<{ fingerprint: string; sparse: boolean }> {
   const output = await gitSetup(dir, ['config', '--null', '--list'])
   const values = new Map<string, string>()
   for (const entry of output.split('\0')) {
     const separator = entry.indexOf('\n')
-    if (separator >= 0) values.set(entry.slice(0, separator).toLowerCase(), entry.slice(separator + 1))
+    if (separator >= 0) values.set(checkoutConfigKey(entry.slice(0, separator)), entry.slice(separator + 1))
   }
   const admin = (await gitSetup(dir, ['rev-parse', '--absolute-git-dir'])).trim()
   const sparseFile = path.join(admin, 'info', 'sparse-checkout')
   const sparse = /^(true|yes|on|1)$/i.test(values.get('core.sparsecheckout') ?? '')
     || await fs.promises.access(sparseFile).then(() => true, () => false)
-  const attributes = await fs.promises.readFile(path.join(admin, 'info', 'attributes')).catch(error => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Buffer.alloc(0)
-    throw error
-  })
-  const relevant = [...values].filter(([key]) => checkoutConfigKeys.has(key) || /^filter\..+\.(smudge|clean|process|required)$/.test(key)).sort(([a], [b]) => a.localeCompare(b))
-  const fingerprint = createHash('sha256').update(JSON.stringify(relevant)).update('\0').update(attributes).digest('hex')
-  return { fingerprint, sparse, attributes }
+  const infoAttributes = (await gitSetup(dir, ['rev-parse', '--path-format=absolute', '--git-path', 'info/attributes'])).trim()
+  const configured = values.get('core.attributesfile')
+  let userAttributes: string
+  let userIdentity: string
+  if (configured !== undefined) {
+    // --path applies Git's ~/ and ~user expansion; a relative path is read from
+    // the invoking worktree. Keep that relative spelling in the key so a slot
+    // name never enters its own fingerprint.
+    const expanded = (await gitSetup(dir, ['config', '--path', '--get', 'core.attributesFile'])).trim()
+    userAttributes = path.resolve(dir, expanded)
+    userIdentity = path.isAbsolute(expanded) ? expanded : `relative:${expanded}`
+  } else {
+    const home = process.env.HOME || os.homedir()
+    const xdg = process.env.XDG_CONFIG_HOME || path.join(home, '.config')
+    userAttributes = path.join(xdg, 'git', 'attributes')
+    userIdentity = userAttributes
+  }
+  const systemAttributes = await systemAttributePaths(dir)
+  const relevant = [...values].filter(([key]) => checkoutConfigKeys.has(key) || /^filter\..+\.(smudge|clean|process|required)$/.test(key)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+  const hash = createHash('sha256').update(JSON.stringify(relevant)).update('\0')
+  for (const [kind, identity, file] of [
+    ['info', infoAttributes, infoAttributes],
+    ['user', userIdentity, userAttributes],
+    ...systemAttributes.map(file => ['system', file, file]),
+  ]) {
+    const bytes = await optionalAttributeFile(file)
+    hash.update(JSON.stringify([kind, identity, bytes.length])).update('\0').update(bytes).update('\0')
+  }
+  return { fingerprint: hash.digest('hex'), sparse }
 }
 
 function slotSettingsFile(slot: string): string { return path.join(path.dirname(slot), `.checkout-${path.basename(slot)}.json`) }
@@ -1070,14 +1119,6 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
   if (!stat) {
     observe?.baseMaterialized?.()
     await gitSetup(cloneDir, ['worktree', 'add', '--detach', '--quiet', dir, ancestor])
-    // info/attributes belongs to each worktree's admin directory. Mirror the
-    // source's checkout policy only inside our new worktree, never in the repo.
-    const admin = (await gitSetup(dir, ['rev-parse', '--absolute-git-dir'])).trim()
-    if (source.attributes.length) {
-      await fs.promises.mkdir(path.join(admin, 'info'), { recursive: true })
-      await fs.promises.writeFile(path.join(admin, 'info', 'attributes'), source.attributes)
-      await gitSetup(dir, ['checkout-index', '-a', '-f'])
-    }
   }
   if (await slotRegistration(cloneDir, dir) !== 'valid') throw new Error('preview slot registration is not reciprocal')
   await lockPreviewSlot(cloneDir, dir)
