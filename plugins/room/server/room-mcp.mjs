@@ -39716,20 +39716,39 @@ async function rejectPreviewLink(file) {
     if (error2.code !== "ENOENT") throw error2;
   }
 }
+function previewGroupAlive(pid) {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function runTrackedProcess(file, args3, cwd, timeout, maxBuffer, lock, env = process.env) {
   return new Promise((resolve5, reject) => {
     const child = spawn5("sh", ["-c", previewProcessGate, "sh", file, ...args3], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     const out2 = [], err2 = [];
     let bytes = 0, failed;
-    const stop2 = (error2) => {
-      if (failed) return;
-      failed = error2;
+    let termAt;
+    let killTimer;
+    const signalGroup = (signal) => {
       if (child.pid) {
         try {
-          process.kill(-child.pid, "SIGKILL");
+          process.kill(-child.pid, signal);
         } catch {
         }
       }
+    };
+    const terminate = () => {
+      if (termAt !== void 0) return;
+      termAt = Date.now();
+      signalGroup("SIGTERM");
+      killTimer = setTimeout(() => signalGroup("SIGKILL"), 2e3);
+    };
+    const stop2 = (error2) => {
+      if (failed) return;
+      failed = error2;
+      terminate();
     };
     const timer = setTimeout(() => stop2(new Error(`timed out after ${timeout}ms`)), timeout);
     const collect = (kind, chunk) => {
@@ -39745,12 +39764,33 @@ function runTrackedProcess(file, args3, cwd, timeout, maxBuffer, lock, env = pro
     child.stderr.on("data", (chunk) => collect("stderr", chunk));
     child.stdin.on("error", stop2);
     child.on("error", stop2);
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (failed) reject(failed);
-      else resolve5({ code: code ?? 1, stdout: Buffer.concat(out2).toString(), stderr: Buffer.concat(err2).toString() });
+    let exited = false;
+    const closed = new Promise((done) => child.once("close", () => done()));
+    child.on("close", () => {
+      if (!exited) {
+        clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        reject(failed ?? new Error("tracked preview process closed without exiting"));
+      }
     });
-    if (child.pid) void lock.trackProcess(child.pid).then(() => child.stdin.end("GO\n"), stop2);
+    child.on("exit", (code) => {
+      exited = true;
+      void (async () => {
+        const stopped = child.pid && previewGroupAlive(child.pid) ? 1 : 0;
+        if (stopped) terminate();
+        while (child.pid && previewGroupAlive(child.pid)) {
+          if (termAt !== void 0 && Date.now() - termAt >= 2e3) signalGroup("SIGKILL");
+          await new Promise((done) => setTimeout(done, 25));
+        }
+        await closed;
+        clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (failed) reject(failed);
+        else resolve5({ code: code ?? 1, stdout: Buffer.concat(out2).toString(), stderr: Buffer.concat(err2).toString(), stopped });
+      })().catch(reject);
+    });
+    if (child.pid && lock) void lock.trackProcess(child.pid).then(() => child.stdin.end("GO\n"), stop2);
+    else if (child.pid) child.stdin.end("GO\n");
   });
 }
 function setPreviewProcessProbeForTests(probe) {
@@ -40160,16 +40200,8 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
     const result2 = await previewCheck(async () => {
       const command2 = bash ?? "sh";
       const args3 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
-      if (cached2) {
-        const tracked = await runTrackedProcess(command2, args3, dir, 5 * 6e4, 4 * 1024 * 1024, previewProcesses.getStore().lock, env);
-        return { code: tracked.code, out: tracked.stdout + tracked.stderr };
-      }
-      return new Promise((resolve5) => {
-        execFile9(command2, args3, { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
-          const raw = err2 ? err2.code : 0;
-          resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
-        });
-      });
+      const tracked = await runTrackedProcess(command2, args3, dir, 5 * 6e4, 4 * 1024 * 1024, previewProcesses.getStore()?.lock, env);
+      return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped };
     });
     checkMs = performance4.now() - checkStart;
     completed = await previewPhase("collect", () => {
@@ -40177,7 +40209,8 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
       const verdict = testVerdict(result2.out, result2.code);
       return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result2.code}; setup ${Math.round(setupMs)}ms (${reused ? "cached base" : cacheFailure ? "fresh base after cache failure" : "fresh base"}), check ${Math.round(checkMs)}ms
 ${tail}
-${verdict.text}` };
+${verdict.text}${result2.stopped ? `
+stopped ${result2.stopped} leftover process(es) from the check` : ""}` };
     });
     return completed;
   } catch (error2) {
@@ -60153,6 +60186,7 @@ async function main() {
     { name: "room", version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { "claude/channel": {} } }, instructions: AGENT_INSTRUCTIONS() }
   );
+  let initialized;
   const binding = createWorkspaceBinding({
     deferred: deferForSharedCodex(process.env),
     fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
@@ -60294,20 +60328,33 @@ async function main() {
       });
       tools.setAutoJoin(autoJoin);
       if (!signal.aborted) void autoJoin.ensure();
-      return { call, shutdown: async (signal2) => {
+      const runtime2 = { call, shutdown: async (signal2) => {
         presence.stop();
         autoJoin.cancel();
         if (!signal2) await autoJoin.settle();
         await tools.shutdown();
         await arbitration.close();
       } };
+      initialized = { dir, call };
+      return runtime2;
     }
   });
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: DEFS }));
   const transport = new FlushedStdioTransport();
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     extra.signal.addEventListener("abort", () => transport.forget(extra.requestId), { once: true });
-    const result2 = await timing.run(req.params.name, () => binding.run(req.params, (runtime2) => runtime2.call(req, extra.signal, (settle) => transport.expect(extra.requestId, settle))));
+    const result2 = await timing.run(req.params.name, async () => {
+      if (req.params.name === "room_state" && req.params.arguments?.check === true) {
+        const dir = codexWorkspace(req.params) ?? fallbackWorkspace(process.env, process.cwd());
+        const active = initialized;
+        if (active) {
+          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)]);
+          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal), error: void 0 };
+        }
+        return { value: await runDoctor(dir), error: void 0 };
+      }
+      return binding.run(req.params, (runtime2) => runtime2.call(req, extra.signal, (settle) => transport.expect(extra.requestId, settle)));
+    });
     return { content: [{ type: "text", text: result2.error ?? result2.value }], ...result2.error ? { isError: true } : {} };
   });
   const bye = async (reason) => {
@@ -60330,11 +60377,11 @@ async function main() {
   process.stdin.on("end", () => {
     void bye("stdin closed");
   });
+  await mcp.connect(transport);
   try {
-    await mcp.connect(transport);
     await binding.start();
   } catch (error2) {
-    if (!closing) throw error2;
+    if (!closing) log(`startup failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
   }
 }
 async function finishSignalShutdown(reason, leave, report, exit, limitMs = 4e3) {
