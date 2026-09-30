@@ -29,6 +29,7 @@ export interface OpenRepo {
   by?: string; at: number; branches: string[]; lastSeen?: number
   mode?: 'branch' | 'repo'; legacy?: string[]; plan?: MigrationPlan
   step?: 'planned' | 'frozen' | 'moved' | 'written'; migratedAt?: number; unresolved?: number
+  migrationSkippedSources?: number; migrationSkippedRecords?: number; migrationSkippedRecordCountsUnknown?: number
 }
 /** `login` is the display name (GitHub login, verified email or preferred_username). `id` is the
  *  namespaced identity used for admission and admin checks: `oidc:<issuer-host>:<sub>` for OIDC

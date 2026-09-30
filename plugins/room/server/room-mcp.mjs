@@ -234,26 +234,26 @@ var require_scope = __commonJS({
       toName(nameOrPrefix) {
         return nameOrPrefix instanceof code_1.Name ? nameOrPrefix : this.name(nameOrPrefix);
       }
-      name(prefix) {
-        return new code_1.Name(this._newName(prefix));
+      name(prefix2) {
+        return new code_1.Name(this._newName(prefix2));
       }
-      _newName(prefix) {
-        const ng = this._names[prefix] || this._nameGroup(prefix);
-        return `${prefix}${ng.index++}`;
+      _newName(prefix2) {
+        const ng = this._names[prefix2] || this._nameGroup(prefix2);
+        return `${prefix2}${ng.index++}`;
       }
-      _nameGroup(prefix) {
+      _nameGroup(prefix2) {
         var _a3, _b;
-        if (((_b = (_a3 = this._parent) === null || _a3 === void 0 ? void 0 : _a3._prefixes) === null || _b === void 0 ? void 0 : _b.has(prefix)) || this._prefixes && !this._prefixes.has(prefix)) {
-          throw new Error(`CodeGen: prefix "${prefix}" is not allowed in this scope`);
+        if (((_b = (_a3 = this._parent) === null || _a3 === void 0 ? void 0 : _a3._prefixes) === null || _b === void 0 ? void 0 : _b.has(prefix2)) || this._prefixes && !this._prefixes.has(prefix2)) {
+          throw new Error(`CodeGen: prefix "${prefix2}" is not allowed in this scope`);
         }
-        return this._names[prefix] = { prefix, index: 0 };
+        return this._names[prefix2] = { prefix: prefix2, index: 0 };
       }
     };
     exports2.Scope = Scope;
     var ValueScopeName = class extends code_1.Name {
-      constructor(prefix, nameStr) {
+      constructor(prefix2, nameStr) {
         super(nameStr);
-        this.prefix = prefix;
+        this.prefix = prefix2;
       }
       setValue(value2, { property, itemIndex }) {
         this.value = value2;
@@ -272,33 +272,33 @@ var require_scope = __commonJS({
       get() {
         return this._scope;
       }
-      name(prefix) {
-        return new ValueScopeName(prefix, this._newName(prefix));
+      name(prefix2) {
+        return new ValueScopeName(prefix2, this._newName(prefix2));
       }
       value(nameOrPrefix, value2) {
         var _a3;
         if (value2.ref === void 0)
           throw new Error("CodeGen: ref must be passed in value");
         const name2 = this.toName(nameOrPrefix);
-        const { prefix } = name2;
+        const { prefix: prefix2 } = name2;
         const valueKey = (_a3 = value2.key) !== null && _a3 !== void 0 ? _a3 : value2.ref;
-        let vs = this._values[prefix];
+        let vs = this._values[prefix2];
         if (vs) {
           const _name = vs.get(valueKey);
           if (_name)
             return _name;
         } else {
-          vs = this._values[prefix] = /* @__PURE__ */ new Map();
+          vs = this._values[prefix2] = /* @__PURE__ */ new Map();
         }
         vs.set(valueKey, name2);
-        const s = this._scope[prefix] || (this._scope[prefix] = []);
+        const s = this._scope[prefix2] || (this._scope[prefix2] = []);
         const itemIndex = s.length;
         s[itemIndex] = value2.ref;
-        name2.setValue(value2, { property: prefix, itemIndex });
+        name2.setValue(value2, { property: prefix2, itemIndex });
         return name2;
       }
-      getValue(prefix, keyOrRef) {
-        const vs = this._values[prefix];
+      getValue(prefix2, keyOrRef) {
+        const vs = this._values[prefix2];
         if (!vs)
           return;
         return vs.get(keyOrRef);
@@ -319,11 +319,11 @@ var require_scope = __commonJS({
       }
       _reduceValues(values, valueCode, usedValues = {}, getCode) {
         let code = code_1.nil;
-        for (const prefix in values) {
-          const vs = values[prefix];
+        for (const prefix2 in values) {
+          const vs = values[prefix2];
           if (!vs)
             continue;
-          const nameSet = usedValues[prefix] = usedValues[prefix] || /* @__PURE__ */ new Map();
+          const nameSet = usedValues[prefix2] = usedValues[prefix2] || /* @__PURE__ */ new Map();
           vs.forEach((name2) => {
             if (nameSet.has(name2))
               return;
@@ -756,12 +756,12 @@ var require_codegen = __commonJS({
         return this._root.render(this.opts);
       }
       // returns unique name in the internal scope
-      name(prefix) {
-        return this._scope.name(prefix);
+      name(prefix2) {
+        return this._scope.name(prefix2);
       }
       // reserves unique name in the external scope
-      scopeName(prefix) {
-        return this._extScope.name(prefix);
+      scopeName(prefix2) {
+        return this._extScope.name(prefix2);
       }
       // reserves unique name in the external scope and assigns value to it
       scopeValue(prefixOrName, value2) {
@@ -770,8 +770,8 @@ var require_codegen = __commonJS({
         vs.add(name2);
         return name2;
       }
-      getScopeValue(prefix, keyOrRef) {
-        return this._extScope.getValue(prefix, keyOrRef);
+      getScopeValue(prefix2, keyOrRef) {
+        return this._extScope.getValue(prefix2, keyOrRef);
       }
       // return code that assigns values in the external scope to the names that are used internally
       // (same names that were returned by gen.scopeName or gen.scopeValue)
@@ -3747,7 +3747,7 @@ var require_schemes = __commonJS({
       urnComponent.nss = (uuidComponent.uuid || "").toLowerCase();
       return urnComponent;
     }
-    var http2 = (
+    var http3 = (
       /** @type {SchemeHandler} */
       {
         scheme: "http",
@@ -3760,7 +3760,7 @@ var require_schemes = __commonJS({
       /** @type {SchemeHandler} */
       {
         scheme: "https",
-        domainHost: http2.domainHost,
+        domainHost: http3.domainHost,
         parse: httpParse,
         serialize: httpSerialize
       }
@@ -3804,7 +3804,7 @@ var require_schemes = __commonJS({
     var SCHEMES = (
       /** @type {Record<SchemeName, SchemeHandler>} */
       {
-        http: http2,
+        http: http3,
         https,
         ws,
         wss,
@@ -7266,9 +7266,9 @@ function describeIdentity(id3) {
   if (id3.label) parts2.push(id3.label);
   return parts2.join(" \xB7 ");
 }
-function newId(prefix = "") {
+function newId(prefix2 = "") {
   const r = Math.random().toString(36).slice(2, 8);
-  return `${prefix}${Date.now().toString(36)}${r}`;
+  return `${prefix2}${Date.now().toString(36)}${r}`;
 }
 var PALETTE;
 var init_identity = __esm({
@@ -16220,9 +16220,9 @@ var init_doc = __esm({
         const current = head ? this.manifest.get(manifestKey(person, head.fence)) : void 0;
         const wanted = new Set([...current?.entries() ?? []].filter(([, entry]) => entry.fence === head?.fence && entry.held !== "scope").map(([path50]) => `${base}:${path50}`));
         this.doc.transact(() => {
-          const prefix = this.baseTextPrefix(person);
+          const prefix2 = this.baseTextPrefix(person);
           for (const key2 of this.ownedBaseTexts.keys()) {
-            if (this.isPersonBaseTextKey(key2, person) && !wanted.has(key2.slice(prefix.length))) this.ownedBaseTexts.delete(key2);
+            if (this.isPersonBaseTextKey(key2, person) && !wanted.has(key2.slice(prefix2.length))) this.ownedBaseTexts.delete(key2);
           }
         }, origin);
       }
@@ -16551,8 +16551,8 @@ function summarizeFiles(paths, options = {}) {
     const folder = parts2.length > 1 ? parts2.slice(0, -1).join("/") + "/" : "./";
     immediate.set(folder, [...immediate.get(folder) ?? [], path50]);
     for (let i2 = 1; i2 < parts2.length; i2++) {
-      const prefix = parts2.slice(0, i2).join("/") + "/";
-      folders.set(prefix, (folders.get(prefix) ?? 0) + 1);
+      const prefix2 = parts2.slice(0, i2).join("/") + "/";
+      folders.set(prefix2, (folders.get(prefix2) ?? 0) + 1);
     }
   }
   const majority = sorted2.length > 5 ? [...folders].filter(([, count]) => count > sorted2.length / 2) : [];
@@ -17867,8 +17867,8 @@ function canonicalRepo(originDerived) {
 function repoRoomOf(name2, isOpen) {
   let end = name2.length;
   while (end > 0) {
-    const prefix = name2.slice(0, end);
-    if (isOpen(prefix)) return prefix;
+    const prefix2 = name2.slice(0, end);
+    if (isOpen(prefix2)) return prefix2;
     end = name2.lastIndexOf("/", end - 1);
   }
   return void 0;
@@ -17886,7 +17886,7 @@ var init_rooms = __esm({
 function* memoryTypes(doc) {
   for (const [name2, kind] of Object.entries(MEMORY_TYPES)) if (doc.share.has(name2)) yield [name2, kind];
   for (const name2 of doc.share.keys()) {
-    for (const [prefix, kind] of Object.entries(MEMORY_PREFIXES)) if (name2.startsWith(prefix)) yield [name2, kind];
+    for (const [prefix2, kind] of Object.entries(MEMORY_PREFIXES)) if (name2.startsWith(prefix2)) yield [name2, kind];
   }
 }
 function validReceipt(value2) {
@@ -18004,9 +18004,9 @@ var init_memory = __esm({
 
 // packages/shared/src/expiry.ts
 function expireParticipant(room, name2, origin, post) {
-  const prefix = `${name2}\0`;
+  const prefix2 = `${name2}\0`;
   const dropOwned = (map2) => {
-    for (const key2 of [...map2.keys()]) if (key2.startsWith(prefix)) map2.delete(key2);
+    for (const key2 of [...map2.keys()]) if (key2.startsWith(prefix2)) map2.delete(key2);
   };
   room.doc.transact(() => {
     dropOwned(room.participants);
@@ -18954,8 +18954,8 @@ function parseRoomIgnore(text) {
       else if (c === "?") re += "[^/]";
       else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
     }
-    const prefix = anchored ? "^" : "^(?:.*/)?";
-    rules.push({ re: new RegExp(`${prefix}${re}${dirOnly ? "/.+" : "(?:/.*)?"}$`), negate });
+    const prefix2 = anchored ? "^" : "^(?:.*/)?";
+    rules.push({ re: new RegExp(`${prefix2}${re}${dirOnly ? "/.+" : "(?:/.*)?"}$`), negate });
   }
   return {
     patterns: rules.length,
@@ -18979,7 +18979,7 @@ function policyFromLevel(level, textPrefixes = [], ceiling = "full", publisher =
   return Object.freeze({ level: clampShare(level, ceiling), requested: level, ceiling, textPrefixes: Object.freeze([...textPrefixes]), ending: Object.freeze([]), publisher });
 }
 function authorizesText(policy, relpath) {
-  return policy.publisher && (policy.level === "full" || policy.level === "declared" && policy.textPrefixes.some((prefix) => containsPath(prefix, relpath)));
+  return policy.publisher && (policy.level === "full" || policy.level === "declared" && policy.textPrefixes.some((prefix2) => containsPath(prefix2, relpath)));
 }
 function defaultExcludedPath(relpath) {
   return relpath.split("/").some((part) => part === ".env" || part.startsWith(".env.") && part !== ".env.example");
@@ -19232,7 +19232,7 @@ async function readDisk(dir, inputs, previous, safe, oversizedCache = /* @__PURE
       hash: hash2,
       baseHash,
       size: bytes.length,
-      ...budgetOmitted ? {} : { text },
+      ...publishable && !budgetOmitted ? { text } : {},
       binary: binary2,
       ...budgetOmitted ? { budgetOmitted: true } : {},
       at: stat4.mtimeMs,
@@ -19382,7 +19382,7 @@ var init_manifest_publish = __esm({
     "use strict";
     init_yjs();
     init_src();
-    authorized = (i2, p) => i2.level === "full" || i2.level === "declared" && i2.prefixes.some((prefix) => containsPath(prefix, p));
+    authorized = (i2, p) => i2.level === "full" || i2.level === "declared" && i2.prefixes.some((prefix2) => containsPath(prefix2, p));
     contentIdentity = (e) => JSON.stringify({ change: e.change, state: e.state, held: e.held, hash: e.hash, size: e.size, baseHash: e.baseHash, fence: e.fence });
     headIdentity = (h) => JSON.stringify({ base: h.base, fence: h.fence, coverage: h.coverage, level: h.level, complete: h.complete, publisher: h.publisher, textPrefixes: h.textPrefixes });
     epochOf = (fence) => /^\d+$/.test(fence) ? Number(fence) : void 0;
@@ -21084,11 +21084,11 @@ var require_receiver = __commonJS({
        * @return {(Error|RangeError)} The error
        * @private
        */
-      createError(ErrorCtor, message2, prefix, statusCode, errorCode) {
+      createError(ErrorCtor, message2, prefix2, statusCode, errorCode) {
         this._loop = false;
         this._errored = true;
         const err2 = new ErrorCtor(
-          prefix ? `Invalid WebSocket frame: ${message2}` : message2
+          prefix2 ? `Invalid WebSocket frame: ${message2}` : message2
         );
         Error.captureStackTrace(err2, this.createError);
         err2.code = errorCode;
@@ -21981,7 +21981,7 @@ var require_websocket = __commonJS({
     "use strict";
     var EventEmitter2 = __require("events");
     var https = __require("https");
-    var http2 = __require("http");
+    var http3 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
     var { randomBytes: randomBytes6, createHash: createHash16 } = __require("crypto");
@@ -22523,7 +22523,7 @@ var require_websocket = __commonJS({
       }
       const defaultPort = isSecure ? 443 : 80;
       const key2 = randomBytes6(16).toString("base64");
-      const request = isSecure ? https.request : http2.request;
+      const request = isSecure ? https.request : http3.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
       opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
@@ -23019,7 +23019,7 @@ var require_websocket_server = __commonJS({
   "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter2 = __require("events");
-    var http2 = __require("http");
+    var http3 = __require("http");
     var { Duplex } = __require("stream");
     var { createHash: createHash16 } = __require("crypto");
     var extension2 = require_extension();
@@ -23100,8 +23100,8 @@ var require_websocket_server = __commonJS({
           );
         }
         if (options.port != null) {
-          this._server = http2.createServer((req, res) => {
-            const body2 = http2.STATUS_CODES[426];
+          this._server = http3.createServer((req, res) => {
+            const body2 = http3.STATUS_CODES[426];
             res.writeHead(426, {
               "Content-Length": body2.length,
               "Content-Type": "text/plain"
@@ -23390,7 +23390,7 @@ var require_websocket_server = __commonJS({
       this.destroy();
     }
     function abortHandshake(socket, code, message2, headers) {
-      message2 = message2 || http2.STATUS_CODES[code];
+      message2 = message2 || http3.STATUS_CODES[code];
       headers = {
         Connection: "close",
         "Content-Type": "text/html",
@@ -23399,7 +23399,7 @@ var require_websocket_server = __commonJS({
       };
       socket.once("finish", socket.destroy);
       socket.end(
-        `HTTP/1.1 ${code} ${http2.STATUS_CODES[code]}\r
+        `HTTP/1.1 ${code} ${http3.STATUS_CODES[code]}\r
 ` + Object.keys(headers).map((h) => `${h}: ${headers[h]}`).join("\r\n") + "\r\n\r\n" + message2
       );
     }
@@ -23432,83 +23432,1554 @@ var init_wrapper = __esm({
   }
 });
 
-// packages/roomd/src/ws-auth.ts
-function authorizedWebSocket(credentials) {
-  const headers = {
-    ...credentials.session || credentials.key ? { authorization: `Bearer ${credentials.session ?? credentials.key}` } : {},
-    ...credentials.token ? { "x-room-token": credentials.token } : {}
-  };
-  return class AuthorizedWebSocket extends wrapper_default {
-    constructor(address, protocols) {
-      super(address, protocols, { headers });
-    }
-  };
+// packages/relay/src/memory.ts
+import fs8 from "node:fs";
+import path5 from "node:path";
+import crypto from "node:crypto";
+function warnLimited(key2, line, log2) {
+  const now = Date.now();
+  if (now - (warnedAt.get(key2) ?? -Infinity) < WARN_EVERY_MS) return;
+  warnedAt.set(key2, now);
+  log2(line());
 }
-var init_ws_auth = __esm({
-  "packages/roomd/src/ws-auth.ts"() {
+function largestRoots(update) {
+  const doc = new Doc2();
+  try {
+    applyUpdate(doc, update);
+    return [...memoryTypes(doc)].map(([name2, kind]) => [name2, JSON.stringify(kind === "array" ? doc.getArray(name2).toJSON() : doc.getMap(name2).toJSON()).length]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name2, size2]) => `${name2} ${mb(size2)} MB`).join(", ");
+  } finally {
+    doc.destroy();
+  }
+}
+function memoryFile(commonDir, room) {
+  return path5.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
+}
+function syncDirectory(dir) {
+  let fd;
+  try {
+    fd = fs8.openSync(dir, "r");
+    fs8.fsyncSync(fd);
+  } catch (error2) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error2.code ?? "")) throw error2;
+  } finally {
+    if (fd !== void 0) fs8.closeSync(fd);
+  }
+}
+function loadMemory(commonDir, room, log2 = stderr) {
+  const doc = new Doc2(), file = memoryFile(commonDir, room);
+  try {
+    if (fs8.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
+    applyUpdate(doc, fs8.readFileSync(file));
+    return doc;
+  } catch (e) {
+    doc.destroy();
+    if (e.code !== "ENOENT") {
+      log2(`local room memory: cannot load ${file}: ${e}; starting empty`);
+      try {
+        fs8.renameSync(file, `${file}.corrupt-${Date.now()}`);
+      } catch {
+      }
+    }
+    return new Doc2();
+  }
+}
+function saveMemory(commonDir, room, doc, log2 = stderr) {
+  const file = memoryFile(commonDir, room);
+  const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
+  try {
+    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: (line) => warnLimited(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log2) });
+    if (update.byteLength > ROOM_DOC_MAX_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: skipping ${room}: snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling; keeping the last good file`, log2);
+      return false;
+    }
+    if (update.byteLength > MAX_MEMORY_BYTES) {
+      warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
+    }
+    fs8.mkdirSync(path5.dirname(file), { recursive: true, mode: 448 });
+    fs8.chmodSync(path5.dirname(file), 448);
+    fs8.writeFileSync(temp, update, { mode: 384, flag: "wx" });
+    const fd = fs8.openSync(temp, "r");
+    try {
+      fs8.fsyncSync(fd);
+    } finally {
+      fs8.closeSync(fd);
+    }
+    fs8.renameSync(temp, file);
+    syncDirectory(path5.dirname(file));
+    return true;
+  } catch (e) {
+    log2(`local room memory: cannot save ${file}: ${e}`);
+    return false;
+  } finally {
+    try {
+      fs8.unlinkSync(temp);
+    } catch {
+    }
+  }
+}
+var stderr, mb, WARN_EVERY_MS, warnedAt, RoomMemory;
+var init_memory2 = __esm({
+  "packages/relay/src/memory.ts"() {
     "use strict";
-    init_wrapper();
+    init_yjs();
+    init_src();
+    stderr = (line) => {
+      process.stderr.write(`${line}
+`);
+    };
+    mb = (bytes) => (bytes / 1048576).toFixed(1);
+    WARN_EVERY_MS = 6e4;
+    warnedAt = /* @__PURE__ */ new Map();
+    RoomMemory = class {
+      constructor(commonDir, room, log2 = stderr) {
+        this.commonDir = commonDir;
+        this.room = room;
+        this.log = log2;
+        this.doc = loadMemory(commonDir, room, log2);
+        this.doc.on("update", this.schedule);
+      }
+      commonDir;
+      room;
+      log;
+      doc;
+      debounce;
+      deadline;
+      forgotten = false;
+      reconciling = false;
+      schedule = () => {
+        if (this.reconciling) return;
+        this.reconciling = true;
+        try {
+          this.doc.transact(() => {
+            for (const name2 of ["bus", "retiredWorkers"]) {
+              if (!this.doc.share.has(name2)) continue;
+              const array2 = this.doc.getArray(name2), seen = /* @__PURE__ */ new Set();
+              const duplicates = [];
+              array2.toArray().forEach((value2, index) => {
+                if (!value2 || typeof value2 !== "object") return;
+                const key2 = name2 === "bus" ? typeof value2.id === "string" ? value2.id : void 0 : typeof value2.name === "string" && typeof value2.startedAt === "number" && typeof value2.lead === "string" ? JSON.stringify([value2.name, value2.startedAt, value2.lead]) : void 0;
+                if (key2 === void 0) return;
+                if (seen.has(key2)) duplicates.push(index);
+                else seen.add(key2);
+              });
+              for (const index of duplicates.reverse()) array2.delete(index);
+            }
+          });
+        } finally {
+          this.reconciling = false;
+        }
+        if (this.forgotten) return;
+        clearTimeout(this.debounce);
+        this.debounce = setTimeout(() => this.flush(), 2e3);
+        this.deadline ??= setTimeout(() => this.flush(), 1e4);
+        this.debounce.unref?.();
+        this.deadline.unref?.();
+      };
+      flush() {
+        clearTimeout(this.debounce);
+        clearTimeout(this.deadline);
+        this.debounce = this.deadline = void 0;
+        if (!this.forgotten) saveMemory(this.commonDir, this.room, this.doc, this.log);
+      }
+      forget() {
+        fs8.rmSync(memoryFile(this.commonDir, this.room), { force: true });
+        this.forgotten = true;
+        clearTimeout(this.debounce);
+        clearTimeout(this.deadline);
+        this.doc.transact(() => {
+          for (const [name2, kind] of memoryTypes(this.doc)) {
+            if (kind === "map") this.doc.getMap(name2).clear();
+            else {
+              const array2 = this.doc.getArray(name2);
+              array2.delete(0, array2.length);
+            }
+          }
+        });
+      }
+      close() {
+        this.flush();
+        this.doc.off("update", this.schedule);
+      }
+    };
   }
 });
 
-// node_modules/lib0/broadcastchannel.js
-var channels, LocalStoragePolyfill, BC, getChannel, subscribe, unsubscribe, publish;
-var init_broadcastchannel = __esm({
-  "node_modules/lib0/broadcastchannel.js"() {
+// packages/relay/src/process.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+import fs9 from "node:fs";
+import path6 from "node:path";
+function pidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function parsePsLstartUtc(line) {
+  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
+  if (!match) return void 0;
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
+  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1e3;
+  return Number.isInteger(seconds) ? seconds : void 0;
+}
+function probeProcess(pid, readers = systemProcessReaders) {
+  if (!pid || pid <= 0) return void 0;
+  const unreadable = () => pidAlive(pid) ? {} : void 0;
+  try {
+    if (readers.platform === "linux") {
+      const stat4 = readers.readFile(`/proc/${pid}/stat`);
+      const close = stat4.lastIndexOf(")");
+      if (close < 0) return unreadable();
+      const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
+      if (!/^\d+$/.test(startTicks ?? "")) return unreadable();
+      const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
+      if (!bootId) return unreadable();
+      let executable;
+      try {
+        executable = path6.basename(readers.readLink(`/proc/${pid}/exe`));
+      } catch {
+      }
+      return { startTime: `linux:${bootId}:${startTicks}`, executable };
+    }
+    if (readers.platform === "darwin") {
+      const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
+      const startSeconds = parsePsLstartUtc(lstart);
+      if (startSeconds === void 0) return unreadable();
+      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
+      if (!boot) return unreadable();
+      let executable;
+      try {
+        executable = path6.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
+      } catch {
+      }
+      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
+    }
+  } catch {
+  }
+  return unreadable();
+}
+var systemProcessReaders;
+var init_process = __esm({
+  "packages/relay/src/process.ts"() {
     "use strict";
-    init_map();
-    init_set();
-    init_buffer();
-    init_storage();
-    channels = /* @__PURE__ */ new Map();
-    LocalStoragePolyfill = class {
-      /**
-       * @param {string} room
-       */
-      constructor(room) {
-        this.room = room;
-        this.onmessage = null;
-        this._onChange = (e) => e.key === room && this.onmessage !== null && this.onmessage({ data: fromBase64(e.newValue || "") });
-        onChange(this._onChange);
-      }
-      /**
-       * @param {ArrayBuffer} buf
-       */
-      postMessage(buf) {
-        varStorage.setItem(this.room, toBase64(createUint8ArrayFromArrayBuffer(buf)));
-      }
-      close() {
-        offChange(this._onChange);
-      }
+    systemProcessReaders = {
+      platform: process.platform,
+      readFile: (file) => fs9.readFileSync(file, "utf8"),
+      readLink: (file) => fs9.readlinkSync(file),
+      exec: (file, args3) => execFileSync2(file, args3, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3e3,
+        ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
+      })
     };
-    BC = typeof BroadcastChannel === "undefined" ? LocalStoragePolyfill : BroadcastChannel;
-    getChannel = (room) => setIfUndefined(channels, room, () => {
-      const subs = create2();
-      const bc = new BC(room);
-      bc.onmessage = (e) => subs.forEach((sub) => sub(e.data, "broadcastchannel"));
-      return {
-        bc,
-        subs
-      };
+  }
+});
+
+// packages/relay/src/local-migrate.ts
+import crypto2 from "node:crypto";
+import fs10 from "node:fs";
+import path7 from "node:path";
+function legacyRelayRunning(common, probe = probeProcess) {
+  return oldRunning(common, probe);
+}
+function oldRunning(common, probe) {
+  try {
+    const info2 = JSON.parse(fs10.readFileSync(path7.join(common, "room-local.json"), "utf8"));
+    const observed = probe(Number(info2.pid));
+    if (!observed) return false;
+    if (info2.startTime && observed.startTime && info2.startTime !== observed.startTime) return false;
+    if (info2.executable && observed.executable && info2.executable !== observed.executable) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function readLedger(common, room) {
+  const scoped = ledgerFile(common, room);
+  let file = scoped;
+  if (!fs10.existsSync(scoped)) {
+    const old = path7.join(common, "room", "relay", "migrated.json");
+    try {
+      const candidate = JSON.parse(fs10.readFileSync(old, "utf8"));
+      const names = Object.keys(candidate.sources ?? {});
+      if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) file = old;
+    } catch {
+    }
+  }
+  let value2;
+  try {
+    value2 = JSON.parse(fs10.readFileSync(file, "utf8"));
+  } catch {
+    return empty();
+  }
+  const ledger2 = { messages: value2.messages ?? [], claims: value2.claims ?? [], scopes: value2.scopes ?? [], scopeSnapshots: value2.scopeSnapshots ?? {}, sources: value2.sources ?? {}, messageSources: value2.messageSources ?? {}, identities: value2.identities ?? {}, complete: !!value2.complete };
+  if (file !== scoped) writeLedger(common, room, ledger2);
+  return ledger2;
+}
+function writeLedger(common, room, ledger2) {
+  const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto2.randomBytes(4).toString("hex")}.tmp`;
+  fs10.mkdirSync(path7.dirname(file), { recursive: true, mode: 448 });
+  try {
+    fs10.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
+    fs10.renameSync(temp, file);
+  } finally {
+    fs10.rmSync(temp, { force: true });
+  }
+}
+function sources(common, room) {
+  try {
+    return fs10.readdirSync(legacyDir(common)).filter((file) => file.endsWith(".ydoc")).flatMap((file) => {
+      let name2;
+      try {
+        name2 = decodeURIComponent(file.slice(0, -5));
+      } catch {
+        throw new Error(`invalid legacy snapshot name: ${file}`);
+      }
+      if (name2 !== room && !name2.startsWith(`${room}/`)) return [];
+      const full = path7.join(legacyDir(common), file);
+      return [{ file: full, name: name2, mtime: fs10.statSync(full).mtimeMs }];
     });
-    subscribe = (room, f) => {
-      getChannel(room).subs.add(f);
-      return f;
-    };
-    unsubscribe = (room, f) => {
-      const channel = getChannel(room);
-      const unsubscribed = channel.subs.delete(f);
-      if (unsubscribed && channel.subs.size === 0) {
-        channel.bc.close();
-        channels.delete(room);
+  } catch (error2) {
+    if (error2.code === "ENOENT") return [];
+    throw error2;
+  }
+}
+function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = probeProcess) {
+  let files2;
+  try {
+    files2 = sources(common, room);
+  } catch (error2) {
+    log2(`local migration: cannot enumerate ${legacyDir(common)}: ${String(error2)}`);
+    new RoomDoc(targetDoc).metaMap.set("localMigrating", 1);
+    if (!saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
+    return true;
+  }
+  const running = oldRunning(common, probe);
+  const ledger2 = readLedger(common, room);
+  if (ledger2.complete) return false;
+  if (!files2.length && !running) return false;
+  const target = new RoomDoc(targetDoc);
+  const messages = new Set(ledger2.messages), claims = new Set(ledger2.claims), scopes = new Set(ledger2.scopes);
+  const existing = /* @__PURE__ */ new Set([...target.bus.toArray().map((m) => m.id), ...target.mail.keys()]);
+  const loaded = [];
+  let unreadable = false;
+  for (const { file, name: name2, mtime } of files2) {
+    const doc = new Doc2();
+    try {
+      applyUpdate(doc, fs10.readFileSync(file));
+      loaded.push({ name: name2, mtime, source: new RoomDoc(doc), doc });
+    } catch (error2) {
+      log2(`local migration: cannot read ${file}: ${String(error2)}`);
+      unreadable = true;
+      doc.destroy();
+    }
+  }
+  const occurrences = new Map(Object.entries(ledger2.identities).map(([person, names]) => [person, new Set(names)]));
+  const mark = (person, source) => {
+    if (!person) return;
+    let names = occurrences.get(person);
+    if (!names) {
+      names = /* @__PURE__ */ new Set();
+      occurrences.set(person, names);
+    }
+    names.add(source);
+  };
+  for (const { name: name2, source } of loaded) {
+    for (const person of source.scopes.keys()) mark(person, name2);
+    for (const claim2 of source.claims.values()) mark(claim2.by, name2);
+    for (const person of source.overlays.keys()) mark(person, name2);
+    for (const person of source.legacyDeleted.keys()) mark(person, name2);
+    for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
+      mark(msg.from, name2);
+      mark(msg.to, name2);
+    }
+  }
+  const aliases = targetDoc.getMap("aliases");
+  const placeholder = (person, source) => `?${crypto2.createHash("sha256").update(`${source}\0${person}`).digest("hex").slice(0, 16)}`;
+  const translated = (person, source) => {
+    const by = placeholder(person, source);
+    return aliases.get(by) ?? ((occurrences.get(person)?.size ?? 0) > 1 ? by : person);
+  };
+  const unresolved = targetDoc.getMap("unresolved");
+  let changed = false;
+  let scanned = false;
+  targetDoc.transact(() => {
+    for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
+      const key2 = `${source}\0${person}`, by = placeholder(person, source);
+      if (!aliases.has(by) && !unresolved.has(key2)) {
+        unresolved.set(key2, { placeholder: by, claims: [] });
+        changed = true;
       }
-      return unsubscribed;
+    }
+    for (const [person, prior] of Object.entries(ledger2.identities)) {
+      if (prior.length !== 1 || (occurrences.get(person)?.size ?? 0) <= 1) continue;
+      const source = prior[0], by = translated(person, source), key2 = `${source}\0${person}`;
+      const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
+      const moved = [...old.claims];
+      for (const [id3, claim2] of target.claims) {
+        if (claim2.by !== person || claim2.origin !== source) continue;
+        target.claims.delete(id3);
+        if (!moved.some((item) => item.id === id3)) moved.push({ ...claim2, by });
+        changed = true;
+      }
+      const oldScope = target.scopes.get(person);
+      const importedScope = !!oldScope && ledger2.scopeSnapshots[key2] === JSON.stringify(oldScope);
+      const scope = importedScope ? { ...oldScope, by } : old.scope;
+      if (importedScope) {
+        target.scopes.delete(person);
+        changed = true;
+      }
+      for (const [id3, message2] of target.mail) {
+        if (ledger2.messageSources[id3] !== source || message2.from !== person && message2.to !== person) continue;
+        target.mail.set(id3, {
+          ...message2,
+          from: message2.from === person ? by : message2.from,
+          ...message2.to === person ? { to: by } : {}
+        });
+        changed = true;
+      }
+      if (by.startsWith("?")) {
+        if (moved.length || scope) {
+          unresolved.set(key2, { placeholder: by, claims: moved, ...scope ? { scope } : {} });
+          changed = true;
+        }
+      } else {
+        for (const claim2 of moved) if (!target.claims.has(claim2.id)) {
+          target.claims.set(claim2.id, { ...claim2, by });
+          changed = true;
+        }
+        if (scope && !target.scopes.has(by)) {
+          const copy2 = { ...scope, by };
+          target.scopes.set(by, copy2);
+          ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
+          changed = true;
+        }
+        if (unresolved.has(key2)) {
+          unresolved.delete(key2);
+          changed = true;
+        }
+      }
+    }
+  });
+  for (const { name: name2, mtime, source, doc } of loaded) {
+    if (ledger2.sources[name2] === mtime) {
+      doc.destroy();
+      continue;
+    }
+    scanned = true;
+    targetDoc.transact(() => {
+      for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
+        if (messages.has(msg.id)) continue;
+        if (!existing.has(msg.id)) {
+          const copy2 = { ...msg, from: translated(msg.from, name2), ...msg.to ? { to: translated(msg.to, name2) } : {} };
+          if (msg.to) {
+            if (!source.seen(msg.to).has(msg.id)) {
+              target.mail.set(msg.id, copy2);
+              existing.add(msg.id);
+              changed = true;
+            }
+          } else {
+            target.bus.push([copy2]);
+            existing.add(msg.id);
+            changed = true;
+          }
+        }
+        messages.add(msg.id);
+        ledger2.messageSources[msg.id] = name2;
+      }
+      for (const claim2 of source.claims.values()) {
+        if (claims.has(claim2.id)) continue;
+        const by = translated(claim2.by, name2);
+        const { anchor: _anchor, ...rest } = claim2;
+        const copy2 = { ...rest, by, origin: name2 };
+        if (by.startsWith("?")) {
+          const key2 = `${name2}\0${claim2.by}`;
+          const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
+          if (!old.claims.some((item) => item.id === claim2.id)) {
+            unresolved.set(key2, { ...old, claims: [...old.claims, copy2] });
+            changed = true;
+          }
+        } else if (!target.claims.has(claim2.id)) {
+          target.claims.set(claim2.id, copy2);
+          changed = true;
+        }
+        claims.add(claim2.id);
+      }
+      for (const [person, scope] of source.scopes) {
+        const key2 = `${name2}\0${person}`;
+        if (scopes.has(key2)) continue;
+        const by = translated(person, name2);
+        const copy2 = { ...scope, by, origin: name2 };
+        if (by.startsWith("?")) {
+          const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
+          unresolved.set(key2, { ...old, scope: copy2 });
+          changed = true;
+        } else if (!target.scopes.has(by)) {
+          target.scopes.set(by, copy2);
+          ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
+          changed = true;
+        }
+        scopes.add(key2);
+      }
+    });
+    ledger2.sources[name2] = mtime;
+    doc.destroy();
+  }
+  const pending = running || unreadable;
+  if (target.metaMap.get("localMigrating") !== Number(pending)) {
+    target.metaMap.set("localMigrating", Number(pending));
+    changed = true;
+  }
+  const completionChanged = ledger2.complete !== !pending;
+  ledger2.complete = !pending;
+  if ((scanned || changed || completionChanged) && !saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
+  ledger2.messages = [...messages];
+  ledger2.claims = [...claims];
+  ledger2.scopes = [...scopes];
+  ledger2.identities = Object.fromEntries([...occurrences].map(([person, names]) => [person, [...names].sort()]));
+  if (scanned || changed || completionChanged) writeLedger(common, room, ledger2);
+  return pending;
+}
+function forgetLegacyLocal(common, room) {
+  for (const { file } of sources(common, room)) fs10.rmSync(file, { force: true });
+  fs10.rmSync(ledgerFile(common, room), { force: true });
+  const old = path7.join(common, "room", "relay", "migrated.json");
+  try {
+    const ledger2 = JSON.parse(fs10.readFileSync(old, "utf8"));
+    const names = Object.keys(ledger2.sources ?? {});
+    if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) fs10.rmSync(old, { force: true });
+  } catch {
+  }
+}
+var empty, ledgerFile, legacyDir;
+var init_local_migrate = __esm({
+  "packages/relay/src/local-migrate.ts"() {
+    "use strict";
+    init_yjs();
+    init_src();
+    init_process();
+    init_memory2();
+    empty = () => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false });
+    ledgerFile = (common, room) => path7.join(common, "room", "relay", `migrated-${crypto2.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
+    legacyDir = (common) => path7.join(common, "room-local");
+  }
+});
+
+// packages/hub-core/src/protocol.ts
+function encodeFrame(frame) {
+  const enc = createEncoder();
+  writeVarUint(enc, MSG_HUB);
+  writeVarString(enc, JSON.stringify(frame));
+  return toUint8Array(enc);
+}
+function decodeFrame(input) {
+  let dec;
+  if (input instanceof Uint8Array) {
+    dec = createDecoder(input);
+    const type = readVarUint(dec);
+    if (type !== MSG_HUB) throw new Error(`not a hub frame: message type ${type}`);
+  } else dec = input;
+  return JSON.parse(readVarString(dec));
+}
+function encodeSeq(incarnation, n) {
+  if (!Number.isInteger(incarnation) || incarnation < 0 || incarnation >= 2 ** 32) throw new RangeError(`incarnation out of range: ${incarnation}`);
+  if (!Number.isInteger(n) || n < 0 || n >= COUNTER_LIMIT) throw new RangeError(`counter out of range: ${n}`);
+  return incarnation * COUNTER_LIMIT + n;
+}
+function incarnationOf(value2) {
+  return Math.floor(value2 / COUNTER_LIMIT);
+}
+var MSG_HUB, HUB_PROTO, HUB_ORIGIN, LEASE_TTL_MS, LEASE_RENEW_MS, SETTLE_MS, STARTING_RETRY_MS, REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, COUNTER_BITS, COUNTER_LIMIT;
+var init_protocol = __esm({
+  "packages/hub-core/src/protocol.ts"() {
+    "use strict";
+    init_encoding();
+    init_decoding();
+    MSG_HUB = 7;
+    HUB_PROTO = 1;
+    HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
+    LEASE_TTL_MS = 45e3;
+    LEASE_RENEW_MS = 15e3;
+    SETTLE_MS = 5e3;
+    STARTING_RETRY_MS = 1e3;
+    REQUEST_TIMEOUT_LOCAL_MS = 5e3;
+    REQUEST_TIMEOUT_TEAM_MS = 1e4;
+    COUNTER_BITS = 21;
+    COUNTER_LIMIT = 2 ** COUNTER_BITS;
+  }
+});
+
+// packages/hub-core/src/hub.ts
+function serializedStore(record2) {
+  let queue = Promise.resolve();
+  const valid = (v, ceiling = 2 ** 32 - 1) => v !== void 0 && Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 && v <= ceiling ? v : void 0;
+  return {
+    current: async (ceiling) => valid(await record2.read(), ceiling),
+    advance(floor2) {
+      const run3 = queue.then(async () => {
+        if (!Number.isSafeInteger(floor2) || floor2 < 0 || floor2 >= 2 ** 32) throw new RoomStateError("incarnation floor is out of range");
+        const next = Math.max((valid(await record2.read(), floor2 + MAX_INCARNATION_AHEAD) ?? -1) + 1, floor2);
+        if (next >= 2 ** 32) throw new RoomStateError("incarnation counter exhausted");
+        await record2.write(next);
+        return next;
+      });
+      queue = run3.catch(() => void 0);
+      return run3;
+    }
+  };
+}
+function parseHolder(v, record2 = false) {
+  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || v.sessionId.length > MAX_HOLDER_FIELD_LENGTH || !Number.isSafeInteger(v.pid) || v.pid < 0 || v.pid > 2 ** 31 - 1 || typeof v.startTime !== "string" || v.startTime.length > MAX_HOLDER_FIELD_LENGTH || typeof v.executable !== "string" || v.executable.length > MAX_HOLDER_FIELD_LENGTH || v.workerId !== void 0 && (typeof v.workerId !== "string" || v.workerId.length > MAX_HOLDER_FIELD_LENGTH) || Object.keys(v).some((k) => !["sessionId", "pid", "startTime", "executable", "workerId", ...record2 ? ["epoch", "at", "ended", "session", "principal"] : []].includes(k))) return void 0;
+  return { sessionId: v.sessionId, pid: v.pid, startTime: v.startTime, executable: v.executable, ...v.workerId !== void 0 ? { workerId: v.workerId } : {} };
+}
+function hubHolder(v) {
+  const holder = parseHolder(v, true);
+  if (!holder || !isObject2(v) || !isCounter(v.epoch) || !Number.isFinite(v.at) || v.ended !== void 0 && v.ended !== "released" && v.ended !== "expired" || v.session !== void 0 && (typeof v.session !== "string" || v.session.length > MAX_HOLDER_FIELD_LENGTH) || v.principal !== void 0 && (typeof v.principal !== "string" || v.principal.length > MAX_HOLDER_FIELD_LENGTH)) return void 0;
+  const ended = v.ended === "released" || v.ended === "expired" ? v.ended : void 0;
+  return {
+    ...holder,
+    epoch: v.epoch,
+    at: typeof v.at === "number" ? v.at : 0,
+    ...ended ? { ended } : {},
+    ...typeof v.session === "string" ? { session: v.session } : {},
+    ...typeof v.principal === "string" ? { principal: v.principal } : {}
+  };
+}
+function knownOf(record2) {
+  const { epoch, at, ended, session, principal, ...holder } = record2;
+  return { epoch, at, holder, session, principal, ...ended ? { ended } : {} };
+}
+function hydrate(known, record2) {
+  if (known.holder || record2.epoch !== known.epoch) return;
+  const { at, holder, session, principal } = knownOf(record2);
+  known.at = at;
+  known.holder = holder;
+  known.session = session;
+  known.principal = principal;
+}
+function visible(doc) {
+  let epoch, seq;
+  let invalid = false;
+  const see = (v, kind) => {
+    if (v === void 0) return;
+    if (!isCounter(v)) {
+      invalid = true;
+      return;
+    }
+    if (kind === "epoch") epoch = higher(epoch, v);
+    else seq = higher(seq, v);
+  };
+  const meta2 = doc.metaMap;
+  see(meta2.get("hubEpoch"), "epoch");
+  see(meta2.get("hubSeq"), "seq");
+  for (const m of doc.bus.toArray()) see(m?.seq, "seq");
+  for (const m of doc.mail.values()) see(m?.seq, "seq");
+  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) {
+    if (!isObject2(value2) || value2.epoch === void 0) continue;
+    if (!isCounter(value2.epoch)) {
+      invalid = true;
+      continue;
+    }
+    see(value2.epoch, "epoch");
+  }
+  const rawIncarnation = meta2.get("hubIncarnation");
+  if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid = true;
+  const incarnation = Math.max(
+    isCounter(rawIncarnation) ? rawIncarnation : -1,
+    ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
+  );
+  return { epoch, seq, incarnation, invalid };
+}
+async function startHub(host) {
+  const hub = new RoomHub(host);
+  await hub.start();
+  return hub;
+}
+var MAINTENANCE_MS, MAX_HUB_FRAME_BYTES, MAX_HUB_REQUESTS_PER_SECOND, MAX_HUB_REPLY_ID_LENGTH, hubReplyId, HubRequestBudget, MAX_HOLDER_FIELD_LENGTH, MAX_LEASES_PER_ROOM, MAX_LEASES_PER_PRINCIPAL, MAX_RETAINED_NAMES, MAX_RETAINED_NAMES_PER_PRINCIPAL, POST_RATE_PER_LEASE, POST_RATE_PER_PRINCIPAL, POST_RATE_PER_ROOM, POST_RATE_WINDOW_MS, MAX_RATE_KEYS, MAX_INCARNATION_AHEAD, RoomStateError, HOLDER, holderKey, encoder2, sizeOf2, isObject2, isName, isCounter, sameRecord, higher, RoomHub;
+var init_hub = __esm({
+  "packages/hub-core/src/hub.ts"() {
+    "use strict";
+    init_src();
+    init_protocol();
+    MAINTENANCE_MS = 6e4;
+    MAX_HUB_FRAME_BYTES = 96 * 1024;
+    MAX_HUB_REQUESTS_PER_SECOND = 500;
+    MAX_HUB_REPLY_ID_LENGTH = 128;
+    hubReplyId = (frame) => isObject2(frame) && typeof frame.id === "string" && frame.id.length <= MAX_HUB_REPLY_ID_LENGTH ? frame.id : "";
+    HubRequestBudget = class {
+      connections = /* @__PURE__ */ new WeakMap();
+      take(conn, now = Date.now()) {
+        const current = this.connections.get(conn);
+        if (!current || now - current.at >= 1e3) {
+          this.connections.set(conn, { at: now, count: 1 });
+          return void 0;
+        }
+        if (current.count >= MAX_HUB_REQUESTS_PER_SECOND) return Math.max(1, 1e3 - (now - current.at));
+        current.count++;
+        return void 0;
+      }
     };
-    publish = (room, data, origin = null) => {
-      const c = getChannel(room);
-      c.bc.postMessage(data);
-      c.subs.forEach((sub) => sub(data, origin));
+    MAX_HOLDER_FIELD_LENGTH = 512;
+    MAX_LEASES_PER_ROOM = 512;
+    MAX_LEASES_PER_PRINCIPAL = 64;
+    MAX_RETAINED_NAMES = 1024;
+    MAX_RETAINED_NAMES_PER_PRINCIPAL = 128;
+    POST_RATE_PER_LEASE = 250;
+    POST_RATE_PER_PRINCIPAL = 500;
+    POST_RATE_PER_ROOM = 1e3;
+    POST_RATE_WINDOW_MS = 1e3;
+    MAX_RATE_KEYS = 2048;
+    MAX_INCARNATION_AHEAD = 1e6;
+    RoomStateError = class extends Error {
+      name = "RoomStateError";
     };
+    HOLDER = "\0holder";
+    holderKey = (name2) => `${name2}${HOLDER}`;
+    encoder2 = new TextEncoder();
+    sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
+    isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+    isName = (v) => typeof v === "string" && validParticipantName(v) && v.length <= 200;
+    isCounter = (v) => Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 * COUNTER_LIMIT;
+    sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
+    higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
+    RoomHub = class {
+      constructor(host) {
+        this.host = host;
+        this.limit = host.counterLimit ?? COUNTER_LIMIT;
+      }
+      host;
+      incarnation = 0;
+      limit;
+      epochs = 0;
+      seqs = 0;
+      lastEpoch;
+      lastSeq;
+      reincarnating;
+      startedAt = 0;
+      freshAtStart = false;
+      settled = false;
+      maintainedAt = 0;
+      dirty = false;
+      stopped = false;
+      unauthorized = false;
+      unavailableSince;
+      tenure;
+      leases = /* @__PURE__ */ new Map();
+      records = /* @__PURE__ */ new Map();
+      greeted = /* @__PURE__ */ new Set();
+      sessions = /* @__PURE__ */ new Map();
+      rates = /* @__PURE__ */ new Map();
+      push = () => {
+      };
+      onUpdate = (_update, origin) => {
+        if (origin === HUB_ORIGIN) return;
+        this.dirty = true;
+        if (this.settling() && !this.storageUnavailable()) this.adoptSynced();
+      };
+      get doc() {
+        return this.host.doc;
+      }
+      async start() {
+        if (this.host.unavailable?.()) throw new Error("hub storage unavailable at startup");
+        const before = visible(this.doc);
+        const wallFloor = Math.floor(this.host.wall() / 1e3);
+        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
+        if (before.invalid || before.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
+        this.freshAtStart = this.host.fresh === true && before.epoch === void 0 && before.seq === void 0 && before.incarnation < 0;
+        await this.incarnate();
+        this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
+        this.startedAt = this.maintainedAt = this.host.mono();
+        this.adoptSynced();
+        this.doc.doc.on("update", this.onUpdate);
+        this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
+      }
+      /** Take a new incarnation (§3): durable before anything is issued under it. */
+      async incarnate() {
+        const seen = visible(this.doc);
+        const wallFloor = Math.floor(this.host.wall() / 1e3);
+        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
+        if (seen.invalid || seen.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
+        const floor2 = Math.max(seen.incarnation + 1, this.incarnation + 1, wallFloor);
+        const next = await this.host.store.advance(floor2);
+        if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
+        this.incarnation = next;
+        this.epochs = this.seqs = 0;
+        this.doc.doc.transact(() => {
+          this.doc.metaMap.set("hubIncarnation", next);
+        }, HUB_ORIGIN);
+      }
+      stop() {
+        this.stopped = true;
+        this.doc.doc.off("update", this.onUpdate);
+      }
+      onPush(fn) {
+        this.push = fn;
+      }
+      closed(conn) {
+        this.greeted.delete(conn);
+        this.sessions.delete(conn);
+        for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
+      }
+      settling() {
+        return !this.freshAtStart && this.host.mono() - this.startedAt < SETTLE_MS;
+      }
+      notify(name2, lease, reason) {
+        if (lease.conn) this.push(lease.conn, { v: 1, push: "lease-lost", name: name2, epoch: lease.epoch, reason });
+      }
+      authorized() {
+        if (this.stopped) return false;
+        if (!this.host.authority || this.host.authority()) {
+          this.unauthorized = false;
+          return true;
+        }
+        if (!this.unauthorized) {
+          this.unauthorized = true;
+          this.host.log("hub: lost the authority lock; answering not-authority");
+          for (const [name2, lease] of this.leases) this.notify(name2, lease, "not-authority");
+        }
+        return false;
+      }
+      // ---- leases ----
+      record(name2) {
+        return hubHolder(this.doc.participants.get(holderKey(name2)));
+      }
+      /** The doc record for what the hub knows of a name, when it knows the holder. */
+      recordOf(k) {
+        return k.holder && {
+          ...k.holder,
+          epoch: k.epoch,
+          at: k.at,
+          ...k.ended ? { ended: k.ended } : {},
+          ...k.session ? { session: k.session } : {},
+          ...k.principal ? { principal: k.principal } : {}
+        };
+      }
+      /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
+      hold(name2, lease) {
+        this.leases.set(name2, lease);
+        this.records.set(name2, lease);
+        this.tenure.present(this.doc, name2, HUB_ORIGIN);
+      }
+      principal(p) {
+        return "local" in p ? "local" : p.id ?? `login:${p.login ?? ""}`;
+      }
+      owner(conn, p, name2, lease) {
+        if (this.host.owns && !this.host.owns(p, name2)) return false;
+        if (lease?.principal && lease.principal !== this.principal(p)) {
+          if (!("id" in p) || !p.id || lease.principal !== `login:${p.login ?? ""}`) return false;
+          const session2 = this.sessions.get(conn);
+          if (!session2 || (lease.session ?? lease.holder?.sessionId) !== session2) return false;
+          lease.principal = p.id;
+          const record2 = this.recordOf(lease);
+          if (record2) this.doc.doc.transact(() => {
+            this.doc.participants.set(holderKey(name2), record2);
+          }, HUB_ORIGIN);
+        }
+        const session = this.sessions.get(conn);
+        return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
+      }
+      storageUnavailable() {
+        const text = this.host.unavailable?.();
+        if (text) {
+          this.unavailableSince ??= this.host.mono();
+          return text;
+        }
+        if (this.unavailableSince !== void 0) {
+          this.unavailableSince = void 0;
+          const now = this.host.mono();
+          for (const lease of this.leases.values()) lease.renewed = now;
+          this.maintainedAt = now;
+          this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
+        }
+        return void 0;
+      }
+      unavailable(fail) {
+        const text = this.storageUnavailable();
+        return text ? fail("unavailable", text, { retryMs: 1e3 }) : void 0;
+      }
+      limited(key2, limit) {
+        const now = this.host.mono();
+        const rate = this.rates.get(key2);
+        if (!rate || now - rate.at >= POST_RATE_WINDOW_MS) {
+          if (!rate && this.rates.size >= MAX_RATE_KEYS) {
+            for (const [k, v] of this.rates) if (now - v.at >= POST_RATE_WINDOW_MS) this.rates.delete(k);
+            if (this.rates.size >= MAX_RATE_KEYS) {
+              const oldLease = [...this.rates.keys()].find((k) => k.startsWith("lease:"));
+              if (oldLease) this.rates.delete(oldLease);
+            }
+          }
+          this.rates.set(key2, { at: now, count: 1 });
+          return void 0;
+        }
+        if (rate.count >= limit) return Math.max(1, POST_RATE_WINDOW_MS - (now - rate.at));
+        rate.count++;
+        return void 0;
+      }
+      pruneRecords() {
+        if (this.records.size < MAX_RETAINED_NAMES) return;
+        const ended = [...this.records].filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
+        for (const [name2] of ended) {
+          if (this.records.size < MAX_RETAINED_NAMES) break;
+          this.records.delete(name2);
+          this.doc.doc.transact(() => {
+            this.doc.participants.delete(holderKey(name2));
+          }, HUB_ORIGIN);
+        }
+      }
+      prunePrincipal(principal) {
+        const mine = [...this.records].filter(([, r]) => r.principal === principal);
+        if (mine.length < MAX_RETAINED_NAMES_PER_PRINCIPAL) return;
+        const ended = mine.filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
+        for (const [name2] of ended) {
+          if ([...this.records.values()].filter((r) => r.principal === principal).length < MAX_RETAINED_NAMES_PER_PRINCIPAL) break;
+          this.records.delete(name2);
+          this.doc.doc.transact(() => {
+            this.doc.participants.delete(holderKey(name2));
+          }, HUB_ORIGIN);
+        }
+      }
+      /**
+       * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
+       * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
+       */
+      live(name2) {
+        const lease = this.leases.get(name2);
+        if (!lease) return void 0;
+        const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
+        const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
+        const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
+        if (!ended && !expired) return lease;
+        this.end(name2, lease, ended ?? "expired");
+        this.notify(name2, lease, "expired");
+        return void 0;
+      }
+      end(name2, lease, how) {
+        this.leases.delete(name2);
+        const current = this.record(name2);
+        if (current) hydrate(lease, current);
+        const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, principal: lease.principal, session: lease.session, ended: how };
+        this.records.set(name2, ended);
+        const record2 = this.recordOf(ended);
+        if (record2) this.doc.doc.transact(() => {
+          this.doc.participants.set(holderKey(name2), record2);
+        }, HUB_ORIGIN);
+        this.host.log(`hub: lease ${lease.epoch} on ${name2} ${how}`);
+      }
+      /**
+       * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
+       * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
+       * rise to the highest values seen.
+       */
+      adoptSynced() {
+        const seen = visible(this.doc);
+        this.lastEpoch = higher(this.lastEpoch, seen.epoch);
+        this.lastSeq = higher(this.lastSeq, seen.seq);
+        for (const [key2, value2] of this.doc.participants.entries()) {
+          if (!key2.endsWith(HOLDER)) continue;
+          const record2 = hubHolder(value2);
+          if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
+          const name2 = key2.slice(0, -HOLDER.length);
+          const known = this.records.get(name2);
+          const lease = this.leases.get(name2);
+          if (!known && this.records.size >= MAX_RETAINED_NAMES) continue;
+          if (known && record2.epoch <= known.epoch) {
+            if (lease) hydrate(lease, record2);
+            continue;
+          }
+          if (lease) {
+            this.leases.delete(name2);
+            this.notify(name2, lease, "superseded");
+          }
+          if (record2.ended) this.records.set(name2, knownOf(record2));
+          else if (this.leases.size < MAX_LEASES_PER_ROOM) this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
+        }
+      }
+      /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
+      reserve(kind, count) {
+        if (this.reincarnating) return false;
+        if ((kind === "epoch" ? this.epochs : this.seqs) + count <= this.limit) return true;
+        this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
+          this.reincarnating = void 0;
+        });
+        return false;
+      }
+      /** The next epoch or seq, or undefined while a new incarnation is being taken. */
+      issue(kind) {
+        if (!this.reserve(kind, 1)) return void 0;
+        const n = kind === "epoch" ? this.epochs++ : this.seqs++;
+        return encodeSeq(this.incarnation, n);
+      }
+      /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
+      append(msg, wall) {
+        const seq = this.issue("seq");
+        if (seq === void 0) return void 0;
+        const record2 = { ...msg, seq, at: wall };
+        this.lastSeq = seq;
+        this.doc.doc.transact(() => {
+          this.doc.bus.push([record2]);
+          this.doc.metaMap.set("hubSeq", seq);
+        }, HUB_ORIGIN);
+        if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
+        return record2;
+      }
+      // ---- requests ----
+      handle(conn, frame, p, frameBytes) {
+        const re = hubReplyId(frame);
+        const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
+        try {
+          return this.handleSafe(conn, frame, p, fail, frameBytes);
+        } catch (error2) {
+          this.host.log(`hub: rejected request: ${error2 instanceof Error ? error2.message : String(error2)}`);
+          return fail("invalid", "invalid hub request");
+        }
+      }
+      handleSafe(conn, frame, p, fail, frameBytes) {
+        const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
+        if ((frameBytes ?? sizeOf2(frame)) > MAX_HUB_FRAME_BYTES) return fail("too-large", "hub request exceeds the frame limit");
+        if (!isObject2(frame) || frame.v !== 1 || !re || re.length > 128 || typeof frame.op !== "string") {
+          this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`);
+          return fail("invalid", "a hub request needs v: 1, an id and an op");
+        }
+        const fields = {
+          hello: ["proto", "schema", "client", "sessionId"],
+          acquire: ["name", "holder", "supersedes"],
+          renew: ["name", "epoch"],
+          release: ["name", "epoch"],
+          post: ["lease", "msg", "auto"]
+        };
+        const op = frame.op;
+        if (fields[op] && Object.keys(frame).some((k) => !["v", "id", "op", ...fields[op]].includes(k))) return fail("invalid", "unknown hub request field");
+        if (!this.authorized()) return fail("not-authority", "not the authority; reconnect");
+        if ("readOnly" in p && p.readOnly) return fail("read-only", "this connection is read-only");
+        const req = frame;
+        if (req.op === "hello") return this.hello(conn, req, fail);
+        if (!this.greeted.has(conn)) return fail("hello-first", "send hello first");
+        const starting = () => fail("starting", "the hub is starting", { retryMs: STARTING_RETRY_MS });
+        switch (req.op) {
+          case "acquire":
+            return this.acquire(conn, req, p, fail, starting);
+          case "renew":
+            return this.renew(conn, req, p, fail);
+          case "release":
+            return this.release(conn, req, p, fail);
+          case "post":
+            return this.post(conn, req, p, fail, starting);
+          default:
+            return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
+        }
+      }
+      hello(conn, req, fail) {
+        if (req.proto !== HUB_PROTO) {
+          return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
+        }
+        if (typeof req.sessionId !== "string" || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH || typeof req.client !== "string" || req.client.length > 128 || req.schema !== 2) return fail("invalid", "hello needs a supported schema, client and session");
+        this.greeted.add(conn);
+        this.sessions.set(conn, req.sessionId);
+        return { v: 1, re: req.id, ok: true, proto: HUB_PROTO, incarnation: this.incarnation, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true };
+      }
+      acquire(conn, req, p, fail, starting) {
+        const holder = parseHolder(req.holder);
+        if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
+        const { name: name2 } = req;
+        if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
+        if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
+        const live = this.live(name2);
+        if (!live && this.settling()) return starting();
+        if (live?.principal && live.principal !== this.principal(p) && !("id" in p && p.id && live.principal === `login:${p.login ?? ""}` && this.owner(conn, p, name2, live))) return fail("not-yours", `${name2} belongs to another principal`);
+        if (live && req.supersedes !== live.epoch && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
+          return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
+        }
+        if (live && live.principal && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
+        if (!live && this.leases.size >= MAX_LEASES_PER_ROOM) return fail("room-full", "the room has too many live leases");
+        const owned = [...this.leases.values()].filter((l) => l.principal === this.principal(p)).length;
+        if (!live && owned >= MAX_LEASES_PER_PRINCIPAL) return fail("room-full", "this principal has too many live leases");
+        if (!live) {
+          this.prunePrincipal(this.principal(p));
+          if ([...this.records.values()].filter((r) => r.principal === this.principal(p)).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return fail("room-full", "this principal has too many retained names");
+        }
+        if (!live && this.records.size >= MAX_RETAINED_NAMES) {
+          this.pruneRecords();
+          if (this.records.size >= MAX_RETAINED_NAMES) return fail("room-full", "the room has too many retained names");
+        }
+        const epoch = this.issue("epoch");
+        if (epoch === void 0) return starting();
+        if (live) this.notify(name2, live, "superseded");
+        const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn, principal: this.principal(p), session: this.sessions.get(conn) };
+        this.lastEpoch = epoch;
+        this.doc.doc.transact(() => {
+          this.hold(name2, lease);
+          this.doc.participants.set(holderKey(name2), this.recordOf(lease));
+          this.doc.metaMap.set("hubEpoch", epoch);
+        }, HUB_ORIGIN);
+        this.host.log(`hub: granted ${name2} to ${holder.sessionId} at epoch ${epoch}${live ? ` (superseding ${live.epoch})` : ""}`);
+        return { v: 1, re: req.id, ok: true, epoch, ttlMs: LEASE_TTL_MS };
+      }
+      renew(conn, req, p, fail) {
+        if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
+        const { name: name2, epoch } = req;
+        const existing = this.leases.get(name2) ?? this.records.get(name2);
+        if (this.host.owns && !this.host.owns(p, name2) || existing?.epoch === epoch && !this.owner(conn, p, name2, existing)) {
+          return fail("not-yours", `${name2} belongs to another holder session`);
+        }
+        const outage = this.unavailable(fail);
+        if (outage) {
+          const lease = this.leases.get(name2);
+          if (lease?.epoch !== epoch) return outage;
+          lease.renewed = this.host.mono();
+          lease.conn = conn;
+          return { v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS };
+        }
+        const live = this.live(name2);
+        const ok = () => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS });
+        if (live?.epoch === epoch) {
+          if (!this.owner(conn, p, name2, live)) return fail("not-yours", `${name2} belongs to another holder session`);
+          live.renewed = this.host.mono();
+          live.conn = conn;
+          return ok();
+        }
+        const known = this.records.get(name2);
+        if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
+          const record2 = this.record(name2);
+          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal && record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
+          if (live) this.notify(name2, live, "superseded");
+          const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
+          this.hold(name2, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn });
+          this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
+          return ok();
+        }
+        return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
+      }
+      release(conn, req, p, fail) {
+        if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
+        const existing = this.leases.get(req.name) ?? this.records.get(req.name);
+        if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
+          return fail("not-yours", `${req.name} belongs to another holder session`);
+        }
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
+        const live = this.live(req.name);
+        const known = this.records.get(req.name);
+        if ((live?.epoch === req.epoch || known?.epoch === req.epoch) && !this.owner(conn, p, req.name, live ?? known)) return fail("not-yours", `${req.name} belongs to another holder session`);
+        if (live?.epoch === req.epoch) this.end(req.name, live, "released");
+        else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
+        return { v: 1, re: req.id, ok: true };
+      }
+      post(conn, req, p, fail, starting) {
+        const msg = req.msg;
+        if (sizeOf2(msg) > MAX_MESSAGE_BYTES) return fail("too-large", `the message exceeds ${MAX_MESSAGE_BYTES / 1024} KiB`);
+        if (!validMessageShape(msg) || !msg.id || !isName(msg.from) || msg.to !== void 0 && !isName(msg.to) || msg.at !== void 0 || msg.seq !== void 0 || req.auto !== void 0 && typeof req.auto !== "boolean") return fail("invalid", "post has invalid message fields");
+        if (!isObject2(req.lease) || Object.keys(req.lease).some((k) => k !== "name" && k !== "epoch") || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
+        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name);
+        if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
+          return fail("not-yours", `${req.lease.name} belongs to another holder session`);
+        }
+        const unavailable = this.unavailable(fail);
+        if (unavailable) return unavailable;
+        const live = this.live(req.lease.name);
+        if (live?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
+        if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
+        const retryMs = this.limited(`lease:${req.lease.name}`, POST_RATE_PER_LEASE) ?? this.limited(`principal:${this.principal(p)}`, POST_RATE_PER_PRINCIPAL) ?? this.limited("room", POST_RATE_PER_ROOM);
+        if (retryMs) return fail("rate-limited", "posting too quickly; retry shortly", { retryMs });
+        const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
+        if (found) {
+          const seq = found.seq;
+          return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
+        }
+        if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
+        const size2 = sizeOf2(msg);
+        if (size2 > MAX_MESSAGE_BYTES) return fail("too-large", `the message is ${Math.ceil(size2 / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`);
+        if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
+        const wall = this.host.wall();
+        if (msg.to && !req.auto) {
+          const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
+          if (!admission.ok) return fail("over-cap", admission.reason);
+        }
+        if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
+        let priority2;
+        try {
+          priority2 = msg.priority ?? defaultPriority(msg);
+        } catch {
+          return fail("invalid", `cannot prioritise a ${msg.type} message`);
+        }
+        const record2 = this.append({ ...msg, priority: priority2 }, wall);
+        if (!record2) return starting();
+        return { v: 1, re: req.id, ok: true, seq: record2.seq, at: wall };
+      }
+      // ---- maintenance ----
+      tick() {
+        try {
+          this.tickSafe();
+        } catch (error2) {
+          this.host.log(`hub: maintenance failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        }
+      }
+      tickSafe() {
+        if (!this.authorized()) return;
+        if (this.storageUnavailable()) return;
+        for (const name2 of [...this.leases.keys()]) this.live(name2);
+        if (this.settling()) return;
+        if (!this.settled) {
+          this.settled = true;
+          this.dirty = true;
+        }
+        if (this.dirty) this.reassert();
+        const now = this.host.mono();
+        if (now - this.maintainedAt >= MAINTENANCE_MS) {
+          this.maintainedAt = now;
+          trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN });
+          this.expire();
+        }
+      }
+      /** Rewrite hub-owned values a stale replica won back (§4.4). */
+      reassert() {
+        this.dirty = false;
+        const { doc } = this;
+        const archived = (id3) => doc.archive.has(id3) || doc.outcomes.has(id3);
+        doc.doc.transact(() => {
+          const names = new Set(this.records.keys());
+          for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER) && hubHolder(value2)) names.add(key2.slice(0, -HOLDER.length));
+          for (const name2 of names) {
+            const current = this.record(name2);
+            let known = this.records.get(name2);
+            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
+              known = knownOf(current.ended ? current : { ...current, ended: "expired" });
+              this.records.set(name2, known);
+            }
+            if (!known) continue;
+            if (current) hydrate(known, current);
+            const want = this.recordOf(known);
+            if (want) {
+              if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
+            } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
+          }
+          const meta2 = doc.metaMap;
+          if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
+          if (this.lastEpoch !== void 0 && meta2.get("hubEpoch") !== this.lastEpoch) meta2.set("hubEpoch", this.lastEpoch);
+          if (this.lastSeq !== void 0 && meta2.get("hubSeq") !== this.lastSeq) meta2.set("hubSeq", this.lastSeq);
+          const seen = /* @__PURE__ */ new Set();
+          const drop = [];
+          doc.bus.toArray().forEach((m, i2) => {
+            const id3 = m?.id;
+            if (typeof id3 !== "string") return;
+            if (seen.has(id3) || archived(id3)) drop.push(i2);
+            seen.add(id3);
+          });
+          for (const i2 of drop.reverse()) doc.bus.delete(i2, 1);
+        }, HUB_ORIGIN);
+      }
+      /**
+       * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
+       * are released with sequenced notices, so a pass runs only when every claim could get a seq.
+       */
+      expire() {
+        if (!this.reserve("seq", Math.min(this.doc.claims.size, this.limit))) return;
+        const view = [];
+        for (const key2 of this.doc.participants.keys()) {
+          if (!key2.endsWith(HOLDER)) continue;
+          const name2 = key2.slice(0, -HOLDER.length);
+          view.push({ name: name2, fresh: !!this.live(name2), visible: true });
+        }
+        const wall = this.host.wall();
+        const post = (from2, body2) => this.append({ ...body2, priority: body2.priority ?? defaultPriority(body2), id: newId("m_"), from: from2.name, fromKind: from2.kind }, wall);
+        for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
+          this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
+          const lease = this.leases.get(name2);
+          if (lease) {
+            this.leases.delete(name2);
+            this.notify(name2, lease, "expired-participant");
+          }
+          this.records.delete(name2);
+        }
+      }
+    };
+  }
+});
+
+// packages/hub-core/src/index.ts
+var init_src2 = __esm({
+  "packages/hub-core/src/index.ts"() {
+    "use strict";
+    init_protocol();
+    init_hub();
+  }
+});
+
+// packages/relay/src/leases.ts
+import fs11 from "node:fs";
+import path8 from "node:path";
+import { createHash as createHash4, randomUUID } from "node:crypto";
+function liveness(identity2, probe = probeProcess) {
+  const observed = probe(identity2.pid);
+  if (!observed) return "dead";
+  if (observed.startTime && identity2.startTime && observed.startTime !== identity2.startTime) return "dead";
+  if (observed.executable && identity2.executable && observed.executable !== identity2.executable) return "dead";
+  if (!observed.startTime || !observed.executable || !identity2.startTime || !identity2.executable) return "unknown";
+  return "alive";
+}
+function syncDirectory2(dir) {
+  let fd;
+  try {
+    fd = fs11.openSync(dir, "r");
+    fs11.fsyncSync(fd);
+  } catch (e) {
+    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
+  } finally {
+    if (fd !== void 0) fs11.closeSync(fd);
+  }
+}
+function ensureDurableDirectory(dir) {
+  const parent = path8.dirname(dir);
+  if (parent !== dir) ensureDurableDirectory(parent);
+  try {
+    fs11.mkdirSync(dir, { mode: 448 });
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+  }
+  if (parent !== dir) syncDirectory2(parent);
+}
+function cleanupOrphanTemps(dir, probe = probeProcess) {
+  let removed = 0;
+  for (const name2 of fs11.readdirSync(dir)) {
+    const match = tempPattern.exec(name2);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const observed = probe(pid);
+    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
+    if (pidAlive(pid)) continue;
+    try {
+      fs11.unlinkSync(path8.join(dir, name2));
+      removed++;
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+  }
+  if (removed) syncDirectory2(dir);
+  return removed;
+}
+function writeTemp(file, content) {
+  const dir = path8.dirname(file);
+  ensureDurableDirectory(dir);
+  cleanupOrphanTemps(dir);
+  const start2 = probeProcess(process.pid)?.startTime;
+  const temp = `${file}.roomtmp-p${process.pid}-s${start2 ? startMarker(start2) : "u"}-n${randomUUID()}.tmp`;
+  const fd = fs11.openSync(temp, "wx", 384);
+  try {
+    fs11.writeFileSync(fd, JSON.stringify(content) + "\n");
+    fs11.fsyncSync(fd);
+  } catch (e) {
+    fs11.closeSync(fd);
+    fs11.rmSync(temp, { force: true });
+    syncDirectory2(dir);
+    throw e;
+  }
+  fs11.closeSync(fd);
+  return temp;
+}
+function createExclusive(file, content) {
+  const temp = writeTemp(file, content);
+  try {
+    try {
+      fs11.linkSync(temp, file);
+    } catch (e) {
+      if (e.code === "EEXIST") return false;
+      throw e;
+    }
+    syncDirectory2(path8.dirname(file));
+    return true;
+  } finally {
+    fs11.rmSync(temp, { force: true });
+    syncDirectory2(path8.dirname(file));
+  }
+}
+function writeAtomic(file, content) {
+  const temp = writeTemp(file, content);
+  try {
+    fs11.renameSync(temp, file);
+    syncDirectory2(path8.dirname(file));
+  } finally {
+    fs11.rmSync(temp, { force: true });
+    syncDirectory2(path8.dirname(file));
+  }
+}
+function read(file) {
+  try {
+    return JSON.parse(fs11.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+function leaseToken(value2) {
+  const candidate = value2.holder ?? value2;
+  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
+}
+function ownToken() {
+  const current = probeProcess(process.pid);
+  return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
+}
+function acquireGuard(file, probe, depth = 0) {
+  if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
+  const token = ownToken();
+  if (createExclusive(file, token)) return token;
+  const previous = read(file);
+  const previousHolder = previous && leaseToken(previous);
+  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
+  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
+  try {
+    const latest = read(file);
+    const latestHolder = latest && leaseToken(latest);
+    if (latestHolder && liveness(latestHolder, probe) === "dead") {
+      fs11.unlinkSync(file);
+      syncDirectory2(path8.dirname(file));
+    }
+  } finally {
+    releaseGuard(`${file}.guard`, outer);
+  }
+  if (createExclusive(file, token)) return token;
+  throw new Error(`lease guard busy: ${file}`);
+}
+function releaseGuard(file, token) {
+  const current = read(file);
+  if (current && leaseToken(current)?.nonce === token.nonce) {
+    fs11.unlinkSync(file);
+    syncDirectory2(path8.dirname(file));
+  }
+}
+function withGuard(file, fn, probe = probeProcess) {
+  const guard = `${file}.guard`;
+  const token = acquireGuard(guard, probe);
+  try {
+    const result2 = fn();
+    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
+    return result2;
+  } finally {
+    releaseGuard(guard, token);
+  }
+}
+function replace2(file, expect, next) {
+  return withGuard(file, () => {
+    const current = read(file);
+    if (!current || !expect(current)) return false;
+    writeAtomic(file, next);
+    return true;
+  });
+}
+function compareAndRelease(file, token) {
+  return withGuard(file, () => {
+    const current = read(file);
+    if (!current || leaseToken(current)?.nonce !== token.nonce) return false;
+    fs11.unlinkSync(file);
+    syncDirectory2(path8.dirname(file));
+    return true;
+  });
+}
+function recover(file, orphan, probe = probeProcess) {
+  return withGuard(file, () => {
+    const current = read(file);
+    const owner = current && leaseToken(current);
+    if (!current || !owner || liveness(owner, probe) !== "dead" || !orphan(current)) return false;
+    fs11.unlinkSync(file);
+    syncDirectory2(path8.dirname(file));
+    return true;
+  });
+}
+var startMarker, tempPattern;
+var init_leases = __esm({
+  "packages/relay/src/leases.ts"() {
+    "use strict";
+    init_process();
+    startMarker = (startTime) => createHash4("sha256").update(startTime).digest("hex").slice(0, 24);
+    tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
+  }
+});
+
+// packages/relay/src/hub.ts
+import fs12 from "node:fs";
+import path9 from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
+function readJson(file) {
+  try {
+    return JSON.parse(fs12.readFileSync(file, "utf8"));
+  } catch (e) {
+    if (e.code === "ENOENT") return void 0;
+    throw e;
+  }
+}
+function incarnationFile(commonDir) {
+  const file = path9.join(hubDir(commonDir), "incarnation.json");
+  return serializedStore({
+    read: async () => {
+      const max2 = readJson(file)?.max;
+      return typeof max2 === "number" ? max2 : void 0;
+    },
+    write: async (max2) => {
+      writeAtomic(file, { max: max2 });
+    }
+  });
+}
+function holderDeadCheck(now = Date.now) {
+  const cache = /* @__PURE__ */ new Map();
+  return (h) => {
+    if (!pidAlive(h.pid)) return true;
+    const key2 = `${h.pid}\0${h.startTime}\0${h.executable}`;
+    const hit = cache.get(key2);
+    if (hit && now() - hit.at < PROBE_CACHE_MS) return hit.dead;
+    const dead = liveness(h) === "dead";
+    cache.set(key2, { at: now(), dead });
+    if (cache.size > 256) {
+      for (const [k, v] of cache) if (now() - v.at >= PROBE_CACHE_MS) cache.delete(k);
+    }
+    return dead;
+  };
+}
+var hubDir, AuthorityLock, PROBE_CACHE_MS;
+var init_hub2 = __esm({
+  "packages/relay/src/hub.ts"() {
+    "use strict";
+    init_src2();
+    init_leases();
+    init_process();
+    hubDir = (commonDir) => path9.join(commonDir, "room", "hub");
+    AuthorityLock = class _AuthorityLock {
+      constructor(file, token) {
+        this.file = file;
+        this.token = token;
+      }
+      file;
+      token;
+      /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
+      static take(commonDir) {
+        const file = path9.join(hubDir(commonDir), "authority.lock");
+        const own2 = probeProcess(process.pid);
+        const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
+        if (createExclusive(file, token)) return new _AuthorityLock(file, token);
+        try {
+          if (recover(file, () => true) && createExclusive(file, token)) return new _AuthorityLock(file, token);
+        } catch {
+        }
+        return void 0;
+      }
+      /** The lock file still carries this lock's token (nonce included). */
+      held() {
+        try {
+          return readJson(this.file)?.nonce === this.token.nonce;
+        } catch {
+          return false;
+        }
+      }
+      release() {
+        try {
+          compareAndRelease(this.file, this.token);
+        } catch {
+        }
+      }
+    };
+    PROBE_CACHE_MS = 5e3;
   }
 });
 
@@ -23565,22 +25036,6 @@ var init_sync = __esm({
           throw new Error("Unknown message type");
       }
       return messageType;
-    };
-  }
-});
-
-// node_modules/y-protocols/auth.js
-var messagePermissionDenied, readAuthMessage;
-var init_auth = __esm({
-  "node_modules/y-protocols/auth.js"() {
-    "use strict";
-    init_decoding();
-    messagePermissionDenied = 0;
-    readAuthMessage = (decoder, y, permissionDeniedHandler2) => {
-      switch (readVarUint(decoder)) {
-        case messagePermissionDenied:
-          permissionDeniedHandler2(y, readVarString(decoder));
-      }
     };
   }
 });
@@ -23794,6 +25249,903 @@ var init_awareness = __esm({
           updated,
           removed
         }, origin]);
+      }
+    };
+  }
+});
+
+// packages/relay/src/proof.ts
+import crypto3 from "node:crypto";
+import http from "node:http";
+function mac2(key2, message2) {
+  return crypto3.createHmac("sha256", key2).update(prefix + message2).digest("hex");
+}
+function sameProof(a, b) {
+  if (typeof a !== "string" || !/^[a-f0-9]{64}$/.test(a)) return false;
+  return crypto3.timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+}
+function relayProof(key2, nonce, port) {
+  return mac2(key2, `relay\0${nonce}\0${port}`);
+}
+function localViewKey(key2, room) {
+  return mac2(key2, `view\0${room}`);
+}
+function viewTicketProof(viewKey, room, ts, nonce) {
+  return mac2(viewKey, `ticket\0${room}\0${ts}\0${nonce}`);
+}
+function localProofHeader(key2, method, path50, port, ts = Date.now(), nonce = crypto3.randomBytes(16).toString("hex")) {
+  return `Room-Proof ${ts}.${nonce}.${mac2(key2, `client\0${method.toUpperCase()}\0${path50}\0${port}\0${ts}\0${nonce}`)}`;
+}
+async function relayIdentity(port, key2, timeoutMs2 = 800) {
+  const nonce = crypto3.randomBytes(16).toString("hex");
+  return new Promise((resolve5) => {
+    const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2, headers: { "x-room-nonce": nonce } }, (res) => {
+      let body2 = "";
+      res.on("data", (c) => {
+        body2 += c;
+        if (body2.length > 2048) req.destroy();
+      });
+      res.on("end", () => {
+        try {
+          const health = JSON.parse(body2);
+          if (res.statusCode !== 200 || !health || typeof health !== "object") {
+            resolve5(void 0);
+            return;
+          }
+          resolve5({ health, proven: sameProof(health.proof, relayProof(key2, nonce, port)) });
+        } catch {
+          resolve5(void 0);
+        }
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve5(void 0);
+    });
+    req.on("error", () => resolve5(void 0));
+  });
+}
+async function relayHealth(port, key2, timeoutMs2 = 800) {
+  const identity2 = await relayIdentity(port, key2, timeoutMs2);
+  return identity2?.proven ? identity2.health : void 0;
+}
+var PROOF_WINDOW_MS, REPLAY_CACHE_MAX, prefix, ProofVerifier;
+var init_proof = __esm({
+  "packages/relay/src/proof.ts"() {
+    "use strict";
+    PROOF_WINDOW_MS = 3e4;
+    REPLAY_CACHE_MAX = 1e4;
+    prefix = "room-relay-v1\0";
+    ProofVerifier = class {
+      constructor(key2, port, now = Date.now) {
+        this.key = key2;
+        this.port = port;
+        this.now = now;
+      }
+      key;
+      port;
+      now;
+      seen = /* @__PURE__ */ new Map();
+      verify(header, method, path50) {
+        if (typeof header !== "string") return false;
+        const match = /^Room-Proof (\d{13})\.([a-f0-9]{32})\.([a-f0-9]{64})$/.exec(header);
+        if (!match) return false;
+        const [, rawTs, nonce, proof] = match;
+        const ts = Number(rawTs), now = this.now();
+        if (Math.abs(ts - now) > PROOF_WINDOW_MS) return false;
+        for (const [n, expiry] of this.seen) if (expiry <= now) this.seen.delete(n);
+        if (this.seen.has(nonce) || this.seen.size >= REPLAY_CACHE_MAX) return false;
+        const expected = mac2(this.key, `client\0${method.toUpperCase()}\0${path50}\0${this.port}\0${ts}\0${nonce}`);
+        if (!sameProof(proof, expected)) return false;
+        this.seen.set(nonce, now + PROOF_WINDOW_MS);
+        return true;
+      }
+    };
+  }
+});
+
+// packages/relay/src/index.ts
+import crypto4 from "node:crypto";
+import fs13 from "node:fs";
+import http2 from "node:http";
+import path10 from "node:path";
+function safeUrl(target) {
+  if (!target || !target.startsWith("/") || target.startsWith("//") || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, "Bad Request");
+  try {
+    return new URL(target, "http://x");
+  } catch {
+    throw new HttpFailure(400, "Bad Request");
+  }
+}
+async function observeTakeover(work, report) {
+  try {
+    await work();
+  } catch (error2) {
+    try {
+      report(error2);
+    } catch {
+    }
+  }
+}
+function stateRequestLimiter(now = Date.now) {
+  let started = now(), count = 0;
+  return (buf, queued) => {
+    try {
+      const dec = createDecoder(buf);
+      const kind = readVarUint(dec);
+      if (kind !== 3 && (kind !== MSG_SYNC || readVarUint(dec) !== messageYjsSyncStep1)) return true;
+    } catch {
+      return true;
+    }
+    if (now() - started >= 6e4) {
+      started = now();
+      count = 0;
+    }
+    return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES;
+  };
+}
+function relayDocs() {
+  return /* @__PURE__ */ new Map();
+}
+function relayOutputAllowed(queued, aggregateQueued, nextBytes, socketBudget = RELAY_SOCKET_QUEUE_BYTES) {
+  return queued === 0 || queued + nextBytes <= socketBudget && aggregateQueued + nextBytes <= RELAY_TOTAL_QUEUE_BYTES;
+}
+function send(conn, buf) {
+  if (conn.readyState !== conn.OPEN) return;
+  const total = [...activeSockets].reduce((sum, socket) => sum + socket.bufferedAmount, 0);
+  if (!relayOutputAllowed(conn.bufferedAmount, total, buf.byteLength, socketBudgets.get(conn))) {
+    conn.close(1013, "relay output queue full");
+    setTimeout(() => {
+      if (conn.readyState !== conn.CLOSED) conn.terminate();
+    }, 1e3).unref?.();
+    return;
+  }
+  try {
+    conn.send(buf);
+  } catch {
+    try {
+      conn.close();
+    } catch {
+    }
+  }
+}
+function getDoc(docs, name2, opts) {
+  let d = docs.get(name2);
+  if (d) return d;
+  const memory = opts.commonDir ? new RoomMemory(opts.commonDir, decodeURIComponent(name2), opts.log) : void 0;
+  const doc = memory?.doc ?? new Doc2({ gc: true });
+  if (doc.getMap("meta").get("schemaVersion") !== 2) doc.getMap("meta").set("schemaVersion", 2);
+  if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name2), doc, opts.log);
+  const awareness = new Awareness(doc);
+  awareness.setLocalState(null);
+  d = { doc, awareness, conns: /* @__PURE__ */ new Map(), memory };
+  doc.on("update", (update) => {
+    const enc = createEncoder();
+    writeVarUint(enc, MSG_SYNC);
+    writeUpdate(enc, update);
+    const buf = toUint8Array(enc);
+    for (const c of d.conns.keys()) send(c, buf);
+  });
+  awareness.on("update", ({ added, updated, removed }, origin) => {
+    const changed = [...added, ...updated, ...removed];
+    if (origin && d.conns.has(origin)) {
+      const ids = d.conns.get(origin);
+      for (const id3 of added) ids.add(id3);
+      for (const id3 of removed) ids.delete(id3);
+    }
+    const enc = createEncoder();
+    writeVarUint(enc, MSG_AWARENESS);
+    writeVarUint8Array(enc, encodeAwarenessUpdate(awareness, changed));
+    const buf = toUint8Array(enc);
+    for (const c of d.conns.keys()) send(c, buf);
+  });
+  docs.set(name2, d);
+  if (opts.seed && name2 === encodeURIComponent(opts.seed.room)) applyUpdate(doc, opts.seed.update);
+  if (opts.hub) startRoomHub(d, decodeURIComponent(name2), opts.hub, opts.log ?? (() => {
+  }));
+  return d;
+}
+function startRoomHub(d, room, rt, log2) {
+  const roomDoc = d.room = new RoomDoc(d.doc);
+  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: (line) => log2(`local room ${room}: ${line}`), store: rt.store, holderDead: rt.holderDead, authority: () => rt.lock.held() }).then((hub) => {
+    if (d.closed) {
+      hub.stop();
+      return;
+    }
+    hub.onPush((conn, push) => send(conn, encodeFrame(push)));
+    d.hub = hub;
+  }).catch((e) => log2(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`));
+}
+function hubReply(d, conn, raw, hubOn, readOnly = false) {
+  const retryMs = hubBudget.take(conn);
+  if (retryMs) return { v: 1, re: "", ok: false, reason: "rate-limited", text: "hub requests too frequent", retryMs };
+  if (raw.byteLength > MAX_HUB_FRAME_BYTES) return { v: 1, re: "", ok: false, reason: "too-large", text: "hub request exceeds the frame limit" };
+  let frame;
+  try {
+    frame = decodeFrame(raw);
+  } catch {
+    frame = void 0;
+  }
+  const re = hubReplyId(frame);
+  if (!hubOn) return { v: 1, re, ok: false, reason: "not-authority", text: "not the authority; reconnect" };
+  if (readOnly) return { v: 1, re, ok: false, reason: "read-only", text: "this connection is read-only" };
+  if (!d.hub) return { v: 1, re, ok: false, reason: "starting", text: "the hub is starting", retryMs: STARTING_RETRY_MS };
+  return d.hub.handle(conn, frame, { local: true }, raw.byteLength);
+}
+function attach(docs, conn, req, opts) {
+  const name2 = encodeURIComponent(decodeURIComponent((req.url ?? "/").slice(1).split("?")[0]));
+  const d = getDoc(docs, name2, opts);
+  d.conns.set(conn, /* @__PURE__ */ new Set());
+  activeSockets.add(conn);
+  if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes);
+  const allowState = stateRequestLimiter();
+  conn.binaryType = "arraybuffer";
+  conn.on("message", (raw) => {
+    const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? new Uint8Array(Buffer.concat(raw)) : new Uint8Array(raw);
+    if (!allowState(buf, conn.bufferedAmount)) {
+      conn.close(1013, "too many state requests");
+      return;
+    }
+    try {
+      const dec = createDecoder(buf);
+      const enc2 = createEncoder();
+      switch (readVarUint(dec)) {
+        case MSG_SYNC:
+          if (opts.readOnly && peekVarUint(dec) !== messageYjsSyncStep1) break;
+          writeVarUint(enc2, MSG_SYNC);
+          readSyncMessage(dec, enc2, d.doc, conn);
+          if (length(enc2) > 1) send(conn, toUint8Array(enc2));
+          break;
+        case MSG_AWARENESS:
+          if (opts.readOnly) break;
+          applyAwarenessUpdate(d.awareness, readVarUint8Array(dec), conn);
+          break;
+        case MSG_HUB:
+          send(conn, encodeFrame(hubReply(d, conn, buf, !!opts.hub, opts.readOnly)));
+          break;
+      }
+    } catch {
+    }
+  });
+  const bye = () => {
+    if (!d.conns.has(conn)) return;
+    const ids = d.conns.get(conn);
+    d.conns.delete(conn);
+    activeSockets.delete(conn);
+    d.hub?.closed(conn);
+    if (ids?.size) removeAwarenessStates(d.awareness, Array.from(ids), null);
+    if (!d.conns.size && !d.closed) d.memory?.flush();
+  };
+  conn.on("close", bye);
+  conn.on("error", bye);
+  const enc = createEncoder();
+  writeVarUint(enc, MSG_SYNC);
+  writeSyncStep1(enc, d.doc);
+  send(conn, toUint8Array(enc));
+  const states = d.awareness.getStates();
+  if (states.size) {
+    const aenc = createEncoder();
+    writeVarUint(aenc, MSG_AWARENESS);
+    writeVarUint8Array(aenc, encodeAwarenessUpdate(d.awareness, Array.from(states.keys())));
+    send(conn, toUint8Array(aenc));
+  }
+}
+function relayFile(commonDir) {
+  return path10.join(commonDir, LOCAL_FILE);
+}
+function readRelayInfo(commonDir) {
+  try {
+    const v = JSON.parse(fs13.readFileSync(relayFile(commonDir), "utf8"));
+    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function deterministicPort(commonDir) {
+  let real = commonDir;
+  try {
+    real = fs13.realpathSync.native(commonDir);
+  } catch {
+  }
+  const h = crypto4.createHash("sha1").update("schema-2\0").update(real).digest();
+  return 4e4 + h.readUInt32BE(0) % 2e4;
+}
+function cloneId(commonDir) {
+  let real = commonDir;
+  try {
+    real = fs13.realpathSync.native(commonDir);
+  } catch {
+  }
+  return crypto4.createHash("sha256").update(real).digest("hex");
+}
+async function probeRelay(port, commonDir, key2, timeoutMs2 = 800) {
+  const identity2 = await relayIdentity(port, key2, timeoutMs2);
+  const h = identity2?.health;
+  if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return "none";
+  return identity2.proven && h.clone === cloneId(commonDir) ? "ours" : "foreign";
+}
+function findWebDist() {
+  const here = path10.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    process.env.ROOM_WEB_DIST,
+    path10.resolve(here, "..", "web"),
+    // plugins/room/server/room-mcp.mjs -> plugins/room/web
+    path10.resolve(here, "..", "..", "web", "dist"),
+    // packages/relay/src -> packages/web/dist
+    path10.resolve(here, "..", "..", "..", "web", "dist")
+  ];
+  for (const c of candidates) if (c && fs13.existsSync(path10.join(c, "index.html"))) return c;
+  return void 0;
+}
+function isLoopback(addr2) {
+  return !!addr2 && LOOPBACK.has(addr2);
+}
+function startRelay(port, opts = {}) {
+  return new Promise((resolve5, reject) => {
+    if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir");
+    const docOptions = {
+      commonDir: opts.commonDir,
+      log: opts.log,
+      seed: opts.seed,
+      socketQueueBytes: opts.socketQueueBytes,
+      ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
+    };
+    const staticDir = opts.staticDir ? path10.resolve(opts.staticDir) : findWebDist();
+    const requestedTicketTtl = opts.ticketTtlMs ?? 6e4;
+    const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(6e4, requestedTicketTtl)) : 6e4;
+    const tickets = /* @__PURE__ */ new Map();
+    const ticketRate = /* @__PURE__ */ new Map();
+    const viewNonces = /* @__PURE__ */ new Map();
+    let verifier;
+    const boundPort = () => server.address()?.port ?? port;
+    const proofOk = (req) => !!opts.key && (verifier ??= new ProofVerifier(opts.key, boundPort())).verify(req.headers.authorization, req.method ?? "GET", req.url ?? "/");
+    const obsolete = (req, url) => /^Bearer /i.test(req.headers.authorization ?? "") || url.searchParams.has("key");
+    const viewOk = (value2, room, now) => {
+      if (!opts.key || typeof value2.ts !== "number" || !Number.isSafeInteger(value2.ts) || typeof value2.nonce !== "string" || !/^[a-f0-9]{32}$/.test(value2.nonce)) return false;
+      if (Math.abs(now - value2.ts) > PROOF_WINDOW_MS) return false;
+      for (const [nonce, expiry] of viewNonces) if (expiry <= now) viewNonces.delete(nonce);
+      if (viewNonces.has(value2.nonce) || viewNonces.size >= 1e4) return false;
+      const expected = viewTicketProof(localViewKey(opts.key, room), room, value2.ts, value2.nonce);
+      if (!sameProof(value2.proof, expected)) return false;
+      viewNonces.set(value2.nonce, now + PROOF_WINDOW_MS);
+      return true;
+    };
+    const server = http2.createServer((req, res) => {
+      try {
+        res.setHeader("Referrer-Policy", "no-referrer");
+        const url = safeUrl(req.url);
+        if (obsolete(req, url)) {
+          res.writeHead(400);
+          res.end("use Authorization: Room-Proof or a view proof");
+          return;
+        }
+        if (url.pathname === "/ws-ticket" && req.method === "OPTIONS") {
+          res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "content-type" });
+          res.end();
+          return;
+        }
+        if (req.method === "POST" && url.pathname === "/ws-ticket") {
+          res.setHeader("Access-Control-Allow-Origin", "*");
+          if (!isLoopback(req.socket.remoteAddress)) {
+            res.writeHead(403);
+            res.end("Forbidden");
+            return;
+          }
+          const ip = req.socket.remoteAddress ?? "?", now = Date.now(), prior = ticketRate.get(ip);
+          const budget = prior && prior.until > now ? prior : { count: 0, until: now + 6e4 };
+          ticketRate.set(ip, budget);
+          if (++budget.count > 60) {
+            res.writeHead(429);
+            res.end("rate limited");
+            return;
+          }
+          let body2 = "";
+          req.on("data", (part) => {
+            body2 += part;
+            if (body2.length > 4096) req.destroy();
+          });
+          req.on("end", () => {
+            let value2;
+            try {
+              value2 = JSON.parse(body2);
+            } catch {
+              res.writeHead(400);
+              res.end("bad request");
+              return;
+            }
+            if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) {
+              res.writeHead(400);
+              res.end("bad request");
+              return;
+            }
+            if ("key" in value2) {
+              res.writeHead(400);
+              res.end("use a view proof");
+              return;
+            }
+            const room = value2.room;
+            if (value2.schema !== 2 || typeof room !== "string" || !room.startsWith("local/")) {
+              res.writeHead(400);
+              res.end("schema 2 local room required");
+              return;
+            }
+            if (!proofOk(req) && !viewOk(value2, room, now)) {
+              res.writeHead(403);
+              res.end("Forbidden");
+              return;
+            }
+            for (const [key2, t] of tickets) if (t.expires <= now) tickets.delete(key2);
+            if (tickets.size >= 1e4) {
+              res.writeHead(503);
+              res.end("too many pending tickets");
+              return;
+            }
+            const ticket = crypto4.randomBytes(16).toString("hex");
+            tickets.set(ticket, { room, expires: now + ticketTtl });
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
+          });
+          return;
+        }
+        if (url.pathname === "/health") {
+          const nonce = req.headers["x-room-nonce"];
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...opts.key && typeof nonce === "string" && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()) } : {} }));
+          return;
+        }
+        if (req.method === "DELETE" && url.pathname === "/memory") {
+          if (!proofOk(req) || !isLoopback(req.socket.remoteAddress)) {
+            res.writeHead(403);
+            res.end();
+            return;
+          }
+          try {
+            const room = url.searchParams.get("room") ?? "";
+            const d = docs.get(encodeURIComponent(room));
+            if (d?.memory) d.memory.forget();
+            else if (opts.commonDir) fs13.rmSync(memoryFile(opts.commonDir, room), { force: true });
+            if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
+            res.writeHead(204);
+            res.end();
+          } catch {
+            res.writeHead(500);
+            res.end("could not forget local memory");
+          }
+          return;
+        }
+        if (staticDir) {
+          const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+          const file = path10.resolve(staticDir, rel);
+          if (file.startsWith(staticDir + path10.sep) && fs13.existsSync(file) && fs13.statSync(file).isFile()) {
+            res.writeHead(200, { "content-type": MIME[path10.extname(file)] ?? "application/octet-stream", "cache-control": rel === "index.html" ? "no-store" : "no-cache" });
+            fs13.createReadStream(file).pipe(res);
+            return;
+          }
+        }
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
+      } catch (e) {
+        opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`);
+        if (!res.writableEnded) {
+          res.writeHead(e instanceof HttpFailure ? e.status : 500);
+          res.end(e instanceof HttpFailure ? e.message : "Internal Server Error");
+        }
+      }
+    });
+    const wss = new import_websocket_server.default({ noServer: true });
+    wss.on("headers", (headers) => headers.push("Referrer-Policy: no-referrer"));
+    const docs = relayDocs();
+    wss.on("connection", (conn, req) => {
+      try {
+        safeUrl(req.url);
+        attach(docs, conn, req, { ...docOptions, readOnly: !!req.ticketView });
+      } catch (e) {
+        opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
+        conn.close(1008, "Bad Request");
+      }
+    });
+    const ticker = setInterval(() => {
+      for (const [name2, d] of docs) {
+        try {
+          d.hub?.tick();
+        } catch (error2) {
+          opts.log?.(`hub maintenance ${name2}: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        }
+        if (opts.commonDir && d.memory) try {
+          catchUpLocal(opts.commonDir, decodeURIComponent(name2), d.doc, opts.log);
+        } catch (error2) {
+          opts.log?.(`local migration: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        }
+      }
+    }, 1e3);
+    ticker.unref?.();
+    server.on("upgrade", (req, socket, head) => {
+      socket.on("error", () => {
+      });
+      const refuse = (code, why) => {
+        socket.write(`HTTP/1.1 ${code} ${why}\r
+Referrer-Policy: no-referrer\r
+Connection: close\r
+\r
+`);
+        socket.destroy();
+      };
+      try {
+        const url = safeUrl(req.url);
+        if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
+        if (obsolete(req, url)) return refuse(400, "use Authorization: Room-Proof or a browser ticket");
+        if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
+        try {
+          decodeURIComponent((req.url ?? "/").split("?")[0]);
+        } catch {
+          return refuse(400, "Bad Request");
+        }
+        if (opts.key) {
+          const issued = url.searchParams.get("ticket");
+          const ticket = issued ? tickets.get(issued) : void 0;
+          if (issued) tickets.delete(issued);
+          const room = decodeURIComponent(url.pathname.slice(1));
+          const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room;
+          if (issued && !ticketOk) return refuse(403, "websocket ticket invalid or expired");
+          if (!ticketOk && !proofOk(req)) return refuse(403, "Forbidden: local room proof missing or wrong");
+          if (ticketOk) req.ticketView = true;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+      } catch (e) {
+        opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`);
+        refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : "Internal Server Error");
+      }
+    });
+    const signals = ["SIGTERM", "SIGINT"];
+    let closing;
+    const onSignal = () => {
+      void close();
+    };
+    const close = () => closing ??= new Promise((done) => {
+      for (const signal of signals) process.off(signal, onSignal);
+      clearInterval(ticker);
+      for (const d of docs.values()) {
+        d.closed = true;
+        d.hub?.stop();
+        d.memory?.close();
+      }
+      for (const c of wss.clients) c.terminate();
+      wss.close();
+      server.close(() => {
+        for (const d of docs.values()) {
+          d.awareness.destroy();
+          d.doc.destroy();
+        }
+        docs.clear();
+        opts.hub?.lock.release();
+        done();
+      });
+    });
+    server.once("error", (e) => {
+      clearInterval(ticker);
+      reject(e);
+    });
+    server.listen(port, "127.0.0.1", () => {
+      const addr2 = server.address();
+      const bound = typeof addr2 === "object" && addr2 ? addr2.port : port;
+      for (const signal of signals) process.on(signal, onSignal);
+      resolve5({
+        port: bound,
+        close,
+        hubRoom(room) {
+          const d = docs.get(encodeURIComponent(room));
+          return d?.room ? { doc: d.room, ...d.hub ? { hub: d.hub } : {} } : void 0;
+        }
+      });
+    });
+  });
+}
+async function ensureLocalRelay(commonDir, room, opts = {}) {
+  const log2 = opts.log ?? ((line) => process.stderr.write(`${line}
+`));
+  let owned = null;
+  let port = 0;
+  let key2 = "";
+  const write2 = () => {
+    const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs13.mkdirSync(path10.dirname(file), { recursive: true, mode: 448 });
+      fs13.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
+      fs13.chmodSync(tmp, 384);
+      fs13.renameSync(tmp, file);
+    } catch (e) {
+      try {
+        fs13.rmSync(tmp, { force: true });
+      } catch {
+      }
+      log2(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+  const recorded = async () => {
+    const info2 = readRelayInfo(commonDir);
+    if (!info2) return void 0;
+    const who2 = await probeRelay(info2.port, commonDir, info2.key);
+    if (who2 === "foreign") log2(`local room ${room}: ${relayFile(commonDir)} names a relay on 127.0.0.1:${info2.port} that does not serve this clone with its key; treating the file as stale`);
+    return who2 === "ours" ? info2 : void 0;
+  };
+  const adopt = (info2, how) => {
+    port = info2.port;
+    key2 = info2.key;
+    log2(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info2.pid}${pidAlive(info2.pid) ? "" : ", pid gone but relay answers"})`);
+  };
+  const start2 = (at, lock, seed) => startRelay(at, { key: key2, staticDir: opts.staticDir, commonDir, log: log2, hub: { lock }, ...seed ? { seed: { room, update: seed } } : {} });
+  const awaitWinner = async () => {
+    let winner;
+    for (let i2 = 0; i2 < 20 && !winner; i2++) {
+      await new Promise((r) => setTimeout(r, 100));
+      winner = await recorded();
+    }
+    return winner;
+  };
+  const existing = await recorded();
+  if (existing) adopt(existing, "joined");
+  else {
+    if (opts.joinOnly) throw new NoLocalRelay(room);
+    key2 = readRelayInfo(commonDir)?.key ?? crypto4.randomBytes(16).toString("hex");
+    const want = deterministicPort(commonDir);
+    const lock = AuthorityLock.take(commonDir);
+    if (!lock) {
+      const winner = await awaitWinner();
+      if (!winner) throw new Error(`local room ${room}: another process holds ${path10.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
+      adopt(winner, "another process holds the relay authority; joined");
+    } else {
+      try {
+        try {
+          owned = await start2(want, lock);
+        } catch (e) {
+          if (e.code !== "EADDRINUSE") throw e;
+          owned = await start2(0, lock);
+          log2(`local room ${room}: port ${want} is taken by something else; using a free port`);
+        }
+      } catch (e) {
+        lock.release();
+        throw e;
+      }
+      port = owned.port;
+      write2();
+      log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
+    }
+  }
+  let stopped = false;
+  let lost;
+  let ticking = null;
+  const tick = async () => {
+    if (stopped || owned || lost) return;
+    const who2 = await probeRelay(port, commonDir, key2);
+    if (stopped || who2 === "ours") return;
+    if (who2 === "foreign") {
+      lost = `127.0.0.1:${port} is now another clone's relay`;
+      log2(`local room ${room}: ${lost}; the session will join afresh`);
+      return;
+    }
+    if (opts.joinOnly) {
+      lost = `the lead's local relay for ${room} is no longer running`;
+      log2(`local room ${room}: ${lost}`);
+      return;
+    }
+    const lock = AuthorityLock.take(commonDir);
+    if (!lock) return;
+    let started;
+    try {
+      started = await start2(port, lock, opts.seed?.());
+    } catch {
+      lock.release();
+      return;
+    }
+    if (stopped) {
+      await started.close();
+      return;
+    }
+    owned = started;
+    write2();
+    log2(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`);
+  };
+  const timer = setInterval(() => {
+    if (ticking) return;
+    const work = observeTakeover(tick, (error2) => log2(`local room ${room}: relay takeover failed: ${error2 instanceof Error ? error2.message : String(error2)}`));
+    ticking = work;
+    void work.then(() => {
+      if (ticking === work) ticking = null;
+    });
+  }, opts.watchMs ?? 2e3);
+  timer.unref?.();
+  return {
+    url: `ws://127.0.0.1:${port}`,
+    httpUrl: `http://127.0.0.1:${port}`,
+    port,
+    key: key2,
+    get owned() {
+      return owned !== null;
+    },
+    get lost() {
+      return lost;
+    },
+    async forget() {
+      if (!await relayHealth(port, key2)) throw new Error("local relay identity could not be verified");
+      const resource = "/memory?room=" + encodeURIComponent(room);
+      const response = await fetch("http://127.0.0.1:" + port + resource, {
+        method: "DELETE",
+        headers: { authorization: localProofHeader(key2, "DELETE", resource, port) },
+        signal: AbortSignal.timeout(5e3)
+      });
+      if (!response.ok) throw new Error("could not forget local room memory: " + response.status);
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await ticking;
+      if (owned) {
+        await owned.close();
+        owned = null;
+      }
+    }
+  };
+}
+var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, activeSockets, socketBudgets, hubBudget, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
+var init_src3 = __esm({
+  "packages/relay/src/index.ts"() {
+    "use strict";
+    init_memory2();
+    init_local_migrate();
+    init_local_migrate();
+    init_process();
+    init_hub2();
+    init_memory2();
+    init_hub2();
+    init_wrapper();
+    init_yjs();
+    init_encoding();
+    init_decoding();
+    init_sync();
+    init_awareness();
+    init_src2();
+    init_src();
+    init_proof();
+    init_proof();
+    HttpFailure = class extends Error {
+      constructor(status, message2) {
+        super(message2);
+        this.status = status;
+      }
+      status;
+    };
+    MSG_SYNC = 0;
+    MSG_AWARENESS = 1;
+    RELAY_STATE_REQUESTS_PER_MINUTE = 10;
+    RELAY_STATE_QUEUE_BYTES = 1024 * 1024;
+    RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024;
+    RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024;
+    activeSockets = /* @__PURE__ */ new Set();
+    socketBudgets = /* @__PURE__ */ new WeakMap();
+    hubBudget = new HubRequestBudget();
+    LOCAL_FILE = path10.join("room", "relay.json");
+    MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
+    LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+    NoLocalRelay = class extends Error {
+      constructor(room) {
+        super(`no running local relay for ${room}`);
+        this.name = "NoLocalRelay";
+      }
+    };
+  }
+});
+
+// packages/roomd/src/ws-auth.ts
+function authorizedWebSocket(credentials) {
+  const headers = {
+    ...credentials.session ? { authorization: `Bearer ${credentials.session}` } : {},
+    ...credentials.token ? { "x-room-token": credentials.token } : {}
+  };
+  return class AuthorizedWebSocket extends wrapper_default {
+    constructor(address, protocols) {
+      if (!credentials.key) {
+        super(address, protocols, { headers });
+        return;
+      }
+      const url = new URL(address.toString());
+      const port = Number(url.port);
+      super(address, protocols, { headers, finishRequest: (request) => {
+        if (url.protocol !== "ws:" || url.hostname !== "127.0.0.1" || !Number.isInteger(port) || port < 1 || port > 65535) {
+          request.destroy(new Error("local relay requires ws://127.0.0.1:<port>"));
+          return;
+        }
+        void relayHealth(port, credentials.key).then((health) => {
+          if (!health) {
+            request.destroy(new Error("local relay identity could not be verified"));
+            return;
+          }
+          request.setHeader("authorization", localProofHeader(credentials.key, "GET", url.pathname + url.search, port));
+          request.end();
+        }, (error2) => request.destroy(error2));
+      } });
+    }
+  };
+}
+var init_ws_auth = __esm({
+  "packages/roomd/src/ws-auth.ts"() {
+    "use strict";
+    init_wrapper();
+    init_src3();
+  }
+});
+
+// node_modules/lib0/broadcastchannel.js
+var channels, LocalStoragePolyfill, BC, getChannel, subscribe, unsubscribe, publish;
+var init_broadcastchannel = __esm({
+  "node_modules/lib0/broadcastchannel.js"() {
+    "use strict";
+    init_map();
+    init_set();
+    init_buffer();
+    init_storage();
+    channels = /* @__PURE__ */ new Map();
+    LocalStoragePolyfill = class {
+      /**
+       * @param {string} room
+       */
+      constructor(room) {
+        this.room = room;
+        this.onmessage = null;
+        this._onChange = (e) => e.key === room && this.onmessage !== null && this.onmessage({ data: fromBase64(e.newValue || "") });
+        onChange(this._onChange);
+      }
+      /**
+       * @param {ArrayBuffer} buf
+       */
+      postMessage(buf) {
+        varStorage.setItem(this.room, toBase64(createUint8ArrayFromArrayBuffer(buf)));
+      }
+      close() {
+        offChange(this._onChange);
+      }
+    };
+    BC = typeof BroadcastChannel === "undefined" ? LocalStoragePolyfill : BroadcastChannel;
+    getChannel = (room) => setIfUndefined(channels, room, () => {
+      const subs = create2();
+      const bc = new BC(room);
+      bc.onmessage = (e) => subs.forEach((sub) => sub(e.data, "broadcastchannel"));
+      return {
+        bc,
+        subs
+      };
+    });
+    subscribe = (room, f) => {
+      getChannel(room).subs.add(f);
+      return f;
+    };
+    unsubscribe = (room, f) => {
+      const channel = getChannel(room);
+      const unsubscribed = channel.subs.delete(f);
+      if (unsubscribed && channel.subs.size === 0) {
+        channel.bc.close();
+        channels.delete(room);
+      }
+      return unsubscribed;
+    };
+    publish = (room, data, origin = null) => {
+      const c = getChannel(room);
+      c.bc.postMessage(data);
+      c.subs.forEach((sub) => sub(data, origin));
+    };
+  }
+});
+
+// node_modules/y-protocols/auth.js
+var messagePermissionDenied, readAuthMessage;
+var init_auth = __esm({
+  "node_modules/y-protocols/auth.js"() {
+    "use strict";
+    init_decoding();
+    messagePermissionDenied = 0;
+    readAuthMessage = (decoder, y, permissionDeniedHandler2) => {
+      switch (readVarUint(decoder)) {
+        case messagePermissionDenied:
+          permissionDeniedHandler2(y, readVarString(decoder));
       }
     };
   }
@@ -24210,7 +26562,7 @@ ${reason}`);
 });
 
 // packages/roomd/src/reanchor.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
 function claimDigest(text, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
@@ -24309,11 +26661,11 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
         uncertain.push(claim2.id);
         continue;
       }
-      const prefix = [0];
-      for (const line of lines) prefix.push(prefix[prefix.length - 1] + line.length);
+      const prefix2 = [0];
+      for (const line of lines) prefix2.push(prefix2[prefix2.length - 1] + line.length);
       const originalLines = original?.split("\n");
       const firstLineHash = originalLines?.length === width && digestLines(originalLines) === claim2.claimedHash ? lineHash(originalLines[0]) : void 0;
-      progress = { key: key2, lines, prefix, next: 0, found: 0, at: -1, firstLineHash };
+      progress = { key: key2, lines, prefix: prefix2, next: 0, found: 0, at: -1, firstLineHash };
       if (previous !== void 0) {
         if (!await tick(previous.length + text.length)) {
           uncertain.push(claim2.id);
@@ -24331,7 +26683,7 @@ async function reanchorClaims(owner, claims, texts, options = {}) {
         }
         if (candidate !== void 0 && candidate >= 1 && candidate + width - 1 <= lines.length) {
           const at = candidate - 1;
-          const chars = prefix[at + width] - prefix[at];
+          const chars = prefix2[at + width] - prefix2[at];
           if (!await tick(chars + width + 1)) {
             uncertain.push(claim2.id);
             continue;
@@ -24387,7 +26739,7 @@ var init_reanchor = __esm({
     init_libesm();
     DEFAULT_WORK_BUDGET = 4e6;
     BASE = 16777619;
-    digestLines = (lines) => createHash4("sha256").update(lines.join("\n"), "utf8").digest("hex");
+    digestLines = (lines) => createHash5("sha256").update(lines.join("\n"), "utf8").digest("hex");
     splitLines2 = (text) => {
       const lines = text.split("\n");
       if (text.endsWith("\n")) lines.pop();
@@ -26296,35 +28648,35 @@ var init_base2 = __esm({
 });
 
 // packages/roomd/src/index.ts
-import fs8 from "node:fs";
-import path5 from "node:path";
+import fs14 from "node:fs";
+import path11 from "node:path";
 import os from "node:os";
-import { createHash as createHash5, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
 function machineIdentity(log2) {
   if (process.env.ROOM_MACHINE_ID) return process.env.ROOM_MACHINE_ID;
-  const file = path5.join(process.env.XDG_CONFIG_HOME || path5.join(os.homedir(), ".config"), "room", "machine-id");
+  const file = path11.join(process.env.XDG_CONFIG_HOME || path11.join(os.homedir(), ".config"), "room", "machine-id");
   const cached2 = machineIdentities.get(file);
   if (cached2) return cached2;
   try {
-    fs8.mkdirSync(path5.dirname(file), { recursive: true, mode: 448 });
+    fs14.mkdirSync(path11.dirname(file), { recursive: true, mode: 448 });
     const temporary = `${file}.${process.pid}.${randomBytes2(8).toString("hex")}`;
     try {
-      fs8.writeFileSync(temporary, randomBytes2(32).toString("hex") + "\n", { flag: "wx", mode: 384 });
+      fs14.writeFileSync(temporary, randomBytes2(32).toString("hex") + "\n", { flag: "wx", mode: 384 });
       try {
-        fs8.linkSync(temporary, file);
+        fs14.linkSync(temporary, file);
       } catch (error2) {
         if (error2.code !== "EEXIST") throw error2;
       }
     } finally {
       try {
-        fs8.rmSync(temporary, { force: true });
+        fs14.rmSync(temporary, { force: true });
       } catch {
       }
     }
-    const id3 = fs8.readFileSync(file, "utf8").trim();
+    const id3 = fs14.readFileSync(file, "utf8").trim();
     if (!/^[a-f0-9]{64}$/.test(id3)) throw new Error("invalid machine-id file");
     machineIdentities.set(file, id3);
     return id3;
@@ -26384,7 +28736,7 @@ function errMsg(error2) {
   return error2 instanceof Error ? error2.message : String(error2);
 }
 var machineHostname, machineIdentities, machineIdentityWarningLogged, RoomdError, ROOM_FILE, ROOMIGNORE, DEFAULT_STARTUP_TIMEOUT_MS, Daemon, hubAccepted, TRANSITION_ATTEMPTS, NO_CLAIM_CHANGES, branchName;
-var init_src2 = __esm({
+var init_src4 = __esm({
   "packages/roomd/src/index.ts"() {
     "use strict";
     init_room_file();
@@ -26527,7 +28879,7 @@ var init_src2 = __esm({
         assertValidParticipantName(options.name);
         if (options.owner) assertValidParticipantName(options.owner);
         if (options.label) assertValidParticipantName(options.label);
-        this.dir = path5.resolve(options.dir);
+        this.dir = path11.resolve(options.dir);
         this.name = options.name;
         this.kind = options.kind ?? "human";
         this.owner = options.owner ?? options.name;
@@ -26548,7 +28900,7 @@ var init_src2 = __esm({
           return () => clearTimeout(timer);
         });
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash5("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs8.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash6("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs14.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -26598,7 +28950,7 @@ var init_src2 = __esm({
         this.setStatus("syncing", { host: options.host, model: options.model, effort: options.effort });
       }
       async start() {
-        if (!fs8.existsSync(path5.join(this.dir, ".git"))) {
+        if (!fs14.existsSync(path11.join(this.dir, ".git"))) {
           throw new RoomdError(`${this.dir} is not a git repository`, 1);
         }
         const [branch, base, tracked, remote] = await this.step("git", () => Promise.all([
@@ -26675,7 +29027,7 @@ var init_src2 = __esm({
       loadRoomIgnore() {
         let text = "";
         try {
-          if (this.isSafeRoomPath(ROOMIGNORE, false)) text = fs8.readFileSync(this.abs(ROOMIGNORE), "utf8");
+          if (this.isSafeRoomPath(ROOMIGNORE, false)) text = fs14.readFileSync(this.abs(ROOMIGNORE), "utf8");
         } catch {
         }
         this.roomIgnoreText = text;
@@ -26814,10 +29166,10 @@ var init_src2 = __esm({
           const legacy = previous?.legacy ?? (previous?.room && previous.room !== this.roomUrl && previous.name ? { room: previous.room, name: previous.name } : void 0);
           const file = roomFilePath(this.dir), temp = `${file}.${process.pid}.${randomBytes2(4).toString("hex")}.tmp`;
           try {
-            fs8.writeFileSync(temp, JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir, ...legacy ? { legacy } : {} }, null, 2) + "\n", { mode: 384 });
-            fs8.renameSync(temp, file);
+            fs14.writeFileSync(temp, JSON.stringify({ room: this.roomUrl, name: this.name, dir: this.dir, ...legacy ? { legacy } : {} }, null, 2) + "\n", { mode: 384 });
+            fs14.renameSync(temp, file);
           } finally {
-            fs8.rmSync(temp, { force: true });
+            fs14.rmSync(temp, { force: true });
           }
         } catch (error2) {
           this.log(`warn: could not write ${ROOM_FILE}: ${errMsg(error2)}`);
@@ -26825,14 +29177,14 @@ var init_src2 = __esm({
       }
       excludeRoomFile() {
         const gitDir = commonGitDirFromDotGit(this.dir);
-        const exclude = path5.join(gitDir, "info", "exclude");
+        const exclude = path11.join(gitDir, "info", "exclude");
         try {
-          fs8.mkdirSync(path5.dirname(exclude), { recursive: true });
-          const current = fs8.existsSync(exclude) ? fs8.readFileSync(exclude, "utf8") : "";
+          fs14.mkdirSync(path11.dirname(exclude), { recursive: true });
+          const current = fs14.existsSync(exclude) ? fs14.readFileSync(exclude, "utf8") : "";
           const missing2 = [ROOM_FILE, ".room/"].filter((p) => !current.split(/\r?\n/).includes(p));
           if (!missing2.length) return;
           const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-          fs8.appendFileSync(exclude, `${separator}${missing2.join("\n")}
+          fs14.appendFileSync(exclude, `${separator}${missing2.join("\n")}
 `);
         } catch (error2) {
           this.log(`warn: could not add ${ROOM_FILE} to .git/info/exclude: ${errMsg(error2)}`);
@@ -26885,11 +29237,11 @@ var init_src2 = __esm({
       async waitForGitOperation(head) {
         const gitDir = worktreeGitDirFromDotGit(this.dir);
         const markers = ["index.lock", "MERGE_AUTOSTASH", "MERGE_HEAD", "REBASE_HEAD", "rebase-apply", "rebase-merge"];
-        const busy2 = () => markers.some((marker) => fs8.existsSync(path5.join(gitDir, marker)));
+        const busy2 = () => markers.some((marker) => fs14.existsSync(path11.join(gitDir, marker)));
         const claimedPaths = [...new Set([...this.roomDoc.claims.values()].filter((c) => c.by === this.name && !c.mirrorOf && !c.path.endsWith("/") && this.isSafeRoomPath(c.path, false)).map((c) => c.path))].sort();
         const fingerprint = () => claimedPaths.map((rel) => {
           try {
-            const stat4 = fs8.lstatSync(this.abs(rel));
+            const stat4 = fs14.lstatSync(this.abs(rel));
             return `${rel}:${stat4.size}:${stat4.mtimeMs}`;
           } catch {
             return `${rel}:missing`;
@@ -27161,7 +29513,7 @@ var init_src2 = __esm({
             continue;
           }
           try {
-            const before = await fs8.promises.lstat(this.abs(rel));
+            const before = await fs14.promises.lstat(this.abs(rel));
             if (!before.isFile()) {
               currentTexts.set(rel, void 0);
               continue;
@@ -27170,7 +29522,7 @@ var init_src2 = __esm({
               unreadable.add(rel);
               continue;
             }
-            const handle2 = await fs8.promises.open(this.abs(rel), fs8.constants.O_RDONLY | fs8.constants.O_NOFOLLOW);
+            const handle2 = await fs14.promises.open(this.abs(rel), fs14.constants.O_RDONLY | fs14.constants.O_NOFOLLOW);
             try {
               const opened = await handle2.stat();
               if (!opened.isFile() || opened.size > this.sizeCap || opened.ino !== before.ino || opened.mtimeMs !== before.mtimeMs) {
@@ -27185,7 +29537,7 @@ var init_src2 = __esm({
                 count += read3.bytesRead;
               }
               const after = await handle2.stat();
-              const pathAfter = await fs8.promises.lstat(this.abs(rel));
+              const pathAfter = await fs14.promises.lstat(this.abs(rel));
               if (count !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || pathAfter.ino !== opened.ino || !this.isSafeRoomPath(rel, false)) {
                 unreadable.add(rel);
                 continue;
@@ -27242,7 +29594,7 @@ var init_src2 = __esm({
       claimFileIdentity(rel) {
         if (!this.isSafeRoomPath(rel, false)) return "unsafe";
         try {
-          const stat4 = fs8.lstatSync(this.abs(rel));
+          const stat4 = fs14.lstatSync(this.abs(rel));
           return `${stat4.isFile()}:${stat4.size}:${stat4.mtimeMs}:${stat4.ino}`;
         } catch (error2) {
           return `error:${error2.code ?? "unknown"}`;
@@ -27342,7 +29694,7 @@ var init_src2 = __esm({
         await this.publisher.reconcile("all", this.publicationComplete());
       }
       abs(relpath) {
-        return path5.join(this.dir, ...relpath.split("/"));
+        return path11.join(this.dir, ...relpath.split("/"));
       }
       isIgnoredPath(relpath) {
         if (!relpath || relpath === ROOM_FILE) return true;
@@ -27381,26 +29733,26 @@ var init_src2 = __esm({
       }
       isSafeRoomPath(relpath, applyIgnore = true) {
         if (applyIgnore && this.isIgnoredPath(relpath)) return false;
-        const target = path5.resolve(this.dir, ...relpath.split("/"));
-        const inside = path5.relative(this.dir, target);
-        if (!inside || inside === ".." || inside.startsWith(`..${path5.sep}`) || path5.isAbsolute(inside)) return false;
+        const target = path11.resolve(this.dir, ...relpath.split("/"));
+        const inside = path11.relative(this.dir, target);
+        if (!inside || inside === ".." || inside.startsWith(`..${path11.sep}`) || path11.isAbsolute(inside)) return false;
         let current = this.dir;
-        for (const segment of inside.split(path5.sep)) {
-          current = path5.join(current, segment);
+        for (const segment of inside.split(path11.sep)) {
+          current = path11.join(current, segment);
           try {
-            const relative3 = path5.relative(this.dir, current);
-            if (fs8.lstatSync(current).isSymbolicLink()) this.symlinks.add(relative3);
+            const relative3 = path11.relative(this.dir, current);
+            if (fs14.lstatSync(current).isSymbolicLink()) this.symlinks.add(relative3);
             else this.symlinks.delete(relative3);
-            if (this.symlinks.has(path5.relative(this.dir, current))) {
+            if (this.symlinks.has(path11.relative(this.dir, current))) {
               this.skipIgnored(relpath, "symlink");
               return false;
             }
-            const real = path5.relative(fs8.realpathSync(this.dir), fs8.realpathSync(current));
-            if (real === ".." || real.startsWith(`..${path5.sep}`) || path5.isAbsolute(real)) return false;
+            const real = path11.relative(fs14.realpathSync(this.dir), fs14.realpathSync(current));
+            if (real === ".." || real.startsWith(`..${path11.sep}`) || path11.isAbsolute(real)) return false;
           } catch (error2) {
             if (error2.code !== "ENOENT") return false;
           }
-          if (this.symlinks.has(path5.relative(this.dir, current))) return false;
+          if (this.symlinks.has(path11.relative(this.dir, current))) return false;
         }
         return true;
       }
@@ -27408,7 +29760,7 @@ var init_src2 = __esm({
       async startWatcher() {
         this.beforeWatcherReady?.();
         try {
-          const root = fs8.opendirSync(this.dir);
+          const root = fs14.opendirSync(this.dir);
           try {
             root.readSync();
           } finally {
@@ -27420,7 +29772,7 @@ var init_src2 = __esm({
         const watchedFiles = /* @__PURE__ */ new Set();
         let warnedLarge = false;
         const countFile = (absolute, add2) => {
-          const relpath = path5.relative(this.dir, absolute).split(path5.sep).join("/");
+          const relpath = path11.relative(this.dir, absolute).split(path11.sep).join("/");
           if (!relpath || defaultIgnoredPath(relpath)) return;
           if (add2) watchedFiles.add(relpath);
           else watchedFiles.delete(relpath);
@@ -27434,7 +29786,7 @@ var init_src2 = __esm({
           followSymlinks: false,
           persistent: true,
           ignored: (absolute) => {
-            const relpath = path5.relative(this.dir, absolute).split(path5.sep).join("/");
+            const relpath = path11.relative(this.dir, absolute).split(path11.sep).join("/");
             if (relpath === "") return false;
             if (isRegenerableBuildPath(relpath.slice(relpath.lastIndexOf("/") + 1)) && !this.holdsTracked(relpath)) return true;
             if (defaultIgnoredPath(relpath)) return this.isIgnoredPath(relpath);
@@ -27446,13 +29798,13 @@ var init_src2 = __esm({
           if (this.stopped) return;
           if (event === "add") countFile(absolute, true);
           else if (event === "unlink") countFile(absolute, false);
-          const relpath = path5.relative(this.dir, absolute).split(path5.sep).join("/");
+          const relpath = path11.relative(this.dir, absolute).split(path11.sep).join("/");
           if (!this.isSafeRoomPath(relpath)) {
             this.onScanned?.(relpath);
             return;
           }
           if (event === "addDir" || event === "unlinkDir") return;
-          if (path5.basename(relpath) === ".gitignore") {
+          if (path11.basename(relpath) === ".gitignore") {
             if (this.trackedPoll) this.trackedPoll.trigger();
             else observeCallback(() => this.refreshTracked(), (error2) => this.log(`warn: ${errMsg(error2)}`));
           }
@@ -27479,9 +29831,9 @@ var init_src2 = __esm({
           watcher.once("ready", ready);
         });
         for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name2 of names) {
-          const absolute = path5.join(dir, name2);
+          const absolute = path11.join(dir, name2);
           try {
-            if (fs8.statSync(absolute).isFile()) countFile(absolute, true);
+            if (fs14.statSync(absolute).isFile()) countFile(absolute, true);
           } catch {
           }
         }
@@ -27509,15 +29861,15 @@ var init_src2 = __esm({
           return;
         }
         if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
-          if (!isNew || !fs8.existsSync(this.abs(relpath))) return;
+          if (!isNew || !fs14.existsSync(this.abs(relpath))) return;
           this.tracked.add(relpath);
         }
         await this.publisher.reconcile("all", this.publicationComplete());
       }
       /** Does git track (or offer as untracked) any file under this directory? */
       holdsTracked(dir) {
-        const prefix = `${dir}/`;
-        for (const relpath of this.tracked) if (relpath.startsWith(prefix)) return true;
+        const prefix2 = `${dir}/`;
+        for (const relpath of this.tracked) if (relpath.startsWith(prefix2)) return true;
         return false;
       }
       async refreshTracked() {
@@ -27530,15 +29882,15 @@ var init_src2 = __esm({
         this.tracked = next.paths;
         this.indexed = next.indexed;
         for (const relpath of /* @__PURE__ */ new Set([...added, ...promoted, ...demoted])) {
-          if (!this.isIgnoredPath(relpath) && fs8.existsSync(this.abs(relpath))) {
+          if (!this.isIgnoredPath(relpath) && fs14.existsSync(this.abs(relpath))) {
             this.scheduleDisk(relpath, true);
             if (isRegenerableBuildPath(relpath)) this.watcher?.add(this.abs(relpath));
           }
         }
         for (const relpath of removed) {
-          if (fs8.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
+          if (fs14.existsSync(this.abs(relpath)) && await gitIgnored(this.dir, relpath)) {
             this.scheduleDisk(relpath, false);
-          } else if (this.fence && this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs8.existsSync(this.abs(relpath))) {
+          } else if (this.fence && this.roomDoc.overlayText(manifestKey(this.name, this.fence), relpath) && !fs14.existsSync(this.abs(relpath))) {
             this.scheduleDisk(relpath, false);
           }
         }
@@ -27553,9 +29905,9 @@ var init_src2 = __esm({
 
 // packages/room-mcp/src/config.ts
 import os2 from "node:os";
-import { execFileSync as execFileSync2 } from "node:child_process";
-import path6 from "node:path";
-import fs9 from "node:fs";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import path12 from "node:path";
+import fs15 from "node:fs";
 function normaliseWhere(where) {
   const w = value(where);
   if (!w) return void 0;
@@ -27582,15 +29934,15 @@ function resolveShare(raw, source = "share") {
 }
 async function readRememberedChoice(dir) {
   try {
-    const file = path6.join(await gitCommonDir(dir), "room-choice.json");
-    const parsed = JSON.parse(fs9.readFileSync(file, "utf8"));
+    const file = path12.join(await gitCommonDir(dir), "room-choice.json");
+    const parsed = JSON.parse(fs15.readFileSync(file, "utf8"));
     return { where: value(parsed.where), room: value(parsed.room) };
   } catch {
     return {};
   }
 }
 function resolveCredentialsPath(args3 = {}, e = process.env) {
-  return value(args3.credentialsPath ?? args3.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path6.join(value(e.XDG_CONFIG_HOME) ?? path6.join(os2.homedir(), ".config"), "room", "credentials.json");
+  return value(args3.credentialsPath ?? args3.credentials) ?? value(e.ROOM_CREDENTIALS) ?? path12.join(value(e.XDG_CONFIG_HOME) ?? path12.join(os2.homedir(), ".config"), "room", "credentials.json");
 }
 async function resolveConfig({ env, args: args3 = {}, dir }) {
   const e = env ?? process.env;
@@ -27626,7 +29978,7 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     claudeChannel: (args3.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
     workerId: value(e.ROOM_WORKER_ID),
     roomUrl,
-    dir: path6.resolve(dir),
+    dir: path12.resolve(dir),
     server: resolveServer(where, teamServer),
     teamServer,
     where,
@@ -27648,12 +30000,12 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     web: value(args3.web) ?? value(e.ROOM_WEB)
   };
 }
-function resolveSessionHost(env = process.env, parentCommand2 = () => execFileSync2("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
+function resolveSessionHost(env = process.env, parentCommand2 = () => execFileSync3("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } })) {
   const host = (v) => v === "claude" || v === "codex" ? v : void 0;
   if (host(env.ROOM_WORKER_HOST)) return env.ROOM_WORKER_HOST;
   if (host(env.ROOM_HOST)) return env.ROOM_HOST;
   try {
-    const command2 = path6.basename(parentCommand2().trim()).toLowerCase();
+    const command2 = path12.basename(parentCommand2().trim()).toLowerCase();
     if (/^codex(?:[.-]|$)/.test(command2)) return "codex";
     if (/^claude(?:[.-]|$)/.test(command2)) return "claude";
   } catch {
@@ -27669,7 +30021,7 @@ function resolveSessionRuntime(sessionDir, env = process.env) {
   const read3 = (name2) => {
     if (!sessionDir) return {};
     try {
-      return JSON.parse(fs9.readFileSync(path6.join(sessionDir, name2), "utf8"));
+      return JSON.parse(fs15.readFileSync(path12.join(sessionDir, name2), "utf8"));
     } catch {
       return {};
     }
@@ -27684,8 +30036,8 @@ var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_
 var init_config = __esm({
   "packages/room-mcp/src/config.ts"() {
     "use strict";
-    init_src2();
-    init_src2();
+    init_src4();
+    init_src4();
     DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
     LOCAL = "local";
     DEFAULT_CLAUDE_CHANNEL = "plugin:room@room";
@@ -27696,269 +30048,6 @@ var init_config = __esm({
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? n : fallback2;
     };
-  }
-});
-
-// packages/relay/src/process.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import fs10 from "node:fs";
-import path7 from "node:path";
-function pidAlive(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === "EPERM";
-  }
-}
-function parsePsLstartUtc(line) {
-  const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
-  if (!match) return void 0;
-  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]);
-  const seconds = Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1e3;
-  return Number.isInteger(seconds) ? seconds : void 0;
-}
-function probeProcess(pid, readers = systemProcessReaders) {
-  if (!pid || pid <= 0) return void 0;
-  const unreadable = () => pidAlive(pid) ? {} : void 0;
-  try {
-    if (readers.platform === "linux") {
-      const stat4 = readers.readFile(`/proc/${pid}/stat`);
-      const close = stat4.lastIndexOf(")");
-      if (close < 0) return unreadable();
-      const startTicks = stat4.slice(close + 1).trim().split(/\s+/)[19];
-      if (!/^\d+$/.test(startTicks ?? "")) return unreadable();
-      const bootId = readers.readFile("/proc/sys/kernel/random/boot_id").trim();
-      if (!bootId) return unreadable();
-      let executable;
-      try {
-        executable = path7.basename(readers.readLink(`/proc/${pid}/exe`));
-      } catch {
-      }
-      return { startTime: `linux:${bootId}:${startTicks}`, executable };
-    }
-    if (readers.platform === "darwin") {
-      const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
-      const startSeconds = parsePsLstartUtc(lstart);
-      if (startSeconds === void 0) return unreadable();
-      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
-      if (!boot) return unreadable();
-      let executable;
-      try {
-        executable = path7.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
-      } catch {
-      }
-      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
-    }
-  } catch {
-  }
-  return unreadable();
-}
-var systemProcessReaders;
-var init_process = __esm({
-  "packages/relay/src/process.ts"() {
-    "use strict";
-    systemProcessReaders = {
-      platform: process.platform,
-      readFile: (file) => fs10.readFileSync(file, "utf8"),
-      readLink: (file) => fs10.readlinkSync(file),
-      exec: (file, args3) => execFileSync4(file, args3, {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 3e3,
-        ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
-      })
-    };
-  }
-});
-
-// packages/relay/src/leases.ts
-import fs11 from "node:fs";
-import path8 from "node:path";
-import { createHash as createHash6, randomUUID } from "node:crypto";
-function liveness(identity2, probe = probeProcess) {
-  const observed = probe(identity2.pid);
-  if (!observed) return "dead";
-  if (observed.startTime && identity2.startTime && observed.startTime !== identity2.startTime) return "dead";
-  if (observed.executable && identity2.executable && observed.executable !== identity2.executable) return "dead";
-  if (!observed.startTime || !observed.executable || !identity2.startTime || !identity2.executable) return "unknown";
-  return "alive";
-}
-function syncDirectory(dir) {
-  let fd;
-  try {
-    fd = fs11.openSync(dir, "r");
-    fs11.fsyncSync(fd);
-  } catch (e) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(e.code ?? "")) throw e;
-  } finally {
-    if (fd !== void 0) fs11.closeSync(fd);
-  }
-}
-function ensureDurableDirectory(dir) {
-  const parent = path8.dirname(dir);
-  if (parent !== dir) ensureDurableDirectory(parent);
-  try {
-    fs11.mkdirSync(dir, { mode: 448 });
-  } catch (e) {
-    if (e.code !== "EEXIST") throw e;
-  }
-  if (parent !== dir) syncDirectory(parent);
-}
-function cleanupOrphanTemps(dir, probe = probeProcess) {
-  let removed = 0;
-  for (const name2 of fs11.readdirSync(dir)) {
-    const match = tempPattern.exec(name2);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    const observed = probe(pid);
-    if (observed && (match[2] === "u" || !observed.startTime || startMarker(observed.startTime) === match[2])) continue;
-    if (pidAlive(pid)) continue;
-    try {
-      fs11.unlinkSync(path8.join(dir, name2));
-      removed++;
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-  }
-  if (removed) syncDirectory(dir);
-  return removed;
-}
-function writeTemp(file, content) {
-  const dir = path8.dirname(file);
-  ensureDurableDirectory(dir);
-  cleanupOrphanTemps(dir);
-  const start2 = probeProcess(process.pid)?.startTime;
-  const temp = `${file}.roomtmp-p${process.pid}-s${start2 ? startMarker(start2) : "u"}-n${randomUUID()}.tmp`;
-  const fd = fs11.openSync(temp, "wx", 384);
-  try {
-    fs11.writeFileSync(fd, JSON.stringify(content) + "\n");
-    fs11.fsyncSync(fd);
-  } catch (e) {
-    fs11.closeSync(fd);
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(dir);
-    throw e;
-  }
-  fs11.closeSync(fd);
-  return temp;
-}
-function createExclusive(file, content) {
-  const temp = writeTemp(file, content);
-  try {
-    try {
-      fs11.linkSync(temp, file);
-    } catch (e) {
-      if (e.code === "EEXIST") return false;
-      throw e;
-    }
-    syncDirectory(path8.dirname(file));
-    return true;
-  } finally {
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(path8.dirname(file));
-  }
-}
-function writeAtomic(file, content) {
-  const temp = writeTemp(file, content);
-  try {
-    fs11.renameSync(temp, file);
-    syncDirectory(path8.dirname(file));
-  } finally {
-    fs11.rmSync(temp, { force: true });
-    syncDirectory(path8.dirname(file));
-  }
-}
-function read(file) {
-  try {
-    return JSON.parse(fs11.readFileSync(file, "utf8"));
-  } catch (e) {
-    if (e.code === "ENOENT") return void 0;
-    throw e;
-  }
-}
-function leaseToken(value2) {
-  const candidate = value2.holder ?? value2;
-  return candidate && typeof candidate.pid === "number" && typeof candidate.startTime === "string" && typeof candidate.executable === "string" && typeof candidate.sessionId === "string" && typeof candidate.nonce === "string" ? candidate : void 0;
-}
-function ownToken() {
-  const current = probeProcess(process.pid);
-  return { pid: process.pid, startTime: current?.startTime ?? "", executable: current?.executable ?? "", sessionId: `mcp:${process.pid}:${current?.startTime ?? "unknown"}`, nonce: randomUUID() };
-}
-function acquireGuard(file, probe, depth = 0) {
-  if (depth > 12) throw new Error(`too many stale lease guards at ${file}`);
-  const token = ownToken();
-  if (createExclusive(file, token)) return token;
-  const previous = read(file);
-  const previousHolder = previous && leaseToken(previous);
-  if (!previousHolder || liveness(previousHolder, probe) !== "dead") throw new Error(`lease guard busy: ${file}`);
-  const outer = acquireGuard(`${file}.guard`, probe, depth + 1);
-  try {
-    const latest = read(file);
-    const latestHolder = latest && leaseToken(latest);
-    if (latestHolder && liveness(latestHolder, probe) === "dead") {
-      fs11.unlinkSync(file);
-      syncDirectory(path8.dirname(file));
-    }
-  } finally {
-    releaseGuard(`${file}.guard`, outer);
-  }
-  if (createExclusive(file, token)) return token;
-  throw new Error(`lease guard busy: ${file}`);
-}
-function releaseGuard(file, token) {
-  const current = read(file);
-  if (current && leaseToken(current)?.nonce === token.nonce) {
-    fs11.unlinkSync(file);
-    syncDirectory(path8.dirname(file));
-  }
-}
-function withGuard(file, fn, probe = probeProcess) {
-  const guard = `${file}.guard`;
-  const token = acquireGuard(guard, probe);
-  try {
-    const result2 = fn();
-    if (result2 && typeof result2.then === "function") throw new TypeError("lease guard callback must be synchronous");
-    return result2;
-  } finally {
-    releaseGuard(guard, token);
-  }
-}
-function replace2(file, expect, next) {
-  return withGuard(file, () => {
-    const current = read(file);
-    if (!current || !expect(current)) return false;
-    writeAtomic(file, next);
-    return true;
-  });
-}
-function compareAndRelease(file, token) {
-  return withGuard(file, () => {
-    const current = read(file);
-    if (!current || leaseToken(current)?.nonce !== token.nonce) return false;
-    fs11.unlinkSync(file);
-    syncDirectory(path8.dirname(file));
-    return true;
-  });
-}
-function recover(file, orphan, probe = probeProcess) {
-  return withGuard(file, () => {
-    const current = read(file);
-    const owner = current && leaseToken(current);
-    if (!current || !owner || liveness(owner, probe) !== "dead" || !orphan(current)) return false;
-    fs11.unlinkSync(file);
-    syncDirectory(path8.dirname(file));
-    return true;
-  });
-}
-var startMarker, tempPattern;
-var init_leases = __esm({
-  "packages/relay/src/leases.ts"() {
-    "use strict";
-    init_process();
-    startMarker = (startTime) => createHash6("sha256").update(startTime).digest("hex").slice(0, 24);
-    tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
   }
 });
 
@@ -28007,22 +30096,22 @@ var init_plugin = __esm({
 });
 
 // packages/room-mcp/src/worker-config.ts
-import fs12 from "node:fs";
-import path9 from "node:path";
+import fs16 from "node:fs";
+import path13 from "node:path";
 import os3 from "node:os";
 import { fileURLToPath } from "node:url";
 function workerRuntime(host, model, effort, env = process.env) {
   const clean2 = (value2) => value2?.trim() || void 0;
-  const prefix = host === "codex" ? "ROOM_CODEX_WORKER_" : "ROOM_CLAUDE_WORKER_";
+  const prefix2 = host === "codex" ? "ROOM_CODEX_WORKER_" : "ROOM_CLAUDE_WORKER_";
   return {
-    model: clean2(model) ?? clean2(env[`${prefix}MODEL`]) ?? clean2(env.ROOM_WORKER_MODEL),
-    effort: clean2(effort) ?? clean2(env[`${prefix}EFFORT`]) ?? clean2(env.ROOM_WORKER_EFFORT)
+    model: clean2(model) ?? clean2(env[`${prefix2}MODEL`]) ?? clean2(env.ROOM_WORKER_MODEL),
+    effort: clean2(effort) ?? clean2(env[`${prefix2}EFFORT`]) ?? clean2(env.ROOM_WORKER_EFFORT)
   };
 }
 function hostDefaultRuntime(host, dir, env = process.env) {
   if (host === "codex") {
     try {
-      const config2 = fs12.readFileSync(path9.join(env.CODEX_HOME || path9.join(os3.homedir(), ".codex"), "config.toml"), "utf8");
+      const config2 = fs16.readFileSync(path13.join(env.CODEX_HOME || path13.join(os3.homedir(), ".codex"), "config.toml"), "utf8");
       const top = config2.split(/^\s*\[/m, 1)[0];
       const value2 = (key2) => top.match(new RegExp(`^\\s*${key2}\\s*=\\s*["']([^"']+)["']`, "m"))?.[1];
       return { model: value2("model"), effort: value2("model_reasoning_effort") };
@@ -28030,11 +30119,11 @@ function hostDefaultRuntime(host, dir, env = process.env) {
       return {};
     }
   }
-  const roots = [path9.join(env.CLAUDE_CONFIG_DIR || path9.join(os3.homedir(), ".claude"), "settings.json"), path9.join(dir, ".claude", "settings.json")];
+  const roots = [path13.join(env.CLAUDE_CONFIG_DIR || path13.join(os3.homedir(), ".claude"), "settings.json"), path13.join(dir, ".claude", "settings.json")];
   let model;
   for (const file of roots) {
     try {
-      const parsed = JSON.parse(fs12.readFileSync(file, "utf8"));
+      const parsed = JSON.parse(fs16.readFileSync(file, "utf8"));
       if (typeof parsed.model === "string" && parsed.model.trim()) model = parsed.model.trim();
     } catch {
     }
@@ -28051,11 +30140,11 @@ function workerPriority(command2, env = process.env, platform = process.platform
   const value2 = raw ? Number(raw) : 10;
   const nice = Number.isFinite(value2) ? Math.max(0, Math.min(19, Math.trunc(value2))) : 10;
   if (platform === "win32" || nice === 0) return { ...command2, nice: 0 };
-  for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path9.delimiter)) {
-    const executable = path9.resolve(dir, "nice");
+  for (const dir of (env.PATH ?? "/usr/bin:/bin").split(path13.delimiter)) {
+    const executable = path13.resolve(dir, "nice");
     try {
-      fs12.accessSync(executable, fs12.constants.X_OK);
-      if (fs12.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command2.cmd, ...command2.args], nice };
+      fs16.accessSync(executable, fs16.constants.X_OK);
+      if (fs16.statSync(executable).isFile()) return { cmd: executable, args: ["-n", String(nice), command2.cmd, ...command2.args], nice };
     } catch {
     }
   }
@@ -28099,7 +30188,7 @@ function workerProcessEnv(options, inherited = process.env) {
     ...options.leadClone ? { ROOM_LEAD_CLONE: options.leadClone } : {},
     ...options.nameEpoch !== void 0 ? { ROOM_NAME_EPOCH: String(options.nameEpoch) } : {},
     ...options.token ? { ROOM_TOKEN: options.token } : {},
-    ROOM_LOG_FILE: path9.join(options.logDir, ".room", "workers", `${options.tag}.mcp.log`)
+    ROOM_LOG_FILE: path13.join(options.logDir, ".room", "workers", `${options.tag}.mcp.log`)
   };
 }
 function validTag(tag) {
@@ -28129,23 +30218,23 @@ function hostWorkerEffort(host, effort) {
   return host === "claude" && effort === "minimal" ? "low" : effort;
 }
 function leadClaudePluginDir(env = process.env, modulePath = fileURLToPath(import.meta.url), installedPath) {
-  const root = env.CLAUDE_PLUGIN_ROOT || (path9.basename(path9.dirname(modulePath)) === "server" ? path9.dirname(path9.dirname(modulePath)) : void 0);
+  const root = env.CLAUDE_PLUGIN_ROOT || (path13.basename(path13.dirname(modulePath)) === "server" ? path13.dirname(path13.dirname(modulePath)) : void 0);
   if (!root) return void 0;
-  const resolved = path9.resolve(root);
+  const resolved = path13.resolve(root);
   if (installedPath === void 0) {
     try {
-      const file = path9.join(env.CLAUDE_CONFIG_DIR || path9.join(os3.homedir(), ".claude"), "plugins", "installed_plugins.json");
-      const installs = JSON.parse(fs12.readFileSync(file, "utf8"));
+      const file = path13.join(env.CLAUDE_CONFIG_DIR || path13.join(os3.homedir(), ".claude"), "plugins", "installed_plugins.json");
+      const installs = JSON.parse(fs16.readFileSync(file, "utf8"));
       installedPath = installs.plugins?.["room@room"]?.at(-1)?.installPath;
     } catch {
     }
   }
-  return installedPath && path9.resolve(installedPath) === resolved ? void 0 : resolved;
+  return installedPath && path13.resolve(installedPath) === resolved ? void 0 : resolved;
 }
 function installedCodexRoomVersion(env = process.env) {
-  const root = path9.join(env.CODEX_HOME || path9.join(os3.homedir(), ".codex"), "plugins", "cache", "room", "room");
+  const root = path13.join(env.CODEX_HOME || path13.join(os3.homedir(), ".codex"), "plugins", "cache", "room", "room");
   try {
-    return fs12.readdirSync(root).filter((v) => /^\d+\.\d+\.\d+$/.test(v) && fs12.existsSync(path9.join(root, v, ".codex-plugin", "plugin.json"))).sort((a, b) => a.localeCompare(b, void 0, { numeric: true })).at(-1);
+    return fs16.readdirSync(root).filter((v) => /^\d+\.\d+\.\d+$/.test(v) && fs16.existsSync(path13.join(root, v, ".codex-plugin", "plugin.json"))).sort((a, b) => a.localeCompare(b, void 0, { numeric: true })).at(-1);
   } catch {
     return void 0;
   }
@@ -28191,18 +30280,18 @@ var init_worker_config = __esm({
 
 // packages/room-mcp/src/worker-process.ts
 import { execFileSync as execFileSync5, spawn as spawn3 } from "node:child_process";
-import fs13 from "node:fs";
-import path10 from "node:path";
+import fs17 from "node:fs";
+import path14 from "node:path";
 import { stripVTControlCharacters } from "node:util";
 function* hostEvents(file, start2 = 0) {
   let fd;
   try {
-    fd = fs13.openSync(file, "r");
-    const size2 = fs13.fstatSync(fd).size;
+    fd = fs17.openSync(file, "r");
+    const size2 = fs17.fstatSync(fd).size;
     let offset = Math.max(0, Math.min(start2, size2)), pending = "";
     const chunk = Buffer.alloc(64 * 1024);
     while (offset < size2) {
-      const count = fs13.readSync(fd, chunk, 0, Math.min(chunk.length, size2 - offset), offset);
+      const count = fs17.readSync(fd, chunk, 0, Math.min(chunk.length, size2 - offset), offset);
       if (!count) break;
       offset += count;
       pending += chunk.toString("utf8", 0, count);
@@ -28220,7 +30309,7 @@ function* hostEvents(file, start2 = 0) {
     }
   } catch {
   } finally {
-    if (fd !== void 0) fs13.closeSync(fd);
+    if (fd !== void 0) fs17.closeSync(fd);
   }
 }
 function assistantText(event) {
@@ -28262,10 +30351,10 @@ function followUpAnswer(file, host, logStart) {
 function workerLogTail(logFile, logStart = 0) {
   let fd;
   try {
-    fd = fs13.openSync(logFile, "r");
-    const size2 = fs13.fstatSync(fd).size, start2 = Math.max(Math.min(size2, logStart), size2 - 64 * 1024, 0);
+    fd = fs17.openSync(logFile, "r");
+    const size2 = fs17.fstatSync(fd).size, start2 = Math.max(Math.min(size2, logStart), size2 - 64 * 1024, 0);
     const buffer = Buffer.alloc(size2 - start2);
-    fs13.readSync(fd, buffer, 0, buffer.length, start2);
+    fs17.readSync(fd, buffer, 0, buffer.length, start2);
     const text = stripVTControlCharacters(buffer.toString("utf8"));
     return text.split(/\r?\n|\r/).map((l) => {
       const line = l.trim();
@@ -28284,7 +30373,7 @@ function workerLogTail(logFile, logStart = 0) {
   } catch {
     return "(log unavailable)";
   } finally {
-    if (fd !== void 0) fs13.closeSync(fd);
+    if (fd !== void 0) fs17.closeSync(fd);
   }
 }
 function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
@@ -28321,7 +30410,7 @@ function workerProcessOwnership(pid, w, probe = probeProcess) {
   if (!w.processStartTime) return "unknown";
   if (!info2?.startTime || !info2.executable) return "unknown";
   if (info2.startTime !== w.processStartTime) return "not-ours";
-  const executable = path10.basename(info2.executable);
+  const executable = path14.basename(info2.executable);
   return executable === w.host || executable === "node" ? "ours" : "not-ours";
 }
 function pidIsOurWorker(pid, w, probe = probeProcess) {
@@ -28330,17 +30419,17 @@ function pidIsOurWorker(pid, w, probe = probeProcess) {
 function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
   const resolved = (p) => {
     try {
-      return fs13.realpathSync(p);
+      return fs17.realpathSync(p);
     } catch {
-      return path10.resolve(p);
+      return path14.resolve(p);
     }
   };
   const root = resolved(dir);
-  return list().some((p) => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path10.sep)));
+  return list().some((p) => p.pid === pid && (resolved(p.cwd) === root || resolved(p.cwd).startsWith(root + path14.sep)));
 }
 function processName(pid) {
   try {
-    return path10.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
+    return path14.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 3e3,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
@@ -28352,11 +30441,11 @@ function processName(pid) {
 function listCwdProcesses(platform = process.platform) {
   const result2 = [];
   if (platform === "linux") {
-    for (const entry of fs13.readdirSync("/proc")) {
+    for (const entry of fs17.readdirSync("/proc")) {
       if (!/^\d+$/.test(entry)) continue;
       const pid = Number(entry);
       try {
-        const cwd = fs13.realpathSync(`/proc/${pid}/cwd`);
+        const cwd = fs17.realpathSync(`/proc/${pid}/cwd`);
         result2.push({ pid, cwd, command: "" });
       } catch {
       }
@@ -28372,21 +30461,21 @@ function listCwdProcesses(platform = process.platform) {
   return result2;
 }
 async function terminateWorktreeProcesses(dir, options = {}) {
-  const root = fs13.existsSync(dir) ? fs13.realpathSync(dir) : path10.resolve(dir);
+  const root = fs17.existsSync(dir) ? fs17.realpathSync(dir) : path14.resolve(dir);
   const protectedPids = /* @__PURE__ */ new Set([process.pid, process.ppid, ...options.protectedPids ?? []]);
   const signal = options.signal ?? ((pid, sig) => process.kill(pid, sig));
   const sleep = options.sleep ?? ((ms2) => new Promise((resolve5) => setTimeout(resolve5, ms2)));
   const resolved = (cwd) => {
     try {
-      return fs13.realpathSync(cwd);
+      return fs17.realpathSync(cwd);
     } catch {
-      return path10.resolve(cwd);
+      return path14.resolve(cwd);
     }
   };
   const list = options.list ?? listCwdProcesses;
   const insideWorktree = (p) => {
     const cwd = resolved(p.cwd);
-    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path10.sep));
+    return p.pid > 0 && !protectedPids.has(p.pid) && (cwd === root || cwd.startsWith(root + path14.sep));
   };
   const targets = list().filter(insideWorktree);
   if (!targets.length) return [];
@@ -28417,16 +30506,16 @@ async function terminateWorktreeProcesses(dir, options = {}) {
 async function quiesceWorktreeProcesses(dir) {
   try {
     await terminateWorktreeProcesses(dir);
-    const root = fs13.realpathSync(dir);
+    const root = fs17.realpathSync(dir);
     const inside = () => listCwdProcesses().some((p) => {
       if (p.pid === process.pid || p.pid === process.ppid) return false;
       let cwd;
       try {
-        cwd = fs13.realpathSync(p.cwd);
+        cwd = fs17.realpathSync(p.cwd);
       } catch {
-        cwd = path10.resolve(p.cwd);
+        cwd = path14.resolve(p.cwd);
       }
-      return cwd === root || cwd.startsWith(root + path10.sep);
+      return cwd === root || cwd.startsWith(root + path14.sep);
     });
     const deadline = Date.now() + 5e3;
     let quietSince;
@@ -28449,18 +30538,18 @@ var init_worker_process = __esm({
     init_process();
     init_process();
     defaultSpawner = (spec16) => {
-      fs13.mkdirSync(path10.dirname(spec16.logFile), { recursive: true });
-      const fd = fs13.openSync(spec16.logFile, "a");
+      fs17.mkdirSync(path14.dirname(spec16.logFile), { recursive: true });
+      const fd = fs17.openSync(spec16.logFile, "a");
       let child;
       try {
         child = spawn3(spec16.cmd, spec16.args, { cwd: spec16.cwd, env: workerEnv(process.env, spec16.env), detached: true, stdio: ["ignore", fd, fd] });
       } catch (error2) {
-        fs13.closeSync(fd);
+        fs17.closeSync(fd);
         throw error2;
       }
       const closeLog = () => {
         try {
-          fs13.closeSync(fd);
+          fs17.closeSync(fd);
         } catch {
         }
       };
@@ -28641,10 +30730,10 @@ var init_worker_status = __esm({
 });
 
 // packages/room-mcp/src/worker-state.ts
-import fs14 from "node:fs";
-import path11 from "node:path";
+import fs18 from "node:fs";
+import path15 from "node:path";
 function roomWorkerPathMatchesBranch(leadDir, workerDir, branch, nested = false) {
-  const relative3 = path11.relative(path11.resolve(leadDir), path11.resolve(workerDir)).split(path11.sep);
+  const relative3 = path15.relative(path15.resolve(leadDir), path15.resolve(workerDir)).split(path15.sep);
   if (relative3.length < 3 || relative3.length % 3 !== 0 || !nested && relative3.length !== 3) return false;
   return relative3.every((part, i2) => i2 % 3 === 0 ? part === ".room" : i2 % 3 === 1 ? part === "workers" : validRepoPath(part, RECORDED_PATH)) && branch === `room/${relative3.at(-1)}`;
 }
@@ -28660,7 +30749,7 @@ async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
       name: record2.name,
       tag: record2.tag,
       lead: record2.lead,
-      dir: "dir" in record2 ? record2.dir : record2.keptWorktree ?? path11.dirname(path11.dirname(path11.dirname(chain[0].dir))),
+      dir: "dir" in record2 ? record2.dir : record2.keptWorktree ?? path15.dirname(path15.dirname(path15.dirname(chain[0].dir))),
       branch: "branch" in record2 ? record2.branch : `room/${record2.tag}`
     };
     chain.unshift(parent);
@@ -28671,12 +30760,12 @@ async function isOwnedWorkerWorktree(leadDir, w, leadName, workers = []) {
     let parentDir = leadDir, parentName = leadName;
     for (const record2 of chain) {
       if (parentName && record2.lead !== parentName) return false;
-      if (!fs14.existsSync(record2.dir)) return false;
-      const parentRoot = fs14.realpathSync(parentDir), workerRoot = fs14.realpathSync(record2.dir);
+      if (!fs18.existsSync(record2.dir)) return false;
+      const parentRoot = fs18.realpathSync(parentDir), workerRoot = fs18.realpathSync(record2.dir);
       if (workerRoot === parentRoot) return false;
       if (!roomWorkerPathMatchesBranch(parentDir, record2.dir, record2.branch)) return false;
-      const expected = path11.join(parentRoot, ".room", "workers", path11.basename(record2.dir));
-      if (workerRoot !== fs14.realpathSync(expected)) return false;
+      const expected = path15.join(parentRoot, ".room", "workers", path15.basename(record2.dir));
+      if (workerRoot !== fs18.realpathSync(expected)) return false;
       if (await realGitCommonDir(parentDir) !== await realGitCommonDir(record2.dir)) return false;
       if ((await git(record2.dir, ["branch", "--show-current"])).trim() !== record2.branch) return false;
       parentDir = record2.dir;
@@ -28710,7 +30799,7 @@ async function workerCommitCount(runGit, dir, ref, leadHead, w) {
 }
 async function workerRealState(leadDir, w, options = {}) {
   const deps = options.probes ?? {};
-  const exists = deps.exists ?? fs14.existsSync;
+  const exists = deps.exists ?? fs18.existsSync;
   const runGit = deps.git ?? git;
   const present = exists(w.dir);
   const state = {
@@ -28739,7 +30828,7 @@ async function workerRealState(leadDir, w, options = {}) {
       const owned = new Set(await (deps.changedPaths ?? workerChangedPaths)(w));
       const status = await runGit(w.dir, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", "."]);
       const uncommitted = new Set(status.split("\0").filter(Boolean).map((entry) => entry.slice(3)).filter((p) => owned.has(p)));
-      for (const p of w.carriedUntracked ?? []) if (owned.has(p.path) && !exists(path11.join(w.dir, p.path))) uncommitted.add(p.path);
+      for (const p of w.carriedUntracked ?? []) if (owned.has(p.path) && !exists(path15.join(w.dir, p.path))) uncommitted.add(p.path);
       state.uncommitted = uncommitted.size;
       state.clean = state.uncommitted === 0;
       const head = (await runGit(leadDir, ["rev-parse", "HEAD"])).trim();
@@ -28800,7 +30889,7 @@ var init_worker_state = __esm({
     "use strict";
     init_git();
     init_baseline();
-    init_src2();
+    init_src4();
     init_worker_process();
     ROOM_CARRY_IDENTITY = {
       authorName: "Room",
@@ -29086,9 +31175,9 @@ var init_diff3 = __esm({
 
 // packages/room-mcp/src/merge.ts
 import { execFile as execFile5 } from "node:child_process";
-import fs15 from "node:fs";
+import fs19 from "node:fs";
 import os4 from "node:os";
-import path12 from "node:path";
+import path16 from "node:path";
 function diff3WithinBudget(a, o, b) {
   if ((a.length + b.length) * o.length > 2e6 || a.length + o.length + b.length > 4096) return false;
   const counts = /* @__PURE__ */ new Map();
@@ -29107,12 +31196,12 @@ async function gitMergeFile(base, ours, theirs, labels) {
   const clean2 = (text) => ({ status: "clean", algorithm: "git", text, chunks: [{ ok: text.split("\n") }], conflicts: [] });
   if (ours === theirs || theirs === base) return clean2(ours);
   if (ours === base) return clean2(theirs);
-  const dir = fs15.mkdtempSync(path12.join(os4.tmpdir(), "room-merge-file-"));
-  const oursPath = path12.join(dir, "ours"), basePath = path12.join(dir, "base"), theirsPath = path12.join(dir, "theirs");
+  const dir = fs19.mkdtempSync(path16.join(os4.tmpdir(), "room-merge-file-"));
+  const oursPath = path16.join(dir, "ours"), basePath = path16.join(dir, "base"), theirsPath = path16.join(dir, "theirs");
   try {
-    fs15.writeFileSync(oursPath, ours);
-    fs15.writeFileSync(basePath, base);
-    fs15.writeFileSync(theirsPath, theirs);
+    fs19.writeFileSync(oursPath, ours);
+    fs19.writeFileSync(basePath, base);
+    fs19.writeFileSync(theirsPath, theirs);
     const result2 = await new Promise((resolve5) => {
       execFile5(
         "git",
@@ -29137,7 +31226,7 @@ async function gitMergeFile(base, ours, theirs, labels) {
       return fallback(base, ours, theirs, labels, `could not parse git output: ${String(error2)}`);
     }
   } finally {
-    fs15.rmSync(dir, { recursive: true, force: true });
+    fs19.rmSync(dir, { recursive: true, force: true });
   }
 }
 function fallback(base, ours, theirs, labels, fallbackReason) {
@@ -29220,23 +31309,23 @@ var init_merge = __esm({
 });
 
 // packages/room-mcp/src/tools/disk-text.ts
-import fs16 from "node:fs";
+import fs20 from "node:fs";
 import { execFile as execFile6 } from "node:child_process";
 function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
-  const fd = fs16.openSync(file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0));
+  const fd = fs20.openSync(file, fs20.constants.O_RDONLY | (fs20.constants.O_NOFOLLOW ?? 0));
   try {
-    const stat4 = fs16.fstatSync(fd);
+    const stat4 = fs20.fstatSync(fd);
     if (!stat4.isFile() || stat4.size > limit) throw new Error(`file too large for Room read: ${file}`);
     const bytes = Buffer.allocUnsafe(limit + 1);
     let used = 0;
     while (used <= limit) {
-      const count = fs16.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
+      const count = fs20.readSync(fd, bytes, used, Math.min(64 * 1024, bytes.length - used), null);
       if (count === 0) return bytes.subarray(0, used).toString("utf8");
       used += count;
     }
     throw new Error(`file too large for Room read: ${file}`);
   } finally {
-    fs16.closeSync(fd);
+    fs20.closeSync(fd);
   }
 }
 async function readBoundedHistoricalText(dir, base, rel) {
@@ -29284,14 +31373,14 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
   });
 }
 async function readBoundedDiskText(file, encoding = "utf8", boundary) {
-  const handle2 = await fs16.promises.open(file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0));
+  const handle2 = await fs20.promises.open(file, fs20.constants.O_RDONLY | (fs20.constants.O_NOFOLLOW ?? 0));
   try {
     const stat4 = await handle2.stat();
     const verify = () => {
       if (!boundary) return;
       const resolved = containedRepoPath(boundary.root, boundary.path, { leaf: "read-contained-link" });
       if (!resolved.ok) throw new Error("unsafe Room read path: " + boundary.path);
-      const current = fs16.lstatSync(resolved.path);
+      const current = fs20.lstatSync(resolved.path);
       if (current.dev !== stat4.dev || current.ino !== stat4.ino) throw new Error("unsafe Room read path changed: " + boundary.path);
     };
     verify();
@@ -29316,7 +31405,7 @@ var DISK_TEXT_LIMIT, HistoricalTextTooLarge;
 var init_disk_text = __esm({
   "packages/room-mcp/src/tools/disk-text.ts"() {
     "use strict";
-    init_src2();
+    init_src4();
     init_git();
     DISK_TEXT_LIMIT = 512 * 1024;
     HistoricalTextTooLarge = class extends Error {
@@ -29331,19 +31420,19 @@ var init_disk_text = __esm({
 });
 
 // packages/room-mcp/src/tools/context.ts
-import fs17 from "node:fs";
-import path13 from "node:path";
+import fs21 from "node:fs";
+import path17 from "node:path";
 async function trustedWorker(s, person) {
   const worker = localWorkers(s.dir, (record2) => record2.name === person && record2.lead.participant === s.me.name)[0];
   if (!worker?.id) return void 0;
   const trusted = await (await registryForDir(s.dir)).trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, worker.tag);
   if (!trusted || trusted.record.id !== worker.id || trusted.record.name !== person) return void 0;
-  return { ...realStateInput(trusted.record, trusted.status), dir: fs17.realpathSync(trusted.record.dir) };
+  return { ...realStateInput(trusted.record, trusted.status), dir: fs21.realpathSync(trusted.record.dir) };
 }
 async function workerText(dir, rel) {
   if (!validRepoPath(rel, DISK_READ_PATH)) throw new Error("unsafe worker path: " + rel);
-  const root = fs17.realpathSync(dir);
-  const candidate = path13.resolve(root, rel);
+  const root = fs21.realpathSync(dir);
+  const candidate = path17.resolve(root, rel);
   if (!isInsideRoot(root, candidate)) throw new Error("unsafe worker path: " + rel);
   try {
     const result2 = containedRepoPath(root, candidate, { leaf: "read-contained-link" });
@@ -29360,7 +31449,7 @@ var init_context = __esm({
   "packages/room-mcp/src/tools/context.ts"() {
     "use strict";
     init_worker_registry();
-    init_src2();
+    init_src4();
     init_worker_registry();
     init_worker_status();
     init_disk_text();
@@ -29400,8 +31489,8 @@ var init_context = __esm({
 });
 
 // packages/room-mcp/src/tools/combined-tree.ts
-import fs18 from "node:fs";
-import path14 from "node:path";
+import fs22 from "node:fs";
+import path18 from "node:path";
 async function buildCombinedTree(state, caller, participants, options = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const result2 = await buildCombinedTreeOnce(state, caller, participants, options);
@@ -29470,12 +31559,12 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (worker) previewDirs.add(worker.dir);
   }
   const roots = options.roots ?? new Map([...previewDirs].map((dir) => {
-    if (fs18.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
-    return [path14.resolve(dir), fs18.realpathSync(dir)];
+    if (fs22.lstatSync(dir).isSymbolicLink()) throw new Error("unsafe preview root: " + dir);
+    return [path18.resolve(dir), fs22.realpathSync(dir)];
   }));
   const rootOf = (dir) => {
-    const canonical = fs18.realpathSync(dir);
-    const root = roots.get(path14.resolve(dir)) ?? [...roots.values()].find((value2) => value2 === canonical);
+    const canonical = fs22.realpathSync(dir);
+    const root = roots.get(path18.resolve(dir)) ?? [...roots.values()].find((value2) => value2 === canonical);
     if (!root) throw new Error("uncaptured preview root: " + dir);
     return root;
   };
@@ -29507,10 +31596,10 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     if (!validRepoPath(p, { ...DISK_READ_PATH, blank: "allow" })) throw new Error("unsafe preview path: " + p);
     const root = rootOf(dir);
     try {
-      const result2 = containedRepoPath(root, path14.join(root, p), { leaf: "read-contained-link" });
+      const result2 = containedRepoPath(root, path18.join(root, p), { leaf: "read-contained-link" });
       if (!result2.ok) throw new Error("unsafe preview symlink: " + p);
       const file = result2.path;
-      return await readBoundedDiskText(file, options.encoding ?? "utf8", { root, path: path14.join(root, p) });
+      return await readBoundedDiskText(file, options.encoding ?? "utf8", { root, path: path18.join(root, p) });
     } catch (e) {
       if (e.code === "ENOENT") return null;
       throw e;
@@ -29600,11 +31689,11 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       let reason = linkedInputs.includes(p) ? "linked input" : void 0;
       if (!reason && root) {
         try {
-          if (!containedRepoPath(root, path14.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
+          if (!containedRepoPath(root, path18.join(root, p), { leaf: "read-contained-link", allowRoot: true }).ok) reason = "symlink leaving the worktree";
         } catch (e) {
           if (e.code !== "ENOENT") throw e;
           try {
-            if (fs18.lstatSync(path14.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
+            if (fs22.lstatSync(path18.join(root, p)).isSymbolicLink()) reason = "dangling symlink";
           } catch {
           }
         }
@@ -29621,7 +31710,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     }
     if (diskDirs.some((dir) => {
       try {
-        return fs18.lstatSync(path14.join(dir, p)).isDirectory();
+        return fs22.lstatSync(path18.join(dir, p)).isDirectory();
       } catch {
         return false;
       }
@@ -29833,8 +31922,8 @@ var init_combined_tree = __esm({
   "packages/room-mcp/src/tools/combined-tree.ts"() {
     "use strict";
     init_git();
-    init_src2();
-    init_src2();
+    init_src4();
+    init_src4();
     init_merge();
     init_worker_git();
     init_worker_state();
@@ -29882,1903 +31971,6 @@ var init_connection = __esm({
   }
 });
 
-// packages/relay/src/memory.ts
-import fs19 from "node:fs";
-import path15 from "node:path";
-import crypto from "node:crypto";
-function warnLimited(key2, line, log2) {
-  const now = Date.now();
-  if (now - (warnedAt.get(key2) ?? -Infinity) < WARN_EVERY_MS) return;
-  warnedAt.set(key2, now);
-  log2(line());
-}
-function largestRoots(update) {
-  const doc = new Doc2();
-  try {
-    applyUpdate(doc, update);
-    return [...memoryTypes(doc)].map(([name2, kind]) => [name2, JSON.stringify(kind === "array" ? doc.getArray(name2).toJSON() : doc.getMap(name2).toJSON()).length]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name2, size2]) => `${name2} ${mb(size2)} MB`).join(", ");
-  } finally {
-    doc.destroy();
-  }
-}
-function memoryFile(commonDir, room) {
-  return path15.join(commonDir, "room", "relay", `${encodeURIComponent(room)}.ydoc`);
-}
-function syncDirectory2(dir) {
-  let fd;
-  try {
-    fd = fs19.openSync(dir, "r");
-    fs19.fsyncSync(fd);
-  } catch (error2) {
-    if (!["EINVAL", "ENOTSUP", "EISDIR", "EPERM"].includes(error2.code ?? "")) throw error2;
-  } finally {
-    if (fd !== void 0) fs19.closeSync(fd);
-  }
-}
-function loadMemory(commonDir, room, log2 = stderr) {
-  const doc = new Doc2(), file = memoryFile(commonDir, room);
-  try {
-    if (fs19.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new Error(`snapshot exceeds ${ROOM_DOC_MAX_BYTES / 1048576} MB`);
-    applyUpdate(doc, fs19.readFileSync(file));
-    return doc;
-  } catch (e) {
-    doc.destroy();
-    if (e.code !== "ENOENT") {
-      log2(`local room memory: cannot load ${file}: ${e}; starting empty`);
-      try {
-        fs19.renameSync(file, `${file}.corrupt-${Date.now()}`);
-      } catch {
-      }
-    }
-    return new Doc2();
-  }
-}
-function saveMemory(commonDir, room, doc, log2 = stderr) {
-  const file = memoryFile(commonDir, room);
-  const temp = `${file}.${process.pid}-${crypto.randomBytes(6).toString("hex")}.tmp`;
-  try {
-    const update = memorySnapshot(doc, { maxBytes: MAX_MEMORY_BYTES, log: (line) => warnLimited(`${file}\0shed`, () => `local room memory: ${room}: ${line}`, log2) });
-    if (update.byteLength > ROOM_DOC_MAX_BYTES) {
-      warnLimited(`${file}\0over`, () => `local room memory: skipping ${room}: snapshot is ${mb(update.byteLength)} MB, over the ${ROOM_DOC_MAX_BYTES / 1048576} MB ceiling; keeping the last good file`, log2);
-      return false;
-    }
-    if (update.byteLength > MAX_MEMORY_BYTES) {
-      warnLimited(`${file}\0over`, () => `local room memory: ${room}: snapshot is ${mb(update.byteLength)} MB after dropping everything droppable (largest roots: ${largestRoots(update)}); saved anyway; target ${MAX_MEMORY_BYTES / 1048576} MB`, log2);
-    }
-    fs19.mkdirSync(path15.dirname(file), { recursive: true, mode: 448 });
-    fs19.chmodSync(path15.dirname(file), 448);
-    fs19.writeFileSync(temp, update, { mode: 384, flag: "wx" });
-    const fd = fs19.openSync(temp, "r");
-    try {
-      fs19.fsyncSync(fd);
-    } finally {
-      fs19.closeSync(fd);
-    }
-    fs19.renameSync(temp, file);
-    syncDirectory2(path15.dirname(file));
-    return true;
-  } catch (e) {
-    log2(`local room memory: cannot save ${file}: ${e}`);
-    return false;
-  } finally {
-    try {
-      fs19.unlinkSync(temp);
-    } catch {
-    }
-  }
-}
-var stderr, mb, WARN_EVERY_MS, warnedAt, RoomMemory;
-var init_memory2 = __esm({
-  "packages/relay/src/memory.ts"() {
-    "use strict";
-    init_yjs();
-    init_src();
-    stderr = (line) => {
-      process.stderr.write(`${line}
-`);
-    };
-    mb = (bytes) => (bytes / 1048576).toFixed(1);
-    WARN_EVERY_MS = 6e4;
-    warnedAt = /* @__PURE__ */ new Map();
-    RoomMemory = class {
-      constructor(commonDir, room, log2 = stderr) {
-        this.commonDir = commonDir;
-        this.room = room;
-        this.log = log2;
-        this.doc = loadMemory(commonDir, room, log2);
-        this.doc.on("update", this.schedule);
-      }
-      commonDir;
-      room;
-      log;
-      doc;
-      debounce;
-      deadline;
-      forgotten = false;
-      reconciling = false;
-      schedule = () => {
-        if (this.reconciling) return;
-        this.reconciling = true;
-        try {
-          this.doc.transact(() => {
-            for (const name2 of ["bus", "retiredWorkers"]) {
-              if (!this.doc.share.has(name2)) continue;
-              const array2 = this.doc.getArray(name2), seen = /* @__PURE__ */ new Set();
-              const duplicates = [];
-              array2.toArray().forEach((value2, index) => {
-                if (!value2 || typeof value2 !== "object") return;
-                const key2 = name2 === "bus" ? typeof value2.id === "string" ? value2.id : void 0 : typeof value2.name === "string" && typeof value2.startedAt === "number" && typeof value2.lead === "string" ? JSON.stringify([value2.name, value2.startedAt, value2.lead]) : void 0;
-                if (key2 === void 0) return;
-                if (seen.has(key2)) duplicates.push(index);
-                else seen.add(key2);
-              });
-              for (const index of duplicates.reverse()) array2.delete(index);
-            }
-          });
-        } finally {
-          this.reconciling = false;
-        }
-        if (this.forgotten) return;
-        clearTimeout(this.debounce);
-        this.debounce = setTimeout(() => this.flush(), 2e3);
-        this.deadline ??= setTimeout(() => this.flush(), 1e4);
-        this.debounce.unref?.();
-        this.deadline.unref?.();
-      };
-      flush() {
-        clearTimeout(this.debounce);
-        clearTimeout(this.deadline);
-        this.debounce = this.deadline = void 0;
-        if (!this.forgotten) saveMemory(this.commonDir, this.room, this.doc, this.log);
-      }
-      forget() {
-        fs19.rmSync(memoryFile(this.commonDir, this.room), { force: true });
-        this.forgotten = true;
-        clearTimeout(this.debounce);
-        clearTimeout(this.deadline);
-        this.doc.transact(() => {
-          for (const [name2, kind] of memoryTypes(this.doc)) {
-            if (kind === "map") this.doc.getMap(name2).clear();
-            else {
-              const array2 = this.doc.getArray(name2);
-              array2.delete(0, array2.length);
-            }
-          }
-        });
-      }
-      close() {
-        this.flush();
-        this.doc.off("update", this.schedule);
-      }
-    };
-  }
-});
-
-// packages/relay/src/local-migrate.ts
-import crypto2 from "node:crypto";
-import fs20 from "node:fs";
-import path16 from "node:path";
-function legacyRelayRunning(common, probe = probeProcess) {
-  return oldRunning(common, probe);
-}
-function oldRunning(common, probe) {
-  try {
-    const info2 = JSON.parse(fs20.readFileSync(path16.join(common, "room-local.json"), "utf8"));
-    const observed = probe(Number(info2.pid));
-    if (!observed) return false;
-    if (info2.startTime && observed.startTime && info2.startTime !== observed.startTime) return false;
-    if (info2.executable && observed.executable && info2.executable !== observed.executable) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function readLedger(common, room) {
-  const scoped = ledgerFile(common, room);
-  let file = scoped;
-  if (!fs20.existsSync(scoped)) {
-    const old = path16.join(common, "room", "relay", "migrated.json");
-    try {
-      const candidate = JSON.parse(fs20.readFileSync(old, "utf8"));
-      const names = Object.keys(candidate.sources ?? {});
-      if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) file = old;
-    } catch {
-    }
-  }
-  let value2;
-  try {
-    value2 = JSON.parse(fs20.readFileSync(file, "utf8"));
-  } catch {
-    return empty();
-  }
-  const ledger2 = { messages: value2.messages ?? [], claims: value2.claims ?? [], scopes: value2.scopes ?? [], scopeSnapshots: value2.scopeSnapshots ?? {}, sources: value2.sources ?? {}, messageSources: value2.messageSources ?? {}, identities: value2.identities ?? {}, complete: !!value2.complete };
-  if (file !== scoped) writeLedger(common, room, ledger2);
-  return ledger2;
-}
-function writeLedger(common, room, ledger2) {
-  const file = ledgerFile(common, room), temp = `${file}.${process.pid}-${crypto2.randomBytes(4).toString("hex")}.tmp`;
-  fs20.mkdirSync(path16.dirname(file), { recursive: true, mode: 448 });
-  try {
-    fs20.writeFileSync(temp, JSON.stringify(ledger2) + "\n", { flag: "wx", mode: 384 });
-    fs20.renameSync(temp, file);
-  } finally {
-    fs20.rmSync(temp, { force: true });
-  }
-}
-function sources(common, room) {
-  try {
-    return fs20.readdirSync(legacyDir(common)).filter((file) => file.endsWith(".ydoc")).flatMap((file) => {
-      let name2;
-      try {
-        name2 = decodeURIComponent(file.slice(0, -5));
-      } catch {
-        throw new Error(`invalid legacy snapshot name: ${file}`);
-      }
-      if (name2 !== room && !name2.startsWith(`${room}/`)) return [];
-      const full = path16.join(legacyDir(common), file);
-      return [{ file: full, name: name2, mtime: fs20.statSync(full).mtimeMs }];
-    });
-  } catch (error2) {
-    if (error2.code === "ENOENT") return [];
-    throw error2;
-  }
-}
-function catchUpLocal(common, room, targetDoc, log2 = console.error, probe = probeProcess) {
-  let files2;
-  try {
-    files2 = sources(common, room);
-  } catch (error2) {
-    log2(`local migration: cannot enumerate ${legacyDir(common)}: ${String(error2)}`);
-    new RoomDoc(targetDoc).metaMap.set("localMigrating", 1);
-    if (!saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
-    return true;
-  }
-  const running = oldRunning(common, probe);
-  const ledger2 = readLedger(common, room);
-  if (ledger2.complete) return false;
-  if (!files2.length && !running) return false;
-  const target = new RoomDoc(targetDoc);
-  const messages = new Set(ledger2.messages), claims = new Set(ledger2.claims), scopes = new Set(ledger2.scopes);
-  const existing = /* @__PURE__ */ new Set([...target.bus.toArray().map((m) => m.id), ...target.mail.keys()]);
-  const loaded = [];
-  let unreadable = false;
-  for (const { file, name: name2, mtime } of files2) {
-    const doc = new Doc2();
-    try {
-      applyUpdate(doc, fs20.readFileSync(file));
-      loaded.push({ name: name2, mtime, source: new RoomDoc(doc), doc });
-    } catch (error2) {
-      log2(`local migration: cannot read ${file}: ${String(error2)}`);
-      unreadable = true;
-      doc.destroy();
-    }
-  }
-  const occurrences = new Map(Object.entries(ledger2.identities).map(([person, names]) => [person, new Set(names)]));
-  const mark = (person, source) => {
-    if (!person) return;
-    let names = occurrences.get(person);
-    if (!names) {
-      names = /* @__PURE__ */ new Set();
-      occurrences.set(person, names);
-    }
-    names.add(source);
-  };
-  for (const { name: name2, source } of loaded) {
-    for (const person of source.scopes.keys()) mark(person, name2);
-    for (const claim2 of source.claims.values()) mark(claim2.by, name2);
-    for (const person of source.overlays.keys()) mark(person, name2);
-    for (const person of source.legacyDeleted.keys()) mark(person, name2);
-    for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
-      mark(msg.from, name2);
-      mark(msg.to, name2);
-    }
-  }
-  const aliases = targetDoc.getMap("aliases");
-  const placeholder = (person, source) => `?${crypto2.createHash("sha256").update(`${source}\0${person}`).digest("hex").slice(0, 16)}`;
-  const translated = (person, source) => {
-    const by = placeholder(person, source);
-    return aliases.get(by) ?? ((occurrences.get(person)?.size ?? 0) > 1 ? by : person);
-  };
-  const unresolved = targetDoc.getMap("unresolved");
-  let changed = false;
-  let scanned = false;
-  targetDoc.transact(() => {
-    for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
-      const key2 = `${source}\0${person}`, by = placeholder(person, source);
-      if (!aliases.has(by) && !unresolved.has(key2)) {
-        unresolved.set(key2, { placeholder: by, claims: [] });
-        changed = true;
-      }
-    }
-    for (const [person, prior] of Object.entries(ledger2.identities)) {
-      if (prior.length !== 1 || (occurrences.get(person)?.size ?? 0) <= 1) continue;
-      const source = prior[0], by = translated(person, source), key2 = `${source}\0${person}`;
-      const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
-      const moved = [...old.claims];
-      for (const [id3, claim2] of target.claims) {
-        if (claim2.by !== person || claim2.origin !== source) continue;
-        target.claims.delete(id3);
-        if (!moved.some((item) => item.id === id3)) moved.push({ ...claim2, by });
-        changed = true;
-      }
-      const oldScope = target.scopes.get(person);
-      const importedScope = !!oldScope && ledger2.scopeSnapshots[key2] === JSON.stringify(oldScope);
-      const scope = importedScope ? { ...oldScope, by } : old.scope;
-      if (importedScope) {
-        target.scopes.delete(person);
-        changed = true;
-      }
-      for (const [id3, message2] of target.mail) {
-        if (ledger2.messageSources[id3] !== source || message2.from !== person && message2.to !== person) continue;
-        target.mail.set(id3, {
-          ...message2,
-          from: message2.from === person ? by : message2.from,
-          ...message2.to === person ? { to: by } : {}
-        });
-        changed = true;
-      }
-      if (by.startsWith("?")) {
-        if (moved.length || scope) {
-          unresolved.set(key2, { placeholder: by, claims: moved, ...scope ? { scope } : {} });
-          changed = true;
-        }
-      } else {
-        for (const claim2 of moved) if (!target.claims.has(claim2.id)) {
-          target.claims.set(claim2.id, { ...claim2, by });
-          changed = true;
-        }
-        if (scope && !target.scopes.has(by)) {
-          const copy2 = { ...scope, by };
-          target.scopes.set(by, copy2);
-          ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
-          changed = true;
-        }
-        if (unresolved.has(key2)) {
-          unresolved.delete(key2);
-          changed = true;
-        }
-      }
-    }
-  });
-  for (const { name: name2, mtime, source, doc } of loaded) {
-    if (ledger2.sources[name2] === mtime) {
-      doc.destroy();
-      continue;
-    }
-    scanned = true;
-    targetDoc.transact(() => {
-      for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
-        if (messages.has(msg.id)) continue;
-        if (!existing.has(msg.id)) {
-          const copy2 = { ...msg, from: translated(msg.from, name2), ...msg.to ? { to: translated(msg.to, name2) } : {} };
-          if (msg.to) {
-            if (!source.seen(msg.to).has(msg.id)) {
-              target.mail.set(msg.id, copy2);
-              existing.add(msg.id);
-              changed = true;
-            }
-          } else {
-            target.bus.push([copy2]);
-            existing.add(msg.id);
-            changed = true;
-          }
-        }
-        messages.add(msg.id);
-        ledger2.messageSources[msg.id] = name2;
-      }
-      for (const claim2 of source.claims.values()) {
-        if (claims.has(claim2.id)) continue;
-        const by = translated(claim2.by, name2);
-        const { anchor: _anchor, ...rest } = claim2;
-        const copy2 = { ...rest, by, origin: name2 };
-        if (by.startsWith("?")) {
-          const key2 = `${name2}\0${claim2.by}`;
-          const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
-          if (!old.claims.some((item) => item.id === claim2.id)) {
-            unresolved.set(key2, { ...old, claims: [...old.claims, copy2] });
-            changed = true;
-          }
-        } else if (!target.claims.has(claim2.id)) {
-          target.claims.set(claim2.id, copy2);
-          changed = true;
-        }
-        claims.add(claim2.id);
-      }
-      for (const [person, scope] of source.scopes) {
-        const key2 = `${name2}\0${person}`;
-        if (scopes.has(key2)) continue;
-        const by = translated(person, name2);
-        const copy2 = { ...scope, by, origin: name2 };
-        if (by.startsWith("?")) {
-          const old = unresolved.get(key2) ?? { placeholder: by, claims: [] };
-          unresolved.set(key2, { ...old, scope: copy2 });
-          changed = true;
-        } else if (!target.scopes.has(by)) {
-          target.scopes.set(by, copy2);
-          ledger2.scopeSnapshots[key2] = JSON.stringify(copy2);
-          changed = true;
-        }
-        scopes.add(key2);
-      }
-    });
-    ledger2.sources[name2] = mtime;
-    doc.destroy();
-  }
-  const pending = running || unreadable;
-  if (target.metaMap.get("localMigrating") !== Number(pending)) {
-    target.metaMap.set("localMigrating", Number(pending));
-    changed = true;
-  }
-  const completionChanged = ledger2.complete !== !pending;
-  ledger2.complete = !pending;
-  if ((scanned || changed || completionChanged) && !saveMemory(common, room, targetDoc, log2)) throw new Error("local migration could not save the new room snapshot");
-  ledger2.messages = [...messages];
-  ledger2.claims = [...claims];
-  ledger2.scopes = [...scopes];
-  ledger2.identities = Object.fromEntries([...occurrences].map(([person, names]) => [person, [...names].sort()]));
-  if (scanned || changed || completionChanged) writeLedger(common, room, ledger2);
-  return pending;
-}
-function forgetLegacyLocal(common, room) {
-  for (const { file } of sources(common, room)) fs20.rmSync(file, { force: true });
-  fs20.rmSync(ledgerFile(common, room), { force: true });
-  const old = path16.join(common, "room", "relay", "migrated.json");
-  try {
-    const ledger2 = JSON.parse(fs20.readFileSync(old, "utf8"));
-    const names = Object.keys(ledger2.sources ?? {});
-    if (names.length && names.every((name2) => name2 === room || name2.startsWith(`${room}/`))) fs20.rmSync(old, { force: true });
-  } catch {
-  }
-}
-var empty, ledgerFile, legacyDir;
-var init_local_migrate = __esm({
-  "packages/relay/src/local-migrate.ts"() {
-    "use strict";
-    init_yjs();
-    init_src();
-    init_process();
-    init_memory2();
-    empty = () => ({ messages: [], claims: [], scopes: [], scopeSnapshots: {}, sources: {}, messageSources: {}, identities: {}, complete: false });
-    ledgerFile = (common, room) => path16.join(common, "room", "relay", `migrated-${crypto2.createHash("sha256").update(room).digest("hex").slice(0, 16)}.json`);
-    legacyDir = (common) => path16.join(common, "room-local");
-  }
-});
-
-// packages/hub-core/src/protocol.ts
-function encodeFrame(frame) {
-  const enc = createEncoder();
-  writeVarUint(enc, MSG_HUB);
-  writeVarString(enc, JSON.stringify(frame));
-  return toUint8Array(enc);
-}
-function decodeFrame(input) {
-  let dec;
-  if (input instanceof Uint8Array) {
-    dec = createDecoder(input);
-    const type = readVarUint(dec);
-    if (type !== MSG_HUB) throw new Error(`not a hub frame: message type ${type}`);
-  } else dec = input;
-  return JSON.parse(readVarString(dec));
-}
-function encodeSeq(incarnation, n) {
-  if (!Number.isInteger(incarnation) || incarnation < 0 || incarnation >= 2 ** 32) throw new RangeError(`incarnation out of range: ${incarnation}`);
-  if (!Number.isInteger(n) || n < 0 || n >= COUNTER_LIMIT) throw new RangeError(`counter out of range: ${n}`);
-  return incarnation * COUNTER_LIMIT + n;
-}
-function incarnationOf(value2) {
-  return Math.floor(value2 / COUNTER_LIMIT);
-}
-var MSG_HUB, HUB_PROTO, HUB_ORIGIN, LEASE_TTL_MS, LEASE_RENEW_MS, SETTLE_MS, STARTING_RETRY_MS, REQUEST_TIMEOUT_LOCAL_MS, REQUEST_TIMEOUT_TEAM_MS, COUNTER_BITS, COUNTER_LIMIT;
-var init_protocol = __esm({
-  "packages/hub-core/src/protocol.ts"() {
-    "use strict";
-    init_encoding();
-    init_decoding();
-    MSG_HUB = 7;
-    HUB_PROTO = 1;
-    HUB_ORIGIN = /* @__PURE__ */ Symbol("room-hub");
-    LEASE_TTL_MS = 45e3;
-    LEASE_RENEW_MS = 15e3;
-    SETTLE_MS = 5e3;
-    STARTING_RETRY_MS = 1e3;
-    REQUEST_TIMEOUT_LOCAL_MS = 5e3;
-    REQUEST_TIMEOUT_TEAM_MS = 1e4;
-    COUNTER_BITS = 21;
-    COUNTER_LIMIT = 2 ** COUNTER_BITS;
-  }
-});
-
-// packages/hub-core/src/hub.ts
-function serializedStore(record2) {
-  let queue = Promise.resolve();
-  const valid = (v, ceiling = 2 ** 32 - 1) => v !== void 0 && Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 && v <= ceiling ? v : void 0;
-  return {
-    current: async (ceiling) => valid(await record2.read(), ceiling),
-    advance(floor2) {
-      const run3 = queue.then(async () => {
-        if (!Number.isSafeInteger(floor2) || floor2 < 0 || floor2 >= 2 ** 32) throw new RoomStateError("incarnation floor is out of range");
-        const next = Math.max((valid(await record2.read(), floor2 + MAX_INCARNATION_AHEAD) ?? -1) + 1, floor2);
-        if (next >= 2 ** 32) throw new RoomStateError("incarnation counter exhausted");
-        await record2.write(next);
-        return next;
-      });
-      queue = run3.catch(() => void 0);
-      return run3;
-    }
-  };
-}
-function parseHolder(v, record2 = false) {
-  if (!isObject2(v) || typeof v.sessionId !== "string" || !v.sessionId || v.sessionId.length > MAX_HOLDER_FIELD_LENGTH || !Number.isSafeInteger(v.pid) || v.pid < 0 || v.pid > 2 ** 31 - 1 || typeof v.startTime !== "string" || v.startTime.length > MAX_HOLDER_FIELD_LENGTH || typeof v.executable !== "string" || v.executable.length > MAX_HOLDER_FIELD_LENGTH || v.workerId !== void 0 && (typeof v.workerId !== "string" || v.workerId.length > MAX_HOLDER_FIELD_LENGTH) || Object.keys(v).some((k) => !["sessionId", "pid", "startTime", "executable", "workerId", ...record2 ? ["epoch", "at", "ended", "session", "principal"] : []].includes(k))) return void 0;
-  return { sessionId: v.sessionId, pid: v.pid, startTime: v.startTime, executable: v.executable, ...v.workerId !== void 0 ? { workerId: v.workerId } : {} };
-}
-function hubHolder(v) {
-  const holder = parseHolder(v, true);
-  if (!holder || !isObject2(v) || !isCounter(v.epoch) || !Number.isFinite(v.at) || v.ended !== void 0 && v.ended !== "released" && v.ended !== "expired" || v.session !== void 0 && (typeof v.session !== "string" || v.session.length > MAX_HOLDER_FIELD_LENGTH) || v.principal !== void 0 && (typeof v.principal !== "string" || v.principal.length > MAX_HOLDER_FIELD_LENGTH)) return void 0;
-  const ended = v.ended === "released" || v.ended === "expired" ? v.ended : void 0;
-  return {
-    ...holder,
-    epoch: v.epoch,
-    at: typeof v.at === "number" ? v.at : 0,
-    ...ended ? { ended } : {},
-    ...typeof v.session === "string" ? { session: v.session } : {},
-    ...typeof v.principal === "string" ? { principal: v.principal } : {}
-  };
-}
-function knownOf(record2) {
-  const { epoch, at, ended, session, principal, ...holder } = record2;
-  return { epoch, at, holder, session, principal, ...ended ? { ended } : {} };
-}
-function hydrate(known, record2) {
-  if (known.holder || record2.epoch !== known.epoch) return;
-  const { at, holder, session, principal } = knownOf(record2);
-  known.at = at;
-  known.holder = holder;
-  known.session = session;
-  known.principal = principal;
-}
-function visible(doc) {
-  let epoch, seq;
-  let invalid = false;
-  const see = (v, kind) => {
-    if (v === void 0) return;
-    if (!isCounter(v)) {
-      invalid = true;
-      return;
-    }
-    if (kind === "epoch") epoch = higher(epoch, v);
-    else seq = higher(seq, v);
-  };
-  const meta2 = doc.metaMap;
-  see(meta2.get("hubEpoch"), "epoch");
-  see(meta2.get("hubSeq"), "seq");
-  for (const m of doc.bus.toArray()) see(m?.seq, "seq");
-  for (const m of doc.mail.values()) see(m?.seq, "seq");
-  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) {
-    if (!isObject2(value2) || value2.epoch === void 0) continue;
-    if (!isCounter(value2.epoch)) {
-      invalid = true;
-      continue;
-    }
-    see(value2.epoch, "epoch");
-  }
-  const rawIncarnation = meta2.get("hubIncarnation");
-  if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid = true;
-  const incarnation = Math.max(
-    isCounter(rawIncarnation) ? rawIncarnation : -1,
-    ...[epoch, seq].map((v) => v === void 0 ? -1 : incarnationOf(v))
-  );
-  return { epoch, seq, incarnation, invalid };
-}
-async function startHub(host) {
-  const hub = new RoomHub(host);
-  await hub.start();
-  return hub;
-}
-var MAINTENANCE_MS, MAX_HUB_FRAME_BYTES, MAX_HOLDER_FIELD_LENGTH, MAX_LEASES_PER_ROOM, MAX_LEASES_PER_PRINCIPAL, MAX_RETAINED_NAMES, MAX_RETAINED_NAMES_PER_PRINCIPAL, POST_RATE_PER_LEASE, POST_RATE_PER_PRINCIPAL, POST_RATE_PER_ROOM, POST_RATE_WINDOW_MS, MAX_RATE_KEYS, MAX_INCARNATION_AHEAD, RoomStateError, HOLDER, holderKey, encoder2, sizeOf2, isObject2, isName, isCounter, sameRecord, higher, RoomHub;
-var init_hub = __esm({
-  "packages/hub-core/src/hub.ts"() {
-    "use strict";
-    init_src();
-    init_protocol();
-    MAINTENANCE_MS = 6e4;
-    MAX_HUB_FRAME_BYTES = 96 * 1024;
-    MAX_HOLDER_FIELD_LENGTH = 512;
-    MAX_LEASES_PER_ROOM = 512;
-    MAX_LEASES_PER_PRINCIPAL = 64;
-    MAX_RETAINED_NAMES = 1024;
-    MAX_RETAINED_NAMES_PER_PRINCIPAL = 128;
-    POST_RATE_PER_LEASE = 250;
-    POST_RATE_PER_PRINCIPAL = 500;
-    POST_RATE_PER_ROOM = 1e3;
-    POST_RATE_WINDOW_MS = 1e3;
-    MAX_RATE_KEYS = 2048;
-    MAX_INCARNATION_AHEAD = 1e6;
-    RoomStateError = class extends Error {
-      name = "RoomStateError";
-    };
-    HOLDER = "\0holder";
-    holderKey = (name2) => `${name2}${HOLDER}`;
-    encoder2 = new TextEncoder();
-    sizeOf2 = (value2) => encoder2.encode(JSON.stringify(value2)).length;
-    isObject2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-    isName = (v) => typeof v === "string" && validParticipantName(v) && v.length <= 200;
-    isCounter = (v) => Number.isSafeInteger(v) && v >= 0 && v < 2 ** 32 * COUNTER_LIMIT;
-    sameRecord = (a, b) => !!a && JSON.stringify(a) === JSON.stringify(b);
-    higher = (a, b) => a === void 0 ? b : b === void 0 ? a : Math.max(a, b);
-    RoomHub = class {
-      constructor(host) {
-        this.host = host;
-        this.limit = host.counterLimit ?? COUNTER_LIMIT;
-      }
-      host;
-      incarnation = 0;
-      limit;
-      epochs = 0;
-      seqs = 0;
-      lastEpoch;
-      lastSeq;
-      reincarnating;
-      startedAt = 0;
-      freshAtStart = false;
-      settled = false;
-      maintainedAt = 0;
-      dirty = false;
-      stopped = false;
-      unauthorized = false;
-      unavailableSince;
-      tenure;
-      leases = /* @__PURE__ */ new Map();
-      records = /* @__PURE__ */ new Map();
-      greeted = /* @__PURE__ */ new Set();
-      sessions = /* @__PURE__ */ new Map();
-      rates = /* @__PURE__ */ new Map();
-      push = () => {
-      };
-      onUpdate = (_update, origin) => {
-        if (origin === HUB_ORIGIN) return;
-        this.dirty = true;
-        if (this.settling() && !this.storageUnavailable()) this.adoptSynced();
-      };
-      get doc() {
-        return this.host.doc;
-      }
-      async start() {
-        if (this.host.unavailable?.()) throw new Error("hub storage unavailable at startup");
-        const before = visible(this.doc);
-        const wallFloor = Math.floor(this.host.wall() / 1e3);
-        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
-        if (before.invalid || before.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
-        this.freshAtStart = this.host.fresh === true && before.epoch === void 0 && before.seq === void 0 && before.incarnation < 0;
-        await this.incarnate();
-        this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
-        this.startedAt = this.maintainedAt = this.host.mono();
-        this.adoptSynced();
-        this.doc.doc.on("update", this.onUpdate);
-        this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
-      }
-      /** Take a new incarnation (§3): durable before anything is issued under it. */
-      async incarnate() {
-        const seen = visible(this.doc);
-        const wallFloor = Math.floor(this.host.wall() / 1e3);
-        const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
-        if (seen.invalid || seen.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
-        const floor2 = Math.max(seen.incarnation + 1, this.incarnation + 1, wallFloor);
-        const next = await this.host.store.advance(floor2);
-        if (!Number.isInteger(next) || next < floor2 || next >= 2 ** 32) throw new Error(`incarnation store returned ${next} for floor ${floor2}`);
-        this.incarnation = next;
-        this.epochs = this.seqs = 0;
-        this.doc.doc.transact(() => {
-          this.doc.metaMap.set("hubIncarnation", next);
-        }, HUB_ORIGIN);
-      }
-      stop() {
-        this.stopped = true;
-        this.doc.doc.off("update", this.onUpdate);
-      }
-      onPush(fn) {
-        this.push = fn;
-      }
-      closed(conn) {
-        this.greeted.delete(conn);
-        this.sessions.delete(conn);
-        for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
-      }
-      settling() {
-        return !this.freshAtStart && this.host.mono() - this.startedAt < SETTLE_MS;
-      }
-      notify(name2, lease, reason) {
-        if (lease.conn) this.push(lease.conn, { v: 1, push: "lease-lost", name: name2, epoch: lease.epoch, reason });
-      }
-      authorized() {
-        if (this.stopped) return false;
-        if (!this.host.authority || this.host.authority()) {
-          this.unauthorized = false;
-          return true;
-        }
-        if (!this.unauthorized) {
-          this.unauthorized = true;
-          this.host.log("hub: lost the authority lock; answering not-authority");
-          for (const [name2, lease] of this.leases) this.notify(name2, lease, "not-authority");
-        }
-        return false;
-      }
-      // ---- leases ----
-      record(name2) {
-        return hubHolder(this.doc.participants.get(holderKey(name2)));
-      }
-      /** The doc record for what the hub knows of a name, when it knows the holder. */
-      recordOf(k) {
-        return k.holder && {
-          ...k.holder,
-          epoch: k.epoch,
-          at: k.at,
-          ...k.ended ? { ended: k.ended } : {},
-          ...k.session ? { session: k.session } : {},
-          ...k.principal ? { principal: k.principal } : {}
-        };
-      }
-      /** A lease is live from here: granted, or adopted from an earlier incarnation. The participant is back (§8). */
-      hold(name2, lease) {
-        this.leases.set(name2, lease);
-        this.records.set(name2, lease);
-        this.tenure.present(this.doc, name2, HUB_ORIGIN);
-      }
-      principal(p) {
-        return "login" in p ? `login:${p.login ?? ""}` : "local";
-      }
-      owner(conn, p, name2, lease) {
-        if (this.host.owns && !this.host.owns(p, name2)) return false;
-        if (lease?.principal && lease.principal !== this.principal(p)) return false;
-        const session = this.sessions.get(conn);
-        return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
-      }
-      storageUnavailable() {
-        const text = this.host.unavailable?.();
-        if (text) {
-          this.unavailableSince ??= this.host.mono();
-          return text;
-        }
-        if (this.unavailableSince !== void 0) {
-          this.unavailableSince = void 0;
-          const now = this.host.mono();
-          for (const lease of this.leases.values()) lease.renewed = now;
-          this.maintainedAt = now;
-          this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
-        }
-        return void 0;
-      }
-      unavailable(fail) {
-        const text = this.storageUnavailable();
-        return text ? fail("unavailable", text, { retryMs: 1e3 }) : void 0;
-      }
-      limited(key2, limit) {
-        const now = this.host.mono();
-        const rate = this.rates.get(key2);
-        if (!rate || now - rate.at >= POST_RATE_WINDOW_MS) {
-          if (!rate && this.rates.size >= MAX_RATE_KEYS) {
-            for (const [k, v] of this.rates) if (now - v.at >= POST_RATE_WINDOW_MS) this.rates.delete(k);
-            if (this.rates.size >= MAX_RATE_KEYS) {
-              const oldLease = [...this.rates.keys()].find((k) => k.startsWith("lease:"));
-              if (oldLease) this.rates.delete(oldLease);
-            }
-          }
-          this.rates.set(key2, { at: now, count: 1 });
-          return void 0;
-        }
-        if (rate.count >= limit) return Math.max(1, POST_RATE_WINDOW_MS - (now - rate.at));
-        rate.count++;
-        return void 0;
-      }
-      pruneRecords() {
-        if (this.records.size < MAX_RETAINED_NAMES) return;
-        const ended = [...this.records].filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
-        for (const [name2] of ended) {
-          if (this.records.size < MAX_RETAINED_NAMES) break;
-          this.records.delete(name2);
-          this.doc.doc.transact(() => {
-            this.doc.participants.delete(holderKey(name2));
-          }, HUB_ORIGIN);
-        }
-      }
-      prunePrincipal(principal) {
-        const mine = [...this.records].filter(([, r]) => r.principal === principal);
-        if (mine.length < MAX_RETAINED_NAMES_PER_PRINCIPAL) return;
-        const ended = mine.filter(([name2, r]) => r.ended && !this.leases.has(name2)).sort((a, b) => a[1].at - b[1].at);
-        for (const [name2] of ended) {
-          if ([...this.records.values()].filter((r) => r.principal === principal).length < MAX_RETAINED_NAMES_PER_PRINCIPAL) break;
-          this.records.delete(name2);
-          this.doc.doc.transact(() => {
-            this.doc.participants.delete(holderKey(name2));
-          }, HUB_ORIGIN);
-        }
-      }
-      /**
-       * The name's live lease. One past its TTL, or whose process is gone, ends here; so does one inherited from
-       * an earlier incarnation whose own record now says it ended (that hub's release or expiry, synced late).
-       */
-      live(name2) {
-        const lease = this.leases.get(name2);
-        if (!lease) return void 0;
-        const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
-        const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
-        const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
-        if (!ended && !expired) return lease;
-        this.end(name2, lease, ended ?? "expired");
-        this.notify(name2, lease, "expired");
-        return void 0;
-      }
-      end(name2, lease, how) {
-        this.leases.delete(name2);
-        const current = this.record(name2);
-        if (current) hydrate(lease, current);
-        const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, principal: lease.principal, session: lease.session, ended: how };
-        this.records.set(name2, ended);
-        const record2 = this.recordOf(ended);
-        if (record2) this.doc.doc.transact(() => {
-          this.doc.participants.set(holderKey(name2), record2);
-        }, HUB_ORIGIN);
-        this.host.log(`hub: lease ${lease.epoch} on ${name2} ${how}`);
-      }
-      /**
-       * Take in earlier incarnations' holders (§4.4), at the start and while settling: an un-ended one above
-       * what the hub knows is carried over with a fresh TTL, an ended one is remembered. The mirrors' baselines
-       * rise to the highest values seen.
-       */
-      adoptSynced() {
-        const seen = visible(this.doc);
-        this.lastEpoch = higher(this.lastEpoch, seen.epoch);
-        this.lastSeq = higher(this.lastSeq, seen.seq);
-        for (const [key2, value2] of this.doc.participants.entries()) {
-          if (!key2.endsWith(HOLDER)) continue;
-          const record2 = hubHolder(value2);
-          if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
-          const name2 = key2.slice(0, -HOLDER.length);
-          const known = this.records.get(name2);
-          const lease = this.leases.get(name2);
-          if (!known && this.records.size >= MAX_RETAINED_NAMES) continue;
-          if (known && record2.epoch <= known.epoch) {
-            if (lease) hydrate(lease, record2);
-            continue;
-          }
-          if (lease) {
-            this.leases.delete(name2);
-            this.notify(name2, lease, "superseded");
-          }
-          if (record2.ended) this.records.set(name2, knownOf(record2));
-          else if (this.leases.size < MAX_LEASES_PER_ROOM) this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
-        }
-      }
-      /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
-      reserve(kind, count) {
-        if (this.reincarnating) return false;
-        if ((kind === "epoch" ? this.epochs : this.seqs) + count <= this.limit) return true;
-        this.reincarnating = this.incarnate().catch((e) => this.host.log(`hub: could not take a new incarnation: ${e instanceof Error ? e.message : e}`)).finally(() => {
-          this.reincarnating = void 0;
-        });
-        return false;
-      }
-      /** The next epoch or seq, or undefined while a new incarnation is being taken. */
-      issue(kind) {
-        if (!this.reserve(kind, 1)) return void 0;
-        const n = kind === "epoch" ? this.epochs++ : this.seqs++;
-        return encodeSeq(this.incarnation, n);
-      }
-      /** Append a message with the next seq and the hub's `at`, mirrored in `meta.hubSeq`; undefined while reincarnating. */
-      append(msg, wall) {
-        const seq = this.issue("seq");
-        if (seq === void 0) return void 0;
-        const record2 = { ...msg, seq, at: wall };
-        this.lastSeq = seq;
-        this.doc.doc.transact(() => {
-          this.doc.bus.push([record2]);
-          this.doc.metaMap.set("hubSeq", seq);
-        }, HUB_ORIGIN);
-        if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
-        return record2;
-      }
-      // ---- requests ----
-      handle(conn, frame, p) {
-        const re = isObject2(frame) && typeof frame.id === "string" && frame.id.length <= 128 ? frame.id : "";
-        const fail = (reason, text, extra = {}) => ({ v: 1, re, ok: false, reason, text, ...extra });
-        try {
-          return this.handleSafe(conn, frame, p, fail);
-        } catch (error2) {
-          this.host.log(`hub: rejected request: ${error2 instanceof Error ? error2.message : String(error2)}`);
-          return fail("invalid", "invalid hub request");
-        }
-      }
-      handleSafe(conn, frame, p, fail) {
-        const re = isObject2(frame) && typeof frame.id === "string" ? frame.id : "";
-        if (sizeOf2(frame) > MAX_HUB_FRAME_BYTES) return fail("too-large", "hub request exceeds the frame limit");
-        if (!isObject2(frame) || frame.v !== 1 || !re || re.length > 128 || typeof frame.op !== "string") {
-          this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`);
-          return fail("invalid", "a hub request needs v: 1, an id and an op");
-        }
-        const fields = {
-          hello: ["proto", "schema", "client", "sessionId"],
-          acquire: ["name", "holder", "supersedes"],
-          renew: ["name", "epoch"],
-          release: ["name", "epoch"],
-          post: ["lease", "msg", "auto"]
-        };
-        const op = frame.op;
-        if (fields[op] && Object.keys(frame).some((k) => !["v", "id", "op", ...fields[op]].includes(k))) return fail("invalid", "unknown hub request field");
-        if (!this.authorized()) return fail("not-authority", "not the authority; reconnect");
-        if ("readOnly" in p && p.readOnly) return fail("read-only", "this connection is read-only");
-        const req = frame;
-        if (req.op === "hello") return this.hello(conn, req, fail);
-        if (!this.greeted.has(conn)) return fail("hello-first", "send hello first");
-        const starting = () => fail("starting", "the hub is starting", { retryMs: STARTING_RETRY_MS });
-        switch (req.op) {
-          case "acquire":
-            return this.acquire(conn, req, p, fail, starting);
-          case "renew":
-            return this.renew(conn, req, p, fail);
-          case "release":
-            return this.release(conn, req, p, fail);
-          case "post":
-            return this.post(conn, req, p, fail, starting);
-          default:
-            return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
-        }
-      }
-      hello(conn, req, fail) {
-        if (req.proto !== HUB_PROTO) {
-          return fail("version", typeof req.proto === "number" && req.proto > HUB_PROTO ? `[room] this room's hub speaks protocol ${HUB_PROTO}; the hub needs updating` : `[room] this room's hub speaks protocol ${HUB_PROTO}; update Room to 0.17 or later`);
-        }
-        if (typeof req.sessionId !== "string" || !req.sessionId || req.sessionId.length > MAX_HOLDER_FIELD_LENGTH || typeof req.client !== "string" || req.client.length > 128 || req.schema !== 2) return fail("invalid", "hello needs a supported schema, client and session");
-        this.greeted.add(conn);
-        this.sessions.set(conn, req.sessionId);
-        return { v: 1, re: req.id, ok: true, proto: HUB_PROTO, incarnation: this.incarnation, ttlMs: LEASE_TTL_MS, renewMs: LEASE_RENEW_MS, authority: true };
-      }
-      acquire(conn, req, p, fail, starting) {
-        const holder = parseHolder(req.holder);
-        if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
-        const { name: name2 } = req;
-        if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
-        if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
-        const live = this.live(name2);
-        if (!live && this.settling()) return starting();
-        if (live && req.supersedes !== live.epoch && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
-          return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
-        }
-        if (live && live.principal && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
-        if (!live && this.leases.size >= MAX_LEASES_PER_ROOM) return fail("room-full", "the room has too many live leases");
-        const owned = [...this.leases.values()].filter((l) => l.principal === this.principal(p)).length;
-        if (!live && owned >= MAX_LEASES_PER_PRINCIPAL) return fail("room-full", "this principal has too many live leases");
-        if (!live) {
-          this.prunePrincipal(this.principal(p));
-          if ([...this.records.values()].filter((r) => r.principal === this.principal(p)).length >= MAX_RETAINED_NAMES_PER_PRINCIPAL) return fail("room-full", "this principal has too many retained names");
-        }
-        if (!live && this.records.size >= MAX_RETAINED_NAMES) {
-          this.pruneRecords();
-          if (this.records.size >= MAX_RETAINED_NAMES) return fail("room-full", "the room has too many retained names");
-        }
-        const epoch = this.issue("epoch");
-        if (epoch === void 0) return starting();
-        if (live) this.notify(name2, live, "superseded");
-        const lease = { epoch, holder, at: this.host.wall(), renewed: this.host.mono(), conn, principal: this.principal(p), session: this.sessions.get(conn) };
-        this.lastEpoch = epoch;
-        this.doc.doc.transact(() => {
-          this.hold(name2, lease);
-          this.doc.participants.set(holderKey(name2), this.recordOf(lease));
-          this.doc.metaMap.set("hubEpoch", epoch);
-        }, HUB_ORIGIN);
-        this.host.log(`hub: granted ${name2} to ${holder.sessionId} at epoch ${epoch}${live ? ` (superseding ${live.epoch})` : ""}`);
-        return { v: 1, re: req.id, ok: true, epoch, ttlMs: LEASE_TTL_MS };
-      }
-      renew(conn, req, p, fail) {
-        if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
-        const { name: name2, epoch } = req;
-        const existing = this.leases.get(name2) ?? this.records.get(name2);
-        if (this.host.owns && !this.host.owns(p, name2) || existing?.epoch === epoch && !this.owner(conn, p, name2, existing)) {
-          return fail("not-yours", `${name2} belongs to another holder session`);
-        }
-        const outage = this.unavailable(fail);
-        if (outage) {
-          const lease = this.leases.get(name2);
-          if (lease?.epoch !== epoch) return outage;
-          lease.renewed = this.host.mono();
-          lease.conn = conn;
-          return { v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS };
-        }
-        const live = this.live(name2);
-        const ok = () => ({ v: 1, re: req.id, ok: true, ttlMs: LEASE_TTL_MS });
-        if (live?.epoch === epoch) {
-          if (!this.owner(conn, p, name2, live)) return fail("not-yours", `${name2} belongs to another holder session`);
-          live.renewed = this.host.mono();
-          live.conn = conn;
-          return ok();
-        }
-        const known = this.records.get(name2);
-        if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
-          const record2 = this.record(name2);
-          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal && record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
-          if (live) this.notify(name2, live, "superseded");
-          const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
-          this.hold(name2, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn });
-          this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
-          return ok();
-        }
-        return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
-      }
-      release(conn, req, p, fail) {
-        if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
-        const existing = this.leases.get(req.name) ?? this.records.get(req.name);
-        if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
-          return fail("not-yours", `${req.name} belongs to another holder session`);
-        }
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
-        const live = this.live(req.name);
-        const known = this.records.get(req.name);
-        if ((live?.epoch === req.epoch || known?.epoch === req.epoch) && !this.owner(conn, p, req.name, live ?? known)) return fail("not-yours", `${req.name} belongs to another holder session`);
-        if (live?.epoch === req.epoch) this.end(req.name, live, "released");
-        else if (!(known?.epoch === req.epoch && known.ended)) return fail("stale", `epoch ${req.epoch} is not the live lease on ${req.name}`);
-        return { v: 1, re: req.id, ok: true };
-      }
-      post(conn, req, p, fail, starting) {
-        const msg = req.msg;
-        if (sizeOf2(msg) > MAX_MESSAGE_BYTES) return fail("too-large", `the message exceeds ${MAX_MESSAGE_BYTES / 1024} KiB`);
-        if (!validMessageShape(msg) || !msg.id || !isName(msg.from) || msg.to !== void 0 && !isName(msg.to) || msg.at !== void 0 || msg.seq !== void 0 || req.auto !== void 0 && typeof req.auto !== "boolean") return fail("invalid", "post has invalid message fields");
-        if (!isObject2(req.lease) || Object.keys(req.lease).some((k) => k !== "name" && k !== "epoch") || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
-        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name);
-        if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
-          return fail("not-yours", `${req.lease.name} belongs to another holder session`);
-        }
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
-        const live = this.live(req.lease.name);
-        if (live?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
-        if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
-        const retryMs = this.limited(`lease:${req.lease.name}`, POST_RATE_PER_LEASE) ?? this.limited(`principal:${this.principal(p)}`, POST_RATE_PER_PRINCIPAL) ?? this.limited("room", POST_RATE_PER_ROOM);
-        if (retryMs) return fail("rate-limited", "posting too quickly; retry shortly", { retryMs });
-        const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
-        if (found) {
-          const seq = found.seq;
-          return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
-        }
-        if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
-        const size2 = sizeOf2(msg);
-        if (size2 > MAX_MESSAGE_BYTES) return fail("too-large", `the message is ${Math.ceil(size2 / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`);
-        if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
-        const wall = this.host.wall();
-        if (msg.to && !req.auto) {
-          const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
-          if (!admission.ok) return fail("over-cap", admission.reason);
-        }
-        if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
-        let priority2;
-        try {
-          priority2 = msg.priority ?? defaultPriority(msg);
-        } catch {
-          return fail("invalid", `cannot prioritise a ${msg.type} message`);
-        }
-        const record2 = this.append({ ...msg, priority: priority2 }, wall);
-        if (!record2) return starting();
-        return { v: 1, re: req.id, ok: true, seq: record2.seq, at: wall };
-      }
-      // ---- maintenance ----
-      tick() {
-        try {
-          this.tickSafe();
-        } catch (error2) {
-          this.host.log(`hub: maintenance failed: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        }
-      }
-      tickSafe() {
-        if (!this.authorized()) return;
-        if (this.storageUnavailable()) return;
-        for (const name2 of [...this.leases.keys()]) this.live(name2);
-        if (this.settling()) return;
-        if (!this.settled) {
-          this.settled = true;
-          this.dirty = true;
-        }
-        if (this.dirty) this.reassert();
-        const now = this.host.mono();
-        if (now - this.maintainedAt >= MAINTENANCE_MS) {
-          this.maintainedAt = now;
-          trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN });
-          this.expire();
-        }
-      }
-      /** Rewrite hub-owned values a stale replica won back (§4.4). */
-      reassert() {
-        this.dirty = false;
-        const { doc } = this;
-        const archived = (id3) => doc.archive.has(id3) || doc.outcomes.has(id3);
-        doc.doc.transact(() => {
-          const names = new Set(this.records.keys());
-          for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER) && hubHolder(value2)) names.add(key2.slice(0, -HOLDER.length));
-          for (const name2 of names) {
-            const current = this.record(name2);
-            let known = this.records.get(name2);
-            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
-              known = knownOf(current.ended ? current : { ...current, ended: "expired" });
-              this.records.set(name2, known);
-            }
-            if (!known) continue;
-            if (current) hydrate(known, current);
-            const want = this.recordOf(known);
-            if (want) {
-              if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
-            } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
-          }
-          const meta2 = doc.metaMap;
-          if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
-          if (this.lastEpoch !== void 0 && meta2.get("hubEpoch") !== this.lastEpoch) meta2.set("hubEpoch", this.lastEpoch);
-          if (this.lastSeq !== void 0 && meta2.get("hubSeq") !== this.lastSeq) meta2.set("hubSeq", this.lastSeq);
-          const seen = /* @__PURE__ */ new Set();
-          const drop = [];
-          doc.bus.toArray().forEach((m, i2) => {
-            const id3 = m?.id;
-            if (typeof id3 !== "string") return;
-            if (seen.has(id3) || archived(id3)) drop.push(i2);
-            seen.add(id3);
-          });
-          for (const i2 of drop.reverse()) doc.bus.delete(i2, 1);
-        }, HUB_ORIGIN);
-      }
-      /**
-       * Measure absence as "no live lease" and expire at ROOM_STALE_DAYS (§8). An expired participant's claims
-       * are released with sequenced notices, so a pass runs only when every claim could get a seq.
-       */
-      expire() {
-        if (!this.reserve("seq", Math.min(this.doc.claims.size, this.limit))) return;
-        const view = [];
-        for (const key2 of this.doc.participants.keys()) {
-          if (!key2.endsWith(HOLDER)) continue;
-          const name2 = key2.slice(0, -HOLDER.length);
-          view.push({ name: name2, fresh: !!this.live(name2), visible: true });
-        }
-        const wall = this.host.wall();
-        const post = (from2, body2) => this.append({ ...body2, priority: body2.priority ?? defaultPriority(body2), id: newId("m_"), from: from2.name, fromKind: from2.kind }, wall);
-        for (const name2 of this.tenure.observe(this.doc, view, HUB_ORIGIN, post)) {
-          this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
-          const lease = this.leases.get(name2);
-          if (lease) {
-            this.leases.delete(name2);
-            this.notify(name2, lease, "expired-participant");
-          }
-          this.records.delete(name2);
-        }
-      }
-    };
-  }
-});
-
-// packages/hub-core/src/index.ts
-var init_src3 = __esm({
-  "packages/hub-core/src/index.ts"() {
-    "use strict";
-    init_protocol();
-    init_hub();
-  }
-});
-
-// packages/relay/src/hub.ts
-import fs21 from "node:fs";
-import path17 from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
-function readJson(file) {
-  try {
-    return JSON.parse(fs21.readFileSync(file, "utf8"));
-  } catch (e) {
-    if (e.code === "ENOENT") return void 0;
-    throw e;
-  }
-}
-function incarnationFile(commonDir) {
-  const file = path17.join(hubDir(commonDir), "incarnation.json");
-  return serializedStore({
-    read: async () => {
-      const max2 = readJson(file)?.max;
-      return typeof max2 === "number" ? max2 : void 0;
-    },
-    write: async (max2) => {
-      writeAtomic(file, { max: max2 });
-    }
-  });
-}
-function holderDeadCheck(now = Date.now) {
-  const cache = /* @__PURE__ */ new Map();
-  return (h) => {
-    if (!pidAlive(h.pid)) return true;
-    const key2 = `${h.pid}\0${h.startTime}\0${h.executable}`;
-    const hit = cache.get(key2);
-    if (hit && now() - hit.at < PROBE_CACHE_MS) return hit.dead;
-    const dead = liveness(h) === "dead";
-    cache.set(key2, { at: now(), dead });
-    if (cache.size > 256) {
-      for (const [k, v] of cache) if (now() - v.at >= PROBE_CACHE_MS) cache.delete(k);
-    }
-    return dead;
-  };
-}
-var hubDir, AuthorityLock, PROBE_CACHE_MS;
-var init_hub2 = __esm({
-  "packages/relay/src/hub.ts"() {
-    "use strict";
-    init_src3();
-    init_leases();
-    init_process();
-    hubDir = (commonDir) => path17.join(commonDir, "room", "hub");
-    AuthorityLock = class _AuthorityLock {
-      constructor(file, token) {
-        this.file = file;
-        this.token = token;
-      }
-      file;
-      token;
-      /** Take the lock, recovering it from a dead holder; undefined while a live (or unknown) process holds it. */
-      static take(commonDir) {
-        const file = path17.join(hubDir(commonDir), "authority.lock");
-        const own2 = probeProcess(process.pid);
-        const token = { pid: process.pid, startTime: own2?.startTime ?? "", executable: own2?.executable ?? "", sessionId: `relay:${process.pid}`, nonce: randomUUID2() };
-        if (createExclusive(file, token)) return new _AuthorityLock(file, token);
-        try {
-          if (recover(file, () => true) && createExclusive(file, token)) return new _AuthorityLock(file, token);
-        } catch {
-        }
-        return void 0;
-      }
-      /** The lock file still carries this lock's token (nonce included). */
-      held() {
-        try {
-          return readJson(this.file)?.nonce === this.token.nonce;
-        } catch {
-          return false;
-        }
-      }
-      release() {
-        try {
-          compareAndRelease(this.file, this.token);
-        } catch {
-        }
-      }
-    };
-    PROBE_CACHE_MS = 5e3;
-  }
-});
-
-// packages/relay/src/index.ts
-import crypto3 from "node:crypto";
-import fs22 from "node:fs";
-import http from "node:http";
-import path18 from "node:path";
-function safeUrl(target) {
-  if (!target || !target.startsWith("/") || target.startsWith("//") || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, "Bad Request");
-  try {
-    return new URL(target, "http://x");
-  } catch {
-    throw new HttpFailure(400, "Bad Request");
-  }
-}
-async function observeTakeover(work, report) {
-  try {
-    await work();
-  } catch (error2) {
-    try {
-      report(error2);
-    } catch {
-    }
-  }
-}
-function relayDocs() {
-  return /* @__PURE__ */ new Map();
-}
-function send(conn, buf) {
-  if (conn.readyState !== conn.OPEN) return;
-  try {
-    conn.send(buf);
-  } catch {
-    try {
-      conn.close();
-    } catch {
-    }
-  }
-}
-function getDoc(docs, name2, opts) {
-  let d = docs.get(name2);
-  if (d) return d;
-  const memory = opts.commonDir ? new RoomMemory(opts.commonDir, decodeURIComponent(name2), opts.log) : void 0;
-  const doc = memory?.doc ?? new Doc2({ gc: true });
-  if (doc.getMap("meta").get("schemaVersion") !== 2) doc.getMap("meta").set("schemaVersion", 2);
-  if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name2), doc, opts.log);
-  const awareness = new Awareness(doc);
-  awareness.setLocalState(null);
-  d = { doc, awareness, conns: /* @__PURE__ */ new Map(), memory };
-  doc.on("update", (update) => {
-    const enc = createEncoder();
-    writeVarUint(enc, MSG_SYNC);
-    writeUpdate(enc, update);
-    const buf = toUint8Array(enc);
-    for (const c of d.conns.keys()) send(c, buf);
-  });
-  awareness.on("update", ({ added, updated, removed }, origin) => {
-    const changed = [...added, ...updated, ...removed];
-    if (origin && d.conns.has(origin)) {
-      const ids = d.conns.get(origin);
-      for (const id3 of added) ids.add(id3);
-      for (const id3 of removed) ids.delete(id3);
-    }
-    const enc = createEncoder();
-    writeVarUint(enc, MSG_AWARENESS);
-    writeVarUint8Array(enc, encodeAwarenessUpdate(awareness, changed));
-    const buf = toUint8Array(enc);
-    for (const c of d.conns.keys()) send(c, buf);
-  });
-  docs.set(name2, d);
-  if (opts.seed && name2 === encodeURIComponent(opts.seed.room)) applyUpdate(doc, opts.seed.update);
-  if (opts.hub) startRoomHub(d, decodeURIComponent(name2), opts.hub, opts.log ?? (() => {
-  }));
-  return d;
-}
-function startRoomHub(d, room, rt, log2) {
-  const roomDoc = d.room = new RoomDoc(d.doc);
-  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: (line) => log2(`local room ${room}: ${line}`), store: rt.store, holderDead: rt.holderDead, authority: () => rt.lock.held() }).then((hub) => {
-    if (d.closed) {
-      hub.stop();
-      return;
-    }
-    hub.onPush((conn, push) => send(conn, encodeFrame(push)));
-    d.hub = hub;
-  }).catch((e) => log2(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`));
-}
-function hubReply(d, conn, dec, hubOn, readOnly = false) {
-  let frame;
-  try {
-    frame = decodeFrame(dec);
-  } catch {
-    frame = void 0;
-  }
-  const id3 = frame?.id;
-  const re = typeof id3 === "string" ? id3 : "";
-  if (!hubOn) return { v: 1, re, ok: false, reason: "not-authority", text: "not the authority; reconnect" };
-  if (!d.hub) return { v: 1, re, ok: false, reason: "starting", text: "the hub is starting", retryMs: STARTING_RETRY_MS };
-  return d.hub.handle(conn, frame, readOnly ? { readOnly: true } : { local: true });
-}
-function attach(docs, conn, req, opts) {
-  const name2 = encodeURIComponent(decodeURIComponent((req.url ?? "/").slice(1).split("?")[0]));
-  const d = getDoc(docs, name2, opts);
-  d.conns.set(conn, /* @__PURE__ */ new Set());
-  conn.binaryType = "arraybuffer";
-  conn.on("message", (raw) => {
-    const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? new Uint8Array(Buffer.concat(raw)) : new Uint8Array(raw);
-    try {
-      const dec = createDecoder(buf);
-      const enc2 = createEncoder();
-      switch (readVarUint(dec)) {
-        case MSG_SYNC:
-          if (opts.readOnly && peekVarUint(dec) !== messageYjsSyncStep1) break;
-          writeVarUint(enc2, MSG_SYNC);
-          readSyncMessage(dec, enc2, d.doc, conn);
-          if (length(enc2) > 1) send(conn, toUint8Array(enc2));
-          break;
-        case MSG_AWARENESS:
-          if (opts.readOnly) break;
-          applyAwarenessUpdate(d.awareness, readVarUint8Array(dec), conn);
-          break;
-        case MSG_HUB:
-          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub, opts.readOnly)));
-          break;
-      }
-    } catch {
-    }
-  });
-  const bye = () => {
-    if (!d.conns.has(conn)) return;
-    const ids = d.conns.get(conn);
-    d.conns.delete(conn);
-    d.hub?.closed(conn);
-    if (ids?.size) removeAwarenessStates(d.awareness, Array.from(ids), null);
-    if (!d.conns.size && !d.closed) d.memory?.flush();
-  };
-  conn.on("close", bye);
-  conn.on("error", bye);
-  const enc = createEncoder();
-  writeVarUint(enc, MSG_SYNC);
-  writeSyncStep1(enc, d.doc);
-  send(conn, toUint8Array(enc));
-  const states = d.awareness.getStates();
-  if (states.size) {
-    const aenc = createEncoder();
-    writeVarUint(aenc, MSG_AWARENESS);
-    writeVarUint8Array(aenc, encodeAwarenessUpdate(d.awareness, Array.from(states.keys())));
-    send(conn, toUint8Array(aenc));
-  }
-}
-function relayFile(commonDir) {
-  return path18.join(commonDir, LOCAL_FILE);
-}
-function readRelayInfo(commonDir) {
-  try {
-    const v = JSON.parse(fs22.readFileSync(relayFile(commonDir), "utf8"));
-    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function deterministicPort(commonDir) {
-  let real = commonDir;
-  try {
-    real = fs22.realpathSync.native(commonDir);
-  } catch {
-  }
-  const h = crypto3.createHash("sha1").update("schema-2\0").update(real).digest();
-  return 4e4 + h.readUInt32BE(0) % 2e4;
-}
-function cloneId(commonDir) {
-  let real = commonDir;
-  try {
-    real = fs22.realpathSync.native(commonDir);
-  } catch {
-  }
-  return crypto3.createHash("sha256").update(real).digest("hex");
-}
-async function probeRelay(port, commonDir, key2, timeoutMs2 = 800) {
-  const h = await health(port, key2, timeoutMs2);
-  if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return "none";
-  return h.clone === cloneId(commonDir) && h.key === true ? "ours" : "foreign";
-}
-function health(port, key2, timeoutMs2) {
-  return new Promise((resolve5) => {
-    const req = http.get({ host: "127.0.0.1", port, path: "/health", timeout: timeoutMs2, ...key2 ? { headers: { authorization: `Bearer ${key2}` } } : {} }, (res) => {
-      let body2 = "";
-      res.on("data", (c) => {
-        body2 += c;
-      });
-      res.on("end", () => {
-        try {
-          resolve5(res.statusCode === 200 ? JSON.parse(body2) : void 0);
-        } catch {
-          resolve5(void 0);
-        }
-      });
-    });
-    req.on("timeout", () => {
-      req.destroy();
-      resolve5(void 0);
-    });
-    req.on("error", () => resolve5(void 0));
-  });
-}
-function findWebDist() {
-  const here = path18.dirname(new URL(import.meta.url).pathname);
-  const candidates = [
-    process.env.ROOM_WEB_DIST,
-    path18.resolve(here, "..", "web"),
-    // plugins/room/server/room-mcp.mjs -> plugins/room/web
-    path18.resolve(here, "..", "..", "web", "dist"),
-    // packages/relay/src -> packages/web/dist
-    path18.resolve(here, "..", "..", "..", "web", "dist")
-  ];
-  for (const c of candidates) if (c && fs22.existsSync(path18.join(c, "index.html"))) return c;
-  return void 0;
-}
-function isLoopback(addr2) {
-  return !!addr2 && LOOPBACK.has(addr2);
-}
-function startRelay(port, opts = {}) {
-  return new Promise((resolve5, reject) => {
-    if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir");
-    const docOptions = {
-      commonDir: opts.commonDir,
-      log: opts.log,
-      seed: opts.seed,
-      ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
-    };
-    const staticDir = opts.staticDir ? path18.resolve(opts.staticDir) : findWebDist();
-    const requestedTicketTtl = opts.ticketTtlMs ?? 6e4;
-    const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(6e4, requestedTicketTtl)) : 6e4;
-    const tickets = /* @__PURE__ */ new Map();
-    const ticketRate = /* @__PURE__ */ new Map();
-    const sameSecret = (given, wanted) => {
-      const a = Buffer.from(typeof given === "string" ? given : ""), b = Buffer.from(wanted);
-      return a.length === b.length && crypto3.timingSafeEqual(a, b);
-    };
-    const bearerOk = (req) => !!opts.key && sameSecret(req.headers.authorization, `Bearer ${opts.key}`);
-    const server = http.createServer((req, res) => {
-      try {
-        res.setHeader("Referrer-Policy", "no-referrer");
-        const url = safeUrl(req.url);
-        if (req.method === "POST" && url.pathname === "/ws-ticket") {
-          if (!isLoopback(req.socket.remoteAddress)) {
-            res.writeHead(403);
-            res.end("Forbidden");
-            return;
-          }
-          const ip = req.socket.remoteAddress ?? "?", now = Date.now(), prior = ticketRate.get(ip);
-          const budget = prior && prior.until > now ? prior : { count: 0, until: now + 6e4 };
-          ticketRate.set(ip, budget);
-          if (++budget.count > 60) {
-            res.writeHead(429);
-            res.end("rate limited");
-            return;
-          }
-          let body2 = "";
-          req.on("data", (part) => {
-            body2 += part;
-            if (body2.length > 4096) req.destroy();
-          });
-          req.on("end", () => {
-            let value2;
-            try {
-              value2 = JSON.parse(body2);
-            } catch {
-              res.writeHead(400);
-              res.end("bad request");
-              return;
-            }
-            if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) {
-              res.writeHead(400);
-              res.end("bad request");
-              return;
-            }
-            if (!opts.key || !(bearerOk(req) || sameSecret(value2.key, opts.key))) {
-              res.writeHead(403);
-              res.end("Forbidden");
-              return;
-            }
-            const room = value2.room;
-            if (value2.schema !== 2 || typeof room !== "string" || !room.startsWith("local/")) {
-              res.writeHead(400);
-              res.end("schema 2 local room required");
-              return;
-            }
-            for (const [key2, t] of tickets) if (t.expires <= now) tickets.delete(key2);
-            if (tickets.size >= 1e4) {
-              res.writeHead(503);
-              res.end("too many pending tickets");
-              return;
-            }
-            const ticket = crypto3.randomBytes(16).toString("hex");
-            tickets.set(ticket, { room, expires: now + ticketTtl });
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
-          });
-          return;
-        }
-        if (url.pathname === "/health") {
-          const keyOk = isLoopback(req.socket.remoteAddress) && bearerOk(req);
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}, ...keyOk ? { key: true } : {} }));
-          return;
-        }
-        if (req.method === "DELETE" && url.pathname === "/memory") {
-          if (!bearerOk(req) || !isLoopback(req.socket.remoteAddress)) {
-            res.writeHead(403);
-            res.end();
-            return;
-          }
-          try {
-            const room = url.searchParams.get("room") ?? "";
-            const d = docs.get(encodeURIComponent(room));
-            if (d?.memory) d.memory.forget();
-            else if (opts.commonDir) fs22.rmSync(memoryFile(opts.commonDir, room), { force: true });
-            if (opts.commonDir) forgetLegacyLocal(opts.commonDir, room);
-            res.writeHead(204);
-            res.end();
-          } catch {
-            res.writeHead(500);
-            res.end("could not forget local memory");
-          }
-          return;
-        }
-        if (staticDir) {
-          const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-          const file = path18.resolve(staticDir, rel);
-          if (file.startsWith(staticDir + path18.sep) && fs22.existsSync(file) && fs22.statSync(file).isFile()) {
-            res.writeHead(200, { "content-type": MIME[path18.extname(file)] ?? "application/octet-stream", "cache-control": rel === "index.html" ? "no-store" : "no-cache" });
-            fs22.createReadStream(file).pipe(res);
-            return;
-          }
-        }
-        res.writeHead(200, { "content-type": "text/plain" });
-        res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
-      } catch (e) {
-        opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`);
-        if (!res.writableEnded) {
-          res.writeHead(e instanceof HttpFailure ? e.status : 500);
-          res.end(e instanceof HttpFailure ? e.message : "Internal Server Error");
-        }
-      }
-    });
-    const wss = new import_websocket_server.default({ noServer: true });
-    wss.on("headers", (headers) => headers.push("Referrer-Policy: no-referrer"));
-    const docs = relayDocs();
-    wss.on("connection", (conn, req) => {
-      try {
-        safeUrl(req.url);
-        attach(docs, conn, req, { ...docOptions, readOnly: !!req.ticketView });
-      } catch (e) {
-        opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
-        conn.close(1008, "Bad Request");
-      }
-    });
-    const ticker = setInterval(() => {
-      for (const [name2, d] of docs) {
-        try {
-          d.hub?.tick();
-        } catch (error2) {
-          opts.log?.(`hub maintenance ${name2}: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        }
-        if (opts.commonDir && d.memory) try {
-          catchUpLocal(opts.commonDir, decodeURIComponent(name2), d.doc, opts.log);
-        } catch (error2) {
-          opts.log?.(`local migration: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        }
-      }
-    }, 1e3);
-    ticker.unref?.();
-    server.on("upgrade", (req, socket, head) => {
-      socket.on("error", () => {
-      });
-      const refuse = (code, why) => {
-        socket.write(`HTTP/1.1 ${code} ${why}\r
-Referrer-Policy: no-referrer\r
-Connection: close\r
-\r
-`);
-        socket.destroy();
-      };
-      try {
-        const url = safeUrl(req.url);
-        if (!isLoopback(req.socket.remoteAddress)) return refuse(403, "Forbidden");
-        if (url.searchParams.get("schema") !== "2") return refuse(426, "update Room to 0.17 or later: this local room uses schema 2");
-        try {
-          decodeURIComponent((req.url ?? "/").split("?")[0]);
-        } catch {
-          return refuse(400, "Bad Request");
-        }
-        if (url.searchParams.has("key")) return refuse(400, "send local key in Authorization or exchange at POST /ws-ticket");
-        if (opts.key) {
-          const issued = url.searchParams.get("ticket");
-          const ticket = issued ? tickets.get(issued) : void 0;
-          if (issued) tickets.delete(issued);
-          const room = decodeURIComponent(url.pathname.slice(1));
-          const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room;
-          if (issued && !ticketOk) return refuse(403, "websocket ticket invalid or expired");
-          if (!ticketOk && !bearerOk(req)) return refuse(403, "Forbidden: local room key missing or wrong");
-          if (ticketOk) req.ticketView = true;
-        }
-        wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
-      } catch (e) {
-        opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`);
-        refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : "Internal Server Error");
-      }
-    });
-    const signals = ["SIGTERM", "SIGINT"];
-    let closing;
-    const onSignal = () => {
-      void close();
-    };
-    const close = () => closing ??= new Promise((done) => {
-      for (const signal of signals) process.off(signal, onSignal);
-      clearInterval(ticker);
-      for (const d of docs.values()) {
-        d.closed = true;
-        d.hub?.stop();
-        d.memory?.close();
-      }
-      for (const c of wss.clients) c.terminate();
-      wss.close();
-      server.close(() => {
-        for (const d of docs.values()) {
-          d.awareness.destroy();
-          d.doc.destroy();
-        }
-        docs.clear();
-        opts.hub?.lock.release();
-        done();
-      });
-    });
-    server.once("error", (e) => {
-      clearInterval(ticker);
-      reject(e);
-    });
-    server.listen(port, "127.0.0.1", () => {
-      const addr2 = server.address();
-      const bound = typeof addr2 === "object" && addr2 ? addr2.port : port;
-      for (const signal of signals) process.on(signal, onSignal);
-      resolve5({
-        port: bound,
-        close,
-        hubRoom(room) {
-          const d = docs.get(encodeURIComponent(room));
-          return d?.room ? { doc: d.room, ...d.hub ? { hub: d.hub } : {} } : void 0;
-        }
-      });
-    });
-  });
-}
-async function ensureLocalRelay(commonDir, room, opts = {}) {
-  const log2 = opts.log ?? ((line) => process.stderr.write(`${line}
-`));
-  let owned = null;
-  let port = 0;
-  let key2 = "";
-  const write2 = () => {
-    const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`;
-    try {
-      fs22.mkdirSync(path18.dirname(file), { recursive: true, mode: 448 });
-      fs22.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
-      fs22.chmodSync(tmp, 384);
-      fs22.renameSync(tmp, file);
-    } catch (e) {
-      try {
-        fs22.rmSync(tmp, { force: true });
-      } catch {
-      }
-      log2(`local relay: could not write ${file}: ${e instanceof Error ? e.message : e}`);
-    }
-  };
-  const recorded = async () => {
-    const info2 = readRelayInfo(commonDir);
-    if (!info2) return void 0;
-    const who2 = await probeRelay(info2.port, commonDir, info2.key);
-    if (who2 === "foreign") log2(`local room ${room}: ${relayFile(commonDir)} names a relay on 127.0.0.1:${info2.port} that does not serve this clone with its key; treating the file as stale`);
-    return who2 === "ours" ? info2 : void 0;
-  };
-  const adopt = (info2, how) => {
-    port = info2.port;
-    key2 = info2.key;
-    log2(`local room ${room}: ${how} relay on 127.0.0.1:${port} (pid ${info2.pid}${pidAlive(info2.pid) ? "" : ", pid gone but relay answers"})`);
-  };
-  const start2 = (at, lock, seed) => startRelay(at, { key: key2, staticDir: opts.staticDir, commonDir, log: log2, hub: { lock }, ...seed ? { seed: { room, update: seed } } : {} });
-  const awaitWinner = async () => {
-    let winner;
-    for (let i2 = 0; i2 < 20 && !winner; i2++) {
-      await new Promise((r) => setTimeout(r, 100));
-      winner = await recorded();
-    }
-    return winner;
-  };
-  const existing = await recorded();
-  if (existing) adopt(existing, "joined");
-  else {
-    if (opts.joinOnly) throw new NoLocalRelay(room);
-    key2 = readRelayInfo(commonDir)?.key ?? crypto3.randomBytes(16).toString("hex");
-    const want = deterministicPort(commonDir);
-    const lock = AuthorityLock.take(commonDir);
-    if (!lock) {
-      const winner = await awaitWinner();
-      if (!winner) throw new Error(`local room ${room}: another process holds ${path18.join(hubDir(commonDir), "authority.lock")} but no relay answers; retry, or remove the lock if its process is gone`);
-      adopt(winner, "another process holds the relay authority; joined");
-    } else {
-      try {
-        try {
-          owned = await start2(want, lock);
-        } catch (e) {
-          if (e.code !== "EADDRINUSE") throw e;
-          owned = await start2(0, lock);
-          log2(`local room ${room}: port ${want} is taken by something else; using a free port`);
-        }
-      } catch (e) {
-        lock.release();
-        throw e;
-      }
-      port = owned.port;
-      write2();
-      log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
-    }
-  }
-  let stopped = false;
-  let lost;
-  let ticking = null;
-  const tick = async () => {
-    if (stopped || owned || lost) return;
-    const who2 = await probeRelay(port, commonDir, key2);
-    if (stopped || who2 === "ours") return;
-    if (who2 === "foreign") {
-      lost = `127.0.0.1:${port} is now another clone's relay`;
-      log2(`local room ${room}: ${lost}; the session will join afresh`);
-      return;
-    }
-    if (opts.joinOnly) {
-      lost = `the lead's local relay for ${room} is no longer running`;
-      log2(`local room ${room}: ${lost}`);
-      return;
-    }
-    const lock = AuthorityLock.take(commonDir);
-    if (!lock) return;
-    let started;
-    try {
-      started = await start2(port, lock, opts.seed?.());
-    } catch {
-      lock.release();
-      return;
-    }
-    if (stopped) {
-      await started.close();
-      return;
-    }
-    owned = started;
-    write2();
-    log2(`local room ${room}: relay owner left; took over on 127.0.0.1:${port}`);
-  };
-  const timer = setInterval(() => {
-    if (ticking) return;
-    const work = observeTakeover(tick, (error2) => log2(`local room ${room}: relay takeover failed: ${error2 instanceof Error ? error2.message : String(error2)}`));
-    ticking = work;
-    void work.then(() => {
-      if (ticking === work) ticking = null;
-    });
-  }, opts.watchMs ?? 2e3);
-  timer.unref?.();
-  return {
-    url: `ws://127.0.0.1:${port}`,
-    httpUrl: `http://127.0.0.1:${port}`,
-    port,
-    key: key2,
-    get owned() {
-      return owned !== null;
-    },
-    get lost() {
-      return lost;
-    },
-    async forget() {
-      const response = await fetch("http://127.0.0.1:" + port + "/memory?room=" + encodeURIComponent(room), {
-        method: "DELETE",
-        headers: { authorization: "Bearer " + key2 },
-        signal: AbortSignal.timeout(5e3)
-      });
-      if (!response.ok) throw new Error("could not forget local room memory: " + response.status);
-    },
-    async stop() {
-      stopped = true;
-      clearInterval(timer);
-      await ticking;
-      if (owned) {
-        await owned.close();
-        owned = null;
-      }
-    }
-  };
-}
-var HttpFailure, MSG_SYNC, MSG_AWARENESS, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
-var init_src4 = __esm({
-  "packages/relay/src/index.ts"() {
-    "use strict";
-    init_memory2();
-    init_local_migrate();
-    init_local_migrate();
-    init_process();
-    init_hub2();
-    init_memory2();
-    init_hub2();
-    init_wrapper();
-    init_yjs();
-    init_encoding();
-    init_decoding();
-    init_sync();
-    init_awareness();
-    init_src3();
-    init_src();
-    HttpFailure = class extends Error {
-      constructor(status, message2) {
-        super(message2);
-        this.status = status;
-      }
-      status;
-    };
-    MSG_SYNC = 0;
-    MSG_AWARENESS = 1;
-    LOCAL_FILE = path18.join("room", "relay.json");
-    MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
-    LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-    NoLocalRelay = class extends Error {
-      constructor(room) {
-        super(`no running local relay for ${room}`);
-        this.name = "NoLocalRelay";
-      }
-    };
-  }
-});
-
 // packages/roomd/src/local.ts
 import path19 from "node:path";
 async function mainWorktree(dir) {
@@ -31792,7 +31984,7 @@ async function localRoomName(dir) {
 var init_local = __esm({
   "packages/roomd/src/local.ts"() {
     "use strict";
-    init_src4();
+    init_src3();
     init_git_dirs();
   }
 });
@@ -35811,7 +36003,7 @@ var init_graph_index = __esm({
     "use strict";
     init_src();
     init_git();
-    init_src2();
+    init_src4();
     init_engine();
     init_parse();
     init_worker_registry();
@@ -36211,11 +36403,11 @@ var init_graph_index = __esm({
       }
       ownTextAuthorized(path50) {
         const head = this.room.manifestHead.get(this.me);
-        return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path50)));
+        return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path50)));
       }
       peerTextAuthorized(person, path50) {
         const head = this.room.manifestHead.get(person);
-        return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path50))) && !!this.room.roomSalt && !head.excluded.includes(digestPath(this.room.roomSalt, path50));
+        return !!head && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path50))) && !!this.room.roomSalt && !head.excluded.includes(digestPath(this.room.roomSalt, path50));
       }
       /** The baseline read for a deletion may include a worker's carried, untracked blob. */
       deletionBaseline(path50) {
@@ -36225,7 +36417,7 @@ var init_graph_index = __esm({
       entryAuthorized(person, path50, entry) {
         const head = this.room.manifestHead.get(person);
         const record2 = participantRecord(this.room, person);
-        return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path50))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path50));
+        return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path50))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path50));
       }
       publicationAllowed(path50, source = this.publishedSource.get(path50)) {
         if (!source) return false;
@@ -36868,22 +37060,6 @@ async function rememberTag(dir, tag) {
     release();
   }
 }
-async function removeSharingChoice(dir) {
-  const file = await choiceFile(dir);
-  withGuard(`${file}.lock`, () => {
-    let raw;
-    try {
-      raw = JSON.parse(fs27.readFileSync(file, "utf8"));
-    } catch (error2) {
-      if (error2.code === "ENOENT") return;
-      throw error2;
-    }
-    delete raw.share;
-    delete raw.warned;
-    delete raw.warnedLevels;
-    writeAtomic(file, raw);
-  });
-}
 async function clearChoice(dir) {
   try {
     fs27.rmSync(await choiceFile(dir));
@@ -36902,7 +37078,7 @@ var init_choice = __esm({
   "packages/room-mcp/src/choice.ts"() {
     "use strict";
     init_git();
-    init_src2();
+    init_src4();
     init_config();
     init_owned_file();
     init_leases2();
@@ -36914,20 +37090,52 @@ var init_choice = __esm({
 import fs28 from "node:fs";
 import path25 from "node:path";
 import { createHash as createHash7 } from "node:crypto";
+async function legacyBaseline(dir) {
+  const file = path25.join(await gitCommonDir(dir), "room", "sharing", "legacy-baseline.json");
+  const choice = await choiceFile(dir);
+  return withGuard(`${file}.lock`, () => {
+    let saved;
+    let corrupt = false;
+    try {
+      const raw = JSON.parse(fs28.readFileSync(file, "utf8"));
+      saved = shareLevel(raw?.level);
+      if (!saved) corrupt = true;
+    } catch (error2) {
+      if (error2.code !== "ENOENT") corrupt = true;
+    }
+    let legacy = {};
+    try {
+      const raw = JSON.parse(fs28.readFileSync(choice, "utf8"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) corrupt = true;
+      else legacy = raw;
+    } catch (error2) {
+      if (error2.code !== "ENOENT") corrupt = true;
+    }
+    const prior = shareLevel(legacy.share);
+    const ambiguous = corrupt || legacy.share !== void 0 && !prior || legacy.warned !== void 0 && legacy.share === void 0 || legacy.warnedLevels !== void 0 && legacy.share === void 0;
+    if (ambiguous) console.warn("[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing");
+    const candidate = ambiguous ? "intent" : prior;
+    const level = candidate && saved ? levels[Math.min(levels.indexOf(candidate), levels.indexOf(saved))] : candidate ?? saved;
+    if (level && level !== saved) writeAtomic(file, { v: 1, level });
+    return { level, legacy };
+  });
+}
 async function sharingFile(dir, room, participant) {
   const hash2 = createHash7("sha256").update(room).update("\0").update(participant).digest("hex");
   return path25.join(await gitCommonDir(dir), "room", "sharing", `${hash2}.json`);
 }
-var emptyGrant, sorted, clean, PolicyStore, CeilingSource;
+var emptyGrant, levels, shareLevel, sorted, clean, PolicyStore, CeilingSource;
 var init_policy_store = __esm({
   "packages/room-mcp/src/policy-store.ts"() {
     "use strict";
     init_src();
-    init_src2();
+    init_src4();
     init_policy();
     init_leases2();
     init_choice();
     emptyGrant = () => ({ active: [], ending: [], retained: [] });
+    levels = ["intent", "declared", "full"];
+    shareLevel = (value2) => levels.find((level) => level === value2);
     sorted = (items) => [...new Set(items)].sort();
     clean = (items) => sorted(items.map((p) => {
       const normal = normalizeCoordinationPath(p);
@@ -36957,31 +37165,19 @@ var init_policy_store = __esm({
         }
         if (record2 && (record2.v !== 1 || record2.room !== room || record2.participant !== participant)) throw new Error(`invalid sharing record ${file}`);
         if (!record2) {
-          let legacy = {};
-          let unreadable = false;
-          try {
-            const parsed = JSON.parse(fs28.readFileSync(await choiceFile(dir), "utf8"));
-            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) unreadable = true;
-            else legacy = parsed;
-          } catch (error2) {
-            if (error2.code !== "ENOENT") unreadable = true;
-          }
-          const priorLevel = legacy.share === "full" || legacy.share === "declared" || legacy.share === "intent" ? legacy.share : void 0;
-          const uncertain = unreadable || legacy.share !== void 0 && !priorLevel || legacy.warned !== void 0 && legacy.share === void 0 || legacy.warnedLevels !== void 0 && legacy.share === void 0;
-          if (uncertain) console.warn("[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing");
+          const { level, legacy } = await legacyBaseline(dir);
           const previousDisclosure = legacy.warnedLevels?.[`${worktree}#${server ?? ""}`];
           record2 = {
             v: 1,
             room,
             participant,
             worktree,
-            requested: priorLevel ?? (uncertain ? "intent" : requested),
+            requested: level ?? requested,
             declared: emptyGrant(),
             disclosed: { level: previousDisclosure === "intent" || previousDisclosure === "declared" || previousDisclosure === "full" ? previousDisclosure : "intent", version: previousDisclosure ? 1 : 0 },
             updatedAt: Date.now()
           };
           writeAtomic(file, record2);
-          if (legacy.share !== void 0 || legacy.warned !== void 0 || legacy.warnedLevels !== void 0) await removeSharingChoice(dir);
         } else if (record2.worktree !== worktree) {
           record2 = { ...record2, worktree, declared: emptyGrant(), updatedAt: Date.now() };
           writeAtomic(file, record2);
@@ -37058,11 +37254,11 @@ var init_policy_store = __esm({
       settle(input, entries, unsettled) {
         return this.update((old) => {
           if (this.policy !== input) return old;
-          const ending = old.declared.ending.filter((prefix) => !input.ending.includes(prefix) || unsettled.some((p) => containsPath(prefix, p)));
+          const ending = old.declared.ending.filter((prefix2) => !input.ending.includes(prefix2) || unsettled.some((p) => containsPath(prefix2, p)));
           const retained = new Set(old.declared.retained.filter((p) => entries.has(p) || unsettled.includes(p)));
-          for (const prefix of old.declared.ending) {
-            if (!input.ending.includes(prefix) || ending.includes(prefix)) continue;
-            for (const [p, entry] of entries) if (containsPath(prefix, p) && (entry.state === "shared" || entry.change === "D")) retained.add(p);
+          for (const prefix2 of old.declared.ending) {
+            if (!input.ending.includes(prefix2) || ending.includes(prefix2)) continue;
+            for (const [p, entry] of entries) if (containsPath(prefix2, p) && (entry.state === "shared" || entry.change === "D")) retained.add(p);
           }
           if (ending.length === old.declared.ending.length && retained.size === old.declared.retained.length && [...retained].every((p) => old.declared.retained.includes(p))) return old;
           return { ...old, declared: { ...old.declared, ending, retained: sorted(retained) }, updatedAt: Date.now() };
@@ -37127,8 +37323,8 @@ var init_policy_store = __esm({
         for (const store of this.stores) store.setCeiling(level);
       }
       async refresh(fetcher = fetch) {
-        const http2 = this.server.replace(/^ws/, "http");
-        const response = await fetcher(`${http2}/auth/config`);
+        const http3 = this.server.replace(/^ws/, "http");
+        const response = await fetcher(`${http3}/auth/config`);
         if (!response.ok) throw new Error(`sharing ceiling: HTTP ${response.status}`);
         const data = await response.json();
         this.set(data.shareMax === "intent" || data.shareMax === "declared" || data.shareMax === "full" ? data.shareMax : "intent");
@@ -37186,7 +37382,7 @@ var PAUSED, NOT_SENT, NOT_SENT_LEASE, NameLeaseUnavailable, HubClient, HubError;
 var init_hub_client = __esm({
   "packages/room-mcp/src/hub-client.ts"() {
     "use strict";
-    init_src3();
+    init_src2();
     PAUSED = "[room] hub unreachable; coordination paused. Your files are unaffected; messages and claims resume when it is back.";
     NOT_SENT = "not sent: hub unreachable";
     NOT_SENT_LEASE = "not sent: name lease is no longer held; rejoin to take a new name";
@@ -38018,7 +38214,7 @@ var NotARepository, notRepository, noWorkTree, noCommit, run2;
 var init_repository = __esm({
   "packages/room-mcp/src/repository.ts"() {
     "use strict";
-    init_src2();
+    init_src4();
     init_git();
     NotARepository = class extends RoomdError {
       constructor(dir, message2) {
@@ -38355,9 +38551,9 @@ function codexArguments(parent, commandLine) {
   const name2 = known.split(/[/\\]/).at(-1);
   if (name2 !== "codex" && name2 !== "codex.exe") return void 0;
   const raw = commandLine.trim();
-  const after = (prefix) => raw.startsWith(prefix) && (raw.length === prefix.length || /\s/.test(raw[prefix.length])) ? raw.slice(prefix.length).trimStart() : void 0;
-  for (const prefix of [known, `"${known}"`, `'${known}'`]) {
-    const args3 = after(prefix);
+  const after = (prefix2) => raw.startsWith(prefix2) && (raw.length === prefix2.length || /\s/.test(raw[prefix2.length])) ? raw.slice(prefix2.length).trimStart() : void 0;
+  for (const prefix2 of [known, `"${known}"`, `'${known}'`]) {
+    const args3 = after(prefix2);
     if (args3 !== void 0) return args3;
   }
   if (raw[0] === '"' || raw[0] === "'") {
@@ -38509,6 +38705,18 @@ async function deriveRoomName(dir) {
   const [repo, branch] = await Promise.all([gitOrigin(dir), gitBranch(dir)]);
   const canonical = repo ? canonicalRepo(repo) : void 0;
   return { repo: canonical, branch, roomName: canonical };
+}
+function normalizeExplicitRoomName(name2, origin, log2) {
+  const parts2 = name2.split("/");
+  if (parts2[0] === "github.com" && parts2.length > 3 && parts2[1] && parts2[2] && parts2.slice(3).every(Boolean)) {
+    const canonical = parts2.slice(0, 3).join("/").toLowerCase();
+    log2?.(`room ${name2}: branch part ignored because Room 0.17 has one room per repository; joining ${canonical}`);
+    return canonical;
+  }
+  if (parts2[0] === "git" && parts2.length > 4 || origin && !origin.startsWith("github.com/") && name2.startsWith(`${origin}/`)) {
+    throw new RoomdError(`legacy branch room ${name2} cannot be mapped safely. Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice to the repository room (${origin ?? "git/<host>/<owner>/<repo>"}); Room 0.17 accepts one room per repository.`, 2);
+  }
+  return name2;
 }
 async function defaultName(dir) {
   try {
@@ -38916,6 +39124,9 @@ async function joinSession(opts) {
     const d = await deriveRoomName(dir);
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop")`, 2);
     roomName = d.roomName;
+  } else {
+    const origin = (await deriveRoomName(dir).catch(() => ({ roomName: void 0 }))).roomName;
+    roomName = normalizeExplicitRoomName(roomName, origin, opts.log);
   }
   const auth = await resolveAuth(server, roomName, token);
   const label = config2.tag?.replace(/[^A-Za-z0-9_-]/g, "") || void 0;
@@ -38948,7 +39159,7 @@ async function joinSession(opts) {
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
   const view = await timed("view token", () => viewToken(server, roomName, creds));
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : ""}`;
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
@@ -39029,7 +39240,7 @@ async function joinLocal(dir, opts) {
   }
   replica = daemon.roomDoc.doc;
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`;
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
@@ -39150,6 +39361,7 @@ async function preflight(server, roomName, auth) {
       return { reason };
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || "forbidden" };
+    if (res.status === 400) return { reason: (await res.text()).trim() || "invalid room name (HTTP 400)" };
     if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true };
     return void 0;
   } catch (e) {
@@ -39196,7 +39408,7 @@ async function refreshBrowserUrl(s) {
     const web = `${u.protocol}//${u.host}`;
     const a = await authFor(s);
     const view = await timed("view token", () => viewToken(server, s.roomName, a));
-    if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`;
+    if (view) s.browserUrl = `${web}/#room=${encodeURIComponent(s.roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(s.me.name)}`;
   } catch {
   }
   return s.browserUrl;
@@ -39213,10 +39425,10 @@ var init_session = __esm({
     init_connection();
     init_y_websocket();
     init_yjs();
-    init_src2();
     init_src4();
+    init_src3();
     init_local();
-    init_src2();
+    init_src4();
     init_git();
     init_src();
     init_graph_index();
@@ -39720,10 +39932,10 @@ function boundedTwoFilesPatch(p, before, after, person) {
   const edits = Math.max(1, Math.min(128, Math.floor(2e6 / Math.max(1, a + b))));
   if (diffLines(before, after, { maxEditLength: edits }))
     return createTwoFilesPatch(`a/${p}`, `b/${p}`, before, after, "base", person, { context: 3 });
-  const patchLines = (value2, prefix) => {
+  const patchLines = (value2, prefix2) => {
     if (!value2) return "";
     const complete = value2.endsWith("\n");
-    const body2 = (complete ? value2.slice(0, -1) : value2).split("\n").map((line) => `${prefix}${line}
+    const body2 = (complete ? value2.slice(0, -1) : value2).split("\n").map((line) => `${prefix2}${line}
 `).join("");
     return complete ? body2 : body2 + "\\ No newline at end of file\n";
   };
@@ -40799,13 +41011,13 @@ var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
     init_git();
-    init_src2();
+    init_src4();
     init_libesm();
     init_src();
     init_worker_registry();
     init_company();
     init_baseline();
-    init_src2();
+    init_src4();
     init_worker_git();
     init_worker_state();
     init_combined_tree();
@@ -41361,7 +41573,7 @@ var init_worker_git = __esm({
   "packages/room-mcp/src/worker-git.ts"() {
     "use strict";
     init_src();
-    init_src2();
+    init_src4();
     init_git();
     init_baseline();
     init_worker_state();
@@ -41659,7 +41871,7 @@ var init_worker_registry = __esm({
     "use strict";
     init_yjs();
     init_src();
-    init_src2();
+    init_src4();
     init_baseline();
     init_leases2();
     init_worker_process();
@@ -43137,7 +43349,7 @@ var init_bridge = __esm({
   "packages/room-mcp/src/bridge.ts"() {
     "use strict";
     init_git();
-    init_src2();
+    init_src4();
     init_policy();
     init_disk_scan();
     init_yjs();
@@ -45757,11 +45969,11 @@ function isValidCIDRv6(value2) {
   const parts2 = value2.split("/");
   if (parts2.length !== 2)
     return false;
-  const [address, prefix] = parts2;
-  if (!prefix)
+  const [address, prefix2] = parts2;
+  if (!prefix2)
     return false;
-  const prefixNum = Number(prefix);
-  if (`${prefixNum}` !== prefix)
+  const prefixNum = Number(prefix2);
+  if (`${prefixNum}` !== prefix2)
     return false;
   if (prefixNum < 0 || prefixNum > 128)
     return false;
@@ -47820,12 +48032,12 @@ function _includes(includes, params2) {
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _startsWith(prefix, params2) {
+function _startsWith(prefix2, params2) {
   return new $ZodCheckStartsWith({
     check: "string_format",
     format: "starts_with",
     ...normalizeParams(params2),
-    prefix
+    prefix: prefix2
   });
 }
 // @__NO_SIDE_EFFECTS__
@@ -53172,7 +53384,7 @@ init_config();
 // packages/room-mcp/src/wake-path.ts
 init_config();
 import net from "node:net";
-import { execFile as execFile4, execFileSync as execFileSync3 } from "node:child_process";
+import { execFile as execFile4, execFileSync as execFileSync4 } from "node:child_process";
 
 // packages/room-mcp/src/channel.ts
 async function sendChannelNotification(content, notify) {
@@ -53185,7 +53397,7 @@ var parentArgsCache;
 function claudeParentArgs() {
   if (parentArgsCache !== void 0) return parentArgsCache;
   try {
-    parentArgsCache = execFileSync3("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
+    parentArgsCache = execFileSync4("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } }).trim();
   } catch {
     parentArgsCache = "";
   }
@@ -53321,7 +53533,7 @@ init_worker_state();
 // packages/room-mcp/src/conflict-set.ts
 init_src();
 init_git();
-init_src2();
+init_src4();
 init_merge();
 init_libesm();
 init_baseline();
@@ -53595,7 +53807,7 @@ var ConflictSet = class _ConflictSet {
     const room = this.team.room;
     const head = snap?.head;
     if (!snap?.fenceValid || !head || !room.roomSalt) return false;
-    const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix) => containsPath(prefix, path50));
+    const textAllowed = head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path50));
     const entry = snap.entries.get(path50);
     return textAllowed && (!entry || entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && entry.fence === head.fence) && !head.excluded.includes(digestPath(room.roomSalt, path50));
   }
@@ -54248,7 +54460,7 @@ async function reconcileProjectedConflicts({ team, workers, owner }) {
 
 // packages/room-mcp/src/tools/claims.ts
 init_company();
-init_src2();
+init_src4();
 init_engine();
 init_src();
 init_context();
@@ -54520,7 +54732,7 @@ import fs43 from "node:fs";
 import { randomUUID as randomUUID8 } from "node:crypto";
 import os9 from "node:os";
 import path40 from "node:path";
-init_src2();
+init_src4();
 init_git();
 
 // packages/room-mcp/src/registry.ts
@@ -54579,7 +54791,7 @@ function releaseWorkerProcessPort(proc) {
 // packages/room-mcp/src/worker-launch.ts
 init_worker_process();
 init_worker_config();
-init_src2();
+init_src4();
 var WorkerLaunchError = class extends Error {
   constructor(phase, message2, delivered = false, pid, stopped = false) {
     super(message2);
@@ -55767,13 +55979,13 @@ function handlers4(state) {
             if (!error2.stopped) return `error: stop unconfirmed for ${tag} (pid ${error2.pid}); it may still be running in ${dir}. Worker record and worktree kept; use room_collect discard=true when it is safe to remove.`;
             return `error: stopped after start: ${error2.phase === "cancelled" ? "cancelled" : error2.message}; worker record and worktree kept in ${dir}. Use room_collect to collect or discard it.`;
           }
-          const prefix = error2.phase === "port" ? "could not allocate a worker port: " : error2.phase === "budget" || error2.phase === "cancelled" ? "" : `could not start ${host}: `;
+          const prefix2 = error2.phase === "port" ? "could not allocate a worker port: " : error2.phase === "budget" || error2.phase === "cancelled" ? "" : `could not start ${host}: `;
           if (!registry2.read(id3)?.runs[0].launch) {
             await registry2.abandonPreparation(id3).catch((cleanup) => state.log(`worker preparation cleanup: ${cleanup}`));
-            return `error: ${prefix}${error2.message}`;
+            return `error: ${prefix2}${error2.message}`;
           }
           await registry2.update(id3, (old) => ({ ...old, phase: "active", seq: old.seq + 1 }));
-          return `error: ${prefix}${error2.message}`;
+          return `error: ${prefix2}${error2.message}`;
         }
         const { proc, port, env, nice, logFile } = launched;
         await s.post(s.me, { type: "note", text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ""}) as ${name2}: ${task.slice(0, 100)}` });
@@ -55933,7 +56145,7 @@ function createWorkerRuntime(deps) {
 
 // packages/room-mcp/src/tools/join.ts
 init_src();
-init_src2();
+init_src4();
 init_local();
 
 // packages/room-mcp/src/tools/scope.ts
@@ -56012,8 +56224,8 @@ function createStaleVersionWarning(modulePath = fileURLToPath3(import.meta.url),
 }
 
 // packages/room-mcp/src/doctor.ts
+init_src3();
 init_src4();
-init_src2();
 init_plugin();
 var exec = promisify(execFile10);
 var minimumGit = [2, 31, 0];
@@ -56232,12 +56444,12 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
       u.protocol = u.protocol === "wss:" ? "https:" : "http:";
       u.pathname = "/health";
       u.search = "";
-      const health2 = await probeHealth(u.toString());
-      f.serverHealth = health2.ok;
-      f.serverRedirect = health2.redirect;
-      f.serverSchema = health2.schema;
-      f.serverHub = health2.hub;
-      f.serverStorage = health2.storage;
+      const health = await probeHealth(u.toString());
+      f.serverHealth = health.ok;
+      f.serverRedirect = health.redirect;
+      f.serverSchema = health.schema;
+      f.serverHub = health.hub;
+      f.serverStorage = health.storage;
       if (session) {
         u.pathname = "/auth/me";
         const credential = await probeCredential(u.toString(), session);
@@ -56630,10 +56842,10 @@ function createAreas(deps) {
 }
 function commonDirectory(paths) {
   const parts2 = paths.map((p) => p.split("/").slice(0, -1));
-  const prefix = parts2[0] ?? [];
+  const prefix2 = parts2[0] ?? [];
   let n = 0;
-  while (n < prefix.length && parts2.every((p) => p[n] === prefix[n])) n++;
-  return n ? prefix.slice(0, n).join("/") + "/" : "./";
+  while (n < prefix2.length && parts2.every((p) => p[n] === prefix2[n])) n++;
+  return n ? prefix2.slice(0, n).join("/") + "/" : "./";
 }
 function compactState(lines, summarizedClaims) {
   const max2 = 7800;
@@ -57836,10 +58048,10 @@ function missingPreEditGuidance(s) {
   return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
 }
 function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = !s.local) {
-  let health2 = hookHealth.get(s);
-  if (!health2) {
-    health2 = newHookHealth(now);
-    hookHealth.set(s, health2);
+  let health = hookHealth.get(s);
+  if (!health) {
+    health = newHookHealth(now);
+    hookHealth.set(s, health);
   }
   const session = sessionDir ? readBoundedJson(path42.join(sessionDir, "session.json")) : void 0;
   const id3 = typeof session?.session_id === "string" && session.session_id.length > 0 && session.session_id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(session.session_id) ? session.session_id : void 0;
@@ -57848,23 +58060,23 @@ function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = 
   const sessionStartedAt = Math.max(PROCESS_STARTED_AT, typeof sessionAt === "number" && Number.isFinite(sessionAt) ? sessionAt : 0);
   const receipt = readBoundedJson(hookReceiptPath(sessionDir, id3));
   const activity = readBoundedJson(path42.join(sessionDir, "hook-activity.json"));
-  if (receipt?.sessionId === id3 && typeof receipt.at === "number" && receipt.at >= sessionStartedAt && receipt.at <= now || activity?.session_id === id3 && activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at >= sessionStartedAt && activity.at <= now) health2.observed = true;
-  if (!expected || health2.observed || health2.noted) return "";
+  if (receipt?.sessionId === id3 && typeof receipt.at === "number" && receipt.at >= sessionStartedAt && receipt.at <= now || activity?.session_id === id3 && activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at >= sessionStartedAt && activity.at <= now) health.observed = true;
+  if (!expected || health.observed || health.noted) return "";
   const upFront = team && resolveSessionHost() === "codex";
-  if (upFront && tool === "room_join" && !health2.joinNoted && !health2.scopeNoted) {
-    health2.joinNoted = true;
+  if (upFront && tool === "room_join" && !health.joinNoted && !health.scopeNoted) {
+    health.joinNoted = true;
     return missingPreEditGuidance(s);
   }
-  if (upFront && tool === "room_scope" && !health2.scopeNoted) {
-    health2.scopeNoted = true;
+  if (upFront && tool === "room_scope" && !health.scopeNoted) {
+    health.scopeNoted = true;
     return missingPreEditGuidance(s);
   }
-  if (health2.joinNoted || health2.scopeNoted) return "";
-  if (!health2.calls) health2.since = now;
-  health2.calls++;
-  if (health2.calls < 2 || now - health2.since < 3e4) return "";
+  if (health.joinNoted || health.scopeNoted) return "";
+  if (!health.calls) health.since = now;
+  health.calls++;
+  if (health.calls < 2 || now - health.since < 3e4) return "";
   if (resolveSessionHost() === "claude" && !(manifestPaths(s.room, s.me.name).length && (s.room.manifestHead.get(s.me.name)?.scannedAt ?? -Infinity) >= sessionStartedAt)) return "";
-  health2.noted = true;
+  health.noted = true;
   return missingPreEditGuidance(s);
 }
 
@@ -58883,7 +59095,7 @@ init_context();
 init_src();
 init_git();
 init_baseline();
-init_src2();
+init_src4();
 init_worker_git();
 init_worker_process();
 init_worker_state();
@@ -59801,10 +60013,10 @@ not done: ${name2} writes under your name, and coordination is paused; retry onc
       const notices = ledger2.notices(batch).map((n) => n.text + "\n\n").join("");
       if (s2) await greeted(s2.hub);
       const paused2 = s2?.lease?.paused() ?? s2?.hub.paused();
-      const health2 = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
+      const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
       const autoTag = s2?.autoTagNote;
       if (s2) delete s2.autoTagNote;
-      return notices + (paused2 ? paused2 + "\n\n" : "") + (health2 ? health2 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
+      return notices + (paused2 ? paused2 + "\n\n" : "") + (health ? health + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
     } catch (e) {
       ledger2.discard(batch);
       if (toolCallAborted()) return "error: tool call cancelled";
@@ -59915,7 +60127,7 @@ init_repository();
 
 // packages/room-mcp/src/auto-join.ts
 init_session();
-init_src2();
+init_src4();
 init_repository();
 var JOIN_DELAYS_MS = [1e3, 2e3, 5e3, 1e4, 2e4];
 var JOIN_DEADLINE_MS = 12e4;
@@ -60069,7 +60281,7 @@ var AutoJoin = class {
 };
 
 // packages/room-mcp/src/index.ts
-init_src2();
+init_src4();
 init_config();
 
 // packages/room-mcp/src/transport.ts
@@ -60346,7 +60558,7 @@ function removeOwn(file, key2) {
 }
 
 // packages/room-mcp/src/workspace.ts
-init_src2();
+init_src4();
 import fs52 from "node:fs";
 import { execFileSync as execFileSync10 } from "node:child_process";
 var samePlace = (a, b) => {
@@ -60489,7 +60701,7 @@ function createWorkspaceBinding({ deferred, fallbackDir, initialize, logFallback
 }
 
 // packages/room-mcp/src/presence-end.ts
-init_src2();
+init_src4();
 init_leases2();
 init_worker_process();
 init_session();

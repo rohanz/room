@@ -76,25 +76,8 @@ afterAll(async () => {
   finally { if (port) fs.rmSync(path.join(os.tmpdir(), `room-server-hub-${port}`), { recursive: true, force: true }) }
 })
 
-it('hydrates a migrated in-memory target before websocket sync', async () => {
-  const repo = 'local/memory'
-  const branch = `${repo}/main`
-  expect((await post('/rooms', { room: branch, token: 'shared' })).status).toBe(201)
-  const old = await connect(branch)
-  const source = new Y.Doc()
-  source.getMap('scopes').set('ben', { by: 'ben', byKind: 'agent', area: 'api', summary: 'old scope', paths: ['x.ts'], at: 1 })
-  update(old, source)
-  await readDoc(old) // waits until the server has processed the preceding update
-  const closed = new Promise<number>(resolve => old.once('close', resolve))
-  expect((await post('/view-token', { room: repo, token: 'shared', schema: 2 })).status).toBe(200)
-  expect(await closed).toBe(4001)
-  const current = await connect(repo, 2)
-  const migrated = await readDoc(current)
-  expect(migrated.getMap('meta').get('schemaVersion')).toBe(2)
-  expect(migrated.getMap('scopes').get('ben')).toMatchObject({ summary: 'old scope' })
-  current.close()
-})
-
+// A 0.17 server creates nothing for 0.16 requests, so an in-memory server has no branch rooms to migrate;
+// the cutover of a persisted 0.16 volume is in cutover.test.ts.
 it('hydrates an initially created schema-2 room in memory', async () => {
   const repo = 'local/fresh-memory'
   expect((await post('/rooms', { room: repo, token: 'shared', schema: 2 })).status).toBe(201)

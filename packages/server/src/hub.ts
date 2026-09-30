@@ -7,7 +7,7 @@ import fsp, { type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { HUB_ORIGIN, MSG_HUB, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
+import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
@@ -254,22 +254,30 @@ interface HubSocket {
  */
 export function bindHub(ws: HubSocket, hub: () => Hub | undefined, principal: Principal, unavailable?: () => string | undefined): void {
   const emit = ws.emit.bind(ws)
+  const budget = new HubRequestBudget()
   ws.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event !== 'message') return emit(event, ...args)
     const buf = toBytes(args[0])
     if (buf[0] !== MSG_HUB) return emit(event, ...args)
+    const retryMs = budget.take(ws)
     let frame: unknown
-    try { frame = decodeFrame(buf) } catch { frame = undefined }
-    const id = (frame as { id?: unknown } | undefined)?.id
-    const re = typeof id === 'string' ? id : ''
+    if (!retryMs && buf.byteLength <= MAX_HUB_FRAME_BYTES) {
+      try { frame = decodeFrame(buf) } catch { frame = undefined }
+    }
+    const re = hubReplyId(frame)
     let reply: Reply
     try {
-      const current = hub(), failure = unavailable?.()
-      reply = 'readOnly' in principal && principal.readOnly
+      reply = retryMs ? { v: 1, re: '', ok: false, reason: 'rate-limited', text: 'hub requests too frequent', retryMs }
+        : buf.byteLength > MAX_HUB_FRAME_BYTES ? { v: 1, re: '', ok: false, reason: 'too-large', text: 'hub request exceeds the frame limit' }
+        : 'readOnly' in principal && principal.readOnly
         ? { v: 1, re, ok: false, reason: 'read-only', text: 'this connection is read-only' }
-        : failure ? { v: 1, re, ok: false, reason: 'unavailable', text: failure, retryMs: STARTING_RETRY_MS }
-          : current ? current.handle(ws, frame, principal)
-            : { v: 1, re, ok: false, reason: 'starting', text: 'the room is loading', retryMs: STARTING_RETRY_MS }
+        : (() => {
+          const failure = unavailable?.()
+          if (failure) return { v: 1, re, ok: false, reason: 'unavailable', text: failure, retryMs: STARTING_RETRY_MS } as Reply
+          const current = hub()
+          return current ? current.handle(ws, frame, principal, buf.byteLength)
+            : { v: 1, re, ok: false, reason: 'starting', text: 'the room is loading', retryMs: STARTING_RETRY_MS } as Reply
+        })()
     } catch (error) { reply = { v: 1, re, ok: false, reason: 'invalid', text: error instanceof Error ? error.message : String(error) } }
     try { ws.send(encodeFrame(reply)) } catch { /* the connection is closing */ }
     return true

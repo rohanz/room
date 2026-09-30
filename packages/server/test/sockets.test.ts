@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { CredentialSockets, PermissionRevalidator } from '../src/sockets.js'
+import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget } from '../src/sockets.js'
 
 describe('credential sockets and tickets', () => {
   it('closes live sockets and invalidates tickets when a session is removed', () => {
@@ -37,6 +37,46 @@ describe('credential sockets and tickets', () => {
     registry.closeRoom(credential, 'github.com/o/denied', 4403, 'access revoked')
     expect(denied.close).toHaveBeenCalledWith(4403, 'access revoked')
     expect(other.close).not.toHaveBeenCalled()
+  })
+  it('invalidates an in-flight upgrade generation on logout and repo revocation', () => {
+    const registry = new CredentialSockets()
+    const credential = { kind: 'session' as const, value: 's' }
+    const before = registry.generation(credential)
+    registry.close(credential, 4401, 'logged out')
+    expect(registry.unchanged(credential, before)).toBe(false)
+    const next = registry.generation(credential)
+    registry.closeRoom(credential, 'github.com/o/r', 4403, 'revoked')
+    expect(registry.unchanged(credential, next)).toBe(false)
+  })
+})
+
+describe('connection and outbound budgets', () => {
+  it('reserves concurrent cross-repository capacity before any load', () => {
+    const quotas = new ConnectionReservations({ total: 2, room: 2, principal: 2, pending: 2, pendingAddress: 2 })
+    const first = quotas.reserve('r1', 'p', 'a')!, second = quotas.reserve('r2', 'p', 'a')!
+    expect(quotas.reserve('r3', 'p', 'a')).toBeUndefined()
+    first.admitted(); second.admitted()
+    expect(quotas.total).toBe(2)
+    first(); second()
+    expect(quotas.total).toBe(0)
+  })
+  it('drops a slow consumer while a fast one still receives, and evicts the largest aggregate queue', () => {
+    const budget = new OutboundBudget(100, 120)
+    const fake = (queued: number) => ({ bufferedAmount: queued, send: vi.fn(), close: vi.fn(), terminate: vi.fn(), once: vi.fn() })
+    const slow = fake(95), fast = fake(0), fastSend = fast.send
+    budget.track(slow); budget.track(fast)
+    slow.send(Buffer.alloc(10)); fast.send(Buffer.alloc(10))
+    expect(slow.terminate).toHaveBeenCalledOnce()
+    expect(fastSend).toHaveBeenCalledOnce()
+    // Into an empty queue a message always goes, whatever its size: it is the only way a large document arrives.
+    const idle = fake(0), idleSend = idle.send
+    budget.track(idle); idle.send(Buffer.alloc(500))
+    expect(idleSend).toHaveBeenCalledOnce()
+    expect(idle.terminate).not.toHaveBeenCalled()
+    const larger = fake(100), smaller = fake(50)
+    budget.track(larger); budget.track(smaller); budget.sweep()
+    expect(larger.terminate).toHaveBeenCalledOnce()
+    expect(smaller.terminate).not.toHaveBeenCalled()
   })
 })
 

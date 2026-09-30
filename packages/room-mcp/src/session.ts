@@ -12,7 +12,7 @@ import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
-import { ensureLocalRelay, NoLocalRelay, type LocalRelay } from '@room/relay'
+import { ensureLocalRelay, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
@@ -410,6 +410,20 @@ export async function deriveRoomName(dir: string): Promise<{ roomName?: string; 
   return { repo: canonical, branch, roomName: canonical }
 }
 
+/** Only GitHub's fixed host/owner/repo shape makes a branch suffix unambiguous. */
+function normalizeExplicitRoomName(name: string, origin?: string, log?: (text: string) => void): string {
+  const parts = name.split('/')
+  if (parts[0] === 'github.com' && parts.length > 3 && parts[1] && parts[2] && parts.slice(3).every(Boolean)) {
+    const canonical = parts.slice(0, 3).join('/').toLowerCase()
+    log?.(`room ${name}: branch part ignored because Room 0.17 has one room per repository; joining ${canonical}`)
+    return canonical
+  }
+  if (parts[0] === 'git' && parts.length > 4 || origin && !origin.startsWith('github.com/') && name.startsWith(`${origin}/`)) {
+    throw new RoomdError(`legacy branch room ${name} cannot be mapped safely. Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice to the repository room (${origin ?? 'git/<host>/<owner>/<repo>'}); Room 0.17 accepts one room per repository.`, 2)
+  }
+  return name
+}
+
 async function defaultName(dir: string): Promise<string | undefined> {
   try { const n = (await git(dir, ['config', 'user.name'])).trim(); if (n) return n } catch { /* fall through */ }
   return process.env.USER || process.env.USERNAME || undefined
@@ -742,6 +756,9 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
     const d = await deriveRoomName(dir)
     if (!d.roomName) throw new RoomdError(`${dir} has no origin remote; pass room explicitly (e.g. room="myteam/shop")`, 2)
     roomName = d.roomName
+  } else {
+    const origin = (await deriveRoomName(dir).catch(() => ({ roomName: undefined }))).roomName
+    roomName = normalizeExplicitRoomName(roomName, origin, opts.log)
   }
   const auth = await resolveAuth(server, roomName, token)
   // Logged in with GitHub: the owner is the verified login, whatever git config says. A label (ROOM_TAG)
@@ -777,7 +794,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
   const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds))
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${view}` : ''}`
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
@@ -850,9 +867,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   replica = daemon.roomDoc.doc
   // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
   const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
-  // The human link carries the relay key once; the browser removes it from the address bar and
-  // exchanges it for read-only tickets. The underlying key still grants local write access.
-  const browserUrl = `${web}/?room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&key=${encodeURIComponent(local.key)}`
+  // This room-scoped view capability cannot authorize a write or reveal the clone key.
+  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {
@@ -971,6 +987,7 @@ async function preflight(server: string, roomName: string, auth: Creds): Promise
       return { reason }
     }
     if (res.status === 403) return { reason: (await res.text()).trim() || 'forbidden' }
+    if (res.status === 400) return { reason: (await res.text()).trim() || 'invalid room name (HTTP 400)' }
     if (res.status === 404) return { reason: (await res.text()).trim() || `no room for ${roomName} yet`, missing: true }
     return undefined // older server or unexpected status: let the websocket try
   } catch (e) {
@@ -1025,7 +1042,7 @@ export async function refreshBrowserUrl(s: Session): Promise<string> {
     const web = `${u.protocol}//${u.host}`
     const a = await authFor(s)
     const view = await timed('view token', () => viewToken(server, s.roomName, a))
-    if (view) s.browserUrl = `${web}/?room=${encodeURIComponent(s.roomUrl)}&view=${view}`
+    if (view) s.browserUrl = `${web}/#room=${encodeURIComponent(s.roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(s.me.name)}`
   } catch { /* keep the stored link */ }
   return s.browserUrl
 }

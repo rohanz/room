@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
-import { mintTicket, takeLinkCredentials } from './conn.js'
+import { webcrypto } from 'node:crypto'
+import { mintTicket, takeLinkCredentials, browserViewProof } from './conn.js'
+import { viewTicketProof } from '../../relay/src/proof.js'
 
 describe('browser link credentials', () => {
   it('strips a view key from the address and retains it for a reload', () => {
@@ -19,5 +21,21 @@ describe('browser link credentials', () => {
     expect(ticket).toBe('fresh')
     expect(request.mock.calls[0]![0]).toBe('https://room.test/ws-ticket')
     expect(JSON.parse(request.mock.calls[0]![1].body).view).toBe('secret')
+  })
+
+  it('parses a fragment capability and proves a local view without sending it', async () => {
+    const dom = new JSDOM('', { url: 'http://127.0.0.1:4444/#room=ws%3A%2F%2F127.0.0.1%3A4444%2Flocal%252Frepo&view=read-only&participant=Pat' })
+    vi.stubGlobal('location', dom.window.location)
+    vi.stubGlobal('crypto', webcrypto)
+    const auth = takeLinkCredentials('', dom.window.sessionStorage, vi.fn())
+    expect(auth.view).toBe('read-only')
+    const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local' }) })
+    await mintTicket({ serverUrl: 'ws://127.0.0.1:4444', encodedRoomName: 'local%2Frepo', displayRoomName: 'local/repo' }, auth, request)
+    const body = JSON.parse(request.mock.calls[0]![1].body)
+    expect(body).not.toHaveProperty('view')
+    expect(body).not.toHaveProperty('key')
+    expect(body.proof).toBe(viewTicketProof('read-only', 'local/repo', body.ts, body.nonce))
+    expect(await browserViewProof('read-only', 'local/repo', body.ts, body.nonce)).toBe(body.proof)
+    vi.unstubAllGlobals()
   })
 })

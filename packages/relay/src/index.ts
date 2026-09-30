@@ -28,8 +28,10 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { MSG_HUB, STARTING_RETRY_MS, decodeFrame, encodeFrame, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
+import { MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
+import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
+export { localProofHeader, localViewKey, relayHealth, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
 class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
 export function safeUrl(target: string | undefined): URL {
   if (!target || !target.startsWith('/') || target.startsWith('//') || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, 'Bad Request')
@@ -43,14 +45,45 @@ export async function observeTakeover(work: () => Promise<void>, report: (error:
 
 // ---- a minimal y-websocket relay (the wire protocol of y-websocket 3.x; private memory persistence) ----
 const MSG_SYNC = 0, MSG_AWARENESS = 1
+export const RELAY_STATE_REQUESTS_PER_MINUTE = 10
+export const RELAY_STATE_QUEUE_BYTES = 1024 * 1024
+export function stateRequestLimiter(now: () => number = Date.now): (buf: Uint8Array, queued: number) => boolean {
+  let started = now(), count = 0
+  return (buf, queued) => {
+    try {
+      const dec = decoding.createDecoder(buf)
+      const kind = decoding.readVarUint(dec)
+      if (kind !== 3 && (kind !== MSG_SYNC || decoding.readVarUint(dec) !== syncProtocol.messageYjsSyncStep1)) return true
+    } catch { return true }
+    if (now() - started >= 60_000) { started = now(); count = 0 }
+    return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES
+  }
+}
 interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; closed?: boolean }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean }
+interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
+/** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
+export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
+export const RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024
+/** A message into an empty queue always goes: it is the only way a large document reaches a client, and refusing
+ *  it would disconnect that client again on every reconnect. Only a consumer already behind is cut off. */
+export function relayOutputAllowed(queued: number, aggregateQueued: number, nextBytes: number, socketBudget = RELAY_SOCKET_QUEUE_BYTES): boolean {
+  return queued === 0 || (queued + nextBytes <= socketBudget && aggregateQueued + nextBytes <= RELAY_TOTAL_QUEUE_BYTES)
+}
+const activeSockets = new Set<WebSocket>()
+/** A relay started with its own per-socket budget (RelayOptions.socketQueueBytes) records it per connection. */
+const socketBudgets = new WeakMap<WebSocket, number>()
 function send(conn: WebSocket, buf: Uint8Array): void {
   if (conn.readyState !== conn.OPEN) return
+  const total = [...activeSockets].reduce((sum, socket) => sum + socket.bufferedAmount, 0)
+  if (!relayOutputAllowed(conn.bufferedAmount, total, buf.byteLength, socketBudgets.get(conn))) {
+    conn.close(1013, 'relay output queue full')
+    setTimeout(() => { if (conn.readyState !== conn.CLOSED) conn.terminate() }, 1000).unref?.()
+    return
+  }
   try { conn.send(buf) } catch { try { conn.close() } catch { /* gone */ } }
 }
 function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): RelayDoc {
@@ -99,22 +132,31 @@ function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, log: (line
     })
     .catch(e => log(`local room ${room}: the hub could not start: ${e instanceof Error ? e.message : e}`))
 }
-function hubReply(d: RelayDoc, conn: WebSocket, dec: decoding.Decoder, hubOn: boolean, readOnly = false): Reply {
+const hubBudget = new HubRequestBudget()
+/** The raw type-7 frame is checked before decode, even while the hub is unavailable. */
+export function hubReply(d: RelayDoc, conn: WebSocket, raw: Uint8Array, hubOn: boolean, readOnly = false): Reply {
+  const retryMs = hubBudget.take(conn)
+  if (retryMs) return { v: 1, re: '', ok: false, reason: 'rate-limited', text: 'hub requests too frequent', retryMs }
+  if (raw.byteLength > MAX_HUB_FRAME_BYTES) return { v: 1, re: '', ok: false, reason: 'too-large', text: 'hub request exceeds the frame limit' }
   let frame: unknown
-  try { frame = decodeFrame(dec) } catch { frame = undefined }
-  const id = (frame as { id?: unknown } | undefined)?.id
-  const re = typeof id === 'string' ? id : ''
+  try { frame = decodeFrame(raw) } catch { frame = undefined }
+  const re = hubReplyId(frame)
   if (!hubOn) return { v: 1, re, ok: false, reason: 'not-authority', text: 'not the authority; reconnect' }
+  if (readOnly) return { v: 1, re, ok: false, reason: 'read-only', text: 'this connection is read-only' }
   if (!d.hub) return { v: 1, re, ok: false, reason: 'starting', text: 'the hub is starting', retryMs: STARTING_RETRY_MS }
-  return d.hub.handle(conn, frame, readOnly ? { readOnly: true } : { local: true })
+  return d.hub.handle(conn, frame, { local: true }, raw.byteLength)
 }
 function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.IncomingMessage, opts: DocOptions): void {
   const name = encodeURIComponent(decodeURIComponent((req.url ?? '/').slice(1).split('?')[0]))
   const d = getDoc(docs, name, opts)
   d.conns.set(conn, new Set())
+  activeSockets.add(conn)
+  if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes)
+  const allowState = stateRequestLimiter()
   conn.binaryType = 'arraybuffer'
   conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
     const buf = raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? new Uint8Array(Buffer.concat(raw)) : new Uint8Array(raw)
+    if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
     try {
       const dec = decoding.createDecoder(buf)
       const enc = encoding.createEncoder()
@@ -130,7 +172,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
           awarenessProtocol.applyAwarenessUpdate(d.awareness, decoding.readVarUint8Array(dec), conn)
           break
         case MSG_HUB:
-          send(conn, encodeFrame(hubReply(d, conn, dec, !!opts.hub, opts.readOnly)))
+          send(conn, encodeFrame(hubReply(d, conn, buf, !!opts.hub, opts.readOnly)))
           break
       }
     } catch { /* malformed message: ignore */ }
@@ -139,6 +181,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
     if (!d.conns.has(conn)) return
     const ids = d.conns.get(conn)
     d.conns.delete(conn)
+    activeSockets.delete(conn)
     d.hub?.closed(conn)
     if (ids?.size) awarenessProtocol.removeAwarenessStates(d.awareness, Array.from(ids), null)
     if (!d.conns.size && !d.closed) d.memory?.flush() // a closed relay already saved its last state
@@ -166,7 +209,7 @@ export interface LocalRelay {
   /** http://127.0.0.1:<port>: the browser view (same machine only). */
   httpUrl: string
   port: number
-  /** Secret every websocket sends in Authorization; lives in room/relay.json (0600). */
+  /** Private discovery secret used only to sign requests; lives in room/relay.json (0600). */
   key: string
   /** True when this process runs the relay. */
   owned: boolean
@@ -206,26 +249,16 @@ export function cloneId(commonDir: string): string {
 }
 
 /**
- * Who answers on 127.0.0.1:port: 'ours' is a relay for this clone that accepts `key`; 'foreign' is a
+ * Who answers on 127.0.0.1:port: 'ours' is a relay for this clone that proves possession of `key`; 'foreign' is a
  * room relay for another clone or with another key (a stale or inconsistent discovery file); 'none' is
  * nothing, or something that is not a room relay.
  */
 export async function probeRelay(port: number, commonDir: string, key: string, timeoutMs = 800): Promise<'ours' | 'foreign' | 'none'> {
-  const h = await health(port, key, timeoutMs)
+  const identity = await relayIdentity(port, key, timeoutMs)
+  const h = identity?.health
   if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return 'none'
-  return h.clone === cloneId(commonDir) && h.key === true ? 'ours' : 'foreign'
-}
-
-function health(port: number, key: string | undefined, timeoutMs: number): Promise<{ local?: unknown; schema?: unknown; hub?: unknown; clone?: unknown; key?: unknown } | undefined> {
-  return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) }, res => {
-      let body = ''
-      res.on('data', c => { body += c })
-      res.on('end', () => { try { resolve(res.statusCode === 200 ? JSON.parse(body) : undefined) } catch { resolve(undefined) } })
-    })
-    req.on('timeout', () => { req.destroy(); resolve(undefined) })
-    req.on('error', () => resolve(undefined))
-  })
+  // A Room relay that did not prove this clone's key (another clone's, or one holding another key) is foreign.
+  return identity!.proven && h.clone === cloneId(commonDir) ? 'ours' : 'foreign'
 }
 
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.map': 'application/json' }
@@ -261,6 +294,8 @@ export interface RelayOptions {
   hub?: RelayHubOptions
   /** Applied to that room's doc before anyone connects: a successor's own replica. */
   seed?: { room: string; update: Uint8Array }
+  /** Bytes that may wait for one socket before a consumer already behind is cut off; default RELAY_SOCKET_QUEUE_BYTES. */
+  socketQueueBytes?: number
 }
 export interface StartedRelay {
   port: number
@@ -272,12 +307,12 @@ export interface StartedRelay {
 /** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
  *  Also serves the browser view (staticDir, default findWebDist()) at / and a /health line, so a local
  *  room has a projector link like a hosted one. Websockets are accepted from loopback only, and when
- *  `key` is set they must carry it in Authorization (the /health line stays open so joiners can recognise a relay). */
+ *  `key` is set they must prove possession without sending it (the /health line stays open). */
 export function startRelay(port: number, opts: RelayOptions = {}): Promise<StartedRelay> {
   return new Promise((resolve, reject) => {
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
     const docOptions: DocOptions = {
-      commonDir: opts.commonDir, log: opts.log, seed: opts.seed,
+      commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes,
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
     const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
@@ -285,17 +320,32 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(60_000, requestedTicketTtl)) : 60_000
     const tickets = new Map<string, { room: string; expires: number }>()
     const ticketRate = new Map<string, { count: number; until: number }>()
-    /** Constant-time comparison of a presented local key (or `Bearer <key>` header) with the clone's. */
-    const sameSecret = (given: unknown, wanted: string): boolean => {
-      const a = Buffer.from(typeof given === 'string' ? given : ''), b = Buffer.from(wanted)
-      return a.length === b.length && crypto.timingSafeEqual(a, b)
+    const viewNonces = new Map<string, number>()
+    let verifier: ProofVerifier | undefined
+    const boundPort = () => (server.address() as { port: number } | null)?.port ?? port
+    const proofOk = (req: http.IncomingMessage): boolean => !!opts.key && (verifier ??= new ProofVerifier(opts.key, boundPort())).verify(req.headers.authorization, req.method ?? 'GET', req.url ?? '/')
+    const obsolete = (req: http.IncomingMessage, url: URL): boolean => /^Bearer /i.test(req.headers.authorization ?? '') || url.searchParams.has('key')
+    const viewOk = (value: Record<string, unknown>, room: string, now: number): boolean => {
+      if (!opts.key || typeof value.ts !== 'number' || !Number.isSafeInteger(value.ts) || typeof value.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(value.nonce)) return false
+      if (Math.abs(now - value.ts) > PROOF_WINDOW_MS) return false
+      for (const [nonce, expiry] of viewNonces) if (expiry <= now) viewNonces.delete(nonce)
+      if (viewNonces.has(value.nonce) || viewNonces.size >= 10_000) return false
+      const expected = viewTicketProof(localViewKey(opts.key, room), room, value.ts, value.nonce)
+      if (!sameProof(value.proof, expected)) return false
+      viewNonces.set(value.nonce, now + PROOF_WINDOW_MS)
+      return true
     }
-    const bearerOk = (req: http.IncomingMessage): boolean => !!opts.key && sameSecret(req.headers.authorization, `Bearer ${opts.key}`)
     const server = http.createServer((req, res) => {
       try {
       res.setHeader('Referrer-Policy', 'no-referrer')
       const url = safeUrl(req.url)
+      if (obsolete(req, url)) { res.writeHead(400); res.end('use Authorization: Room-Proof or a view proof'); return }
+      if (url.pathname === '/ws-ticket' && req.method === 'OPTIONS') {
+        // The exchange requires an explicit proof, never ambient credentials.
+        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'content-type' }); res.end(); return
+      }
       if (req.method === 'POST' && url.pathname === '/ws-ticket') {
+        res.setHeader('Access-Control-Allow-Origin', '*')
         if (!isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end('Forbidden'); return }
         const ip = req.socket.remoteAddress ?? '?', now = Date.now(), prior = ticketRate.get(ip)
         const budget = prior && prior.until > now ? prior : { count: 0, until: now + 60_000 }
@@ -304,13 +354,14 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         let body = ''
         req.on('data', part => { body += part; if (body.length > 4096) req.destroy() })
         req.on('end', () => {
-          let value: { room?: unknown; schema?: unknown; key?: unknown }
+          let value: Record<string, unknown>
           try { value = JSON.parse(body) } catch { res.writeHead(400); res.end('bad request'); return }
           // `null`, a number or an array parses: only an object has the fields read below.
           if (!value || typeof value !== 'object' || Array.isArray(value)) { res.writeHead(400); res.end('bad request'); return }
-          if (!opts.key || !(bearerOk(req) || sameSecret(value.key, opts.key))) { res.writeHead(403); res.end('Forbidden'); return }
+          if ('key' in value) { res.writeHead(400); res.end('use a view proof'); return }
           const room = value.room
           if (value.schema !== 2 || typeof room !== 'string' || !room.startsWith('local/')) { res.writeHead(400); res.end('schema 2 local room required'); return }
+          if (!proofOk(req) && !viewOk(value, room, now)) { res.writeHead(403); res.end('Forbidden'); return }
           for (const [key, t] of tickets) if (t.expires <= now) tickets.delete(key)
           if (tickets.size >= 10000) { res.writeHead(503); res.end('too many pending tickets'); return }
           const ticket = crypto.randomBytes(16).toString('hex')
@@ -320,14 +371,14 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         return
       }
       if (url.pathname === '/health') {
-        // Open to joiners; with the clone's key it also confirms the key, so a stale discovery file is never trusted.
-        const keyOk = isLoopback(req.socket.remoteAddress) && bearerOk(req)
+        // A nonce lets joiners authenticate this listener before sending any authority.
+        const nonce = req.headers['x-room-nonce']
         res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(keyOk ? { key: true } : {}) }))
+        res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, ...(opts.commonDir ? { clone: cloneId(opts.commonDir) } : {}), ...(opts.key && typeof nonce === 'string' && /^[a-f0-9]{32}$/.test(nonce) ? { proof: relayProof(opts.key, nonce, boundPort()) } : {}) }))
         return
       }
       if (req.method === 'DELETE' && url.pathname === '/memory') {
-        if (!bearerOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
+        if (!proofOk(req) || !isLoopback(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return }
         try {
           const room = url.searchParams.get('room') ?? ''
           const d = docs.get(encodeURIComponent(room))
@@ -374,9 +425,9 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       try {
       const url = safeUrl(req.url)
       if (!isLoopback(req.socket.remoteAddress)) return refuse(403, 'Forbidden')
+      if (obsolete(req, url)) return refuse(400, 'use Authorization: Room-Proof or a browser ticket')
       if (url.searchParams.get('schema') !== '2') return refuse(426, 'update Room to 0.17 or later: this local room uses schema 2')
       try { decodeURIComponent((req.url ?? '/').split('?')[0]) } catch { return refuse(400, 'Bad Request') }
-      if (url.searchParams.has('key')) return refuse(400, 'send local key in Authorization or exchange at POST /ws-ticket')
       if (opts.key) {
         const issued = url.searchParams.get('ticket')
         const ticket = issued ? tickets.get(issued) : undefined
@@ -384,7 +435,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         const room = decodeURIComponent(url.pathname.slice(1))
         const ticketOk = !!ticket && ticket.expires > Date.now() && ticket.room === room
         if (issued && !ticketOk) return refuse(403, 'websocket ticket invalid or expired')
-        if (!ticketOk && !bearerOk(req)) return refuse(403, 'Forbidden: local room key missing or wrong')
+        if (!ticketOk && !proofOk(req)) return refuse(403, 'Forbidden: local room proof missing or wrong')
         if (ticketOk) (req as http.IncomingMessage & { ticketView?: boolean }).ticketView = true
       }
       wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
@@ -548,8 +599,10 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     get owned() { return owned !== null },
     get lost() { return lost },
     async forget() {
-      const response = await fetch('http://127.0.0.1:' + port + '/memory?room=' + encodeURIComponent(room), {
-        method: 'DELETE', headers: { authorization: 'Bearer ' + key }, signal: AbortSignal.timeout(5000),
+      if (!await relayHealth(port, key)) throw new Error('local relay identity could not be verified')
+      const resource = '/memory?room=' + encodeURIComponent(room)
+      const response = await fetch('http://127.0.0.1:' + port + resource, {
+        method: 'DELETE', headers: { authorization: localProofHeader(key, 'DELETE', resource, port) }, signal: AbortSignal.timeout(5000),
       })
       if (!response.ok) throw new Error('could not forget local room memory: ' + response.status)
     },

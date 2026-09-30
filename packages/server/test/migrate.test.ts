@@ -35,6 +35,17 @@ function fixture(failAfter?: string) {
 }
 
 describe('migrateRepo', () => {
+  it('loads sources sequentially and leaves capped sources in exportable archives', async () => {
+    const f = fixture()
+    let active = 0, peak = 0
+    const load = f.io.load
+    f.io.load = async name => { active++; peak = Math.max(peak, active); try { return await load(name) } finally { active-- } }
+    f.io.maxSources = 1
+    await migrateRepo(repo, f.entry, f.io)
+    expect(peak).toBe(1)
+    expect(f.entry.migrationSkippedSources).toBeGreaterThan(0)
+    expect(f.docs.has(two)).toBe(true)
+  })
   it('cannot absorb another GitHub repository through an open prefix', async () => {
     const f = fixture()
     const victim = 'github.com/o/r2/private'

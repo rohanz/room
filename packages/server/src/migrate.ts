@@ -1,6 +1,5 @@
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
-import { HUB_ORIGIN } from '@room/hub-core'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
 import type { OpenRepo } from './store.js'
 import { archiveOwnerOf, parseRoomName } from './names.js'
@@ -50,6 +49,9 @@ export interface MigrationIO {
   revoke(names: string[]): Promise<void>
   save(): Promise<void>
   now?: () => number
+  maxTargetBytes?: number
+  maxSources?: number
+  maxReadBytes?: number
 }
 
 /** The caller holds repoLock. A persisted plan makes every replay use the same sources and archive key. */
@@ -85,15 +87,31 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     entry.step = 'moved'; await save()
   }
   if (entry.step === 'moved') {
-    const sources = await Promise.all(plan.sources.map(async name => ({ name, room: new RoomDoc(await io.load(name)) })))
+    const maxTargetBytes = io.maxTargetBytes ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
+    const maxSources = io.maxSources ?? Number(process.env.ROOM_MIGRATION_MAX_SOURCES ?? 1000)
+    const maxReadBytes = io.maxReadBytes ?? Number(process.env.ROOM_MIGRATION_MAX_READ_MB ?? 128) * 1048576
+    const candidates = plan.sources.slice(0, maxSources)
+    let skippedSources = plan.sources.length - candidates.length, skippedRecords = 0
     const target = new RoomDoc(await io.load(repo))
+    const sources: string[] = []
+    let readBytes = 0, plannedBytes = Y.encodeStateAsUpdate(target.doc).byteLength
+    for (const name of candidates) {
+      const source = new RoomDoc(await io.load(name))
+      const bytes = Y.encodeStateAsUpdate(source.doc).byteLength
+      const records = source.scopes.size + source.claims.size + source.bus.length + source.mail.size
+      if (readBytes + bytes > maxReadBytes || plannedBytes + bytes > maxTargetBytes) {
+        skippedSources++; skippedRecords += records; continue
+      }
+      readBytes += bytes; plannedBytes += bytes; sources.push(name)
+    }
     const occurrences = new Map<string, Set<string>>()
     const mark = (name: string | undefined, source: string) => {
       if (!name) return
       let found = occurrences.get(name); if (!found) { found = new Set(); occurrences.set(name, found) }
       found.add(source)
     }
-    for (const { name, room } of sources) {
+    for (const name of sources) {
+      const room = new RoomDoc(await io.load(name))
       for (const person of room.scopes.keys()) mark(person, name)
       for (const claim of room.claims.values()) mark(claim.by, name)
       for (const person of room.overlays.keys()) mark(person, name)
@@ -103,12 +121,18 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     const translated = (name: string, source: string) => (occurrences.get(name)?.size ?? 0) > 1
       ? `?${crypto.createHash('sha256').update(`${source}\0${name}`).digest('hex').slice(0, 16)}` : name
     const unresolved = target.doc.getMap<{ placeholder: string; claims: Claim[]; scope?: Scope }>('unresolved')
-    target.doc.transact(() => {
-      for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
+    for (const [person, found] of occurrences) if (found.size > 1) for (const source of found) {
         const key = `${source}\0${person}`
         if (!unresolved.has(key)) unresolved.set(key, { placeholder: translated(person, source), claims: [] })
       }
-      for (const { name, room } of sources) {
+      for (const name of sources) {
+        const room = new RoomDoc(await io.load(name))
+        const records = room.scopes.size + room.claims.size + room.bus.length + room.mail.size
+        // Check each source before copying it: a skipped source stays in the archive for export.
+        // Sequential loads cap transient memory; this conservative estimate leaves room for Yjs metadata.
+        if (Y.encodeStateAsUpdate(target.doc).byteLength + Y.encodeStateAsUpdate(room.doc).byteLength > maxTargetBytes) {
+          skippedSources++; skippedRecords += records; continue
+        }
         for (const [person, scope] of room.scopes) {
           const by = translated(person, name)
           const copy = { ...scope, by, origin: name }
@@ -134,9 +158,11 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
         }
       }
       target.metaMap.set('schemaVersion', 2)
-    }, HUB_ORIGIN)
     await io.write(repo, Y.encodeStateAsUpdate(target.doc))
     entry.unresolved = unresolved.size
+    entry.migrationSkippedSources = skippedSources
+    entry.migrationSkippedRecords = skippedRecords
+    entry.migrationSkippedRecordCountsUnknown = plan.sources.length - candidates.length
     entry.step = 'written'; await save()
   }
   if (entry.step === 'written') {

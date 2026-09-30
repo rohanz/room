@@ -282,7 +282,7 @@ describe('the server process', () => {
     return p
   }
   async function hello(port: number, query = ''): Promise<Reply> {
-    const c = await socketClient(`ws://127.0.0.1:${port}/${encodeURIComponent('local/hub/main')}${query}`)
+    const c = await socketClient(`ws://127.0.0.1:${port}/${encodeURIComponent('local/hub/main')}?schema=2${query}`)
     try { return await waitFor(async () => { const r = await c.hello(); return (r.ok || r.reason !== 'starting') && r }, 5000) }
     finally { await c.close() }
   }
@@ -291,12 +291,15 @@ describe('the server process', () => {
     const port = await freePort()
     const dir = tmp()
     proc = await start(port, dir)
-    const opened = await fetch(`http://127.0.0.1:${port}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'local/hub/main' }) })
+    const opened = await fetch(`http://127.0.0.1:${port}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'local/hub/main', schema: 2 }) })
     expect(opened.status).toBe(201)
     const first = await hello(port)
     expect(first).toMatchObject({ ok: true, proto: 1, authority: true })
-    const { view } = await (await fetch(`http://127.0.0.1:${port}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: 'local/hub/main' }) })).json() as { view: string }
-    expect(await hello(port, `?view=${view}`)).toMatchObject({ ok: false, reason: 'read-only' })
+    const json = (route: string, body: unknown) => fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
+    const { view } = await json('/view-token', { room: 'local/hub/main', schema: 2 }) as { view: string }
+    // A browser trades its view key for a one-use ticket; the key itself is refused in a websocket URL.
+    const { ticket } = await json('/ws-ticket', { room: 'local/hub/main', schema: 2, view }) as { ticket: string }
+    expect(await hello(port, `&ticket=${ticket}`)).toMatchObject({ ok: false, reason: 'read-only' })
     await servers.stop(proc, 'SIGKILL')
     proc = await start(port, dir)
     const second = await hello(port)

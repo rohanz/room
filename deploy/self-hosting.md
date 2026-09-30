@@ -46,6 +46,11 @@ server is open (fine on a laptop, not on the internet).
 | `ROOM_MAX_ROOMS` | Open repositories this server holds; opening another is refused with 503. | `100` |
 | `ROOM_MAX_CONNECTIONS`, `ROOM_MAX_CONNECTIONS_PER_ROOM`, `ROOM_MAX_CONNECTIONS_PER_PRINCIPAL` | Live websockets overall, per room, and per login (per address for view links). Every session, worker and browser view is one connection. | `4000`, `200`, `100` |
 | `ROOM_MAX_PENDING_LOGINS` | Login attempts awaiting completion. | `1000` |
+| `ROOM_MAX_PENDING_ADMISSIONS`, `ROOM_MAX_PENDING_PER_ADDRESS` | Websocket upgrades still being admitted (permission check, document load), overall and per address; more are answered 429 and clients retry. | `256`, `16` |
+| `ROOM_MAX_QUEUED_MB`, `ROOM_MAX_TOTAL_QUEUED_MB` | Bytes that may wait unsent for one websocket (default: the document cap plus 4) and for all of them. A consumer already behind is disconnected with 1013 and reconnects; a message into an empty queue is always sent. | `68`, `256` |
+| `ROOM_AWARENESS_MAX_MESSAGE_KB`, `ROOM_AWARENESS_MAX_STATE_KB`, `ROOM_AWARENESS_MESSAGES_PER_MINUTE`, `ROOM_AWARENESS_IDS_PER_CONNECTION`, `ROOM_AWARENESS_IDS_PER_ROOM` | Presence budgets per connection and per room. | `64`, `16`, `6000`, `16`, `4096` |
+| `ROOM_VIEW_TTL_MS`, `ROOM_VIEW_MAX_PER_PRINCIPAL`, `ROOM_VIEW_MAX_PER_ROOM`, `ROOM_VIEW_MAX_TOTAL`, `ROOM_VIEW_ISSUE_PER_HOUR` | Browser view keys: lifetime, how many one login holds per room, per room, on the server, and how many one login may mint an hour. Asking again returns the key you already hold while more than half its life remains. | 7 days, `5`, `200`, `10000`, `20` |
+| `ROOM_MIGRATION_MAX_SOURCES`, `ROOM_MIGRATION_MAX_READ_MB` | The 0.16 cutover reads at most this many branch rooms and megabytes into one repository room; the rest stay in the archive, exportable. | `1000`, `128` |
 | `ROOM_TOKEN` | Shared secret sent as `X-Room-Token: <value>` on HTTP and websocket upgrades; admits non-GitHub rooms (`local/...`, `git/...`). It never admits a `github.com/...` room. | — |
 | `ROOM_REVALIDATE_MINUTES` | Recheck each live GitHub session's push access, bypassing the positive cache. `0` disables periodic checks; logout and expiry still close sockets. | `10` |
 | `ROOM_WS_TICKET_TTL_MS` | Browser websocket ticket lifetime, clamped to 1–60,000 ms. Shorter values are useful in tests. | `60000` |
@@ -58,9 +63,11 @@ Which rooms a login can enter:
 
 | Room name | Who is admitted |
 | --- | --- |
-| `github.com/<owner>/<repo>/<branch>` | A GitHub device-flow login with push access to the repo. Nothing else: `ROOM_TOKEN` is refused, a GitHub token forwarded by a client is refused (401 pointing at `room_login`), and OIDC logins are refused because the server cannot check GitHub permissions for them. |
-| `git/<host>/<owner>/<repo>/<branch>` (self-hosted GitLab, Gitea, Bitbucket, ...) | A client presenting the configured `ROOM_TOKEN` is admitted, including when a login provider is configured. Without a matching token, a configured provider requires a valid login (GitHub or OIDC). With no provider, the token is required when set; with neither, the room is open. |
-| `local/<dir>/<branch>` (filesystem remotes) | Same as `git/`. |
+| `github.com/<owner>/<repo>` | A GitHub device-flow login with push access to the repo. Nothing else: `ROOM_TOKEN` is refused, a GitHub token forwarded by a client is refused (401 pointing at `room_login`), and OIDC logins are refused because the server cannot check GitHub permissions for them. |
+| `git/<host>/<path>` (self-hosted GitLab, Gitea, Bitbucket, ...) | A client presenting the configured `ROOM_TOKEN` is admitted, including when a login provider is configured. Without a matching token, a configured provider requires a valid login (GitHub or OIDC). With no provider, the token is required when set; with neither, the room is open. |
+| `local/<name>` (filesystem remotes, explicit names) | Same as `git/`. |
+
+One room per repository: the name has no branch. Any other name (a bare `github.com`, `github.com/<owner>`, an unknown namespace, an `archive:` key) is refused with 400 before admission.
 
 ## GitHub login (OAuth App)
 
@@ -185,6 +192,11 @@ upgrade attempts, 60 browser tickets, 30 failed admissions; past a limit the ser
 earlier than GitHub's interval is answered `pending` without calling GitHub. Per room, the hub allows 512 live name
 leases (64 per login), keeps at most 1,024 ended names, accepts hub frames up to 96 KiB with holder fields up to 512
 characters, and takes 250 posts a second per lease, 500 per login and 1,000 per room; past those it answers
-`room-full` or `rate-limited` and clients retry. A room whose document cannot be written to disk refuses new
+`room-full` or `rate-limited` and clients retry. Hub frames are measured before they are parsed, and one connection may send 500 hub frames a second. One connection may ask for the room's state 10 times a minute. A room whose document cannot be written to disk refuses new
 coordination writes (`unavailable`, websocket close 4507, `"storage":"failing"` in `/health`) and retries the full
 state with backoff until the disk accepts it; at most 16 rooms may be in that state before further writes are refused.
+
+A 0.17 server creates nothing for a 0.16 client: repositories and branch rooms recorded by 0.16 stay usable by 0.16
+clients until the first 0.17 client cuts the repository over, but a 0.16 client can no longer open a repository or
+add a branch. Hub leases, quotas and rate limits are keyed by the login's provider-qualified identity
+(`github:<login>`, `oidc:<issuer-host>:<sub>`), so two OIDC users who share a display name are different principals.

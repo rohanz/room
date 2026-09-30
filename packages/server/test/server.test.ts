@@ -58,7 +58,7 @@ function sendMemberUpdate(room: string, session: string, change: (doc: Y.Doc) =>
   encoding.writeVarUint(message, 0)
   syncProtocol.writeUpdate(message, Y.encodeStateAsUpdate(doc))
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?session=${encodeURIComponent(session)}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`, { headers: { authorization: `Bearer ${session}` } })
     ws.on('open', () => {
       ws.send(encoding.toUint8Array(message))
       setTimeout(() => { ws.close(); doc.destroy(); resolve() }, 50)
@@ -102,16 +102,18 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await join(victim, { session, schema: '2' })).toBe(101)
     expect(await join(`${victim}/main`, { session, schema: '2' })).toBe(400)
   })
-  it('cuts a repository over on a schema-2 preflight and refuses old requests', async () => {
+  it('refuses new 0.16 branch population and keeps schema-2 access', async () => {
     const session = await login('cutover')
     const room = 'github.com/cutover/project'
-    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
+    const oldText = `update Room to 0.17 or later: this repository now has one room for all branches (${room})`
+    const oldOpen = await post('/rooms', { room: `${room}/main`, session })
+    expect(oldOpen.status).toBe(403)
+    expect(await oldOpen.text()).toBe(oldText)
+    expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
     expect((await post('/view-token', { room, schema: 2 })).status).toBe(401)
-    expect(await join(`${room}/main`, { session })).toBe(101)
     const migrated = await post('/view-token', { room, session, schema: 2 })
     expect(migrated.status).toBe(200)
     expect(await migrated.json()).toMatchObject({ room, hub: 1 })
-    const oldText = `update Room to 0.17 or later: this repository now has one room for all branches (${room})`
     for (const [route, body] of [
       ['/view-token', { room: `${room}/main`, session }],
       ['/rooms', { room: `${room}/main`, session }],
@@ -120,9 +122,8 @@ describe('room server with the fake GitHub issuer', () => {
       expect(refused.status).toBe(403)
       expect(await refused.text()).toBe(oldText)
     }
-    const unauthenticated = await post('/view-token', { room: `${room}/main` })
-    expect(unauthenticated.status).toBe(403)
-    expect(await unauthenticated.text()).toBe(oldText)
+    // Admission comes first: without a login the upgrade text is not an oracle for which repositories have rooms.
+    expect((await post('/view-token', { room: `${room}/main` })).status).toBe(401)
     expect(await join(`${room}/main`, { session })).toBe(403)
     expect(await join(room, { session, schema: '2' })).toBe(101)
     const alias = await post('/rooms', { room: `${room}/main`, session, schema: 2 })
@@ -130,57 +131,45 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await alias.text()).toContain('invalid room name')
   })
 
-  it('closes an already joined 0.16 socket with the upgrade text', async () => {
+  it('refuses a 0.16 socket with the upgrade text', async () => {
     const session = await login('old-socket')
     const room = 'github.com/socket/project'
-    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(`${room}/main`)}?session=${session}`)
-    await new Promise<void>(resolve => ws.once('open', resolve))
-    const closed = new Promise<{ code: number; reason: string }>(resolve => ws.once('close', (code, reason) => resolve({ code, reason: reason.toString() })))
-    const preflight = await post('/view-token', { room, session, schema: 2 })
-    expect(preflight.status).toBe(200)
-    expect(await closed).toEqual({ code: 4001, reason: `update Room to 0.17 or later: this repository now has one room for all branches (${room})` })
+    expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
+    expect(await join(`${room}/main`, { session })).toBe(403)
   })
 
   it('keeps old members in an unmigrated canonical-key room, but refuses its token to a schema-2 viewer', async () => {
     const session = await login('canonical-view')
     const room = 'github.com/canonical/view'
-    expect((await post('/rooms', { room, session })).status).toBe(201)
-    const old = await (await post('/view-token', { room, session })).json() as { view: string }
-    expect(await join(room, { session })).toBe(101)
-    expect(await join(room, { schema: '2', view: old.view })).toBe(400)
-    // A rejected bearer must not trigger migration; 0.16 can still use the branch-mode room.
-    expect(await join(room, { session })).toBe(101)
-    expect((await post('/view-token', { room, session })).status).toBe(200)
-    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
+    expect((await post('/rooms', { room, session })).status).toBe(403)
+    expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
     expect(await join(room, { session })).toBe(403)
-    expect(await join(room, { schema: '2', view: old.view })).toBe(400)
+    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
   })
 
   it('returns an actionable 410 page and websocket refusal for an archived branch link', async () => {
     const session = await login('old-link')
     const room = 'github.com/old-link/project'
     const branch = `${room}/main`
-    expect((await post('/rooms', { room: branch, session })).status).toBe(201)
-    const { view } = await (await post('/view-token', { room: branch, session })).json() as { view: string }
-    expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
+    expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
+    const view = 'retired-branch-view'
     const link = `${base}/?room=${encodeURIComponent(`ws://127.0.0.1:${port}/${encodeURIComponent(branch)}`)}&view=${view}`
     const page = await fetch(link)
     expect(page.status).toBe(410)
     expect(await page.text()).toContain('this link was for a branch room that no longer exists; ask a teammate for a new link')
+    // A view key in a websocket URL is refused outright; the ticket exchange carries the explanation.
     expect(await join(branch, { schema: '2', view })).toBe(400)
+    const ticket = await post('/ws-ticket', { room: branch, schema: 2, view })
+    expect(ticket.status).toBe(410)
   })
 
-  it('exports an archive only to an admitted member and closes the repo while unjoined', async () => {
+  it('does not create legacy archives in a fresh schema-2 room and closes while unjoined', async () => {
     const session = await login('archiver')
     const room = 'github.com/archive/project'
-    expect((await post('/rooms', { room: `${room}/main`, session })).status).toBe(201)
-    await sendMemberUpdate(`${room}/main`, session, d => d.getMap('scopes').set('archiver', { by: 'archiver', byKind: 'agent', area: 'api', summary: 'old', paths: ['x.ts'], at: 1 }))
+    expect((await post('/rooms', { room, session, schema: 2 })).status).toBe(201)
     expect((await post('/view-token', { room, session, schema: 2 })).status).toBe(200)
     const archive = await post('/archive/export', { room: `${room}/main`, session, schema: 2 })
-    expect(archive.status).toBe(200)
-    const doc = new Y.Doc(); Y.applyUpdate(doc, new Uint8Array(await archive.arrayBuffer()))
-    expect(doc.getMap('scopes').get('archiver')).toMatchObject({ summary: 'old' })
+    expect(archive.status).toBe(404)
     expect((await post('/archive/export', { room: `${room}/main`, view: 'token', schema: 2 })).status).toBe(403)
     const closed = await fetch(`${base}/rooms`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, session, schema: 2 }) })
     expect(closed.status).toBe(200)
@@ -190,14 +179,14 @@ describe('room server with the fake GitHub issuer', () => {
     expect(await (await fetch(`${base}/auth/config`)).json()).toMatchObject({ github: 'device', providers: ['github'], fake: true })
   })
 
-  it('fake login -> open a github.com repo -> join its branch room', async () => {
+  it('fake login -> open a github.com repo -> join its repository room', async () => {
     const session = await login('octo')
     expect(await (await fetch(`${base}/auth/me`, { headers: { authorization: `Bearer ${session}` } })).json()).toEqual({ login: 'octo', provider: 'github' })
-    const open = await post('/rooms', { room: 'github.com/o/r/main', session })
+    const open = await post('/rooms', { room: 'github.com/o/r', session, schema: 2 })
     expect(open.status).toBe(201)
     expect(await open.json()).toMatchObject({ repo: 'github.com/o/r', created: true, login: 'octo' })
-    expect(await join('github.com/o/r/main', { session })).toBe(101)
-    expect(await join('github.com/o/r/feature/x', { session })).toBe(101) // any branch of an open repo
+    expect(await join('github.com/o/r', { session, schema: '2' })).toBe(101)
+    expect(await join('github.com/o/r/feature/x', { session })).toBe(403)
     const listed = await (await fetch(`${base}/rooms`, { headers: { authorization: `Bearer ${session}` } })).json() as { repo: string }[]
     expect(listed.map(r => r.repo)).toContain('github.com/o/r')
     // the fake issuer holds no real GitHub token: the PR proxy refuses rather than calling GitHub
@@ -213,9 +202,9 @@ describe('room server with the fake GitHub issuer', () => {
   })
 
   it('ROOM_TOKEN opens and joins non-GitHub rooms but never a github.com room', async () => {
-    expect((await post('/rooms', { room: 'local/origin/main', token: 'shared' })).status).toBe(201)
-    expect(await join('local/origin/main', { token: 'shared' })).toBe(101)
-    expect(await join('local/origin/main', { token: 'wrong' })).toBe(401)
+    expect((await post('/rooms', { room: 'local/origin', token: 'shared', schema: 2 })).status).toBe(201)
+    expect(await join('local/origin', { token: 'shared', schema: '2' })).toBe(101)
+    expect(await join('local/origin', { token: 'wrong', schema: '2' })).toBe(401)
     const gh = await post('/rooms', { room: 'github.com/o/other/main', token: 'shared' })
     expect(gh.status).toBe(401)
     expect(await gh.text()).toMatch(/ROOM_TOKEN does not admit GitHub rooms/)
@@ -224,17 +213,16 @@ describe('room server with the fake GitHub issuer', () => {
 
   it('a login session enters non-GitHub rooms too; no credentials at all is 401', async () => {
     const session = await login('kieran')
-    expect(await join('local/origin/main', { session })).toBe(101)
-    expect(await join('local/origin/main', {})).toBe(401)
+    expect(await join('local/origin', { session, schema: '2' })).toBe(101)
+    expect(await join('local/origin', { schema: '2' })).toBe(401)
     expect(await join('github.com/o/r/main', {})).toBe(401)
   })
 
   it('logs and audits an observed identity objection while applying the member update', async () => {
     const session = await login('bob')
-    const room = 'github.com/o/identity/main'
     const repo = 'github.com/o/identity'
-    expect((await post('/rooms', { room, session })).status).toBe(201)
-    await sendMemberUpdate(room, session, doc => doc.getMap('scopes').set('alice', {
+    expect((await post('/rooms', { room: repo, session, schema: 2 })).status).toBe(201)
+    await sendMemberUpdate(repo, session, doc => doc.getMap('scopes').set('alice', {
       by: 'alice', byKind: 'agent', area: 'api', summary: 'foreign', paths: ['a.ts'], at: 1,
     }))
 

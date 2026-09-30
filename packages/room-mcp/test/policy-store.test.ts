@@ -64,7 +64,7 @@ it('keeps a stored requested level on a default reopen and accepts an explicit o
   expect(explicitJoin.requested).toBe('full')
 })
 
-it('migrates a matching legacy sharing level and retained grant, then removes the old fields', async () => {
+it('migrates a matching legacy sharing level and retained grant into a durable clone-wide floor', async () => {
   const dir = checkout()
   const choice = path.join(dir, '.git', 'room-choice.json')
   const oldGrant = path.join(dir, '.git', 'room-retained-declared.json')
@@ -75,7 +75,8 @@ it('migrates a matching legacy sharing level and retained grant, then removes th
   expect(store.retained).toEqual(['src/kept.py'])
   expect(store.disclosed).toEqual({ level: 'declared', version: 1 })
   expect(fs.existsSync(oldGrant)).toBe(false)
-  expect(JSON.parse(fs.readFileSync(choice, 'utf8'))).toEqual({ where: 'team', at: 1 })
+  expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBe('declared')
+  expect(JSON.parse(fs.readFileSync(path.join(dir, '.git', 'room', 'sharing', 'legacy-baseline.json'), 'utf8')).level).toBe('declared')
 })
 
 it('carries restricted legacy fields through destination rewrites until the new policy is durable', async () => {
@@ -85,7 +86,20 @@ it('carries restricted legacy fields through destination rewrites until the new 
   expect(JSON.parse(fs.readFileSync(choice, 'utf8'))).toMatchObject({ share: 'intent', warned: ['old'] })
   const store = await PolicyStore.open({ dir, room: 'repo', participant: 'alice', requested: 'full' })
   expect(store.requested).toBe('intent')
-  expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBeUndefined()
+  expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBe('intent')
+  expect((await PolicyStore.open({ dir, room: 'repo', participant: 'ben', requested: 'full' })).requested).toBe('intent')
+})
+
+it('keeps the safer baseline if an older client later rewrites its clone choice', async () => {
+  const dir = checkout(), choice = path.join(dir, '.git', 'room-choice.json')
+  fs.writeFileSync(choice, JSON.stringify({ where: 'team', share: 'intent' }))
+  expect((await PolicyStore.open({ dir, room: 'repo', participant: 'alice' })).requested).toBe('intent')
+  fs.writeFileSync(choice, JSON.stringify({ where: 'team', share: 'full' }))
+  expect((await PolicyStore.open({ dir, room: 'repo', participant: 'ben' })).requested).toBe('intent')
+  const explicit = await PolicyStore.open({ dir, room: 'repo', participant: 'alice' })
+  await explicit.setRequested('full')
+  expect((await PolicyStore.open({ dir, room: 'repo', participant: 'alice' })).requested).toBe('full')
+  expect((await PolicyStore.open({ dir, room: 'repo', participant: 'later-worker' })).requested).toBe('intent')
 })
 
 it.each([['ambiguous', '{broken'], ['unknown level', JSON.stringify({ where: 'local', share: 'private' })]])('fails closed for %s legacy choice', async (_case, contents) => {

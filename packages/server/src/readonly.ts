@@ -54,6 +54,71 @@ export function makeReadOnly(conn: EmitterLike, onDrop: () => void): void {
 
 const MESSAGE_AWARENESS = 1
 
+export interface AwarenessBudgetOptions {
+  maxMessageBytes: number; maxStateBytes: number; maxMessagesPerMinute: number
+  maxIdsPerConnection: number; maxIdsPerRoom: number; now?: () => number
+}
+export interface AwarenessState { meta: Map<number, { clock: number; lastUpdated: number }>; getStates(): Map<number, unknown> }
+/** A clock record with no state is kept at least this long, so an echo still in flight cannot bring a departed ID back. */
+const AWARENESS_TOMBSTONE_MS = 60_000
+
+/**
+ * Presence budgets for every connection that may write presence (whose names a login may use is bindIdentity's
+ * job). y-websocket clients send back every presence change they hear, so only entries that would ADD a state
+ * count: an entry newer than the room's record that creates a state (or a record for an ID never heard of). One connection may add a
+ * bounded number of IDs over its life; a room holds a bounded number of clock records, which y-protocols keeps
+ * for removed states too: once over the cap, records without a state that are a minute old are pruned. A
+ * session that reconnects announces its ID with a newer clock, as always.
+ */
+export class AwarenessBudget {
+  constructor(private readonly awareness: AwarenessState, private readonly options: AwarenessBudgetOptions) {}
+  bind(conn: EmitterLike, close: (code: number, reason: string) => void): void {
+    const emit = conn.emit.bind(conn), added = new Set<number>()
+    const now = this.options.now ?? Date.now
+    let window = now(), messages = 0, cut = false
+    const refuse = (reason: string) => { if (!cut) { cut = true; close(4429, reason) } return false }
+    conn.emit = ((event: string | symbol, ...args: unknown[]) => {
+      if (event !== 'message' || !isAwarenessMessage(toBytes(args[0]))) return emit(event, ...args)
+      if (cut) return false // nothing more from a connection being closed
+      const bytes = toBytes(args[0])
+      if (now() - window >= 60_000) { window = now(); messages = 0 }
+      if (bytes.byteLength > this.options.maxMessageBytes || ++messages > this.options.maxMessagesPerMinute) return refuse('presence budget exceeded')
+      const adding: number[] = []
+      try {
+        const states = this.awareness.getStates()
+        const d = decoding.createDecoder(bytes)
+        decoding.readVarUint(d)
+        const inner = decoding.createDecoder(decoding.readVarUint8Array(d))
+        const count = decoding.readVarUint(inner)
+        for (let i = 0; i < count; i++) {
+          const id = decoding.readVarUint(inner)
+          const clock = decoding.readVarUint(inner)
+          const raw = decoding.readVarString(inner)
+          const known = this.awareness.meta.get(id)
+          if (known && clock <= known.clock) continue // an echo or a stale entry: y-protocols ignores it
+          if (Buffer.byteLength(raw) > this.options.maxStateBytes) throw Error('presence state too large')
+          // Adds a record to the room: a new state, or a removal of an ID the room has never heard of.
+          if (added.has(id) || (JSON.parse(raw) === null ? !!known : states.has(id))) continue
+          adding.push(id)
+        }
+        if (added.size + adding.length > this.options.maxIdsPerConnection) throw Error('presence ID budget exceeded')
+      } catch { return refuse('invalid or excessive presence') }
+      if (adding.length) {
+        const fresh = adding.filter(id => !this.awareness.meta.has(id)).length
+        if (this.awareness.meta.size + fresh > this.options.maxIdsPerRoom) this.prune(now())
+        // A full room takes no new IDs for now; the newcomer stays connected and its next heartbeat tries again.
+        if (this.awareness.meta.size + fresh > this.options.maxIdsPerRoom) return false
+        for (const id of adding) added.add(id)
+      }
+      return emit(event, ...args)
+    }) as EmitterLike['emit']
+  }
+  private prune(now: number): void {
+    const states = this.awareness.getStates()
+    for (const [id, record] of this.awareness.meta) if (!states.has(id) && now - record.lastUpdated >= AWARENESS_TOMBSTONE_MS) this.awareness.meta.delete(id)
+  }
+}
+
 /** A login may appear as itself or as login+<label>. */
 export function ownsName(name: string, login: string): boolean {
   return validParticipantName(name) && validParticipantName(login) && (name === login || (name.startsWith(login + '+') && name.length > login.length + 1))

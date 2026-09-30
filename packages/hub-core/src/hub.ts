@@ -16,6 +16,21 @@ import {
 /** How often the hub trims the bus and measures absence (§8). */
 export const MAINTENANCE_MS = 60_000
 export const MAX_HUB_FRAME_BYTES = 96 * 1024
+/** Adapter budget per connection, including malformed and refused hub frames. Above the per-lease post rate:
+ *  a client flushing a backlog after a reconnect sends hundreds of posts back to back. */
+export const MAX_HUB_REQUESTS_PER_SECOND = 500
+export const MAX_HUB_REPLY_ID_LENGTH = 128
+export const hubReplyId = (frame: unknown): string => isObject(frame) && typeof frame.id === 'string' && frame.id.length <= MAX_HUB_REPLY_ID_LENGTH ? frame.id : ''
+export class HubRequestBudget {
+  private readonly connections = new WeakMap<object, { at: number; count: number }>()
+  take(conn: object, now = Date.now()): number | undefined {
+    const current = this.connections.get(conn)
+    if (!current || now - current.at >= 1000) { this.connections.set(conn, { at: now, count: 1 }); return undefined }
+    if (current.count >= MAX_HUB_REQUESTS_PER_SECOND) return Math.max(1, 1000 - (now - current.at))
+    current.count++
+    return undefined
+  }
+}
 export const MAX_HOLDER_FIELD_LENGTH = 512
 export const MAX_LEASES_PER_ROOM = 512
 export const MAX_LEASES_PER_PRINCIPAL = 64
@@ -90,7 +105,7 @@ export class RoomStateError extends Error {
 export interface Hub {
   readonly incarnation: number
   stop(): void
-  handle(conn: object, frame: unknown, p: Principal): Reply
+  handle(conn: object, frame: unknown, p: Principal, frameBytes?: number): Reply
   closed(conn: object): void
   /** Leases, re-assertion, trim and expiry; call every second. */
   tick(): void
@@ -305,11 +320,19 @@ class RoomHub implements Hub {
     this.tenure.present(this.doc, name, HUB_ORIGIN)
   }
 
-  private principal(p: Principal): string { return 'login' in p ? `login:${p.login ?? ''}` : 'local' }
+  private principal(p: Principal): string { return 'local' in p ? 'local' : p.id ?? `login:${p.login ?? ''}` }
 
   private owner(conn: object, p: Principal, name: string, lease: Known | undefined): boolean {
     if (this.host.owns && !this.host.owns(p, name)) return false
-    if (lease?.principal && lease.principal !== this.principal(p)) return false
+    if (lease?.principal && lease.principal !== this.principal(p)) {
+      // Pre-id records may be claimed once by their original holder session and login.
+      if (!('id' in p) || !p.id || lease.principal !== `login:${p.login ?? ''}`) return false
+      const session = this.sessions.get(conn)
+      if (!session || (lease.session ?? lease.holder?.sessionId) !== session) return false
+      lease.principal = p.id
+      const record = this.recordOf(lease)
+      if (record) this.doc.doc.transact(() => { this.doc.participants.set(holderKey(name), record) }, HUB_ORIGIN)
+    }
     const session = this.sessions.get(conn)
     return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session)
   }
@@ -460,16 +483,16 @@ class RoomHub implements Hub {
 
   // ---- requests ----
 
-  handle(conn: object, frame: unknown, p: Principal): Reply {
-    const re = isObject(frame) && typeof frame.id === 'string' && frame.id.length <= 128 ? frame.id : ''
+  handle(conn: object, frame: unknown, p: Principal, frameBytes?: number): Reply {
+    const re = hubReplyId(frame)
     const fail = (reason: Reason, text: string, extra: Record<string, unknown> = {}): Reply => ({ v: 1, re, ok: false, reason, text, ...extra })
-    try { return this.handleSafe(conn, frame, p, fail) }
+    try { return this.handleSafe(conn, frame, p, fail, frameBytes) }
     catch (error) { this.host.log(`hub: rejected request: ${error instanceof Error ? error.message : String(error)}`); return fail('invalid', 'invalid hub request') }
   }
 
-  private handleSafe(conn: object, frame: unknown, p: Principal, fail: Fail): Reply {
+  private handleSafe(conn: object, frame: unknown, p: Principal, fail: Fail, frameBytes?: number): Reply {
     const re = isObject(frame) && typeof frame.id === 'string' ? frame.id : ''
-    if (sizeOf(frame) > MAX_HUB_FRAME_BYTES) return fail('too-large', 'hub request exceeds the frame limit')
+    if ((frameBytes ?? sizeOf(frame)) > MAX_HUB_FRAME_BYTES) return fail('too-large', 'hub request exceeds the frame limit')
     if (!isObject(frame) || frame.v !== 1 || !re || re.length > 128 || typeof frame.op !== 'string') {
       this.host.log(`hub: invalid frame ${JSON.stringify(frame)?.slice(0, 200)}`)
       return fail('invalid', 'a hub request needs v: 1, an id and an op')
@@ -518,6 +541,8 @@ class RoomHub implements Hub {
     if (this.host.full?.()) return fail('room-full', "this room's document is over its size limit")
     const live = this.live(name)
     if (!live && this.settling()) return starting()
+    if (live?.principal && live.principal !== this.principal(p)
+      && !(('id' in p) && p.id && live.principal === `login:${p.login ?? ''}` && this.owner(conn, p, name, live))) return fail('not-yours', `${name} belongs to another principal`)
     if (live && req.supersedes !== live.epoch
       && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
       return fail('held', `${name} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } })

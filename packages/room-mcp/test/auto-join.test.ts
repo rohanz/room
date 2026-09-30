@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RoomdError } from '@room/roomd'
-import { ensureLocalRelay, startRelay } from '@room/relay'
+import { ensureLocalRelay, relayProof, startRelay } from '@room/relay'
 import { AutoJoin } from '../src/auto-join.js'
 import { appendRoomLog } from '../src/index.js'
 import { LOCAL, NoRoom, joinSession, leaveSession, type Session } from '../src/session.js'
@@ -65,7 +65,7 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
   const sockets = new Set<net.Socket>()
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
+    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(typeof req.headers['x-room-nonce'] === 'string' ? { proof: relayProof(key, req.headers['x-room-nonce'], port) } : {}) }))
   })
   server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   server.on('upgrade', () => { /* hang: never answer the handshake */ })

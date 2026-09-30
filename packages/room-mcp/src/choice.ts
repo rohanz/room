@@ -87,20 +87,7 @@ export async function rememberTag(dir: string, tag: string): Promise<RoomChoice>
   }
 }
 
-/** Migration removes old sharing authority after PolicyStore has persisted its replacement. */
-export async function removeSharingChoice(dir: string): Promise<void> {
-  const file = await choiceFile(dir)
-  withGuard(`${file}.lock`, () => {
-    let raw: Record<string, unknown>
-    try { raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error }
-    delete raw.share
-    delete raw.warned
-    delete raw.warnedLevels
-    writeAtomic(file, raw)
-  })
-}
-
+/** Forget the destination and tags. The separate sharing baseline survives room_leave. */
 export async function clearChoice(dir: string): Promise<boolean> {
   try { fs.rmSync(await choiceFile(dir)); return true } catch { return false }
 }

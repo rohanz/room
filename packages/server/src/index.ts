@@ -35,13 +35,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, limitStateRequests, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
+import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, limitStateRequests, sizeCapReason, DocSizeMeter, DocumentIdentityGuard, AwarenessBudget } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
 import { githubPushChecker, makeAdmitted, type Creds } from './admit.js'
-import { CredentialSockets, PermissionRevalidator, type Credential } from './sockets.js'
+import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget, type Credential } from './sockets.js'
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
@@ -94,18 +94,25 @@ const github = new GitHubProxy({ log: l => console.log(l) })
 
 /** Room-scoped tokens for the browser view (minted for verified clients). Persisted next to the
  *  room data so a redeploy does not invalidate links people already opened. */
-const viewTokens = new Map<string, { room: string; exp: number }>()
-const VIEW_TTL = 7 * 24 * 60 * 60 * 1000
+const viewTokens = new Map<string, { room: string; exp: number; issuer?: string }>()
+const VIEW_TTL = Number(process.env.ROOM_VIEW_TTL_MS ?? 7 * 24 * 60 * 60 * 1000)
+const VIEW_MAX_PER_PRINCIPAL = Number(process.env.ROOM_VIEW_MAX_PER_PRINCIPAL ?? 5)
+const VIEW_MAX_PER_ROOM = Number(process.env.ROOM_VIEW_MAX_PER_ROOM ?? 200)
+const VIEW_MAX_TOTAL = Number(process.env.ROOM_VIEW_MAX_TOTAL ?? 10000)
 const VIEW_FILE = process.env.YPERSISTENCE ? path.join(process.env.YPERSISTENCE, 'view-tokens.json') : undefined
 try { if (VIEW_FILE && fs.existsSync(VIEW_FILE)) for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(VIEW_FILE, 'utf8')) as Record<string, { room: string; exp: number }>)) if (v.exp > Date.now()) viewTokens.set(k, v) } catch { /* start empty */ }
 let viewSaveRetry: ReturnType<typeof setTimeout> | undefined
 function saveViewTokens() {
   if (!VIEW_FILE) return
+  if (viewSaveRetry) return
+  viewSaveRetry = setTimeout(writeViewTokens, 50); viewSaveRetry.unref?.()
+}
+function writeViewTokens() {
+  viewSaveRetry = undefined
+  if (!VIEW_FILE) return
   try {
     fs.mkdirSync(path.dirname(VIEW_FILE), { recursive: true })
     writeAtomicFile(VIEW_FILE, JSON.stringify(Object.fromEntries(viewTokens)))
-    if (viewSaveRetry) clearTimeout(viewSaveRetry)
-    viewSaveRetry = undefined
   } catch (error) {
     console.log(`could not save view tokens: ${error instanceof Error ? error.message : error}`)
     if (!viewSaveRetry) { viewSaveRetry = setTimeout(() => { viewSaveRetry = undefined; saveViewTokens() }, 1000); viewSaveRetry.unref?.() }
@@ -120,8 +127,17 @@ const MAX_ROOMS = Number(process.env.ROOM_MAX_ROOMS ?? 100)
 const MAX_CONNECTIONS = Number(process.env.ROOM_MAX_CONNECTIONS ?? 4000)
 const MAX_CONNECTIONS_PER_ROOM = Number(process.env.ROOM_MAX_CONNECTIONS_PER_ROOM ?? 200)
 const MAX_CONNECTIONS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_CONNECTIONS_PER_PRINCIPAL ?? 100)
-const connectionCounts = { total: 0, room: new Map<string, number>(), principal: new Map<string, number>() }
+const MAX_PENDING_ADMISSIONS = Number(process.env.ROOM_MAX_PENDING_ADMISSIONS ?? 256)
+const MAX_PENDING_PER_ADDRESS = Number(process.env.ROOM_MAX_PENDING_PER_ADDRESS ?? 16)
+let pendingAdmissions = 0
+const pendingByAddress = new Map<string, number>()
+const connectionCounts = new ConnectionReservations({ total: MAX_CONNECTIONS, room: MAX_CONNECTIONS_PER_ROOM,
+  principal: MAX_CONNECTIONS_PER_PRINCIPAL, pending: MAX_PENDING_ADMISSIONS, pendingAddress: MAX_PENDING_PER_ADDRESS })
+const MAX_QUEUED_BYTES = Number(process.env.ROOM_MAX_QUEUED_MB ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) + 4) * 1048576
+const MAX_TOTAL_QUEUED_BYTES = Number(process.env.ROOM_MAX_TOTAL_QUEUED_MB ?? 256) * 1048576
+const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
 const locks = new RepoLocks()
+let pendingRoomCreations = 0
 const canonical = (name: string, schema2 = false) => {
   const parsed = parseRoomName(name, schema2)
   if (!parsed) return roomNameOf(name)
@@ -212,6 +228,7 @@ function stopDoc(name: string, reason = 'room closed') {
   }
   hubs.stop(name)
   documentGuards.delete(name); awarenessOwners.delete(name)
+  awarenessBudgets.delete(name)
   docMeters.delete(name); capLogged.delete(name)
 }
 async function freezeDocs(names: string[], reason: string): Promise<void> {
@@ -300,6 +317,7 @@ const authCallbackLimit = new RateLimit(30, 60_000)
 const upgradeLimit = new RateLimit(600, 60_000)
 const failedAdmissionLimit = new RateLimit(30, 60_000)
 const ticketLimit = new RateLimit(60, 60_000)
+const viewIssueLimit = new RateLimit(Number(process.env.ROOM_VIEW_ISSUE_PER_HOUR ?? 20), 60 * 60_000)
 setInterval(() => {
   credentialSockets.sweep()
   for (const [key, value] of viewTokens) if (value.exp <= Date.now()) { viewTokens.delete(key); credentialSockets.close({ kind: 'view', value: key }, 4403, 'view key expired') }
@@ -309,14 +327,14 @@ const revalidateMinutes = Number.isFinite(revalidateSetting) && revalidateSettin
 const revalidator = new PermissionRevalidator(
   async (session, repo) => {
     const st = auth.peek(session)
-    if (!st) return true // peek already closed an expired session with 4401
+    if (!st) return false // vanished sessions must close every tracked socket
     if (!st.ghToken) return false
     const ownerRepo = githubRepoOf(repo)
     return !ownerRepo || st.ghToken.startsWith('fake:') ? true : pushChecker(st.ghToken, ownerRepo, true)
   },
   (session, repo) => {
     const st = auth.peek(session)
-    credentialSockets.closeRoom({ kind: 'session', value: session }, repo, 4403, 'access revoked')
+    credentialSockets.closeRoom({ kind: 'session', value: session }, repo, st ? 4403 : 4401, st ? 'access revoked' : 'session expired or unknown')
     audit({ event: 'refused', room: repo, login: st?.login, reason: 'access revoked' })
   },
   (_session, repo) => console.log(`permission revalidation unavailable for ${repo}; retaining connections`),
@@ -339,6 +357,13 @@ const server = http.createServer((req, res) => {
   let url: URL
   try { url = safeUrl(req.url) } catch { res.writeHead(400); res.end('Bad Request'); return }
   const limited = (limiter: RateLimit) => { const retry = limiter.check(clientIp(req)); if (!retry) return false; res.writeHead(429, { 'retry-after': String(retry) }); res.end('rate limited'); return true }
+  // Ticket exchange accepts only explicit body/header secrets; wildcard origin cannot use browser cookies.
+  if (url.pathname === '/ws-ticket' && (req.method === 'POST' || req.method === 'OPTIONS')) {
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'POST')
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-room-token')
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+  }
   if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
   const headerCreds = (): Creds => ({ session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1], token: str(req.headers['x-room-token']) })
   const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token) ?? headerCreds().token, session: str(o.session) ?? headerCreds().session })
@@ -432,7 +457,6 @@ const server = http.createServer((req, res) => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
-    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`close refused: ${v.why}`); return text(v.status, v.why) }
     const repo = canonical(room)
@@ -447,7 +471,6 @@ const server = http.createServer((req, res) => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, o.schema === 2) || o.schema !== 2 && !parseRoomName(oldBranchRepo(roomNameOf(room)), true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
-    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`open refused: ${v.why}`); return text(v.status, v.why) }
     const by = v.login ?? str(o.by)
@@ -456,15 +479,19 @@ const server = http.createServer((req, res) => {
     let created = false
     await locks.run(name, async () => {
       const existing = rooms.get(name)
-      if (o.schema !== 2 && existing?.mode === 'repo') return text(403, upgradeText(name))
+      if (o.schema !== 2 && (!existing || existing.mode === 'repo' || requested !== name && !existing.branches.includes(requested))) return text(403, upgradeText(name))
       if (!existing) {
-        if (rooms.size >= MAX_ROOMS) return text(503, 'server room limit reached')
+        if (rooms.size + pendingRoomCreations >= MAX_ROOMS) return text(503, 'server room limit reached')
+        pendingRoomCreations++
+        let reserved = true
+        try {
         created = true
         const priorDocs = await listDocs()
         const oldDocs = o.schema === 2 && priorDocs.some(doc => doc === name || parseRoomName(doc)?.github && parseRoomName(doc)?.repo === name)
         const fresh = !priorDocs.includes(name) && !oldDocs
         rooms.set(name, { by, at: Date.now(), branches: [], mode: o.schema === 2 && !oldDocs ? 'repo' : 'branch',
           ...(o.schema === 2 && !oldDocs ? { migratedAt: Date.now() } : {}) })
+        pendingRoomCreations--; reserved = false // the registry entry now accounts for this slot
         if (o.schema === 2 && !oldDocs) {
           const empty = new Y.Doc(); empty.getMap('meta').set('schemaVersion', 2)
           await writeDoc(name, Y.encodeStateAsUpdate(empty))
@@ -473,9 +500,11 @@ const server = http.createServer((req, res) => {
         if (fresh) hubs.markFresh(name)
         console.log(`room opened: ${name}${by ? ` by ${by}` : ''}`)
         audit({ event: 'room_opened', room: name, login: by, id: v.id })
+        } catch (error) { rooms.delete(name); throw error }
+        finally { if (reserved) pendingRoomCreations-- }
       }
       const opened = rooms.get(name)
-      if (o.schema !== 2 && requested !== name && opened && !opened.branches.includes(requested)) { opened.branches.push(requested); await saveRooms() }
+      // rc2 retains recorded 0.16 branches but never expands their document population.
     })
     if (res.writableEnded) return
     if (o.schema === 2) await migrateOpenRepo(name)
@@ -485,13 +514,19 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/ws-ticket' && req.method === 'POST') return withBody(async o => {
     if (limited(ticketLimit)) return
     const room = str(o.room)
-    if (!room || o.schema !== 2 || !parseRoomName(room, true)) return text(400, 'schema 2 room required')
+    if (!room || o.schema !== 2) return text(400, 'schema 2 room required')
+    const old = parseRoomName(room)
+    if (!parseRoomName(room, true)) {
+      if (o.view && old && rooms.get(old.repo)?.mode === 'repo') return text(410, oldLinkText)
+      return text(400, 'schema 2 room required')
+    }
     const repo = canonical(room, true)
     if (!rooms.has(repo)) return text(404, NOT_OPEN(room))
     const view = str(o.view)
     if (view) {
       const key = viewTokens.get(view)
-      if (!key || key.exp <= Date.now() || key.room !== repo) return text(403, 'view key invalid or expired')
+      if (!key || key.exp <= Date.now() || key.room !== repo) return text(key && key.room !== repo && rooms.get(repo)?.mode === 'repo' ? 410 : 403,
+        key && key.room !== repo && rooms.get(repo)?.mode === 'repo' ? oldLinkText : 'view key invalid or expired')
       return json(200, credentialSockets.mint(repo, { kind: 'view', value: view }, true))
     }
     const c = { ...headerCreds(), ...creds(o) }
@@ -505,24 +540,34 @@ const server = http.createServer((req, res) => {
     const room = str(o.room)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
-    if (o.schema !== 2 && rooms.get(canonical(room))?.mode === 'repo') return text(403, upgradeText(canonical(room)))
     const v = await admitted(room, creds(o))
     if (!v.ok) { console.log(`view-token refused: ${v.why}`); return text(v.status, v.why) }
     const repo = canonical(room)
     const entry = rooms.get(repo)
     if (!entry) return text(404, NOT_OPEN(repo))
     if (o.schema !== 2 && entry.mode === 'repo') return text(403, upgradeText(repo))
+    if (o.schema !== 2 && roomNameOf(room) !== repo && !entry.branches.includes(roomNameOf(room))) return text(403, upgradeText(repo))
     if (o.schema === 2) await migrateOpenRepo(repo)
     const name = o.schema === 2 ? repo : roomNameOf(room)
+    const principal = v.id ?? (v.provider ? `${v.provider}:${v.login}` : creds(o).token ? `token:${crypto.createHash('sha256').update(creds(o).token!).digest('hex')}` : `open:${clientIp(req)}`)
     const view = await locks.run(repo, async () => {
       if (!rooms.has(repo)) return undefined
       if (o.schema !== 2 && rooms.get(repo)?.mode === 'repo') return undefined
+      const now = Date.now()
+      for (const [key, value] of viewTokens) if (value.exp <= now) viewTokens.delete(key)
+      const reusable = [...viewTokens].find(([, value]) => value.room === name && value.issuer === principal && value.exp - now > VIEW_TTL / 2)
+      if (reusable) return reusable[0]
+      const retry = viewIssueLimit.check(principal)
+      if (retry) return 'rate-limited'
+      const owned = [...viewTokens].filter(([, value]) => value.room === name && value.issuer === principal)
+      const inRoom = [...viewTokens].filter(([, value]) => value.room === name)
+      if (owned.length >= VIEW_MAX_PER_PRINCIPAL || inRoom.length >= VIEW_MAX_PER_ROOM || viewTokens.size >= VIEW_MAX_TOTAL) return 'rate-limited'
       const key = crypto.randomBytes(16).toString('hex')
-      viewTokens.set(key, { room: name, exp: Date.now() + VIEW_TTL })
-      for (const [k, vv] of viewTokens) if (vv.exp < Date.now()) viewTokens.delete(k)
+      viewTokens.set(key, { room: name, exp: now + VIEW_TTL, issuer: principal })
       saveViewTokens()
       return key
     })
+    if (view === 'rate-limited') return text(429, 'view-link issuance limit reached; retry later')
     if (!view) return rooms.get(repo)?.mode === 'repo' && o.schema !== 2
       ? text(403, upgradeText(repo)) : text(404, NOT_OPEN(repo))
     json(200, { ...(o.schema === 2 ? { room: name, hub: 1 } : {}), view, expiresIn: VIEW_TTL, ...(v.login ? { login: v.login } : {}) })
@@ -654,14 +699,14 @@ const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, P
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
-setInterval(() => hubs.tick(), 1000).unref()
+setInterval(() => { hubs.tick(); outbound.sweep() }, 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
 wss.on('connection', (conn, req) => {
   try {
   const url = safeUrl(req.url)
   const raw = docNameOf(req.url ?? '/')
-  if (!parseRoomName(raw, url.searchParams.get('schema') === '2' && !url.searchParams.has('view'))) { conn.close(1008, 'invalid room name'); return }
+  if (!parseRoomName(raw, url.searchParams.get('schema') === '2')) { conn.close(1008, 'invalid room name'); return }
   const repo = canonical(raw)
   const docName = url.searchParams.get('schema') === '2' || rooms.get(repo)?.mode === 'repo' ? repo : raw
   setupWSConnection(conn, req, { gc: true, docName })
@@ -689,6 +734,13 @@ const refuse = (socket: import('node:stream').Duplex, code: number, why: string,
 const identityLog = new Map<string, number>()
 const documentGuards = new Map<string, DocumentIdentityGuard>()
 const awarenessOwners = new Map<string, Map<number, string>>()
+const awarenessBudgets = new Map<string, AwarenessBudget>()
+const AWARENESS_MAX_MESSAGE_BYTES = Number(process.env.ROOM_AWARENESS_MAX_MESSAGE_KB ?? 64) * 1024
+const AWARENESS_MAX_STATE_BYTES = Number(process.env.ROOM_AWARENESS_MAX_STATE_KB ?? 16) * 1024
+// y-websocket clients send back every presence change they hear: a client in a room of 200 relays some 800 heartbeats a minute.
+const AWARENESS_MAX_MESSAGES_PER_MINUTE = Number(process.env.ROOM_AWARENESS_MESSAGES_PER_MINUTE ?? 6000)
+const AWARENESS_MAX_IDS_PER_CONNECTION = Number(process.env.ROOM_AWARENESS_IDS_PER_CONNECTION ?? 16)
+const AWARENESS_MAX_IDS_PER_ROOM = Number(process.env.ROOM_AWARENESS_IDS_PER_ROOM ?? 4096)
 function documentGuard(roomName: string): DocumentIdentityGuard {
   let guard = documentGuards.get(roomName)
   if (!guard) { guard = new DocumentIdentityGuard(() => docs.get(roomName)); documentGuards.set(roomName, guard) }
@@ -706,20 +758,31 @@ server.on('upgrade', (req, socket, head) => {
   const url = safeUrl(req.url)
   const retry = upgradeLimit.check(clientIp(req))
   if (retry) return refuse(socket, 429, `Too Many Requests; retry after ${retry} seconds`)
+  const address = clientIp(req)
+  if (pendingAdmissions >= MAX_PENDING_ADMISSIONS || (pendingByAddress.get(address) ?? 0) >= MAX_PENDING_PER_ADDRESS)
+    return refuse(socket, 429, 'too many pending connections; retry')
+  pendingAdmissions++; pendingByAddress.set(address, (pendingByAddress.get(address) ?? 0) + 1)
+  let pendingReleased = false
+  const releasePending = () => { if (pendingReleased) return; pendingReleased = true; pendingAdmissions--; const n = (pendingByAddress.get(address) ?? 1) - 1; if (n) pendingByAddress.set(address, n); else pendingByAddress.delete(address) }
+  socket.once('close', releasePending)
   const roomName = roomNameOf(url.pathname)
-  // A retired branch link (view key) keeps its branch suffix so it can be told 410 instead of 400.
-  if (!parseRoomName(roomName, url.searchParams.get('schema') === '2' && !url.searchParams.has('view'))) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
+  if (!parseRoomName(roomName, url.searchParams.get('schema') === '2')) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
   const repo = canonical(roomName)
   const schema2 = url.searchParams.get('schema') === '2'
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
   if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
   if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 400, 'send credentials in headers', roomName)
-  if (!schema2 && rooms.get(repo)?.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
   const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential } = {}) => {
+    const principal = opts.id ?? (opts.login ? `login:${opts.login}` : opts.credential ? `${opts.credential.kind}:${crypto.createHash('sha256').update(opts.credential.value).digest('hex')}` : `ip:${address}`)
+    const release = connectionCounts.reserve(repo, principal, address)
+    if (!release) return refuse(socket, 503, 'connection or pending admission limit reached', roomName)
+    const generation = opts.credential ? credentialSockets.generation(opts.credential) : undefined
+    let upgraded = false
     void locks.run(repo, async () => {
       const current = rooms.get(repo)
       if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
       if (!schema2 && current.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
+      if (!schema2 && current.mode !== 'repo' && roomName !== repo && !current.branches.includes(roomName)) return refuse(socket, 403, upgradeText(repo), roomName)
       if (schema2 && !current.migratedAt) return refuse(socket, 503, 'room migration is not complete; retry', roomName)
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       if (opts.readOnly) {
@@ -728,28 +791,25 @@ server.on('upgrade', (req, socket, head) => {
           return refuse(socket, current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? 410 : 403,
             current.mode === 'repo' && (roomName !== repo || current.plan?.moved) ? oldLinkText : 'Forbidden: view token invalid for this room', roomName)
       }
-      const principal = opts.login ? `login:${opts.login}` : `ip:${clientIp(req)}`
-      if (connectionCounts.total >= MAX_CONNECTIONS || (connectionCounts.room.get(repo) ?? 0) >= MAX_CONNECTIONS_PER_ROOM)
-        return refuse(socket, 503, 'connection limit reached', roomName)
-      if ((connectionCounts.principal.get(principal) ?? 0) >= MAX_CONNECTIONS_PER_PRINCIPAL)
-        return refuse(socket, 429, 'connection limit reached for principal', roomName)
       // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
       // Holding the repo lock also makes the socket visible to migration's freeze step.
       await hubs.flush(getYDoc(docKey, true))
+      // Test-only suspension makes the logout/expiry interval reproducible in a child server.
+      if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_UPGRADE_DELAY_MS)
+        await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_UPGRADE_DELAY_MS)))
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
+      // Last check after every await. The generation also catches logout then replacement.
+      if (opts.credential && !credentialSockets.unchanged(opts.credential, generation!)) return refuse(socket, 403, 'credential revoked', roomName)
+      if (opts.credential?.kind === 'session' && !auth.peek(opts.credential.value)) return refuse(socket, 401, 'session expired or unknown', roomName)
+      if (opts.credential?.kind === 'view') { const view = viewTokens.get(opts.credential.value); if (!view || view.exp <= Date.now() || view.room !== docKey) return refuse(socket, 403, 'view key expired or revoked', roomName) }
+      if (opts.credential?.kind === 'token' && opts.credential.value !== TOKEN) return refuse(socket, 403, 'token revoked', roomName)
+      if (socket.destroyed) return
       wss.handleUpgrade(req, socket, head, ws => {
+        upgraded = true
+        releasePending(); release.admitted(); ws.once('close', release)
         if (opts.credential) credentialSockets.track(opts.credential, ws, docKey)
         if (opts.credential?.kind === 'session' && githubRepoOf(repo)) ws.once('close', revalidator.track(opts.credential.value, repo))
-        connectionCounts.total++
-        connectionCounts.room.set(repo, (connectionCounts.room.get(repo) ?? 0) + 1)
-        connectionCounts.principal.set(principal, (connectionCounts.principal.get(principal) ?? 0) + 1)
-        ws.once('close', () => {
-          connectionCounts.total--
-          const roomCount = (connectionCounts.room.get(repo) ?? 1) - 1
-          if (roomCount) connectionCounts.room.set(repo, roomCount); else connectionCounts.room.delete(repo)
-          const principalCount = (connectionCounts.principal.get(principal) ?? 1) - 1
-          if (principalCount) connectionCounts.principal.set(principal, principalCount); else connectionCounts.principal.delete(principal)
-        })
+        outbound.track(ws as unknown as import('./sockets.js').BufferedSocket)
         const entry = rooms.get(repo)!
         entry.lastSeen = Date.now(); void saveRooms().catch(() => {})
         // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
@@ -788,9 +848,16 @@ server.on('upgrade', (req, socket, head) => {
         })
         // Outermost of all: a state request costs an encoding of the whole document, for viewers and members alike.
         limitStateRequests(ws, { perMinute: 10, maxQueuedBytes: 1048576, queued: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) })
+        if (!opts.readOnly) {
+          let budget = awarenessBudgets.get(docKey)
+          if (!budget) { budget = new AwarenessBudget(getYDoc(docKey, true).awareness, { maxMessageBytes: AWARENESS_MAX_MESSAGE_BYTES,
+            maxStateBytes: AWARENESS_MAX_STATE_BYTES, maxMessagesPerMinute: AWARENESS_MAX_MESSAGES_PER_MINUTE,
+            maxIdsPerConnection: AWARENESS_MAX_IDS_PER_CONNECTION, maxIdsPerRoom: AWARENESS_MAX_IDS_PER_ROOM }); awarenessBudgets.set(docKey, budget) }
+          budget.bind(ws, (code, reason) => ws.close(code, reason))
+        }
         wss.emit('connection', ws, req)
       })
-    }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) })
+    }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) }).finally(() => { if (!upgraded) release() })
   }
   const ticket = url.searchParams.get('ticket')
   if (ticket) {

@@ -32,32 +32,48 @@ export function parseRoomUrl(raw: string): RoomLocation {
 }
 
 function roomLocationFromQuery(search = location.search): RoomLocation {
-  const raw = new URLSearchParams(search).get('room') ?? 'ws://localhost:1234/demo'
+  const raw = new URLSearchParams(location.hash.slice(1)).get('room') ?? new URLSearchParams(search).get('room') ?? 'ws://localhost:1234/demo'
   return parseRoomUrl(raw)
 }
 
-/** A human link necessarily carries its capability once; remove it before navigation or referrers can copy it. */
+/** Read fragment capabilities from browser memory; strip old query credentials after arrival. */
 export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getItem' | 'setItem'>, replace: (url: string) => void): { view: string; key: string; token: string } {
   const url = new URL(location.href)
   const q = new URLSearchParams(search)
-  const room = q.get('room') ?? ''
+  const fragment = new URLSearchParams(url.hash.slice(1))
+  const room = fragment.get('room') ?? q.get('room') ?? ''
   const slot = `room-credential:${room}`
-  const incoming = { view: q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: q.get('token') ?? '' }
+  const incoming = { view: fragment.get('view') ?? q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: fragment.get('token') ?? q.get('token') ?? '' }
   if (incoming.view || incoming.key || incoming.token) try { storage.setItem(slot, JSON.stringify(incoming)) } catch { /* this tab still holds it in memory */ }
   for (const name of ['view', 'key', 'token']) {
     const values = url.searchParams.getAll(name).filter(v => name === 'view' && (v === 'board' || v === 'code'))
     url.searchParams.delete(name)
     for (const value of values) url.searchParams.append(name, value)
   }
-  if (incoming.view || incoming.key || incoming.token) replace(url.toString())
+  if (url.hash) { url.searchParams.set('room', room); url.hash = '' }
+  if (incoming.view || incoming.key || incoming.token || location.hash) replace(url.toString())
   try { return incoming.view || incoming.key || incoming.token ? incoming : JSON.parse(storage.getItem(slot) ?? '{}') }
   catch { return { view: '', key: '', token: '' } }
 }
 
+export async function browserViewProof(view: string, room: string, ts: number, nonce: string): Promise<string> {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey('raw', encoder.encode(view), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(`room-relay-v1\0ticket\0${room}\0${ts}\0${nonce}`))
+  return [...new Uint8Array(signature)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
 export async function mintTicket(loc: RoomLocation, auth: { view: string; key: string; token: string }, request: typeof fetch = fetch): Promise<string> {
   const http = loc.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:')
+  const local = new URL(loc.serverUrl).hostname === '127.0.0.1' || new URL(loc.serverUrl).hostname === 'localhost'
+  if (local && auth.key) throw new Error('This local link uses an obsolete key. Ask your agent for a fresh room view URL.')
+  let credential: Record<string, unknown> = auth.view ? { view: auth.view } : {}
+  if (local && auth.view) {
+    const ts = Date.now(), nonce = [...crypto.getRandomValues(new Uint8Array(16))].map(v => v.toString(16).padStart(2, '0')).join('')
+    credential = { ts, nonce, proof: await browserViewProof(auth.view, loc.displayRoomName, ts, nonce) }
+  }
   const response = await request(`${http}/ws-ticket`, { method: 'POST', headers: { 'content-type': 'application/json', ...(auth.token ? { 'x-room-token': auth.token } : {}) },
-    body: JSON.stringify({ room: loc.displayRoomName, schema: 2, ...(auth.key ? { key: auth.key } : auth.view ? { view: auth.view } : {}) }) })
+    body: JSON.stringify({ room: loc.displayRoomName, schema: 2, ...credential }) })
   if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
   return ((await response.json()) as { ticket: string }).ticket
 }
@@ -71,6 +87,7 @@ export interface Conn extends RoomLocation {
 
 export function connect(search = location.search): Conn {
   const roomLocation = roomLocationFromQuery(search)
+  const viewerName = (new URLSearchParams(location.hash.slice(1)).get('participant') ?? new URLSearchParams(search).get('name'))?.trim()
   const doc = new Y.Doc()
   const room = new RoomDoc(doc)
   const storage = (() => { try { return sessionStorage } catch { return { getItem: () => null, setItem: () => {} } } })()
@@ -110,7 +127,6 @@ export function connect(search = location.search): Conn {
       }
     }
   })
-  const viewerName = new URLSearchParams(search).get('name')?.trim()
   if (viewerName) {
     provider.awareness.setLocalState({
       user: { name: viewerName, kind: 'human', color: colorFor(viewerName, room) },
@@ -174,7 +190,7 @@ async function explainAccess(loc: RoomLocation, auth: { view: string; token: str
   try {
     const res = await fetch(`${http}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...(auth.token ? { token: auth.token } : {}) }) })
     if (res.ok) return
-    if (!auth.view && !auth.token) show('this link has no access key. Ask your agent for the room view URL (it ends with &view=...), or use room_state.')
+    if (!auth.view && !auth.token) show('this link has no access key. Ask your agent for the room view URL, or use room_state.')
     else if (auth.view) show('the view key on this link has expired or is for another room. Ask your agent for a fresh link (room_state prints it).')
     else show((await res.text()) || 'access refused')
   } catch { show(`cannot reach ${loc.serverUrl}`) }

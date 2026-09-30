@@ -1,8 +1,31 @@
 import { expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { EventEmitter } from 'node:events'
-import { HUB_ORIGIN, decodeFrame, encodeFrame } from '@room/hub-core'
+import { HUB_ORIGIN, MAX_HUB_FRAME_BYTES, MAX_HUB_REQUESTS_PER_SECOND, decodeFrame, encodeFrame } from '@room/hub-core'
 import { ServerHubs, bindHub, type PersistenceProvider } from '../src/hub.js'
+
+it('bounds raw hub frames and reply ids before decoding, including unavailable and read-only paths', () => {
+  const socket = () => Object.assign(new EventEmitter(), { replies: [] as Uint8Array[], send(buf: Uint8Array) { this.replies.push(buf) } })
+  const parse = vi.spyOn(JSON, 'parse')
+  try {
+    const unavailable = socket()
+    bindHub(unavailable, () => undefined, { readOnly: false }, () => 'storage down')
+    const huge = encodeFrame({ v: 1, id: 'x', op: 'hello', payload: 'x'.repeat(MAX_HUB_FRAME_BYTES) } as never)
+    const before = parse.mock.calls.length
+    unavailable.emit('message', huge)
+    expect(parse).toHaveBeenCalledTimes(before)
+    expect(decodeFrame(unavailable.replies[0])).toMatchObject({ reason: 'too-large', re: '' })
+    for (const id of ['x'.repeat(129), 'ok']) unavailable.emit('message', encodeFrame({ v: 1, id, op: 'hello' } as never))
+    expect(decodeFrame(unavailable.replies[1])).toMatchObject({ reason: 'unavailable', re: '' })
+    expect(decodeFrame(unavailable.replies[2])).toMatchObject({ reason: 'unavailable', re: 'ok' })
+    for (let i = 0; i < MAX_HUB_REQUESTS_PER_SECOND + 1; i++) unavailable.emit('message', encodeFrame({ v: 1, id: 'r', op: 'hello' } as never))
+    expect(decodeFrame(unavailable.replies.at(-1)!)).toMatchObject({ reason: 'rate-limited', retryMs: expect.any(Number) })
+    const readonly = socket()
+    bindHub(readonly, () => undefined, { readOnly: true })
+    for (let i = 0; i <= MAX_HUB_REQUESTS_PER_SECOND; i++) readonly.emit('message', encodeFrame({ v: 1, id: 'r', op: 'hello' } as never))
+    expect(decodeFrame(readonly.replies.at(-1)!)).toMatchObject({ reason: 'rate-limited' })
+  } finally { parse.mockRestore() }
+})
 
 it('drains a disconnected legacy document by name before migration reads its archive', async () => {
   const stored = new Map<string, Uint8Array>()

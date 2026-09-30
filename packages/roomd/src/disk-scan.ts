@@ -137,7 +137,7 @@ export async function readDisk(dir: string, inputs: PublicationInputs, previous:
     const publishable = isChanged && authorizesText(inputs.policy, p) && text !== undefined
     const budgetOmitted = publishable && retainedTextBytes + bytes.length > inputs.rules.budget
     if (publishable && !budgetOmitted) retainedTextBytes += bytes.length
-    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, ...(budgetOmitted ? {} : { text }), binary,
+    facts.push({ path: p, kind: 'file', hash, baseHash, size: bytes.length, ...(publishable && !budgetOmitted ? { text } : {}), binary,
       ...(budgetOmitted ? { budgetOmitted: true } : {}), at: stat.mtimeMs, ino: stat.ino,
       ...(!changed.has(p) && !baseHash ? { changed: false } : {}) })
   }

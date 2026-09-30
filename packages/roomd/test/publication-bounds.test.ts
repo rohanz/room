@@ -60,6 +60,20 @@ it('retains at most the publication budget while scanning 512 eligible changed f
   expect([...desired.excludedReasons.values()].every(reason => reason === 'budget')).toBe(true)
 })
 
+it.each(['declared', 'intent'] as const)('discards unauthorized text at %s and reads it on a widened scan', async level => {
+  const { dir, head } = repo()
+  const size = 64 * 1024, budget = 8 * 1024 * 1024
+  for (let i = 0; i < 512; i++) fs.writeFileSync(path.join(dir, `changed-${String(i).padStart(3, '0')}.txt`), 'x'.repeat(size))
+  const restricted = { policy: policyFromLevel(level), rules: rulesFromText('', 512 * 1024, budget), head }
+  const hidden = await readDisk(dir, restricted, [], () => true)
+  expect(hidden.reduce((total, fact) => total + Buffer.byteLength(fact.text ?? ''), 0)).toBe(0)
+  if (level === 'declared') expect(hidden.filter(fact => fact.kind === 'file' && fact.path.startsWith('changed-'))).toHaveLength(512)
+  const widened = { ...restricted, policy: policyFromLevel('full') }
+  const visible = await readDisk(dir, widened, [], () => true)
+  expect(visible.reduce((total, fact) => total + Buffer.byteLength(fact.text ?? ''), 0)).toBe(budget)
+  expect(plan(widened, visible, 'aa'.repeat(32)).textPaths).toHaveLength(128)
+})
+
 it('checks old blob sizes and reads only blobs within the publication cap', async () => {
   const { dir, git, head } = repo()
   fs.writeFileSync(path.join(dir, 'large'), 'a'.repeat(2_000_000))

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -9,7 +9,7 @@ import { RoomDoc, trim, type AnswerMsg, type NoteMsg, type QuestionMsg } from '@
 import { hubAppend } from '@room/shared/testing'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
-import { DEFAULT_SERVER, NotLoggedIn, type JoinOptions, type Session } from '../src/session.js'
+import { DEFAULT_SERVER, NotLoggedIn, joinSession, startupJoinOptions, type JoinOptions, type Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 import { memorySession } from './fixtures/session.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -129,6 +129,42 @@ it('identifies an old server when the 0.17 hub is absent', async () => {
   expect(await t.tools.call('room_join', { where: server, room: 'git/example/repo' }))
     .toContain('this Room server has no 0.17 hub; ask its operator to deploy Room 0.17')
   expect(t.joiner).not.toHaveBeenCalled()
+})
+
+it.each(['argument', 'ROOM_ROOM', 'ROOM_URL', 'remembered'] as const)('retargets a legacy GitHub %s room before preflight', async source => {
+  const server = 'ws://upgrade.example'
+  const legacy = 'github.com/example/repo/feature/deep'
+  const credentialsPath = join(dir, 'upgrade-credentials.json')
+  writeFileSync(credentialsPath, JSON.stringify({ [server]: { session: 's'.repeat(64), login: 'Ada', at: Date.now() } }))
+  vi.stubEnv('ROOM_CREDENTIALS', credentialsPath)
+  if (source === 'ROOM_ROOM') vi.stubEnv('ROOM_ROOM', legacy)
+  if (source === 'ROOM_URL') vi.stubEnv('ROOM_URL', `${server}/${legacy}`)
+  if (source === 'remembered') {
+    execFileSync('git', ['-C', dir, 'remote', 'remove', 'origin'])
+    writeFileSync(join(dir, '.git', 'room.json'), JSON.stringify({ room: `${server}/${encodeURIComponent(legacy)}`, name: 'Ada', dir }))
+  }
+  const rooms: string[] = [], notices: string[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    const endpoint = new URL(url).pathname
+    if (endpoint === '/auth/config') return Response.json({ github: 'device' })
+    if (endpoint === '/view-token') {
+      rooms.push((JSON.parse(String(init?.body)) as { room: string }).room)
+      return new Response('preflight refused for test', { status: 400 })
+    }
+    throw new Error(`unexpected request ${endpoint}`)
+  }))
+  const remembered = source === 'remembered' ? await startupJoinOptions(dir, server) : undefined
+  await expect(joinSession({ dir, where: source === 'ROOM_URL' ? undefined : server,
+    ...(source === 'argument' ? { room: legacy } : {}), ...remembered, log: text => notices.push(text) })).rejects.toThrow(/preflight refused for test/)
+  expect(rooms).toEqual(['github.com/example/repo'])
+  expect(notices).toEqual([expect.stringContaining('branch part ignored')])
+})
+
+it('refuses a non-GitHub branch room with a setting to change before network access', async () => {
+  vi.stubEnv('ROOM_ROOM', 'git/gitlab.example/owner/repo/main')
+  vi.stubGlobal('fetch', vi.fn(() => { throw new Error('network should not be reached') }))
+  await expect(joinSession({ dir, where: 'ws://upgrade.example' })).rejects.toThrow(/Change room argument, ROOM_ROOM, ROOM_URL, or the remembered room choice/)
+  expect(fetch).not.toHaveBeenCalled()
 })
 
 it('room_login server=team uses the remembered concrete server', async () => {

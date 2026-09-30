@@ -6,10 +6,13 @@ import path from 'node:path'
 import * as Y from 'yjs'
 import WebSocket from 'ws'
 const keyedSocket = (key: string) => class extends WebSocket {
-  constructor(address: string | URL, protocols?: string | string[]) { super(address, protocols, { headers: { authorization: `Bearer ${key}` } }) }
+  constructor(address: string | URL, protocols?: string | string[]) {
+    const url = new URL(address.toString())
+    super(address, protocols, { headers: { authorization: localProofHeader(key, 'GET', url.pathname + url.search, Number(url.port)) } })
+  }
 } as typeof WebSocket
 import { WebsocketProvider } from 'y-websocket'
-import { deterministicPort, ensureLocalRelay, LOCAL_FILE, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
+import { deterministicPort, ensureLocalRelay, LOCAL_FILE, localProofHeader, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
 import { portAnswers, relayAnswers } from './probes.js'
 import http from 'node:http'
 
@@ -195,7 +198,7 @@ it('restores memory in a new relay, excludes live state, and forgets through an 
     const url = `http://127.0.0.1:${relay.port}/memory?room=${encodeURIComponent(room)}`
     expect((await fetch(url, { method: 'DELETE' })).status).toBe(403)
     expect(fs.existsSync(memoryFile(commonDir, room))).toBe(true)
-    expect((await fetch(url, { method: 'DELETE', headers: { authorization: 'Bearer test-key' } })).status).toBe(204)
+    expect((await fetch(url, { method: 'DELETE', headers: { authorization: localProofHeader('test-key', 'DELETE', new URL(url).pathname + new URL(url).search, relay.port) } })).status).toBe(204)
     provider!.destroy(); provider = undefined
     await relay.close(); relay = undefined
     expect(fs.existsSync(memoryFile(commonDir, room))).toBe(false)

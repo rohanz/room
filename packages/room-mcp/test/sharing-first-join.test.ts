@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import { startAutoTaggedRoomd } from '../src/session.js'
 import { sharingFile } from '../src/policy-store.js'
+import { clearChoice, rememberTag, writeChoice } from '../src/choice.js'
 import { hubRoom } from './fixtures/hub-provider.js'
 
 const dirs: string[] = []
@@ -35,18 +36,36 @@ it.each([
   const rename = fs.renameSync
   let interrupted = false
   vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
-    if (!interrupted && String(to).includes('/room/sharing/')) { interrupted = true; throw new Error('simulated crash before policy write') }
+    if (!interrupted && String(to).includes('/room/sharing/') && !String(to).endsWith('/legacy-baseline.json')) { interrupted = true; throw new Error('simulated crash before policy write') }
     return rename(from, to)
   })
   await expect(start('first')).rejects.toThrow('simulated crash')
   vi.restoreAllMocks()
   expect(interrupted).toBe(true)
   expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBe(level)
+  expect(JSON.parse(fs.readFileSync(path.join(dir, '.git', 'room', 'sharing', 'legacy-baseline.json'), 'utf8')).level).toBe(level)
   const joined = await start('second')
   try {
     expect(joined.policyStore.requested).toBe(level)
     expect(joined.policyStore.policy.level).toBe(level)
     expect(JSON.parse(fs.readFileSync(await sharingFile(dir, 'room', joined.me.name), 'utf8')).requested).toBe(level)
-    expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(choice, 'utf8')).share).toBe(level)
+    await rememberTag(dir, 'new')
+    await writeChoice(dir, 'ws://another-server')
+    const second = await start('third')
+    expect(second.me.name).not.toBe(joined.me.name)
+    expect(second.policyStore.requested).toBe(level)
+    await second.daemon.stop()
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-qb', 'linked', path.join(dir, 'linked')])
+    const linked = path.join(dir, 'linked')
+    const worker = await startAutoTaggedRoomd({ dir: linked, room: 'ws://test/room', localKey: 'key',
+      name: 'ada', owner: 'ada', requested: 'full', sessionId: 'worker', providerFactory: (_s, _r, doc: Y.Doc) => room.provider(doc), log: () => {} }, 'worker')
+    expect(worker.policyStore.requested).toBe(level)
+    await worker.daemon.stop()
+    await clearChoice(dir)
+    const later = await startAutoTaggedRoomd({ dir: linked, room: 'ws://test/room', localKey: 'key',
+      name: 'ada', owner: 'ada', requested: 'full', sessionId: 'later', providerFactory: (_s, _r, doc: Y.Doc) => room.provider(doc), log: () => {} }, 'later')
+    expect(later.policyStore.requested).toBe(level)
+    await later.daemon.stop()
   } finally { await joined.daemon.stop(); room.doc.doc.destroy() }
 })

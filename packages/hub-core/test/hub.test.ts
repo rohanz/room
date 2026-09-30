@@ -19,6 +19,58 @@ const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', se
 const local = { local: true } as const
 
 describe('hub in process', () => {
+  it('separates colliding OIDC display logins across live and persisted leases', async () => {
+    const h = host({ fresh: true, owns: (p, name) => 'login' in p && p.login === name })
+    const victim = { login: 'ada', id: 'oidc:issuer:subject-a', readOnly: false }
+    const attacker = { login: 'ada', id: 'oidc:issuer:subject-b', readOnly: false }
+    const a = {}, b = {}
+    const hub = await startHub(h)
+    hub.handle(a, { ...hello, sessionId: 'copied' }, victim)
+    hub.handle(b, { ...hello, sessionId: 'copied' }, attacker)
+    const epoch = (hub.handle(a, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('copied') }, victim) as { epoch: number }).epoch
+    const checks = (instance: Hub) => {
+      expect(instance.handle(b, { v: 1, id: 's', op: 'acquire', name: 'ada', holder: holder('copied'), supersedes: epoch }, attacker)).toMatchObject({ ok: false, reason: 'not-yours' })
+      expect(instance.handle(b, { v: 1, id: 'r', op: 'renew', name: 'ada', epoch }, attacker)).toMatchObject({ reason: 'not-yours' })
+      expect(instance.handle(b, { v: 1, id: 'x', op: 'release', name: 'ada', epoch }, attacker)).toMatchObject({ reason: 'not-yours' })
+      expect(instance.handle(b, { v: 1, id: 'p', op: 'post', lease: { name: 'ada', epoch }, msg: { id: 'm', type: 'note', from: 'ada', text: 'x' } }, attacker)).toMatchObject({ reason: 'not-yours' })
+    }
+    checks(hub)
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ principal: victim.id })
+    hub.stop()
+    const restarted = await startHub(host({ doc: h.doc, store: h.store }))
+    restarted.handle(a, { ...hello, sessionId: 'copied' }, victim)
+    restarted.handle(b, { ...hello, sessionId: 'copied' }, attacker)
+    checks(restarted)
+    expect(restarted.handle(a, { v: 1, id: 'r2', op: 'renew', name: 'ada', epoch }, victim)).toMatchObject({ ok: true })
+  })
+
+  it('upgrades a legacy login principal only for its matching holder session', async () => {
+    const h = host({ fresh: true })
+    const legacy = { login: 'ada', readOnly: false }
+    const identified = { ...legacy, id: 'oidc:issuer:subject-a' }
+    const hub = await startHub(h)
+    const old = {}, wrong = {}
+    hub.handle(old, { ...hello, sessionId: 'original' }, legacy)
+    hub.handle(wrong, { ...hello, sessionId: 'other' }, identified)
+    const epoch = (hub.handle(old, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('original') }, legacy) as { epoch: number }).epoch
+    hub.stop()
+    const next = await startHub(host({ doc: h.doc, store: h.store }))
+    next.handle(wrong, { ...hello, sessionId: 'other' }, identified)
+    expect(next.handle(wrong, { v: 1, id: 'bad', op: 'renew', name: 'ada', epoch }, identified)).toMatchObject({ reason: 'not-yours' })
+    const resumed = {}
+    next.handle(resumed, { ...hello, sessionId: 'original' }, identified)
+    expect(next.handle(resumed, { v: 1, id: 'good', op: 'renew', name: 'ada', epoch }, identified)).toMatchObject({ ok: true })
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ principal: identified.id })
+  })
+
+  it('uses a stable ID even when the principal has no display login', async () => {
+    const h = host({ fresh: true }), hub = await startHub(h), conn = {}
+    const principal = { id: 'oidc:issuer:subject-a', readOnly: false }
+    hub.handle(conn, { ...hello, sessionId: 's' }, principal)
+    expect(hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, principal)).toMatchObject({ ok: true })
+    expect(h.doc.participants.get('ada\u0000holder')).toMatchObject({ principal: principal.id })
+  })
+
   it('refuses Bob renewing, releasing, or posting with Alice’s public epoch without replacing her push connection', async () => {
     const h = host({ fresh: true, owns: (p, name) => 'login' in p && p.login === name })
     const hub = await startHub(h)

@@ -7,6 +7,7 @@ import type net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { relayProof } from '@room/relay'
 import { LOCAL, joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 
@@ -41,7 +42,7 @@ async function wedgedRelay(commonDir: string): Promise<{ upgrades: () => number;
   let upgrades = 0
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(req.headers.authorization === `Bearer ${key}` ? { key: true } : {}) }))
+    res.end(JSON.stringify({ ok: true, local: true, schema: 2, hub: 1, clone, ...(typeof req.headers['x-room-nonce'] === 'string' ? { proof: relayProof(key, req.headers['x-room-nonce'], port) } : {}) }))
   })
   server.on('connection', s => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
   const upgraded = new Set<net.Socket>()

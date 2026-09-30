@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto'
 import { containsPath, normalizeCoordinationPath, repoRoomOf } from '@room/shared'
 import { commonGitDirFromDotGit, gitCommonDir, worktreeGitDirFromDotGit, type ShareLevel } from '@room/roomd'
 import { policyFromLevel, type SharingPolicy } from '@room/roomd/policy'
-import { writeAtomic } from './leases.js'
-import { choiceFile, removeSharingChoice } from './choice.js'
+import { withGuard, writeAtomic } from './leases.js'
+import { choiceFile } from './choice.js'
 
 interface Grant { active: string[]; ending: string[]; retained: string[] }
 interface SharingRecord {
@@ -20,6 +20,36 @@ interface SharingRecord {
 }
 
 const emptyGrant = (): Grant => ({ active: [], ending: [], retained: [] })
+const levels: ShareLevel[] = ['intent', 'declared', 'full']
+const shareLevel = (value: unknown): ShareLevel | undefined => levels.find(level => level === value)
+
+/** Common to all worktrees and participants. Leaving a room never removes this migration floor. */
+async function legacyBaseline(dir: string): Promise<{ level?: ShareLevel; legacy: { warnedLevels?: Record<string, ShareLevel> } }> {
+  const file = path.join(await gitCommonDir(dir), 'room', 'sharing', 'legacy-baseline.json')
+  const choice = await choiceFile(dir)
+  return withGuard(`${file}.lock`, () => {
+    let saved: ShareLevel | undefined
+    let corrupt = false
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+      saved = shareLevel((raw as { level?: unknown })?.level)
+      if (!saved) corrupt = true
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') corrupt = true }
+    let legacy: { share?: unknown; warned?: unknown; warnedLevels?: Record<string, ShareLevel> } = {}
+    try {
+      const raw: unknown = JSON.parse(fs.readFileSync(choice, 'utf8'))
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) corrupt = true
+      else legacy = raw as typeof legacy
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') corrupt = true }
+    const prior = shareLevel(legacy.share)
+    const ambiguous = corrupt || legacy.share !== undefined && !prior || legacy.warned !== undefined && legacy.share === undefined || legacy.warnedLevels !== undefined && legacy.share === undefined
+    if (ambiguous) console.warn('[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing')
+    const candidate = ambiguous ? 'intent' : prior
+    const level = candidate && saved ? levels[Math.min(levels.indexOf(candidate), levels.indexOf(saved))] : candidate ?? saved
+    if (level && level !== saved) writeAtomic(file, { v: 1, level })
+    return { level, legacy }
+  })
+}
 const sorted = (items: Iterable<string>) => [...new Set(items)].sort()
 const clean = (items: readonly string[]) => sorted(items.map(p => {
   const normal = normalizeCoordinationPath(p)
@@ -50,23 +80,12 @@ export class PolicyStore {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     if (record && (record.v !== 1 || record.room !== room || record.participant !== participant)) throw new Error(`invalid sharing record ${file}`)
     if (!record) {
-      let legacy: { share?: unknown; warned?: unknown; warnedLevels?: Record<string, ShareLevel> } = {}
-      let unreadable = false
-      try {
-        const parsed: unknown = JSON.parse(fs.readFileSync(await choiceFile(dir), 'utf8'))
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) unreadable = true
-        else legacy = parsed as typeof legacy
-      }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unreadable = true }
-      const priorLevel = legacy.share === 'full' || legacy.share === 'declared' || legacy.share === 'intent' ? legacy.share : undefined
-      const uncertain = unreadable || legacy.share !== undefined && !priorLevel || legacy.warned !== undefined && legacy.share === undefined || legacy.warnedLevels !== undefined && legacy.share === undefined
-      if (uncertain) console.warn('[room] legacy sharing choice is unreadable or ambiguous; using intent-only sharing')
+      const { level, legacy } = await legacyBaseline(dir)
       const previousDisclosure = legacy.warnedLevels?.[`${worktree}#${server ?? ''}`]
-      record = { v: 1, room, participant, worktree, requested: priorLevel ?? (uncertain ? 'intent' : requested), declared: emptyGrant(),
+      record = { v: 1, room, participant, worktree, requested: level ?? requested, declared: emptyGrant(),
         disclosed: { level: previousDisclosure === 'intent' || previousDisclosure === 'declared' || previousDisclosure === 'full' ? previousDisclosure : 'intent', version: previousDisclosure ? 1 : 0 }, updatedAt: Date.now() }
-      // The old file is a migration input only. The new record is durable before it is removed.
+      // The clone-wide floor is durable before any participant's policy is written.
       writeAtomic(file, record)
-      if (legacy.share !== undefined || legacy.warned !== undefined || legacy.warnedLevels !== undefined) await removeSharingChoice(dir)
     } else if (record.worktree !== worktree) {
       record = { ...record, worktree, declared: emptyGrant(), updatedAt: Date.now() }
       writeAtomic(file, record)

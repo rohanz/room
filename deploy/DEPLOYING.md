@@ -99,19 +99,22 @@ idle and the next request or websocket wakes it. Set `min_machines_running = 1` 
 
 ## Rooms and repos
 
-Rooms exist per repo+branch inside a repo that someone has *opened*. The registry, sessions and
+There is one room per repository, and a repository must be *opened* once before anyone can join it. The registry, sessions and
 view keys live on the volume next to the LevelDB documents. Use the server's own API for
 lifecycle work; a session token is in `~/.config/room/credentials.json` after `room_login`.
 
 ```sh
 SESSION=$(python3 -c "import json;print(json.load(open('$HOME/.config/room/credentials.json'))['wss://room-rohanz.fly.dev']['session'])")
 # open (idempotent)
-curl -s -X POST https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -d "{\"room\":\"github.com/<owner>/<repo>/<branch>\",\"session\":\"$SESSION\"}"
+curl -s -X POST https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -H "Authorization: Bearer $SESSION" -d '{"room":"github.com/<owner>/<repo>","schema":2}'
 # list what I can see
 curl -s -H "Authorization: Bearer $SESSION" "https://room-rohanz.fly.dev/rooms"
-# close a repo: drops every branch room, deletes their documents, invalidates their view links
-curl -s -X DELETE https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -d "{\"room\":\"github.com/<owner>/<repo>/<branch>\",\"session\":\"$SESSION\"}"
+# close a repo: deletes its room document and archived 0.16 branch rooms, drops connections, invalidates its view links
+curl -s -X DELETE https://room-rohanz.fly.dev/rooms -H 'content-type: application/json' -H "Authorization: Bearer $SESSION" -d '{"room":"github.com/<owner>/<repo>","schema":2}'
 ```
+
+Both calls need `"schema":2` and the repository name without a branch: a request without the schema is a 0.16
+client's and is refused with the upgrade text, and a branch-qualified GitHub name is a 400.
 
 Repos idle for `ROOM_IDLE_DAYS` (30) close themselves.
 

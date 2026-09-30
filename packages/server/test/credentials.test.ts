@@ -25,7 +25,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${port}`
   const logs: string[] = []
   const { YPERSISTENCE: _volume, ...inherited } = process.env // in-memory: an empty YPERSISTENCE is a path to LevelDB
-  const proc = servers.start({ env: { ...inherited, PORT: String(port), HOST: '127.0.0.1', ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_WS_TICKET_TTL_MS: '2000', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = servers.start({ env: { ...inherited, PORT: String(port), HOST: '127.0.0.1', ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', ROOM_TOKEN: 'shared', ROOM_WS_TICKET_TTL_MS: '2000', ROOM_TEST_UPGRADE_DELAY_MS: '150', NODE_ENV: 'test' }, stdio: ['ignore', 'pipe', 'pipe'] })
   proc.stdout!.on('data', d => logs.push(String(d))); proc.stderr!.on('data', d => logs.push(String(d)))
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error(`server exited: ${logs.join('')}`)
@@ -37,9 +37,26 @@ beforeAll(async () => {
 afterAll(() => servers.stopAll())
 
 describe('credential boundaries', () => {
+  it('answers only ticket preflight with scoped CORS and reuses an issued view capability', async () => {
+    const session = await login()
+    await post('/rooms', { room, schema: 2, session })
+    const preflight = await fetch(base + '/ws-ticket', { method: 'OPTIONS', headers: { origin: 'https://view.example',
+      'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,authorization' } })
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
+    expect(preflight.headers.get('access-control-allow-methods')).toBe('POST')
+    expect(preflight.headers.get('access-control-allow-headers')).toBe('content-type, authorization, x-room-token')
+    expect((await fetch(base + '/health')).headers.get('access-control-allow-origin')).toBeNull()
+    const first = await (await post('/view-token', { room, schema: 2, session })).json() as { view: string }
+    const second = await (await post('/view-token', { room, schema: 2, session })).json() as { view: string }
+    expect(second.view).toBe(first.view)
+    const exchanged = await post('/ws-ticket', { room, schema: 2, view: first.view })
+    expect(exchanged.status).toBe(200)
+    expect((await exchanged.json() as { ticket: string }).ticket).toBeTruthy()
+  })
   it('accepts HTTP headers, rejects URL credentials, and sends no-referrer', async () => {
     const session = await login()
-    expect((await post('/rooms', { room, schema: 2, session })).status).toBe(201)
+    expect((await post('/rooms', { room, schema: 2, session })).ok).toBe(true)
     const me = await fetch(base + '/auth/me', { headers: bearer(session) })
     expect(me.status).toBe(200)
     expect(me.headers.get('referrer-policy')).toBe('no-referrer')
@@ -64,6 +81,14 @@ describe('credential boundaries', () => {
     await post('/auth/logout', { session })
     expect(await closed).toBe(4401)
     await expect(socket(`&ticket=${ticket}`)).rejects.toThrow('HTTP 403')
+  })
+  it('refuses an upgrade suspended after admission when logout revokes its session', async () => {
+    const session = await login()
+    await post('/rooms', { room, schema: 2, session })
+    const pending = socket('', bearer(session))
+    await new Promise(resolve => setTimeout(resolve, 40))
+    await post('/auth/logout', { session })
+    await expect(pending).rejects.toThrow(/HTTP (401|403)/)
   })
 
   it('exchanges a view key for one-use ticket and closes it on room revocation', async () => {

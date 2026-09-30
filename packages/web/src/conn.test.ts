@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
+import { webcrypto } from 'node:crypto'
 
 const mocks = vi.hoisted(() => ({ provider: vi.fn(), connect: vi.fn(), events: new Map<string, (...args: unknown[]) => void>() }))
 vi.mock('y-websocket', () => ({ WebsocketProvider: class {
@@ -18,6 +19,7 @@ function browser(url: string) {
   vi.stubGlobal('history', dom.window.history)
   vi.stubGlobal('sessionStorage', dom.window.sessionStorage)
   vi.stubGlobal('document', dom.window.document)
+  vi.stubGlobal('crypto', webcrypto)
   return dom
 }
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); mocks.events.clear() })
@@ -36,15 +38,17 @@ describe('browser ticket connection', () => {
     expect(JSON.parse(request.mock.calls[0]![1].body).view).toBe('secret')
   })
 
-  it('does not send a local key in a websocket URL', async () => {
-    const dom = browser('http://127.0.0.1/?room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&key=local-key')
+  it('proves a local view capability without sending it', async () => {
+    const dom = browser('http://127.0.0.1/#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=local-view')
     const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local-ticket' }) })
     vi.stubGlobal('fetch', request)
     const conn = connect(dom.window.location.search)
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
-    expect(dom.window.location.href).not.toContain('local-key')
+    expect(dom.window.location.href).not.toContain('local-view')
     expect(conn.provider.params).toEqual({ schema: '2', ticket: 'local-ticket' })
-    expect(JSON.parse(request.mock.calls[0]![1].body).key).toBe('local-key')
+    const body = JSON.parse(request.mock.calls[0]![1].body)
+    expect(body.proof).toMatch(/^[a-f0-9]{64}$/)
+    expect(body).not.toHaveProperty('view')
   })
 
   it('mints a new ticket after a disconnected websocket', async () => {
