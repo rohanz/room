@@ -10,6 +10,7 @@ description: Use for another agent, agents in parallel, work in the background, 
    For a few lines, do it yourself. Use built-in subagents for read-only research.
    For one or two workers, lead them yourself. Before three or more workers or a long
    batch, especially when this session cannot be woken, offer once: "I can hand this to a background lead that stays on it until it's done; you can keep talking to me."
+   If your human already said to go ahead, or chose how to run it, skip the offer and dispatch.
    If accepted, spawn one worker with a self-contained lead brief: the task, how to
    split it into tasks with functions or areas to change, the test command, and "collect your workers
    before room_done". That lead spawns the workers, answers their questions in a
