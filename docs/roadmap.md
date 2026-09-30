@@ -3,6 +3,8 @@
 Written 2026-09-21. Room 0.17 has one room per repository across branches. These are the known gaps
 between that and a fifty-engineer production repo, in priority order. Completed work is marked below.
 Decide the order after the trial with real users; see "What decides the order" at the end.
+For current setup and behavior, use the [quickstart](../README.md#start-in-five-minutes)
+and [reference](reference.md); for the 0.16 cutover, use the [upgrade guide](upgrading.md).
 
 **Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.

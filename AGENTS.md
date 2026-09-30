@@ -131,7 +131,9 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - A message to a finished worker resumes its retained session in its worktree. A collected or
   discarded worker cannot be resumed. `ROOM_WORKER_MAX_BUDGET_USD` sets the Claude worker
   `--max-budget-usd` cap (documented in the [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)).
-- Implementation work goes to Codex (GPT-6 Sol at medium by default): either the
+- Our release batches assign implementation work to Codex, with the model and effort named
+  in each worker request. Room itself sets no default worker model or effort; the host
+  chooses when neither the request nor worker environment selects one. Use either the
   codex:codex-rescue subagent or room workers with `host: 'codex'`. Claude plans, writes briefs,
   leads room batches, reviews, integrates and deploys. Codex's sandbox cannot write a git dir
   outside its cwd and cannot listen on sockets: give it a standalone clone (`git clone … /tmp/room-x`,
@@ -146,13 +148,19 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex --no-daemon`, then `$room-join`) or
   with `npx tsx packages/agent/src/cli.ts --dir <clone>`.
   Codex's shared app-server daemon does not pass your shell's `ROOM_*` variables to Room.
-- With no `ROOM_SERVER` a session is in a local room (`local/<repo>/<branch>`, relay on loopback,
-  `.git/room-local.json`). Team rooms are named `<host/owner/repo>/<branch>` from the clone's origin
-  (non-GitHub hosts become `git/<host>/…`); URL-encoded in the ws path. A repo must be opened once
-  (`room_create` / `POST /rooms`) before its branch rooms accept connections. Without
+- With no `ROOM_SERVER` or remembered team choice, a session is in a local room
+  (`local/<main-worktree basename>`, relay on loopback, discovery in
+  `<git common dir>/room/relay.json`). Team rooms are named `<host/owner/repo>` from
+  the clone's origin (non-GitHub hosts become `git/<host>/…`); all branches share the
+  repository room. A repo must be opened once (`room_create` / `POST /rooms`) before
+  that room accepts connections. Without
   `YPERSISTENCE` the server is in-memory: restart it to reset. A dev server needs
   `GITHUB_CLIENT_ID=fake` to log anyone in (test issuer; refused with NODE_ENV=production).
 - Ports: server 1234 by default; demo scripts in this repo have used 1244 to avoid a stray
   server from an earlier session.
 - Quick tool-level smoke without Codex: call `createTools` / `joinSession` from
   `@room/room-mcp` in a tsx script (see the test in `packages/room-mcp/test/tools.test.ts`).
+- For a development checkout, run `npm ci && npm run build:plugin`, then
+  `claude plugin marketplace add /path/to/room` or `codex plugin marketplace add /path/to/room`.
+  Install `room@room` with the host's plugin command. Public GitHub install and user
+  setup live in [README.md](README.md); release changes live in [CHANGELOG.md](CHANGELOG.md).

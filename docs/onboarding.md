@@ -1,68 +1,31 @@
-# Trying Room
+# First session with Room
+
+[Install Room](../README.md#start-in-five-minutes) for Claude Code or Codex first. You need Node.js 22+, Git, a repository with a commit, and Claude Code 2.1.224+ (2.1.234+ on native Windows) or Codex 0.157+. In Codex, trust Room's hooks when prompted or in `/hooks`.
 
 ## Start locally
 
-1. [Install Room](../README.md#getting-started) for your agent and trust its hooks when asked.
-2. Start Codex or plain `claude` in your clone as usual. Claude Code 2.1.224 or later
-   wakes through its messaging inbox with no launch flag (2.1.234 on native Windows).
-   See [Claude Code wake-ups](../README.md#claude-code).
-   With no server configured or team choice remembered, nothing leaves your machine.
-3. Ask for your feature. To split a substantial task, try:
+1. Start your agent as usual from your repository. Ask it to work on a small feature. With no team destination chosen, Room uses `local/<repo>` and nothing leaves your machine.
+2. Say **“show room state”**. Look for `local: nothing leaves this machine`, `room: local/<repo>`, and `you: <name> in local/<repo>`. Ask for the browser link if you want to see participants and activity; the local link works while a session is running.
+3. If you do not see those lines, ask **“is Room set up right?”**. The agent checks its Room connection and hooks. The installed plugin also has `bin/room-doctor`; see [the quickstart](../README.md#start-in-five-minutes).
 
-   > Use a couple of subagents: add the endpoint in api.ts and its tests in api.test.ts.
+Another session in this clone or its linked worktrees joins the same local room. Its participant name may get a tag such as `rohanz+claude`. Room shows work near your agent's own area and delivers addressed questions and relevant conflicts.
 
-Your agent handles coordination and brings finished output into your working tree, uncommitted
-and unstaged, preserving your existing edits. All finished work is collected together; any
-conflict leaves your files untouched. Running or failed work is skipped. Collection never
-commits. If you ask for a commit, your agent uses plain Git for one normal task commit. Full
-successful collection of an exited worker cleans up its worktree and branch, plus logs after a
-successful exit. Failed or partial collection preserves work for recovery. Discard saves tracked
-and non-ignored changes in a recovery patch for one week, then removes the worker. If ignored
-artifacts exist outside dependency and cache trees, discard refuses, lists them and keeps the
-worktree so you can copy them explicitly; a repeated forced discard deletes them and reports
-what was removed. You do not need to maintain ignore rules for Room. See [collection](../README.md#dispatching-workers) and
-[what Room writes](../README.md#what-room-writes) for the details.
+## Add teammates
 
-Ask **“show room state”** if you want to inspect progress, or ask for the browser link.
-The browser is optional. A local link works while a session is running; local history survives
-in the clone’s common Git directory. Live file text is rebuilt when sessions reconnect.
+One team room covers every branch of a GitHub repository. Each teammate needs push access and installs the same Room version.
 
-Claude Code and Codex can run side by side. A second session under the same login gets a
-participant tag such as `rohanz+claude` or `rohanz+codex`; `ROOM_TAG` chooses your own label.
+1. Say **“log in to Room”**. Open the GitHub device page, enter the code, and approve Room.
+2. One participant says **“open this repo on the server”**. This runs `room_create` once.
+3. Each teammate says **“join the room”** from their clone. **“Show room state”** now reports `team room:`, `room: github.com/<owner>/<repo>`, and `you: <name> in github.com/<owner>/<repo>` with that person's branch and base.
 
-## Work with teammates
+The hosted server is `wss://room-rohanz.fly.dev`. For a self-hosted server, launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; the shared app-server daemon does not inherit shell `ROOM_*` variables. Room states what this worktree shares on first join. Say **“share plans only”** or **“only my declared files”** if you want a narrower level. The [reference](reference.md#sharing-and-agent-context) explains what each level includes. **“Work locally”** returns to the local room.
 
-Use a GitHub repo you can push to. **One team room includes every branch of that repository.**
-Your own branch and base are shown beside your participant name.
+## Coordinate a task
 
-1. Start your agent and say **“join the room”**.
-2. On first login, open the GitHub device page, enter the code your agent gives you, and approve
-   Room. Tell the agent when that is done so it can finish joining. Your participant name is
-   your GitHub login; Room does not forward your `gh` token.
-3. If the repo has no room, one participant asks **“open a room for this repo”**.
-4. Work as usual. Your agent relays the [sharing disclosure](../README.md#getting-started) once
-   per worktree and destination, including when you are first into the room.
+Ask your agent to change a file while a teammate works nearby. It can name its area with `room_scope`, claim lines before editing with `room_claim`, and ask the other agent a question. The room reports overlaps and relevant changes; claims guide coordination but do not lock files.
 
-The destination choice is remembered for the clone and its worktrees. Later sessions reuse it;
-**“work locally”** switches back. Explicit environment settings can override the choice.
+For a substantial task, say **“use a couple of subagents for this”** and name separate work areas. Each Room worker gets its own worktree and a spawn reply that names its host, model and effort when known. The worker scopes and claims its work, then reports completion. Ask your agent to **preview the merge**. `room_preview_merge` combines current work in a scratch tree and can run your check command there. Once you approve collection, `room_collect` brings finished output into your tree **uncommitted and unstaged**. A conflict leaves your files alone and names the conflicting paths. You decide when to commit or push.
 
-By default, eligible changed-file text is shared. Keep that default `full` level for a first
-trial: finished uncommitted output at `declared` becomes unreadable after `room_done` and is
-withdrawn on restart. `ROOM_SHARE=declared` limits text to your agent’s declared paths;
-`ROOM_SHARE=intent` shares plans without file text. Ask to change the
-sharing level at any time. Invalid levels fall back to plans only and report the invalid value.
+A question addressed to an idle agent can wake its session. Claude Code 2.1.224+ uses its messaging inbox with plain `claude` (2.1.234+ on native Windows); Codex uses its queue. The wake carries a short pointer, then the agent reads the actual Room message. See [wake paths](reference.md#wake-paths).
 
-## When something needs attention
-
-Your agent coordinates when another participant’s task, claim or changed file overlaps its work.
-It receives actionable conflicts and addressed questions. In a team room, until Room sees a real
-same-session pre-edit receipt, Codex gets one actionable hook-approval line on join and first scope;
-Claude Code gets the equivalent plugin reinstall/re-enable guidance. Session-start evidence alone
-does not satisfy this check, and later calls stay quiet. Room also reports when a session cannot be
-woken or changed files exceed sharing limits.
-A missing file in the room is not proof that nobody changed it.
-
-After a plugin update, [start a new session](../README.md#updating-the-plugin): a running session
-keeps the tools and instructions it started with. Trust hooks again if your host asks.
-
-Tell us what surprised you, and when you wanted to turn Room off.
+If something is missing or stale, ask for room state and use [diagnostics](reference.md#limits-and-diagnostics). After a plugin update, restart the agent session or reconnect its MCP server to load the new tools.
