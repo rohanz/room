@@ -31413,12 +31413,18 @@ function startRelay(port, opts = {}) {
               res.end("bad request");
               return;
             }
+            if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) {
+              res.writeHead(400);
+              res.end("bad request");
+              return;
+            }
             if (!opts.key || !(bearerOk(req) || sameSecret(value2.key, opts.key))) {
               res.writeHead(403);
               res.end("Forbidden");
               return;
             }
-            if (value2.schema !== 2 || !value2.room || !value2.room.startsWith("local/")) {
+            const room = value2.room;
+            if (value2.schema !== 2 || typeof room !== "string" || !room.startsWith("local/")) {
               res.writeHead(400);
               res.end("schema 2 local room required");
               return;
@@ -31430,7 +31436,7 @@ function startRelay(port, opts = {}) {
               return;
             }
             const ticket = crypto3.randomBytes(16).toString("hex");
-            tickets.set(ticket, { room: value2.room, expires: now + ticketTtl });
+            tickets.set(ticket, { room, expires: now + ticketTtl });
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1e3) }));
           });

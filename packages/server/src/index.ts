@@ -35,7 +35,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocketServer } from 'ws'
 import { setupWSConnection, getYDoc, docs, getPersistence, setPersistence } from '@y/websocket-server/utils'
-import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
+import { makeReadOnly, bindIdentity, bindDocumentIdentity, capDocSize, limitStateRequests, sizeCapReason, DocSizeMeter, DocumentIdentityGuard } from './readonly.js'
 import { docNameOf, roomNameOf, githubRepoOf, parseRoomName, archiveOwnerOf } from './names.js'
 import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
@@ -786,6 +786,8 @@ server.on('upgrade', (req, socket, head) => {
           if ((capLogged.get(repo) ?? 0) < now - 60_000) { capLogged.set(repo, now); console.log(`refusing writes: room ${repo} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
           ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
         })
+        // Outermost of all: a state request costs an encoding of the whole document, for viewers and members alike.
+        limitStateRequests(ws, { perMinute: 10, maxQueuedBytes: 1048576, queued: () => ws.bufferedAmount, close: (code, reason) => ws.close(code, reason) })
         wss.emit('connection', ws, req)
       })
     }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) })

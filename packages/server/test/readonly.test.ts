@@ -6,7 +6,7 @@ import * as Y from 'yjs'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
-import { bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity } from '../src/readonly.js'
+import { bindDocumentIdentity, DocumentIdentityGuard, isWriteMessage, makeReadOnly, ownsName, capDocSize, filterAwareness, bindIdentity, limitStateRequests } from '../src/readonly.js'
 import { hubAppend } from '@room/shared/testing'
 
 const doc = new Y.Doc()
@@ -415,4 +415,37 @@ it('capDocSize drops writes once the room is over the cap and keeps reads flowin
   conn.emit('message', encoding.toUint8Array(update)); conn.emit('message', encoding.toUint8Array(step1))
   expect(seen).toEqual(['write', 'read', 'read'])
   expect(capped).toEqual([1000])
+})
+
+describe('state request budget (security re-review: 80 bytes of sync requests drew 20 MiB of replies)', () => {
+  const step1 = sync(enc => syncProtocol.writeSyncStep1(enc, new Y.Doc()))
+  const update = sync(enc => syncProtocol.writeUpdate(enc, Y.encodeStateAsUpdate(doc)))
+  function wired(queued: () => number = () => 0, now = { at: 0 }) {
+    const conn = new EventEmitter()
+    const seen: Uint8Array[] = [], closed: number[] = []
+    conn.on('message', (buf: Uint8Array) => seen.push(buf))
+    limitStateRequests(conn, { perMinute: 5, maxQueuedBytes: 1000, queued, now: () => now.at, close: code => closed.push(code) })
+    return { conn, seen, closed, now }
+  }
+  it('passes a connection\'s few state requests and refuses a flood', () => {
+    const { conn, seen, closed, now } = wired()
+    for (let i = 0; i < 5; i++) conn.emit('message', step1)
+    expect(seen).toHaveLength(5)
+    for (let i = 0; i < 50; i++) conn.emit('message', step1)
+    expect(seen).toHaveLength(5)
+    expect(closed).toEqual([4429])
+    now.at += 60_000
+    conn.emit('message', step1)
+    expect(seen).toHaveLength(6)
+  })
+  it('never counts writes, and refuses a request while replies are still queued', () => {
+    let backlog = 0
+    const { conn, seen, closed } = wired(() => backlog)
+    for (let i = 0; i < 50; i++) conn.emit('message', update)
+    expect(seen).toHaveLength(50)
+    backlog = 1001
+    conn.emit('message', step1)
+    expect(seen).toHaveLength(50)
+    expect(closed).toEqual([4429])
+  })
 })

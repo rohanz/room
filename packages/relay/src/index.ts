@@ -304,14 +304,17 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         let body = ''
         req.on('data', part => { body += part; if (body.length > 4096) req.destroy() })
         req.on('end', () => {
-          let value: { room?: string; schema?: number; key?: string }
+          let value: { room?: unknown; schema?: unknown; key?: unknown }
           try { value = JSON.parse(body) } catch { res.writeHead(400); res.end('bad request'); return }
+          // `null`, a number or an array parses: only an object has the fields read below.
+          if (!value || typeof value !== 'object' || Array.isArray(value)) { res.writeHead(400); res.end('bad request'); return }
           if (!opts.key || !(bearerOk(req) || sameSecret(value.key, opts.key))) { res.writeHead(403); res.end('Forbidden'); return }
-          if (value.schema !== 2 || !value.room || !value.room.startsWith('local/')) { res.writeHead(400); res.end('schema 2 local room required'); return }
+          const room = value.room
+          if (value.schema !== 2 || typeof room !== 'string' || !room.startsWith('local/')) { res.writeHead(400); res.end('schema 2 local room required'); return }
           for (const [key, t] of tickets) if (t.expires <= now) tickets.delete(key)
           if (tickets.size >= 10000) { res.writeHead(503); res.end('too many pending tickets'); return }
           const ticket = crypto.randomBytes(16).toString('hex')
-          tickets.set(ticket, { room: value.room, expires: now + ticketTtl })
+          tickets.set(ticket, { room, expires: now + ticketTtl })
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ticket, expiresIn: Math.ceil(ticketTtl / 1000) }))
         })
         return

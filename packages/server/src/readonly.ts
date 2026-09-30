@@ -332,6 +332,48 @@ export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: Do
  * size is asked for lazily, with the write message's byte length, so callers can cache an
  * O(doc) measurement and refresh it by traffic (see DocSizeMeter).
  */
+const SYNC_STEP1 = 0
+const MESSAGE_QUERY_AWARENESS = 3
+
+/** A message the server answers with state it holds: the whole document (sync step 1) or every presence. */
+function isStateRequest(buf: Uint8Array): boolean {
+  try {
+    const d = decoding.createDecoder(buf)
+    const type = decoding.readVarUint(d)
+    return type === MESSAGE_QUERY_AWARENESS || (type === MESSAGE_SYNC && decoding.readVarUint(d) === SYNC_STEP1)
+  } catch { return false }
+}
+
+export interface StateRequestLimit {
+  /** State requests one connection may make a minute; a client needs one per connect. */
+  perMinute: number
+  /** No further state is encoded for a connection with this much still unsent. */
+  maxQueuedBytes: number
+  queued(): number
+  close(code: number, reason: string): void
+  now?: () => number
+}
+
+/**
+ * A few bytes of state request draw the whole document in reply, from viewers too: bound how often one
+ * connection may ask, and never encode another copy while earlier replies are still queued for it.
+ */
+export function limitStateRequests(conn: EmitterLike, limit: StateRequestLimit): void {
+  const emit = conn.emit.bind(conn)
+  const now = limit.now ?? Date.now
+  let windowStart = now(), count = 0, closed = false
+  conn.emit = ((event: string | symbol, ...args: unknown[]) => {
+    if (event === 'message' && isStateRequest(toBytes(args[0]))) {
+      if (now() - windowStart >= 60_000) { windowStart = now(); count = 0; closed = false }
+      if (++count > limit.perMinute || limit.queued() > limit.maxQueuedBytes) {
+        if (!closed) { closed = true; limit.close(4429, 'too many state requests') }
+        return false
+      }
+    }
+    return emit(event, ...args)
+  }) as EmitterLike['emit']
+}
+
 export function sizeCapReason(maxBytes: number): string { return `room is over its size cap (${(maxBytes / 1048576).toFixed(0)} MB)` }
 
 export function capDocSize(conn: EmitterLike, sizeBytes: (messageBytes: number) => number, maxBytes: number, onCap: (size: number) => void): void {

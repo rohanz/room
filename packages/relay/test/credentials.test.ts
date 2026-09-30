@@ -18,6 +18,9 @@ describe('local relay credentials', () => {
       expect(health.headers.get('referrer-policy')).toBe('no-referrer')
       expect(await connect('', { authorization: 'Bearer test-key' })).toBe(101)
       expect(await connect('&key=test-key')).toBe(400)
+      // A body that parses but is not an object is refused before the key is read (it used to throw inside the callback).
+      for (const body of ['null', '1', '[]', '"x"']) expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body })).status).toBe(400)
+      expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { authorization: 'Bearer test-key' }, body: JSON.stringify({ room: 7, schema: 2 }) })).status).toBe(400)
       const minted = await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room, schema: 2, key: 'test-key' }) })
       const { ticket } = await minted.json() as { ticket: string }
       expect(await connect(`&ticket=${ticket}`)).toBe(101)
