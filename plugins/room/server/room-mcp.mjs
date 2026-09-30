@@ -39055,7 +39055,8 @@ async function tryPreviewLock(entry) {
   const command2 = lockUnavailableForTests ? void 0 : process.platform === "darwin" ? "lockf" : process.platform === "linux" ? "flock" : void 0;
   if (!command2) return void 0;
   await fs34.promises.mkdir(path30.dirname(file), { recursive: true, mode: 448 });
-  const args3 = command2 === "lockf" ? ["-t", "0", file, "sh", "-c", "printf READY; cat >/dev/null"] : ["-n", file, "sh", "-c", "printf READY; cat >/dev/null"];
+  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; for pgid in $groups; do while kill -0 "-$pgid" 2>/dev/null; do sleep 0.2; done; done';
+  const args3 = command2 === "lockf" ? ["-t", "0", file, "sh", "-c", helper] : ["-n", file, "sh", "-c", helper];
   return new Promise((resolve5) => {
     const child = spawn4(command2, args3, { stdio: ["pipe", "pipe", "ignore"] });
     let settled = false;
@@ -39068,10 +39069,14 @@ async function tryPreviewLock(entry) {
       resolve5(release);
     };
     child.stdout.on("data", (data) => {
-      if (String(data).includes("READY")) finish(async () => {
+      if (String(data).includes("READY")) finish(Object.assign(async () => {
         child.stdin.end();
         if (child.exitCode === null) await new Promise((done) => child.once("close", () => done()));
-      });
+      }, { trackProcess(pid) {
+        if (!Number.isSafeInteger(pid) || pid <= 0 || !child.stdin.writable) return Promise.reject(new Error("preview lock lost before process registration"));
+        return new Promise((done, fail) => child.stdin.write(`${pid}
+`, (error2) => error2 ? fail(error2) : done()));
+      } }));
     });
     child.on("error", () => finish());
     child.on("close", () => finish());
@@ -39161,7 +39166,8 @@ __export(files_exports, {
   testVerdict: () => testVerdict,
   waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
-import { execFile as execFile9 } from "node:child_process";
+import { execFile as execFile9, spawn as spawn5 } from "node:child_process";
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
 import fs35 from "node:fs";
 import os6 from "node:os";
@@ -39710,6 +39716,43 @@ async function rejectPreviewLink(file) {
     if (error2.code !== "ENOENT") throw error2;
   }
 }
+function runTrackedProcess(file, args3, cwd, timeout, maxBuffer, lock, env = process.env) {
+  return new Promise((resolve5, reject) => {
+    const child = spawn5("sh", ["-c", previewProcessGate, "sh", file, ...args3], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const out2 = [], err2 = [];
+    let bytes = 0, failed;
+    const stop2 = (error2) => {
+      if (failed) return;
+      failed = error2;
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+        }
+      }
+    };
+    const timer = setTimeout(() => stop2(new Error(`timed out after ${timeout}ms`)), timeout);
+    const collect = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > maxBuffer) {
+        stop2(new Error("output exceeded preview buffer"));
+        return;
+      }
+      if (kind === "stdout") out2.push(chunk);
+      else err2.push(chunk);
+    };
+    child.stdout.on("data", (chunk) => collect("stdout", chunk));
+    child.stderr.on("data", (chunk) => collect("stderr", chunk));
+    child.stdin.on("error", stop2);
+    child.on("error", stop2);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (failed) reject(failed);
+      else resolve5({ code: code ?? 1, stdout: Buffer.concat(out2).toString(), stderr: Buffer.concat(err2).toString() });
+    });
+    if (child.pid) void lock.trackProcess(child.pid).then(() => child.stdin.end("GO\n"), stop2);
+  });
+}
 function setPreviewProcessProbeForTests(probe) {
   processProbeForTests = probe;
 }
@@ -39971,8 +40014,10 @@ async function migrateLegacySlots(cloneDir, repoDir = cloneDir) {
     await rejectPreviewLink(root);
     if (await isLegacyTree(root)) continue;
     for (const name2 of await fs35.promises.readdir(root).catch(() => [])) {
-      if (!slotOwner(name2) || !await isDeadSlot(name2)) continue;
+      if (/\.(?:lock|meta\.json|claim|settings.*)$/.test(name2)) continue;
       const slot = path31.join(root, name2);
+      if (!(await fs35.promises.lstat(slot).catch(() => void 0))?.isDirectory()) continue;
+      if (!slotOwner(name2) || !await isDeadSlot(name2)) continue;
       if (!await legacyClaimDead(slot)) continue;
       const release = await tryPreviewLock(slot).catch(() => void 0);
       if (!release) continue;
@@ -40048,7 +40093,7 @@ async function preparePreviewCache(cloneDir, dir, ancestor, source, observe) {
   return !!stat4;
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map(), observe) {
-  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe);
+  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe));
 }
 async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) {
   let dir;
@@ -40073,7 +40118,10 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
       }
       if (cache && previewCapBytes() > 0) {
         const unlock = await tryPreviewLock(cache).catch(() => void 0);
-        if (unlock) release = unlock;
+        if (unlock) {
+          release = unlock;
+          previewProcesses.getStore().lock = unlock;
+        }
       }
       cached2 = !!release;
       if (cached2) {
@@ -40109,12 +40157,20 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
     const env = Object.fromEntries(Object.entries(process.env).filter(([key2]) => !key2.startsWith("ROOM_")));
     env.ROOM_MERGED_TREE = dir;
     const checkStart = performance4.now();
-    const result2 = await previewCheck(() => new Promise((resolve5) => {
-      execFile9(bash ?? "sh", bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd], { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
-        const raw = err2 ? err2.code : 0;
-        resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
+    const result2 = await previewCheck(async () => {
+      const command2 = bash ?? "sh";
+      const args3 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
+      if (cached2) {
+        const tracked = await runTrackedProcess(command2, args3, dir, 5 * 6e4, 4 * 1024 * 1024, previewProcesses.getStore().lock, env);
+        return { code: tracked.code, out: tracked.stdout + tracked.stderr };
+      }
+      return new Promise((resolve5) => {
+        execFile9(command2, args3, { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+          const raw = err2 ? err2.code : 0;
+          resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}` });
+        });
       });
-    }));
+    });
     checkMs = performance4.now() - checkStart;
     completed = await previewPhase("collect", () => {
       const tail = stripVTControlCharacters2(result2.out).trim().split("\n").slice(-25).join("\n");
@@ -40147,6 +40203,7 @@ ${verdict.text}` };
       if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
     } finally {
       await release?.();
+      if (release) previewProcesses.getStore().lock = void 0;
       if (cached2 || previewCapBytes() === 0) {
         const key2 = await previewKeyPath(s.dir).catch(() => void 0);
         if (key2) {
@@ -40194,7 +40251,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs35.promises.rm(index, { force: true });
   }
 }
-var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions;
+var defs, previewGenerations, SETUP_TIMEOUT_MS, previewProcesses, previewProcessGate, gitSetup, PROBE_TIMEOUT_MS, processProbeForTests, checkoutConfigKeys, gitEnvTrue, gitLine, warnedEntries, previewMigrations, previewEvictions;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -40238,7 +40295,16 @@ var init_files = __esm({
     ];
     previewGenerations = /* @__PURE__ */ new WeakMap();
     SETUP_TIMEOUT_MS = 10 * 6e4;
-    gitSetup = (dir, args3) => git(dir, args3, SETUP_TIMEOUT_MS);
+    previewProcesses = new AsyncLocalStorage2();
+    previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"';
+    gitSetup = (dir, args3) => {
+      const lock = previewProcesses.getStore()?.lock;
+      if (!lock) return git(dir, args3, SETUP_TIMEOUT_MS);
+      return runTrackedProcess("git", args3, dir, SETUP_TIMEOUT_MS, 64 * 1024 * 1024, lock).then((result2) => {
+        if (result2.code) throw new Error(`git ${args3.join(" ")} failed: ${result2.stderr.trim() || `exit ${result2.code}`}`);
+        return result2.stdout;
+      });
+    };
     PROBE_TIMEOUT_MS = 3e3;
     checkoutConfigKeys = /* @__PURE__ */ new Set(["core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.filemode", "core.ignorecase", "core.precomposeunicode", "core.attributesfile"]);
     gitEnvTrue = (value2) => /^(true|yes|on)$/i.test(value2?.trim() ?? "") || /^[+-]?\d+$/.test(value2?.trim() ?? "") && Number(value2) !== 0;
@@ -52635,13 +52701,13 @@ function codexQueue(threadId, text) {
 }
 function createWakeSender(o) {
   return async (target, text) => {
+    const env = o.env ?? process.env;
+    const selected = mode(env);
+    if (selected === "off") return void 0;
     if (target.host === "codex") {
       await (o.queue ?? codexQueue)(target.id, text);
       return "queue";
     }
-    const env = o.env ?? process.env;
-    const selected = mode(env);
-    if (selected === "off") return void 0;
     const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel);
     const channel = async () => {
       await sendChannelNotification(text, o.notify);
@@ -53923,7 +53989,7 @@ init_config();
 import fs41 from "node:fs";
 import { randomUUID as randomUUID7 } from "node:crypto";
 import path38 from "node:path";
-import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
 
 // packages/room-mcp/src/worker-launch.ts
 init_names();
@@ -54266,7 +54332,7 @@ async function autoRetire(s, rooms) {
 
 // packages/room-mcp/src/registry.ts
 init_worker_projector();
-var toolSignal = new AsyncLocalStorage2();
+var toolSignal = new AsyncLocalStorage3();
 function withToolSignal(signal, run3) {
   return signal ? toolSignal.run(signal, run3) : run3();
 }
@@ -55408,6 +55474,10 @@ init_src2();
 init_plugin();
 var exec = promisify(execFile10);
 var minimumGit = [2, 31, 0];
+var CODEX_ROOM_HOOK_HASHES = {
+  "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
+  "session_start:0:0": "sha256:96fd593f780005aedd3d3796345ed66ef79f6b3751129aed8a120818ddf11d18"
+};
 function triple(raw) {
   const match = raw?.match(/(?:^|\s|v)(\d+)\.(\d+)(?:\.(\d+))?/);
   return match ? [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)] : void 0;
@@ -55421,10 +55491,15 @@ function atLeast(raw, min2) {
 function hookVersion(text) {
   return text?.match(/export const HOOKS_VERSION = ['"]([^'"]+)['"]/)?.[1];
 }
-function codexRoomHooksTrusted(toml) {
-  if (!toml) return false;
+function codexRoomHookTrustStatus(toml) {
+  if (!toml) return "absent";
   const sections = [...toml.matchAll(/^\[hooks\.state\."room@room:hooks\.json:([^"\]]+)"\]([\s\S]*?)(?=^\[|$(?![\s\S]))/gm)];
-  return ["pre_tool_use:0:0", "session_start:0:0"].every((kind) => sections.some((m) => m[1] === kind && /^trusted_hash\s*=\s*"sha256:[a-f\d]{64}"/m.test(m[2])));
+  const hashes = Object.entries(CODEX_ROOM_HOOK_HASHES).map(([kind, expected]) => {
+    const body2 = sections.find((m) => m[1] === kind)?.[2];
+    return { expected, stored: body2?.match(/^trusted_hash\s*=\s*"(sha256:[a-f\d]{64})"/m)?.[1] };
+  });
+  if (hashes.some((h) => !h.stored)) return "absent";
+  return hashes.every((h) => h.stored === h.expected) ? "trusted" : "modified";
 }
 function evaluateDoctor(f, version3 = plugin_default.version) {
   const rows = [];
@@ -55452,7 +55527,10 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
     const stamp = hookVersion(name2 === "Codex" ? f.codexHooks : f.claudeHooks);
     add2(stamp === version3 ? "PASS" : "FAIL", `${name2} hooks`, stamp ? `${stamp}; bundle ${version3}` : "version stamp missing", `Update the marketplace and reinstall room@room in ${name2}`);
   }
-  if (f.codex) add2(codexRoomHooksTrusted(f.codexTrust) ? "PASS" : "FAIL", "Codex hook trust", codexRoomHooksTrusted(f.codexTrust) ? "Room hooks trusted" : "Room hooks not trusted", "Open Codex and accept the hooks prompt, or trust them in /hooks");
+  if (f.codex) {
+    const trust = codexRoomHookTrustStatus(f.codexTrust);
+    add2(trust === "trusted" ? "PASS" : trust === "modified" ? "WARN" : "FAIL", "Codex hook trust", trust === "trusted" ? "Room hooks trusted" : trust === "modified" ? "Room hooks changed since trust was granted" : "Room hooks not trusted", trust === "modified" ? "Codex will ask to trust Room's hooks again; accept it (or /hooks)" : "Open Codex and accept the hooks prompt, or trust them in /hooks");
+  }
   if (f.claude) {
     const min2 = process.platform === "win32" ? [2, 1, 234] : [2, 1, 224];
     add2(atLeast(f.claudeVersion, min2) ? "PASS" : "WARN", "Claude wake", f.claudeVersion ? `Claude Code ${f.claudeVersion}` : "version unknown", `Update Claude Code to ${min2.join(".")} or newer`);
@@ -55460,7 +55538,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
   }
   if (f.configError) add2("FAIL", "Room config", f.configError, "Correct ROOM_SERVER or ROOM_URL, then retry");
   else if (f.server) {
-    add2(f.serverHealth ? "PASS" : "WARN", "team server", f.serverHealth ? "/health answered" : "/health unavailable", "Check ROOM_SERVER and server status");
+    add2(f.serverHealth ? "PASS" : "WARN", "team server", f.serverRedirect ? `server redirected /health (${f.serverRedirect}); check ROOM_SERVER` : f.serverHealth ? "/health answered" : "/health unavailable", "Check ROOM_SERVER and server status");
     add2(f.credential ? "PASS" : "WARN", "team login", f.credential ? "login present" : "login missing", "Run room_login");
   } else add2(f.relayFile ? f.relayHealth ? "PASS" : "WARN" : "PASS", "local relay", f.relayFile ? f.relayHealth ? "discovery and /health OK" : "discovery exists; /health unavailable" : "not started yet", "Join the local room to start its relay");
   if (f.legacyRelay) add2("WARN", "Room 0.16 session", "a Room 0.16 local relay is still running in this clone", "End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)");
@@ -55496,15 +55574,15 @@ function codexHooksRoot(marketplaces, name2) {
   }
   return path41.resolve(root, entry ?? path41.join("plugins", "room"));
 }
-async function health2(url) {
+async function probeHealth(url, fetcher = fetch) {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(3e3) });
-    return r.ok;
+    const r = await fetcher(url, { signal: AbortSignal.timeout(3e3), redirect: "manual" });
+    return { ok: r.ok, ...r.status >= 300 && r.status < 400 ? { redirect: `HTTP ${r.status}` } : {} };
   } catch {
-    return false;
+    return { ok: false };
   }
 }
-async function collectDoctorFacts(dir, inSession = false) {
+async function collectDoctorFacts(dir, inSession = false, selected) {
   const [gitVersion, head, claudeJson, codexJson, codexMarketsJson, claudeVersion] = await Promise.all([
     command("git", ["--version"]),
     command("git", ["-C", dir, "rev-parse", "--verify", "HEAD"]),
@@ -55550,7 +55628,7 @@ async function collectDoctorFacts(dir, inSession = false) {
     stale: inSession ? createStaleVersionWarning(fileURLToPath4(import.meta.url))() : void 0
   };
   try {
-    const config2 = await resolveConfig({ dir });
+    const config2 = selected ?? await resolveConfig({ dir });
     if (config2.server !== "local") {
       f.server = config2.server;
       configureCredentials(config2.credentialsPath);
@@ -55559,21 +55637,23 @@ async function collectDoctorFacts(dir, inSession = false) {
       u.protocol = u.protocol === "wss:" ? "https:" : "http:";
       u.pathname = "/health";
       u.search = "";
-      f.serverHealth = await health2(u.toString());
+      const health2 = await probeHealth(u.toString());
+      f.serverHealth = health2.ok;
+      f.serverRedirect = health2.redirect;
     } else if (f.repo) {
       const common = await gitCommonDir(dir);
       const info2 = readRelayInfo(common);
       f.legacyRelay = legacyRelayRunning(common);
       f.relayFile = info2 ? relayFile(common) : void 0;
-      if (info2) f.relayHealth = await health2(`http://127.0.0.1:${info2.port}/health`);
+      if (info2) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info2.port}/health`)).ok;
     }
   } catch (error2) {
     f.configError = error2 instanceof Error ? error2.message : String(error2);
   }
   return f;
 }
-async function runDoctor(dir, inSession = false) {
-  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession)));
+async function runDoctor(dir, inSession = false, selected) {
+  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession, selected)));
 }
 
 // packages/room-mcp/src/tools/scope.ts
@@ -55678,7 +55758,11 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       return out2.join("\n");
     },
     async room_state(a) {
-      if (a.check === true) return runDoctor(state.ctx.cwd ?? process.cwd(), true);
+      if (a.check === true) {
+        const active = state.ctx.getSession();
+        const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf("/")) : void 0;
+        return runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : void 0);
+      }
       const s = S();
       await loadAreas(s);
       const m = s.room.meta;
@@ -57148,10 +57232,10 @@ function missingPreEditGuidance(s) {
   return "Pre-edit coordination is not confirmed yet; enable the Room hooks for this agent host.";
 }
 function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = !s.local) {
-  let health3 = hookHealth.get(s);
-  if (!health3) {
-    health3 = newHookHealth(now);
-    hookHealth.set(s, health3);
+  let health2 = hookHealth.get(s);
+  if (!health2) {
+    health2 = newHookHealth(now);
+    hookHealth.set(s, health2);
   }
   const session = sessionDir ? readBoundedJson(path42.join(sessionDir, "session.json")) : void 0;
   const id3 = typeof session?.session_id === "string" && session.session_id.length > 0 && session.session_id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(session.session_id) ? session.session_id : void 0;
@@ -57160,23 +57244,23 @@ function hookHealthNote(s, sessionDir, expected, now = Date.now(), tool, team = 
   const sessionStartedAt = Math.max(PROCESS_STARTED_AT, typeof sessionAt === "number" && Number.isFinite(sessionAt) ? sessionAt : 0);
   const receipt = readBoundedJson(hookReceiptPath(sessionDir, id3));
   const activity = readBoundedJson(path42.join(sessionDir, "hook-activity.json"));
-  if (receipt?.sessionId === id3 && typeof receipt.at === "number" && receipt.at >= sessionStartedAt && receipt.at <= now || activity?.session_id === id3 && activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at >= sessionStartedAt && activity.at <= now) health3.observed = true;
-  if (!expected || health3.observed || health3.noted) return "";
+  if (receipt?.sessionId === id3 && typeof receipt.at === "number" && receipt.at >= sessionStartedAt && receipt.at <= now || activity?.session_id === id3 && activity.event === "PreToolUse" && typeof activity.at === "number" && activity.at >= sessionStartedAt && activity.at <= now) health2.observed = true;
+  if (!expected || health2.observed || health2.noted) return "";
   const upFront = team && resolveSessionHost() === "codex";
-  if (upFront && tool === "room_join" && !health3.joinNoted && !health3.scopeNoted) {
-    health3.joinNoted = true;
+  if (upFront && tool === "room_join" && !health2.joinNoted && !health2.scopeNoted) {
+    health2.joinNoted = true;
     return missingPreEditGuidance(s);
   }
-  if (upFront && tool === "room_scope" && !health3.scopeNoted) {
-    health3.scopeNoted = true;
+  if (upFront && tool === "room_scope" && !health2.scopeNoted) {
+    health2.scopeNoted = true;
     return missingPreEditGuidance(s);
   }
-  if (health3.joinNoted || health3.scopeNoted) return "";
-  if (!health3.calls) health3.since = now;
-  health3.calls++;
-  if (health3.calls < 2 || now - health3.since < 3e4) return "";
+  if (health2.joinNoted || health2.scopeNoted) return "";
+  if (!health2.calls) health2.since = now;
+  health2.calls++;
+  if (health2.calls < 2 || now - health2.since < 3e4) return "";
   if (resolveSessionHost() === "claude" && !(manifestPaths(s.room, s.me.name).length && (s.room.manifestHead.get(s.me.name)?.scannedAt ?? -Infinity) >= sessionStartedAt)) return "";
-  health3.noted = true;
+  health2.noted = true;
   return missingPreEditGuidance(s);
 }
 
@@ -59113,10 +59197,10 @@ not done: ${name2} writes under your name, and coordination is paused; retry onc
       const notices = ledger2.notices(batch).map((n) => n.text + "\n\n").join("");
       if (s2) await greeted(s2.hub);
       const paused2 = s2?.lease?.paused() ?? s2?.hub.paused();
-      const health3 = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
+      const health2 = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name2, !s2.local) : "";
       const autoTag = s2?.autoTagNote;
       if (s2) delete s2.autoTagNote;
-      return notices + (paused2 ? paused2 + "\n\n" : "") + (health3 ? health3 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
+      return notices + (paused2 ? paused2 + "\n\n" : "") + (health2 ? health2 + "\n\n" : "") + (autoTag ? autoTag + "\n\n" : "") + (unread ? unread + body2 : body2);
     } catch (e) {
       ledger2.discard(batch);
       if (toolCallAborted()) return "error: tool call cancelled";
@@ -59158,6 +59242,7 @@ not done: ${name2} writes under your name, and coordination is paused; retry onc
       return { batch, items, notices, more };
     },
     async call(name2, args3, signal, handoff2) {
+      if (name2 === "room_state" && args3?.check === true) return handlers10.room_state(args3);
       let release;
       if (CHOOSES_ROOM.has(name2)) {
         pendingMoves++;
@@ -60160,6 +60245,7 @@ async function main() {
         return rebinding;
       };
       const call = async (req, signal2, handoff2) => {
+        if (req.params.name === "room_state" && req.params.arguments?.check === true) return tools.call(req.params.name, req.params.arguments, signal2, handoff2);
         const bound = sessionBinding.bound();
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id);
         else if (rebinding) await rebinding;
