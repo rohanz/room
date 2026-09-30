@@ -197,3 +197,35 @@ it('bounds process-wide rooms awaiting persistence before admitting another room
   for (let i = 0; i < 16; i++) await persistence.bindState(`room-${i}`, new Y.Doc())
   expect(hubs.storageFailure('room-16')).toContain('backlog is full')
 })
+
+// Real LevelDB catches full snapshots accumulating between cold joins and coalesced writes.
+it.each(['cold', 'burst', 'incremental'])('bounds stored snapshots through repeated %s writes', async kind => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hub-snapshots-'))
+  const { LeveldbPersistence } = await import('y-leveldb')
+  const stored = await import('../src/stored.js')
+  const provider = new LeveldbPersistence(dir)
+  const replace = vi.fn((name: string, snapshot: Uint8Array) => stored.levelReplace(provider, name, snapshot))
+  const persistence = Object.assign(provider, { replace })
+  const hubs = new ServerHubs({ store: { advance: async floor => floor }, log: () => {}, full: () => false })
+  const adapter = hubs.persistence(persistence)
+  const seed = new Y.Doc(); seed.getText('padding').insert(0, 'x'.repeat(2 * 1048576))
+  const logical = Y.encodeStateAsUpdate(seed).byteLength
+  await provider.storeUpdate('room', Y.encodeStateAsUpdate(seed)); seed.destroy()
+  let live: Y.Doc | undefined
+  try {
+    for (let i = 0; i < 40; i++) {
+      if (!live) { live = new Y.Doc(); await adapter.bindState('room', live); await hubs.flush(live) }
+      if (kind === 'burst') {
+        for (let j = 0; j < 20; j++) live.getMap('edits').set('value', `${i}-${j}`)
+        await hubs.flush(live)
+      } else if (kind === 'incremental') {
+        live.getMap('edits').set('value', 'y'.repeat(100_000))
+        await hubs.flush(live)
+      } else { await adapter.writeState('room'); live.destroy(); live = undefined }
+      const measured = await stored.levelStoredSize(await stored.levelDbOf(provider), 'room')
+      expect(measured.bytes).toBeLessThan(2 * logical)
+      expect(measured.updates).toBeLessThan(20)
+    }
+    expect(replace.mock.calls.length).toBeGreaterThan(kind === 'incremental' ? 1 : 20)
+  } finally { live?.destroy(); await provider.destroy(); await fs.rm(dir, { recursive: true, force: true }) }
+}, 30_000)

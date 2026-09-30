@@ -13,7 +13,7 @@ const servers = devServers()
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-export-'))
 const repo = 'github.com/archiver/project', archive = `${repo}/main`
 const compacted = `${repo}/compacted`, tooLarge = `${repo}/too-large`
-const historical = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`]
+const historical = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/Archiver/Project', `${repo}/`]
 let port: number, base: string
 const post = (route: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${base}${route}`, {
   method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),

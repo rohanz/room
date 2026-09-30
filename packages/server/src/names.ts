@@ -42,10 +42,10 @@ export function parseRoomName(input: string, schema2 = false): ParsedRoom | unde
   return undefined
 }
 /** Historical stored keys are literal: 0.16 admission split the prefix after at most three decodes.
- *  A triple-encoded request could preserve any nonempty suffix, including percent escapes. */
+ *  A triple-encoded request could preserve any suffix, including empty strings and percent escapes. */
 export function parseLegacyRoomName(name: string): ParsedRoom | undefined {
   if (name.startsWith('/')) return undefined
-  const github = /^github\.com\/([^/]+)\/([^/]+)(?:\/(.+))?$/i.exec(name)
+  const github = /^github\.com\/([^/]+)\/([^/]+)(?:\/([\s\S]*))?$/i.exec(name)
   if (github) {
     const root = parseRoomName(`github.com/${github[1]}/${github[2]}`, true)
     return root ? { ...root, name } : undefined

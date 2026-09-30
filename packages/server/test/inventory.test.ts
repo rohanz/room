@@ -42,7 +42,7 @@ describe('inventory classification', () => {
     expect(classifyDoc(repo, registry).kind).toBe('canonical')
   })
   it('serves percent-containing suffixes and case aliases but never encoded repository prefixes', () => {
-    for (const name of [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main']) {
+    for (const name of [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main', 'github.com/O/R', `${repo}/`]) {
       expect(servedBy016(name), name).toBe(true)
       expect(classifyDoc(name, registry)).toEqual({ repo, kind: 'served' })
     }
@@ -50,7 +50,7 @@ describe('inventory classification', () => {
       expect(servedBy016(name), name).toBe(false)
       expect(classifyDoc(name, registry).kind).toBe('never-served')
     }
-    for (const name of ['/github.com/o/r/main', `${repo}/`, 'github.com/o!/r/main']) expect(servedBy016(name)).toBe(false)
+    for (const name of ['/github.com/o/r/main', 'github.com/o!/r/main']) expect(servedBy016(name)).toBe(false)
   })
   it('only recognizes archives recorded by their owner', () => {
     const archive = `archive:${repo}:12345678-1234-1234-1234-123456789abc`

@@ -91,12 +91,13 @@ export function serverLeaseFile(dir: string | undefined, port: number, room: str
 export interface PersistenceProvider {
   getYDoc(docName: string): Promise<Y.Doc>
   storeUpdate(docName: string, update: Uint8Array): Promise<unknown>
+  replace?(docName: string, snapshot: Uint8Array): Promise<unknown>
   clearDocument?(docName: string): Promise<void>
 }
 
 interface Entry { doc: Y.Doc; room: RoomDoc; hub?: Hub; stopped?: boolean; startError?: string; startFailed?: boolean; lastTickError?: number }
 interface Loading { loaded: Promise<void>; stored: () => Promise<void> }
-interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean; pendingUpdate?: Uint8Array; pending?: Promise<void>; error?: string; retry?: ReturnType<typeof setTimeout>; delay: number }
+interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean; appendedBytes: number; snapshotBytes: number; pendingUpdate?: Uint8Array; pending?: Promise<void>; error?: string; retry?: ReturnType<typeof setTimeout>; delay: number }
 
 export interface ServerHubsOptions {
   store: IncarnationStore
@@ -148,9 +149,16 @@ export class ServerHubs {
       while (state.dirty) {
         state.dirty = false
         try {
-          const update = state.pendingUpdate ?? Y.encodeStateAsUpdate(state.doc)
+          const full = !state.pendingUpdate || state.appendedBytes > Math.max(1048576, state.snapshotBytes / 2)
+          const update = full ? Y.encodeStateAsUpdate(state.doc) : state.pendingUpdate!
           state.pendingUpdate = undefined
-          await state.provider.storeUpdate(name, update)
+          if (full && state.provider.replace) {
+            await state.provider.replace(name, update)
+            state.appendedBytes = 0; state.snapshotBytes = update.byteLength
+          } else {
+            await state.provider.storeUpdate(name, update)
+            state.appendedBytes += update.byteLength
+          }
           if (state.error) {
             this.opts.log(`room ${name}: storage recovered`)
             const entry = this.entries.get(name)
@@ -188,7 +196,7 @@ export class ServerHubs {
     return {
       provider,
       bindState: (docName, doc) => {
-        const state: WriteState = { doc, provider, dirty: false, delay: 250 }
+        const state: WriteState = { doc, provider, dirty: false, appendedBytes: 0, snapshotBytes: 0, delay: 250 }
         const store = (update: Uint8Array, origin: unknown) => {
           if (origin === HUB_ORIGIN) this.opts.hubBytes?.(docName, update.byteLength)
           this.queueWrite(docName, state, update)
@@ -199,8 +207,9 @@ export class ServerHubs {
           this.writes.set(docName, state)
           doc.once('destroy', () => { if (this.writes.get(docName) === state && !state.dirty && !state.pending && !state.error) this.writes.delete(docName) })
           Y.applyUpdate(doc, Y.encodeStateAsUpdate(persisted))
+          persisted.destroy()
           doc.on('update', store)
-          this.queueWrite(docName, state, Y.encodeStateAsUpdate(doc))
+          this.queueWrite(docName, state)
         })()
         this.loads.set(doc, { loaded, stored: () => this.flushName(docName) })
         return loaded

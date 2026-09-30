@@ -134,6 +134,8 @@ export function exportRoomLedger(s: Session, opts: { path?: string; now?: number
 async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> | null): Promise<void> {
   if (!body) throw new Error('archive frame stream missing')
   const reader = body.getReader(), header = new Uint8Array(4)
+  const frameMb = Number(process.env.ROOM_EXPORT_MAX_FRAME_MB ?? 64)
+  const maxFrameBytes = (Number.isFinite(frameMb) && frameMb > 0 ? frameMb : 64) * 1048576
   let headerAt = 0, update: Uint8Array | undefined, updateAt = 0, complete = false
   try {
     for (;;) {
@@ -145,7 +147,7 @@ async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> |
           header.set(value.subarray(at, at + count), headerAt); headerAt += count; at += count
           if (headerAt < 4) continue
           const length = new DataView(header.buffer).getUint32(0)
-          if (!length || length > 64 * 1048576) throw new Error('archive frame too large or empty')
+          if (!length || length > maxFrameBytes) throw new Error('archive frame too large or empty; raise ROOM_EXPORT_MAX_FRAME_MB')
           update = new Uint8Array(length); updateAt = 0; headerAt = 0
         }
         const count = Math.min(update.byteLength - updateAt, value.byteLength - at)

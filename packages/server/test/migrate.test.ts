@@ -38,7 +38,7 @@ function fixture(failAfter?: string) {
 
 describe('migrateRepo', () => {
   it('migrates historical percent suffixes under their exact stored names', async () => {
-    const f = fixture(), names = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main']
+    const f = fixture(), names = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/O/R/main', 'github.com/O/R', `${repo}/`]
     for (const [i, name] of names.entries()) {
       const room = new RoomDoc(); room.scopes.set(`legacy${i}`, { by: `legacy${i}`, byKind: 'agent', area: 'a', summary: name, paths: [], at: 1 })
       f.docs.set(name, Y.encodeStateAsUpdate(room.doc)); room.doc.destroy()
@@ -57,6 +57,13 @@ describe('migrateRepo', () => {
       expect(safe).toMatchObject(entry)
       expect(migrationSources(key, safe, [])).toEqual([name])
     }
+  })
+  it('keeps the bare case alias recorded by an uppercase historical registry', () => {
+    const alias = 'github.com/O/R', names = [alias, `${repo}/`]
+    const entry: OpenRepo = { at: 1, branches: names, legacy: names, plan: { id: 'p', sources: names } }
+    const safe = safeRoomRegistry({ [alias]: entry })[alias]
+    expect(safe).toMatchObject(entry)
+    expect(migrationSources(repo, safe, [], new Set([alias]))).toEqual(names)
   })
   it('loads sources sequentially and leaves capped sources in exportable archives', async () => {
     const f = fixture()

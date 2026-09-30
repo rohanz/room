@@ -16,7 +16,7 @@ export interface Inventory { budgetBytes: number; docs: InventoryDoc[]; tables: 
 /** 0.16.40 admitted literal repo prefixes; three decodes could still leave '%' in a suffix. */
 export function servedBy016(name: string): boolean {
   const parsed = parseLegacyRoomName(name)
-  return !!parsed && (!parsed.github || /^github\.com\/([^/]+)\/([^/]+)\/(.+)$/i.test(name))
+  return !!parsed
 }
 
 /** Which registered repository, if any, owns a stored document, and in what role. */

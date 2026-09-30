@@ -1,7 +1,9 @@
 /** Stored document sizes and raw updates, read without building a Y.Doc.
  *  y-leveldb keeps each update under ['v1', name, 'update', clock] and one state-vector record under ['v1_sv', name]. */
 // @ts-expect-error y-leveldb's exports omit its generated declarations.
-import { getAllDocs, keyEncoding } from 'y-leveldb'
+import { getAllDocs, getCurrentUpdateClock, keyEncoding } from 'y-leveldb'
+import * as Y from 'yjs'
+import * as encoding from 'lib0/encoding'
 export interface StoredSize { bytes: number; updates: number; over: boolean; reason?: string }
 
 type Key = (string | number)[]
@@ -17,6 +19,7 @@ export interface LevelDb {
   db?: { db?: { getProperty?(name: string): string } }
   createReadStream(opts: { gte: Key; lt: Key; keys: boolean; values: boolean; limit?: number; highWaterMark?: number }): ReadStream
   get(key: Key): Promise<Uint8Array>
+  clear(opts: { gte: Key; lt: Key }): Promise<unknown>
   batch(ops: { type: 'put'; key: Key; value: Uint8Array }[]): Promise<unknown>
 }
 /** y-leveldb's LeveldbPersistence exposes its db only through `_transact`. */
@@ -27,6 +30,23 @@ const updateRange = (name: string) => ({ gte: ['v1', name, 'update', 0] as Key, 
 
 export function isLevelProvider(provider: unknown): provider is LevelProvider {
   return !!provider && typeof (provider as LevelProvider)._transact === 'function'
+}
+
+/** Publish the snapshot and discovery vector before clearing old records: interrupted clears keep a superset. */
+export async function levelReplace(provider: LevelProvider, name: string, snapshot: Uint8Array): Promise<void> {
+  // y-leveldb swallows callback errors; carry them out so hub retries still work.
+  const result = await provider._transact(async db => {
+    try {
+      const clock = await getCurrentUpdateClock(db, name) + 1
+      const vector = encoding.createEncoder()
+      encoding.writeVarUint(vector, clock)
+      encoding.writeVarUint8Array(vector, Y.encodeStateVectorFromUpdate(snapshot))
+      await db.batch([{ type: 'put', key: ['v1', name, 'update', clock], value: Buffer.from(snapshot) },
+        { type: 'put', key: ['v1_sv', name], value: Buffer.from(encoding.toUint8Array(vector)) }])
+      await db.clear({ gte: updateRange(name).gte, lt: ['v1', name, 'update', clock] })
+    } catch (error) { return { error } }
+  })
+  if (result) throw result.error
 }
 
 /** Grab the db handle; a LevelDB iterator reads a consistent snapshot, so no transaction is held while streaming. */
@@ -84,6 +104,20 @@ export function levelOversizedTables(snapshot: StoredTables | undefined, limit: 
     ({ level: table.level, file: table.file, bytes: table.bytes, smallest: docName(table.first), largest: docName(table.last) }))
 }
 
+/** Tables opened by the merge/concatenating iterators, including initial seeks. */
+export function levelReadTables(tables: readonly StoredTable[], start: Buffer, end: Buffer): StoredTable[] {
+  const opened = new Set<number>(), advancing = new Set<number>()
+  return tables.filter(table => {
+    if (Buffer.compare(table.last, start) < 0) return false
+    const intersects = Buffer.compare(table.first, end) <= 0
+    // Concatenation opens the successor before the outer iterator checks its range.
+    const reads = table.level === 0 || !opened.has(table.level) || intersects || advancing.has(table.level)
+    opened.add(table.level)
+    if (intersects) advancing.add(table.level); else advancing.delete(table.level)
+    return reads
+  })
+}
+
 /** Gate on tables an iterator can read, then sum raw bytes with early exit.
  *  Memtables and compression can undercount; reopening recovers legacy logs into SSTs. */
 export async function levelStoredSize(db: LevelDb, name: string, limit = Infinity, snapshot?: StoredTables): Promise<StoredSize> {
@@ -95,16 +129,7 @@ export async function levelStoredSize(db: LevelDb, name: string, limit = Infinit
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (Buffer.compare(metadata.names[mid]!, prefix) <= 0) lo = mid + 1; else hi = mid }
       // Include the next doc's whole prefix: an iterator reads one key past the requested range.
       const end = Buffer.concat([metadata.names[lo] ?? metadata.firstVector, Buffer.from([0xff])])
-      const opened = new Set<number>()
-      let bytes = 0
-      for (const table of metadata.tables) {
-        if (Buffer.compare(table.last, start) < 0) continue
-        // DBImpl::NewInternalIterator/MergingIterator seek every L0 file. Higher levels seek
-        // their first qualifying file, then concatenate through the one-past-end range.
-        const reads = table.level === 0 || !opened.has(table.level) || Buffer.compare(table.first, end) <= 0
-        opened.add(table.level)
-        if (reads && table.bytes > limit) bytes = Math.max(bytes, table.bytes)
-      }
+      const bytes = levelReadTables(metadata.tables, start, end).reduce((max, table) => table.bytes > limit ? Math.max(max, table.bytes) : max, 0)
       if (bytes) return { bytes, updates: 0, over: true, reason: 'an oversized LevelDB table would be read' }
     }
   }

@@ -21,6 +21,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-cutover-'))
 let port = 0, base = ''
 const repo = 'github.com/cutover/project', main = `${repo}/main`, feature = `${repo}/feature/x`
 const other = 'github.com/cutover/project2', otherMain = `${other}/main`
+const rejoins = Array.from({ length: 4 }, (_, i) => `github.com/cutover/rejoins${i}`)
 const upgradeText = `update Room to 0.17 or later: this repository now has one room for all branches (${repo})`
 
 const post = (route: string, body: unknown, headers: Record<string, string> = {}) =>
@@ -69,9 +70,16 @@ beforeAll(async () => {
   await seed(main, 'ben', 'main scope')
   await seed(feature, 'cy', 'feature scope')
   await seed(otherMain, 'dee', 'another repository')
+  for (const name of rejoins) {
+    const doc = new Y.Doc(); doc.getMap('meta').set('schemaVersion', 2); doc.getText('padding').insert(0, 'x'.repeat(700_000))
+    await ldb.storeUpdate(name, Y.encodeStateAsUpdate(doc))
+    if (name === rejoins[0]) await ldb.storeUpdate(name, Y.encodeStateAsUpdate(doc)) // healthy logical state, >1 MB stored
+    doc.destroy()
+  }
   await ldb.destroy()
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({
     [repo]: { by: 'ben', at: Date.now(), branches: [main, feature] },
+    ...Object.fromEntries(rejoins.map(name => [name, { at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() }])),
     [other]: { by: 'dee', at: Date.now(), branches: [otherMain] },
   }))
   port = await new Promise<number>((resolve, reject) => {
@@ -80,7 +88,7 @@ beforeAll(async () => {
   })
   base = `http://127.0.0.1:${port}`
   const logs: string[] = []
-  const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '', GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_DOC_MAX_MB: '1', ROOM_LOAD_MAX_MB: '1', ROOM_TEST_STORED_TABLES_DELAY_MS: '150' }, stdio: ['ignore', 'pipe', 'pipe'] })
   proc.stdout!.on('data', d => logs.push(String(d))); proc.stderr!.on('data', d => logs.push(String(d)))
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error(`server exited: ${logs.join('')}`)
@@ -143,3 +151,27 @@ it('serves 0.16 clients until the first 0.17 preflight, then migrates the record
   expect(neighbour).toBeInstanceOf(WebSocket)
   ;(neighbour as WebSocket).close()
 }, 40_000)
+
+async function disconnect(ws: WebSocket): Promise<void> {
+  await new Promise<void>(resolve => { ws.once('close', () => resolve()); ws.close() })
+}
+it('keeps a healthy canonical room joinable across 40 cold joins with a 1 MB cap', async () => {
+  const session = await login('repeat')
+  for (let i = 0; i < 40; i++) {
+    const joined = await open(rejoins[0]!, session, true)
+    expect(joined, `cold join ${i}`).toBeInstanceOf(WebSocket)
+    const doc = await readDoc(joined as WebSocket)
+    expect(doc.getText('padding').length).toBe(700_000); doc.destroy()
+    await disconnect(joined as WebSocket)
+  }
+}, 40_000)
+it('shares a single metadata scan across concurrent cold joins of different rooms', async () => {
+  const session = await login('parallel')
+  const count = async () => ((await (await fetch(base + '/health')).json()) as { tableScans: number }).tableScans
+  const before = await count()
+  const joined = await Promise.all(rejoins.map(name => open(name, session, true)))
+  try {
+    for (const ws of joined) expect(ws).toBeInstanceOf(WebSocket)
+    expect(await count()).toBe(before + 1)
+  } finally { await Promise.all(joined.filter((ws): ws is WebSocket => ws instanceof WebSocket).map(disconnect)) }
+})

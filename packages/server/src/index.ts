@@ -46,7 +46,7 @@ import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from '.
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, isLevelProvider, type StoredSize } from './stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
@@ -226,17 +226,28 @@ const memoryProvider: PersistenceProvider & { getAllDocNames(): Promise<string[]
     const before = memoryDocs.get(name)
     memoryDocs.set(name, before ? Y.mergeUpdates([before, update]) : update)
   },
+  replace: async (name, snapshot) => { memoryDocs.set(name, snapshot) },
   clearDocument: async name => { memoryDocs.delete(name) },
 }
 const provider = () => (getPersistence() as { provider?: PersistenceProvider & { getAllDocNames?(): Promise<string[]> } } | null)?.provider
 const listDocs = async () => [...new Set([...(await provider()?.getAllDocNames?.() ?? []), ...docs.keys()])]
+let tableScan: ReturnType<typeof levelStoredTables> | undefined, testTableScans = 0
 const storedTables = async (names?: readonly string[]) => {
+  if (tableScan) return tableScan
   const p = provider()
-  return isLevelProvider(p) ? levelStoredTables(await levelDbOf(p), names) : undefined
+  if (!isLevelProvider(p)) return undefined
+  const work = (async () => {
+    testTableScans++
+    if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_STORED_TABLES_DELAY_MS)
+      await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_STORED_TABLES_DELAY_MS)))
+    return levelStoredTables(await levelDbOf(p), names)
+  })()
+  tableScan = work
+  try { return await work } finally { tableScan = undefined }
 }
 const storedSize = async (name: string, limit = LOAD_MAX_BYTES, tables?: Awaited<ReturnType<typeof storedTables>>): Promise<StoredSize> => {
   const p = provider()
-  if (isLevelProvider(p)) return levelStoredSize(await levelDbOf(p), name, limit, tables)
+  if (isLevelProvider(p)) return levelStoredSize(await levelDbOf(p), name, limit, tables ?? await storedTables())
   const bytes = memoryDocs.get(name)?.byteLength ?? 0
   return { bytes, updates: memoryDocs.has(name) ? 1 : 0, over: bytes > limit }
 }
@@ -267,8 +278,8 @@ void roomsLoaded.then(async () => {
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)
   if (live) return live
-  // Migration applies the stricter ROOM_LOAD_MAX_MB itself; a schema-2 room may grow to ROOM_DOC_MAX_MB.
-  if ((await storedSize(name, Math.max(LOAD_MAX_BYTES, DOC_MAX_BYTES))).over) throw new HttpFailure(507, 'room document too large to load')
+  // Migration uses ROOM_LOAD_MAX_MB; live loads leave headroom for snapshot + appended updates.
+  if ((await storedSize(name, Math.max(LOAD_MAX_BYTES, 2 * DOC_MAX_BYTES))).over) throw new HttpFailure(507, 'room document too large to load')
   return provider()!.getYDoc(name)
 }
 let testArchiveLoads = 0
@@ -453,7 +464,7 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-room-token')
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
   }
-  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(process.env.NODE_ENV === 'test' ? { archiveLoads: testArchiveLoads, inventoryScans: testInventoryScans } : {}), ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
+  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(process.env.NODE_ENV === 'test' ? { archiveLoads: testArchiveLoads, inventoryScans: testInventoryScans, tableScans: testTableScans } : {}), ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
   const headerCreds = (): Creds => ({ session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1], token: str(req.headers['x-room-token']) })
   const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token) ?? headerCreds().token, session: str(o.session) ?? headerCreds().session })
   if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') {
@@ -944,6 +955,10 @@ const droppedWrite = (room: string) => () => {
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
+if (stockPersistence && isLevelProvider(stockPersistence.provider)) {
+  const level = stockPersistence.provider
+  level.replace = (name, snapshot) => levelReplace(level, name, snapshot)
+}
 setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
 setInterval(() => { hubs.tick() }, 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
@@ -1031,7 +1046,7 @@ server.on('upgrade', (req, socket, head) => {
       }
       // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
       // Holding the repo lock also makes the socket visible to migration's freeze step.
-      if (!docs.has(docKey) && (await storedSize(docKey, Math.max(LOAD_MAX_BYTES, DOC_MAX_BYTES))).over)
+      if (!docs.has(docKey) && (await storedSize(docKey, Math.max(LOAD_MAX_BYTES, 2 * DOC_MAX_BYTES))).over)
         return refuse(socket, 507, 'room document too large to load', roomName)
       await hubs.flush(getYDoc(docKey, true))
       if (abandoned()) return

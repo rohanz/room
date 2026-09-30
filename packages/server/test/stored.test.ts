@@ -5,12 +5,19 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { keyEncoding, LeveldbPersistence } from 'y-leveldb'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw } from '../src/stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables } from '../src/stored.js'
 import { migrateRepo, type MigrationIO } from '../src/migrate.js'
 import type { OpenRepo } from '../src/store.js'
 import { takeInventory, formatInventory } from '../src/inventory.js'
 
 const cleanups: (() => Promise<void>)[] = []
+it('opens each higher-level successor even when the global one-past-end key is in another level', () => {
+  const key = (clock: number) => keyEncoding.encode(['v1', 'room', 'update', clock])
+  const table = (level: number, file: number, first: number, last: number) => ({ level, file, bytes: 100, first: key(first), last: key(last) })
+  const tables = [table(0, 1, 99, 100), table(1, 2, 0, 1), table(1, 3, 2, 5), table(1, 4, 20, 30), table(1, 5, 31, 40),
+    table(2, 6, 6, 10), table(2, 7, 41, 50), table(3, 8, 60, 70), table(3, 9, 80, 90)]
+  expect(levelReadTables(tables, key(2), key(6)).map(t => t.file)).toEqual([1, 3, 4, 6, 7, 8])
+})
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
 async function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-stored-')), provider = new LeveldbPersistence(dir)
@@ -21,6 +28,22 @@ async function fixture() {
   for (const update of updates) await provider.storeUpdate('from', update)
   return { provider, db: await levelDbOf(provider), doc, updates }
 }
+it('replaces snapshots with a matching discovery vector, preserving content across interrupted clear and replay', async () => {
+  const f = await fixture(), snapshot = Y.encodeStateAsUpdate(f.doc)
+  const clear = vi.spyOn(f.db, 'clear').mockRejectedValueOnce(new Error('interrupted clear'))
+  await expect(levelReplace(f.provider, 'from', snapshot)).rejects.toThrow('interrupted clear')
+  expect((await levelStoredSize(f.db, 'from')).updates).toBe(f.updates.length + 1)
+  let loaded = await f.provider.getYDoc('from')
+  expect(Y.encodeStateAsUpdate(loaded)).toEqual(snapshot); loaded.destroy()
+  expect(await f.provider.getAllDocNames()).toContain('from')
+  await levelReplace(f.provider, 'from', snapshot)
+  expect(await levelStoredSize(f.db, 'from')).toEqual({ bytes: snapshot.byteLength, updates: 1, over: false })
+  expect(await f.provider.getStateVector('from')).toEqual(Y.encodeStateVectorFromUpdate(snapshot))
+  loaded = await f.provider.getYDoc('from')
+  expect(Y.encodeStateAsUpdate(loaded)).toEqual(snapshot)
+  expect(await f.provider.getAllDocNames()).toContain('from')
+  loaded.destroy(); f.doc.destroy(); clear.mockRestore()
+})
 it.each([undefined, 'a-longer-name'])('rejects one large reopened SST record without an update iterator (next doc: %s)', async next => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-stored-large-'))
   let provider = new LeveldbPersistence(dir)
