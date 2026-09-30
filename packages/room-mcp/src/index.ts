@@ -7,7 +7,7 @@ import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
 import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
-import { joinableRoot } from './repository.js'
+import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { resolveConfig } from './config.js'
@@ -18,7 +18,7 @@ import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
-import { createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
+import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
@@ -85,6 +85,7 @@ async function main() {
     { name: 'room', version: RELEASE_VERSION },
     { capabilities: { tools: {}, experimental: { 'claude/channel': {} } }, instructions: AGENT_INSTRUCTIONS() },
   )
+  let initialized: { dir: string; call: (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal) => Promise<string> } | undefined
   const binding = createWorkspaceBinding({
     deferred: deferForSharedCodex(process.env), fallbackDir: () => fallbackWorkspace(process.env, process.cwd()),
     logFallback: () => log('call has no workspace metadata; using ROOM_DIR/PWD/INIT_CWD/process.cwd() fallback'),
@@ -206,12 +207,14 @@ async function main() {
       tools.setAutoJoin(autoJoin)
       if (!signal.aborted) void autoJoin.ensure()
 
-      return { call, shutdown: async (signal?: boolean) => {
+      const runtime = { call, shutdown: async (signal?: boolean) => {
         presence.stop(); autoJoin.cancel()
         if (!signal) await autoJoin.settle()
         await tools.shutdown()
         await arbitration.close()
       } }
+      initialized = { dir, call }
+      return runtime
     },
   })
 
@@ -220,7 +223,18 @@ async function main() {
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
-    const result = await timing.run(req.params.name, () => binding.run(req.params, runtime => runtime.call(req, extra.signal, settle => transport.expect(extra.requestId, settle))))
+    const result = await timing.run(req.params.name, async () => {
+      if (req.params.name === 'room_state' && req.params.arguments?.check === true) {
+        const dir = codexWorkspace(req.params) ?? fallbackWorkspace(process.env, process.cwd())
+        const active = initialized
+        if (active) {
+          const [requestedRoot, activeRoot] = await Promise.all([joinableRoot(dir).catch(() => dir), joinableRoot(active.dir).catch(() => active.dir)])
+          if (sameFolder(requestedRoot, activeRoot)) return { value: await active.call(req, extra.signal), error: undefined }
+        }
+        return { value: await runDoctor(dir), error: undefined }
+      }
+      return binding.run(req.params, runtime => runtime.call(req, extra.signal, settle => transport.expect(extra.requestId, settle)))
+    })
     return { content: [{ type: 'text' as const, text: result.error ?? result.value! }], ...(result.error ? { isError: true } : {}) }
   })
 
@@ -235,11 +249,10 @@ async function main() {
   process.stdin.on('end', () => { void bye('stdin closed') })
 
   // The definitions are static; a shared Codex daemon needs no directory-bound state until a call.
-  try {
-    await mcp.connect(transport)
-    await binding.start()
-  } catch (error) {
-    if (!closing) throw error // non-deferred startup keeps its fatal exit policy
+  await mcp.connect(transport)
+  try { await binding.start() } catch (error) {
+    // A failed eager startup must leave the MCP alive so room_state({check:true}) can diagnose it.
+    if (!closing) log(`startup failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
