@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -38,8 +38,12 @@ it('stays quiet while the event loop turns', async () => {
   expect(fs.existsSync(report)).toBe(false)
 })
 
-it('reports a file that runs past its limit', async () => {
+it('reports a file that runs past its limit and ends what the file started', async () => {
+  if (process.platform === 'win32') return
   const report = reportFile()
+  const child = spawn('sh', ['-c', 'sleep 60 & wait'], { stdio: 'ignore' })
+  const exited = new Promise<NodeJS.Signals | null>(resolve => child.once('exit', (_code, signal) => resolve(signal)))
   stops.push(startWatchdog({ fileLimitMs: 300, pollMs: 50, killSelf: false, reportFile: report, describe: () => 'slow.test.ts' }).stop)
   await expect.poll(() => fs.existsSync(report) && fs.readFileSync(report, 'utf8'), { timeout: 5000 }).toMatch(/^slow\.test\.ts: the file has run for \d+ s; ending this test worker/)
+  expect(await exited).toBe('SIGKILL')
 })

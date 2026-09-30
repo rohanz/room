@@ -33,7 +33,7 @@ const say = line => {
   catch { /* stderr is gone with the run */ }
 }
 const what = () => Buffer.from(text.slice(0, Atomics.load(beats, 1))).toString('utf8') || 'a file that has not started a test'
-// Every descendant, children first: a grandchild left behind would keep the worker's output pipe open.
+// Every descendant, parents before children: a grandchild left behind would keep the worker's output pipe open.
 const descendants = () => {
   try {
     const all = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 5000 }).split('\\n')
@@ -47,6 +47,7 @@ const descendants = () => {
     return found
   } catch { return [] }
 }
+const kill = processes => { for (const child of [...processes].reverse()) { try { process.kill(child.pid, 'SIGKILL') } catch { /* it exited */ } } }
 let seen = Atomics.load(beats, 0), still = 0, elapsed = 0, killedChildren = false
 for (;;) {
   Atomics.wait(sleeper, 0, 0, pollMs)
@@ -62,10 +63,12 @@ for (;;) {
     say(what() + ': the event loop has been blocked for ' + Math.round(still / 1000) + ' s' + (waiting.length
       ? '; killing what it waits on: ' + waiting.filter(child => child.parent === pid).map(child => child.command + ' (pid ' + child.pid + ')').join('; ')
       : '; it waits on no child process'))
-    for (const child of waiting) { try { process.kill(child.pid, 'SIGKILL') } catch { /* it exited */ } }
+    kill(waiting)
     if (waiting.length) { killedChildren = true; still = Math.max(0, stallMs - 4 * pollMs); continue }
   }
   say(what() + (overLimit ? ': the file has run for ' + Math.round(elapsed / 1000) + ' s' : ': still blocked') + '; ending this test worker')
+  // Whatever the worker started goes with it, deepest first: a survivor would keep the worker's output pipe open.
+  kill(descendants())
   if (killSelf) process.kill(pid, 'SIGKILL')
   break
 }

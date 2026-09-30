@@ -195,6 +195,8 @@ it('treats GitHub rate limiting as unavailable, not as a denial: the grant survi
     () => new Response('{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}', { status: 403, headers: { 'retry-after': '60' } }),
     () => new Response('{"message":"You have exceeded a secondary rate limit."}', { status: 403 }),
     () => new Response('{}', { status: 429 }),
+    // A 403 whose body cannot be read says nothing about permission either.
+    () => Object.assign(new Response('', { status: 403 }), { text: async () => { throw new Error('body read aborted') } }),
   ]
   for (const throttle of limited) {
     let t = 0, mode: 'ok' | 'limited' = 'ok', calls = 0

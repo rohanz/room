@@ -28,10 +28,11 @@ export interface AdmitOptions {
 }
 
 const GH_POSITIVE_CACHE_MS = 10 * 60 * 1000
-/** A throttled GitHub answer: no allowance left, a Retry-After, or a rate-limit message in the (bounded) body. */
+/** A throttled GitHub answer: no allowance left, a Retry-After, or a rate-limit message in the (bounded) body.
+ *  A body that cannot be read throws: the caller answers "unavailable", never a denial it has not seen. */
 async function rateLimited(res: Response): Promise<boolean> {
   if (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')) return true
-  try { return /rate limit|abuse detection/i.test((await res.text()).slice(0, 2048)) } catch { return false }
+  return /rate limit|abuse detection/i.test((await res.text()).slice(0, 2048))
 }
 export type PushChecker = ((token: string, ownerRepo: string, fresh?: boolean) => Promise<boolean | undefined>) & { forget(token: string): void }
 export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number } = {}): PushChecker {
