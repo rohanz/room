@@ -8,7 +8,7 @@ import WebSocket from 'ws'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 const keyedSocket = (key: string) => authorizedWebSocket({ key })
 import { WebsocketProvider } from 'y-websocket'
-import { deterministicPort, ensureLocalRelay, LOCAL_FILE, localProofHeader, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
+import { canonicalRelayWarning, cloneId, deterministicPort, ensureLocalRelay, LOCAL_FILE, localProofHeader, NoLocalRelay, probeRelay, readRelayInfo, startRelay } from '../src/index.js'
 import { portAnswers, relayAnswers } from './probes.js'
 import http from 'node:http'
 
@@ -16,6 +16,46 @@ import http from 'node:http'
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-'))
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
 const until = async (f: () => boolean | Promise<boolean>, ms = 5000) => { const t = Date.now(); while (!(await f())) { if (Date.now() - t > ms) throw new Error('timeout'); await wait(50) } }
+
+it('classifies old, mismatched-key, foreign-clone, and non-Room canonical listeners without sockets', () => {
+  const common = '/tmp/room-collision-test'
+  const port = 46115
+  const info = { schema: 2 as const, port, pid: 321, room: 'local/test', startedAt: Date.UTC(2026, 8, 28), key: 'stale' }
+  const old = canonicalRelayWarning(port, common, { health: { ok: true, local: true }, proven: false }, info)
+  expect(old.warning).toBe("an older Room session (pid 321, started 2026-09-28T00:00:00.000Z) still holds this room's relay on 127.0.0.1:46115; quit it or reconnect Room there")
+  const mismatch = canonicalRelayWarning(port, common, { health: { ok: true, local: true, schema: 2, hub: 1 }, proven: false }, info)
+  expect(mismatch.warning).toBe(old.warning)
+  expect(canonicalRelayWarning(port, common, { health: { ok: true, local: true, clone: 'another-clone' }, proven: false }, info)).toEqual({ roomRelay: true })
+  expect(canonicalRelayWarning(port, common, { health: { ok: true }, proven: false }, info)).toEqual({ roomRelay: false })
+})
+
+it.each(['old', 'different key', 'non-Room'])('reports an occupied canonical port held by %s (socket integration)', async kind => {
+  const common = await makeCommonDir()
+  const port = deterministicPort(common)
+  const server = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(kind === 'non-Room' ? { ok: true } : kind === 'old' ? { ok: true, local: true } : { ok: true, local: true, schema: 2, hub: 1, clone: cloneId(common) }))
+  })
+  await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve))
+  await fsp.mkdir(path.join(common, 'room'), { recursive: true })
+  await fsp.writeFile(path.join(common, LOCAL_FILE), JSON.stringify({ schema: 2, port, pid: 321, room: 'local/x', startedAt: Date.UTC(2026, 8, 28), key: 'stale' }))
+  const logs: string[] = []
+  let relay: Awaited<ReturnType<typeof ensureLocalRelay>> | undefined
+  try {
+    relay = await ensureLocalRelay(common, 'local/x', { log: line => logs.push(line) })
+    expect(relay.port).not.toBe(port)
+    if (kind === 'non-Room') {
+      expect(relay.canonicalWarning).toBeUndefined()
+      expect(logs.join('\n')).toContain('taken by something else')
+    } else {
+      expect(relay.canonicalWarning).toContain("an older Room session (pid 321, started 2026-09-28T00:00:00.000Z) still holds this room's relay")
+      expect(logs.join('\n')).toContain(relay.canonicalWarning)
+      expect(logs.join('\n')).not.toContain('taken by something else')
+      const joiner = await ensureLocalRelay(common, 'local/x', { joinOnly: true })
+      try { expect(joiner.canonicalWarning).toBe(relay.canonicalWarning) } finally { await joiner.stop() }
+    }
+  } finally { await relay?.stop(); await new Promise<void>(resolve => server.close(() => resolve())); await fsp.rm(common, { recursive: true, force: true }) }
+})
 
 describe('local relay', () => {
   it('joinOnly joins a running relay but never starts one', async () => {

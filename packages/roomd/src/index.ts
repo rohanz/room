@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { CoalescedPoll } from './poll.js'
 import { Publisher, type PreparedPublication } from './publisher.js'
+import { SkipSummaryGate } from './skip-summary.js'
 import { StalePublication } from './disk-scan.js'
 import { markManifestIncomplete } from './manifest-publish.js'
 import { authorizesText, rulesFromText, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
@@ -336,6 +337,8 @@ class Daemon implements Roomd {
   /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
   private pendingSkips = new Map<string, number>()
   private pendingSkipExample = ''
+  private readonly skipSummaryGate = new SkipSummaryGate()
+  private publishedSkipReasons = new Map<string, string>()
   private skipLogTimer?: NodeJS.Timeout
   private readonly skipLogMs: number
   private started = false
@@ -457,7 +460,7 @@ class Daemon implements Roomd {
     if (this.basePollMs > 0) this.headPoll = new CoalescedPoll('HEAD poll', this.basePollMs, () => this.queuedHeadPoll(), this.log)
     this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
-    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`)
+    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummaryGate.shouldLog(this.publishedSkipReasons) ? this.skipSummary() : ''}`)
   }
 
   private step<T>(phase: string, work: () => Promise<T>): Promise<T> {
@@ -475,6 +478,19 @@ class Daemon implements Roomd {
     if (!n) return ''
     const parts = [['size', this.skips.size.size], ['budget', this.skips.budget.size], ['ignore', this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
     return `; skipped ${n} file(s) (${parts.join(', ')})`
+  }
+
+  /** Publisher calls this on every reconcile, including unchanged skip sets. */
+  syncSkipReasons(reasons: ReadonlyMap<string, string>): void {
+    this.publishedSkipReasons = new Map(reasons)
+    if (this.started && this.skipSummaryGate.shouldLog(reasons)) {
+      const counts = new Map<string, number>()
+      for (const reason of reasons.values()) {
+        const label = reason === 'size' ? 'over size cap' : reason === 'budget' ? 'over total budget' : reason === 'untracked lockfile' ? reason : 'ignore'
+        counts.set(label, (counts.get(label) ?? 0) + 1)
+      }
+      if (counts.size) this.log(`skipped ${reasons.size} file(s) (${[...counts].map(([reason, count]) => `${count} ${reason}`).join(', ')}), e.g. ${reasons.keys().next().value}`)
+    }
   }
 
   // ---- sharing policy --------------------------------------------------

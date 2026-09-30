@@ -8,7 +8,7 @@ import { resolveConfig } from './config.js'
 import { getCredential, configureCredentials } from './credentials.js'
 import { createStaleVersionWarning } from './stale-version.js'
 import { claudeWakeAvailable } from './wake-path.js'
-import { legacyRelayRunning, readRelayInfo, relayFile } from '@room/relay'
+import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
 import { gitCommonDir } from '@room/roomd'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 
@@ -29,7 +29,7 @@ export interface DoctorFacts {
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
   server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
   credential?: boolean; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
-  relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; configError?: string; stale?: string; inSession?: boolean
+  relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
 }
 
 function triple(raw?: string): number[] | undefined {
@@ -103,6 +103,7 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
     else add('WARN', 'team login', 'credential present (not verified)', 'Check server connection, then retry room doctor')
   } else add(f.relayFile ? f.relayHealth ? 'PASS' : 'WARN' : 'PASS', 'local relay', f.relayFile ? f.relayHealth ? 'discovery and /health OK' : 'discovery exists; /health unavailable' : 'not started yet', 'Join the local room to start its relay')
   if (f.legacyRelay) add('WARN', 'Room 0.16 session', 'a Room 0.16 local relay is still running in this clone', 'End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)')
+  if (f.canonicalRelayWarning) add('WARN', 'canonical relay', f.canonicalRelayWarning, 'Quit the older Room session or reconnect Room there')
   add(f.inSession ? f.stale ? 'WARN' : 'PASS' : 'PASS', 'running session', f.inSession ? f.stale ?? 'matches installed bundle' : 'n/a', 'Restart the host session or reconnect Room (/mcp)')
   return rows
 }
@@ -211,10 +212,16 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
       f.legacyRelay = legacyRelayRunning(common)
       f.relayFile = info ? relayFile(common) : undefined
       if (info) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info.port}/health`)).ok
+      const port = deterministicPort(common)
+      const identity = await relayIdentity(port, info?.key ?? '')
+      if (identity && !(identity.proven && identity.health.clone === cloneId(common) && identity.health.schema === 2))
+        f.canonicalRelayWarning = canonicalRelayWarning(port, common, identity, info).warning
     }
   } catch (error) { f.configError = error instanceof Error ? error.message : String(error) }
   return f
 }
-export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination): Promise<string> {
-  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession, selected)))
+export async function runDoctor(dir: string, inSession = false, selected?: DoctorDestination, sessionWarning?: string): Promise<string> {
+  const facts = await collectDoctorFacts(dir, inSession, selected)
+  if (sessionWarning) facts.canonicalRelayWarning = sessionWarning
+  return formatDoctor(evaluateDoctor(facts))
 }

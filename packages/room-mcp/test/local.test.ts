@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
+import http from 'node:http'
+import { deterministicPort } from '../../relay/src/index.js'
 import { joinSession, leaveSession, resolveServer, DEFAULT_SERVER, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 
@@ -36,6 +38,22 @@ afterAll(() => {
 })
 
 describe('local mode (no server)', () => {
+  it('shows an old canonical relay in join, state, and doctor (socket integration)', async () => {
+    const clone = repo('room-old-relay-')
+    const port = deterministicPort(join(clone, '.git'))
+    const server = http.createServer((_req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, local: true })) })
+    await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve))
+    let session: Session | null = null
+    const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: clone,
+      join: async opts => { const s = await joinSession(opts); sessions.push(s); return s },
+    })
+    try {
+      const reply = await tools.call('room_join', { where: 'local' })
+      expect(reply).toContain("an older Room session still holds this room's relay")
+      expect(await tools.call('room_state', {})).toContain("an older Room session still holds this room's relay")
+      expect(await tools.call('room_state', { check: true })).toContain('WARN  canonical relay: an older Room session')
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
+  })
   it('resolves the server setting: unset/local → local, hosted → the hosted URL, else the URL', () => {
     expect(resolveServer(undefined)).toBe('local')
     expect(resolveServer('local')).toBe('local')

@@ -80,6 +80,11 @@ describe('doctor report', () => {
     expect(rows.find(r => r.name === 'Room 0.16 session')).toMatchObject({ level: 'WARN' })
     expect(evaluateDoctor(base()).some(r => r.name === 'Room 0.16 session')).toBe(false)
   })
+  it('warns with the canonical relay collision sentence and fix', () => {
+    const warning = "an older Room session (pid 321) still holds this room's relay on 127.0.0.1:46115; quit it or reconnect Room there"
+    expect(evaluateDoctor({ ...base(), canonicalRelayWarning: warning }).find(r => r.name === 'canonical relay'))
+      .toMatchObject({ level: 'WARN', finding: warning, fix: 'Quit the older Room session or reconnect Room there' })
+  })
   it('reports old runtimes, missing commit, stale host bundles and hooks', () => {
     const f = { ...base(), node: 'v20.0.0', git: 'git version 2.30.9', repo: false,
       claude: { version: '0.16.40' }, codexHooks: undefined }

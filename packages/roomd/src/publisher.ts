@@ -29,6 +29,7 @@ interface Host {
   isSafeRoomPath(p: string): boolean
   bumpLastActive(): void
   noteSkip(p: string, reason: string): void
+  syncSkipReasons?(reasons: ReadonlyMap<string, string>): void
   reconcileGitChanges(): Promise<void>
   carried(): Baseline | undefined
 }
@@ -308,12 +309,11 @@ export class Publisher {
     }, host)
     this.excludedPaths.clear()
     for (const p of desired.excludedPaths) this.excludedPaths.add(p)
-    const previousSkips = new Set([...host.skips.size, ...host.skips.budget, ...host.skips.ignore])
     host.skips.size.clear(); host.skips.budget.clear(); host.skips.ignore.clear()
     for (const [p, reason] of desired.excludedReasons) if (reason === 'size') host.skips.size.add(p)
     else if (reason === 'budget') host.skips.budget.add(p)
     else host.skips.ignore.add(p)
-    for (const [p, reason] of desired.excludedReasons) if (!previousSkips.has(p)) host.noteSkip(p, reason === 'size' ? 'over size cap' : reason === 'budget' ? 'over total budget' : reason === 'untracked lockfile' ? reason : 'ignore')
+    host.syncSkipReasons?.(desired.excludedReasons)
     this.errors.clear()
     for (const p of desired.textPaths) host.batch.published(p)
     if (desired.entries.size || desired.excluded.length) host.bumpLastActive()

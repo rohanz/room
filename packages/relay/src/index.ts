@@ -33,7 +33,7 @@ import { RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 export { SecureSession } from './secure.js'
-export { localProofHeader, localViewKey, relayHealth, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
+export { localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
 class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
 export function safeUrl(target: string | undefined): URL {
   if (!target || !target.startsWith('/') || target.startsWith('//') || /[\x00-\x1f\x7f]/.test(target)) throw new HttpFailure(400, 'Bad Request')
@@ -271,7 +271,7 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
   }
 }
 
-export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string }
+export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
@@ -283,6 +283,8 @@ export interface LocalRelay {
   key: string
   /** True when this process runs the relay. */
   owned: boolean
+  /** A canonical port occupied by a relay of this clone, while this session uses another port. */
+  canonicalWarning?: string
   /** Set when this clone's relay port is now served by another relay: the session must join afresh. */
   readonly lost?: string
   /** Forget this room's saved memory until the relay next restarts. */
@@ -298,7 +300,7 @@ export function readRelayInfo(commonDir: string): LocalRelayInfo | undefined {
   try {
     const v = JSON.parse(fs.readFileSync(relayFile(commonDir), 'utf8')) as Partial<LocalRelayInfo>
     return v.schema === 2 && typeof v.port === 'number' && typeof v.pid === 'number' && typeof v.key === 'string' && v.key
-      ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key }
+      ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ''), startedAt: Number(v.startedAt ?? 0), key: v.key, ...(typeof v.canonicalWarning === 'string' ? { canonicalWarning: v.canonicalWarning } : {}) }
       : undefined
   } catch { return undefined }
 }
@@ -329,6 +331,19 @@ export async function probeRelay(port: number, commonDir: string, key: string, t
   if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return 'none'
   // A Room relay that did not prove this clone's key (another clone's, or one holding another key) is foreign.
   return identity!.proven && h.clone === cloneId(commonDir) ? 'ours' : 'foreign'
+}
+
+export type RelayIdentity = Awaited<ReturnType<typeof relayIdentity>>
+/** Classify an occupied canonical port without trusting the discovery key. */
+export function canonicalRelayWarning(port: number, commonDir: string, identity: RelayIdentity, info?: LocalRelayInfo): { roomRelay: boolean; warning?: string } {
+  const h = identity?.health
+  if (h?.ok !== true || h.local !== true) return { roomRelay: false }
+  // 0.16 did not advertise a clone; on this clone's derived port, treat it as this room.
+  if (typeof h.clone === 'string' && h.clone !== cloneId(commonDir)) return { roomRelay: true }
+  const pid = info?.port === port ? info.pid : typeof h.pid === 'number' ? h.pid : undefined
+  const started = info?.port === port && info.startedAt ? new Date(info.startedAt).toISOString() : undefined
+  const details = [pid !== undefined ? `pid ${pid}` : undefined, started ? `started ${started}` : undefined].filter(Boolean).join(', ')
+  return { roomRelay: true, warning: `an older Room session${details ? ` (${details})` : ''} still holds this room's relay on 127.0.0.1:${port}; quit it or reconnect Room there` }
 }
 
 const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.map': 'application/json' }
@@ -562,12 +577,13 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
   let owned: StartedRelay | null = null
   let port = 0
   let key = ''
+  let canonicalWarning: string | undefined
   /** Publish the discovery file atomically: readers see the old file or the new one, never a partial one. */
   const write = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-      fs.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key, canonicalWarning } satisfies LocalRelayInfo) + '\n', { mode: 0o600 })
       fs.chmodSync(tmp, 0o600)
       fs.renameSync(tmp, file)
     } catch (e) {
@@ -614,8 +630,10 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
         try { owned = await start(want, lock) }
         catch (e) {
           if ((e as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw e
+          const collision = canonicalRelayWarning(want, commonDir, await relayIdentity(want, key), readRelayInfo(commonDir))
           owned = await start(0, lock)
-          log(`local room ${room}: port ${want} is taken by something else; using a free port`)
+          canonicalWarning = collision.warning
+          log(`local room ${room}: ${collision.warning ?? (collision.roomRelay ? `port ${want} is held by another clone's Room relay; using a free port` : `port ${want} is taken by something else; using a free port`)}`)
         }
       } catch (e) { lock.release(); throw e }
       port = owned.port
@@ -624,11 +642,24 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     }
   }
 
+  // Later joiners adopt the fallback relay from discovery, but the canonical conflict remains.
+  const canonicalPort = deterministicPort(commonDir)
+  if (port !== canonicalPort) {
+    const identity = await relayIdentity(canonicalPort, key)
+    const collision = canonicalRelayWarning(canonicalPort, commonDir, identity, readRelayInfo(commonDir))
+    canonicalWarning = collision.warning ? canonicalWarning ?? readRelayInfo(commonDir)?.canonicalWarning ?? collision.warning : undefined
+  }
+
   let stopped = false
   let lost: string | undefined
   let ticking: Promise<void> | null = null
   const tick = async () => {
-    if (stopped || owned || lost) return
+    if (stopped) return
+    if (canonicalWarning) {
+      const identity = await relayIdentity(canonicalPort, key)
+      if (!canonicalRelayWarning(canonicalPort, commonDir, identity, readRelayInfo(commonDir)).warning) canonicalWarning = undefined
+    }
+    if (owned || lost) return
     const who = await probeRelay(port, commonDir, key)
     if (stopped || who === 'ours') return
     if (who === 'foreign') {
@@ -666,6 +697,7 @@ export async function ensureLocalRelay(commonDir: string, room: string, opts: { 
     httpUrl: `http://127.0.0.1:${port}`,
     port,
     key,
+    get canonicalWarning() { return canonicalWarning },
     get owned() { return owned !== null },
     get lost() { return lost },
     async forget() {

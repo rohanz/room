@@ -19711,14 +19711,13 @@ var init_publisher = __esm({
         }, host);
         this.excludedPaths.clear();
         for (const p of desired.excludedPaths) this.excludedPaths.add(p);
-        const previousSkips = /* @__PURE__ */ new Set([...host.skips.size, ...host.skips.budget, ...host.skips.ignore]);
         host.skips.size.clear();
         host.skips.budget.clear();
         host.skips.ignore.clear();
         for (const [p, reason] of desired.excludedReasons) if (reason === "size") host.skips.size.add(p);
         else if (reason === "budget") host.skips.budget.add(p);
         else host.skips.ignore.add(p);
-        for (const [p, reason] of desired.excludedReasons) if (!previousSkips.has(p)) host.noteSkip(p, reason === "size" ? "over size cap" : reason === "budget" ? "over total budget" : reason === "untracked lockfile" ? reason : "ignore");
+        host.syncSkipReasons?.(desired.excludedReasons);
         this.errors.clear();
         for (const p of desired.textPaths) host.batch.published(p);
         if (desired.entries.size || desired.excluded.length) host.bumpLastActive();
@@ -19740,6 +19739,30 @@ var init_publisher = __esm({
           if (!(error2 instanceof StalePublication)) this.reconcileFailed(error2);
           return void 0;
         }
+      }
+    };
+  }
+});
+
+// packages/roomd/src/skip-summary.ts
+var SkipSummaryGate;
+var init_skip_summary = __esm({
+  "packages/roomd/src/skip-summary.ts"() {
+    "use strict";
+    SkipSummaryGate = class {
+      constructor(now = Date.now) {
+        this.now = now;
+      }
+      now;
+      previous = /* @__PURE__ */ new Map();
+      lastLogged = -Infinity;
+      shouldLog(next) {
+        const changed = next.size !== this.previous.size || [...next].some(([path50, reason]) => this.previous.get(path50) !== reason);
+        this.previous = new Map(next);
+        if (!next.size) return false;
+        if (!changed && this.now() - this.lastLogged < 60 * 6e4) return false;
+        this.lastLogged = this.now();
+        return true;
       }
     };
   }
@@ -25720,7 +25743,7 @@ function relayFile(commonDir) {
 function readRelayInfo(commonDir) {
   try {
     const v = JSON.parse(fs13.readFileSync(relayFile(commonDir), "utf8"));
-    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key } : void 0;
+    return v.schema === 2 && typeof v.port === "number" && typeof v.pid === "number" && typeof v.key === "string" && v.key ? { schema: 2, port: v.port, pid: v.pid, room: String(v.room ?? ""), startedAt: Number(v.startedAt ?? 0), key: v.key, ...typeof v.canonicalWarning === "string" ? { canonicalWarning: v.canonicalWarning } : {} } : void 0;
   } catch {
     return void 0;
   }
@@ -25747,6 +25770,15 @@ async function probeRelay(port, commonDir, key2, timeoutMs2 = 800) {
   const h = identity2?.health;
   if (h?.local !== true || h.schema !== 2 || h.hub !== 1) return "none";
   return identity2.proven && h.clone === cloneId(commonDir) ? "ours" : "foreign";
+}
+function canonicalRelayWarning(port, commonDir, identity2, info2) {
+  const h = identity2?.health;
+  if (h?.ok !== true || h.local !== true) return { roomRelay: false };
+  if (typeof h.clone === "string" && h.clone !== cloneId(commonDir)) return { roomRelay: true };
+  const pid = info2?.port === port ? info2.pid : typeof h.pid === "number" ? h.pid : void 0;
+  const started = info2?.port === port && info2.startedAt ? new Date(info2.startedAt).toISOString() : void 0;
+  const details = [pid !== void 0 ? `pid ${pid}` : void 0, started ? `started ${started}` : void 0].filter(Boolean).join(", ");
+  return { roomRelay: true, warning: `an older Room session${details ? ` (${details})` : ""} still holds this room's relay on 127.0.0.1:${port}; quit it or reconnect Room there` };
 }
 function findWebDist() {
   const here = path10.dirname(new URL(import.meta.url).pathname);
@@ -26030,11 +26062,12 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
   let owned = null;
   let port = 0;
   let key2 = "";
+  let canonicalWarning;
   const write2 = () => {
     const file = relayFile(commonDir), tmp = `${file}.${process.pid}.tmp`;
     try {
       fs13.mkdirSync(path10.dirname(file), { recursive: true, mode: 448 });
-      fs13.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2 }) + "\n", { mode: 384 });
+      fs13.writeFileSync(tmp, JSON.stringify({ schema: 2, port, pid: process.pid, room, startedAt: Date.now(), key: key2, canonicalWarning }) + "\n", { mode: 384 });
       fs13.chmodSync(tmp, 384);
       fs13.renameSync(tmp, file);
     } catch (e) {
@@ -26083,8 +26116,10 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
           owned = await start2(want, lock);
         } catch (e) {
           if (e.code !== "EADDRINUSE") throw e;
+          const collision = canonicalRelayWarning(want, commonDir, await relayIdentity(want, key2), readRelayInfo(commonDir));
           owned = await start2(0, lock);
-          log2(`local room ${room}: port ${want} is taken by something else; using a free port`);
+          canonicalWarning = collision.warning;
+          log2(`local room ${room}: ${collision.warning ?? (collision.roomRelay ? `port ${want} is held by another clone's Room relay; using a free port` : `port ${want} is taken by something else; using a free port`)}`);
         }
       } catch (e) {
         lock.release();
@@ -26095,11 +26130,22 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
       log2(`local room ${room}: started relay on 127.0.0.1:${port}`);
     }
   }
+  const canonicalPort = deterministicPort(commonDir);
+  if (port !== canonicalPort) {
+    const identity2 = await relayIdentity(canonicalPort, key2);
+    const collision = canonicalRelayWarning(canonicalPort, commonDir, identity2, readRelayInfo(commonDir));
+    canonicalWarning = collision.warning ? canonicalWarning ?? readRelayInfo(commonDir)?.canonicalWarning ?? collision.warning : void 0;
+  }
   let stopped = false;
   let lost;
   let ticking = null;
   const tick = async () => {
-    if (stopped || owned || lost) return;
+    if (stopped) return;
+    if (canonicalWarning) {
+      const identity2 = await relayIdentity(canonicalPort, key2);
+      if (!canonicalRelayWarning(canonicalPort, commonDir, identity2, readRelayInfo(commonDir)).warning) canonicalWarning = void 0;
+    }
+    if (owned || lost) return;
     const who2 = await probeRelay(port, commonDir, key2);
     if (stopped || who2 === "ours") return;
     if (who2 === "foreign") {
@@ -26143,6 +26189,9 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     httpUrl: `http://127.0.0.1:${port}`,
     port,
     key: key2,
+    get canonicalWarning() {
+      return canonicalWarning;
+    },
     get owned() {
       return owned !== null;
     },
@@ -28974,6 +29023,7 @@ var init_src4 = __esm({
     init_disk_batch();
     init_poll();
     init_publisher();
+    init_skip_summary();
     init_disk_scan();
     init_manifest_publish();
     init_policy();
@@ -29093,6 +29143,8 @@ var init_src4 = __esm({
       /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
       pendingSkips = /* @__PURE__ */ new Map();
       pendingSkipExample = "";
+      skipSummaryGate = new SkipSummaryGate();
+      publishedSkipReasons = /* @__PURE__ */ new Map();
       skipLogTimer;
       skipLogMs;
       started = false;
@@ -29216,7 +29268,7 @@ var init_src4 = __esm({
         if (this.basePollMs > 0) this.headPoll = new CoalescedPoll("HEAD poll", this.basePollMs, () => this.queuedHeadPoll(), this.log);
         this.pendingSkips.clear();
         this.started = true;
-        this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummary()}`);
+        this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummaryGate.shouldLog(this.publishedSkipReasons) ? this.skipSummary() : ""}`);
       }
       step(phase, work) {
         this.phase = phase;
@@ -29231,6 +29283,18 @@ var init_src4 = __esm({
         if (!n) return "";
         const parts2 = [["size", this.skips.size.size], ["budget", this.skips.budget.size], ["ignore", this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`);
         return `; skipped ${n} file(s) (${parts2.join(", ")})`;
+      }
+      /** Publisher calls this on every reconcile, including unchanged skip sets. */
+      syncSkipReasons(reasons) {
+        this.publishedSkipReasons = new Map(reasons);
+        if (this.started && this.skipSummaryGate.shouldLog(reasons)) {
+          const counts = /* @__PURE__ */ new Map();
+          for (const reason of reasons.values()) {
+            const label = reason === "size" ? "over size cap" : reason === "budget" ? "over total budget" : reason === "untracked lockfile" ? reason : "ignore";
+            counts.set(label, (counts.get(label) ?? 0) + 1);
+          }
+          if (counts.size) this.log(`skipped ${reasons.size} file(s) (${[...counts].map(([reason, count]) => `${count} ${reason}`).join(", ")}), e.g. ${reasons.keys().next().value}`);
+        }
       }
       // ---- sharing policy --------------------------------------------------
       applyInputs(next) {
@@ -56547,6 +56611,7 @@ function evaluateDoctor(f, version3 = plugin_default.version) {
     else add2("WARN", "team login", "credential present (not verified)", "Check server connection, then retry room doctor");
   } else add2(f.relayFile ? f.relayHealth ? "PASS" : "WARN" : "PASS", "local relay", f.relayFile ? f.relayHealth ? "discovery and /health OK" : "discovery exists; /health unavailable" : "not started yet", "Join the local room to start its relay");
   if (f.legacyRelay) add2("WARN", "Room 0.16 session", "a Room 0.16 local relay is still running in this clone", "End Room 0.16 sessions here so 0.17 can take over (docs/upgrading.md)");
+  if (f.canonicalRelayWarning) add2("WARN", "canonical relay", f.canonicalRelayWarning, "Quit the older Room session or reconnect Room there");
   add2(f.inSession ? f.stale ? "WARN" : "PASS" : "PASS", "running session", f.inSession ? f.stale ?? "matches installed bundle" : "n/a", "Restart the host session or reconnect Room (/mcp)");
   return rows;
 }
@@ -56699,14 +56764,20 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
       f.legacyRelay = legacyRelayRunning(common);
       f.relayFile = info2 ? relayFile(common) : void 0;
       if (info2) f.relayHealth = (await probeHealth(`http://127.0.0.1:${info2.port}/health`)).ok;
+      const port = deterministicPort(common);
+      const identity2 = await relayIdentity(port, info2?.key ?? "");
+      if (identity2 && !(identity2.proven && identity2.health.clone === cloneId(common) && identity2.health.schema === 2))
+        f.canonicalRelayWarning = canonicalRelayWarning(port, common, identity2, info2).warning;
     }
   } catch (error2) {
     f.configError = error2 instanceof Error ? error2.message : String(error2);
   }
   return f;
 }
-async function runDoctor(dir, inSession = false, selected) {
-  return formatDoctor(evaluateDoctor(await collectDoctorFacts(dir, inSession, selected)));
+async function runDoctor(dir, inSession = false, selected, sessionWarning) {
+  const facts = await collectDoctorFacts(dir, inSession, selected);
+  if (sessionWarning) facts.canonicalRelayWarning = sessionWarning;
+  return formatDoctor(evaluateDoctor(facts));
 }
 
 // packages/room-mcp/src/tools/scope.ts
@@ -56814,7 +56885,8 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       if (a.check === true) {
         const active = state.ctx.getSession();
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf("/")) : void 0;
-        return runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : void 0);
+        const destination = server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : void 0;
+        return active?.local?.canonicalWarning ? runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active.local.canonicalWarning) : runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination);
       }
       const s = S();
       await loadAreas(s);
@@ -56827,6 +56899,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       const out2 = [s.local ? "local: nothing leaves this machine" : publisher ? `team room: ${publisher} (${participants} in the room)` : `team room: sharing ${sharingDescription(sharingLevel)}${sharingLevel === "declared" && s.policyStore.retained.length ? "; changed files declared earlier remain shared" : ""} with ${participants}`];
       if (!s.local) out2.push(`sharing level: ${sharingLevel}; ${sharingHumanChoices(sharingLevel)}`);
       if (s.local && publisher) out2.push(publisher);
+      if (s.local?.canonicalWarning) out2.push(`WARN: ${s.local.canonicalWarning}`);
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, "company");
         if (wakeNote) out2.unshift(wakeNote);
@@ -57391,6 +57464,7 @@ function handlers6(state) {
       out2.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone and its worktrees)" : choice.rule === "env" ? resolved.whereEnv : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
       await offerTeamSharingDisclosure(s, ledger2);
       if (s.local) out2.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
+      if (s.local?.canonicalWarning) out2.push(`WARN: ${s.local.canonicalWarning}`);
       if (presences(s).some((p) => sameCheckoutSession(s, p.user.name))) out2.push("another session in this checkout");
       const sameCheckoutNames = new Set(presences(s).filter((p) => sameCheckoutSession(s, p.user.name)).map((p) => p.user.name));
       for (const scope of s.room.allScopes()) if (sameCheckoutNames.has(scope.by)) out2.push(`  scope: ${displayName({ name: scope.by, kind: scope.byKind })} is on ${scopeLine(scope)}`);
