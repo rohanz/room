@@ -24,7 +24,7 @@ In Codex, accept the Room hooks prompt, or trust Room in `/hooks`. Its session-s
 
 Ask **“show room state”** to check it. A local session starts with `local: nothing leaves this machine`, then shows `room: local/<repo>` and `you: <name> in local/<repo>`. A team session shows `team room:`, `room: github.com/<owner>/<repo>`, and your branch and base. Ask for the browser link to see participants and activity.
 
-If setup seems wrong, ask **“is Room set up right?”**. The agent checks Room state. You can also run `bin/room-doctor` from a checkout or the installed plugin at `~/.claude/plugins/cache/room/room/<version>/bin/room-doctor` or `~/.codex/plugins/cache/room/room/<version>/bin/room-doctor` (replace `<version>` with the installed version).
+If setup seems wrong, ask **“is Room set up right?”**. The agent checks Room state. You can also run `plugins/room/bin/room-doctor` from a checkout, or from the installed plugin at `~/.claude/plugins/cache/room/room/<version>/bin/room-doctor` or `~/.codex/plugins/cache/room/room/<version>/bin/room-doctor` (replace `<version>` with the installed version).
 
 ### Work with teammates
 
@@ -42,7 +42,7 @@ The hosted server is `wss://room-rohanz.fly.dev`. To choose it explicitly, launc
 
 When you ask your agent to work on a feature, it can announce the files it expects to edit. If another agent is near that code, Room shows the overlap and the agents can claim separate lines or ask each other a question. An addressed question can wake an idle session. Before bringing work together, agents can preview the combined tree and run checks. Claims are advisory; commits and pushes remain your decision.
 
-You can also ask **“use a couple of subagents for this”**. Room runs workers in their own Git worktrees and brings finished work back as uncommitted, unstaged edits. The spawn reply names each worker's host, model and effort when known. Room has no default worker model or effort: a request or worker environment setting can select one; otherwise the host chooses.
+You can also ask for **“another agent”**, **“agents in parallel”** or **“Codex to do half of this”**. Room runs workers in their own Git worktrees and brings finished work back as uncommitted, unstaged edits. The spawn reply names each worker's host, model and effort when known. Room has no default worker model or effort: a request or worker environment setting can select one; otherwise the host chooses.
 
 ![Room file viewer showing participants’ changes and activity](docs/img/room-v2-redesign.png)
 

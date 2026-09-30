@@ -1,4 +1,4 @@
-import { displayName, type Identity } from '@room/shared'
+import { displayName, workerLive, type Identity } from '@room/shared'
 import type { Session } from '../session.js'
 import { isPrName } from '../prs.js'
 
@@ -43,5 +43,18 @@ export function resolveDisplayedName(requested: string, context: NameContext, ca
     for (const worker of room.room.retiredWorkers()) if (worker.lead === caller.me.name && addressKey(worker.tag) === key) candidates.add(worker.name)
   }
   const names = [...candidates].sort()
-  return names.length > 1 ? { ambiguous: names } : { name: names[0] }
+  if (names.length) return names.length > 1 ? { ambiguous: names } : { name: names[0] }
+  const owner = key.endsWith("'s agent") ? key.slice(0, -"'s agent".length) : key
+  // Presence is the active roster. Old scopes, mail and retired workers must not win this fallback.
+  const active = new Map<string, Identity>()
+  for (const room of sessions) for (const identity of [room.me, ...context.presences(room).map(p => p.user)]) {
+    if (identity.kind === 'agent') active.set(identity.name, identity)
+  }
+  for (const room of sessions) for (const worker of room.room.acceptedWorkerViews()) {
+    if (workerLive(worker.status) && !active.has(worker.name)) active.set(worker.name, { name: worker.name, kind: 'agent' })
+  }
+  const owned = [...active.values()].filter(id => addressKey(id.owner ?? id.name.split('+')[0]) === owner)
+  // Workers count only here, after exact names and displayed names have failed.
+  const owners = owned.map(id => id.name).sort()
+  return owners.length > 1 ? { ambiguous: owners } : { name: owners[0] }
 }

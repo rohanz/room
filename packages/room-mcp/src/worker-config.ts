@@ -7,6 +7,36 @@ import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 
 export type WorkerHost = 'claude' | 'codex'
 
+export function workerRuntime(host: WorkerHost, model?: string, effort?: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
+  const clean = (value: string | undefined) => value?.trim() || undefined
+  const prefix = host === 'codex' ? 'ROOM_CODEX_WORKER_' : 'ROOM_CLAUDE_WORKER_'
+  return {
+    model: clean(model) ?? clean(env[`${prefix}MODEL`]) ?? clean(env.ROOM_WORKER_MODEL),
+    effort: clean(effort) ?? clean(env[`${prefix}EFFORT`]) ?? clean(env.ROOM_WORKER_EFFORT),
+  }
+}
+
+/** Read only public model settings; neither host's credential files are inspected. */
+export function hostDefaultRuntime(host: WorkerHost, dir: string, env: NodeJS.ProcessEnv = process.env): { model?: string; effort?: string } {
+  if (host === 'codex') {
+    try {
+      const config = fs.readFileSync(path.join(env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml'), 'utf8')
+      const top = config.split(/^\s*\[/m, 1)[0]
+      const value = (key: string) => top.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, 'm'))?.[1]
+      return { model: value('model'), effort: value('model_reasoning_effort') }
+    } catch { return {} }
+  }
+  const roots = [path.join(env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'settings.json'), path.join(dir, '.claude', 'settings.json')]
+  let model: string | undefined
+  for (const file of roots) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { model?: unknown }
+      if (typeof parsed.model === 'string' && parsed.model.trim()) model = parsed.model.trim()
+    } catch { /* absent or invalid settings */ }
+  }
+  return { model }
+}
+
 export const WORKER_PORT_START = 4400
 export const WORKER_PORT_END = 4499
 
@@ -162,7 +192,7 @@ export function workerMaxBudget(env: NodeJS.ProcessEnv = process.env): string | 
  * every variable a worker needs explicitly (ROOM_SERVER, ROOM_ROOM, ROOM_DIR, ROOM_TAG, ROOM_LEAD,
  * ROOM_OWNER, ROOM_SHARE, ROOM_LOG_FILE and, when the lead joined with one, ROOM_TOKEN).
  */
-const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
+const LEAD_ONLY_ENV = ['ROOM_URL', 'ROOM_NAME', 'ROOM_DIR', 'ROOM_SERVER', 'ROOM_ROOM', 'ROOM_TAG', 'ROOM_LEAD', 'ROOM_LEAD_CLONE', 'ROOM_OWNER', 'ROOM_SHARE', 'ROOM_TOKEN', 'ROOM_WORKER_ID', 'ROOM_WORKER_RUN', 'ROOM_LAUNCH_NONCE', 'ROOM_REGISTRY', 'ROOM_NAME_EPOCH', 'ROOM_WORKER_HOST', 'ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_CODEX_WORKER_MODEL', 'ROOM_CODEX_WORKER_EFFORT', 'ROOM_CLAUDE_WORKER_MODEL', 'ROOM_CLAUDE_WORKER_EFFORT', 'ROOM_LOG_FILE', 'ROOM_KIND', 'PORT'] as const
 /** The environment a worker process starts with: the lead's, minus LEAD_ONLY_ENV, plus the spec's variables. */
 export function workerEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

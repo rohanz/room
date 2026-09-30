@@ -121,6 +121,16 @@ it('carries a requested custom destination through login and back to join', asyn
   expect(joiner.mock.calls.map(([opts]) => opts.server)).toEqual([server]) // preflight refuses before calling join
 })
 
+it('identifies an old server when the 0.17 hub is absent', async () => {
+  const server = 'ws://old-hub.example'
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new URL(url).pathname === '/auth/config'
+    ? Response.json({}) : Response.json({ view: 'v' })))
+  const t = branchTools(session(`local/${dir.split('/').pop()}`, { local: true }))
+  expect(await t.tools.call('room_join', { where: server, room: 'git/example/repo' }))
+    .toContain('this Room server has no 0.17 hub; ask its operator to deploy Room 0.17')
+  expect(t.joiner).not.toHaveBeenCalled()
+})
+
 it('room_login server=team uses the remembered concrete server', async () => {
   const server = 'ws://remembered-login.example'
   await writeChoice(dir, server)

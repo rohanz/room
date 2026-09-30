@@ -951,7 +951,7 @@ async function preflight(server: string, roomName: string, auth: Creds): Promise
     const res = await serverFetch(`${httpOf(server)}/view-token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ room: roomName, schema: 2, ...auth }), timeoutMs: 20000 })
     if (res.ok) {
       const body = await res.json() as { room?: string; hub?: number }
-      if (body.hub !== 1) return { reason: "this room's hub speaks protocol 1; update Room to 0.17 or later" }
+      if (body.hub !== 1) return { reason: 'this Room server has no 0.17 hub; ask its operator to deploy Room 0.17' }
       return body.room && body.room !== roomName ? { reason: '', canonical: body.room } : undefined
     }
     if (res.status === 401) {

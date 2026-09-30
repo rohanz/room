@@ -30,4 +30,4 @@ End running 0.16 local sessions before joining with 0.17. The new local relay ha
 
 Update a lead and all its workers together. A mixed-version lead and worker may fail admission or miss addressed messages. Finish, collect or stop old workers before starting new ones; workers that were already collected or discarded cannot resume.
 
-For any setup problem, ask **“is Room set up right?”** or run `bin/room-doctor` from a checkout or installed plugin. See [the reference](reference.md#updating-plugins) for cache locations, sharing and diagnostics.
+For any setup problem, ask **“is Room set up right?”** or run `room-doctor` from the installed plugin's `bin/` folder (paths in [the quickstart](../README.md#start-in-five-minutes)). See [the reference](reference.md#updating-plugins) for cache locations, sharing and diagnostics.

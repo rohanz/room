@@ -16,7 +16,7 @@ import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
 import { toolCallAborted, workerOrigin } from '../registry.js'
 import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
-import { workerBudget, hostWorkerEffort, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
+import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
 import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -139,8 +139,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const mismatch = codexRoomVersionMismatch()
         if (mismatch) return `error: ${mismatch}`
       }
-      const effort = hostWorkerEffort(host, requestedEffort)
-      const model = typeof a.model === 'string' && a.model.trim() ? a.model.trim() : undefined
+      const runtime = workerRuntime(host, typeof a.model === 'string' ? a.model : undefined, requestedEffort)
+      if (runtime.effort !== undefined && !(WORKER_EFFORTS as readonly string[]).includes(runtime.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
+      const effort = hostWorkerEffort(host, runtime.effort)
+      const model = runtime.model
       const config = await resolveConfig({ dir: s.dir, env: process.env, args: { maxWorkers: ctx.maxWorkers } })
       const max = config.maxWorkers
       const share = typeof a.share === 'string' && a.share ? parseShare(a.share) : undefined
@@ -272,10 +274,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const { proc, port, env, nice, logFile } = launched
         await s.post<NoteMsg>(s.me, { type: 'note', text: `spawned worker ${tag} (${host}${model ? ` ${model}` : ''}) as ${name}: ${task.slice(0, 100)}` })
-        const out = [`spawned ${tag}: ${name} (${host}${model ? ` ${model}` : ''}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
+        const defaults = hostDefaultRuntime(host, dir)
+        const shownModel = model ?? (defaults.model ? `(host default: ${defaults.model})` : '(host default)')
+        const shownEffort = effort ?? (defaults.effort ? `(host default: ${defaults.effort})` : '(host default)')
+        const out = [`spawned ${tag}: ${name} (${host}, pid ${proc.pid})${port === undefined ? '' : ` port ${port}`} in ${dir} on branch ${branch}${created ? ' (new worktree)' : ''}`]
+        out.push(`model ${shownModel} · effort ${shownEffort}; name a model or effort in the request, or set ROOM_WORKER_MODEL / ROOM_WORKER_EFFORT.`)
         const wakeNote = claudeWakeNote(lead, 'spawn')
         if (wakeNote) out.unshift(wakeNote)
-        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${effort ? ` · effort ${effort}` : ''}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
+        out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
         if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import { createTools } from '../src/tools.js'
@@ -18,6 +18,7 @@ const shutdowns: (() => Promise<void>)[] = []
 const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim()
 
 beforeEach(() => {
+  for (const key of ['ROOM_WORKER_MODEL', 'ROOM_WORKER_EFFORT', 'ROOM_CODEX_WORKER_MODEL', 'ROOM_CODEX_WORKER_EFFORT', 'ROOM_CLAUDE_WORKER_MODEL', 'ROOM_CLAUDE_WORKER_EFFORT']) vi.stubEnv(key, undefined)
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-spawn-safety-'))
   repo = path.join(root, 'lead'); fs.mkdirSync(repo)
   git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Lead'); git('config', 'user.email', 'lead@example.test')
@@ -26,9 +27,27 @@ beforeEach(() => {
   fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '.room/\n')
 })
 afterEach(async () => {
+  vi.unstubAllEnvs()
   for (const stop of shutdowns.splice(0)) await stop().catch(() => {})
   await closeRegistryForDir(repo)
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+it('shows the configured host default and an explicit worker model in spawn replies', async () => {
+  const home = path.join(root, 'codex')
+  fs.mkdirSync(home)
+  fs.writeFileSync(path.join(home, 'config.toml'), 'model = "configured-model"\nmodel_reasoning_effort = "high"\n')
+  vi.stubEnv('CODEX_HOME', home)
+  const t = tool()
+  const first = await t.call({ tag: 'default', host: 'codex' })
+  expect(first).toContain('model (host default: configured-model) · effort (host default: high)')
+  const named = await t.call({ tag: 'named', host: 'codex', model: 'requested-model', effort: 'low' })
+  expect(named).toContain('model requested-model · effort low')
+})
+
+it('labels unknown worker model and effort as host defaults', async () => {
+  vi.stubEnv('CODEX_HOME', path.join(root, 'missing'))
+  expect(await tool().call({ host: 'codex' })).toContain('model (host default) · effort (host default)')
 })
 
 function tool(roomName = 'local/a/main', spawner: (spec: { env: Record<string, string> }) => any = () => ({ pid: 4000000, started: Promise.resolve(), onExit() {}, kill: () => true })) {

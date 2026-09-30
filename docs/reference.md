@@ -50,9 +50,9 @@ Claude Code **2.1.224+** on macOS, Linux and WSL 2, and **2.1.234+** on native W
 
 ## Workers and previews
 
-Say “use a couple of subagents for this” for substantial parallel work. `room_spawn` makes a worktree under `.room/workers/<tag>`; each worker gets its own development port. It carries eligible tracked and non-ignored untracked work from the lead. Files over 5 MB or beyond 50 MB total, nested repositories, and unsafe links are skipped and named in the reply. The worker's changes return through `room_collect` as uncommitted, unstaged edits. A conflict leaves the lead's files untouched. Collection of a finished worker removes its worktree, branch and logs; a failed collection preserves them. Discard retains a recovery patch for a week. A worker in a borrowed checkout detaches without deleting the owner's worktree. A message to a finished worker resumes its retained session until collection or discard.
+Ask for “another agent”, “a few agents in parallel” or “Codex to do part of it” for substantial parallel work. `room_spawn` makes a worktree under `.room/workers/<tag>`; each worker gets its own development port. It carries eligible tracked and non-ignored untracked work from the lead. Files over 5 MB or beyond 50 MB total, nested repositories, and unsafe links are skipped and named in the reply. The worker's changes return through `room_collect` as uncommitted, unstaged edits. A conflict leaves the lead's files untouched. Collection of a finished worker removes its worktree, branch and logs; a failed collection preserves them. Discard retains a recovery patch for a week. A worker in a borrowed checkout detaches without deleting the owner's worktree. A message to a finished worker resumes its retained session until collection or discard.
 
-Room has **no default worker model or effort**. A request, `ROOM_WORKER_MODEL` or `ROOM_WORKER_EFFORT` can select them; otherwise the host chooses. The spawn reply reports what the worker runs with. `ROOM_WORKER_THREADS` overrides its compute thread budget; `ROOM_WORKER_MAX_BUDGET_USD` caps a Claude worker through that host's `--max-budget-usd`. Workers are capped at eight by default (`ROOM_MAX_WORKERS`). A lead can dispatch locally while in a team room: its worker messages remain on this machine and the lead bridges relevant team updates.
+Room has **no default worker model or effort**. The model and effort named in the request win, then a per-host setting (`ROOM_CODEX_WORKER_MODEL`, `ROOM_CLAUDE_WORKER_MODEL` and their `_EFFORT` variants), then `ROOM_WORKER_MODEL` / `ROOM_WORKER_EFFORT`; otherwise the host's own default applies (Codex's `config.toml` or built-in default, Claude Code's settings). The spawn reply reports what the worker runs with. `ROOM_WORKER_THREADS` overrides its compute thread budget; `ROOM_WORKER_MAX_BUDGET_USD` caps a Claude worker through that host's `--max-budget-usd`. Workers are capped at eight by default (`ROOM_MAX_WORKERS`). A lead can dispatch locally while in a team room: its worker messages remain on this machine and the lead bridges relevant team updates.
 
 `room_preview_merge` combines selected participants at each pair's merge base. With `run=`, it runs a check in a temporary checkout and keeps a reusable worktree slot under the Git common directory's `room-preview/`. Ignored build output can stay warm. The preview cache has a size cap (`ROOM_PREVIEW_CACHE_GB`, default 4; 0 disables reuse). A sparse clone's check uses a full-tree checkout without changing the source's sparse settings. A crashed process can leave a claimed slot; stop Room processes and inspect `git worktree list --porcelain` and the slot's `.git` and reciprocal admin `gitdir` before manually removing its `.claim` and registered worktree.
 
@@ -73,7 +73,8 @@ When a teammate pushes a commit on your branch, Room can show that your clone is
 | `ROOM_SHARE` | `full`, `declared`, or `intent`. |
 | `ROOM_WAKE` | `auto`, `channels`, or `off`. |
 | `ROOM_TAG` | Your label when one login has several sessions. |
-| `ROOM_WORKER_MODEL`, `ROOM_WORKER_EFFORT` | Worker model and effort when explicitly selected; otherwise host defaults apply. |
+| `ROOM_WORKER_MODEL`, `ROOM_WORKER_EFFORT` | Your default worker model and effort; otherwise host defaults apply. |
+| `ROOM_CODEX_WORKER_MODEL`, `ROOM_CODEX_WORKER_EFFORT`, `ROOM_CLAUDE_WORKER_MODEL`, `ROOM_CLAUDE_WORKER_EFFORT` | Per-host worker defaults; they override the generic pair. |
 | `ROOM_WORKER_THREADS`, `ROOM_WORKER_MAX_BUDGET_USD` | Worker compute budget and Claude cost cap. |
 | `ROOM_MAX_WORKERS` | Maximum concurrent workers; default 8. |
 | `ROOM_PREVIEW_CACHE_GB` | Preview cache cap in GiB; default 4, 0 disables reuse. |
@@ -81,7 +82,6 @@ When a teammate pushes a commit on your branch, Room can show that your clone is
 | `ROOM_CREDENTIALS`, `ROOM_LOG_FILE` | Alternate credential and log paths. |
 | `ROOM_TOKEN` | Shared server token for non-GitHub rooms. |
 | `YPERSISTENCE` | Server state directory. |
-<!-- lead: env -->
 
 ## Updating plugins
 
