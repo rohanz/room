@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { keyEncoding, LeveldbPersistence } from 'y-leveldb'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables } from '../src/stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables, levelLoad } from '../src/stored.js'
 import { migrateRepo, type MigrationIO } from '../src/migrate.js'
 import type { OpenRepo } from '../src/store.js'
 import { takeInventory, formatInventory } from '../src/inventory.js'
@@ -28,6 +28,19 @@ async function fixture() {
   for (const update of updates) await provider.storeUpdate('from', update)
   return { provider, db: await levelDbOf(provider), doc, updates }
 }
+it('loads a document with more than 500 records without writing (y-leveldb getYDoc would append a snapshot)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-stored-load-')), provider = new LeveldbPersistence(dir)
+  cleanups.push(async () => { await provider.destroy(); fs.rmSync(dir, { recursive: true, force: true }) })
+  const doc = new Y.Doc(), updates: Uint8Array[] = []
+  doc.on('update', update => { updates.push(update) })
+  for (let i = 0; i < 520; i++) doc.getMap('m').set(`k${i}`, i)
+  for (const update of updates) await provider.storeUpdate('many', update)
+  const db = await levelDbOf(provider), before = await levelStoredSize(db, 'many')
+  const loaded = await levelLoad(provider, 'many')
+  expect(Y.encodeStateAsUpdate(loaded)).toEqual(Y.encodeStateAsUpdate(doc))
+  expect(await levelStoredSize(db, 'many')).toEqual(before)
+  loaded.destroy(); doc.destroy()
+})
 it('replaces snapshots atomically with a matching discovery vector: an interrupted write changes nothing', async () => {
   const f = await fixture(), snapshot = Y.encodeStateAsUpdate(f.doc)
   const before = await levelStoredSize(f.db, 'from')

@@ -20,6 +20,8 @@ it('replaces the canonical snapshot when expiry clears unresolved entries of a c
   canonical.on('update', update => { updates.push(update) })
   canonical.getMap('meta').set('schemaVersion', 2)
   for (let i = 0; i < 6; i++) canonical.getMap('unresolved').set(`key-${i}`, { placeholder: `?${i}`, claims: [], pad: 'x'.repeat(64 * 1024) })
+  // Past y-leveldb's 500-record trim: loading must not append its own snapshot beside these records.
+  for (let i = 0; i < 600; i++) canonical.getMap('meta').set(`touch-${i}`, i)
   for (const update of updates) await db.storeUpdate(repo, update)
   await db.storeUpdate(legacy, Y.encodeStateAsUpdate(new Y.Doc()))
   canonical.destroy(); await db.destroy()

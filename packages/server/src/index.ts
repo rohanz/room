@@ -46,7 +46,7 @@ import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from '.
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, isLevelProvider, type StoredSize } from './stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
@@ -965,6 +965,7 @@ const stockPersistence = getPersistence() as { provider: PersistenceProvider } |
 if (stockPersistence && isLevelProvider(stockPersistence.provider)) {
   const level = stockPersistence.provider
   level.replace = (name, snapshot) => levelReplace(level, name, snapshot)
+  level.getYDoc = name => levelLoad(level, name)
 }
 setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
 setInterval(() => { hubs.tick() }, 1000).unref()

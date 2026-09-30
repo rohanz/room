@@ -1,7 +1,7 @@
 /** Stored document sizes and raw updates, read without building a Y.Doc.
  *  y-leveldb keeps each update under ['v1', name, 'update', clock] and one state-vector record under ['v1_sv', name]. */
 // @ts-expect-error y-leveldb's exports omit its generated declarations.
-import { getAllDocs, getCurrentUpdateClock, keyEncoding } from 'y-leveldb'
+import { getAllDocs, getCurrentUpdateClock, getLevelUpdates, keyEncoding } from 'y-leveldb'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
 export interface StoredSize { bytes: number; updates: number; over: boolean; reason?: string }
@@ -31,7 +31,19 @@ export function isLevelProvider(provider: unknown): provider is LevelProvider {
   return !!provider && typeof (provider as LevelProvider)._transact === 'function'
 }
 
-/** Publish the snapshot and discovery vector before clearing old records: interrupted clears keep a superset. */
+/** y-leveldb's getYDoc without its trim: past 500 records it appends a snapshot and clears the old ones
+ *  without waiting, so a crash can leave both. Compaction happens only through levelReplace. */
+export async function levelLoad(provider: LevelProvider, name: string): Promise<Y.Doc> {
+  const result = await provider._transact(async db => {
+    try { return { updates: await getLevelUpdates(db, name) as Uint8Array[] } } catch (error) { return { error } }
+  })
+  if (!result || 'error' in result) throw result?.error ?? new Error('document read failed')
+  const doc = new Y.Doc()
+  doc.transact(() => { for (const update of result.updates) Y.applyUpdate(doc, update) })
+  return doc
+}
+
+/** Replace a document's stored updates with one snapshot and its discovery vector, atomically. */
 export async function levelReplace(provider: LevelProvider, name: string, snapshot: Uint8Array): Promise<void> {
   // y-leveldb swallows callback errors; carry them out so hub retries still work.
   const result = await provider._transact(async db => {
