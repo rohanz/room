@@ -19,6 +19,7 @@ import { projectWorkers } from '../src/worker-projector.js'
 import { autoRetire } from '../src/retire.js'
 import { cleanupWorker, type WorkerCleanupPreservation } from '../src/worker-git.js'
 import { realStateInput } from '../src/worker-status.js'
+import { currentToolTiming, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
@@ -26,10 +27,12 @@ import { testPolicyStore } from './policy-fixture.js'
 vi.setConfig({ testTimeout: 30_000 })
 
 const collectRefHook = vi.hoisted(() => ({ call: undefined as undefined | ((ref: string) => void) }))
+const gitPathCalls = vi.hoisted(() => [] as string[][])
 vi.mock('@room/roomd/git', async importOriginal => {
   const actual = await importOriginal<typeof import('@room/roomd/git')>()
   return { ...actual, git: async (...args: Parameters<typeof actual.git>) => {
     const result = await actual.git(...args)
+    if (args[1][0] === 'rev-parse' && args[1].includes('--git-path')) gitPathCalls.push(args[1])
     if (args[1][0] === 'update-ref' && args[1][1]?.startsWith('refs/room/collect-head/')) collectRefHook.call?.(args[1][1])
     return result
   } }
@@ -42,6 +45,7 @@ const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirnam
 
 beforeEach(() => {
   release.mockReset()
+  gitPathCalls.length = 0
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-')))
   lead = path.join(root, 'lead'); worker = path.join(lead, '.room', 'workers', 'test'); fs.mkdirSync(lead)
   git(lead, 'init', '-q'); git(lead, 'config', 'user.name', 'Lead'); git(lead, 'config', 'user.email', 'lead@example.test')
@@ -101,6 +105,19 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
+  it('checks Git operation markers in one call per checkout and reports collect phases', async () => {
+    const t = setup()
+    put(worker, 'new.txt', 'worker output\n')
+    let timing: ToolTiming | undefined
+    const result = await new ToolTimingTracker({ log: () => {} }).run('room_collect', async () => {
+      timing = currentToolTiming()
+      return t.call({ tag: 'test' })
+    })
+    expect(result).toContain('Changes from test: new.txt.')
+    expect(gitPathCalls).toHaveLength(2)
+    for (const args of gitPathCalls) expect(args.filter(arg => arg === '--git-path')).toHaveLength(5)
+    expect(timing?.slowLine(0, 0)).toMatch(/lease .*inspect .*merge .*prepare .*cleanup /)
+  })
   it.each(['done', 'dismissed', 'running'] as const)('keeps a %s worker when its live pid cannot be verified', async status => {
     const t = setup(status)
     const current = { ...t.w, id: 'worker-id', pid: process.pid, startedAt: Date.now(), exitCode: status === 'running' ? undefined : 0 }

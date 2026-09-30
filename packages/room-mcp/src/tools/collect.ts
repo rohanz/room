@@ -16,6 +16,7 @@ import type { Session } from '../session.js'
 import { retireWorker } from '../retire.js'
 import { localWorkers, registryForDir, registrySnapshotForDir } from '../worker-registry.js'
 import { realStateInput, type LocalWorker } from '../worker-status.js'
+import { currentToolTiming } from '../timing.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
@@ -129,8 +130,10 @@ async function copyFiles(root: string, paths: string[]): Promise<string[]> {
 }
 
 async function assertNoOperation(dir: string): Promise<void> {
-  for (const name of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']) {
-    const file = (await git(dir, ['rev-parse', '--git-path', name])).trim()
+  const names = ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply']
+  const files = (await git(dir, ['rev-parse', ...names.flatMap(name => ['--git-path', name])])).trim().split('\n')
+  if (files.length !== names.length) throw new Error('could not inspect Git operation state in ' + dir)
+  for (const file of files) {
     if (fs.existsSync(path.resolve(dir, file))) throw new Error('finish the existing Git operation in ' + dir + ' before collecting')
   }
 }
@@ -432,6 +435,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const workerRoots = new Map<LocalWorker, string>()
     const workerLocks: string[] = []
     const collectStarted = new Set<string>()
+    const timing = currentToolTiming()
+    let endPhase = timing?.begin('inspect')
+    const nextPhase = (name: string) => { endPhase?.(); endPhase = timing?.begin(name) }
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
@@ -493,6 +499,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
       }
       if (!selected.length) return out.join('\n') || 'No finished changes to collect.'
+      nextPhase(a.mode === 'copy' ? 'copy' : 'merge')
       await assertNoOperation(lead.dir)
       if (a.mode === 'copy') {
         const { s, w } = selected[0]
@@ -588,6 +595,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const tags = (names: string[]) => names.map(name => selected.find(x => x.w.name === name)?.w.tag ?? 'your edits').join(', ')
       if (result.conflictingPaths.size) return [...out, 'Nothing written; conflicting files: ' + [...result.conflictingPaths].map(([p, names]) => p + ' (' + tags(names) + ')').join('; '), 'Collect one at a time, or resolve by hand using room_read.'].join('\n')
       const changes: { p: string; file: string; before: Buffer | null; after: Buffer | null; mode: number; oldMode: number }[] = []
+      nextPhase('prepare')
       // A worker's mode change is judged against its own base, like its text.
       const baseModes = new Map<string, Map<string, number>>()
       const unchangedCarried = new Map<string, Set<string>>()
@@ -642,6 +650,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         throw e
       }
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
+      nextPhase('cleanup')
       for (const { s, w } of selected) {
         let archived: { entry: RetiredWorker; keptWorktree?: string } | undefined
         const finishOne = async (success = true) => {
@@ -725,12 +734,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const id of collectStarted) await registry.abortCollect(id).catch(() => {})
       return [...out, 'error: ' + (e instanceof Error ? e.message : String(e))].join('\n')
     }
-    finally { for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
+    finally { endPhase?.(); for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
   }
   return { room_collect: async a => {
     const registry = await registryForDir(state.S().dir)
     if (a.discard) return roomCollect(a)
-    try { return await registry.withCollectLease(state.S().dir, () => roomCollect(a)) }
+    const endLease = currentToolTiming()?.begin('lease')
+    try { return await registry.withCollectLease(state.S().dir, () => { endLease?.(); return roomCollect(a) }) }
     catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
+    finally { endLease?.() }
   } }
 }
