@@ -39016,7 +39016,7 @@ __export(files_exports, {
   testVerdict: () => testVerdict,
   waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
-import { execFile as execFile8, spawn as spawn4 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
 import fs34 from "node:fs";
 import os6 from "node:os";
@@ -39765,7 +39765,7 @@ function warnSlot(slot, reason) {
   warnedSlots.add(slot);
   console.warn(`room preview: leaving ${slot}: ${reason}`);
 }
-async function deletePreviewSlot(repoDir, slot) {
+async function deletePreviewSlot(repoDir, slot, retryOwnFailure = false) {
   const release = await claimPreviewSlot(slot);
   if (!release) return false;
   let complete = false;
@@ -39807,72 +39807,91 @@ async function deletePreviewSlot(repoDir, slot) {
     warnSlot(slot, error2 instanceof Error ? error2.message : String(error2));
     return false;
   } finally {
-    if (complete) await release();
+    if (complete || retryOwnFailure) await release();
   }
+}
+function queueOwnAbandonedCleanup() {
+  ownCleanup = ownCleanup.then(async () => {
+    await new Promise((resolve5) => setImmediate(resolve5));
+    for (const [slot, repoDir] of [...abandonedOwnSlots].slice(0, 2)) {
+      if (previewSlotTurns.has(slot)) continue;
+      abandonedOwnSlots.delete(slot);
+      if (!await fs34.promises.access(path30.dirname(slot)).then(() => true, () => false)) continue;
+      try {
+        if (!await deletePreviewSlot(repoDir, slot, true)) abandonedOwnSlots.set(slot, repoDir);
+      } catch (error2) {
+        console.warn(`room preview own-slot cleanup: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        abandonedOwnSlots.set(slot, repoDir);
+      }
+    }
+  }).catch((error2) => {
+    console.warn("room preview own-slot cleanup:", error2);
+  });
 }
 async function sweepPreviewCache(repoDir, base, state) {
   const began = performance4.now();
-  const preferred = new Set(state.preferred);
-  state.preferred.clear();
-  const names = await fs34.promises.readdir(base).catch((error2) => {
-    if (error2.code === "ENOENT") return [];
-    throw error2;
-  });
-  const keys2 = [...new Set(names.filter((name2) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name2)).map((name2) => name2.slice(0, 20)))].sort();
-  const candidates = [];
-  const keyStart = keys2.length ? state.keyCursor % keys2.length : 0;
-  let scannedKeys = 0;
-  let scannedSlots = 0;
-  for (const keyName of [...keys2.slice(keyStart), ...keys2.slice(0, keyStart)]) {
-    if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break;
-    scannedKeys++;
-    const key2 = path30.join(base, keyName);
-    const entries = [];
-    let clone2;
-    let keySlots = 0;
-    for (const root of [key2, `${key2}.slots`]) {
-      if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT) break;
-      await rejectPreviewLink(root);
-      if (await isLegacyTree(root)) continue;
-      const children = await fs34.promises.readdir(root).catch((error2) => {
-        if (error2.code === "ENOENT") return [];
-        throw error2;
-      });
-      try {
-        const parsed = JSON.parse(await fs34.promises.readFile(path30.join(root, "clone.json"), "utf8"));
-        if (typeof parsed.path === "string" && path30.isAbsolute(parsed.path)) clone2 = parsed.path;
-      } catch {
+  if (!state.queue.length) {
+    const preferred = new Set(state.preferred);
+    state.preferred.clear();
+    const names = await fs34.promises.readdir(base).catch((error2) => {
+      if (error2.code === "ENOENT") return [];
+      throw error2;
+    });
+    const keys2 = [...new Set(names.filter((name2) => /^[a-f0-9]{20}(?:\.slots)?$/.test(name2)).map((name2) => name2.slice(0, 20)))].sort();
+    const candidates = [];
+    const keyStart = keys2.length ? state.keyCursor % keys2.length : 0;
+    let scannedKeys = 0;
+    let scannedSlots = 0;
+    for (const keyName of [...keys2.slice(keyStart), ...keys2.slice(0, keyStart)]) {
+      if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break;
+      scannedKeys++;
+      const key2 = path30.join(base, keyName);
+      const entries = [];
+      let clone2;
+      let keySlots = 0;
+      for (const root of [key2, `${key2}.slots`]) {
+        if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT) break;
+        await rejectPreviewLink(root);
+        if (await isLegacyTree(root)) continue;
+        const children = await fs34.promises.readdir(root).catch((error2) => {
+          if (error2.code === "ENOENT") return [];
+          throw error2;
+        });
+        try {
+          const parsed = JSON.parse(await fs34.promises.readFile(path30.join(root, "clone.json"), "utf8"));
+          if (typeof parsed.path === "string" && path30.isAbsolute(parsed.path)) clone2 = parsed.path;
+        } catch {
+        }
+        const start2 = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0;
+        let scannedHere = 0;
+        let rootSlots = 0;
+        for (const name2 of [...children.slice(start2), ...children.slice(0, start2)]) {
+          if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT || rootSlots >= PREVIEW_KEY_SCAN_LIMIT / 2) break;
+          scannedHere++;
+          if (!slotOwner(name2)) continue;
+          scannedSlots++;
+          keySlots++;
+          rootSlots++;
+          const slot = path30.join(root, name2);
+          const stat4 = await fs34.promises.lstat(slot).catch(() => void 0);
+          if (stat4?.isDirectory()) entries.push({ slot, mtime: stat4.mtimeMs });
+        }
+        if (children.length) state.entryCursor.set(root, (start2 + scannedHere) % children.length);
       }
-      const start3 = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0;
-      let scannedHere = 0;
-      let rootSlots = 0;
-      for (const name2 of [...children.slice(start3), ...children.slice(0, start3)]) {
-        if (performance4.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT || rootSlots >= PREVIEW_KEY_SCAN_LIMIT / 2) break;
-        scannedHere++;
-        if (!slotOwner(name2)) continue;
-        scannedSlots++;
-        keySlots++;
-        rootSlots++;
-        const slot = path30.join(root, name2);
-        const stat4 = await fs34.promises.lstat(slot).catch(() => void 0);
-        if (stat4?.isDirectory()) entries.push({ slot, mtime: stat4.mtimeMs });
-      }
-      if (children.length) state.entryCursor.set(root, (start3 + scannedHere) % children.length);
+      entries.sort((a, b) => b.mtime - a.mtime);
+      const vanished = clone2 !== void 0 && !await fs34.promises.access(clone2).then(() => true, () => false);
+      candidates.push(...entries.map((entry) => ({ slot: entry.slot, key: key2, retainSpare: !vanished && !preferred.has(key2) })));
+      preferred.delete(key2);
     }
-    entries.sort((a, b) => b.mtime - a.mtime);
-    const vanished = clone2 !== void 0 && !await fs34.promises.access(clone2).then(() => true, () => false);
-    candidates.push(...entries.map((entry) => ({ slot: entry.slot, key: key2, retainSpare: !vanished && !preferred.has(key2) })));
-    preferred.delete(key2);
+    for (const key2 of preferred) state.preferred.add(key2);
+    if (keys2.length) state.keyCursor = (keyStart + scannedKeys) % keys2.length;
+    state.queue.push(...candidates);
   }
-  for (const key2 of preferred) state.preferred.add(key2);
-  if (keys2.length) state.keyCursor = (keyStart + scannedKeys) % keys2.length;
-  if (!candidates.length) return;
+  if (!state.queue.length) return;
   let probes = 0, removed = 0;
   const spared = /* @__PURE__ */ new Set();
-  const start2 = state.cursor % candidates.length;
-  let visited = 0;
-  while (visited < candidates.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance4.now() - began < PREVIEW_SWEEP_MS) {
-    const { slot, key: key2, retainSpare } = candidates[(start2 + visited++) % candidates.length];
+  while (state.queue.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance4.now() - began < PREVIEW_SWEEP_MS) {
+    const { slot, key: key2, retainSpare } = state.queue.shift();
     probes++;
     const remaining = PREVIEW_SWEEP_MS - (performance4.now() - began);
     let deadline;
@@ -39885,18 +39904,17 @@ async function sweepPreviewCache(repoDir, base, state) {
       if (deadline) clearTimeout(deadline);
     });
     if (!dead) continue;
-    if (retainSpare && !spared.has(key2) && await slotRegistration(repoDir, slot) === "valid") {
+    if (retainSpare && !state.preferred.has(key2) && !spared.has(key2) && await slotRegistration(repoDir, slot) === "valid") {
       spared.add(key2);
       continue;
     }
     if (await deletePreviewSlot(repoDir, slot)) removed++;
   }
-  state.cursor = (start2 + visited) % candidates.length;
 }
 function queuePreviewSweep(repoDir, base, preferred) {
   let state = previewSweeps.get(base);
   if (!state) {
-    state = { running: false, pending: false, preferred: /* @__PURE__ */ new Set(), cursor: 0, keyCursor: 0, entryCursor: /* @__PURE__ */ new Map() };
+    state = { running: false, pending: false, preferred: /* @__PURE__ */ new Set(), queue: [], keyCursor: 0, entryCursor: /* @__PURE__ */ new Map() };
     previewSweeps.set(base, state);
   }
   if (preferred) state.preferred.add(preferred);
@@ -39925,6 +39943,7 @@ async function removePreviewCache(cloneDir, repoDir = cloneDir) {
 }
 async function waitForPreviewSweepForTests() {
   for (let n = 0; n < 1e3; n++) {
+    await ownCleanup;
     if (![...previewSweeps.values()].some((state) => state.running)) return;
     await new Promise((resolve5) => setTimeout(resolve5, 10));
   }
@@ -40021,9 +40040,9 @@ async function preparePreviewCache(cloneDir, dir, ancestor, observe) {
   return !!stat4;
 }
 async function runInMergedTree(s, ancestor, merged, cmd, modes = /* @__PURE__ */ new Map(), observe) {
-  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, false);
+  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe);
 }
-async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, forceScratch) {
+async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) {
   let dir;
   let release;
   let cached2 = false;
@@ -40031,12 +40050,14 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, 
   let cacheReady = false;
   let setupMs = 0;
   let checkMs = 0;
+  let cacheFailure = false;
+  let completed;
   let stage = "setup";
   const setupStart = performance4.now();
   try {
     await previewPhase("setup", async () => {
       let cache;
-      if (!forceScratch) try {
+      try {
         cache = await previewCachePath(s.dir);
       } catch {
       }
@@ -40060,12 +40081,16 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, 
           cacheReady = true;
         } catch (error2) {
           ownSlotGeneration++;
+          abandonedOwnSlots.set(dir, s.dir);
           console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
           cached2 = false;
+          cacheFailure = true;
+          dir = void 0;
         }
       }
       if (!cached2) {
-        dir = await fs34.promises.realpath(await fs34.promises.mkdtemp(path30.join(os6.tmpdir(), "room-merge-")));
+        dir = await fs34.promises.mkdtemp(path30.join(os6.tmpdir(), "room-merge-"));
+        dir = await fs34.promises.realpath(dir);
         observe?.baseMaterialized?.();
         await materializeGitTree(s.dir, ancestor, dir);
       }
@@ -40089,18 +40114,18 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, 
       });
     }));
     checkMs = performance4.now() - checkStart;
-    return previewPhase("collect", () => {
+    completed = await previewPhase("collect", () => {
       const tail = stripVTControlCharacters2(result2.out).trim().split("\n").slice(-25).join("\n");
       const verdict = testVerdict(result2.out, result2.code);
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result2.code}; setup ${Math.round(setupMs)}ms (${reused ? "cached base" : "fresh base"}), check ${Math.round(checkMs)}ms
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result2.code}; setup ${Math.round(setupMs)}ms (${reused ? "cached base" : cacheFailure ? "fresh base after cache failure" : "fresh base"}), check ${Math.round(checkMs)}ms
 ${tail}
 ${verdict.text}` };
     });
+    return completed;
   } catch (error2) {
     const detail = error2 instanceof Error ? error2.message : String(error2);
     return { passed: false, text: stage === "setup" ? `merged-tree setup failed after ${Math.round(performance4.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}` };
   } finally {
-    let rerunScratch = false;
     try {
       if (dir) {
         if (cached2 && cacheReady) {
@@ -40108,90 +40133,46 @@ ${verdict.text}` };
             await resetPreviewTree(s.dir, dir, ancestor);
           } catch (error2) {
             ownSlotGeneration++;
+            abandonedOwnSlots.set(dir, s.dir);
             console.warn(`room preview: abandoning ${dir}: ${error2 instanceof Error ? error2.message : String(error2)}`);
-            rerunScratch = true;
+            if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
           }
         } else await fs34.promises.rm(dir, { recursive: true, force: true });
       }
+    } catch (error2) {
+      console.warn(`room preview cleanup: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      if (completed) completed.text += "\nwarning: preview cache abandoned after the check; next preview uses a new cache";
     } finally {
       await release?.();
+      if (abandonedOwnSlots.size) queueOwnAbandonedCleanup();
       if (cached2) {
         const key2 = await previewKeyPath(s.dir).catch(() => void 0);
         if (key2) queuePreviewSweep(s.dir, path30.dirname(key2));
       }
     }
-    if (rerunScratch) return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, true);
   }
 }
 async function materializeGitTree(cloneDir, ref, destination) {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`);
-  await git(cloneDir, ["cat-file", "-e", `${ref}^{commit}`]);
-  await new Promise((resolve5, reject) => {
-    const archive = spawn4("git", ["-C", cloneDir, "archive", "--format=tar", ref], { stdio: ["ignore", "pipe", "pipe"] });
-    const extract = spawn4("tar", ["-x", "-C", destination], { stdio: ["pipe", "ignore", "pipe"] });
-    let archiveError = "", extractError = "", archiveCode, extractCode;
-    let settled = false;
-    const fail = (error2) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      archive.kill();
-      extract.kill();
-      reject(error2);
-    };
-    const finish = () => {
-      if (settled) return;
-      if (archiveCode !== void 0 && archiveCode !== 0 || extractCode !== void 0 && extractCode !== 0) {
-        fail(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? "still running"}${archiveError.trim() ? `: ${archiveError.trim()}` : ""}; tar ${extractCode ?? "still running"}${extractError.trim() ? `: ${extractError.trim()}` : ""})`));
-        return;
-      }
-      if (archiveCode === void 0 || extractCode === void 0) return;
-      settled = true;
-      clearTimeout(timer);
-      if (archiveCode === 0 && extractCode === 0) resolve5();
-      else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? "signal"}${archiveError.trim() ? `: ${archiveError.trim()}` : ""}; tar ${extractCode ?? "signal"}${extractError.trim() ? `: ${extractError.trim()}` : ""})`));
-    };
-    const timeout = Math.max(wholeTreeTimeoutMs(), SETUP_TIMEOUT_MS);
-    const timer = setTimeout(() => fail(new Error(`git archive/tar extraction timed out after ${timeout}ms`)), timeout);
-    timer.unref?.();
-    archive.stderr.setEncoding("utf8");
-    archive.stderr.on("data", (chunk) => {
-      archiveError += String(chunk).slice(0, 4096);
+  const index = path30.join(destination, `.room-preview-index-${randomUUID5()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const deadline = performance4.now() + SETUP_TIMEOUT_MS;
+  const run3 = (args3) => new Promise((resolve5, reject) => {
+    const remaining = Math.max(1, Math.ceil(deadline - performance4.now()));
+    execFile8("git", ["-C", cloneDir, ...args3], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr2) => {
+      if (error2) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args3[0]}: ${String(stderr2 || error2.message).trim()})`));
+      else resolve5();
     });
-    extract.stderr.setEncoding("utf8");
-    extract.stderr.on("data", (chunk) => {
-      extractError += String(chunk).slice(0, 4096);
-    });
-    archive.on("error", fail);
-    extract.on("error", fail);
-    const streamError = (error2) => {
-      if (!CLOSED_ARCHIVE_PIPE_ERRORS.has(error2.code ?? "")) {
-        fail(error2);
-        return;
-      }
-      archive.stdout.unpipe(extract.stdin);
-      archive.stdout.resume();
-    };
-    archive.stdout.on("error", streamError);
-    extract.stdin.on("error", streamError);
-    extract.stdin.on("close", () => {
-      archive.stdout.unpipe(extract.stdin);
-      archive.stdout.resume();
-    });
-    archive.on("exit", (code) => {
-      archiveCode = code;
-      finish();
-    });
-    extract.on("exit", (code) => {
-      extractCode = code;
-      archive.stdout.unpipe(extract.stdin);
-      archive.stdout.resume();
-      finish();
-    });
-    archive.stdout.pipe(extract.stdin);
   });
+  try {
+    await run3(["cat-file", "-e", `${ref}^{commit}`]);
+    await run3(["read-tree", ref]);
+    await run3([`--work-tree=${destination}`, "checkout-index", "-a", "-f"]);
+  } finally {
+    await fs34.promises.rm(index, { force: true });
+  }
 }
-var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, ownSlotGeneration, warnedSlots, PREVIEW_SWEEP_LIMIT, PREVIEW_PROBE_LIMIT, PREVIEW_SCAN_LIMIT, PREVIEW_KEY_SCAN_LIMIT, PREVIEW_SWEEP_MS, previewSweeps, previewSlotTurns, CLOSED_ARCHIVE_PIPE_ERRORS;
+var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, ownSlotGeneration, warnedSlots, abandonedOwnSlots, ownCleanup, PREVIEW_SWEEP_LIMIT, PREVIEW_PROBE_LIMIT, PREVIEW_SCAN_LIMIT, PREVIEW_KEY_SCAN_LIMIT, PREVIEW_SWEEP_MS, previewSweeps, previewSlotTurns;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -40238,6 +40219,8 @@ var init_files = __esm({
     PROBE_TIMEOUT_MS = 3e3;
     ownSlotGeneration = 0;
     warnedSlots = /* @__PURE__ */ new Set();
+    abandonedOwnSlots = /* @__PURE__ */ new Map();
+    ownCleanup = Promise.resolve();
     PREVIEW_SWEEP_LIMIT = 4;
     PREVIEW_PROBE_LIMIT = 8;
     PREVIEW_SCAN_LIMIT = 64;
@@ -40245,7 +40228,6 @@ var init_files = __esm({
     PREVIEW_SWEEP_MS = 2e3;
     previewSweeps = /* @__PURE__ */ new Map();
     previewSlotTurns = /* @__PURE__ */ new Map();
-    CLOSED_ARCHIVE_PIPE_ERRORS = /* @__PURE__ */ new Set(["EPIPE", "ENOTCONN", "ECONNRESET"]);
   }
 });
 

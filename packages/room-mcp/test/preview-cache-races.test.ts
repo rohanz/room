@@ -373,27 +373,130 @@ it('recovers in the same process when git repair fails after adoption rename', (
   })
 }, 35_000)
 
-it('abandons a failed final cache clean and repeats the check in scratch', async () => {
+it('keeps the completed check result when final cache cleanup fails', async () => {
   const { root, ancestor, session } = fixture()
   const own = await previewCachePath(root)
+  const runs = path.join(root, 'runs')
   const original = fs.promises.open.bind(fs.promises)
   let afterSetup = false
   let injected = false
   vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
     if (String(file) === path.join(own, '.git') && afterSetup && !injected) {
       injected = true
+      await new Promise(resolve => setTimeout(resolve, 100))
       throw Object.assign(new Error('transient validation failure'), { code: 'EBUSY' })
     }
     return original(file, flags, mode)
   })
-  const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), pass, new Map(), {
+  const command = `node -e 'const fs=require("fs"),f=${JSON.stringify(runs)};let n=fs.existsSync(f)?Number(fs.readFileSync(f,"utf8")):0;fs.writeFileSync(f,String(n+1));console.log(n?"1 passed":"1 failed");process.exit(n?0:1)'`
+  const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), command, new Map(), {
     mergedWrite() { afterSetup = true },
   })
   expect(injected).toBe(true)
-  expect(result.passed, result.text).toBe(true)
-  expect(result.text).toContain('fresh base')
+  expect(fs.readFileSync(runs, 'utf8')).toBe('1')
+  expect(result.passed).toBe(false)
+  expect(result.text).toContain('1 failed')
+  expect(result.text).toContain('preview cache abandoned after the check; next preview uses a new cache')
   expect(await previewCachePath(root)).not.toBe(own)
 }, 30_000)
+
+it('uses checkout contents for a fresh fallback even with export attributes', async () => {
+  const { root, git, session } = fixture()
+  fs.mkdirSync(path.join(root, 'tests'))
+  fs.writeFileSync(path.join(root, 'tests', 'ok.test'), 'PASS')
+  fs.writeFileSync(path.join(root, 'tests', 'regression.test'), 'FAIL')
+  fs.writeFileSync(path.join(root, 'subst.txt'), '$Format:%H$')
+  fs.writeFileSync(path.join(root, '.gitattributes'), 'tests/regression.test export-ignore\nsubst.txt export-subst\n')
+  git('add', '.'); git('commit', '-qm', 'attributes')
+  const ancestor = git('rev-parse', 'HEAD')
+  const own = await previewCachePath(root)
+  const command = `node -e 'const fs=require("fs");const names=fs.readdirSync("tests").sort();console.log("FILES="+names.join(","));console.log("SUBST="+fs.readFileSync("subst.txt","utf8"));if(names.some(n=>fs.readFileSync("tests/"+n,"utf8")==="FAIL")){console.log("1 failed");process.exit(1)}console.log("1 passed")'`
+  const cached = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), command)
+  expect(cached.passed).toBe(false)
+  fs.unlinkSync(path.join(own, '.git'))
+  fs.symlinkSync(path.join(root, '.git'), path.join(own, '.git'))
+  const fresh = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), command)
+  expect(fresh.passed).toBe(cached.passed)
+  expect(fresh.text).toContain('(fresh base after cache failure)')
+  for (const result of [cached, fresh]) {
+    expect(result.text).toContain('FILES=ok.test,regression.test')
+    expect(result.text).toContain('SUBST=$Format:%H$')
+    expect(result.text).toContain('1 failed')
+  }
+}, 30_000)
+
+it('leaves an abandoned registration untouched if fresh allocation fails', async () => {
+  const { root, ancestor, session } = fixture()
+  const own = await previewCachePath(root)
+  expect((await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')).passed).toBe(true)
+  fs.unlinkSync(path.join(own, '.git'))
+  fs.symlinkSync(path.join(root, '.git'), path.join(own, '.git'))
+  vi.spyOn(fs.promises, 'mkdtemp').mockRejectedValueOnce(new Error('scratch unavailable'))
+  const result = await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+  expect(result.passed).toBe(false)
+  expect(result.text).toContain('scratch unavailable; check was not run')
+  await waitForPreviewSweepForTests()
+  expect(fs.lstatSync(path.join(own, '.git')).isSymbolicLink()).toBe(true)
+  expect(fs.existsSync(own)).toBe(true)
+}, 30_000)
+
+it('reaches every slot in a key before refilling its candidate queue', async () => {
+  const { root } = fixture()
+  const own = await previewCachePath(root)
+  const base = path.dirname(path.dirname(own))
+  const first = path.join(base, '00000000000000000000')
+  const later = path.join(base, 'ffffffffffffffffffff')
+  fs.mkdirSync(first, { recursive: true }); fs.mkdirSync(later, { recursive: true })
+  for (let n = 0; n < 16; n++) fs.mkdirSync(path.join(first, `${600000 + n}-live`))
+  for (let n = 0; n < 8; n++) fs.mkdirSync(path.join(later, `${700000 + n}-live`))
+  const dead = path.join(first, '600015-live')
+  const seen = new Set<number>()
+  setPreviewProcessProbeForTests(async pid => { seen.add(pid); return pid === 600015 ? null : 'live' })
+  for (let pass = 0; pass < 8 && fs.existsSync(dead); pass++) {
+    await removePreviewCache(root); await waitForPreviewSweepForTests()
+  }
+  expect(seen.has(600015)).toBe(true)
+  expect(fs.existsSync(dead)).toBe(false)
+}, 30_000)
+
+it('reclaims abandoned own generations over later preview turns', async () => {
+  const { root, git, ancestor, session } = fixture()
+  const first = await previewCachePath(root)
+  const key = path.dirname(first)
+  const original = fs.promises.open.bind(fs.promises)
+  const link = fs.promises.link.bind(fs.promises)
+  let failPath = ''
+  vi.spyOn(fs.promises, 'link').mockImplementation(async (from, to) => {
+    if (String(to).startsWith(path.join(key, `${process.pid}-`)) && String(to).endsWith('.claim')) {
+      throw Object.assign(new Error('cleanup temporarily busy'), { code: 'EBUSY' })
+    }
+    return link(from, to)
+  })
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+    if (String(file) === failPath) {
+      failPath = ''
+      throw Object.assign(new Error('one-shot final validation failure'), { code: 'EBUSY' })
+    }
+    return original(file, flags, mode)
+  })
+  for (let n = 0; n < 6; n++) {
+    const slot = await previewCachePath(root)
+    const result = await runInMergedTree(session, ancestor, new Map([['app.txt', 'merged\n']]), pass, new Map(), {
+      mergedWrite() { failPath = path.join(slot, '.git') },
+    })
+    expect(result.passed, result.text).toBe(true)
+    expect(result.text).toContain('preview cache abandoned after the check')
+    await waitForPreviewSweepForTests()
+  }
+  expect(fs.readdirSync(key).filter(name => /^\d+-.*-\d+$/.test(name))).toHaveLength(6)
+  vi.restoreAllMocks()
+  for (let n = 0; n < 4; n++) {
+    await runInMergedTree(session, ancestor, new Map(), 'echo "1 passed"')
+    await waitForPreviewSweepForTests()
+  }
+  expect(fs.readdirSync(key).filter(name => /^\d+-.*-\d+$/.test(name))).toHaveLength(1)
+  expect(git('worktree', 'list', '--porcelain').match(/locked room preview slot/g)).toHaveLength(1)
+}, 60_000)
 
 it('sweeps a later key despite more than 64 live slots in an earlier key', async () => {
   const { root } = fixture()

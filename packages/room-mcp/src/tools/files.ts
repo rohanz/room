@@ -1,7 +1,7 @@
-import { git, gitCommitMissing, gitWholeTree, isGitTimeout, wholeTreeTimeoutMs } from '@room/roomd/git'
+import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch, diffLines } from 'diff'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -769,7 +769,7 @@ function warnSlot(slot: string, reason: string): void {
 }
 
 /** Git removes registrations by their original slot path; no admin path is ever deleted directly. */
-async function deletePreviewSlot(repoDir: string, slot: string): Promise<boolean> {
+async function deletePreviewSlot(repoDir: string, slot: string, retryOwnFailure = false): Promise<boolean> {
   const release = await claimPreviewSlot(slot)
   if (!release) return false
   let complete = false
@@ -809,8 +809,29 @@ async function deletePreviewSlot(repoDir: string, slot: string): Promise<boolean
     warnSlot(slot, error instanceof Error ? error.message : String(error))
     return false
   } finally {
-    if (complete) await release()
+    if (complete || retryOwnFailure) await release()
   }
+}
+
+/** Only this process may reclaim its superseded generations while its PID is live. */
+const abandonedOwnSlots = new Map<string, string>()
+let ownCleanup = Promise.resolve()
+function queueOwnAbandonedCleanup(): void {
+  ownCleanup = ownCleanup.then(async () => {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    for (const [slot, repoDir] of [...abandonedOwnSlots].slice(0, 2)) {
+      if (previewSlotTurns.has(slot)) continue
+      abandonedOwnSlots.delete(slot)
+      // The clone can disappear during worker collection. No slot remains to reclaim.
+      if (!await fs.promises.access(path.dirname(slot)).then(() => true, () => false)) continue
+      try {
+        if (!await deletePreviewSlot(repoDir, slot, true)) abandonedOwnSlots.set(slot, repoDir)
+      } catch (error) {
+        console.warn(`room preview own-slot cleanup: ${error instanceof Error ? error.message : String(error)}`)
+        abandonedOwnSlots.set(slot, repoDir)
+      }
+    }
+  }).catch(error => { console.warn('room preview own-slot cleanup:', error) })
 }
 
 const PREVIEW_SWEEP_LIMIT = 4
@@ -818,72 +839,74 @@ const PREVIEW_PROBE_LIMIT = 8
 const PREVIEW_SCAN_LIMIT = 64
 const PREVIEW_KEY_SCAN_LIMIT = 16
 const PREVIEW_SWEEP_MS = 2000
-type SweepState = { running: boolean; pending: boolean; preferred: Set<string>; cursor: number; keyCursor: number; entryCursor: Map<string, number> }
+type SweepCandidate = { slot: string; key: string; retainSpare: boolean }
+type SweepState = { running: boolean; pending: boolean; preferred: Set<string>; queue: SweepCandidate[]; keyCursor: number; entryCursor: Map<string, number> }
 const previewSweeps = new Map<string, SweepState>()
 
-/** One bounded pass. The cursor rotates across candidate slots, even when none is deleted. */
+/** One bounded pass. A gathered queue is drained before source slices rotate again. */
 async function sweepPreviewCache(repoDir: string, base: string, state: SweepState): Promise<void> {
   const began = performance.now()
-  const preferred = new Set(state.preferred)
-  state.preferred.clear()
-  const names = await fs.promises.readdir(base).catch(error => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
-    throw error
-  })
-  const keys = [...new Set(names.filter(name => /^[a-f0-9]{20}(?:\.slots)?$/.test(name)).map(name => name.slice(0, 20)))].sort()
-  const candidates: { slot: string; key: string; retainSpare: boolean }[] = []
-  const keyStart = keys.length ? state.keyCursor % keys.length : 0
-  let scannedKeys = 0
-  let scannedSlots = 0
-  for (const keyName of [...keys.slice(keyStart), ...keys.slice(0, keyStart)]) {
-    if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break
-    scannedKeys++
-    const key = path.join(base, keyName)
-    const entries: { slot: string; mtime: number }[] = []
-    let clone: string | undefined
-    let keySlots = 0
-    for (const root of [key, `${key}.slots`]) {
-      if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT) break
-      await rejectPreviewLink(root)
-      if (await isLegacyTree(root)) continue
-      const children = await fs.promises.readdir(root).catch(error => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
-        throw error
-      })
-      try {
-        const parsed = JSON.parse(await fs.promises.readFile(path.join(root, 'clone.json'), 'utf8')) as { path?: unknown }
-        if (typeof parsed.path === 'string' && path.isAbsolute(parsed.path)) clone = parsed.path
-      } catch { /* Old caches have no metadata. */ }
-      const start = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0
-      let scannedHere = 0
-      let rootSlots = 0
-      for (const name of [...children.slice(start), ...children.slice(0, start)]) {
-        if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT || rootSlots >= PREVIEW_KEY_SCAN_LIMIT / 2) break
-        scannedHere++
-        if (!slotOwner(name)) continue
-        scannedSlots++
-        keySlots++
-        rootSlots++
-        const slot = path.join(root, name)
-        const stat = await fs.promises.lstat(slot).catch(() => undefined)
-        if (stat?.isDirectory()) entries.push({ slot, mtime: stat.mtimeMs })
+  if (!state.queue.length) {
+    const preferred = new Set(state.preferred)
+    state.preferred.clear()
+    const names = await fs.promises.readdir(base).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
+      throw error
+    })
+    const keys = [...new Set(names.filter(name => /^[a-f0-9]{20}(?:\.slots)?$/.test(name)).map(name => name.slice(0, 20)))].sort()
+    const candidates: SweepCandidate[] = []
+    const keyStart = keys.length ? state.keyCursor % keys.length : 0
+    let scannedKeys = 0
+    let scannedSlots = 0
+    for (const keyName of [...keys.slice(keyStart), ...keys.slice(0, keyStart)]) {
+      if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT) break
+      scannedKeys++
+      const key = path.join(base, keyName)
+      const entries: { slot: string; mtime: number }[] = []
+      let clone: string | undefined
+      let keySlots = 0
+      for (const root of [key, `${key}.slots`]) {
+        if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT) break
+        await rejectPreviewLink(root)
+        if (await isLegacyTree(root)) continue
+        const children = await fs.promises.readdir(root).catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]
+          throw error
+        })
+        try {
+          const parsed = JSON.parse(await fs.promises.readFile(path.join(root, 'clone.json'), 'utf8')) as { path?: unknown }
+          if (typeof parsed.path === 'string' && path.isAbsolute(parsed.path)) clone = parsed.path
+        } catch { /* Old caches have no metadata. */ }
+        const start = children.length ? (state.entryCursor.get(root) ?? 0) % children.length : 0
+        let scannedHere = 0
+        let rootSlots = 0
+        for (const name of [...children.slice(start), ...children.slice(0, start)]) {
+          if (performance.now() - began >= PREVIEW_SWEEP_MS || scannedSlots >= PREVIEW_SCAN_LIMIT || keySlots >= PREVIEW_KEY_SCAN_LIMIT || rootSlots >= PREVIEW_KEY_SCAN_LIMIT / 2) break
+          scannedHere++
+          if (!slotOwner(name)) continue
+          scannedSlots++
+          keySlots++
+          rootSlots++
+          const slot = path.join(root, name)
+          const stat = await fs.promises.lstat(slot).catch(() => undefined)
+          if (stat?.isDirectory()) entries.push({ slot, mtime: stat.mtimeMs })
+        }
+        if (children.length) state.entryCursor.set(root, (start + scannedHere) % children.length)
       }
-      if (children.length) state.entryCursor.set(root, (start + scannedHere) % children.length)
+      entries.sort((a, b) => b.mtime - a.mtime)
+      const vanished = clone !== undefined && !await fs.promises.access(clone).then(() => true, () => false)
+      candidates.push(...entries.map(entry => ({ slot: entry.slot, key, retainSpare: !vanished && !preferred.has(key) })))
+      preferred.delete(key)
     }
-    entries.sort((a, b) => b.mtime - a.mtime)
-    const vanished = clone !== undefined && !await fs.promises.access(clone).then(() => true, () => false)
-    candidates.push(...entries.map(entry => ({ slot: entry.slot, key, retainSpare: !vanished && !preferred.has(key) })))
-    preferred.delete(key)
+    for (const key of preferred) state.preferred.add(key)
+    if (keys.length) state.keyCursor = (keyStart + scannedKeys) % keys.length
+    state.queue.push(...candidates)
   }
-  for (const key of preferred) state.preferred.add(key)
-  if (keys.length) state.keyCursor = (keyStart + scannedKeys) % keys.length
-  if (!candidates.length) return
+  if (!state.queue.length) return
   let probes = 0, removed = 0
   const spared = new Set<string>()
-  const start = state.cursor % candidates.length
-  let visited = 0
-  while (visited < candidates.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance.now() - began < PREVIEW_SWEEP_MS) {
-    const { slot, key, retainSpare } = candidates[(start + visited++) % candidates.length]
+  while (state.queue.length && probes < PREVIEW_PROBE_LIMIT && removed < PREVIEW_SWEEP_LIMIT && performance.now() - began < PREVIEW_SWEEP_MS) {
+    const { slot, key, retainSpare } = state.queue.shift()!
     probes++
     const remaining = PREVIEW_SWEEP_MS - (performance.now() - began)
     let deadline: NodeJS.Timeout | undefined
@@ -892,20 +915,19 @@ async function sweepPreviewCache(repoDir: string, base: string, state: SweepStat
       new Promise<false>(resolve => { deadline = setTimeout(() => resolve(false), Math.max(1, remaining)) }),
     ]).finally(() => { if (deadline) clearTimeout(deadline) })
     if (!dead) continue
-    if (retainSpare && !spared.has(key) && await slotRegistration(repoDir, slot) === 'valid') {
+    if (retainSpare && !state.preferred.has(key) && !spared.has(key) && await slotRegistration(repoDir, slot) === 'valid') {
       spared.add(key)
       continue
     }
     if (await deletePreviewSlot(repoDir, slot)) removed++
   }
-  state.cursor = (start + visited) % candidates.length
 }
 
 /** Requests during a pass collapse into one follow-up pass for this common directory. */
 function queuePreviewSweep(repoDir: string, base: string, preferred?: string): void {
   let state = previewSweeps.get(base)
   if (!state) {
-    state = { running: false, pending: false, preferred: new Set(), cursor: 0, keyCursor: 0, entryCursor: new Map() }
+    state = { running: false, pending: false, preferred: new Set(), queue: [], keyCursor: 0, entryCursor: new Map() }
     previewSweeps.set(base, state)
   }
   if (preferred) state.preferred.add(preferred)
@@ -932,6 +954,7 @@ export async function removePreviewCache(cloneDir: string, repoDir = cloneDir): 
 /** Test seam for observing asynchronous maintenance without making worker cleanup wait. */
 export async function waitForPreviewSweepForTests(): Promise<void> {
   for (let n = 0; n < 1000; n++) {
+    await ownCleanup
     if (![...previewSweeps.values()].some(state => state.running)) return
     await new Promise(resolve => setTimeout(resolve, 10))
   }
@@ -1024,10 +1047,10 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
 
 /** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
 export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
-  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, false)
+  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe)
 }
 
-async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined, forceScratch: boolean): Promise<TestResult> {
+async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined): Promise<TestResult> {
   let dir: string | undefined
   let release: (() => Promise<void>) | undefined
   let cached = false
@@ -1035,12 +1058,14 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   let cacheReady = false
   let setupMs = 0
   let checkMs = 0
+  let cacheFailure = false
+  let completed: TestResult | undefined
   let stage: 'setup' | 'check' = 'setup'
   const setupStart = performance.now()
   try {
     await previewPhase('setup', async () => {
       let cache: string | undefined
-      if (!forceScratch) try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
+      try { cache = await previewCachePath(s.dir) } catch { /* Uncertain identity uses a fresh tree. */ }
       if (cache && !previewSlotTurns.has(cache)) {
         let finish!: () => void
         const turn = new Promise<void>(resolve => { finish = resolve })
@@ -1059,12 +1084,16 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
           cacheReady = true
         } catch (error) {
           ownSlotGeneration++
+          abandonedOwnSlots.set(dir, s.dir)
           console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
           cached = false
+          cacheFailure = true
+          dir = undefined // A failed scratch allocation must not clean the abandoned slot.
         }
       }
       if (!cached) {
-        dir = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-')))
+        dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'room-merge-'))
+        dir = await fs.promises.realpath(dir)
         observe?.baseMaterialized?.()
         await materializeGitTree(s.dir, ancestor, dir)
       }
@@ -1088,91 +1117,62 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       })
     }))
     checkMs = performance.now() - checkStart
-    return previewPhase('collect', () => {
+    completed = await previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}` }
     })
+    return completed
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return { passed: false, text: stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}` }
   } finally {
-    let rerunScratch = false
     try {
       if (dir) {
         if (cached && cacheReady) {
           try { await resetPreviewTree(s.dir, dir, ancestor) }
           catch (error) {
             ownSlotGeneration++
+            abandonedOwnSlots.set(dir, s.dir)
             console.warn(`room preview: abandoning ${dir}: ${error instanceof Error ? error.message : String(error)}`)
-            rerunScratch = true
+            if (completed) completed.text += '\nwarning: preview cache abandoned after the check; next preview uses a new cache'
           }
         }
         else await fs.promises.rm(dir, { recursive: true, force: true })
       }
+    } catch (error) {
+      console.warn(`room preview cleanup: ${error instanceof Error ? error.message : String(error)}`)
+      if (completed) completed.text += '\nwarning: preview cache abandoned after the check; next preview uses a new cache'
     } finally {
       await release?.()
+      if (abandonedOwnSlots.size) queueOwnAbandonedCleanup()
       // Maintenance never delays the preview reply and is bounded per pass.
       if (cached) {
         const key = await previewKeyPath(s.dir).catch(() => undefined)
         if (key) queuePreviewSweep(s.dir, path.dirname(key))
       }
     }
-    if (rerunScratch) return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe, true)
   }
 }
 
-const CLOSED_ARCHIVE_PIPE_ERRORS = new Set(['EPIPE', 'ENOTCONN', 'ECONNRESET'])
-
-/** Extract one verified commit without placing a clone path or ref in a shell program. */
+/** Materialize the committed checkout through a private index, without worktree registration. */
 export async function materializeGitTree(cloneDir: string, ref: string, destination: string): Promise<void> {
   if (!/^[0-9a-f]{40,64}$/i.test(ref)) throw new Error(`invalid merge ancestor: ${JSON.stringify(ref)}`)
-  await git(cloneDir, ['cat-file', '-e', `${ref}^{commit}`])
-  await new Promise<void>((resolve, reject) => {
-    const archive = spawn('git', ['-C', cloneDir, 'archive', '--format=tar', ref], { stdio: ['ignore', 'pipe', 'pipe'] })
-    const extract = spawn('tar', ['-x', '-C', destination], { stdio: ['pipe', 'ignore', 'pipe'] })
-    let archiveError = '', extractError = '', archiveCode: number | null | undefined, extractCode: number | null | undefined
-    let settled = false
-    const fail = (error: Error) => {
-      if (settled) return
-      settled = true; clearTimeout(timer)
-      archive.kill(); extract.kill()
-      reject(error)
-    }
-    const finish = () => {
-      if (settled) return
-      if ((archiveCode !== undefined && archiveCode !== 0) || (extractCode !== undefined && extractCode !== 0)) {
-        fail(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'still running'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'still running'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
-        return
-      }
-      if (archiveCode === undefined || extractCode === undefined) return
-      settled = true; clearTimeout(timer)
-      if (archiveCode === 0 && extractCode === 0) resolve()
-      else reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${archiveCode ?? 'signal'}${archiveError.trim() ? `: ${archiveError.trim()}` : ''}; tar ${extractCode ?? 'signal'}${extractError.trim() ? `: ${extractError.trim()}` : ''})`))
-    }
-    const timeout = Math.max(wholeTreeTimeoutMs(), SETUP_TIMEOUT_MS)
-    const timer = setTimeout(() => fail(new Error(`git archive/tar extraction timed out after ${timeout}ms`)), timeout)
-    timer.unref?.()
-    archive.stderr.setEncoding('utf8'); archive.stderr.on('data', chunk => { archiveError += String(chunk).slice(0, 4096) })
-    extract.stderr.setEncoding('utf8'); extract.stderr.on('data', chunk => { extractError += String(chunk).slice(0, 4096) })
-    archive.on('error', fail); extract.on('error', fail)
-    const streamError = (error: NodeJS.ErrnoException) => {
-      if (!CLOSED_ARCHIVE_PIPE_ERRORS.has(error.code ?? '')) { fail(error); return }
-      archive.stdout.unpipe(extract.stdin)
-      archive.stdout.resume()
-    }
-    archive.stdout.on('error', streamError); extract.stdin.on('error', streamError)
-    // Node can destroy stdin on child exit without an EPIPE event. Drain git in that ordering too.
-    extract.stdin.on('close', () => { archive.stdout.unpipe(extract.stdin); archive.stdout.resume() })
-    // `close` waits for every inherited pipe handle, including ones held by grandchildren.
-    // Process exit is enough to know the result; drain the producer when tar exits first.
-    archive.on('exit', code => { archiveCode = code; finish() })
-    extract.on('exit', code => {
-      extractCode = code
-      archive.stdout.unpipe(extract.stdin)
-      archive.stdout.resume()
-      finish()
+  const index = path.join(destination, `.room-preview-index-${randomUUID()}`)
+  const env = { ...process.env, GIT_INDEX_FILE: index }
+  const deadline = performance.now() + SETUP_TIMEOUT_MS
+  const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+    const remaining = Math.max(1, Math.ceil(deadline - performance.now()))
+    execFile('git', ['-C', cloneDir, ...args], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args[0]}: ${String(stderr || error.message).trim()})`))
+      else resolve()
     })
-    archive.stdout.pipe(extract.stdin)
   })
+  try {
+    await run(['cat-file', '-e', `${ref}^{commit}`])
+    await run(['read-tree', ref])
+    await run([`--work-tree=${destination}`, 'checkout-index', '-a', '-f'])
+  } finally {
+    await fs.promises.rm(index, { force: true })
+  }
 }
