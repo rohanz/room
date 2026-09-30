@@ -1,7 +1,8 @@
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
 import { createTwoFilesPatch, diffLines } from 'diff'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -21,7 +22,7 @@ import { buildCombinedTree } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
-import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock } from '../preview-cache.js'
+import { evictPreviewLru, previewCapBytes, touchPreview, tryPreviewLock, type PreviewUnlock } from '../preview-cache.js'
 import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
@@ -575,7 +576,47 @@ async function rejectPreviewLink(file: string): Promise<void> {
 }
 
 const SETUP_TIMEOUT_MS = 10 * 60_000
-const gitSetup = (dir: string, args: string[]) => git(dir, args, SETUP_TIMEOUT_MS)
+const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
+const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
+
+function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const out: Buffer[] = [], err: Buffer[] = []
+    let bytes = 0, failed: Error | undefined
+    const stop = (error: Error) => {
+      if (failed) return
+      failed = error
+      if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ } }
+    }
+    const timer = setTimeout(() => stop(new Error(`timed out after ${timeout}ms`)), timeout)
+    const collect = (kind: 'stdout' | 'stderr', chunk: Buffer) => {
+      bytes += chunk.length
+      if (bytes > maxBuffer) { stop(new Error('output exceeded preview buffer')); return }
+      if (kind === 'stdout') out.push(chunk)
+      else err.push(chunk)
+    }
+    child.stdout.on('data', (chunk: Buffer) => collect('stdout', chunk))
+    child.stderr.on('data', (chunk: Buffer) => collect('stderr', chunk))
+    child.stdin.on('error', stop)
+    child.on('error', stop)
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (failed) reject(failed)
+      else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() })
+    })
+    if (child.pid) void lock.trackProcess(child.pid).then(() => child.stdin.end('GO\n'), stop)
+  })
+}
+
+const gitSetup = (dir: string, args: string[]) => {
+  const lock = previewProcesses.getStore()?.lock
+  if (!lock) return git(dir, args, SETUP_TIMEOUT_MS)
+  return runTrackedProcess('git', args, dir, SETUP_TIMEOUT_MS, 64 * 1024 * 1024, lock).then(result => {
+    if (result.code) throw new Error(`git ${args.join(' ')} failed: ${result.stderr.trim() || `exit ${result.code}`}`)
+    return result.stdout
+  })
+}
 const PROBE_TIMEOUT_MS = 3000
 let processProbeForTests: ((pid: number) => Promise<string | null | undefined>) | undefined
 /** Test seam: null means dead, undefined means an uncertain live process. */
@@ -853,8 +894,10 @@ async function migrateLegacySlots(cloneDir: string, repoDir = cloneDir): Promise
     await rejectPreviewLink(root)
     if (await isLegacyTree(root)) continue
     for (const name of await fs.promises.readdir(root).catch(() => [] as string[])) {
-      if (!slotOwner(name) || !await isDeadSlot(name)) continue
+      if (/\.(?:lock|meta\.json|claim|settings.*)$/.test(name)) continue
       const slot = path.join(root, name)
+      if (!(await fs.promises.lstat(slot).catch(() => undefined))?.isDirectory()) continue
+      if (!slotOwner(name) || !await isDeadSlot(name)) continue
       if (!await legacyClaimDead(slot)) continue
       const release = await tryPreviewLock(slot).catch(() => undefined)
       if (!release) continue
@@ -936,7 +979,7 @@ async function preparePreviewCache(cloneDir: string, dir: string, ancestor: stri
 
 /** Run against a whole ancestor tree with only merged paths changed. A slot is exclusive within this process. */
 export async function runInMergedTree(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number> = new Map(), observe?: { baseMaterialized?(): void; mergedWrite?(path: string): void }): Promise<TestResult> {
-  return runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe)
+  return previewProcesses.run({}, () => runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe))
 }
 
 async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<string, string | null>, cmd: string, modes: ReadonlyMap<string, number>, observe: { baseMaterialized?(): void; mergedWrite?(path: string): void } | undefined): Promise<TestResult> {
@@ -961,7 +1004,10 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       } catch { /* Uncertain checkout policy or identity uses a fresh tree. */ }
       if (cache && previewCapBytes() > 0) {
         const unlock = await tryPreviewLock(cache).catch(() => undefined)
-        if (unlock) release = unlock
+        if (unlock) {
+          release = unlock
+          previewProcesses.getStore()!.lock = unlock
+        }
       }
       cached = !!release
       if (cached) {
@@ -997,12 +1043,20 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
     env.ROOM_MERGED_TREE = dir!
     const checkStart = performance.now()
-    const result = await previewCheck(() => new Promise<{ code: number | null; out: string }>(resolve => {
-      execFile(bash ?? 'sh', bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd], { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
-        const raw = err ? (err as { code?: unknown }).code : 0
-        resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
+    const result = await previewCheck(async () => {
+      const command = bash ?? 'sh'
+      const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
+      if (cached) {
+        const tracked = await runTrackedProcess(command, args, dir!, 5 * 60_000, 4 * 1024 * 1024, previewProcesses.getStore()!.lock!, env)
+        return { code: tracked.code, out: tracked.stdout + tracked.stderr }
+      }
+      return new Promise<{ code: number | null; out: string }>(resolve => {
+        execFile(command, args, { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+          const raw = err ? (err as { code?: unknown }).code : 0
+          resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}` })
+        })
       })
-    }))
+    })
     checkMs = performance.now() - checkStart
     completed = await previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
@@ -1033,6 +1087,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
       if (completed) completed.text += '\nwarning: preview cache abandoned after the check; next preview uses a new cache'
     } finally {
       await release?.()
+      if (release) previewProcesses.getStore()!.lock = undefined
       // Maintenance never delays the preview reply and is bounded per pass.
       if (cached || previewCapBytes() === 0) {
         const key = await previewKeyPath(s.dir).catch(() => undefined)

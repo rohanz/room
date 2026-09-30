@@ -4,8 +4,9 @@ import path from 'node:path'
 
 /*
  * A clone and checkout-policy fingerprint select one shared worktree. A short-lived
- * lockf/flock child holds an OS advisory lock for the whole preview; the kernel
- * releases it after a crash. Contenders use a temporary tree immediately.
+ * lockf/flock child holds an OS advisory lock for the whole preview. It also
+ * waits for recorded process groups after an MCP crash, so orphaned checks
+ * cannot lose their tree. Contenders use a temporary tree immediately.
  * Metadata is written after use; eviction locks each candidate before Git removes
  * it. Windows and hosts without lockf/flock use temporary trees only.
  */
@@ -19,19 +20,24 @@ export function previewCapBytes(): number {
 let lockUnavailableForTests = false
 export function setPreviewLockUnavailableForTests(value = false): void { lockUnavailableForTests = value }
 
-export async function tryPreviewLock(entry: string): Promise<(() => Promise<void>) | undefined> {
+export type PreviewUnlock = (() => Promise<void>) & { trackProcess(pid: number): Promise<void> }
+
+export async function tryPreviewLock(entry: string): Promise<PreviewUnlock | undefined> {
   const file = `${entry}.lock`
   const command = lockUnavailableForTests ? undefined : process.platform === 'darwin' ? 'lockf' : process.platform === 'linux' ? 'flock' : undefined
   if (!command) return undefined
   await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
+  // Read every process group while the owner is alive. EOF may mean normal
+  // release or a killed owner; either way, wait for its children before unlock.
+  const helper = 'printf READY; groups=""; while IFS= read -r pgid; do case "$pgid" in *[!0-9]*|"") continue;; esac; groups="$groups $pgid"; done; for pgid in $groups; do while kill -0 "-$pgid" 2>/dev/null; do sleep 0.2; done; done'
   const args = command === 'lockf'
-    ? ['-t', '0', file, 'sh', '-c', 'printf READY; cat >/dev/null']
-    : ['-n', file, 'sh', '-c', 'printf READY; cat >/dev/null']
+    ? ['-t', '0', file, 'sh', '-c', helper]
+    : ['-n', file, 'sh', '-c', helper]
   return new Promise(resolve => {
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'] })
     let settled = false
     let timer: NodeJS.Timeout | undefined
-    const finish = (release?: () => Promise<void>) => {
+    const finish = (release?: PreviewUnlock) => {
       if (settled) return
       settled = true
       if (timer) clearTimeout(timer)
@@ -39,10 +45,13 @@ export async function tryPreviewLock(entry: string): Promise<(() => Promise<void
       resolve(release)
     }
     child.stdout.on('data', (data: Buffer) => {
-      if (String(data).includes('READY')) finish(async () => {
+      if (String(data).includes('READY')) finish(Object.assign(async () => {
         child.stdin.end()
         if (child.exitCode === null) await new Promise<void>(done => child.once('close', () => done()))
-      })
+      }, { trackProcess(pid: number) {
+        if (!Number.isSafeInteger(pid) || pid <= 0 || !child.stdin.writable) return Promise.reject(new Error('preview lock lost before process registration'))
+        return new Promise<void>((done, fail) => child.stdin.write(`${pid}\n`, error => error ? fail(error) : done()))
+      } }))
     })
     child.on('error', () => finish())
     child.on('close', () => finish())
