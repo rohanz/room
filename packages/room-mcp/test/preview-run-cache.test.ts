@@ -140,7 +140,7 @@ it('uses an isolated fresh tree when two checks overlap in one clone', async () 
   expect(maxDelay).toBeLessThan(200)
 }, 120_000)
 
-it('recreates a preview cache after its worktree registration is broken', async () => {
+it('uses a fresh tree when a cached worktree has lost its gitfile', async () => {
   const cache = await previewCachePath(repo)
   fs.unlinkSync(path.join(cache, '.git'))
   execFileSync('git', ['-C', repo, 'worktree', 'prune'])
@@ -150,5 +150,6 @@ it('recreates a preview cache after its worktree registration is broken', async 
   })
   expect(result.passed, result.text).toBe(true)
   expect(baseCopies).toBe(1)
-  expect(fs.existsSync(path.join(cache, '.git'))).toBe(true)
+  expect(result.text).toContain('fresh base after cache failure')
+  expect(fs.existsSync(path.join(cache, '.git'))).toBe(false)
 }, 120_000)

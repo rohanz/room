@@ -45,7 +45,7 @@ async function expectPolicyChangeToAbandon(root: string, session: Session, head:
   expect(result.passed, result.text).toBe(false)
   expect(await previewCachePath(root)).not.toBe(old)
   await waitForPreviewSweepForTests()
-  expect(fs.existsSync(old)).toBe(false)
+  expect(fs.existsSync(old)).toBe(true)
   const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-fresh-'))
   roots.push(fresh)
   await materializeGitTree(root, head, fresh)
@@ -94,7 +94,7 @@ it('abandons a warm slot when source worktree checkout conversion changes', asyn
   expect(git('config', '--get', 'core.autocrlf')).toBe('true')
   expect(await previewCachePath(root)).not.toBe(old)
   await waitForPreviewSweepForTests()
-  expect(fs.existsSync(old)).toBe(false)
+  expect(fs.existsSync(old)).toBe(true)
 }, 30_000)
 
 it('rejects a sparse cached slot even when the source is a full checkout', async () => {
@@ -112,7 +112,8 @@ it('rejects a sparse cached slot even when the source is a full checkout', async
   const result = await runInMergedTree(session, head, new Map(), cmd)
   expect(result.passed, result.text).toBe(false)
   expect(result.text).toContain('fresh base after cache failure')
-  expect(await previewCachePath(root)).not.toBe(old)
+  expect(await previewCachePath(root)).toBe(old)
+  expect(fs.existsSync(old)).toBe(false)
 }, 30_000)
 
 it('applies source info attributes when creating a cache slot', async () => {
@@ -142,7 +143,7 @@ it('replaces a slot when source info attributes change after warming', async () 
   expect(result.passed, result.text).toBe(true)
   expect(await previewCachePath(root)).not.toBe(old)
   await waitForPreviewSweepForTests()
-  expect(fs.existsSync(old)).toBe(false)
+  expect(fs.existsSync(old)).toBe(true)
 }, 30_000)
 
 it('abandons a linked worktree slot when shared info attributes change', async () => {
@@ -320,28 +321,4 @@ it('keeps the same slot and fingerprint for unrelated config changes', async () 
     expect(await previewCachePath(root)).toBe(slot)
     expect(fs.readFileSync(settings, 'utf8')).toBe(fingerprint)
   }
-}, 30_000)
-
-it('keeps a healthy clone slot reachable after another clone abandons a generation', async () => {
-  const healthy = fixture(), faulty = fixture()
-  for (const repo of [healthy, faulty]) { fs.writeFileSync(path.join(repo.root, 'x'), 'base\n'); repo.git('add', '.'); repo.git('commit', '-qm', 'base') }
-  const healthyHead = healthy.git('rev-parse', 'HEAD'), faultyHead = faulty.git('rev-parse', 'HEAD')
-  const original = fs.promises.open.bind(fs.promises)
-  let fault = ''
-  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
-    if (String(args[0]) === fault) { fault = ''; throw Object.assign(new Error('one-shot fault'), { code: 'EBUSY' }) }
-    return original(...args)
-  })
-  for (let i = 0; i < 3; i++) {
-    const healthySlot = await previewCachePath(healthy.root)
-    const good = await runInMergedTree(healthy.session, healthyHead, new Map(), 'echo "1 passed"')
-    expect(good.passed, good.text).toBe(true)
-    expect(await previewCachePath(healthy.root)).toBe(healthySlot)
-    const badSlot = await previewCachePath(faulty.root)
-    const bad = await runInMergedTree(faulty.session, faultyHead, new Map([['x', 'merged\n']]), 'echo "1 passed"', new Map(), { mergedWrite() { fault = `${badSlot}/.git` } })
-    expect(bad.passed, bad.text).toBe(true)
-    await waitForPreviewSweepForTests()
-  }
-  const key = path.dirname(await previewCachePath(healthy.root))
-  expect(fs.readdirSync(key).filter(name => /^\d+-.*-\d+$/.test(name) && fs.statSync(path.join(key, name)).isDirectory())).toHaveLength(1)
 }, 30_000)

@@ -10,7 +10,20 @@ The sharing manifest now describes `declared` as “paths of every changed file;
 
 **Known limits:** Codex `/quit` can leave a participant name reserved until its lease expires. Everyone admitted to a team room is trusted; finer server permissions remain [future work](docs/roadmap.md). Claims are advisory and inferred contract impact still needs tests.
 
-<!-- lead: batch items -->
+**Getting started and diagnosing:**
+
+- **Install from GitHub is the default** for both hosts (`claude plugin marketplace add rohanz/room`, `codex plugin marketplace add rohanz/room`). The README opens with a five-minute quickstart; internals moved to [docs/reference.md](docs/reference.md).
+- **`room doctor`.** Run `plugins/room/bin/room-doctor` (or `bin/room-doctor` in the installed plugin), or ask your agent “is Room set up right?” (`room_state` with `check: true`). It checks Node and Git, the repository, Room's version on each host, the hook scripts' version against the server bundle, Codex hook trust, the Claude wake path, the team server's `/health` and login, a still-running 0.16 local relay, and a stale running session. Each line is PASS, WARN or FAIL with a one-line fix.
+- **Tool and skill descriptions say when to use them**, in the words people say: “bring in their work” (`room_collect`), “ask the worker a follow-up” and “interrupt the worker” (`room_send`), “will our changes work together?” (`room_preview_merge`), “stop sharing” (`room_leave`), “work locally” (`room_join`).
+
+**Workers and previews:**
+
+- **No default worker model or effort.** Unless a request names one, workers use the host's own default (Codex's `config.toml` or built-in default, Claude Code's settings). Set your own with `ROOM_WORKER_MODEL` / `ROOM_WORKER_EFFORT` or the per-host `ROOM_CODEX_WORKER_*` / `ROOM_CLAUDE_WORKER_*`. The spawn reply names what the worker runs with.
+- **Preview cache is a simple LRU with a size cap.** One cached worktree per clone keeps build output warm; an OS file lock (released on crash) gives one preview at a time, others use a temporary checkout. Least recently used entries are removed through Git when the repository's cache passes `ROOM_PREVIEW_CACHE_GB` (default 4; 0 turns it off). The per-process slots, claim files and dead-owner takeover are gone; slots left by earlier builds are removed once their owner has exited.
+- **`room_collect`** makes two Git probes instead of ten and logs its phases (lease, inspect, merge, prepare, cleanup) when slow.
+- **“cy's agent”** now reaches cy's only active agent when it is tagged (for example `cy+codex`).
+- A 0.17 client pointed at an older server now says the server needs Room 0.17.
+- **Codex `instant_interrupt`** (0.159.0, opt-in): checked on 0.159.2, a Room wake sent mid-response waits for the turn to end, so wakes still never land mid-turn.
 
 ## 0.16.40
 
