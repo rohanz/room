@@ -3,12 +3,15 @@ name: room-workers
 description: Use for another agent, agents in parallel, work in the background, or codex/claude to do part of it. Also use to follow up with, interrupt, collect, or discard a worker; load before room_spawn.
 ---
 
-1. Split substantial work into independent parts with disjoint files where possible.
+1. Split substantial work by task. Parts may share files: give each worker a function
+   or area to change, and let Room surface overlap. Keep parts in one agent when they
+   must edit the same lines or one needs another's result first. Run independent parts
+   in parallel as a wave, then do dependent work.
    For a few lines, do it yourself. Use built-in subagents for read-only research.
    For one or two workers, lead them yourself. Before three or more workers or a long
    batch, especially when this session cannot be woken, offer once: "I can hand this to a background lead that stays on it until it's done; you can keep talking to me."
    If accepted, spawn one worker with a self-contained lead brief: the task, how to
-   split it into workers with owned files, the test command, and "collect your workers
+   split it into tasks with functions or areas to change, the test command, and "collect your workers
    before room_done". That lead spawns the workers, answers their questions in a
    room_wait loop, previews and tests, collects their changes, then calls room_done.
    Steer it with room_send to its full `<lead>+<tag>` name; collect it at the end like
@@ -17,11 +20,14 @@ description: Use for another agent, agents in parallel, work in the background, 
    as a wave of workers. Workers do not share context; each needs its own brief. What
    Room does between them: shows who is near which file, warns before two edits collide,
    and when a worker changes a function's signature or removes a definition, tells the
-   workers whose files use it (detected from the diff, no message needed).
+   workers whose files use it (detected from the diff, no message needed). Workers
+   claim the functions or line ranges they edit, ask each other questions, and check
+   their combined changes in a preview before collection.
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
-   only when requested. Give each worker a self-contained task, owned files and test command.
+   only when requested. Give each worker a self-contained task, functions or areas to
+   change, and a test command. Shared files are fine; ask workers to claim their regions.
    Pass a model only when specified.
-   If asked to follow up with a worker, use `room_send(to=...)`; a message to a finished worker resumes its retained session in its worktree. Use `priority="interrupt"` when asked to stop or redirect the worker now. Codex workers use the installed Room plugin, so install the lead's Room version for Codex or use host claude.
+   If asked to follow up with a worker, use `room_send(to=...)`; a message to a finished worker resumes its retained session in its worktree. To stop the current edit and redirect that same worker, send the new task with `priority="interrupt"`; discard only when the human wants its work thrown away. Codex workers use the installed Room plugin, so install the lead's Room version for Codex or use host claude.
    The worker starts with eligible uncommitted work, or pass `carry=false` to start from HEAD. Tracked changes use a carry commit on the worker branch (`git push --all` can publish them); non-ignored untracked files are copied, never committed to a branch, with a private ref for merge and recovery. Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and linked inputs are skipped and named in the spawn reply. Carried edits are the lead's work in progress, already in the worker's worktree to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Each worker gets its own `PORT` for dev servers.
 3. Briefly state what you dispatched. Workers report progress in `room_done`; they send
    notes only when the lead must know before they finish. Notes from your own workers

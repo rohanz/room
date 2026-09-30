@@ -47,7 +47,7 @@ function sharingSentence(s: Session): string {
   const repo = s.roomName
   const level = s.daemon.share ?? s.shareRequested ?? 'intent'
   const secondary = publisherLine(s)
-  if (secondary) return `note for your human: ${secondary} Members of ${repo} on ${server} can read it.`
+  if (secondary) return `note for your human: ${secondary} Your sharing level is ${level}; ${sharingHumanChoices(level)} Members of ${repo} on ${server} can read it.`
   const description = sharingDescription(level, !!(s.daemon as typeof s.daemon & { retainedDeclared?: () => string[] }).retainedDeclared?.().length)
   const choices = sharingHumanChoices(level)
   return `note for your human: this clone now shares ${description} with members of ${repo} on ${server}${choices ? `; ${choices}` : '.'}`

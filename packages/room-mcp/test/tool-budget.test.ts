@@ -14,6 +14,8 @@ it('keeps all advertised tool names, descriptions and schemas within 9,500 chara
   expect(collect.inputSchema).toHaveProperty('additionalProperties', false)
   const spawn = DEFS.find(d => d.name === 'room_spawn')!.description
   for (const phrase of ['another agent', 'in parallel', 'in the background', 'codex', 'claude']) expect(spawn).toContain(phrase)
+  expect(spawn).toContain('even in one file')
+  expect(spawn).toContain('split by task')
   const share = DEFS.find(d => d.name === 'room_share')!.description
   expect(share).toContain('share plans only')
   expect(share).toContain('only my declared files')

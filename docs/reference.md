@@ -66,21 +66,28 @@ When a teammate pushes a commit on your branch, Room can show that your clone is
 
 ## Environment variables
 
+See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-them) for the meaning of each default and the words to use with your agent.
+
 | Variable | Purpose |
 |---|---|
 | `ROOM_SERVER` | `hosted` or a team WebSocket URL; takes priority over remembered choice. |
 | `ROOM_URL` | Legacy team URL fallback. |
 | `ROOM_SHARE` | `full`, `declared`, or `intent`. |
+| `ROOM_SHARE_MAX` | Server ceiling for sharing: `full`, `declared`, or `intent`. |
 | `ROOM_WAKE` | `auto`, `channels`, or `off`. |
 | `ROOM_TAG` | Your label when one login has several sessions. |
+| `ROOM_AUTO_FETCH` | Set to `0` to disable automatic missing-base fetches. |
+| `ROOM_STALE_DAYS` | Stale unowned claim threshold; default 7 days. |
 | `ROOM_WORKER_MODEL`, `ROOM_WORKER_EFFORT` | Your default worker model and effort; otherwise host defaults apply. |
 | `ROOM_CODEX_WORKER_MODEL`, `ROOM_CODEX_WORKER_EFFORT`, `ROOM_CLAUDE_WORKER_MODEL`, `ROOM_CLAUDE_WORKER_EFFORT` | Per-host worker defaults; they override the generic pair. |
-| `ROOM_WORKER_THREADS`, `ROOM_WORKER_MAX_BUDGET_USD` | Worker compute budget and Claude cost cap. |
+| `ROOM_WORKER_THREADS`, `ROOM_WORKER_MEM_GB`, `ROOM_WORKER_MAX_BUDGET_USD` | Worker compute budget and Claude cost cap. |
 | `ROOM_MAX_WORKERS` | Maximum concurrent workers; default 8. |
 | `ROOM_PREVIEW_CACHE_GB` | Preview cache cap in GiB; default 4, 0 disables reuse. |
 | `ROOM_IDLE_LEASE_MS` | Positive idle lease in milliseconds for an unheld Codex app-server session; default 30 minutes. |
 | `ROOM_CREDENTIALS`, `ROOM_LOG_FILE` | Alternate credential and log paths. |
 | `ROOM_TOKEN` | Shared server token for non-GitHub rooms. |
+| `ROOM_IDLE_DAYS`, `ROOM_LEGACY_DAYS` | Server cleanup thresholds; both default to 30 days. |
+| `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, `ROOM_IDENTITY_GUARD` | Server size caps and experimental identity enforcement. |
 | `YPERSISTENCE` | Server state directory. |
 
 ## Updating plugins

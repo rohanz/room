@@ -57,7 +57,7 @@ export function sharingDescription(level: ShareLevel, retainedChangedFiles = fal
 export function sharingHumanChoices(level: ShareLevel): string {
   if (level === 'full') return 'to keep file contents on this machine, say: share plans only; to share only my declared files, say: only my declared files.'
   if (level === 'declared') return 'to keep file contents on this machine, say: share plans only.'
-  return ''
+  return 'to share only my declared files, say: only my declared files; to share all changed files, say: share all changed files.'
 }
 
 /** Missing means the default; an invalid supplied value can never widen sharing. */

@@ -1,4 +1,4 @@
-import { sharingDescription } from '../config.js'
+import { sharingDescription, sharingHumanChoices } from '../config.js'
 import { runDoctor } from '../doctor.js'
 import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
@@ -111,9 +111,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.name)).size
       const participants = `${people} other participant${people === 1 ? '' : 's'}`
       const noUnseen = !ledger.candidates(s).length
+      const sharingLevel = shareOf(s, s.me.name)
       const out: string[] = [s.local ? 'local: nothing leaves this machine' : publisher
         ? `team room: ${publisher} (${participants} in the room)`
-        : `team room: sharing ${sharingDescription(shareOf(s, s.me.name))}${shareOf(s, s.me.name) === 'declared' && s.policyStore.retained.length ? '; changed files declared earlier remain shared' : ''} with ${participants}`]
+        : `team room: sharing ${sharingDescription(sharingLevel)}${sharingLevel === 'declared' && s.policyStore.retained.length ? '; changed files declared earlier remain shared' : ''} with ${participants}`]
+      if (!s.local) out.push(`sharing level: ${sharingLevel}; ${sharingHumanChoices(sharingLevel)}`)
       if (s.local && publisher) out.push(publisher)
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, 'company')

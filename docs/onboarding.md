@@ -18,7 +18,7 @@ One team room covers every branch of a GitHub repository. Each teammate needs pu
 2. One participant says **“open this repo on the server”**. This runs `room_create` once.
 3. Each teammate says **“join the room”** from their clone. **“Show room state”** now reports `team room:`, `room: github.com/<owner>/<repo>`, and `you: <name> in github.com/<owner>/<repo>` with that person's branch and base.
 
-The hosted server is `wss://room-rohanz.fly.dev`. For a self-hosted server, launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; the shared app-server daemon does not inherit shell `ROOM_*` variables. Room states what this worktree shares on first join. Say **“share plans only”** or **“only my declared files”** if you want a narrower level. The [reference](reference.md#sharing-and-agent-context) explains what each level includes. **“Work locally”** returns to the local room.
+The hosted server is `wss://room-rohanz.fly.dev`. For a self-hosted server, launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; the shared app-server daemon does not inherit shell `ROOM_*` variables. Room states what this worktree shares on first join. By default, members of the team room on every branch see the full text of eligible files you change. Say **“share plans only”** or **“only my declared files”** to narrow it; `room_share` changes it later. The [defaults table](../README.md#defaults-and-how-to-change-them) and [reference](reference.md#sharing-and-agent-context) explain the levels. **“Work locally”** returns to the local room.
 
 ## Coordinate a task
 

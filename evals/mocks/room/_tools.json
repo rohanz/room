@@ -96,7 +96,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use for \"join the room\", \"work locally\", or moving rooms. Remembers this clone’s choice.",
+      "description": "Use for \"join the room\", \"work locally\", or moving rooms. Remembers this clone\u2019s choice.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -242,7 +242,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use for \"who’s here?\", file ownership, or \"is Room set up right?\" check=true checks my setup (room doctor); link gets the browser URL.",
+      "description": "Use for \"who\u2019s here?\", file ownership, or \"is Room set up right?\" check=true checks my setup (room doctor); link gets the browser URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -278,7 +278,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use to read a teammate’s live file or diff; omit path for all diffs.",
+      "description": "Use to read a teammate\u2019s live file or diff; omit path for all diffs.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -524,7 +524,7 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "description": "Use when asked to post Room activity on a GitHub PR. Updates the room ledger on this branch’s PR by default.",
+      "description": "Use when asked to post Room activity on a GitHub PR. Updates the room ledger on this branch\u2019s PR by default.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -626,7 +626,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use for another agent (claude/codex), agents in parallel, work in the background, or codex/claude to do part of it; message a finished worker to resume it in its worktree.",
+      "description": "Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together. Message a finished worker to resume it.",
       "inputSchema": {
         "type": "object",
         "properties": {
