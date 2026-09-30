@@ -46,7 +46,9 @@ export type LeaseLostReason = 'superseded' | 'expired' | 'expired-participant' |
 export type Push = { v: 1; push: 'lease-lost'; name: string; epoch: number; reason: LeaseLostReason }
 
 /** Who sent a frame: a local relay connection (it presented the clone key), or a server connection. */
-export type Principal = { local: true } | { login?: string; readOnly: boolean }
+/** `login` is a display name and may collide across identity providers; `id` is the stable provider-qualified
+ *  identity (`github:<login>`, `oidc:<issuer-host>:<sub>`) that ownership and quotas are judged by when present. */
+export type Principal = { local: true } | { login?: string; id?: string; readOnly: boolean }
 
 export type Frame = Req | Reply | Push
 

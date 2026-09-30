@@ -753,7 +753,7 @@ server.on('upgrade', (req, socket, head) => {
         const entry = rooms.get(repo)!
         entry.lastSeen = Date.now(); void saveRooms().catch(() => {})
         // Innermost wrapper (installed first): the outer ones pass type 7 through to it.
-        bindHub(ws, () => hubs.current(docKey), opts.readOnly ? { readOnly: true } : { login: opts.login, readOnly: false }, () => hubs.storageFailure(docKey) ?? hubs.startFailure(docKey))
+        bindHub(ws, () => hubs.current(docKey), opts.readOnly ? { readOnly: true } : { login: opts.login, id: opts.id ?? (opts.provider === 'github' && opts.login ? `github:${opts.login.toLowerCase()}` : undefined), readOnly: false }, () => hubs.storageFailure(docKey) ?? hubs.startFailure(docKey))
         audit({ event: 'join', room: docKey, login: opts.login, id: opts.id, provider: opts.provider, ...(opts.readOnly ? { readOnly: true } : {}) })
         if (opts.readOnly) makeReadOnly(ws, droppedWrite(docKey))
         if (opts.login) {
