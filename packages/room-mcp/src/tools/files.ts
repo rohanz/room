@@ -691,15 +691,17 @@ async function optionalAttributeFile(file: string): Promise<Buffer> {
   })
 }
 
+/** Git's boolean environment values: true/yes/on or a nonzero integer. */
+const gitEnvTrue = (value: string | undefined): boolean => /^(true|yes|on)$/i.test(value?.trim() ?? '') || /^[+-]?\d+$/.test(value?.trim() ?? '') && Number(value) !== 0
+
+/** Git prints one value and a newline: drop only that newline, never pathname bytes. */
+const gitLine = (output: string): string => output.replace(/\r?\n$/, '')
+
 async function systemAttributePaths(dir: string): Promise<string[]> {
-  if (/^(true|yes|on|1)$/i.test(process.env.GIT_ATTR_NOSYSTEM ?? '')) return []
-  try { return [(await gitSetup(dir, ['var', 'GIT_ATTR_SYSTEM'])).trim()] }
-  catch {
-    // Older Git without GIT_ATTR_SYSTEM: probe both common prefix layouts.
-    // If Git cannot report its path, these are conservative candidates.
-    const execPath = (await gitSetup(dir, ['--exec-path'])).trim()
-    return [...new Set([path.resolve(execPath, '../../etc/gitattributes'), path.resolve(execPath, '../../../etc/gitattributes')])]
-  }
+  if (gitEnvTrue(process.env.GIT_ATTR_NOSYSTEM)) return []
+  // Only Git knows its system attributes file (git var GIT_ATTR_SYSTEM, Git 2.42+). If it cannot say,
+  // the checkout policy is unknown: the caller previews on a fresh tree instead of guessing paths.
+  return [gitLine(await gitSetup(dir, ['var', 'GIT_ATTR_SYSTEM']))]
 }
 
 async function checkoutSettings(dir: string): Promise<{ fingerprint: string; sparse: boolean }> {
@@ -713,7 +715,7 @@ async function checkoutSettings(dir: string): Promise<{ fingerprint: string; spa
   const sparseFile = path.join(admin, 'info', 'sparse-checkout')
   const sparse = /^(true|yes|on|1)$/i.test(values.get('core.sparsecheckout') ?? '')
     || await fs.promises.access(sparseFile).then(() => true, () => false)
-  const infoAttributes = (await gitSetup(dir, ['rev-parse', '--path-format=absolute', '--git-path', 'info/attributes'])).trim()
+  const infoAttributes = gitLine(await gitSetup(dir, ['rev-parse', '--path-format=absolute', '--git-path', 'info/attributes']))
   const configured = values.get('core.attributesfile')
   let userAttributes: string
   let userIdentity: string
@@ -721,7 +723,7 @@ async function checkoutSettings(dir: string): Promise<{ fingerprint: string; spa
     // --path applies Git's ~/ and ~user expansion; a relative path is read from
     // the invoking worktree. Keep that relative spelling in the key so a slot
     // name never enters its own fingerprint.
-    const expanded = (await gitSetup(dir, ['config', '--path', '--get', 'core.attributesFile'])).trim()
+    const expanded = (await gitSetup(dir, ['config', '--null', '--path', '--get', 'core.attributesFile'])).replace(/\0$/, '')
     userAttributes = path.resolve(dir, expanded)
     userIdentity = path.isAbsolute(expanded) ? expanded : `relative:${expanded}`
   } else {

@@ -39679,13 +39679,8 @@ async function optionalAttributeFile(file) {
   });
 }
 async function systemAttributePaths(dir) {
-  if (/^(true|yes|on|1)$/i.test(process.env.GIT_ATTR_NOSYSTEM ?? "")) return [];
-  try {
-    return [(await gitSetup(dir, ["var", "GIT_ATTR_SYSTEM"])).trim()];
-  } catch {
-    const execPath = (await gitSetup(dir, ["--exec-path"])).trim();
-    return [.../* @__PURE__ */ new Set([path30.resolve(execPath, "../../etc/gitattributes"), path30.resolve(execPath, "../../../etc/gitattributes")])];
-  }
+  if (gitEnvTrue(process.env.GIT_ATTR_NOSYSTEM)) return [];
+  return [gitLine(await gitSetup(dir, ["var", "GIT_ATTR_SYSTEM"]))];
 }
 async function checkoutSettings(dir) {
   const output = await gitSetup(dir, ["config", "--null", "--list"]);
@@ -39697,12 +39692,12 @@ async function checkoutSettings(dir) {
   const admin = (await gitSetup(dir, ["rev-parse", "--absolute-git-dir"])).trim();
   const sparseFile = path30.join(admin, "info", "sparse-checkout");
   const sparse = /^(true|yes|on|1)$/i.test(values.get("core.sparsecheckout") ?? "") || await fs34.promises.access(sparseFile).then(() => true, () => false);
-  const infoAttributes = (await gitSetup(dir, ["rev-parse", "--path-format=absolute", "--git-path", "info/attributes"])).trim();
+  const infoAttributes = gitLine(await gitSetup(dir, ["rev-parse", "--path-format=absolute", "--git-path", "info/attributes"]));
   const configured = values.get("core.attributesfile");
   let userAttributes;
   let userIdentity;
   if (configured !== void 0) {
-    const expanded = (await gitSetup(dir, ["config", "--path", "--get", "core.attributesFile"])).trim();
+    const expanded = (await gitSetup(dir, ["config", "--null", "--path", "--get", "core.attributesFile"])).replace(/\0$/, "");
     userAttributes = path30.resolve(dir, expanded);
     userIdentity = path30.isAbsolute(expanded) ? expanded : `relative:${expanded}`;
   } else {
@@ -40254,7 +40249,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
     await fs34.promises.rm(index, { force: true });
   }
 }
-var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, ownSlotGenerations, checkoutConfigKeys, warnedSlots, abandonedOwnSlots, ownCleanup, PREVIEW_SWEEP_LIMIT, PREVIEW_PROBE_LIMIT, PREVIEW_SCAN_LIMIT, PREVIEW_KEY_SCAN_LIMIT, PREVIEW_SWEEP_MS, previewSweeps, previewSlotTurns;
+var defs, previewGenerations, SETUP_TIMEOUT_MS, gitSetup, PROBE_TIMEOUT_MS, ownStartPromise, processProbeForTests, ownSlotGenerations, checkoutConfigKeys, gitEnvTrue, gitLine, warnedSlots, abandonedOwnSlots, ownCleanup, PREVIEW_SWEEP_LIMIT, PREVIEW_PROBE_LIMIT, PREVIEW_SCAN_LIMIT, PREVIEW_KEY_SCAN_LIMIT, PREVIEW_SWEEP_MS, previewSweeps, previewSlotTurns;
 var init_files = __esm({
   "packages/room-mcp/src/tools/files.ts"() {
     "use strict";
@@ -40301,6 +40296,8 @@ var init_files = __esm({
     PROBE_TIMEOUT_MS = 3e3;
     ownSlotGenerations = /* @__PURE__ */ new Map();
     checkoutConfigKeys = /* @__PURE__ */ new Set(["core.autocrlf", "core.eol", "core.safecrlf", "core.symlinks", "core.filemode", "core.ignorecase", "core.precomposeunicode", "core.attributesfile"]);
+    gitEnvTrue = (value2) => /^(true|yes|on)$/i.test(value2?.trim() ?? "") || /^[+-]?\d+$/.test(value2?.trim() ?? "") && Number(value2) !== 0;
+    gitLine = (output) => output.replace(/\r?\n$/, "");
     warnedSlots = /* @__PURE__ */ new Set();
     abandonedOwnSlots = /* @__PURE__ */ new Map();
     ownCleanup = Promise.resolve();

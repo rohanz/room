@@ -195,6 +195,54 @@ it('expands a ~/ core.attributesFile path', async () => {
   await expectPolicyChangeToAbandon(root, session, head, old)
 }, 30_000)
 
+it('keeps every byte of a core.attributesFile path, including a trailing space', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  const file = path.join(isolatedHome, 'attributes ')
+  fs.writeFileSync(file, '')
+  git('config', 'core.attributesFile', file)
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).passed).toBe(true)
+  const old = await previewCachePath(root)
+  fs.writeFileSync(file, 'x text eol=crlf\n')
+  await expectPolicyChangeToAbandon(root, session, head, old)
+}, 30_000)
+
+/** A git on PATH that cannot report GIT_ATTR_SYSTEM (as before Git 2.42) and runs the real git otherwise. */
+function gitWithoutAttrSystem(): string {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-old-git-'))
+  roots.push(bin)
+  const real = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nfor a in "$@"; do [ "$a" = GIT_ATTR_SYSTEM ] && { echo "fatal: unknown variable" >&2; exit 1; }; done\nexec "${real}" "$@"\n`, { mode: 0o755 })
+  return bin
+}
+
+it('previews on a fresh tree when Git cannot report its system attributes file', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  delete process.env.GIT_ATTR_NOSYSTEM
+  vi.stubEnv('PATH', `${gitWithoutAttrSystem()}:${process.env.PATH}`)
+  for (let i = 0; i < 2; i++) {
+    const result = await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)
+    expect(result.passed, result.text).toBe(true)
+    expect(result.text).not.toContain('(cached base)')
+  }
+}, 30_000)
+
+it('treats a nonzero integer GIT_ATTR_NOSYSTEM as disabling system attributes, as Git does', async () => {
+  const { root, git, session } = fixture()
+  fs.writeFileSync(path.join(root, 'x'), 'base\n')
+  git('add', '.'); git('commit', '-qm', 'base')
+  const head = git('rev-parse', 'HEAD')
+  process.env.GIT_ATTR_NOSYSTEM = '2'
+  vi.stubEnv('PATH', `${gitWithoutAttrSystem()}:${process.env.PATH}`)
+  await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)
+  expect((await runInMergedTree(session, head, new Map(), rejectsChangedCheckout)).text).toContain('(cached base)')
+}, 30_000)
+
 it('abandons a slot when a relative core.attributesFile path changes', async () => {
   const { root, git, session } = fixture()
   fs.writeFileSync(path.join(root, 'x'), 'base\n')
