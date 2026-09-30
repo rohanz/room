@@ -217,3 +217,67 @@ describe('migrateRepo', () => {
     expect(f.docs.has(two)).toBe(true)
   })
 })
+
+function canonicalFixture() {
+  const f = fixture()
+  // Two unrelated old participants named cy, one under the canonical key.
+  f.docs.set(repo, f.docs.get(one)!)
+  f.docs.delete(one)
+  f.docs.delete(two)
+  const other = new RoomDoc()
+  other.scopes.set('cy', { by: 'cy', byKind: 'agent', area: 'other', summary: 'other cy', paths: ['other.ts'], at: 1 })
+  f.docs.set(two, Y.encodeStateAsUpdate(other.doc)); other.doc.destroy()
+  f.entry.branches = [two]
+  return f
+}
+
+it.each(['known-size', 'measured-size', 'load-error', 'size-error'])('canonical inspection %s failure persists nothing; larger-budget retry archives and translates identities', async failure => {
+  const f = canonicalFixture(), before = structuredClone(f.entry), saved: OpenRepo[] = []
+  const save = f.io.save, load = f.io.load
+  f.io.save = async () => { saved.push(structuredClone(f.entry)); await save() }
+  f.io.maxReadBytes = failure.includes('size') ? 10 : 100_000
+  if (failure === 'known-size') f.io.size = async name => f.docs.get(name)?.byteLength
+  if (failure === 'size-error') f.io.size = async () => { throw Error('size unavailable') }
+  if (failure === 'load-error') f.io.load = async name => { if (name === repo) throw Error('unreadable'); return load(name) }
+  await expect(migrateRepo(repo, f.entry, f.io)).rejects.toThrow('room migration could not read the existing room within ROOM_MIGRATION_MAX_READ_MB; raise it and retry')
+  expect(saved).toEqual([])
+  expect(f.entry).toEqual(before)
+  expect([...f.docs.keys()]).toEqual([repo, two])
+  f.io.maxReadBytes = 100_000; f.io.load = load; f.io.size = undefined
+  await migrateRepo(repo, f.entry, f.io)
+  const moved = f.entry.plan!.moved!
+  expect(f.docs.has(moved)).toBe(true)
+  expect(f.entry.unresolved).toBe(2)
+  const target = new RoomDoc(await f.io.load(repo))
+  expect(target.mail.get('q1')?.to).toMatch(/^\?/)
+  expect(target.meta.schemaVersion).toBe(2)
+  target.doc.destroy()
+})
+
+it.each(['planned', 'frozen', 'moved', 'written'])('repairs an incomplete saved plan at %s before reusing a legacy canonical document', async step => {
+  const f = canonicalFixture()
+  f.entry.plan = { id: '123e4567-e89b-12d3-a456-426614174000', sources: [two] }
+  f.entry.mode = 'repo'; f.entry.step = step as OpenRepo['step']; f.entry.legacy = [two]
+  await migrateRepo(repo, f.entry, f.io)
+  expect(f.entry.plan.moved).toBe(`archive:${repo}:123e4567-e89b-12d3-a456-426614174000`)
+  expect(f.docs.has(f.entry.plan.moved!)).toBe(true)
+  expect(f.entry.unresolved).toBe(2)
+  const target = new RoomDoc(await f.io.load(repo))
+  expect(target.mail.get('q1')?.to).toMatch(/^\?/)
+  target.doc.destroy()
+})
+
+it('cannot advance the mandatory canonical archive move when its budget is insufficient', async () => {
+  const f = canonicalFixture()
+  f.entry.plan = { id: '123e4567-e89b-12d3-a456-426614174000', sources: [two], moved: `archive:${repo}:123e4567-e89b-12d3-a456-426614174000` }
+  f.entry.legacy = [two, f.entry.plan.moved!]; f.entry.step = 'frozen'; f.entry.mode = 'repo'
+  f.io.maxReadBytes = 10
+  await expect(migrateRepo(repo, f.entry, f.io)).rejects.toThrow(/could not read the existing room/)
+  expect(f.entry.step).toBe('frozen')
+  expect(f.docs.has(repo)).toBe(true)
+  expect(f.docs.has(f.entry.plan.moved!)).toBe(false)
+  f.io.maxReadBytes = 100_000
+  await migrateRepo(repo, f.entry, f.io)
+  expect(f.docs.has(f.entry.plan.moved!)).toBe(true)
+  expect(f.entry.unresolved).toBe(2)
+})

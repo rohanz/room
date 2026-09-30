@@ -13,6 +13,19 @@ use broke and proposes the order of work.
 
 - **Repository rooms:** Every participant carries a branch and base inside one room per repository; branch switches keep scope and claims. The PR mirror considers participants’ branches, and local relay state migrates to a separate schema-2 generation.
 
+## Post-0.17
+
+- **One local database.** Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
+- **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.
+- **Trim the large modules.** `worker-registry.ts` (about 1.26k lines) and `conflict-set.ts` (about 0.8k) after the database move.
+- **Threat model.** Write one for 0.17, and write threat models alongside future specs.
+- **Standalone local daemon.** Consider one instead of the relay living in the first session.
+- **Simplification pass** after the trial.
+- **Protocol version negotiation** and a compatibility window, before the user base grows.
+- **Per-person permissions** and validated operations.
+- **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
+- **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew.
+
 ## Fixed in 0.16.3
 
 - **Crash recovery lock race (0.16.1 audit finding 8):** automatic-name and choice locks now serialize stale-owner recovery with a reclaimable guard and re-read the owner before removing a lock.

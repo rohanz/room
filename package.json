@@ -11,7 +11,6 @@
     "knip": "knip",
     "typecheck": "tsc -b packages/shared packages/hub-core packages/relay packages/server packages/roomd packages/room-mcp packages/agent && tsc -p packages/web",
     "server": "tsx packages/server/src/index.ts",
-    "roomd": "tsx packages/roomd/src/cli.ts",
     "mcp": "tsx packages/room-mcp/src/index.ts",
     "web": "npm run dev -w @room/web",
     "build:plugin": "node scripts/build-plugin.mjs",

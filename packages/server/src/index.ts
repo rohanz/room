@@ -45,9 +45,9 @@ import { CredentialSockets, PermissionRevalidator, ConnectionReservations, Outbo
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
-import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
+import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { HUB_ORIGIN } from '@room/hub-core'
-import { bodyReader, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
+import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -79,7 +79,7 @@ const auth = new Auth({
   oidc: oidcIssuer ? { issuer: oidcIssuer, clientId: process.env.OIDC_CLIENT_ID!.trim(), clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(), allowedDomains: list(process.env.OIDC_ALLOWED_DOMAINS), publicUrl: process.env.PUBLIC_URL!.trim() } : undefined,
   store,
   log: l => console.log(l),
-  onSessionRemoved: (session, reason) => { credentialSockets.close({ kind: 'session', value: session }, 4401, reason); revalidator.forget(session) },
+  onSessionRemoved: (session, reason, removed) => { if (removed?.ghToken) pushChecker.forget(removed.ghToken); credentialSockets.close({ kind: 'session', value: session }, 4401, reason); revalidator.forget(session) },
 })
 setInterval(() => { auth.sweepSessions(); void auth.reconcileSessions().catch(e => console.log(`session store check failed: ${e instanceof Error ? e.message : e}`)) }, 60_000).unref()
 /** Append-only audit trail: who logged in, which rooms were opened/closed, every websocket accepted or refused. */
@@ -147,6 +147,17 @@ const MAX_PR_LISTS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_PR_LISTS_PER_PRIN
 const prOperations = new WorkSlots(MAX_PR_OPERATIONS, MAX_PR_LISTS_PER_PRINCIPAL, outbound)
 const PR_OPERATIONS_PER_MINUTE = Number(process.env.ROOM_PR_OPERATIONS_PER_MINUTE ?? 30)
 const prOperationRate = new RateLimit(PR_OPERATIONS_PER_MINUTE, 60_000)
+const MAX_HTTP_RESPONSES = Number(process.env.ROOM_MAX_HTTP_RESPONSES ?? 32)
+const MAX_HTTP_RESPONSES_PER_PRINCIPAL = Number(process.env.ROOM_MAX_HTTP_RESPONSES_PER_PRINCIPAL ?? 4)
+const HTTP_RESPONSE_DEADLINE_MS = Number(process.env.ROOM_HTTP_RESPONSE_DEADLINE_MS ?? 120_000)
+const MAX_ROOM_LISTS = Number(process.env.ROOM_MAX_ROOM_LISTS ?? 8)
+const MAX_ROOM_LISTS_PER_PRINCIPAL = 1
+const ROOM_LISTS_PER_MINUTE = Number(process.env.ROOM_LISTS_PER_MINUTE ?? 10)
+const archiveListSetting = Number(process.env.ROOM_ARCHIVE_LIST_MAX_KEYS ?? 1000)
+const ARCHIVE_LIST_MAX_KEYS = Number.isFinite(archiveListSetting) ? Math.min(1000, Math.max(0, Math.floor(archiveListSetting))) : 1000
+const httpResponses = new WorkSlots(MAX_HTTP_RESPONSES, MAX_HTTP_RESPONSES_PER_PRINCIPAL, outbound)
+const roomListResponses = new WorkSlots(MAX_ROOM_LISTS, MAX_ROOM_LISTS_PER_PRINCIPAL, outbound)
+const roomListRate = new RateLimit(ROOM_LISTS_PER_MINUTE, 60_000)
 const locks = new RepoLocks()
 let pendingRoomCreations = 0
 const canonical = (name: string, schema2 = false) => {
@@ -233,15 +244,19 @@ const loadArchiveDoc = async (name: string): Promise<Y.Doc> => {
     await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_ARCHIVE_LOAD_DELAY_MS)))
   return loadDoc(name)
 }
-const archiveListings = new Map<string, Promise<string[]>>()
-async function unresolvedNames(repo: string): Promise<string[]> {
+const archiveListings = new Map<string, Promise<string>>()
+async function archiveListingBody(repo: string, principal: string): Promise<string> {
   const current = archiveListings.get(repo)
   if (current) return current
+  const loadSlot = exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
+  if (!loadSlot) throw new HttpFailure(429, 'archive listing busy; retry')
   const work = (async () => {
+    try {
     const live = docs.get(repo)
     const doc = live ?? await loadArchiveDoc(repo)
-    try { return [...doc.getMap('unresolved').keys()] }
+    try { return archiveListing(repo, rooms.get(repo)?.legacy ?? [], doc.getMap('unresolved'), ARCHIVE_LIST_MAX_KEYS) }
     finally { if (!live) doc.destroy() }
+    } finally { loadSlot.release() }
   })()
   archiveListings.set(repo, work)
   try { return await work } finally { archiveListings.delete(repo) }
@@ -409,14 +424,52 @@ const server = http.createServer((req, res) => {
     res.end(legacy ? 'update Room to 0.17 or later: this server no longer accepts credentials in URLs' : 'send credentials in Authorization or X-Room-Token headers')
     return
   }
-  const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
-  const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
-  const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
+  let responseWork: ResponseWork | undefined
+  const stateLink = url.pathname === '/' && url.searchParams.has('room') && (url.searchParams.has('view') || url.searchParams.has('key'))
+  const stateRoute = stateLink || ['/rooms', '/archive', '/archive/export', '/audit', '/github/prs', '/github/pr-note', '/view-token', '/ws-ticket'].includes(url.pathname)
+  const reserveResponse = (c: Creds): boolean => {
+    if (res.destroyed || res.writableEnded || req.aborted) return false
+    if (responseWork) return !res.destroyed
+    const principal = workPrincipal(auth.resolve(c.session), !!c.token, clientIp(req))
+    const listing = url.pathname === '/rooms' && req.method === 'GET'
+    const retry = listing ? roomListRate.check(principal) : 0
+    responseWork = retry ? undefined : ResponseWork.reserve(listing ? roomListResponses : httpResponses, principal, res,
+      url.pathname.startsWith('/archive') ? Math.min(HTTP_RESPONSE_DEADLINE_MS, EXPORT_DEADLINE_MS) : HTTP_RESPONSE_DEADLINE_MS)
+    if (responseWork) return true
+    res.writeHead(429, { 'Retry-After': String(retry || 5) }); res.end('room server busy; retry')
+    return false
+  }
+  const encodedJson = (status: number, body: string) => {
+    if (res.destroyed || res.writableEnded) return
+    if (responseWork) {
+      if (!responseWork.send(status, body) && !res.destroyed) { res.writeHead(503, { 'Retry-After': '5' }); res.end(); }
+    } else { res.writeHead(status, { 'content-type': 'application/json' }); res.end(body) }
+  }
+  const json = (status: number, body: unknown) => encodedJson(status, JSON.stringify(body))
+  const text = (status: number, body: string) => {
+    if (res.destroyed || res.writableEnded) return
+    if (status === 429 && !res.hasHeader('Retry-After')) res.setHeader('Retry-After', '5')
+    if (responseWork) {
+      if (!responseWork.send(status, body, 'text/plain') && !res.destroyed) { res.writeHead(503, { 'Retry-After': '5' }); res.end(); }
+    } else { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
+  }
+  if (stateRoute && req.method === 'GET' && !reserveResponse(headerCreds())) return
+  const html = (status: number, body: string) => {
+    const encoded = `<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`
+    res.setHeader('cache-control', 'no-store')
+    if (responseWork) {
+      if (!responseWork.send(status, encoded, 'text/html; charset=utf-8') && !res.destroyed) { res.writeHead(503); res.end() }
+    } else { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' }); res.end(encoded) }
+  }
   const withBody = (fn: (o: Record<string, unknown>) => Promise<void>, maxBytes?: number) => { void readBody(req, { maxBytes }).then(async body => {
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(body || '{}') as Record<string, unknown> } catch { text(400, 'bad request'); return }
-    try { await fn({ ...headerCreds(), ...parsed }) }
-    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, 'room server operation failed; retry') }
+    const o = { ...headerCreds(), ...parsed }
+    if (stateRoute && !reserveResponse(creds(o))) return
+    const releaseWork = responseWork?.hold()
+    try { await fn(o) }
+    catch (e) { console.log(`request ${url.pathname}: ${e instanceof Error ? e.stack : e}`); if (!res.writableEnded) text(e instanceof MigrationReadFailure || e instanceof Error && e.message.includes('storage is failing') ? 503 : 500, e instanceof MigrationReadFailure ? e.message : 'room server operation failed; retry') }
+    finally { releaseWork?.() }
   }).catch(e => { if (!res.writableEnded && !res.destroyed) text(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'request body failed') }); return }
 
   // A retired browser URL must explain the terminal state before the static app reconnects.
@@ -479,7 +532,8 @@ const server = http.createServer((req, res) => {
     if (!isAdmin(st)) return text(403, `${st.login} is not in ROOM_ADMINS`)
     const since = Number(url.searchParams.get('since') ?? 0) || 0
     const limit = Math.min(10_000, Number(url.searchParams.get('limit') ?? 1000) || 1000)
-    void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`))
+    const releaseWork = responseWork?.hold()
+    void store.readAudit({ since, limit }).then(entries => json(200, entries)).catch(e => text(500, `audit unavailable: ${e instanceof Error ? e.message : e}`)).finally(() => releaseWork?.())
     return
   }
 
@@ -487,10 +541,13 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/rooms' && req.method === 'GET') {
     if (url.searchParams.has('room') && !parseRoomName(url.searchParams.get('room') ?? '', url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     const c = headerCreds()
+    const releaseWork = responseWork?.hold()
     void (async () => {
-      const out: ({ repo: string } & OpenRepo)[] = []
-      for (const [repo, r] of rooms) if ((await admitted(repo, c)).ok) out.push({ repo, ...r })
-      json(200, out)
+      const cancellation = requestCancellation(req, res)
+      try {
+        const out = await scanRooms(rooms, async repo => (await admitted(repo, c)).ok, cancellation.signal, MAX_ROOMS)
+        if (!cancellation.cancelled()) json(200, out)
+      } finally { cancellation.dispose(); releaseWork?.() }
     })().catch(e => { console.log(`rooms list: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) text(500, 'could not list rooms') })
     return
   }
@@ -617,6 +674,7 @@ const server = http.createServer((req, res) => {
   // Legacy documents are retained for 30 days but never connected to a writable socket.
   if (url.pathname === '/archive' && req.method === 'GET') {
     if (!parseRoomName(url.searchParams.get('repo') ?? '', true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
+    const releaseWork = responseWork?.hold()
     void (async () => {
       const cancellation = requestCancellation(req, res)
       try {
@@ -627,15 +685,10 @@ const server = http.createServer((req, res) => {
       if (cancellation.cancelled()) return
       if (!v.ok) return text(v.status, v.why)
       const principal = workPrincipal(auth.resolve(headerCreds().session), !!headerCreds().token, clientIp(req))
-      const existing = archiveListings.get(repo)
-      const slot = existing ? undefined : exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
-      if (!existing && !slot) { res.setHeader('Retry-After', '5'); return text(429, 'archive listing busy; retry') }
-      try {
-        const unresolved = await (existing ?? unresolvedNames(repo))
-        if (!cancellation.cancelled()) { json(200, { repo, legacy: entry.legacy ?? [], unresolved }); await waitForResponse(res) }
-      } finally { slot?.release() }
-      } finally { cancellation.dispose() }
-    })().catch(e => text(500, `archive unavailable: ${e instanceof Error ? e.message : e}`))
+      const encoded = await archiveListingBody(repo, principal)
+      if (!cancellation.cancelled()) encodedJson(200, encoded)
+      } finally { cancellation.dispose(); releaseWork?.() }
+    })().catch(e => text(e instanceof HttpFailure ? e.status : 500, `archive unavailable: ${e instanceof Error ? e.message : e}`))
     return
   }
   if (url.pathname === '/archive/export' && req.method === 'POST') return withBody(async o => {
@@ -665,7 +718,7 @@ const server = http.createServer((req, res) => {
       try { if (!cancellation.cancelled()) update = Y.encodeStateAsUpdate(doc) }
       finally { if (!live) doc.destroy() }
       if (cancellation.cancelled() || !update) return
-      if (!slot.resize(update.byteLength)) return text(503, 'server output budget exhausted; retry')
+      if (!slot.resize(update.byteLength) || !responseWork?.resize(update.byteLength)) return text(503, 'server output budget exhausted; retry')
       if (cancellation.cancelled()) return
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
       for (let at = 0; at < update.byteLength && !cancellation.cancelled(); at += EXPORT_CHUNK_BYTES) {
@@ -692,6 +745,7 @@ const server = http.createServer((req, res) => {
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo')
     const c = headerCreds()
+    const releaseWork = responseWork?.hold()
     void (async () => {
       const cancellation = requestCancellation(req, res)
       try {
@@ -716,7 +770,7 @@ const server = http.createServer((req, res) => {
         if (!cancellation.cancelled()) json(200, result)
       } catch (e) { if (!cancellation.cancelled()) githubFail('github/prs', e) }
       } finally { slot.release() }
-      } finally { cancellation.dispose() }
+      } finally { cancellation.dispose(); releaseWork?.() }
     })().catch(e => { console.log(`github/prs: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) text(500, 'could not list pull requests') })
     return
   }

@@ -20,33 +20,61 @@ export interface AdmitOptions {
   auth: Pick<Auth, 'providers' | 'resolve' | 'fake'>
   /** ROOM_TOKEN: admits non-GitHub rooms only. */
   token?: string
-  /** Can this GitHub token push to owner/repo? Default: asks the GitHub API, cached 10 min per token+repo. */
+  /** Can this GitHub token push to owner/repo? Default: asks the GitHub API, grants cached 10 min and definite denials at most 60 s per token+repo. */
   canPush?: (token: string, ownerRepo: string, fresh?: boolean) => Promise<boolean | undefined>
   fetch?: typeof fetch
   now?: () => number
 }
 
 /** Can the token push to the repo? Read access alone would make every public repo an open room. */
-export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number } = {}): (token: string, ownerRepo: string, fresh?: boolean) => Promise<boolean | undefined> {
-  const f = o.fetch ?? globalThis.fetch
-  const now = o.now ?? Date.now
-  const cache = new Map<string, Map<string, number>>()
-  return async (token, ownerRepo, fresh = false) => {
-    const t = now()
-    const hit = cache.get(token)?.get(ownerRepo)
-    if (!fresh && hit && hit > t) return true
-    try {
-      const res = await f(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' }, signal: AbortSignal.timeout(10000) })
-      if (!res.ok) { if (res.status === 401 || res.status === 404) cache.get(token)?.delete(ownerRepo); return res.status === 401 || res.status === 404 ? false : undefined }
-      const body = await res.json() as { permissions?: { push?: boolean } }
-      if (!body.permissions?.push) { cache.get(token)?.delete(ownerRepo); return false }
-      let m = cache.get(token); if (!m) { m = new Map(); cache.set(token, m) }
-      m.set(ownerRepo, t + 10 * 60 * 1000)
-      if (cache.size > 1000) cache.delete(cache.keys().next().value!)
-      if (m.size > 100) m.delete(m.keys().next().value!)
-      return true
-    } catch { return undefined }
+const GH_DENIAL_CACHE_MS = Math.min(60_000, Math.max(0, Number(process.env.ROOM_GH_DENIAL_CACHE_MS ?? 60_000)))
+const GH_POSITIVE_CACHE_MS = 10 * 60 * 1000
+export type PushChecker = ((token: string, ownerRepo: string, fresh?: boolean) => Promise<boolean | undefined>) & { forget(token: string): void }
+export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number } = {}): PushChecker {
+  const f = o.fetch ?? globalThis.fetch, now = o.now ?? Date.now
+  // Logout clears cached decisions while pending checks remain coalesced; generations prevent stale repopulation.
+  const holders = new Map<string, { cache: Map<string, { allowed: boolean; until: number }>; pending: Map<string, Promise<boolean | undefined>>; generation: number }>()
+  const check = (async (token: string, ownerRepo: string, fresh = false) => {
+    let holder = holders.get(token)
+    if (!holder) {
+      holder = { cache: new Map(), pending: new Map(), generation: 0 }; holders.set(token, holder)
+      if (holders.size > 1000) for (const [key, value] of holders) { if (!value.pending.size) { holders.delete(key); break } }
+    }
+    const current = holder.pending.get(ownerRepo)
+    if (current) return current
+    const hit = holder.cache.get(ownerRepo)
+    if (hit && hit.until > now() && (!fresh || !hit.allowed)) return hit.allowed
+    const h = holder, generation = holder.generation
+    const work = (async () => {
+      try {
+        const res = await f(`https://api.github.com/repos/${ownerRepo}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'room-server' }, signal: AbortSignal.timeout(10000) })
+        let allowed: boolean
+        if (!res.ok) {
+          if (![401, 403, 404].includes(res.status)) return undefined
+          h.cache.delete(ownerRepo)
+          // 401 is a stale credential, not a repository permission denial.
+          if (res.status === 401) return false
+          allowed = false
+        } else {
+          const body = await res.json() as { permissions?: { push?: boolean } }
+          if (body.permissions?.push !== true && body.permissions?.push !== false) return undefined
+          allowed = body.permissions.push
+        }
+        if (h.generation === generation && holders.get(token) === h) h.cache.set(ownerRepo, { allowed, until: now() + (allowed ? GH_POSITIVE_CACHE_MS : GH_DENIAL_CACHE_MS) })
+        if (h.cache.size > 100) h.cache.delete(h.cache.keys().next().value!)
+        return allowed
+      } catch { return undefined }
+    })()
+    h.pending.set(ownerRepo, work)
+    try { return await work } finally { h.pending.delete(ownerRepo) }
+  }) as PushChecker
+  check.forget = token => {
+    const holder = holders.get(token)
+    if (!holder) return
+    holder.cache.clear(); holder.generation++
+    if (!holder.pending.size) holders.delete(token)
   }
+  return check
 }
 
 export function makeAdmitted(o: AdmitOptions): (room: string, c: Creds) => Promise<Verdict> {

@@ -50,7 +50,7 @@ export interface AuthOptions {
   /** How long a started login may take before the client must start again. Default 15 min. */
   loginTtlMs?: number
   log?: (line: string) => void
-  onSessionRemoved?: (session: string, reason: 'session expired' | 'logged out') => void
+  onSessionRemoved?: (session: string, reason: 'session expired' | 'logged out', removed?: StoredSession) => void
 }
 export type DeviceStart = { provider: 'github'; user_code: string; verification_uri: string; expires_in: number; interval: number; device: string }
 export type OidcStart = { provider: 'oidc'; url: string; expires_in: number; interval: number; device: string }
@@ -297,7 +297,7 @@ export class Auth {
     if (!session) return undefined
     const s = this.sessions.get(session)
     if (!s) return undefined
-    if (s.at + this.ttl < this.now()) { this.sessions.delete(session); this.persist(this.store.deleteSession(session)); this.o.onSessionRemoved?.(session, 'session expired'); return undefined }
+    if (s.at + this.ttl < this.now()) { this.sessions.delete(session); this.persist(this.store.deleteSession(session)); this.o.onSessionRemoved?.(session, 'session expired', s); return undefined }
     return s
   }
   resolve(session: string | undefined): StoredSession | undefined {
@@ -314,7 +314,7 @@ export class Auth {
     const s = this.sessions.get(session)
     if (!s) return undefined
     this.sessions.delete(session); this.persist(this.store.deleteSession(session))
-    this.o.onSessionRemoved?.(session, 'logged out')
+    this.o.onSessionRemoved?.(session, 'logged out', s)
     return s
   }
 
@@ -327,8 +327,9 @@ export class Auth {
   async reconcileSessions(): Promise<void> {
     const stored = await this.store.loadSessions()
     for (const id of this.sessions.keys()) if (!(id in stored)) {
+      const removed = this.sessions.get(id)
       this.sessions.delete(id)
-      this.o.onSessionRemoved?.(id, 'logged out')
+      this.o.onSessionRemoved?.(id, 'logged out', removed)
     }
   }
 

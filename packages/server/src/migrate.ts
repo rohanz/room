@@ -60,6 +60,11 @@ export interface MigrationIO {
   onBuild?: () => void
 }
 
+/** An existing canonical key cannot be treated as absent after a failed inspection. */
+export class MigrationReadFailure extends Error {
+  constructor() { super('room migration could not read the existing room within ROOM_MIGRATION_MAX_READ_MB; raise it and retry') }
+}
+
 const MAX_REBUILDS = Math.min(8, Math.max(1, Number(process.env.ROOM_MIGRATION_MAX_REBUILDS ?? 4) || 4))
 const nextTurn = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
@@ -80,12 +85,19 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
     if (workBytes > maxReadBytes) { release(name, doc); return undefined }
     return doc
   }
+  const requiredCanonical = async (): Promise<Y.Doc> => {
+    try {
+      const doc = await checkedLoad(repo)
+      if (!doc) throw new MigrationReadFailure()
+      return doc
+    } catch { throw new MigrationReadFailure() }
+  }
   const save = () => io.save()
   if (!entry.plan) {
     const names = new Set([...entry.branches, ...(entry.legacy ?? []), ...await io.list()])
     workRecords += names.size
     const sources = migrationSources(repo, entry, [...names], registered)
-    const canonicalDoc = names.has(repo) ? await checkedLoad(repo) : undefined
+    const canonicalDoc = names.has(repo) ? await requiredCanonical() : undefined
     const moved = canonicalDoc && new RoomDoc(canonicalDoc).meta.schemaVersion !== 2
       ? `archive:${repo}:${crypto.randomUUID()}` : undefined
     if (canonicalDoc) release(repo, canonicalDoc)
@@ -98,6 +110,22 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
   const plan = entry.plan
   plan.sources = migrationSources(repo, entry, plan.sources, registered)
   if (plan.moved && archiveOwnerOf(plan.moved) !== repo) plan.moved = undefined
+  // e274970 could persist a plan without a move after rejecting an oversized canonical read.
+  // Inspect before advancing any step; reset to a replayable move when that old key is legacy.
+  if (!plan.moved && (await io.list()).includes(repo)) {
+    const canonicalDoc = await requiredCanonical()
+    let legacy: boolean
+    try { legacy = new RoomDoc(canonicalDoc).meta.schemaVersion !== 2 }
+    finally { release(repo, canonicalDoc) }
+    if (legacy) {
+      const moved = `archive:${repo}:${plan.id}`
+      plan.moved = archiveOwnerOf(moved) === repo ? moved : `archive:${repo}:${crypto.randomUUID()}`
+      plan.sources = [...new Set([...plan.sources, plan.moved])]
+      entry.legacy = [...plan.sources]
+      entry.mode = 'repo'; entry.step = 'planned'
+      await save()
+    }
+  }
   if (entry.step === 'planned') {
     await io.freeze([...plan.sources, repo])
     await io.revoke([...plan.sources, repo])
@@ -108,8 +136,7 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       const archived = await io.list()
       workRecords += archived.length
       if (!archived.includes(plan.moved)) {
-        const source = await checkedLoad(repo)
-        if (!source) throw new Error('migration archive source exceeds read budget')
+        const source = await requiredCanonical()
         try { await io.write(plan.moved, Y.encodeStateAsUpdate(source)) }
         finally { release(repo, source) }
       }

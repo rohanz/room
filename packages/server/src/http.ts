@@ -150,3 +150,63 @@ export class RateLimit {
     return 0
   }
 }
+
+/** Each reader owns its output, even when the upstream load is shared. */
+export class ResponseWork {
+  private released = false
+  private responseDone = false
+  private working = 0
+  private readonly timer: ReturnType<typeof setTimeout>
+  private readonly done = () => {
+    if (this.responseDone) return
+    this.responseDone = true
+    clearTimeout(this.timer)
+    this.res.off('finish', this.done); this.res.off('close', this.done)
+    this.releaseIfDone()
+  }
+  private releaseIfDone(): void {
+    if (this.responseDone && !this.working && !this.released) { this.released = true; this.slot.release() }
+  }
+  /** Keep already-started work bounded even after its reader disconnects. */
+  hold(): () => void {
+    this.working++
+    let released = false
+    return () => { if (!released) { released = true; this.working--; this.releaseIfDone() } }
+  }
+  private constructor(private readonly slot: NonNullable<ReturnType<WorkSlots['reserve']>>, private readonly res: http.ServerResponse, deadlineMs: number) {
+    this.timer = setTimeout(() => { res.destroy(); this.done() }, deadlineMs)
+    this.timer.unref?.()
+    res.once('finish', this.done); res.once('close', this.done)
+    if (res.destroyed || res.writableFinished) this.done()
+  }
+  static reserve(slots: WorkSlots, principal: string, res: http.ServerResponse, deadlineMs: number): ResponseWork | undefined {
+    const slot = slots.reserve(principal)
+    return slot ? new ResponseWork(slot, res, deadlineMs) : undefined
+  }
+  resize(bytes: number): boolean { return !this.responseDone && !this.released && this.slot.resize(bytes) }
+  send(status: number, body: string, contentType = 'application/json'): boolean {
+    if (this.res.destroyed || this.res.writableEnded || !this.resize(Buffer.byteLength(body))) return false
+    this.res.writeHead(status, { 'content-type': contentType })
+    this.res.end(body)
+    return true
+  }
+}
+
+export async function scanRooms<T>(rooms: ReadonlyMap<string, T>, admitted: (repo: string) => Promise<boolean>, signal: AbortSignal, maxRooms: number): Promise<({ repo: string } & T)[]> {
+  const out: ({ repo: string } & T)[] = []
+  let scanned = 0
+  for (const [repo, entry] of rooms) {
+    if (signal.aborted || scanned++ >= maxRooms) break
+    const ok = await admitted(repo)
+    if (signal.aborted) break
+    if (ok) out.push({ repo, ...entry })
+  }
+  return out
+}
+
+/** Keep the list informational and bounded; serialize once per coalesced load. */
+export function archiveListing(repo: string, legacy: string[], keys: { size: number; keys(): IterableIterator<string> }, limit: number): string {
+  const unresolved: string[] = []
+  for (const key of keys.keys()) { if (unresolved.length >= limit) break; unresolved.push(key) }
+  return JSON.stringify({ repo, legacy, unresolved, unresolvedTotal: keys.size, ...(keys.size > unresolved.length ? { truncated: true } : {}) })
+}

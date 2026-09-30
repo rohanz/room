@@ -81,11 +81,11 @@ describe('admission: github.com rooms', () => {
     expect(await canPush('gho_ok', 'o/r')).toBe(true)
     expect(calls).toBe(1)
     expect(await canPush('gho_read', 'o/r')).toBe(false)
-    expect(await canPush('gho_read', 'o/r')).toBe(false) // a no is not cached
-    expect(calls).toBe(3)
+    expect(await canPush('gho_read', 'o/r')).toBe(false) // definite denial is cached briefly
+    expect(calls).toBe(2)
     t = 11 * 60 * 1000
     expect(await canPush('gho_ok', 'o/r')).toBe(true)
-    expect(calls).toBe(4)
+    expect(calls).toBe(3)
   })
 
   it('a fresh denial clears a previously cached push grant', async () => {
@@ -96,7 +96,7 @@ describe('admission: github.com rooms', () => {
     expect(await check('token', 'o/r')).toBe(true) // ordinary admission uses the positive cache
     expect(await check('token', 'o/r', true)).toBe(false)
     expect(await check('token', 'o/r')).toBe(false)
-    expect(calls).toBe(3)
+    expect(calls).toBe(2)
   })
 })
 
@@ -114,4 +114,76 @@ describe('admission: non-GitHub rooms', () => {
     // a gh token is simply ignored here: it is not a credential
     expect(await admitted(LOCAL, { gh: 'gho_ok' })).toMatchObject({ ok: false, status: 401 })
   })
+})
+
+it('coalesces permission checks and caches definite denials for only 60 seconds', async () => {
+  let t = 0, calls = 0, finish!: (r: Response) => void
+  const check = githubPushChecker({ now: () => t, fetch: (async () => { calls++; return new Promise<Response>(resolve => { finish = resolve }) }) as typeof fetch })
+  const a = check('holder', 'o/r'), b = check('holder', 'o/r', true)
+  expect(calls).toBe(1)
+  finish(new Response('{}', { status: 403 }))
+  expect(await a).toBe(false); expect(await b).toBe(false)
+  expect(await check('holder', 'o/r')).toBe(false)
+  expect(calls).toBe(1)
+  t = 60_000
+  const expired = check('holder', 'o/r')
+  expect(calls).toBe(2)
+  finish(new Response('{}', { status: 500 }))
+  expect(await expired).toBeUndefined()
+  const retry = check('holder', 'o/r')
+  expect(calls).toBe(3)
+  finish(new Response('{}', { status: 404 })); await retry
+  check.forget('holder')
+  const loggedOut = check('holder', 'o/r')
+  expect(calls).toBe(4)
+  finish(new Response('{}', { status: 404 })); await loggedOut
+})
+
+it('does not cache network failures, 5xx or missing permission data', async () => {
+  for (const fail of [() => { throw new Error('offline') }, () => new Response('{}', { status: 503 }), () => new Response('{}')]) {
+    let calls = 0
+    const check = githubPushChecker({ fetch: (async () => { calls++; return fail() }) as typeof fetch })
+    expect(await check('token', 'o/r')).toBeUndefined()
+    expect(await check('token', 'o/r')).toBeUndefined()
+    expect(calls).toBe(2)
+  }
+})
+
+it('logout removes a holder cache even if its permission fetch is pending', async () => {
+  let finish!: (value: Response) => void, calls = 0
+  const check = githubPushChecker({ fetch: (async () => { calls++; return new Promise<Response>(resolve => { finish = resolve }) }) as typeof fetch })
+  const pending = check('token', 'o/r')
+  check.forget('token')
+  finish(new Response('{}', { status: 403 })); await pending
+  const next = check('token', 'o/r')
+  expect(calls).toBe(2)
+  finish(new Response('{}', { status: 403 })); await next
+})
+
+it('session logout and expiry clear the removed holder permission entries', async () => {
+  let now = 0, calls = 0
+  const checker = githubPushChecker({ fetch: (async () => { calls++; return new Response('{}', { status: 403 }) }) as typeof fetch })
+  const auth = new Auth({ clientId: 'fake', production: false, now: () => now, sessionTtlMs: 1000,
+    onSessionRemoved: (_session, _reason, removed) => { if (removed?.ghToken) checker.forget(removed.ghToken) } })
+  for (const reason of ['logout', 'expiry']) {
+    const session = await githubLogin(auth, 'holder')
+    await checker('fake:holder', 'o/r'); await checker('fake:holder', 'o/r')
+    if (reason === 'logout') auth.logout(session)
+    else { now += 1001; auth.sweepSessions() }
+    await checker('fake:holder', 'o/r')
+  }
+  expect(calls).toBe(3)
+})
+
+it('logout keeps an upstream check coalesced but prevents its result repopulating the cache', async () => {
+  let calls = 0, finish!: (r: Response) => void
+  const checker = githubPushChecker({ fetch: (async () => { calls++; return new Promise<Response>(resolve => { finish = resolve }) }) as typeof fetch })
+  const a = checker('token', 'o/r')
+  checker.forget('token')
+  const b = checker('token', 'o/r')
+  expect(calls).toBe(1)
+  finish(new Response('{}', { status: 403 })); await Promise.all([a, b])
+  const c = checker('token', 'o/r')
+  expect(calls).toBe(2)
+  finish(new Response('{}', { status: 403 })); await c
 })

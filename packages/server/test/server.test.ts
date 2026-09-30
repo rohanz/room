@@ -315,3 +315,67 @@ describe('room server refuses the fake issuer in production', () => {
     expect(err).toContain('test issuer')
   }, 30_000)
 })
+
+it('bounds rooms scans per identity and globally, shares admission checks, and stops disconnected scans', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-scan-'))
+  const preload = path.join(dir, 'fetch.mjs'), callsFile = path.join(dir, 'calls.log')
+  const repos = ['github.com/scans/a', 'github.com/scans/b', 'github.com/scans/c']
+  fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify(Object.fromEntries(repos.map(repo => [repo, { at: Date.now(), branches: [], mode: 'repo', migratedAt: Date.now() }]))))
+  // Synthetic device issuer and delayed GitHub permission API; no real credentials or network.
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+    let serial = 0;
+    globalThis.fetch = async (url, init) => {
+      const reply = body => new Response(JSON.stringify(body));
+      if (String(url).endsWith('/login/device/code')) return reply({ device_code: 'holder-' + (++serial), user_code: 'ABCD', verification_uri: 'https://example.test', expires_in: 900, interval: 1 });
+      if (String(url).endsWith('/login/oauth/access_token')) return reply({ access_token: JSON.parse(init.body).device_code });
+      const token = init.headers.authorization.replace('Bearer ', '');
+      if (String(url).endsWith('/user')) return reply({ login: token });
+      fs.appendFileSync(${JSON.stringify(callsFile)}, token + ' ' + String(url) + '\\n');
+      await new Promise(resolve => setTimeout(resolve, 400));
+      return reply({ permissions: { push: false } });
+    };
+  `)
+  let child: ChildProcess | undefined
+  try {
+    const scanPort = await freePort(), scanBase = `http://127.0.0.1:${scanPort}`
+    child = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(scanPort), ROOM_SERVER: '', ROOM_TOKEN: '',
+      GITHUB_CLIENT_ID: 'synthetic-client', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_MAX_ROOM_LISTS: '2', ROOM_LISTS_PER_MINUTE: '3',
+      NODE_OPTIONS: `--import=${preload}` }, stdio: 'ignore' })
+    for (let i = 0; i < 200; i++) {
+      if (child.exitCode !== null) throw new Error('scan server exited')
+      try { if ((await fetch(scanBase + '/health')).ok) break } catch { /* starting */ }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    const scanPost = (route: string, body: unknown) => fetch(scanBase + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const scanLogin = async () => {
+      const start = await (await scanPost('/auth/device', {})).json() as { device: string }
+      return ((await (await scanPost('/auth/poll', { device: start.device })).json()) as { session: string }).session
+    }
+    const sessions: string[] = []
+    for (let i = 0; i < 4; i++) sessions.push(await scanLogin())
+    const list = (session: string) => fetch(scanBase + '/rooms', { headers: { authorization: `Bearer ${session}` } })
+    const a = list(sessions[0]), b = list(sessions[1])
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const [same, global] = await Promise.all([list(sessions[0]), list(sessions[2])])
+    expect(same.status).toBe(429); expect(global.status).toBe(429)
+    expect(same.headers.get('retry-after')).toBeTruthy(); expect(global.headers.get('retry-after')).toBeTruthy()
+    // This admission call must share the first listing's pending token/repository check.
+    const admission = scanPost('/view-token', { room: repos[0], schema: 2, session: sessions[0] })
+    expect((await admission).status).toBe(403)
+    expect(await (await a).json()).toEqual([]); expect(await (await b).json()).toEqual([])
+    const calls = () => fs.readFileSync(callsFile, 'utf8').trim().split('\n')
+    const before = calls()
+    expect(before.filter(line => line === 'holder-1 https://api.github.com/repos/scans/a')).toHaveLength(1)
+    expect((await list(sessions[0])).status).toBe(200)
+    expect(calls()).toEqual(before) // definite denials reused
+    const rateLimited = await list(sessions[0])
+    expect(rateLimited.status).toBe(429)
+    expect(rateLimited.headers.get('retry-after')).toBeTruthy()
+    const socket = net.connect(scanPort, '127.0.0.1')
+    socket.on('error', () => {})
+    socket.write(`GET /rooms HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${sessions[3]}\r\n\r\n`)
+    await new Promise(resolve => setTimeout(resolve, 100)); socket.destroy()
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect(calls().filter(line => line.startsWith('holder-4 '))).toHaveLength(1)
+  } finally { if (child) await servers.stop(child); fs.rmSync(dir, { recursive: true, force: true }) }
+}, 30_000)

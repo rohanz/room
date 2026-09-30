@@ -21,7 +21,11 @@ beforeAll(async () => {
   const doc = new Y.Doc()
   doc.getText('padding').insert(0, 'x'.repeat(8 * 1024 * 1024))
   await db.storeUpdate(archive, Y.encodeStateAsUpdate(doc))
-  doc.destroy(); await db.destroy()
+  doc.destroy()
+  const canonical = new Y.Doc()
+  for (let i = 0; i < 1005; i++) canonical.getMap('unresolved').set(`key-${i}-${'x'.repeat(8192)}`, {})
+  await db.storeUpdate(repo, Y.encodeStateAsUpdate(canonical))
+  canonical.destroy(); await db.destroy()
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({
     [repo]: { at: Date.now(), branches: [archive], legacy: [archive], mode: 'repo', migratedAt: Date.now() },
   }))
@@ -31,7 +35,7 @@ beforeAll(async () => {
   })
   base = `http://127.0.0.1:${port}`
   const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '',
-    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_EXPORT_DEADLINE_MS: '3000', ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' })
+    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_EXPORT_DEADLINE_MS: '3000', ROOM_MAX_HTTP_RESPONSES_PER_PRINCIPAL: '2', ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' })
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error('export test server exited')
     try { if ((await fetch(`${base}/health`)).ok) return } catch { /* starting */ }
@@ -96,5 +100,44 @@ it('coalesces concurrent archive listings into one canonical load', async () => 
   const [a, b] = await Promise.all([fetch(url, { headers }), fetch(url, { headers })])
   expect(a.status).toBe(200)
   expect(b.status).toBe(200)
+  const [listingA, listingB] = await Promise.all([a.json(), b.json()])
+  expect(listingA).toEqual(listingB)
+  expect(listingA.unresolved).toHaveLength(1000)
+  expect(listingA.unresolvedTotal).toBe(1005)
+  expect(listingA.truncated).toBe(true)
   expect(await count()).toBe(before + 1)
+}, 15_000)
+
+
+it('bounds coalesced listing waiters before load completion', async () => {
+  const started = await (await post('/auth/device', {})).json() as { device: string }
+  const session = ((await (await post('/auth/poll', { device: started.device, fakeLogin: 'archiver-bounded' })).json()) as { session: string }).session
+  const url = `${base}/archive?repo=${encodeURIComponent(repo)}`, headers = { authorization: `Bearer ${session}` }
+  const a = fetch(url, { headers }), b = fetch(url, { headers })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  const excess = await fetch(url, { headers })
+  expect(excess.status).toBe(429)
+  expect(excess.headers.get('retry-after')).toBeTruthy()
+  const responses = await Promise.all([a, b])
+  expect(responses.map(r => r.status)).toEqual([200, 200])
+  await Promise.all(responses.map(r => r.arrayBuffer()))
+}, 15_000)
+
+it('ends stalled listing readers on the response deadline and releases their identity slots', async () => {
+  const started = await (await post('/auth/device', {})).json() as { device: string }
+  const session = ((await (await post('/auth/poll', { device: started.device, fakeLogin: 'archiver-stalled-list' })).json()) as { session: string }).session
+  const path = `/archive?repo=${encodeURIComponent(repo)}`
+  const sockets = Array.from({ length: 2 }, () => net.connect(port, '127.0.0.1'))
+  await Promise.all(sockets.map(socket => new Promise<void>((resolve, reject) => {
+    socket.once('error', reject)
+    socket.once('data', () => { socket.pause(); resolve() })
+    socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${session}\r\nConnection: keep-alive\r\n\r\n`)
+  })))
+  const blocked = await fetch(base + path, { headers: { authorization: `Bearer ${session}` } })
+  expect(blocked.status).toBe(429)
+  await new Promise(resolve => setTimeout(resolve, 3200))
+  sockets.forEach(socket => { socket.resume(); socket.destroy() })
+  const later = await fetch(base + path, { headers: { authorization: `Bearer ${session}` } })
+  expect(later.status).toBe(200)
+  await later.arrayBuffer()
 }, 15_000)
