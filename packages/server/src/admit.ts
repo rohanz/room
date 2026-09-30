@@ -29,6 +29,11 @@ export interface AdmitOptions {
 /** Can the token push to the repo? Read access alone would make every public repo an open room. */
 const GH_DENIAL_CACHE_MS = Math.min(60_000, Math.max(0, Number(process.env.ROOM_GH_DENIAL_CACHE_MS ?? 60_000)))
 const GH_POSITIVE_CACHE_MS = 10 * 60 * 1000
+/** A throttled GitHub answer: no allowance left, a Retry-After, or a rate-limit message in the (bounded) body. */
+async function rateLimited(res: Response): Promise<boolean> {
+  if (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')) return true
+  try { return /rate limit|abuse detection/i.test((await res.text()).slice(0, 2048)) } catch { return false }
+}
 export type PushChecker = ((token: string, ownerRepo: string, fresh?: boolean) => Promise<boolean | undefined>) & { forget(token: string): void }
 export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number } = {}): PushChecker {
   const f = o.fetch ?? globalThis.fetch, now = o.now ?? Date.now
@@ -51,6 +56,8 @@ export function githubPushChecker(o: { fetch?: typeof fetch; now?: () => number 
         let allowed: boolean
         if (!res.ok) {
           if (![401, 403, 404].includes(res.status)) return undefined
+          // GitHub uses 403 for primary and secondary rate limits too: that is "unavailable", never a denial.
+          if (res.status === 403 && await rateLimited(res)) return undefined
           h.cache.delete(ownerRepo)
           // 401 is a stale credential, not a repository permission denial.
           if (res.status === 401) return false

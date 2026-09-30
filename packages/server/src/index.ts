@@ -41,7 +41,7 @@ import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
 import { githubPushChecker, makeAdmitted, type Creds } from './admit.js'
-import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget, catchSocketErrors, type Credential } from './sockets.js'
+import { CredentialSockets, PermissionRevalidator, ConnectionReservations, PendingAdmissions, OutboundBudget, catchSocketErrors, type Credential } from './sockets.js'
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
@@ -129,10 +129,9 @@ const MAX_CONNECTIONS_PER_ROOM = Number(process.env.ROOM_MAX_CONNECTIONS_PER_ROO
 const MAX_CONNECTIONS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_CONNECTIONS_PER_PRINCIPAL ?? 100)
 const MAX_PENDING_ADMISSIONS = Number(process.env.ROOM_MAX_PENDING_ADMISSIONS ?? 256)
 const MAX_PENDING_PER_ADDRESS = Number(process.env.ROOM_MAX_PENDING_PER_ADDRESS ?? 16)
-let pendingAdmissions = 0
-const pendingByAddress = new Map<string, number>()
+const pendingAdmissions = new PendingAdmissions(MAX_PENDING_ADMISSIONS, MAX_PENDING_PER_ADDRESS)
 const connectionCounts = new ConnectionReservations({ total: MAX_CONNECTIONS, room: MAX_CONNECTIONS_PER_ROOM,
-  principal: MAX_CONNECTIONS_PER_PRINCIPAL, pending: MAX_PENDING_ADMISSIONS, pendingAddress: MAX_PENDING_PER_ADDRESS })
+  principal: MAX_CONNECTIONS_PER_PRINCIPAL })
 const MAX_QUEUED_BYTES = Number(process.env.ROOM_MAX_QUEUED_MB ?? Number(process.env.ROOM_DOC_MAX_MB ?? 64) + 4) * 1048576
 const MAX_TOTAL_QUEUED_BYTES = Number(process.env.ROOM_MAX_TOTAL_QUEUED_MB ?? 256) * 1048576
 const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
@@ -711,7 +710,6 @@ const server = http.createServer((req, res) => {
     const slot = exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
     if (!slot) { res.setHeader('Retry-After', '5'); return text(429, 'archive export busy; retry') }
     let update: Uint8Array | undefined
-    const deadline = setTimeout(() => res.destroy(), EXPORT_DEADLINE_MS)
     try {
       const live = docs.get(name)
       const doc = live ?? await loadArchiveDoc(name)
@@ -730,7 +728,7 @@ const server = http.createServer((req, res) => {
         res.end()
         await waitForResponse(res)
       }
-    } finally { clearTimeout(deadline); update = undefined; slot.release() }
+    } finally { update = undefined; slot.release() }
     } finally { cancellation.dispose() }
   })
 
@@ -858,7 +856,7 @@ const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, P
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
-setInterval(() => { hubs.tick(); outbound.sweep() }, 1000).unref()
+setInterval(() => { hubs.tick() }, 1000).unref()
 // The docs map (and persistence) is keyed by the DECODED room name, the same key admission, closing,
 // expiry and the size cap use; y-websocket's default would key by the raw, possibly double-encoded path.
 wss.on('connection', (conn, req) => {
@@ -917,12 +915,7 @@ server.on('upgrade', (req, socket, head) => {
   const retry = upgradeLimit.check(clientIp(req))
   if (retry) return refuse(socket, 429, `Too Many Requests; retry after ${retry} seconds`)
   const address = clientIp(req)
-  if (pendingAdmissions >= MAX_PENDING_ADMISSIONS || (pendingByAddress.get(address) ?? 0) >= MAX_PENDING_PER_ADDRESS)
-    return refuse(socket, 429, 'too many pending connections; retry')
-  pendingAdmissions++; pendingByAddress.set(address, (pendingByAddress.get(address) ?? 0) + 1)
-  let pendingReleased = false
-  const releasePending = () => { if (pendingReleased) return; pendingReleased = true; pendingAdmissions--; const n = (pendingByAddress.get(address) ?? 1) - 1; if (n) pendingByAddress.set(address, n); else pendingByAddress.delete(address) }
-  socket.once('close', releasePending)
+  const work = pendingAdmissions.run(address, socket, async abandoned => {
   const roomName = roomNameOf(url.pathname)
   if (!parseRoomName(roomName, url.searchParams.get('schema') === '2')) return refuse(socket, 400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name', roomName)
   const repo = canonical(roomName)
@@ -930,13 +923,14 @@ server.on('upgrade', (req, socket, head) => {
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
   if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
   if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 403, 'update Room to 0.17 or later: this server no longer accepts credentials in URLs', roomName)
-  const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential } = {}) => {
+  const accept = async (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential } = {}) => {
     const principal = opts.id ?? (opts.login ? `login:${opts.login}` : opts.credential ? `${opts.credential.kind}:${crypto.createHash('sha256').update(opts.credential.value).digest('hex')}` : `ip:${address}`)
-    const release = connectionCounts.reserve(repo, principal, address)
-    if (!release) return refuse(socket, 503, 'connection or pending admission limit reached', roomName)
+    const release = connectionCounts.reserve(repo, principal)
+    if (!release) return refuse(socket, 503, 'connection limit reached', roomName)
     const generation = opts.credential ? credentialSockets.generation(opts.credential) : undefined
     let upgraded = false
-    void locks.run(repo, async () => {
+    await locks.run(repo, async () => {
+      if (abandoned()) return
       const current = rooms.get(repo)
       if (!current) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
       if (!schema2 && current.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
@@ -952,20 +946,21 @@ server.on('upgrade', (req, socket, head) => {
       // Finish loading before the HTTP upgrade: after handleUpgrade the client may send immediately.
       // Holding the repo lock also makes the socket visible to migration's freeze step.
       await hubs.flush(getYDoc(docKey, true))
+      if (abandoned()) return
       // Test-only suspension makes the logout/expiry interval reproducible in a child server.
       if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_UPGRADE_DELAY_MS)
         await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_UPGRADE_DELAY_MS)))
+      if (abandoned()) return
       if (hubs.storageFailure(docKey)) return refuse(socket, 503, hubs.storageFailure(docKey)!, roomName)
       // Last check after every await. The generation also catches logout then replacement.
       if (opts.credential && !credentialSockets.unchanged(opts.credential, generation!)) return refuse(socket, 403, 'credential revoked', roomName)
       if (opts.credential?.kind === 'session' && !auth.peek(opts.credential.value)) return refuse(socket, 401, 'session expired or unknown', roomName)
       if (opts.credential?.kind === 'view') { const view = viewTokens.get(opts.credential.value); if (!view || view.exp <= Date.now() || view.room !== docKey) return refuse(socket, 403, 'view key expired or revoked', roomName) }
       if (opts.credential?.kind === 'token' && opts.credential.value !== TOKEN) return refuse(socket, 403, 'token revoked', roomName)
-      if (socket.destroyed) return
       wss.handleUpgrade(req, socket, head, ws => {
         catchSocketErrors(ws, message => console.log(message))
         upgraded = true
-        releasePending(); release.admitted(); ws.once('close', release)
+        ws.once('close', release)
         if (opts.credential) credentialSockets.track(opts.credential, ws, docKey)
         if (opts.credential?.kind === 'session' && githubRepoOf(repo)) ws.once('close', revalidator.track(opts.credential.value, repo))
         outbound.track(ws as unknown as import('./sockets.js').BufferedSocket)
@@ -1017,7 +1012,7 @@ server.on('upgrade', (req, socket, head) => {
         }
         wss.emit('connection', ws, req)
       })
-    }).catch(e => { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) }).finally(() => { if (!upgraded) release() })
+    }).catch(e => { if (!abandoned()) { console.log(`could not load room ${docKey}: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room could not load; retry', roomName) } }).finally(() => { if (!upgraded) release() })
   }
   const ticket = url.searchParams.get('ticket')
   if (ticket) {
@@ -1030,8 +1025,9 @@ server.on('upgrade', (req, socket, head) => {
       return accept({ readOnly: true, credential: c })
     }
     const creds: Creds = c.kind === 'session' ? { session: c.value } : { token: c.value }
-    return admitted(roomName, creds).then(v => v.ok ? accept({ login: v.login, id: v.id, provider: v.provider, credential: c }) : refuse(socket, v.status, v.why, roomName))
-      .catch(() => refuse(socket, 503, 'room unavailable; retry', roomName))
+    const v = await admitted(roomName, creds)
+    if (abandoned()) return
+    return v.ok ? accept({ login: v.login, id: v.id, provider: v.provider, credential: c }) : refuse(socket, v.status, v.why, roomName)
   }
   const view = url.searchParams.get('view')
   if (view) {
@@ -1046,23 +1042,18 @@ server.on('upgrade', (req, socket, head) => {
   const c: Creds = { token: str(req.headers['x-room-token']), session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1],
     ...(!schema2 ? { gh: url.searchParams.get('gh') ?? undefined, token: str(req.headers['x-room-token']) ?? url.searchParams.get('token') ?? undefined,
       session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1] ?? url.searchParams.get('session') ?? undefined } : {}) }
-  admitted(roomName, c)
-    .then(async v => {
-      if (!v.ok) {
-        const retry = failedAdmissionLimit.check(clientIp(req))
-        return retry ? refuse(socket, 429, `Too Many Requests; retry after ${retry} seconds`, roomName) : refuse(socket, v.status, v.why, roomName)
-      }
-      const entry = rooms.get(repo)
-      if (!entry) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
-      if (url.searchParams.get('schema') !== '2') {
-        if (entry.mode === 'repo') return refuse(socket, 403, upgradeText(repo), roomName)
-        return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
-      }
-      await migrateOpenRepo(repo)
-      if (!rooms.has(repo)) return refuse(socket, 404, `Not Found: ${NOT_OPEN(roomName)}`)
-      return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
-    })
-    .catch(e => { console.log(`upgrade admission: ${e instanceof Error ? e.message : e}`); refuse(socket, 503, 'room unavailable; retry', roomName) })
+  const v = await admitted(roomName, c)
+  if (abandoned()) return
+  if (!v.ok) {
+    const retry = failedAdmissionLimit.check(clientIp(req))
+    return retry ? refuse(socket, 429, `Too Many Requests; retry after ${retry} seconds`, roomName) : refuse(socket, v.status, v.why, roomName)
+  }
+  if (schema2) await migrateOpenRepo(repo)
+  if (abandoned()) return
+  return accept({ login: v.login, id: v.id, provider: v.provider, credential: c.session ? { kind: 'session', value: c.session } : c.token ? { kind: 'token', value: c.token } : undefined })
+  })
+  if (!work) return refuse(socket, 429, 'too many pending connections; retry')
+  void work.catch(e => { if (!socket.destroyed) { console.log(`upgrade admission: ${e instanceof Error ? e.message : e}`); refuse(socket, e instanceof HttpFailure ? e.status : 503, e instanceof HttpFailure ? e.message : 'room unavailable; retry') } })
   } catch (e) { console.log(`upgrade failed: ${e instanceof Error ? e.message : e}`); refuse(socket, e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'Internal Server Error') }
 })
 process.on('unhandledRejection', e => console.log(`unhandled rejection: ${e instanceof Error ? e.stack : e}`))

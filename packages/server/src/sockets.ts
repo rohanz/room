@@ -60,33 +60,41 @@ export class CredentialSockets {
   sweep(): void { for (const [ticket, value] of this.tickets) if (value.expires <= this.now()) this.tickets.delete(ticket) }
 }
 
-/** Reserve before asynchronous admission; the release closure is safe on every exit path. */
+/** Pending work outlives its socket; abandoning a caller never cancels shared admission. */
+export class PendingAdmissions {
+  private total = 0
+  private readonly address = new Map<string, number>()
+  constructor(private readonly max: number, private readonly perAddress: number) {}
+  run(address: string, socket: Pick<EventEmitter, 'once' | 'removeListener'> & { destroyed: boolean }, task: (abandoned: () => boolean) => Promise<void>): Promise<void> | undefined {
+    if (this.total >= this.max || (this.address.get(address) ?? 0) >= this.perAddress) return undefined
+    this.total++; this.address.set(address, (this.address.get(address) ?? 0) + 1)
+    let abandoned = false
+    const close = () => { abandoned = true }
+    socket.once('close', close)
+    return task(() => abandoned || socket.destroyed).finally(() => {
+      socket.removeListener('close', close); this.total--; decrement(this.address, address)
+    })
+  }
+}
+
+/** Reserve live capacity before loading; release on failed upgrade or connection close. */
 export class ConnectionReservations {
   readonly room = new Map<string, number>()
   readonly principal = new Map<string, number>()
-  readonly address = new Map<string, number>()
   total = 0
-  pending = 0
-  constructor(readonly limits: { total: number; room: number; principal: number; pending: number; pendingAddress: number }) {}
-  reserve(room: string, principal: string, address: string): (() => void) & { admitted(): void } | undefined {
+  constructor(readonly limits: { total: number; room: number; principal: number }) {}
+  reserve(room: string, principal: string): (() => void) | undefined {
     if (this.total >= this.limits.total || (this.room.get(room) ?? 0) >= this.limits.room ||
-      (this.principal.get(principal) ?? 0) >= this.limits.principal || this.pending >= this.limits.pending ||
-      (this.address.get(address) ?? 0) >= this.limits.pendingAddress) return undefined
-    this.total++; this.pending++
-    this.room.set(room, (this.room.get(room) ?? 0) + 1)
+      (this.principal.get(principal) ?? 0) >= this.limits.principal) return undefined
+    this.total++; this.room.set(room, (this.room.get(room) ?? 0) + 1)
     this.principal.set(principal, (this.principal.get(principal) ?? 0) + 1)
-    this.address.set(address, (this.address.get(address) ?? 0) + 1)
-    let released = false, admitted = false
-    const finishPending = () => { this.pending--; decrement(this.address, address) }
-    const release = (() => {
+    let released = false
+    return () => {
       if (released) return
       released = true
-      if (!admitted) finishPending()
       this.total--
       decrement(this.room, room); decrement(this.principal, principal)
-    }) as (() => void) & { admitted(): void }
-    release.admitted = () => { if (!admitted) { admitted = true; finishPending() } }
-    return release
+    }
   }
 }
 function decrement(map: Map<string, number>, key: string): void { const n = (map.get(key) ?? 1) - 1; if (n) map.set(key, n); else map.delete(key) }
@@ -137,13 +145,6 @@ export class OutboundBudget {
     this.sockets.add(socket)
     this.pending.set(socket, 0)
     socket.once('close', () => { this.sockets.delete(socket); this.queuedTotal -= this.pending.get(socket) ?? 0; this.pending.delete(socket) })
-  }
-  sweep(): void {
-    if (this.queuedBytes <= this.total) return
-    for (const socket of [...this.sockets].sort((a, b) => (this.pending.get(b) ?? 0) - (this.pending.get(a) ?? 0))) {
-      if (this.queuedBytes <= this.total) break
-      this.drop(socket)
-    }
   }
   private drop(socket: BufferedSocket, reason = 'slow consumer; retry'): void {
     if (!this.sockets.delete(socket)) return

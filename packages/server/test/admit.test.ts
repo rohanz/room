@@ -187,3 +187,30 @@ it('logout keeps an upstream check coalesced but prevents its result repopulatin
   expect(calls).toBe(2)
   finish(new Response('{}', { status: 403 })); await c
 })
+
+it('treats GitHub rate limiting as unavailable, not as a denial: the grant survives and nothing is cached', async () => {
+  // GitHub answers 403 (or 429) for primary and secondary rate limits as well as for real denials.
+  const limited: (() => Response)[] = [
+    () => new Response('{"message":"API rate limit exceeded for user ID 1."}', { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1790000000' } }),
+    () => new Response('{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}', { status: 403, headers: { 'retry-after': '60' } }),
+    () => new Response('{"message":"You have exceeded a secondary rate limit."}', { status: 403 }),
+    () => new Response('{}', { status: 429 }),
+  ]
+  for (const throttle of limited) {
+    let t = 0, mode: 'ok' | 'limited' = 'ok', calls = 0
+    const check = githubPushChecker({ now: () => t, fetch: (async () => { calls++; return mode === 'ok' ? new Response('{"permissions":{"push":true}}') : throttle() }) as typeof fetch })
+    expect(await check('holder', 'o/r')).toBe(true)
+    mode = 'limited'
+    // A revalidation (fresh) during throttling is "unavailable": the caller keeps existing sockets.
+    expect(await check('holder', 'o/r', true)).toBeUndefined()
+    // The earlier grant is still in the positive cache for ordinary admission.
+    expect(await check('holder', 'o/r')).toBe(true)
+    mode = 'ok'
+    expect(await check('holder', 'o/r', true)).toBe(true)
+    expect(calls).toBe(3)
+    t += 1
+  }
+  // A plain 403 without rate-limit signals is still a denial.
+  const denied = githubPushChecker({ fetch: (async () => new Response('{"message":"Must have admin rights to Repository."}', { status: 403 })) as typeof fetch })
+  expect(await denied('holder', 'o/r')).toBe(false)
+})

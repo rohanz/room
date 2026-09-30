@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget } from '../src/sockets.js'
+import { githubPushChecker } from '../src/admit.js'
+import { CredentialSockets, PermissionRevalidator, ConnectionReservations, PendingAdmissions, OutboundBudget } from '../src/sockets.js'
 
 describe('credential sockets and tickets', () => {
   it('closes live sockets and invalidates tickets when a session is removed', () => {
@@ -52,12 +54,15 @@ describe('credential sockets and tickets', () => {
 
 describe('connection and outbound budgets', () => {
   it('reserves concurrent cross-repository capacity before any load', () => {
-    const quotas = new ConnectionReservations({ total: 2, room: 2, principal: 2, pending: 2, pendingAddress: 2 })
-    const first = quotas.reserve('r1', 'p', 'a')!, second = quotas.reserve('r2', 'p', 'a')!
-    expect(quotas.reserve('r3', 'p', 'a')).toBeUndefined()
-    first.admitted(); second.admitted()
+    const quotas = new ConnectionReservations({ total: 3, room: 1, principal: 2 })
+    const first = quotas.reserve('r1', 'p')!, second = quotas.reserve('r2', 'p')!
+    expect(quotas.reserve('r3', 'p')).toBeUndefined()
+    expect(quotas.reserve('r1', 'other')).toBeUndefined()
+    const third = quotas.reserve('r3', 'other')!
+    expect(quotas.reserve('r4', 'third')).toBeUndefined()
+    third()
     expect(quotas.total).toBe(2)
-    first(); second()
+    first(); first(); second()
     expect(quotas.total).toBe(0)
   })
   it('reserves every send before enqueue, evicts the largest queue, and releases on completion', () => {
@@ -120,5 +125,47 @@ describe('permission revalidation', () => {
     await loop.run()
     expect(check).toHaveBeenCalledTimes(3)
     expect(unavailable).toHaveBeenCalledOnce()
+  })
+})
+
+
+describe('pending admission work', () => {
+  const socket = () => Object.assign(new EventEmitter(), { destroyed: false })
+  const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r }); return { promise, resolve } }
+  it('retains address and global capacity after disconnect across distinct repositories', async () => {
+    const work = new PendingAdmissions(2, 1), gate = deferred(), a = socket(), b = socket()
+    const admit = vi.fn(async (_repo: string) => gate.promise), load = vi.fn()
+    const first = work.run('a', a, async abandoned => { await admit('repo-a'); if (!abandoned()) load() })!
+    a.emit('close')
+    expect(work.run('a', socket(), async () => { await admit('repo-b') })).toBeUndefined()
+    const second = work.run('b', b, async () => { await admit('repo-c') })!
+    b.emit('close')
+    expect(work.run('c', socket(), async () => { await admit('repo-d') })).toBeUndefined()
+    expect(admit).toHaveBeenCalledTimes(2)
+    gate.resolve(); await Promise.all([first, second])
+    expect(load).not.toHaveBeenCalled()
+    expect(work.run('a', socket(), async () => {})).toBeDefined()
+  })
+  it('releases failed and abandoned tasks exactly once after settlement', async () => {
+    const work = new PendingAdmissions(1, 1), gate = deferred(), a = socket()
+    const first = work.run('a', a, async () => { await gate.promise; throw Error('denied') })!
+    a.emit('close'); a.emit('close')
+    expect(work.run('a', socket(), async () => {})).toBeUndefined()
+    gate.resolve(); await expect(first).rejects.toThrow('denied')
+    const nextGate = deferred(), next = work.run('a', socket(), async () => nextGate.promise)!
+    a.emit('close')
+    expect(work.run('a', socket(), async () => {})).toBeUndefined()
+    nextGate.resolve(); await next
+    await work.run('a', socket(), async () => {})
+  })
+  it('does not cancel another caller sharing a permission check', async () => {
+    const work = new PendingAdmissions(2, 2), gate = deferred(), a = socket(), load = vi.fn()
+    const fetch = vi.fn(async () => { await gate.promise; return new Response(JSON.stringify({ permissions: { push: true } })) })
+    const check = githubPushChecker({ fetch })
+    const first = work.run('a', a, async abandoned => { await check('token', 'owner/repo'); if (!abandoned()) load('a') })!
+    const second = work.run('a', socket(), async abandoned => { await check('token', 'owner/repo'); if (!abandoned()) load('b') })!
+    a.emit('close'); gate.resolve(); await Promise.all([first, second])
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(load.mock.calls).toEqual([['b']])
   })
 })
