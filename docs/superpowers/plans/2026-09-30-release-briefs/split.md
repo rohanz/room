@@ -1,0 +1,22 @@
+YOUR AREA (tag split): agents must split work by TASK, not by file (Rohan's request, part of the routing item).
+
+Problem (Rohan): agents refuse to parallelise when tasks touch the same files. Root cause is OUR wording: plugins/room/skills/room-workers/SKILL.md step 1 says "Split substantial work into independent parts with disjoint files where possible" and talks about "owned files", so agents treat file overlap as a reason not to use Room. That is backwards: handling overlap is what Room is for.
+
+OWNED FILES: plugins/room/skills/room-workers/SKILL.md, plugins/room/skills/room-etiquette/SKILL.md, the room_spawn DESCRIPTION string in packages/room-mcp/src/tools/workers.ts (text only), the MCP server instructions in packages/room-mcp/src/prompt.ts, packages/room-mcp/test/tool-budget.test.ts, evals/** (new cases; you may also fix evals/routing/interrupt-worker, see 4). README/docs belong to the `defaults` worker: do not edit them.
+
+1. Rewrite the guidance in room-workers, room-etiquette, room_spawn's description (within the budget: the budget test caps all tools at 9,500 characters; today ~9,392) and the server instructions:
+   - Split by TASK, not by file.
+   - Parts MAY share files. Each worker claims the functions or line ranges it changes, and Room handles the overlap: claims, change notices to the files that use a changed definition, questions between agents, a combined preview before collect.
+   - Keep work in ONE agent only when two parts must change the SAME lines, or one part needs another's result first; even then, run the independent parts in parallel (a wave, then the dependent part).
+   - Briefs name each worker's task and the functions/areas it will change, not "owned files". Remove "disjoint files" and "owned files" language from user-facing guidance.
+   Keep the routing phrases: "another agent", "in parallel", "in the background", "codex/claude to do part of it" (the budget test asserts some of them). Keep everything else those texts say that is still true (resume by message, collect, discard, preview, carry, thread budgets, ROOM_MAX_WORKERS, log path).
+2. Add eval cases in the existing format (evals/routing/<name>/case.yaml, prompt.md, graders/*.md, scaffold.sh using ../../fixtures/shop.sh or a variant fixture; see evals/routing/codex-half and couple-no-wait for patterns; YAML single-quoted regexes use a SINGLE backslash, e.g. '"host"\s*:\s*"codex"'):
+   - `same-file-parallel`: "these three tasks all touch api/handlers.py, do them in parallel" (the fixture must have an api/handlers.py with three plausible tasks in the README or prompt) → room_spawn called at least twice (tool_used min 2), no built-in subagent (regex not_contains Task|Agent tool_use), no refusal to parallelise (an llm or regex grader is fine if the format supports it; check existing graders).
+   - `same-file-two-bugs`: "fix these two bugs in the same file at the same time" (two bugs described in one file) → room_spawn at least once (both in parallel: e.g. two workers, or one worker plus the lead), no built-in subagent.
+   - `rename-and-signature` (negative): "rename this function everywhere, and also change its signature" → stays in ONE agent or sequences the dependency: room_spawn called at most once (max 1) OR not at all; must not spawn two parallel workers on the same symbol.
+   Mocks: evals/mocks/room/*.md answer the tools; make room_state/room_spawn replies plausible for these scenarios if needed (per-case mocks/ dir is allowed).
+3. Regenerate evals/mocks/room/_tools.json from DEFS after your description change: keys name, annotations, description, inputSchema, wrapped as {"tools":[...]} (see the current file).
+4. The existing `interrupt-worker` case scored 1/3 with the plugin on the last run: "Stop the pricing-fix worker now, it's editing the wrong file. Tell it to switch to api/refunds.py." Two of three runs never called room_send (check whether they called room_collect discard, room_state only, or asked the human; the lead will paste trace notes to you if available). Decide whether the routing text (room_send / room-workers "interrupt the worker") needs to be clearer, or the prompt/graders are ambiguous ("stop" can reasonably mean discard). Fix the routing text if it is the cause; keep the case honest.
+You cannot run `claude plugin eval` (network); the lead runs it.
+
+Tests: packages/room-mcp/test/tool-budget.test.ts, any test pinning skill or prompt text (grep packages/*/test for 'SKILL.md', 'room-workers', 'disjoint'), `npm run typecheck`.
