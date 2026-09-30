@@ -41,9 +41,17 @@ ticket body of `null`, unbounded replies to repeated state requests) were fixed 
 
 ## Not verified in this batch
 
-- **The local viewer in a real browser.** `viewer.html` opened from `file://` was exercised by unit tests with stubbed
-  `location`/`fetch`, and the browser's own connection code was run against a real relay under Node
-  (`packages/relay/test/browser-interop.test.ts`), but no real Chrome, Firefox or Safari opened the link.
+- ~~The local viewer in a real browser.~~ **Verified after rc2 (2026-09-30).** A local room with a relay, two
+  participants, overlays and messages was started in a scratch repository through the bundled MCP server, and the
+  `file://…/viewer.html` link it printed was opened with Playwright in headless Chromium 151, WebKit 26.6 and
+  Firefox 155. In each: the page is a secure context with `crypto.subtle`, connects and syncs, shows participants,
+  changed files, overlay text and messages; a document write or presence forced from the page reaches no other
+  viewer; a wrong view key, an old `key=` link, and a reused, unknown or expired (60 s) ticket are refused. Two
+  defects were fixed: the refusal message was painted under the header and the reconnect banner, and a refused page
+  listed its own reader as the one participant online. The viewer uses only standard APIs (Web Crypto HMAC, HKDF and
+  AES-GCM, `BigInt`, ARIA reflection, `ResizeObserver`, `replaceChildren`); the only prefixed CSS is
+  `-webkit-line-clamp` with `-webkit-box`, which all three engines implement. Safari itself was not run: Playwright's
+  WebKit build stands in for it.
 - **The staging snapshot and restore rehearsal** in `deploy/DEPLOYING.md` and `docs/upgrading.md` (documented, not run).
 - **The model-based routing evals** (`claude plugin eval`) were not rerun; tool descriptions were not reworded.
 - **An intermittent hang of the full suite** with the default reporter (twice in this batch: one vitest worker idle

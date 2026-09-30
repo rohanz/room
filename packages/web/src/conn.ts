@@ -113,6 +113,7 @@ export function connect(search = location.search): Conn {
   }
   provider.on('connection-close', (event: CloseEvent | null) => {
     provider.shouldConnect = false
+    provider.awareness.setLocalState(null)
     if (event?.code === 4401 || event?.code === 4403) { stopped = true; showError(event.reason || 'access revoked'); return }
     setTimeout(() => { if (!stopped) void reconnect() }, 1000)
   })
@@ -131,15 +132,8 @@ export function connect(search = location.search): Conn {
       }
     }
   })
-  if (viewerName) {
-    provider.awareness.setLocalState({
-      user: { name: viewerName, kind: 'human', color: colorFor(viewerName, room) },
-      status: 'viewing',
-      lastActive: Date.now(),
-    })
-  } else {
-    provider.awareness.setLocalState(null)
-  }
+  // The viewer appears only while synced: a refused or disconnected page must not show its own reader as online.
+  provider.awareness.setLocalState(null)
 
   const listeners: ((connected: boolean) => void)[] = []
   const conn: Conn = {

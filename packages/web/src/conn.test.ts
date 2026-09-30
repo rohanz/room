@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 import { webcrypto } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 const mocks = vi.hoisted(() => ({ provider: vi.fn(), connect: vi.fn(), events: new Map<string, (...args: unknown[]) => void>() }))
 vi.mock('y-websocket', () => ({ WebsocketProvider: class {
@@ -64,4 +65,24 @@ describe('browser ticket connection', () => {
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledTimes(2), { timeout: 2000 })
     expect(conn.provider.params.ticket).toBe('second')
   })
+
+  it('presents the viewer only while the room is synced, so a refused link shows nobody online', async () => {
+    const dom = browser('file:///opt/room/viewer.html#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=wrong&participant=Pat&relay=1')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403, text: async () => 'Forbidden' }))
+    const conn = connect(dom.window.location.search)
+    const states = () => vi.mocked(conn.provider.awareness.setLocalState).mock.calls.map(([state]) => state && (state as { user: { name: string } }).user.name)
+    await vi.waitFor(() => expect(dom.window.document.getElementById('access-error')?.textContent).toBe('Cannot open local/repo: Forbidden'))
+    expect(mocks.connect).not.toHaveBeenCalled()
+    expect(states()).toEqual([null])
+    mocks.events.get('sync')?.(true)
+    expect(states()).toEqual([null, 'Pat'])
+    mocks.events.get('connection-close')?.(null)
+    expect(states()).toEqual([null, 'Pat', null])
+  })
+})
+
+it('keeps the access error above the header and the reconnect banner', () => {
+  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
+  const layer = (selector: string) => Math.max(...[...css.matchAll(new RegExp(`(?:^|\\n)\\${selector} \\{[^}]*z-index: (\\d+)`, 'g'))].map(match => Number(match[1])), 0)
+  expect(layer('.access-error')).toBeGreaterThan(Math.max(layer('.header'), layer('.reconnecting')))
 })
