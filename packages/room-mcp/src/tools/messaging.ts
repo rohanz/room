@@ -25,7 +25,7 @@ export function waitConsumesMessage(s: Session, m: Msg): boolean {
 }
 
 export const defs: ToolDef[] = [
-  { name: 'room_send', annotations: RW, description: 'Ask (to), answer (inReplyTo), note; message a finished worker to resume it in its worktree.',
+  { name: 'room_send', annotations: RW, description: 'Use to "tell X", "ask the worker a follow-up", or "interrupt the worker" (priority=interrupt); message a finished worker to resume it in its worktree.',
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient; omit to broadcast'),
@@ -36,7 +36,7 @@ export const defs: ToolDef[] = [
       inReplyTo: str('question id (answer) or addressed note id (note reply)'),
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency override' },
     }, required: ['type'] } },
-  { name: 'room_wait', annotations: RO, description: 'Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout. Loop short waits until the answer or completion arrives.',
+  { name: 'room_wait', annotations: RO, description: 'Use when waiting for an answer, claim release, worker completion, or interrupt. On timeout, wait again if still blocked.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 100000') } } }
 ]
 

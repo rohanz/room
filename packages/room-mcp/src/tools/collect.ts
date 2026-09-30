@@ -19,7 +19,7 @@ import { realStateInput, type LocalWorker } from '../worker-status.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Collect workers as unstaged edits. Tag a stopped worker for partial edits; collect-all skips it. Conflicts write nothing. Skips live/failed workers. copy takes named files; discard dismisses one and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.',
+  description: 'Use to "bring in their work" or "take the worker\'s changes" as unstaged edits; discard to "throw away the worker". Skips live workers; tag a stopped worker for partial edits; copy takes named files. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },

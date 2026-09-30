@@ -1,6 +1,6 @@
 ---
 name: room-join
-description: Choose a local or team room when your human asks to join, create, move, or leave.
+description: Use when asked to join or create a local or team room, move rooms, leave, stop sharing, or work locally.
 ---
 
 You join automatically: a LOCAL room on this machine unless ROOM_SERVER is set or this
@@ -54,7 +54,7 @@ If it fails:
 After joining, if the user has given you a task, immediately call
 `room_scope(area, summary, paths)` describing it if others are present, then follow the room-etiquette skill.
 
-`room_leave` when the user says they are done.
+"Stop sharing" / "leave the room" / "I'm done with Room": `room_leave`. This ends participation; "work locally" keeps Room coordination on this machine with `room_join(where="local")`.
 
 Plain `claude` on Claude Code 2.1.224 or later wakes through its messaging inbox with
 no launch flag (2.1.234 on native Windows). `ROOM_WAKE=socket|channels|off` selects

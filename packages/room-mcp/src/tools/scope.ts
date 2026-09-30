@@ -17,9 +17,9 @@ import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState,
 
 
 export const defs: ToolDef[] = [
-  { name: 'room_scope', annotations: RW, description: 'Declare task and edit paths once; read-only reviewers need no scope.',
+  { name: 'room_scope', annotations: RW, description: 'Use when starting work with others: declare task and edit paths once.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('non-empty edit files or directories') }, required: ['area', 'summary', 'paths'] } },
-  { name: 'room_state', annotations: RO, description: 'Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.',
+  { name: 'room_state', annotations: RO, description: 'Use for "who’s here?", file ownership, or "is Room set up right?" check=true checks my setup (room doctor); link gets the browser URL.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' } } } },
 ]
 

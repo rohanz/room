@@ -1,6 +1,6 @@
 ---
 name: room-workers
-description: Running editing work through other agents. Use when asked for another agent, a few agents in parallel, work in the background, or for codex/claude to do part of it; load before room_spawn.
+description: Use for another agent, agents in parallel, work in the background, or codex/claude to do part of it. Also use to follow up with, interrupt, collect, or discard a worker; load before room_spawn.
 ---
 
 1. Split substantial work into independent parts with disjoint files where possible.
@@ -21,7 +21,7 @@ description: Running editing work through other agents. Use when asked for anoth
 2. Call `room_spawn(tag, task, host?, model?)`. Host defaults to your own host; override
    only when requested. Give each worker a self-contained task, owned files and test command.
    Pass a model only when specified.
-   Message a finished worker to resume it in its worktree before collecting or discarding it. Codex workers use the installed Room plugin, so install the lead's Room version for Codex or use host claude.
+   If asked to follow up with a worker, use `room_send(to=...)`; a message to a finished worker resumes its retained session in its worktree. Use `priority="interrupt"` when asked to stop or redirect the worker now. Codex workers use the installed Room plugin, so install the lead's Room version for Codex or use host claude.
    The worker starts with eligible uncommitted work, or pass `carry=false` to start from HEAD. Tracked changes use a carry commit on the worker branch (`git push --all` can publish them); non-ignored untracked files are copied, never committed to a branch, with a private ref for merge and recovery. Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and linked inputs are skipped and named in the spawn reply. Carried edits are the lead's work in progress, already in the worker's worktree to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Each worker gets its own `PORT` for dev servers.
 3. Briefly state what you dispatched. Workers report progress in `room_done`; they send
    notes only when the lead must know before they finish. Notes from your own workers
@@ -31,11 +31,11 @@ description: Running editing work through other agents. Use when asked for anoth
 4. Preview current worker output together using full participant names:
    `room_preview_merge(people=[...], run="<tests>")`. Repeat after the last worker finishes
    and resolve conflicts or failing tests before collecting.
-5. Call `room_collect()` once with no tag to bring every finished worker's changes into
+5. When asked to "bring in their work" or "take the worker's changes", call `room_collect()` once with no tag to bring every finished worker's changes into
    your working tree, uncommitted and unstaged. Conflicts write nothing: resolve them or
    collect one tag at a time. Running and failed workers are skipped. Fully collected workers
    are cleaned up after a clean exit. Regenerable build output (`dist/`, `build/`, `out/`, `.astro/`, `.next/`, `.nuxt/`, `.svelte-kit/`, `.turbo/`, `.cache/`, `coverage/`, `test-results/`, `playwright-report/`, `node_modules/`, `vendor/`, `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`, `.gradle/`, `target/`, `*.tsbuildinfo`) does not keep a collected worktree. For named artifacts, use `tag, mode="copy", paths=[...]`;
-   `tag, discard=true` stops a worker and removes its owned worktree, branch and logs, keeping a recovery patch for a week. A worker started with `dir=` in another worker's checkout detaches without removing it; discard the owner after its other users finish. Collect, discard and stop also stop processes running inside an owned worktree.
+   "Throw away the worker" means `tag, discard=true`: it stops the worker and removes its owned worktree, branch and logs, keeping a recovery patch for a week. A worker started with `dir=` in another worker's checkout detaches without removing it; discard the owner after its other users finish. Collect, discard and stop also stop processes running inside an owned worktree.
 6. Run the tests on the real working tree, then report the work and validation result.
    Never commit or push unless the human asked. If asked to commit, use plain git for one
    task commit with a normal message; worker details do not belong in the history.

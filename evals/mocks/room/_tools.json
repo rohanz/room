@@ -8,7 +8,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.",
+      "description": "Use to sign in or out. Show the login code/URL, then call again to wait.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -49,7 +49,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.",
+      "description": "Use when asked to open this repo as a team room; confirm=true authorizes it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -96,7 +96,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Join local or a requested team server; remember explicit choices for this clone and its worktrees. Priority: argument, ROOM_SERVER, ROOM_URL, remembered, local.",
+      "description": "Use for \"join the room\", \"work locally\", or moving rooms. Remembers this clone\u2019s choice.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -144,7 +144,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Leave and release your work claims. force dismisses running workers; forget clears this clone\u2019s remembered destination.",
+      "description": "Use for \"stop sharing\" or \"leave the room\". Releases claims; force dismisses workers; forget clears saved choice. To \"work locally\", use room_join.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -165,7 +165,7 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "On explicit request, export history then delete the repository room for everyone on all branches, or local memory. Leaves clone files intact.",
+      "description": "Use only when asked to close the room for everyone; exports history, then deletes it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -185,7 +185,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Export current ledger or room=<legacy> archive to Markdown.",
+      "description": "Use to export room history or a legacy archive as Markdown.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -208,7 +208,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Declare task and edit paths once; read-only reviewers need no scope.",
+      "description": "Use when starting work with others: declare task and edit paths once.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -242,7 +242,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Show sharing, participants and overlapping work. Use path for file ownership, link for the browser URL.",
+      "description": "Use for \"who\u2019s here?\", file ownership, or \"is Room set up right?\" check=true checks my setup (room doctor); link gets the browser URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -274,7 +274,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Read a live file with claims and history. diff=true compares to base; omit path for all diffs.",
+      "description": "Use to read a teammate\u2019s live file or diff; omit path for all diffs.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -300,7 +300,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Claim only where another participant is near. File: symbol, or from and to (whole file: from=1, to=last line). Directory: path ending /. Declare public API plans.",
+      "description": "Use before editing a file near another participant. Claim a symbol, line range, or directory; declare public API plans.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -369,7 +369,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Release early; room_done releases remaining claims. List completed plan symbols in done.",
+      "description": "Use to release a claim early. room_done releases remaining claims; list completed symbols in done.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -402,7 +402,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Ask (to), answer (inReplyTo), note; message a finished worker to resume it in its worktree.",
+      "description": "Use to \"tell X\", \"ask the worker a follow-up\", or \"interrupt the worker\" (priority=interrupt); message a finished worker to resume it in its worktree.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -467,7 +467,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Wait for an answer, claim release, worker completion or interrupt; returns the event or timeout. Loop short waits until the answer or completion arrives.",
+      "description": "Use when waiting for an answer, claim release, worker completion, or interrupt. On timeout, wait again if still blocked.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -494,7 +494,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Finish your task and release claims. Workers report to their lead, then exit.",
+      "description": "Use when finished: report one-line progress and tests, release claims, then exit if you are a worker.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -520,7 +520,7 @@
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "description": "Post or update the room ledger on a GitHub PR; defaults to this branch\u2019s open PR.",
+      "description": "Use when asked to post Room activity on a GitHub PR. Updates the room ledger on this branch\u2019s PR by default.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -538,7 +538,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Find symbol consumers or file dependencies before changing an interface.",
+      "description": "Use before changing a public function or file: find who depends on it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -560,7 +560,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Preview combined live changes without editing clones. Optionally run tests in the combined scratch tree.",
+      "description": "Use for \"will our changes work together?\" or \"check for conflicts before I finish\"; optionally run tests.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -598,7 +598,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Report or change sharing live. \"share plans only\" and \"only my declared files\" narrow file text; the server ceiling applies.",
+      "description": "Use to check or change what others see: \"share plans only\", \"only my declared files\", or \"share all changed files\".",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -622,7 +622,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Start another agent (claude/codex) in the background; for agents in parallel or codex/claude to do part of it. Use room_collect; message a finished worker to resume it in its worktree.",
+      "description": "Use for another agent (claude/codex), agents in parallel, work in the background, or codex/claude to do part of it; message a finished worker to resume it in its worktree.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -712,7 +712,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Collect workers as unstaged edits. Tag a stopped worker for partial edits; collect-all skips it. Conflicts write nothing. Skips live/failed workers. copy takes named files; discard dismisses one and can recover nested workers. Keeps worktrees with uncopied ignored artifacts.",
+      "description": "Use to \"bring in their work\" or \"take the worker's changes\" as unstaged edits; discard to \"throw away the worker\". Skips live workers; tag a stopped worker for partial edits. Conflicts write nothing.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",

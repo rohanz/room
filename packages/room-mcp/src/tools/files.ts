@@ -25,11 +25,11 @@ import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_read', annotations: RO, description: 'Read a live file with claims and history. diff=true compares to base; omit path for all diffs.',
+  { name: 'room_read', annotations: RO, description: 'Use to read a teammate’s live file or diff; omit path for all diffs.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path'), person: str('default you'), diff: { type: 'boolean' } } } },
-  { name: 'room_impact', annotations: RO, description: 'Find symbol consumers or file dependencies before changing an interface.',
+  { name: 'room_impact', annotations: RO, description: 'Use before changing a public function or file: find who depends on it.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'Preview combined live changes without editing clones. Optionally run tests in the combined scratch tree.',
+  { name: 'room_preview_merge', annotations: RO, description: 'Use for "will our changes work together?" or "check for conflicts before I finish"; optionally run tests.',
     inputSchema: { type: 'object', properties: { people: strs('participants in merge order; default all'), person: str('one participant'), includeOffline: { type: 'boolean', description: 'include offline overlays' }, run: str('test command'), resolve: { type: 'boolean', description: 'resolve superset conflicts' } } } }
 ]
 

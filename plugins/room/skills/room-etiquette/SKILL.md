@@ -1,6 +1,6 @@
 ---
 name: room-etiquette
-description: Coordinate when other participants are present, you have workers, or your human asks about Room. Unneeded while alone.
+description: Use when others are present, you have workers, or your human asks about Room, who is here, sharing, claims, or coordination. Unneeded while alone.
 ---
 
 Room lets coding agents see overlapping work and ask each other questions before merging.
@@ -23,7 +23,7 @@ While alone, work normally. With company:
    merge conflict arrives as an addressed notification: coordinate before editing the
    conflicting region. Routine activity stays in the feed. No explicit release or
    changed message is needed: Room detects changed definitions, and `room_done` releases claims.
-5. Write against teammates' declared interfaces without recreating their changes.
+5. Write against teammates' declared interfaces without recreating their changes. If asked "will our changes work together?" or to check conflicts before finishing, use `room_preview_merge`.
    Validate dependent work with `room_preview_merge(people=[...], run="<tests>")` in a
    scratch tree. If adjacent edits need a shared line, preserve their version exactly;
    `resolve=true` can return a superset resolution for inspection.

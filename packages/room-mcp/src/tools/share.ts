@@ -23,7 +23,7 @@ export function retainedList(paths: string[]): string {
 }
 
 export const defs: ToolDef[] = [
-  { name: 'room_share', annotations: RW, description: 'Report or change sharing live. "share plans only" and "only my declared files" narrow file text; the server ceiling applies.',
+  { name: 'room_share', annotations: RW, description: 'Use to check or change what others see: "share plans only", "only my declared files", or "share all changed files".',
     inputSchema: { type: 'object', properties: { level: SHARE } } }
 ]
 

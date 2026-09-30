@@ -40,9 +40,9 @@ function missingBriefPaths(task: string, leadDir: string, workerDir: string): st
 }
 
 export const defs: ToolDef[] = [
-  { name: 'room_done', annotations: RW, description: 'Finish your task and release claims. Workers report to their lead, then exit.',
+  { name: 'room_done', annotations: RW, description: 'Use when finished: report one-line progress and tests, release claims, then exit if you are a worker.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Start another agent (claude/codex) in the background; for agents in parallel or codex/claude to do part of it. Use room_collect; message a finished worker to resume it in its worktree.',
+  { name: 'room_spawn', annotations: RW, description: 'Use for another agent (claude/codex), agents in parallel, work in the background, or codex/claude to do part of it; message a finished worker to resume it in its worktree.',
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'default: caller host' }, model: str('host model override'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false: start from HEAD' }, threads: { type: 'integer', minimum: 1, description: 'worker thread budget' }, share: SHARE, allowOutside: { type: 'boolean', description: 'allow a team worker outside this repo' }, dir: str('existing directory; no new worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default) or local workers room' } }, required: ['tag', 'task'] } },
 ]
 

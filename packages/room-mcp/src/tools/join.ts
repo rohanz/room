@@ -26,17 +26,17 @@ import { currentToolTiming } from '../timing.js'
 const timed = <T>(phase: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(phase, work) ?? Promise.resolve().then(work)
 
 export const defs: ToolDef[] = [
-  { name: 'room_login', annotations: RW, description: 'Sign in; show the returned code/URL verbatim, then call again to wait. action=logout revokes and forgets the account.',
+  { name: 'room_login', annotations: RW, description: 'Use to sign in or out. Show the login code/URL, then call again to wait.',
     inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['login', 'logout'] }, provider: { type: 'string', enum: ['github', 'oidc'] }, wait: int('wait seconds, default 90, max 600'), server: str('server URL'), credentials: str('credentials file') } } },
-  { name: 'room_create', annotations: RW, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Open this repo on a team server and join. confirm=true authorizes opening it for members with push access.',
+  { name: 'room_create', annotations: RW, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Use when asked to open this repo as a team room; confirm=true authorizes it.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' }, where: str('team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
-  { name: 'room_join', annotations: RW, description: 'Join local or a requested team server; remember explicit choices for this clone and its worktrees. Priority: argument, ROOM_SERVER, ROOM_URL, remembered, local.',
+  { name: 'room_join', annotations: RW, description: 'Use for "join the room", "work locally", or moving rooms. Remembers this clone’s choice.',
     inputSchema: { type: 'object', properties: { where: str('local | team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE, takeover: { type: 'boolean', description: 'take a local name only when its process identity is unknown' } } } },
-  { name: 'room_leave', annotations: RW, description: 'Leave and release your work claims. force dismisses running workers; forget clears this clone’s remembered destination.',
+  { name: 'room_leave', annotations: RW, description: 'Use for "stop sharing" or "leave the room". Releases claims; force dismisses workers; forget clears saved choice. To "work locally", use room_join.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
-  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'On explicit request, export history then delete the repository room for everyone on all branches, or local memory. Leaves clone files intact.',
+  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Use only when asked to close the room for everyone; exports history, then deletes it. Clone files stay.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } },
-  { name: 'room_export', annotations: RO, description: 'Export current ledger or room=<legacy> archive to Markdown.',
+  { name: 'room_export', annotations: RO, description: 'Use to export room history or a legacy archive as Markdown.',
     inputSchema: { type: 'object', properties: { room: str('legacy branch room'), path: str('output Markdown path') } } }
 ]
 

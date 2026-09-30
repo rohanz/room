@@ -5,7 +5,7 @@ import type { Session } from '../session.js'
 import { RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Post or update the room ledger on a GitHub PR; defaults to this branch’s open PR.',
+  { name: 'room_pr_note', annotations: { ...RW, openWorldHint: true }, description: 'Use when asked to post Room activity on a GitHub PR. Updates the room ledger on this branch’s PR by default.',
     inputSchema: { type: 'object', properties: { number: int('PR number') } } }
 ]
 

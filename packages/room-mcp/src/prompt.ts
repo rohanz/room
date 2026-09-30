@@ -44,7 +44,7 @@ export const AGENT_INSTRUCTIONS = (name?: string) => `You are ${name ? `${name}'
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
    Workers report progress in room_done. Send a note only when the lead must know before finishing; ask a question when blocked.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
-5. Asked for another agent, agents in parallel, background work or a background lead, or for codex/claude to take part of an editing task: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself.
+5. Asked for another agent, agents in parallel, work in the background, a background lead, or for codex/claude to do part of it: use room_spawn (load room-workers), not a built-in subagent. For a few lines, just do it yourself. For a follow-up or interruption, room_send the worker; a finished worker resumes in its worktree.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, collisions surfaced before they land, changed definitions announced to the files that use them, and a merged, uncommitted result to review.
 6. Ask your human only when blocked on their decision. Never commit or push unless asked. In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. ${BASE_CATCH_UP}
 
