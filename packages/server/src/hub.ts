@@ -7,7 +7,7 @@ import fsp, { type FileHandle } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, serializedStore, startHub, type Hub, type IncarnationStore, type Principal, type Reply } from '@room/hub-core'
+import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, serializedStore, startHub, type Hub, type IncarnationStore, type LeaseStore, type StoredLease, type Principal, type Reply } from '@room/hub-core'
 import { RoomDoc } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
@@ -58,6 +58,35 @@ export function incarnationFile(dir: string | undefined, port: number): Incarnat
   })
 }
 
+const leaseFileWrites = new Map<string, Promise<void>>()
+const MAX_LEASE_FILE_BYTES = 2 * 1024 * 1024
+export function serverLeaseFile(dir: string | undefined, port: number, room: string): { store: LeaseStore; remove(): Promise<void> } {
+  const root = dir ? path.join(dir, 'hub') : path.join(os.tmpdir(), `room-server-hub-${port}`)
+  const file = path.join(root, 'leases', `${crypto.createHash('sha256').update(room).digest('hex')}.json`)
+  return {
+    store: {
+      read: async () => {
+        try {
+          if ((await fsp.stat(file)).size > MAX_LEASE_FILE_BYTES) throw new Error('lease file exceeds size limit')
+          return JSON.parse(await fsp.readFile(file, 'utf8')) as StoredLease[]
+        }
+        catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e }
+      },
+      write: leases => {
+        const pending = (leaseFileWrites.get(file)?.catch(() => {}) ?? Promise.resolve()).then(() => writeDurable(file, leases))
+        leaseFileWrites.set(file, pending)
+        void pending.finally(() => { if (leaseFileWrites.get(file) === pending) leaseFileWrites.delete(file) }).catch(() => {})
+        return pending
+      },
+    },
+    remove: async () => {
+      try { await leaseFileWrites.get(file) } catch { /* a failed write cannot recreate the file */ }
+      await fsp.rm(file, { force: true })
+      try { await syncDirectory(path.dirname(file)) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+    },
+  }
+}
+
 /** What the server's LevelDB persistence offers (y-leveldb). */
 export interface PersistenceProvider {
   getYDoc(docName: string): Promise<Y.Doc>
@@ -71,6 +100,7 @@ interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean
 
 export interface ServerHubsOptions {
   store: IncarnationStore
+  leaseFile?: (room: string) => ReturnType<typeof serverLeaseFile>
   log(line: string): void
   /** The room's document is over its size cap. */
   full(room: string): boolean
@@ -89,6 +119,9 @@ export class ServerHubs {
   private readonly writes = new Map<string, WriteState>()
   private readonly maxDirtyRooms = 16
   constructor(private readonly opts: ServerHubsOptions) {}
+
+  /** Call on explicit room close, after stopping its document. */
+  async removeClosedRoomLeases(name: string): Promise<void> { await this.opts.leaseFile?.(name).remove() }
 
   /** Called only by the room-opening endpoint after it creates a room with no prior document. */
   markFresh(name: string): void { this.freshRooms.add(name) }
@@ -190,7 +223,7 @@ export class ServerHubs {
     void (loading?.loaded ?? Promise.resolve())
       .then(() => startHub({
         doc: entry.room, mono: this.opts.mono ?? (() => performance.now()), wall: this.opts.wall ?? Date.now, log,
-        store: this.opts.store, owns, full: () => this.opts.full(name), unavailable: () => this.storageFailure(name), fresh,
+        store: this.opts.store, leases: this.opts.leaseFile?.(name).store, owns, full: () => this.opts.full(name), unavailable: () => this.storageFailure(name), fresh,
       }))
       .then(async hub => {
         await loading?.stored() // the incarnation's meta mirror, stored before the hub serves

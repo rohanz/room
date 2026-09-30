@@ -32,8 +32,8 @@ export function parseRoomUrl(raw: string): RoomLocation {
   }
 }
 
-function roomLocationFromQuery(search = location.search): RoomLocation {
-  const raw = new URLSearchParams(location.hash.slice(1)).get('room') ?? new URLSearchParams(search).get('room') ?? 'ws://localhost:1234/demo'
+export function roomLocationFromQuery(search = location.search): RoomLocation {
+  const raw = new URLSearchParams(location.hash.slice(1)).get('room') ?? new URLSearchParams(search).get('room') ?? (location.protocol === 'file:' ? '' : 'ws://localhost:1234/demo')
   return parseRoomUrl(raw)
 }
 
@@ -45,6 +45,9 @@ export function takeLinkCredentials(search: string, storage: Pick<Storage, 'getI
   const room = fragment.get('room') ?? q.get('room') ?? ''
   const slot = `room-credential:${room}`
   const incoming = { view: fragment.get('view') ?? q.getAll('view').find(v => v !== 'board' && v !== 'code') ?? '', key: q.get('key') ?? '', token: fragment.get('token') ?? q.get('token') ?? '', relay: fragment.get('relay') === '1' }
+  // file: pages have browser-dependent storage isolation. Keep the local capability in
+  // the fragment for reloads and in this page's memory only; never write it to storage.
+  if (url.protocol === 'file:') return incoming
   if (incoming.view || incoming.key || incoming.token) try { storage.setItem(slot, JSON.stringify(incoming)) } catch { /* this tab still holds it in memory */ }
   for (const name of ['view', 'key', 'token']) {
     const values = url.searchParams.getAll(name).filter(v => name === 'view' && (v === 'board' || v === 'code'))

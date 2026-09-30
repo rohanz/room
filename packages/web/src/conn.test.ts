@@ -17,7 +17,7 @@ function browser(url: string) {
   const dom = new JSDOM('<div id="app"></div>', { url })
   vi.stubGlobal('location', dom.window.location)
   vi.stubGlobal('history', dom.window.history)
-  vi.stubGlobal('sessionStorage', dom.window.sessionStorage)
+  try { vi.stubGlobal('sessionStorage', dom.window.sessionStorage) } catch { vi.stubGlobal('sessionStorage', undefined) }
   vi.stubGlobal('document', dom.window.document)
   vi.stubGlobal('crypto', webcrypto)
   return dom
@@ -39,12 +39,12 @@ describe('browser ticket connection', () => {
   })
 
   it('proves a local view capability without sending it', async () => {
-    const dom = browser('http://127.0.0.1/#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=local-view&relay=1')
+    const dom = browser('file:///opt/room%20plugin/viewer.html#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Frepo&view=local-view&relay=1')
     const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local-ticket' }) })
     vi.stubGlobal('fetch', request)
     const conn = connect(dom.window.location.search)
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce())
-    expect(dom.window.location.href).not.toContain('local-view')
+    expect(dom.window.location.hash).toContain('local-view')
     expect(conn.provider.params).toEqual({ schema: '2', ticket: 'local-ticket' })
     const body = JSON.parse(request.mock.calls[0]![1].body)
     expect(body.proof).toMatch(/^[a-f0-9]{64}$/)

@@ -104,16 +104,18 @@ describe('local relay browser view', () => {
   const get = (url: string) => new Promise<{ status: number; body: string; type: string }>((resolve, reject) => {
     http.get(url, res => { let body = ''; res.on('data', c => { body += c }); res.on('end', () => resolve({ status: res.statusCode ?? 0, body, type: String(res.headers['content-type']) })) }).on('error', reject)
   })
-  it('serves index.html and /health, and accepts a keyless websocket from loopback', async () => {
+  it('serves no viewer assets, but keeps /health and authenticated websockets', async () => {
     const dist = await fsp.mkdtemp(path.join(os.tmpdir(), 'room-dist-'))
     await fsp.writeFile(path.join(dist, 'index.html'), '<!doctype html><title>Room</title>')
     await fsp.writeFile(path.join(dist, 'app.js'), 'console.log(1)')
     const relay = await startRelay(0, { staticDir: dist, key: 'test-key' })
     try {
       const root = await get(`http://127.0.0.1:${relay.port}/`)
-      expect(root.status).toBe(200); expect(root.type).toContain('text/html'); expect(root.body).toContain('<title>Room</title>')
+      expect(root.status).toBe(200); expect(root.type).toContain('text/plain'); expect(root.body).toContain('file link printed by your agent')
       const js = await get(`http://127.0.0.1:${relay.port}/app.js`)
-      expect(js.type).toContain('javascript')
+      expect(js.status).toBe(404); expect(js.body).not.toContain('console.log')
+      const html = await get(`http://127.0.0.1:${relay.port}/index.html`)
+      expect(html.status).toBe(404)
       const health = await get(`http://127.0.0.1:${relay.port}/health`)
       expect(JSON.parse(health.body)).toEqual({ ok: true, local: true, schema: 2, hub: 1 })
       const old = await new Promise<{ code: number; text: string }>(resolve => {

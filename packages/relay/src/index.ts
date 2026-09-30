@@ -15,7 +15,7 @@ import { RoomMemory, memoryFile } from './memory.js'
 import { catchUpLocal, forgetLegacyLocal } from './local-migrate.js'
 export { legacyRelayRunning } from './local-migrate.js'
 import { pidAlive } from './process.js'
-import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile } from './hub.js'
+import { AuthorityLock, holderDeadCheck, hubDir, incarnationFile, relayLeaseFile } from './hub.js'
 export { RoomMemory, memoryFile, loadMemory, saveMemory } from './memory.js'
 export { AuthorityLock } from './hub.js'
 import crypto from 'node:crypto'
@@ -76,6 +76,8 @@ export function relayOutputAllowed(queued: number, aggregateQueued: number, next
 /** A relay started with its own per-socket budget (RelayOptions.socketQueueBytes) records it per connection. */
 const socketBudgets = new WeakMap<WebSocket, number>()
 const sessions = new WeakMap<WebSocket, SecureSession>()
+const handshakeCleanup = new WeakMap<WebSocket, () => void>()
+const failedSockets = new WeakSet<WebSocket>()
 const queued = new Map<WebSocket, number>()
 let totalQueued = 0
 let stateReservation = 0
@@ -151,12 +153,12 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
   docs.set(name, d)
   // A successor starts from its own replica before anyone connects, so its hub sees every grant it saw.
   if (opts.seed && name === encodeURIComponent(opts.seed.room)) Y.applyUpdate(doc, opts.seed.update)
-  if (opts.hub) startRoomHub(d, decodeURIComponent(name), opts.hub, opts.log ?? (() => {}))
+  if (opts.hub) startRoomHub(d, decodeURIComponent(name), opts.hub, opts.commonDir!, opts.log ?? (() => {}))
   return d
 }
-function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, log: (line: string) => void): void {
+function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, commonDir: string, log: (line: string) => void): void {
   const roomDoc = d.room = new RoomDoc(d.doc)
-  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, holderDead: rt.holderDead, authority: () => rt.lock.held() })
+  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), holderDead: rt.holderDead, authority: () => rt.lock.held() })
     .then(hub => {
       if (d.closed) { hub.stop(); return }
       hub.onPush((conn, push) => send(conn as WebSocket, encodeFrame(push)))
@@ -184,6 +186,7 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
   const session = new SecureSession(opts.readOnly ? localViewKey(opts.key, room) : opts.key, room, 'relay')
   sessions.set(conn, session)
   const timer = setTimeout(() => conn.close(1008, 'secure handshake timeout'), 5000)
+  handshakeCleanup.set(conn, () => { clearTimeout(timer); conn.off('message', handshake); dropSocket(conn); sessions.delete(conn) })
   timer.unref?.()
   let hello = false
   const handshake = (raw: Buffer, binary: boolean) => {
@@ -202,13 +205,14 @@ function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.Incoming
       }
       const first = session.decrypt(raw)
       clearTimeout(timer)
+      handshakeCleanup.delete(conn)
       conn.off('message', handshake)
       attachReady(docs, conn, name, opts, first)
       conn.emit('message', first, true)
     } catch { clearTimeout(timer); conn.close(1008, 'invalid secure frame') }
   }
   conn.on('message', handshake)
-  conn.on('close', () => { clearTimeout(timer); dropSocket(conn) })
+  conn.on('close', () => { handshakeCleanup.get(conn)?.(); handshakeCleanup.delete(conn); clearTimeout(timer); dropSocket(conn); sessions.delete(conn) })
 }
 function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string, opts: DocOptions, first: Buffer): void {
   const d = getDoc(docs, name, opts)
@@ -271,12 +275,30 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
   }
 }
 
+/** The first operation on every accepted websocket is its error listener. */
+export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOptions & { key: string }): (conn: WebSocket, req: http.IncomingMessage) => void {
+  return (conn, req) => {
+    conn.on('error', error => {
+      if (failedSockets.has(conn)) return
+      failedSockets.add(conn)
+      try { opts.log?.(`relay websocket: ${error instanceof Error ? error.message : String(error)}`) } catch { /* cleanup still matters */ }
+      handshakeCleanup.get(conn)?.()
+      handshakeCleanup.delete(conn)
+      sessions.delete(conn)
+      dropSocket(conn)
+      try { conn.terminate() } catch { /* already gone */ }
+    })
+    try { safeUrl(req.url); attach(docs, conn, req, { ...opts, readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
+    catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
+  }
+}
+
 export interface LocalRelayInfo { schema: 2; port: number; pid: number; room: string; startedAt: number; key: string; canonicalWarning?: string }
 
 export interface LocalRelay {
   /** ws://127.0.0.1:<port> */
   url: string
-  /** http://127.0.0.1:<port>: the browser view (same machine only). */
+  /** http://127.0.0.1:<port>: the relay API (the viewer opens from disk). */
   httpUrl: string
   port: number
   /** Private discovery secret used only to sign requests; lives in room/relay.json (0600). */
@@ -346,28 +368,11 @@ export function canonicalRelayWarning(port: number, commonDir: string, identity:
   return { roomRelay: true, warning: `an older Room session${details ? ` (${details})` : ''} still holds this room's relay on 127.0.0.1:${port}; quit it or reconnect Room there` }
 }
 
-const MIME: Record<string, string> = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.map': 'application/json' }
-
-/**
- * Where the built browser view lives: ROOM_WEB_DIST, else `web/` next to the plugin bundle's
- * `server/` dir (plugins/room/web), else packages/web/dist for source runs. Undefined when none exists.
- */
-export function findWebDist(): string | undefined {
-  const here = path.dirname(new URL(import.meta.url).pathname)
-  const candidates = [
-    process.env.ROOM_WEB_DIST,
-    path.resolve(here, '..', 'web'),            // plugins/room/server/room-mcp.mjs -> plugins/room/web
-    path.resolve(here, '..', '..', 'web', 'dist'), // packages/relay/src -> packages/web/dist
-    path.resolve(here, '..', '..', '..', 'web', 'dist'),
-  ]
-  for (const c of candidates) if (c && fs.existsSync(path.join(c, 'index.html'))) return c
-  return undefined
-}
-
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
 function isLoopback(addr: string | undefined): boolean { return !!addr && LOOPBACK.has(addr) }
 
 export interface RelayOptions {
+  /** Legacy option ignored: the relay never serves executable viewer content. */
   staticDir?: string
   key?: string
   /** Browser ticket lifetime; default 60 seconds, capped at 60 seconds. */
@@ -390,8 +395,7 @@ export interface StartedRelay {
 }
 
 /** Start a relay on 127.0.0.1:port (0 = any free port). Rejects with EADDRINUSE when someone else won the race.
- *  Also serves the browser view (staticDir, default findWebDist()) at / and a /health line, so a local
- *  room has a projector link like a hosted one. Websockets are accepted from loopback only, and when
+ *  Serves only API endpoints and a /health line. Websockets are accepted from loopback only, and when
  *  `key` is set they must prove possession without sending it (the /health line stays open). */
 export function startRelay(port: number, opts: RelayOptions = {}): Promise<StartedRelay> {
   return new Promise((resolve, reject) => {
@@ -400,7 +404,6 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
       commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes,
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
-    const staticDir = opts.staticDir ? path.resolve(opts.staticDir) : findWebDist()
     const requestedTicketTtl = opts.ticketTtlMs ?? 60_000
     const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(60_000, requestedTicketTtl)) : 60_000
     const tickets = new Map<string, { room: string; expires: number }>()
@@ -474,26 +477,19 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         } catch { res.writeHead(500); res.end('could not forget local memory') }
         return
       }
-      if (staticDir) {
-        const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
-        const file = path.resolve(staticDir, rel)
-        if (file.startsWith(staticDir + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
-          res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream', 'cache-control': rel === 'index.html' ? 'no-store' : 'no-cache' })
-          fs.createReadStream(file).pipe(res)
-          return
-        }
+      if (url.pathname === '/') {
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('Room opens the browser view from the file link printed by your agent.\n')
+        return
       }
-      res.writeHead(200, { 'content-type': 'text/plain' })
-      res.end(staticDir ? 'room local relay\n' : 'room local relay (no browser view built: run npm run build -w @room/web)\n')
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('Not Found\n')
       } catch (e) { opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) { res.writeHead(e instanceof HttpFailure ? e.status : 500); res.end(e instanceof HttpFailure ? e.message : 'Internal Server Error') } }
     })
     const wss = new WebSocketServer({ noServer: true })
     wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
     const docs = relayDocs()
-    wss.on('connection', (conn, req) => {
-      try { safeUrl(req.url); attach(docs, conn, req, { ...docOptions, key: opts.key ?? '', readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
-      catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
-    })
+    wss.on('connection', relayConnectionHandler(docs, { ...docOptions, key: opts.key ?? '' }))
     const ticker = setInterval(() => {
       for (const [name, d] of docs) {
         try { d.hub?.tick() }

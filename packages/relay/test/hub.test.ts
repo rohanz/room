@@ -11,7 +11,7 @@ import { RoomDoc } from '@room/shared'
 import { SETTLE_MS, encodeSeq, startHub, MSG_HUB, encodeFrame, decodeFrame, type Reply, type Push } from '@room/hub-core'
 import { contractSuite, fakeClock, holder, waitFor, type MakeEnv } from '../../hub-core/test/contract.js'
 import { AuthorityLock, deterministicPort, ensureLocalRelay, localProofHeader, memoryFile, readRelayInfo, startRelay, type StartedRelay } from '../src/index.js'
-import { incarnationFile } from '../src/hub.js'
+import { incarnationFile, relayLeaseFile } from '../src/hub.js'
 import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 
 const makeCommonDir = () => fsp.mkdtemp(path.join(os.tmpdir(), 'room-relay-hub-'))
@@ -68,6 +68,7 @@ const relayEnv: MakeEnv = async clock => {
     connect: () => authed(roomUrl(port), KEY),
     async tick() { current().hub!.tick() },
     async restart(state) {
+      await current().hub!.flushLeases()
       const update = state ?? Y.encodeStateAsUpdate(current().doc.doc)
       await relay.close()
       fs.rmSync(memoryFile(commonDir, ROOM), { force: true })
@@ -80,6 +81,26 @@ const relayEnv: MakeEnv = async clock => {
 contractSuite('local relay', relayEnv)
 
 describe('relay hub wiring', () => {
+  it('a successor reads leases from the shared clone directory', async () => {
+    const common = await makeCommonDir()
+    try {
+      const clock = fakeClock(), room = 'local/takeover'
+      const first = await startHub({ doc: new RoomDoc(), fresh: true, store: incarnationFile(common), leases: relayLeaseFile(common, room),
+        mono: clock.mono, wall: clock.wall, log: () => {} })
+      const conn = {}, principal = { local: true } as const
+      first.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId: 's' }, principal)
+      const epoch = (first.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, principal) as { epoch: number }).epoch
+      await first.flushLeases(); first.stop()
+      const second = await startHub({ doc: new RoomDoc(), store: incarnationFile(common), leases: relayLeaseFile(common, room),
+        mono: clock.mono, wall: clock.wall, log: () => {} })
+      const survivor = {}
+      second.handle(survivor, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 'test', sessionId: 's' }, principal)
+      expect(second.handle(survivor, { v: 1, id: 'r', op: 'renew', name: 'ada', epoch }, principal)).toMatchObject({ ok: true })
+      const file = path.join(common, 'room', 'hub-leases', `${(await import('node:crypto')).createHash('sha256').update(room).digest('hex')}.json`)
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(path.dirname(file)).mode & 0o777).toBe(0o700)
+    } finally { fs.rmSync(common, { recursive: true, force: true }) }
+  })
   it('recovers an rc1-poisoned incarnation file before serving a clean room', async () => {
     const common = await makeCommonDir()
     const file = path.join(common, 'room', 'hub', 'incarnation.json')
@@ -210,8 +231,8 @@ describe('relay hub wiring', () => {
       const next = await waitFor(async () => { try { return await authed(roomUrl(port, 'local/x'), key) } catch { return undefined } }, 5000)
       const hello = await waitFor(async () => { const r = await next.hello(); return r.ok && r }, 5000)
       expect(hello.incarnation as number).toBeGreaterThan(first.incarnation as number)
-      // No replica carried ada's holder record to the survivor: the public epoch alone does not prove the session.
-      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: false, reason: 'not-yours' })
+      // The survivor read the lease the dead owner stored under the clone's git dir: ada's session renews it.
+      expect(await next.send({ op: 'renew', name: 'ada', epoch })).toMatchObject({ ok: true })
       const bob = await waitFor(async () => { const r = await next.send({ op: 'acquire', name: 'bob', holder: holder('s2') }); return r.ok && r }, 10_000)
       expect(bob.epoch as number).toBeGreaterThan(epoch)
       await next.close()
@@ -238,11 +259,13 @@ describe('relay hub wiring', () => {
       await owner.stop()
       await waitFor(() => b.owned, 8000)
       const c = await authed(roomUrl(b.port, 'local/x'), b.key)
-      // The inherited holder's own session renews; any other session is refused (the epoch is a fence, not a secret).
       const hello = await waitFor(async () => { const r = await c.send({ op: 'hello', proto: 1, schema: 2, client: 'contract', sessionId: 's1' }); return r.ok && r })
       expect(hello.incarnation as number).toBeGreaterThan(5)
-      expect(await c.send({ op: 'renew', name: 'ada', epoch: inherited })).toMatchObject({ ok: true })
-      expect(await c.send({ op: 'acquire', name: 'ada', holder: holder('other') })).toMatchObject({ ok: false, reason: 'held' })
+      // A holder record that exists only in a replica is not authority (the hub's own lease store is): the renew is
+      // refused, and the holder acquires afresh with an epoch above everything the replica showed.
+      expect(await c.send({ op: 'renew', name: 'ada', epoch: inherited })).toMatchObject({ ok: false, reason: 'stale' })
+      const again = await waitFor(async () => { const r = await c.send({ op: 'acquire', name: 'ada', holder: holder('s1') }); return r.ok && r }, 10_000)
+      expect(again.epoch as number).toBeGreaterThan(inherited)
       await c.close()
     } finally { await owner.stop(); await b.stop() }
     expect(fs.existsSync(path.join(common, 'room', 'hub', 'authority.lock'))).toBe(false)

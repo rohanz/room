@@ -83,6 +83,20 @@ beforeAll(async () => {
 afterAll(async () => { try { await servers.stopAll() } finally { fs.rmSync(persistenceDir, { recursive: true, force: true }) } })
 
 describe('room server with the fake GitHub issuer', () => {
+  it('gives schema-less URL credentials an explicit upgrade refusal', async () => {
+    const room = 'local/old-client'
+    const result = await new Promise<{ status: number; body: string }>(resolve => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?token=shared`)
+      // An upgrade refusal carries its text in the status line.
+      ws.on('unexpected-response', (_req, res) => { resolve({ status: res.statusCode ?? 0, body: res.statusMessage ?? '' }); ws.terminate() })
+      ws.on('error', () => resolve({ status: 0, body: '' }))
+    })
+    expect(result.status).toBe(403)
+    expect(result.body).toContain('update Room to 0.17 or later')
+    const http = await fetch(`${base}/rooms?token=shared`)
+    expect(http.status).toBe(403)
+    expect(await http.text()).toContain('update Room to 0.17 or later')
+  })
   it('refuses incomplete GitHub parents before admission and preserves the victim room', async () => {
     const session = await login('namespace-victim')
     const victim = 'github.com/namespace-victim/private'
@@ -197,7 +211,8 @@ describe('room server with the fake GitHub issuer', () => {
     const open = await post('/rooms', { room: 'github.com/o/r/main', gh: 'gho_real' })
     expect(open.status).toBe(401)
     expect(await open.text()).toContain('room_login')
-    expect(await join('github.com/o/r/main', { gh: 'gho_real' })).toBe(400)
+    // A credential in a schema-less URL is a 0.16 client's: it is told to upgrade.
+    expect(await join('github.com/o/r/main', { gh: 'gho_real' })).toBe(403)
     expect((await post('/view-token', { room: 'github.com/o/r/main', gh: 'gho_real' })).status).toBe(401)
   })
 
@@ -258,7 +273,9 @@ describe('room server with the fake GitHub issuer', () => {
     expect((await fetch(`${base}/rooms`, { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': String(1024 * 1024) }, body: 'x'.repeat(1024 * 1024) }).catch(() => ({ status: 413 }))).status).toBe(413)
     // A path that escapes to a sibling directory sharing the static root's prefix is not served (S3).
     expect((await raw('GET /x/..//etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'))).not.toMatch(/root:/)
-    expect(await (await fetch(`${base}/health`)).json()).toEqual({ ok: true, schema: 2, hub: 1 })
+    const health = await (await fetch(`${base}/health`)).json()
+    expect(health).toMatchObject({ ok: true, schema: 2, hub: 1 })
+    expect(health).not.toHaveProperty('storage')
   })
 
   it('survives clients that reset the connection while an upgrade is being refused', async () => {

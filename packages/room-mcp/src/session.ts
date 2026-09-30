@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
@@ -44,6 +45,22 @@ const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => curre
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
 export { DEFAULT_SERVER, LOCAL, resolveServer }
 const DEFAULT_WEB = 'http://localhost:5173'
+const VIEWER_MISSING = 'not built; run npm run build -w @room/web'
+
+/** Installed plugins and source checkouts put the trusted local viewer beside their code. */
+function findLocalViewer(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url))
+  for (const file of [resolve(here, '..', 'web', 'viewer.html'), resolve(here, '..', '..', 'web', 'dist', 'viewer.html')]) {
+    if (existsSync(file)) return file
+  }
+  return undefined
+}
+
+export function localBrowserLink(roomUrl: string, name: string, view: string, viewerFile: string | undefined = findLocalViewer(), web?: string): string {
+  if (!viewerFile && !web) return VIEWER_MISSING
+  const base = web ? `${web.replace(/\/+$/, '')}/` : pathToFileURL(resolve(viewerFile!)).href
+  return `${base}#room=${encodeURIComponent(roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(name)}&relay=1`
+}
 
 export interface Session {
   room: RoomDoc
@@ -855,10 +872,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
-  // The relay serves the browser view itself (same machine only); ROOM_WEB overrides for web dev.
-  const web = (opts.web ?? local.httpUrl).replace(/\/+$/, '')
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
-  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}&relay=1`
+  const browserUrl = localBrowserLink(roomUrl, me.name, localViewKey(local.key, roomName), findLocalViewer(), opts.web)
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
   graph.start()
   const session: Session = {

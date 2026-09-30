@@ -1,8 +1,28 @@
 import { expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import crypto from 'node:crypto'
 import { HUB_ORIGIN, MAX_HUB_FRAME_BYTES, MAX_HUB_REQUESTS_PER_SECOND, decodeFrame, encodeFrame } from '@room/hub-core'
-import { ServerHubs, bindHub, type PersistenceProvider } from '../src/hub.js'
+import { ServerHubs, bindHub, serverLeaseFile, type PersistenceProvider } from '../src/hub.js'
+
+it('writes per-room leases privately and removes them on explicit close', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-leases-'))
+  try {
+    const room = 'git/example/room'
+    const file = path.join(dir, 'hub', 'leases', `${crypto.createHash('sha256').update(room).digest('hex')}.json`)
+    const adapter = serverLeaseFile(dir, 0, room)
+    const rows = [{ name: 'ada', epoch: 1, at: 2, holder: { sessionId: 's', pid: 1, startTime: '', executable: '' }, principal: 'oidc:a', session: 's' }]
+    await adapter.store.write(rows)
+    expect(await adapter.store.read()).toEqual(rows)
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600)
+    const hubs = new ServerHubs({ store: { advance: async floor => floor }, leaseFile: () => adapter, log: () => {}, full: () => false })
+    await hubs.removeClosedRoomLeases(room)
+    expect(await adapter.store.read()).toEqual([])
+  } finally { await fs.rm(dir, { recursive: true, force: true }) }
+})
 
 it('bounds raw hub frames and reply ids before decoding, including unavailable and read-only paths', () => {
   const socket = () => Object.assign(new EventEmitter(), { replies: [] as Uint8Array[], send(buf: Uint8Array) { this.replies.push(buf) } })

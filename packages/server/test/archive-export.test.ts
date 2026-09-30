@@ -31,7 +31,7 @@ beforeAll(async () => {
   })
   base = `http://127.0.0.1:${port}`
   const proc = servers.start({ env: { ...process.env, HOST: '127.0.0.1', PORT: String(port), ROOM_SERVER: '',
-    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_EXPORT_DEADLINE_MS: '3000' }, stdio: 'ignore' })
+    GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'test', YPERSISTENCE: dir, ROOM_EXPORT_DEADLINE_MS: '3000', ROOM_TEST_ARCHIVE_LOAD_DELAY_MS: '700' }, stdio: 'ignore' })
   for (let i = 0; i < 200; i++) {
     if (proc.exitCode !== null) throw new Error('export test server exited')
     try { if ((await fetch(`${base}/health`)).ok) return } catch { /* starting */ }
@@ -61,4 +61,40 @@ it('holds one principal slot for a stalled client, then releases it on deadline'
   const later = await post('/archive/export', { room: archive, schema: 2, session })
   expect(later.status).toBe(200)
   await later.arrayBuffer()
+}, 15_000)
+
+it('keeps export slots after clients disconnect during storage loading', async () => {
+  const sessions: string[] = []
+  for (const login of ['archiver-a', 'archiver-b', 'archiver-c']) {
+    const started = await (await post('/auth/device', {})).json() as { device: string }
+    sessions.push(((await (await post('/auth/poll', { device: started.device, fakeLogin: login })).json()) as { session: string }).session)
+  }
+  const raw = sessions.slice(0, 2).map(session => {
+    const body = JSON.stringify({ room: archive, schema: 2, session })
+    const socket = net.connect(port, '127.0.0.1')
+    socket.on('error', () => {})
+    socket.once('connect', () => socket.write(`POST /archive/export HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`))
+    return socket
+  })
+  await new Promise(resolve => setTimeout(resolve, 150))
+  raw.forEach(socket => socket.destroy())
+  const busy = await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })
+  expect(busy.status).toBe(429)
+  await new Promise(resolve => setTimeout(resolve, 800))
+  const later = await post('/archive/export', { room: archive, schema: 2, session: sessions[2] })
+  expect(later.status).toBe(200)
+  await later.arrayBuffer()
+}, 15_000)
+
+it('coalesces concurrent archive listings into one canonical load', async () => {
+  const started = await (await post('/auth/device', {})).json() as { device: string }
+  const session = ((await (await post('/auth/poll', { device: started.device, fakeLogin: 'archiver-list' })).json()) as { session: string }).session
+  const count = async () => ((await (await fetch(`${base}/health`)).json()) as { archiveLoads: number }).archiveLoads
+  const before = await count()
+  const url = `${base}/archive?repo=${encodeURIComponent(repo)}`
+  const headers = { authorization: `Bearer ${session}` }
+  const [a, b] = await Promise.all([fetch(url, { headers }), fetch(url, { headers })])
+  expect(a.status).toBe(200)
+  expect(b.status).toBe(200)
+  expect(await count()).toBe(before + 1)
 }, 15_000)

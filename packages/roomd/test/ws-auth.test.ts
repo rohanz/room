@@ -6,6 +6,7 @@ vi.mock('@room/relay', () => ({
 }))
 vi.mock('ws', () => ({ default: class {
   constructor(...args: unknown[]) { calls.push(args) }
+  on() { return this }
 } }))
 import { authorizedWebSocket } from '../src/ws-auth.js'
 

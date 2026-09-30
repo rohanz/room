@@ -135,13 +135,13 @@ describe('HubClient', () => {
     client.close()
   })
 
-  it('reacquires its name after an unsynced restart refuses epoch-only renewal', async () => {
+  it.each(['stale', 'not-yours'] as const)('reacquires its name after an unstored restart returns %s', async reason => {
     const { client, transport } = fixture()
     await client.hello(); await client.acquire('alice', holder)
     transport.answer = req => req.op === 'renew'
-      ? { ok: false, reason: 'not-yours', text: 'holder record has not synced' }
+      ? { ok: false, reason, text: 'lease was not recovered' }
       : req.op === 'acquire' ? { ok: true, epoch: 43, ttlMs: LEASE_TTL_MS } : { ok: true }
-    await expect(client.renew('alice')).rejects.toMatchObject({ reason: 'not-yours' })
+    await expect(client.renew('alice')).rejects.toMatchObject({ reason })
     expect(client.lease('alice')).toBeUndefined()
     expect(await client.acquire('alice', holder)).toBe(43)
     expect(client.lease('alice')).toBe(43)

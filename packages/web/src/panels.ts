@@ -1012,7 +1012,7 @@ export function header(conn: Conn): HTMLElement {
   const local = parts.local ? h('span', { class: 'room-chip mono' }, 'local') : null
   const count = h('span', { class: 'header-detail' }, '0 active')
   const connection = h('span', { class: 'connection' }, 'disconnected')
-  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, count, h('span', { class: 'sp' }), connection)
+  const element = h('header', { class: 'header' }, h('span', { class: 'product-mark' }, typeof location !== 'undefined' && location.protocol === 'file:' ? 'Room' : h('img', { src: '/logo.png', alt: 'Room', width: 40, height: 40 })), h('span', { class: 'header-divider' }), roomName, local, count, h('span', { class: 'sp' }), connection)
   const render = () => {
     const total = participantGroups(conn).active.length
     count.textContent = `${total} active`

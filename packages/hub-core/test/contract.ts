@@ -212,20 +212,20 @@ export function contractSuite(name: string, make: MakeEnv): void {
         const dee = ok(await a.send({ op: 'acquire', name: 'dee', holder: holder('s4') })).epoch as number
         await a.close()
 
-        // The successor's doc lacks the last grants (cy, dee): their holders have not synced yet.
+        // The successor's doc lacks the last grants, but the private lease store has them.
         env.clock.advance(1_000)
         await env.restart(snapshot)
         expect(env.incarnation()).toBeGreaterThan(before)
         const c = await greeted(env)
         expect(ok(await c.hello()).incarnation).toBe(env.incarnation())
         expect(refused(await c.send({ op: 'acquire', name: 'bob', holder: holder('s2') }), 'starting').retryMs).toBe(1000)
-        // The grant was never synced: an epoch alone cannot prove the original session.
-        refused(await c.send({ op: 'renew', name: 'cy', epoch: cy }), 'not-yours')
-        refused(await c.send({ op: 'acquire', name: 'cy', holder: holder('s3') }), 'starting')
+        // The stored owner can resume even when the document missed the grant.
+        ok(await c.send({ op: 'renew', name: 'cy', epoch: cy }))
+        ok(await c.send({ op: 'renew', name: 'cy', epoch: cy }))
 
         env.clock.advance(SETTLE_MS)
         expect((ok(await c.send({ op: 'acquire', name: 'cy', holder: holder('s3') })).epoch as number)).toBeGreaterThan(cy)
-        refused(await c.send({ op: 'renew', name: 'dee', epoch: dee }), 'stale')
+        ok(await c.send({ op: 'renew', name: 'dee', epoch: dee }))
         const bob = ok(await c.send({ op: 'acquire', name: 'bob', holder: holder('s2') })).epoch as number
         const seq2 = ok(await c.send({ op: 'post', lease: { name: 'bob', epoch: bob }, msg: { id: 'm2', type: 'note', from: 'ada', text: 'y' } })).seq as number
         expect(bob).toBeGreaterThan(Math.max(ada, cy, dee, seq))
@@ -254,7 +254,7 @@ export function contractSuite(name: string, make: MakeEnv): void {
         await env.restart(snapshot)
         env.clock.advance(SETTLE_MS)
         const c = await greeted(env)
-        const epoch2 = ok(await c.send({ op: 'acquire', name: 'ada', holder: holder('s2') })).epoch as number
+        const epoch2 = ok(await c.send({ op: 'acquire', name: 'ada', holder: holder('s1') })).epoch as number
         const later = [epoch2, ok(await c.send({ op: 'post', lease: { name: 'ada', epoch: epoch2 }, msg: { id: 'm0', type: 'note', from: 'ada', text: 'x' } })).seq as number]
         for (const v of later) expect(v).toBeGreaterThan(Math.max(...issued))
         await c.close()
@@ -300,10 +300,12 @@ export function memoryEnv(extra: Partial<Pick<HubHost, 'holderDead' | 'authority
   return async clock => {
     let max: number | undefined
     const store = extra.store ?? serializedStore({ read: async () => max, write: async v => { max = v } })
+    let saved: import('../src/index.js').StoredLease[] = []
+    const leases: import('../src/index.js').LeaseStore = { read: async () => saved, write: async rows => { saved = rows } }
     let doc = new RoomDoc()
     const clients = new Map<object, Push[]>()
     const start = async () => {
-      const hub = await startHub({ doc, mono: clock.mono, wall: clock.wall, log: l => { extra.logs?.push(l) }, store, ...extra })
+      const hub = await startHub({ doc, mono: clock.mono, wall: clock.wall, log: l => { extra.logs?.push(l) }, store, leases, ...extra })
       hub.onPush((conn, push) => clients.get(conn)?.push(push))
       return hub
     }
@@ -323,6 +325,7 @@ export function memoryEnv(extra: Partial<Pick<HubHost, 'holderDead' | 'authority
       },
       async tick() { hub.tick() },
       async restart(state) {
+        await hub.flushLeases()
         hub.stop()
         if (state) { doc = new RoomDoc(new Y.Doc()); Y.applyUpdate(doc.doc, state) }
         hub = await start()

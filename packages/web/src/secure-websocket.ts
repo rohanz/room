@@ -7,7 +7,13 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
   for (const part of parts) { out.set(part, at); at += part.length }
   return out
 }
-const equal = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && a.every((v, i) => v === b[i])
+/** Constant-time for equal lengths: every byte is compared. */
+const equal = (a: Uint8Array, b: Uint8Array): boolean => {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!
+  return diff === 0
+}
 const bytes = async (data: unknown): Promise<Uint8Array> => {
   if (data instanceof ArrayBuffer) return new Uint8Array(data)
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
@@ -48,9 +54,9 @@ export function secureWebSocket(viewKey: string): typeof WebSocket {
       this.room = decodeURIComponent(new URL(this.url).pathname.slice(1))
       this.ws = new WebSocket(address, protocols)
       this.ws.binaryType = 'arraybuffer'
-      this.timer = setTimeout(() => this.close(1008, 'secure handshake timeout'), 5000)
+      this.timer = setTimeout(() => this.close(4008, 'secure handshake timeout'), 5000)
       this.ws.onopen = () => this.ws.send(concat(magic, this.cn))
-      this.ws.onmessage = event => { this.incoming = this.incoming.then(() => this.receive(event.data)).catch(() => this.close(1008, 'invalid secure frame')) }
+      this.ws.onmessage = event => { this.incoming = this.incoming.then(() => this.receive(event.data)).catch(() => this.close(4008, 'invalid secure frame')) }
       this.ws.onclose = event => { clearTimeout(this.timer); this.onclose?.(event) }
       this.ws.onerror = event => this.onerror?.(event)
     }
@@ -78,15 +84,22 @@ export function secureWebSocket(viewKey: string): typeof WebSocket {
       }
       const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: source(this.iv(this.received)) }, this.rx!, source(frame))
       this.received++
-      this.onmessage?.(new MessageEvent('message', { data: plain }))
+      // A listener's own failure is not a transport failure: the frame was authentic.
+      try { this.onmessage?.(new MessageEvent('message', { data: plain })) } catch (error) { console.error(error) }
     }
     send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
       this.outgoing = this.outgoing.then(async () => {
-        if (!this.opened || this.ws.readyState !== WebSocket.OPEN) throw new Error('secure websocket is not open')
+        // Like a native socket that is closing: what is sent now is dropped, and no counter is spent.
+        if (!this.opened || this.ws.readyState !== WebSocket.OPEN) return
         const frame = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: source(this.iv(this.sent++)) }, this.tx!, source(await bytes(data)))
-        this.ws.send(frame)
-      }).catch(() => this.close(1008, 'invalid secure frame'))
+        if (this.ws.readyState === WebSocket.OPEN) this.ws.send(frame)
+        else this.close(4008, 'secure session interrupted')
+      }).catch(() => this.close(4008, 'invalid secure frame'))
     }
-    close(code?: number, reason?: string): void { clearTimeout(this.timer); this.ws.close(code, reason) }
+    /** Browsers accept only 1000 and 3000-4999 from script; anything else would throw here. */
+    close(code?: number, reason?: string): void {
+      clearTimeout(this.timer)
+      try { this.ws.close(code === undefined || code === 1000 || (code >= 3000 && code <= 4999) ? code : 4008, reason) } catch { /* already closed */ }
+    }
   } as unknown as typeof WebSocket
 }

@@ -11,6 +11,34 @@ import { authorizedWebSocket } from '../../roomd/src/ws-auth.js'
 
 const room = 'local/credentials', key = 'test-key'
 describe('local relay credentials', () => {
+  it('survives a malformed WebSocket frame after a valid ticket upgrade, before secure hello', async () => {
+    const relay = await startRelay(0, { key })
+    try {
+      const response = await fetch(`http://127.0.0.1:${relay.port}/ws-ticket`, {
+        method: 'POST', headers: { authorization: localProofHeader(key, 'POST', '/ws-ticket', relay.port), 'content-type': 'application/json' },
+        body: JSON.stringify({ room, schema: 2 }),
+      })
+      const { ticket } = await response.json() as { ticket: string }
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${relay.port}/${encodeURIComponent(room)}?schema=2&ticket=${ticket}`)
+        const timeout = setTimeout(() => { ws.terminate(); reject(new Error('malformed frame did not close')) }, 3000)
+        ws.once('open', () => {
+          // Masked frame with reserved opcode 0xB: ws emits a protocol error on the server socket.
+          ;(ws as WebSocket & { _socket: import('node:net').Socket })._socket.write(Buffer.from([0x8b, 0x80, 0, 0, 0, 0]))
+        })
+        ws.once('close', () => { clearTimeout(timeout); resolve() })
+        ws.once('error', () => {})
+      })
+      expect((await fetch(`http://127.0.0.1:${relay.port}/health`)).status).toBe(200)
+      const path = `/${encodeURIComponent(room)}?schema=2`
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${relay.port}${path}`, { headers: { authorization: localProofHeader(key, 'GET', path, relay.port) } })
+        ws.once('open', () => { ws.close(); resolve() })
+        ws.once('error', reject)
+      })
+    } finally { await relay.close() }
+  })
+
   it('uses port-bound one-use proofs and refuses obsolete credentials', async () => {
     const relay = await startRelay(0, { key })
     const base = `http://127.0.0.1:${relay.port}`
@@ -37,7 +65,7 @@ describe('local relay credentials', () => {
       expect(nodeTicket.status).toBe(200)
       const ts = Date.now(), viewNonce = crypto.randomBytes(16).toString('hex'), view = localViewKey(key, room)
       const body = JSON.stringify({ room, schema: 2, ts, nonce: viewNonce, proof: viewTicketProof(view, room, ts, viewNonce) })
-      const minted = await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      const minted = await fetch(base + '/ws-ticket', { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body })
       expect(minted.status).toBe(200)
       expect(minted.headers.get('access-control-allow-origin')).toBe('*')
       expect((await fetch(base + '/ws-ticket', { method: 'POST', headers: { 'content-type': 'application/json' }, body })).status).toBe(403)
@@ -61,8 +89,9 @@ describe('local relay credentials', () => {
         await new Promise(resolve => setTimeout(resolve, 100))
         expect(writerDoc.getText('private').toString()).toBe('')
       } finally { viewer.destroy(); writer.destroy(); viewerDoc.destroy(); writerDoc.destroy() }
-      const preflight = await fetch(base + '/ws-ticket', { method: 'OPTIONS' })
+      const preflight = await fetch(base + '/ws-ticket', { method: 'OPTIONS', headers: { origin: 'null', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } })
       expect(preflight.status).toBe(204)
+      expect(preflight.headers.get('access-control-allow-origin')).toBe('*')
       expect(preflight.headers.get('access-control-allow-headers')).toBe('content-type')
     } finally { await relay.close() }
   })

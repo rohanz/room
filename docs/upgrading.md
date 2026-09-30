@@ -6,6 +6,7 @@ Room 0.17 is a **hard cutover**. It uses schema version 2 and hub protocol 1, an
 
 0. **Take a consistent pre-upgrade snapshot before deploying.** Stop the server first so LevelDB is not mid-write. Snapshot the entire `YPERSISTENCE` volume or directory. If `DATABASE_URL` is set, take a `pg_dump` of the registry database at the same stopped-server point. Keep both copies together. On Fly, follow [the hosted runbook](../deploy/DEPLOYING.md#017-cutover-snapshot-and-rollback). For Docker, stop the container and copy the named volume; for a bare host, stop the server and copy the `YPERSISTENCE` directory. Do not restart until the volume copy and matching database dump finish.
 1. The operator deploys the **0.17 server first** using [the deploy runbook](../deploy/DEPLOYING.md).
+   From that moment, 0.16 clients are limited: they keep using the branch rooms 0.16 recorded for a repository until the first 0.17 client joins it, but they cannot open a repository or add a branch. A 0.16 client that authenticates with `ROOM_TOKEN` puts the token in the URL, which 0.17 refuses at once with “update Room to 0.17 or later”: update those clients together with the server.
 2. Every teammate updates the plugin at the same time:
 
    ```sh

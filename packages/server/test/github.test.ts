@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { GitHubProxy, LEDGER_MARKER } from '../src/github.js'
+import { WorkSlots } from '../src/http.js'
 
 type Call = { method: string; url: string; body?: any; auth?: string }
 /** A scripted GitHub: two open PRs on `main`, one on `dev`; PR 7 has a ledger comment by octo. */
@@ -41,6 +42,51 @@ function fakeGitHub(opts: { login?: string; comments?: any[]; extraPrs?: any[] }
 }
 
 describe('GitHub proxy: open pull requests', () => {
+  it('coalesces identical in-flight lists for one token', async () => {
+    let calls = 0, finish!: (value: Response) => void
+    const upstream = new Promise<Response>(resolve => { finish = resolve })
+    const proxy = new GitHubProxy({ fetch: (async () => { calls++; return upstream }) as typeof fetch })
+    const a = proxy.openPrs('token', 'o/r', 'main')
+    const b = proxy.openPrs('token', 'o/r', 'main')
+    expect(calls).toBe(1)
+    finish(new Response('[]', { status: 200 }))
+    expect(await a).toEqual([])
+    expect(await b).toEqual([])
+  })
+  it('caps complete note operations and aborts an in-flight GitHub fetch', async () => {
+    const slots = new WorkSlots(8, 2, { reserve: () => () => {} })
+    const held = Array.from({ length: 2 }, () => slots.reserve('same:note', 4)!)
+    expect(slots.reserve('same:note', 4)).toBeUndefined()
+    const controller = new AbortController()
+    let aborted = false
+    const proxy = new GitHubProxy({ fetch: (async (_url, init) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')) }, { once: true })
+    })) as typeof fetch })
+    const pending = proxy.upsertNote('token', 'o/r', 1, 'note', controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toThrow('aborted')
+    expect(aborted).toBe(true)
+    held.forEach(slot => slot.release())
+    expect(slots.count).toBe(0)
+  })
+  it('returns busy for excess concurrent notes while earlier GitHub calls remain pending', async () => {
+    let upstream = 0, complete!: (response: Response) => void
+    const waiting = new Promise<Response>(resolve => { complete = resolve })
+    const proxy = new GitHubProxy({ fetch: (async () => { upstream++; return waiting }) as typeof fetch })
+    const slots = new WorkSlots(8, 2, { reserve: () => () => {} })
+    const request = () => {
+      const slot = slots.reserve('same:note', 100)
+      if (!slot) return Promise.resolve(429)
+      return proxy.upsertNote('token', 'o/r', 1, 'note').then(() => 200, () => 502).finally(() => slot.release())
+    }
+    const pending = Array.from({ length: 6 }, request)
+    expect(await Promise.all(pending.slice(2))).toEqual([429, 429, 429, 429])
+    expect(upstream).toBe(2)
+    complete(new Response('{"login":"octo"}', { status: 200 }))
+    // The fake returns a user payload for later endpoints; they fail but still settle and release.
+    await Promise.all(pending.slice(0, 2))
+    expect(slots.count).toBe(0)
+  })
   it('lists open PRs targeting the branch with their files, using the given token', async () => {
     const gh = fakeGitHub()
     const p = new GitHubProxy({ fetch: gh.fetch })

@@ -41,13 +41,13 @@ import * as Y from 'yjs'
 import { Auth, FAKE_CLIENT_ID } from './auth.js'
 import type { Provider } from './auth.js'
 import { githubPushChecker, makeAdmitted, type Creds } from './admit.js'
-import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget, type Credential } from './sockets.js'
+import { CredentialSockets, PermissionRevalidator, ConnectionReservations, OutboundBudget, catchSocketErrors, type Credential } from './sockets.js'
 import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from './store.js'
-import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from './hub.js'
+import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { HUB_ORIGIN } from '@room/hub-core'
-import { bodyReader, ExportReservations, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
+import { bodyReader, WorkSlots, workPrincipal, requestCancellation, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 const PORT = Number(process.env.PORT ?? 1234)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -139,7 +139,14 @@ const outbound = new OutboundBudget(MAX_QUEUED_BYTES, MAX_TOTAL_QUEUED_BYTES)
 const MAX_EXPORTS = Number(process.env.ROOM_MAX_EXPORTS ?? 2)
 const EXPORT_DEADLINE_MS = Number(process.env.ROOM_EXPORT_DEADLINE_MS ?? 120_000)
 const EXPORT_CHUNK_BYTES = Number(process.env.ROOM_EXPORT_CHUNK_KB ?? 64) * 1024
-const exportsInFlight = new ExportReservations(MAX_EXPORTS)
+const DOC_MAX_RESERVATION_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
+const exportsInFlight = new WorkSlots(MAX_EXPORTS, Number(process.env.ROOM_MAX_EXPORTS_PER_PRINCIPAL ?? 1), outbound)
+const MAX_PR_OPERATIONS = Number(process.env.ROOM_MAX_PR_OPERATIONS ?? 8)
+const MAX_PR_NOTES_PER_PRINCIPAL = Number(process.env.ROOM_MAX_PR_NOTES_PER_PRINCIPAL ?? 2)
+const MAX_PR_LISTS_PER_PRINCIPAL = Number(process.env.ROOM_MAX_PR_LISTS_PER_PRINCIPAL ?? 4)
+const prOperations = new WorkSlots(MAX_PR_OPERATIONS, MAX_PR_LISTS_PER_PRINCIPAL, outbound)
+const PR_OPERATIONS_PER_MINUTE = Number(process.env.ROOM_PR_OPERATIONS_PER_MINUTE ?? 30)
+const prOperationRate = new RateLimit(PR_OPERATIONS_PER_MINUTE, 60_000)
 const locks = new RepoLocks()
 let pendingRoomCreations = 0
 const canonical = (name: string, schema2 = false) => {
@@ -219,6 +226,26 @@ const loadDoc = async (name: string): Promise<Y.Doc> => {
   if (live) return live
   return provider()!.getYDoc(name)
 }
+let testArchiveLoads = 0
+const loadArchiveDoc = async (name: string): Promise<Y.Doc> => {
+  if (process.env.NODE_ENV === 'test') testArchiveLoads++
+  if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_ARCHIVE_LOAD_DELAY_MS)
+    await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_ARCHIVE_LOAD_DELAY_MS)))
+  return loadDoc(name)
+}
+const archiveListings = new Map<string, Promise<string[]>>()
+async function unresolvedNames(repo: string): Promise<string[]> {
+  const current = archiveListings.get(repo)
+  if (current) return current
+  const work = (async () => {
+    const live = docs.get(repo)
+    const doc = live ?? await loadArchiveDoc(repo)
+    try { return [...doc.getMap('unresolved').keys()] }
+    finally { if (!live) doc.destroy() }
+  })()
+  archiveListings.set(repo, work)
+  try { return await work } finally { archiveListings.delete(repo) }
+}
 const writeDoc = async (name: string, update: Uint8Array): Promise<void> => {
   await provider()!.storeUpdate(name, update)
 }
@@ -258,6 +285,9 @@ async function migrateOpenRepo(repo: string): Promise<void> {
     if (!r || r.migratedAt) return
     await migrateRepo(repo, r, {
       list: listDocs, load: loadDoc, write: writeDoc, clear: clearDoc, save: saveRooms,
+      // The in-memory store has direct update sizes; y-leveldb offers no cheap size lookup.
+      size: async name => process.env.YPERSISTENCE ? undefined : memoryDocs.get(name)?.byteLength,
+      release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
       freeze: names => freezeDocs(names, upgradeText(repo)),
       revoke: async names => {
         const set = new Set(names)
@@ -304,6 +334,8 @@ async function closeRepo(repo: string, oldClient = false): Promise<string[] | un
     saveViewTokens()
     await freezeDocs([...names], 'room closed')
     for (const name of names) await clearDoc(name)
+    // The hub's own lease records go with the room's documents.
+    for (const name of names) await hubs.removeClosedRoomLeases(name).catch(e => console.log(`room ${name}: could not remove its lease record: ${e instanceof Error ? e.message : e}`))
     console.log(`room closed: ${repo} (${names.size} document(s))`)
     return [...names]
   })
@@ -368,10 +400,15 @@ const server = http.createServer((req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-room-token')
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
   }
-  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
+  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, schema: 2, hub: 1, ...(process.env.NODE_ENV === 'test' ? { archiveLoads: testArchiveLoads } : {}), ...(hubs.anyStorageFailure() ? { storage: 'failing' } : {}) })); return }
   const headerCreds = (): Creds => ({ session: /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ''))?.[1], token: str(req.headers['x-room-token']) })
   const creds = (o: Record<string, unknown>): Creds => ({ gh: str(o.gh), token: str(o.token) ?? headerCreds().token, session: str(o.session) ?? headerCreds().session })
-  if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') { res.writeHead(400); res.end('send credentials in Authorization or X-Room-Token headers'); return }
+  if (['session', 'token', 'gh'].some(key => url.searchParams.has(key)) && req.method === 'GET') {
+    const legacy = !url.searchParams.has('schema') && (url.searchParams.has('token') || url.searchParams.has('gh'))
+    res.writeHead(legacy ? 403 : 400)
+    res.end(legacy ? 'update Room to 0.17 or later: this server no longer accepts credentials in URLs' : 'send credentials in Authorization or X-Room-Token headers')
+    return
+  }
   const json = (status: number, body: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
   const text = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/plain' }); res.end(body) }
   const html = (status: number, body: string) => { res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); res.end(`<!doctype html><title>Room</title><body style="font-family:system-ui;margin:3em">${body}</body>`) }
@@ -581,17 +618,29 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/archive' && req.method === 'GET') {
     if (!parseRoomName(url.searchParams.get('repo') ?? '', true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
     void (async () => {
+      const cancellation = requestCancellation(req, res)
+      try {
       const repo = canonical(url.searchParams.get('repo') ?? '')
       const entry = rooms.get(repo)
       if (!entry) return text(404, NOT_OPEN(repo))
       const v = await admitted(repo, headerCreds())
+      if (cancellation.cancelled()) return
       if (!v.ok) return text(v.status, v.why)
-      const unresolved = (await loadDoc(repo)).getMap('unresolved')
-      json(200, { repo, legacy: entry.legacy ?? [], unresolved: [...unresolved.keys()] })
+      const principal = workPrincipal(auth.resolve(headerCreds().session), !!headerCreds().token, clientIp(req))
+      const existing = archiveListings.get(repo)
+      const slot = existing ? undefined : exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
+      if (!existing && !slot) { res.setHeader('Retry-After', '5'); return text(429, 'archive listing busy; retry') }
+      try {
+        const unresolved = await (existing ?? unresolvedNames(repo))
+        if (!cancellation.cancelled()) { json(200, { repo, legacy: entry.legacy ?? [], unresolved }); await waitForResponse(res) }
+      } finally { slot?.release() }
+      } finally { cancellation.dispose() }
     })().catch(e => text(500, `archive unavailable: ${e instanceof Error ? e.message : e}`))
     return
   }
   if (url.pathname === '/archive/export' && req.method === 'POST') return withBody(async o => {
+    const cancellation = requestCancellation(req, res)
+    try {
     if (o.schema !== 2) return text(403, 'update Room to 0.17 or later to export an archive')
     const name = str(o.room)
     if (!name) return text(400, 'room required')
@@ -602,36 +651,34 @@ const server = http.createServer((req, res) => {
     const repo = [...rooms].find(([key, r]) => (!owner || key === owner) && r.legacy?.includes(name) && migrationSources(key, r, [name], new Set(rooms.keys())).includes(name))?.[0]
     if (!repo) return text(404, 'archive not found')
     const v = await admitted(repo, creds(o))
+    if (cancellation.cancelled()) return
     if (!v.ok) return text(v.status, v.why)
     const c = creds(o)
-    const principal = c.session ? `session:${c.session}` : c.token ? `token:${c.token}` : `address:${clientIp(req)}`
-    const releaseSlot = exportsInFlight.reserve(principal)
-    if (!releaseSlot) { res.setHeader('Retry-After', '5'); return text(429, 'archive export busy; retry') }
-    let releaseBytes: (() => void) | undefined
+    const principal = workPrincipal(auth.resolve(c.session), !!c.token, clientIp(req))
+    const slot = exportsInFlight.reserve(principal, DOC_MAX_RESERVATION_BYTES)
+    if (!slot) { res.setHeader('Retry-After', '5'); return text(429, 'archive export busy; retry') }
     let update: Uint8Array | undefined
-    let disconnected = false
-    const cleanup = () => { disconnected = true; releaseBytes?.(); releaseBytes = undefined; update = undefined; releaseSlot(); clearTimeout(deadline) }
     const deadline = setTimeout(() => res.destroy(), EXPORT_DEADLINE_MS)
-    res.once('close', cleanup)
     try {
       const live = docs.get(name)
-      const doc = live ?? await loadDoc(name)
-      try { if (!disconnected) update = Y.encodeStateAsUpdate(doc) }
+      const doc = live ?? await loadArchiveDoc(name)
+      try { if (!cancellation.cancelled()) update = Y.encodeStateAsUpdate(doc) }
       finally { if (!live) doc.destroy() }
-      if (disconnected || !update) return
-      releaseBytes = outbound.reserve(update.byteLength)
-      if (!releaseBytes) return text(503, 'server output budget exhausted; retry')
+      if (cancellation.cancelled() || !update) return
+      if (!slot.resize(update.byteLength)) return text(503, 'server output budget exhausted; retry')
+      if (cancellation.cancelled()) return
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': update.byteLength })
-      for (let at = 0; at < update.byteLength && !disconnected; at += EXPORT_CHUNK_BYTES) {
+      for (let at = 0; at < update.byteLength && !cancellation.cancelled(); at += EXPORT_CHUNK_BYTES) {
         if (!res.write(update.subarray(at, at + EXPORT_CHUNK_BYTES))) {
-          await new Promise<void>(resolve => {
-            const done = () => { res.off('drain', done); res.off('close', done); resolve() }
-            res.once('drain', done); res.once('close', done)
-          })
+          await waitForDrain(res, cancellation.signal)
         }
       }
-      if (!disconnected) res.end()
-    } finally { if (disconnected || !res.headersSent) cleanup() }
+      if (!cancellation.cancelled()) {
+        res.end()
+        await waitForResponse(res)
+      }
+    } finally { clearTimeout(deadline); update = undefined; slot.release() }
+    } finally { cancellation.dispose() }
   })
 
   // ---- github (pull requests) ----
@@ -646,20 +693,36 @@ const server = http.createServer((req, res) => {
     if (!parseRoomName(room, url.searchParams.get('schema') === '2')) return text(400, 'invalid room name: use github.com/owner/repo')
     const c = headerCreds()
     void (async () => {
+      const cancellation = requestCancellation(req, res)
+      try {
       const name = roomNameOf(room)
       const repo = githubRepoOf(name)
       if (!repo) return text(400, `${name} is not a github.com room`)
+      const principal = workPrincipal(auth.resolve(c.session), false, clientIp(req))
+      const retry = prOperationRate.check(principal)
+      if (retry) { res.setHeader('Retry-After', String(retry)); return text(429, 'pull request rate limit; retry') }
+      const slot = prOperations.reserve(`${principal}:list`, 0, MAX_PR_LISTS_PER_PRINCIPAL)
+      if (!slot) { res.setHeader('Retry-After', '5'); return text(429, 'pull request proxy busy; retry') }
+      try {
+      if (cancellation.cancelled()) return
       const v = await admitted(name, c)
+      if (cancellation.cancelled()) return
       if (!v.ok) { console.log(`github/prs refused: ${v.why}`); return text(v.status, v.why) }
       if (!rooms.has(canonical(name))) return text(404, NOT_OPEN(name))
       const token = githubTokenFor(c)
       if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to see pull requests')
-      try { json(200, await github.openPrs(token, repo, url.searchParams.get('branch') ?? name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1' })) }
-      catch (e) { githubFail('github/prs', e) }
+      try {
+        const result = await github.openPrs(token, repo, url.searchParams.get('branch') ?? name.slice(`github.com/${repo}/`.length), { head: url.searchParams.get('head') === '1', signal: cancellation.signal })
+        if (!cancellation.cancelled()) json(200, result)
+      } catch (e) { if (!cancellation.cancelled()) githubFail('github/prs', e) }
+      } finally { slot.release() }
+      } finally { cancellation.dispose() }
     })().catch(e => { console.log(`github/prs: ${e instanceof Error ? e.message : e}`); if (!res.writableEnded) text(500, 'could not list pull requests') })
     return
   }
   if (url.pathname === '/github/pr-note' && req.method === 'POST') return withBody(async o => {
+    const cancellation = requestCancellation(req, res)
+    try {
     const room = str(o.room)
     const number = Number(o.number)
     const body = str(o.body)
@@ -671,13 +734,25 @@ const server = http.createServer((req, res) => {
     const name = roomNameOf(room)
     const repo = githubRepoOf(name)
     if (!repo) return text(400, `${name} is not a github.com room`)
+    const principal = workPrincipal(auth.resolve(c.session), false, clientIp(req))
+    const retry = prOperationRate.check(principal)
+    if (retry) { res.setHeader('Retry-After', String(retry)); return text(429, 'pull request rate limit; retry') }
+    const slot = prOperations.reserve(`${principal}:note`, Buffer.byteLength(body), MAX_PR_NOTES_PER_PRINCIPAL)
+    if (!slot) { res.setHeader('Retry-After', '5'); return text(429, 'pull request proxy busy; retry') }
+    try {
+    if (cancellation.cancelled()) return
     const v = await admitted(name, c)
+    if (cancellation.cancelled()) return
     if (!v.ok) { console.log(`github/pr-note refused: ${v.why}`); return text(v.status, v.why) }
     if (!rooms.has(canonical(name))) return text(404, NOT_OPEN(name))
     const token = githubTokenFor(c)
     if (!token) return text(403, 'this session has no GitHub token; log in with GitHub to comment on pull requests')
-    try { json(200, { repo, number, ...(await github.upsertNote(token, repo, number, body)), ...(v.login ? { login: v.login } : {}) }) }
-    catch (e) { githubFail('github/pr-note', e) }
+    try {
+      const result = await github.upsertNote(token, repo, number, body, cancellation.signal)
+      if (!cancellation.cancelled()) json(200, { repo, number, ...result, ...(v.login ? { login: v.login } : {}) })
+    } catch (e) { if (!cancellation.cancelled()) githubFail('github/pr-note', e) }
+    } finally { slot.release() }
+    } finally { cancellation.dispose() }
   }, auth.resolve(headerCreds().session) ? PR_NOTE_MAX_BYTES : undefined)
   if (fs.existsSync(STATIC)) {
     const rel = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
@@ -725,7 +800,7 @@ const droppedWrite = (room: string) => () => {
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
-const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
+const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 setPersistence(hubs.persistence(stockPersistence?.provider ?? memoryProvider))
@@ -758,8 +833,7 @@ function auditRefused(remote: string | undefined, room: string | undefined, reas
 const refuse = (socket: import('node:stream').Duplex, code: number, why: string, room?: string) => {
   console.log(`refused ${code} ${why}${room ? ` (room ${room})` : ''}`)
   auditRefused((socket as import('node:net').Socket).remoteAddress, room, `${code} ${why}`)
-  socket.write(`HTTP/1.1 ${code} ${why}\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n`)
-  socket.destroy()
+  socket.end(`HTTP/1.1 ${code} ${why}\r\nReferrer-Policy: no-referrer\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(why)}\r\nConnection: close\r\n\r\n${why}`)
 }
 const identityLog = new Map<string, number>()
 const documentGuards = new Map<string, DocumentIdentityGuard>()
@@ -801,7 +875,7 @@ server.on('upgrade', (req, socket, head) => {
   const schema2 = url.searchParams.get('schema') === '2'
   const docKey = schema2 || rooms.get(repo)?.mode === 'repo' ? repo : roomName
   if (schema2 && ['session', 'token', 'gh', 'view', 'key'].some(key => url.searchParams.has(key))) return refuse(socket, 400, 'send credentials in headers or exchange a browser link at POST /ws-ticket', roomName)
-  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 400, 'send credentials in headers', roomName)
+  if (!schema2 && (url.searchParams.has('token') || url.searchParams.has('gh'))) return refuse(socket, 403, 'update Room to 0.17 or later: this server no longer accepts credentials in URLs', roomName)
   const accept = (opts: { readOnly?: boolean; login?: string; id?: string; provider?: Provider; credential?: Credential } = {}) => {
     const principal = opts.id ?? (opts.login ? `login:${opts.login}` : opts.credential ? `${opts.credential.kind}:${crypto.createHash('sha256').update(opts.credential.value).digest('hex')}` : `ip:${address}`)
     const release = connectionCounts.reserve(repo, principal, address)
@@ -835,6 +909,7 @@ server.on('upgrade', (req, socket, head) => {
       if (opts.credential?.kind === 'token' && opts.credential.value !== TOKEN) return refuse(socket, 403, 'token revoked', roomName)
       if (socket.destroyed) return
       wss.handleUpgrade(req, socket, head, ws => {
+        catchSocketErrors(ws, message => console.log(message))
         upgraded = true
         releasePending(); release.admitted(); ws.once('close', release)
         if (opts.credential) credentialSockets.track(opts.credential, ws, docKey)

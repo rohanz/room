@@ -1,22 +1,60 @@
 import { describe, expect, it } from 'vitest'
-import { IncomingMessage } from 'node:http'
+import { IncomingMessage, ServerResponse } from 'node:http'
 import { Socket } from 'node:net'
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { bodyReader, ExportReservations, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from '../src/http.js'
+import { bodyReader, WorkSlots, workPrincipal, requestCancellation, waitForDrain, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from '../src/http.js'
+import { catchSocketErrors } from '../src/sockets.js'
 
 describe('HTTP entry guards', () => {
-  it('holds one export per principal and two process slots until release', () => {
-    const slots = new ExportReservations(2)
-    const a = slots.reserve('a')!, b = slots.reserve('b')!
-    expect(slots.reserve('a')).toBeUndefined()
-    expect(slots.reserve('c')).toBeUndefined()
-    expect(slots.count).toBe(2)
-    a(); a()
+  it('handles an accepted websocket error before wrappers are installed', () => {
+    const socket = new EventEmitter(), lines: string[] = []
+    catchSocketErrors(socket, line => lines.push(line))
+    expect(() => socket.emit('error', new Error('bad frame'))).not.toThrow()
+    expect(lines).toEqual(['websocket error: bad frame'])
+  })
+  it('cancels before admission resolves and wakes a pending drain on close', async () => {
+    const req = new IncomingMessage(new Socket())
+    const res = new ServerResponse(req)
+    const cancellation = requestCancellation(req, res)
+    let finish!: () => void
+    const admission = new Promise<void>(resolve => { finish = resolve })
+    res.emit('close')
+    finish(); await admission
+    expect(cancellation.cancelled()).toBe(true)
+    await expect(waitForDrain(res, cancellation.signal)).resolves.toBeUndefined()
+    cancellation.dispose()
+  })
+  it('holds work after disconnect until loading settles, keyed by identity across sessions', async () => {
+    let bytes = 0
+    const budget = { reserve: (n: number) => { if (bytes + n > 100) return undefined; bytes += n; return () => { bytes -= n } } }
+    const slots = new WorkSlots(2, 1, budget)
+    const principal = workPrincipal({ id: 'github:42', login: 'ben' }, false, '1.1.1.1')
+    expect(principal).toBe(workPrincipal({ id: 'github:42', login: 'ben' }, false, '2.2.2.2'))
+    const a = slots.reserve(principal, 60)!, b = slots.reserve('other', 30)!
+    let settle!: () => void
+    const loading = new Promise<void>(resolve => { settle = resolve }).finally(() => a.release())
+    // The caller closes here; only the storage promise's finally releases the slot.
+    expect(slots.reserve(principal, 1)).toBeUndefined()
+    expect(slots.reserve('third', 1)).toBeUndefined()
+    expect(bytes).toBe(90)
+    settle(); await loading
     expect(slots.count).toBe(1)
-    expect(slots.reserve('c')).toBeTypeOf('function')
-    b()
+    expect(bytes).toBe(30)
+    expect(slots.reserve(principal, 60)?.release).toBeTypeOf('function')
+    b.release()
+  })
+  it('resizes and releases byte capacity exactly once', () => {
+    let bytes = 0
+    const slots = new WorkSlots(2, 1, { reserve: n => { if (bytes + n > 100) return undefined; bytes += n; return () => { bytes -= n } } })
+    const a = slots.reserve('a', 80)!
+    expect(a.resize(20)).toBe(true)
+    expect(bytes).toBe(20)
+    expect(a.resize(120)).toBe(false)
+    a.release(); a.release()
+    expect(bytes).toBe(0)
   })
   it('M5 rejects malformed request targets without throwing URL errors', () => {
     expect(() => safeUrl('//[')).toThrow(HttpFailure)

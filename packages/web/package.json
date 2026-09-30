@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite --port 5173 --host",
-    "build": "vite build",
+    "build": "vite build && node scripts/inline-viewer.mjs",
     "preview": "vite preview --port 5173",
     "seed": "tsx scripts/seed.ts",
     "seed:scale": "tsx scripts/seed-scale.ts"

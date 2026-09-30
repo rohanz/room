@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
 import { webcrypto } from 'node:crypto'
-import { mintTicket, takeLinkCredentials, browserViewProof } from './conn.js'
+import { mintTicket, takeLinkCredentials, browserViewProof, roomLocationFromQuery } from './conn.js'
 import { viewTicketProof } from '../../relay/src/proof.js'
 
 describe('browser link credentials', () => {
@@ -24,13 +24,21 @@ describe('browser link credentials', () => {
   })
 
   it('parses a fragment capability and proves a local view without sending it', async () => {
-    const dom = new JSDOM('', { url: 'http://127.0.0.1:4444/#room=ws%3A%2F%2F127.0.0.1%3A4444%2Flocal%252Frepo&view=read-only&participant=Pat&relay=1' })
+    const dom = new JSDOM('', { url: 'file:///opt/room%20plugin/viewer.html#room=ws%3A%2F%2F127.0.0.1%3A4444%2Flocal%252Frepo&view=read-only&participant=Pat&relay=1' })
     vi.stubGlobal('location', dom.window.location)
     vi.stubGlobal('crypto', webcrypto)
-    const auth = takeLinkCredentials('', dom.window.sessionStorage, vi.fn())
+    const storage = { getItem: vi.fn(() => { throw new Error('unavailable') }), setItem: vi.fn(() => { throw new Error('unavailable') }) }
+    const replace = vi.fn()
+    const auth = takeLinkCredentials('', storage, replace)
     expect(auth.view).toBe('read-only')
+    expect(roomLocationFromQuery()).toMatchObject({ serverUrl: 'ws://127.0.0.1:4444', displayRoomName: 'local/repo' })
+    expect(storage.getItem).not.toHaveBeenCalled()
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalled()
+    expect(dom.window.location.hash).toContain('view=read-only')
     const request = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ticket: 'local' }) })
-    await mintTicket({ serverUrl: 'ws://127.0.0.1:4444', encodedRoomName: 'local%2Frepo', displayRoomName: 'local/repo' }, auth, request)
+    await mintTicket(roomLocationFromQuery(), auth, request)
+    expect(request.mock.calls[0]![0]).toBe('http://127.0.0.1:4444/ws-ticket')
     const body = JSON.parse(request.mock.calls[0]![1].body)
     expect(body).not.toHaveProperty('view')
     expect(body).not.toHaveProperty('key')

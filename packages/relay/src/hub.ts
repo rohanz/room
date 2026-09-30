@@ -4,8 +4,8 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { serializedStore, type HolderIn, type IncarnationStore } from '@room/hub-core'
+import { createHash, randomUUID } from 'node:crypto'
+import { serializedStore, type HolderIn, type IncarnationStore, type LeaseStore, type StoredLease } from '@room/hub-core'
 import { compareAndRelease, createExclusive, liveness, recover, writeAtomic, type InstanceToken } from './leases.js'
 import { pidAlive, probeProcess } from './process.js'
 
@@ -48,6 +48,21 @@ export function incarnationFile(commonDir: string): IncarnationStore {
     read: async () => { const max = readJson(file)?.max; return typeof max === 'number' ? max : undefined },
     write: async max => { writeAtomic(file, { max }) },
   })
+}
+
+/** Shared by successive relay owners of this clone. */
+export function relayLeaseFile(commonDir: string, room: string): LeaseStore {
+  const file = path.join(commonDir, 'room', 'hub-leases', `${createHash('sha256').update(room).digest('hex')}.json`)
+  return {
+    read: async () => {
+      try {
+        if (fs.statSync(file).size > 2 * 1024 * 1024) throw new Error('lease file exceeds size limit')
+        return JSON.parse(fs.readFileSync(file, 'utf8')) as StoredLease[]
+      }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []; throw e }
+    },
+    write: async leases => { writeAtomic(file, leases) },
+  }
 }
 
 const PROBE_CACHE_MS = 5_000

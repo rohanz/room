@@ -22007,7 +22007,7 @@ var require_websocket = __commonJS({
     var http3 = __require("http");
     var net3 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes6, createHash: createHash16 } = __require("crypto");
+    var { randomBytes: randomBytes6, createHash: createHash17 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -22675,7 +22675,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash16("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash17("sha1").update(key2 + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -23044,7 +23044,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter2 = __require("events");
     var http3 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash16 } = __require("crypto");
+    var { createHash: createHash17 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -23351,7 +23351,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash16("sha1").update(key2 + GUID).digest("base64");
+        const digest = createHash17("sha1").update(key2 + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -24071,18 +24071,6 @@ function hubHolder(v) {
     ...typeof v.principal === "string" ? { principal: v.principal } : {}
   };
 }
-function knownOf(record2) {
-  const { epoch, at, ended, session, principal, ...holder } = record2;
-  return { epoch, at, holder, session, principal, ...ended ? { ended } : {} };
-}
-function hydrate(known, record2) {
-  if (known.holder || record2.epoch !== known.epoch) return;
-  const { at, holder, session, principal } = knownOf(record2);
-  known.at = at;
-  known.holder = holder;
-  known.session = session;
-  known.principal = principal;
-}
 function visible(doc) {
   let epoch, seq;
   let invalid = false;
@@ -24100,14 +24088,6 @@ function visible(doc) {
   see(meta2.get("hubSeq"), "seq");
   for (const m of doc.bus.toArray()) see(m?.seq, "seq");
   for (const m of doc.mail.values()) see(m?.seq, "seq");
-  for (const [key2, value2] of doc.participants.entries()) if (key2.endsWith(HOLDER)) {
-    if (!isObject2(value2) || value2.epoch === void 0) continue;
-    if (!isCounter(value2.epoch)) {
-      invalid = true;
-      continue;
-    }
-    see(value2.epoch, "epoch");
-  }
   const rawIncarnation = meta2.get("hubIncarnation");
   if (rawIncarnation !== void 0 && (!Number.isSafeInteger(rawIncarnation) || rawIncarnation < 0 || rawIncarnation >= 2 ** 32)) invalid = true;
   const incarnation = Math.max(
@@ -24184,7 +24164,6 @@ var init_hub = __esm({
       startedAt = 0;
       freshAtStart = false;
       settled = false;
-      legacyExpired = false;
       maintainedAt = 0;
       dirty = false;
       stopped = false;
@@ -24193,7 +24172,11 @@ var init_hub = __esm({
       tenure;
       leases = /* @__PURE__ */ new Map();
       records = /* @__PURE__ */ new Map();
-      legacyHolders = /* @__PURE__ */ new Map();
+      unadopted = /* @__PURE__ */ new Map();
+      stored = /* @__PURE__ */ new Map();
+      leaseWrite;
+      leaseDirty = false;
+      leaseWriteFailed = false;
       greeted = /* @__PURE__ */ new Set();
       sessions = /* @__PURE__ */ new Map();
       rates = /* @__PURE__ */ new Map();
@@ -24213,10 +24196,26 @@ var init_hub = __esm({
         const wallFloor = Math.floor(this.host.wall() / 1e3);
         const trusted = Math.max(await this.host.store.current?.(wallFloor + MAX_INCARNATION_AHEAD) ?? -1, wallFloor, this.incarnation);
         if (before.invalid || before.incarnation > trusted || trusted >= 2 ** 32) throw new RoomStateError("room hub counters exceed the trusted incarnation bound");
-        this.freshAtStart = this.host.fresh === true && before.epoch === void 0 && before.seq === void 0 && before.incarnation < 0;
+        this.freshAtStart = this.host.fresh === true && before.epoch === void 0 && before.seq === void 0 && before.incarnation < 0 && ![...this.doc.participants.keys()].some((key2) => key2.endsWith(HOLDER));
         await this.incarnate();
+        if (this.host.leases) {
+          try {
+            const rows = await this.host.leases.read();
+            if (!Array.isArray(rows) || rows.length > MAX_RETAINED_NAMES) throw new Error("invalid lease count");
+            const loaded = /* @__PURE__ */ new Map();
+            for (const row of rows) {
+              if (!isObject2(row) || Object.keys(row).some((k) => !["name", "epoch", "at", "holder", "principal", "session", "ended"].includes(k)) || !isName(row.name) || !isCounter(row.epoch) || incarnationOf(row.epoch) >= this.incarnation || !Number.isFinite(row.at) || row.at < 0 || !parseHolder(row.holder) || typeof row.principal !== "string" || !row.principal || row.principal.length > MAX_HOLDER_FIELD_LENGTH || typeof row.session !== "string" || !row.session || row.session.length > MAX_HOLDER_FIELD_LENGTH || row.ended !== void 0 && row.ended !== "released" && row.ended !== "expired" || loaded.has(row.name)) throw new Error("invalid lease record");
+              loaded.set(row.name, row);
+            }
+            this.stored = loaded;
+          } catch (e) {
+            this.stored.clear();
+            this.host.log(`hub: lease store unreadable; no leases adopted: ${e instanceof Error ? e.message : e}`);
+          }
+        }
         this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
         this.startedAt = this.maintainedAt = this.host.mono();
+        this.adoptStored();
         this.adoptSynced();
         this.doc.doc.on("update", this.onUpdate);
         this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
@@ -24239,6 +24238,17 @@ var init_hub = __esm({
       stop() {
         this.stopped = true;
         this.doc.doc.off("update", this.onUpdate);
+      }
+      async flushLeases() {
+        if (!this.host.leases) return;
+        while (this.leaseWrite || this.leaseDirty) {
+          if (!this.leaseWrite) {
+            this.leaseWriteFailed = false;
+            this.writeLeases();
+          }
+          await this.leaseWrite;
+          if (this.leaseWriteFailed) throw new Error("lease store write failed");
+        }
       }
       onPush(fn) {
         this.push = fn;
@@ -24287,6 +24297,60 @@ var init_hub = __esm({
         this.leases.set(name2, lease);
         this.records.set(name2, lease);
         this.tenure.present(this.doc, name2, HUB_ORIGIN);
+        this.remember(name2, lease);
+      }
+      remember(name2, known) {
+        if (!known.holder || !known.principal || !known.session) return;
+        this.stored.set(name2, {
+          name: name2,
+          epoch: known.epoch,
+          at: known.at,
+          holder: known.holder,
+          principal: known.principal,
+          session: known.session,
+          ...known.ended ? { ended: known.ended } : {}
+        });
+        this.leaseDirty = true;
+        this.leaseWriteFailed = false;
+        this.writeLeases();
+      }
+      writeLeases() {
+        if (!this.host.leases || this.leaseWrite || !this.leaseDirty) return;
+        this.leaseDirty = false;
+        const snapshot2 = [...this.stored.values()];
+        this.leaseWrite = Promise.resolve().then(() => this.host.leases.write(snapshot2)).catch((e) => {
+          this.leaseDirty = true;
+          this.leaseWriteFailed = true;
+          this.host.log(`hub: lease store write failed: ${e instanceof Error ? e.message : e}`);
+        }).finally(() => {
+          this.leaseWrite = void 0;
+          if (this.leaseDirty && !this.stopped && !this.leaseWriteFailed) this.writeLeases();
+        });
+      }
+      adoptStored() {
+        for (const record2 of this.stored.values()) {
+          if (this.allocationFailure(record2.name, record2.principal, !record2.ended)) {
+            this.unadopted.set(record2.name, record2);
+            this.stored.delete(record2.name);
+            this.leaseDirty = true;
+            continue;
+          }
+          const known = {
+            epoch: record2.epoch,
+            at: record2.at,
+            holder: record2.holder,
+            principal: record2.principal,
+            session: record2.session,
+            ...record2.ended ? { ended: record2.ended } : {}
+          };
+          if (record2.ended) this.records.set(record2.name, known);
+          else {
+            this.leases.set(record2.name, { ...known, renewed: this.host.mono() });
+            this.records.set(record2.name, known);
+            this.tenure.present(this.doc, record2.name, HUB_ORIGIN);
+          }
+        }
+        this.writeLeases();
       }
       principal(p) {
         return "local" in p ? "local" : p.id ?? `login:${p.login ?? ""}`;
@@ -24340,6 +24404,9 @@ var init_hub = __esm({
         for (const [name2] of ended) {
           if (this.records.size < MAX_RETAINED_NAMES) break;
           this.records.delete(name2);
+          this.stored.delete(name2);
+          this.leaseDirty = true;
+          this.writeLeases();
           this.doc.doc.transact(() => {
             this.doc.participants.delete(holderKey(name2));
           }, HUB_ORIGIN);
@@ -24352,6 +24419,9 @@ var init_hub = __esm({
         for (const [name2] of ended) {
           if ([...this.records.values()].filter((r) => r.principal === principal).length < MAX_RETAINED_NAMES_PER_PRINCIPAL) break;
           this.records.delete(name2);
+          this.stored.delete(name2);
+          this.leaseDirty = true;
+          this.writeLeases();
           this.doc.doc.transact(() => {
             this.doc.participants.delete(holderKey(name2));
           }, HUB_ORIGIN);
@@ -24374,20 +24444,17 @@ var init_hub = __esm({
       live(name2) {
         const lease = this.leases.get(name2);
         if (!lease) return void 0;
-        const record2 = incarnationOf(lease.epoch) < this.incarnation ? this.record(name2) : void 0;
-        const ended = record2?.epoch === lease.epoch ? record2.ended : void 0;
         const expired = this.host.mono() - lease.renewed >= LEASE_TTL_MS || !!(lease.holder && this.host.holderDead?.(lease.holder));
-        if (!ended && !expired) return lease;
-        this.end(name2, lease, ended ?? "expired");
+        if (!expired) return lease;
+        this.end(name2, lease, "expired");
         this.notify(name2, lease, "expired");
         return void 0;
       }
       end(name2, lease, how) {
         this.leases.delete(name2);
-        const current = this.record(name2);
-        if (current) hydrate(lease, current);
         const ended = { epoch: lease.epoch, at: lease.at, ...lease.holder ? { holder: lease.holder } : {}, principal: lease.principal, session: lease.session, ended: how };
         this.records.set(name2, ended);
+        this.remember(name2, ended);
         const record2 = this.recordOf(ended);
         if (record2) this.doc.doc.transact(() => {
           this.doc.participants.set(holderKey(name2), record2);
@@ -24403,29 +24470,6 @@ var init_hub = __esm({
         const seen = visible(this.doc);
         this.lastEpoch = higher(this.lastEpoch, seen.epoch);
         this.lastSeq = higher(this.lastSeq, seen.seq);
-        for (const [key2, value2] of this.doc.participants.entries()) {
-          if (!key2.endsWith(HOLDER)) continue;
-          const record2 = hubHolder(value2);
-          if (!record2 || incarnationOf(record2.epoch) >= this.incarnation) continue;
-          const name2 = key2.slice(0, -HOLDER.length);
-          const known = this.records.get(name2);
-          const lease = this.leases.get(name2);
-          if (known && record2.epoch <= known.epoch) {
-            if (lease) hydrate(lease, record2);
-            continue;
-          }
-          if (!record2.principal) {
-            if (!record2.ended) this.legacyHolders.set(name2, record2.epoch);
-            continue;
-          }
-          if (this.allocationFailure(name2, record2.principal, !record2.ended)) continue;
-          if (lease) {
-            this.leases.delete(name2);
-            this.notify(name2, lease, "superseded");
-          }
-          if (record2.ended) this.records.set(name2, knownOf(record2));
-          else this.hold(name2, { ...knownOf(record2), renewed: this.host.mono() });
-        }
       }
       /** Whether `count` more values can be issued now; if not, a new incarnation is taken (§3). */
       reserve(kind, count) {
@@ -24519,10 +24563,8 @@ var init_hub = __esm({
         if (unavailable) return unavailable;
         if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
         const live = this.live(name2);
-        const stored = this.record(name2);
-        if (stored && stored.epoch === req.supersedes && stored.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
+        if (req.supersedes !== void 0 && this.records.get(name2)?.epoch === req.supersedes && this.records.get(name2)?.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
         if (!live && this.settling()) return starting();
-        if (!live && stored && !stored.ended && !stored.principal && this.legacyHolders.get(name2) === stored.epoch && this.host.mono() - this.startedAt < LEASE_TTL_MS) return fail("held", `${name2} is held by a legacy record until its TTL ends`);
         if (live && live.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
         if (live && req.supersedes !== live.epoch && (live.holder?.sessionId !== holder.sessionId || (live.session ?? live.holder?.sessionId) !== this.sessions.get(conn))) {
           return fail("held", `${name2} is held by another session`, { holder: { sessionId: live.holder?.sessionId, since: live.at } });
@@ -24545,12 +24587,13 @@ var init_hub = __esm({
       renew(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "renew needs a name and an epoch");
         const { name: name2, epoch } = req;
-        const stored = this.record(name2);
         const existing = this.leases.get(name2) ?? this.records.get(name2);
+        const denied = this.unadopted.get(name2);
+        if (denied?.epoch === epoch && denied.principal === this.principal(p) && denied.session === this.sessions.get(conn))
+          return fail("room-full", "the stored lease exceeds this room\u2019s lease quota");
         if (this.host.owns && !this.host.owns(p, name2) || existing?.epoch === epoch && !this.owner(conn, p, name2, existing)) {
           return fail("not-yours", `${name2} belongs to another holder session`);
         }
-        if (stored?.epoch === epoch && !this.owner(conn, p, name2, knownOf(stored))) return fail("not-yours", `${name2} belongs to another holder session`);
         const outage = this.unavailable(fail);
         if (outage) {
           const lease = this.leases.get(name2);
@@ -24567,28 +24610,14 @@ var init_hub = __esm({
           live.conn = conn;
           return ok();
         }
-        const known = this.records.get(name2);
-        if (this.settling() && incarnationOf(epoch) < this.incarnation && (!known || epoch > known.epoch) && (!this.host.owns || this.host.owns(p, name2))) {
-          const record2 = this.record(name2);
-          if (!record2 || record2.epoch !== epoch || record2.ended || (record2.session ?? record2.sessionId) !== this.sessions.get(conn) || record2.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another holder session`);
-          const capacity = this.allocationFailure(name2, this.principal(p), true);
-          if (capacity) return fail("room-full", capacity);
-          if (live) this.notify(name2, live, "superseded");
-          const synced = record2?.epoch === epoch && !record2.ended ? knownOf(record2) : { epoch, at: this.host.wall() };
-          this.hold(name2, { ...synced, principal: this.principal(p), session: this.sessions.get(conn), renewed: this.host.mono(), conn });
-          this.host.log(`hub: adopted ${name2} at epoch ${epoch} from a renew`);
-          return ok();
-        }
         return fail("stale", `epoch ${epoch} is not the live lease on ${name2}`);
       }
       release(conn, req, p, fail) {
         if (!isName(req.name) || !isCounter(req.epoch)) return fail("invalid", "release needs a name and an epoch");
-        const stored = this.record(req.name);
-        const existing = this.leases.get(req.name) ?? this.records.get(req.name) ?? (stored?.epoch === req.epoch ? knownOf(stored) : void 0);
+        const existing = this.leases.get(req.name) ?? this.records.get(req.name);
         if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
           return fail("not-yours", `${req.name} belongs to another holder session`);
         }
-        if (stored?.epoch === req.epoch && !this.owner(conn, p, req.name, knownOf(stored))) return fail("not-yours", `${req.name} belongs to another holder session`);
         const unavailable = this.unavailable(fail);
         if (unavailable) return unavailable;
         const live = this.live(req.name);
@@ -24603,12 +24632,10 @@ var init_hub = __esm({
         if (sizeOf2(msg) > MAX_MESSAGE_BYTES) return fail("too-large", `the message exceeds ${MAX_MESSAGE_BYTES / 1024} KiB`);
         if (!validMessageShape(msg) || !msg.id || !isName(msg.from) || msg.to !== void 0 && !isName(msg.to) || msg.at !== void 0 || msg.seq !== void 0 || req.auto !== void 0 && typeof req.auto !== "boolean") return fail("invalid", "post has invalid message fields");
         if (!isObject2(req.lease) || Object.keys(req.lease).some((k) => k !== "name" && k !== "epoch") || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "a post carries the poster's name lease");
-        const stored = this.record(req.lease.name);
-        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name) ?? (stored?.epoch === req.lease.epoch ? knownOf(stored) : void 0);
+        const existing = this.leases.get(req.lease.name) ?? this.records.get(req.lease.name);
         if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
           return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         }
-        if (stored?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, knownOf(stored))) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         const unavailable = this.unavailable(fail);
         if (unavailable) return unavailable;
         const live = this.live(req.lease.name);
@@ -24643,6 +24670,10 @@ var init_hub = __esm({
       }
       // ---- maintenance ----
       tick() {
+        if (this.leaseWriteFailed) {
+          this.leaseWriteFailed = false;
+          this.writeLeases();
+        }
         try {
           this.tickSafe();
         } catch (error2) {
@@ -24656,10 +24687,6 @@ var init_hub = __esm({
         if (this.settling()) return;
         if (!this.settled) {
           this.settled = true;
-          this.dirty = true;
-        }
-        if (!this.legacyExpired && this.host.mono() - this.startedAt >= LEASE_TTL_MS) {
-          this.legacyExpired = true;
           this.dirty = true;
         }
         if (this.dirty) this.reassert();
@@ -24681,16 +24708,15 @@ var init_hub = __esm({
           for (const name2 of names) {
             const current = this.record(name2);
             let known = this.records.get(name2);
-            if (current && incarnationOf(current.epoch) < this.incarnation && !this.leases.has(name2) && (current.principal || current.ended || this.legacyExpired || this.legacyHolders.get(name2) !== current.epoch) && (known || this.records.size < MAX_RETAINED_NAMES) && (!known || current.epoch > known.epoch)) {
-              known = knownOf(current.ended ? current : { ...current, ended: "expired" });
-              this.records.set(name2, known);
+            if (!known) {
+              if (current && !current.ended)
+                doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
+              continue;
             }
-            if (!known) continue;
-            if (current) hydrate(known, current);
             const want = this.recordOf(known);
             if (want) {
               if (!sameRecord(current, want)) doc.participants.set(holderKey(name2), want);
-            } else if (current && !current.ended) doc.participants.set(holderKey(name2), { ...current, ended: "expired" });
+            }
           }
           const meta2 = doc.metaMap;
           if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
@@ -24725,10 +24751,13 @@ var init_hub = __esm({
           this.host.log(`hub: expired ${name2}: no lease for the room's stale period`);
           const lease = this.leases.get(name2);
           if (lease) {
-            this.leases.delete(name2);
+            this.end(name2, lease, "expired");
             this.notify(name2, lease, "expired-participant");
           }
           this.records.delete(name2);
+          this.stored.delete(name2);
+          this.leaseDirty = true;
+          this.writeLeases();
         }
       }
     };
@@ -24936,7 +24965,7 @@ var init_leases = __esm({
 // packages/relay/src/hub.ts
 import fs12 from "node:fs";
 import path9 from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID2 } from "node:crypto";
 function readJson(file) {
   try {
     return JSON.parse(fs12.readFileSync(file, "utf8"));
@@ -24956,6 +24985,23 @@ function incarnationFile(commonDir) {
       writeAtomic(file, { max: max2 });
     }
   });
+}
+function relayLeaseFile(commonDir, room) {
+  const file = path9.join(commonDir, "room", "hub-leases", `${createHash5("sha256").update(room).digest("hex")}.json`);
+  return {
+    read: async () => {
+      try {
+        if (fs12.statSync(file).size > 2 * 1024 * 1024) throw new Error("lease file exceeds size limit");
+        return JSON.parse(fs12.readFileSync(file, "utf8"));
+      } catch (e) {
+        if (e.code === "ENOENT") return [];
+        throw e;
+      }
+    },
+    write: async (leases2) => {
+      writeAtomic(file, leases2);
+    }
+  };
 }
 function holderDeadCheck(now = Date.now) {
   const cache = /* @__PURE__ */ new Map();
@@ -25589,13 +25635,13 @@ function getDoc(docs, name2, opts) {
   });
   docs.set(name2, d);
   if (opts.seed && name2 === encodeURIComponent(opts.seed.room)) applyUpdate(doc, opts.seed.update);
-  if (opts.hub) startRoomHub(d, decodeURIComponent(name2), opts.hub, opts.log ?? (() => {
+  if (opts.hub) startRoomHub(d, decodeURIComponent(name2), opts.hub, opts.commonDir, opts.log ?? (() => {
   }));
   return d;
 }
-function startRoomHub(d, room, rt, log2) {
+function startRoomHub(d, room, rt, commonDir, log2) {
   const roomDoc = d.room = new RoomDoc(d.doc);
-  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: (line) => log2(`local room ${room}: ${line}`), store: rt.store, holderDead: rt.holderDead, authority: () => rt.lock.held() }).then((hub) => {
+  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: (line) => log2(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), holderDead: rt.holderDead, authority: () => rt.lock.held() }).then((hub) => {
     if (d.closed) {
       hub.stop();
       return;
@@ -25626,6 +25672,12 @@ function attach(docs, conn, req, opts) {
   const session = new SecureSession(opts.readOnly ? localViewKey(opts.key, room) : opts.key, room, "relay");
   sessions.set(conn, session);
   const timer = setTimeout(() => conn.close(1008, "secure handshake timeout"), 5e3);
+  handshakeCleanup.set(conn, () => {
+    clearTimeout(timer);
+    conn.off("message", handshake);
+    dropSocket(conn);
+    sessions.delete(conn);
+  });
   timer.unref?.();
   let hello = false;
   const handshake = (raw, binary2) => {
@@ -25651,6 +25703,7 @@ function attach(docs, conn, req, opts) {
       }
       const first = session.decrypt(raw);
       clearTimeout(timer);
+      handshakeCleanup.delete(conn);
       conn.off("message", handshake);
       attachReady(docs, conn, name2, opts, first);
       conn.emit("message", first, true);
@@ -25661,8 +25714,11 @@ function attach(docs, conn, req, opts) {
   };
   conn.on("message", handshake);
   conn.on("close", () => {
+    handshakeCleanup.get(conn)?.();
+    handshakeCleanup.delete(conn);
     clearTimeout(timer);
     dropSocket(conn);
+    sessions.delete(conn);
   });
 }
 function attachReady(docs, conn, name2, opts, first) {
@@ -25737,6 +25793,33 @@ function attachReady(docs, conn, name2, opts, first) {
     send(conn, toUint8Array(aenc));
   }
 }
+function relayConnectionHandler(docs, opts) {
+  return (conn, req) => {
+    conn.on("error", (error2) => {
+      if (failedSockets.has(conn)) return;
+      failedSockets.add(conn);
+      try {
+        opts.log?.(`relay websocket: ${error2 instanceof Error ? error2.message : String(error2)}`);
+      } catch {
+      }
+      handshakeCleanup.get(conn)?.();
+      handshakeCleanup.delete(conn);
+      sessions.delete(conn);
+      dropSocket(conn);
+      try {
+        conn.terminate();
+      } catch {
+      }
+    });
+    try {
+      safeUrl(req.url);
+      attach(docs, conn, req, { ...opts, readOnly: !!req.ticketView });
+    } catch (e) {
+      opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
+      conn.close(1008, "Bad Request");
+    }
+  };
+}
 function relayFile(commonDir) {
   return path10.join(commonDir, LOCAL_FILE);
 }
@@ -25780,19 +25863,6 @@ function canonicalRelayWarning(port, commonDir, identity2, info2) {
   const details = [pid !== void 0 ? `pid ${pid}` : void 0, started ? `started ${started}` : void 0].filter(Boolean).join(", ");
   return { roomRelay: true, warning: `an older Room session${details ? ` (${details})` : ""} still holds this room's relay on 127.0.0.1:${port}; quit it or reconnect Room there` };
 }
-function findWebDist() {
-  const here = path10.dirname(new URL(import.meta.url).pathname);
-  const candidates = [
-    process.env.ROOM_WEB_DIST,
-    path10.resolve(here, "..", "web"),
-    // plugins/room/server/room-mcp.mjs -> plugins/room/web
-    path10.resolve(here, "..", "..", "web", "dist"),
-    // packages/relay/src -> packages/web/dist
-    path10.resolve(here, "..", "..", "..", "web", "dist")
-  ];
-  for (const c of candidates) if (c && fs13.existsSync(path10.join(c, "index.html"))) return c;
-  return void 0;
-}
 function isLoopback(addr2) {
   return !!addr2 && LOOPBACK.has(addr2);
 }
@@ -25806,7 +25876,6 @@ function startRelay(port, opts = {}) {
       socketQueueBytes: opts.socketQueueBytes,
       ...opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}
     };
-    const staticDir = opts.staticDir ? path10.resolve(opts.staticDir) : findWebDist();
     const requestedTicketTtl = opts.ticketTtlMs ?? 6e4;
     const ticketTtl = Number.isFinite(requestedTicketTtl) ? Math.max(1, Math.min(6e4, requestedTicketTtl)) : 6e4;
     const tickets = /* @__PURE__ */ new Map();
@@ -25929,17 +25998,13 @@ function startRelay(port, opts = {}) {
           }
           return;
         }
-        if (staticDir) {
-          const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-          const file = path10.resolve(staticDir, rel);
-          if (file.startsWith(staticDir + path10.sep) && fs13.existsSync(file) && fs13.statSync(file).isFile()) {
-            res.writeHead(200, { "content-type": MIME[path10.extname(file)] ?? "application/octet-stream", "cache-control": rel === "index.html" ? "no-store" : "no-cache" });
-            fs13.createReadStream(file).pipe(res);
-            return;
-          }
+        if (url.pathname === "/") {
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+          res.end("Room opens the browser view from the file link printed by your agent.\n");
+          return;
         }
-        res.writeHead(200, { "content-type": "text/plain" });
-        res.end(staticDir ? "room local relay\n" : "room local relay (no browser view built: run npm run build -w @room/web)\n");
+        res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        res.end("Not Found\n");
       } catch (e) {
         opts.log?.(`relay http: ${e instanceof Error ? e.message : e}`);
         if (!res.writableEnded) {
@@ -25951,15 +26016,7 @@ function startRelay(port, opts = {}) {
     const wss = new import_websocket_server.default({ noServer: true });
     wss.on("headers", (headers) => headers.push("Referrer-Policy: no-referrer"));
     const docs = relayDocs();
-    wss.on("connection", (conn, req) => {
-      try {
-        safeUrl(req.url);
-        attach(docs, conn, req, { ...docOptions, key: opts.key ?? "", readOnly: !!req.ticketView });
-      } catch (e) {
-        opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`);
-        conn.close(1008, "Bad Request");
-      }
-    });
+    wss.on("connection", relayConnectionHandler(docs, { ...docOptions, key: opts.key ?? "" }));
     const ticker = setInterval(() => {
       for (const [name2, d] of docs) {
         try {
@@ -26219,7 +26276,7 @@ async function ensureLocalRelay(commonDir, room, opts = {}) {
     }
   };
 }
-var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, MIME, LOOPBACK, NoLocalRelay;
+var HttpFailure, MSG_SYNC, MSG_AWARENESS, RELAY_STATE_REQUESTS_PER_MINUTE, RELAY_STATE_QUEUE_BYTES, RELAY_SOCKET_QUEUE_BYTES, RELAY_TOTAL_QUEUE_BYTES, socketBudgets, sessions, handshakeCleanup, failedSockets, queued, totalQueued, stateReservation, hubBudget, LOCAL_FILE, LOOPBACK, NoLocalRelay;
 var init_src3 = __esm({
   "packages/relay/src/index.ts"() {
     "use strict";
@@ -26257,12 +26314,13 @@ var init_src3 = __esm({
     RELAY_TOTAL_QUEUE_BYTES = 256 * 1024 * 1024;
     socketBudgets = /* @__PURE__ */ new WeakMap();
     sessions = /* @__PURE__ */ new WeakMap();
+    handshakeCleanup = /* @__PURE__ */ new WeakMap();
+    failedSockets = /* @__PURE__ */ new WeakSet();
     queued = /* @__PURE__ */ new Map();
     totalQueued = 0;
     stateReservation = 0;
     hubBudget = new HubRequestBudget();
     LOCAL_FILE = path10.join("room", "relay.json");
-    MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".map": "application/json" };
     LOOPBACK = /* @__PURE__ */ new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
     NoLocalRelay = class extends Error {
       constructor(room) {
@@ -26294,6 +26352,8 @@ function authorizedWebSocket(credentials) {
         this.timer = setTimeout(() => this.close(1008, "secure handshake timeout"), 5e3);
         this.timer.unref?.();
       } else super(address, protocols, { headers });
+      this.on("error", () => {
+      });
     }
     emit(event, ...args3) {
       if (!this.secure) return super.emit(event, ...args3);
@@ -26838,7 +26898,7 @@ ${reason}`);
 });
 
 // packages/roomd/src/reanchor.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { setImmediate as setImmediate7 } from "node:timers/promises";
 function claimDigest(text, from2, to2) {
   if (!Number.isSafeInteger(from2) || !Number.isSafeInteger(to2) || from2 < 1 || to2 < from2) return void 0;
@@ -27015,7 +27075,7 @@ var init_reanchor = __esm({
     init_libesm();
     DEFAULT_WORK_BUDGET = 4e6;
     BASE = 16777619;
-    digestLines = (lines) => createHash5("sha256").update(lines.join("\n"), "utf8").digest("hex");
+    digestLines = (lines) => createHash6("sha256").update(lines.join("\n"), "utf8").digest("hex");
     splitLines2 = (text) => {
       const lines = text.split("\n");
       if (text.endsWith("\n")) lines.pop();
@@ -28927,7 +28987,7 @@ var init_base2 = __esm({
 import fs14 from "node:fs";
 import path11 from "node:path";
 import os from "node:os";
-import { createHash as createHash6, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes2 } from "node:crypto";
 function observeCallback(fn, report) {
   void Promise.resolve().then(fn).catch(report);
 }
@@ -29179,7 +29239,7 @@ var init_src4 = __esm({
           return () => clearTimeout(timer);
         });
         this.debounceMs = options.debounceMs ?? 300;
-        this.watchedDirectory = createHash6("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs14.realpathSync(this.dir)).digest("hex");
+        this.watchedDirectory = createHash7("sha256").update(machineHostname).update("\0").update(machineIdentity(this.log)).update("\0").update(fs14.realpathSync(this.dir)).digest("hex");
         this.batch = new DiskBatch((paths) => {
           const work = this.enqueue(async () => {
             await this.pollHead();
@@ -37397,7 +37457,7 @@ var init_choice = __esm({
 // packages/room-mcp/src/policy-store.ts
 import fs28 from "node:fs";
 import path25 from "node:path";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 async function legacyBaseline(dir) {
   const file = path25.join(await gitCommonDir(dir), "room", "sharing", "legacy-baseline.json");
   const choice = await choiceFile(dir);
@@ -37429,7 +37489,7 @@ async function legacyBaseline(dir) {
   });
 }
 async function sharingFile(dir, room, participant) {
-  const hash2 = createHash7("sha256").update(room).update("\0").update(participant).digest("hex");
+  const hash2 = createHash8("sha256").update(room).update("\0").update(participant).digest("hex");
   return path25.join(await gitCommonDir(dir), "room", "sharing", `${hash2}.json`);
 }
 var emptyGrant, levels, shareLevel, sorted, clean, PolicyStore, CeilingSource;
@@ -37591,7 +37651,7 @@ var init_policy_store = __esm({
         return this.update((old) => ({ ...old, disclosed: { level, version: version3 }, updatedAt: Date.now() }), false);
       }
       static retire(dir, room, participant, server) {
-        const hash2 = createHash7("sha256").update(room).update("\0").update(participant).digest("hex");
+        const hash2 = createHash8("sha256").update(room).update("\0").update(participant).digest("hex");
         const file = path25.join(commonGitDirFromDotGit(dir), "room", "sharing", `${hash2}.json`);
         fs28.rmSync(file, { force: true });
         const privateGit = worktreeGitDirFromDotGit(dir);
@@ -38049,9 +38109,9 @@ var init_post = __esm({
 // packages/room-mcp/src/publisher-lease.ts
 import fs29 from "node:fs";
 import path26 from "node:path";
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 function publisherLeaseFile(commonDir, worktree) {
-  return path26.join(commonDir, "room", "publishers", `${createHash8("sha256").update(worktree).digest("hex")}.json`);
+  return path26.join(commonDir, "room", "publishers", `${createHash9("sha256").update(worktree).digest("hex")}.json`);
 }
 async function guarded(fn) {
   const deadline = performance.now() + GUARD_WAIT_MS;
@@ -38211,9 +38271,9 @@ var init_publisher_lease = __esm({
 // packages/room-mcp/src/names.ts
 import fs30 from "node:fs";
 import path27 from "node:path";
-import { createHash as createHash9, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
 function nameLeaseFile(commonDir, roomKey2, name2) {
-  return path27.join(commonDir, "room", "names", `${createHash9("sha256").update(`${roomKey2}\0${name2}`).digest("hex")}.json`);
+  return path27.join(commonDir, "room", "names", `${createHash10("sha256").update(`${roomKey2}\0${name2}`).digest("hex")}.json`);
 }
 function readLease(file) {
   try {
@@ -38792,13 +38852,26 @@ var init_timing = __esm({
 });
 
 // packages/room-mcp/src/session.ts
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { createHash as createHash10 } from "node:crypto";
+import { existsSync as existsSync3, readFileSync, readdirSync, statSync } from "node:fs";
+import { createHash as createHash11 } from "node:crypto";
 import { execFileSync as execFileSync7 } from "node:child_process";
 import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
+import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
+function findLocalViewer() {
+  const here = dirname4(fileURLToPath3(import.meta.url));
+  for (const file of [resolve3(here, "..", "web", "viewer.html"), resolve3(here, "..", "..", "web", "dist", "viewer.html")]) {
+    if (existsSync3(file)) return file;
+  }
+  return void 0;
+}
+function localBrowserLink(roomUrl, name2, view, viewerFile = findLocalViewer(), web) {
+  if (!viewerFile && !web) return VIEWER_MISSING;
+  const base = web ? `${web.replace(/\/+$/, "")}/` : pathToFileURL(resolve3(viewerFile)).href;
+  return `${base}#room=${encodeURIComponent(roomUrl)}&view=${encodeURIComponent(view)}&participant=${encodeURIComponent(name2)}&relay=1`;
+}
 function sessionDirectory(commonDir, sessionId) {
   if (!sessionId) throw new Error("session ID is required");
-  const sid = createHash10("sha256").update(sessionId).digest("hex").slice(0, 16);
+  const sid = createHash11("sha256").update(sessionId).digest("hex").slice(0, 16);
   return join4(commonDir, "room", "sessions", sid);
 }
 function readSessionFile(commonDir, sessionId, name2) {
@@ -39536,8 +39609,7 @@ async function joinLocal(dir, opts) {
     throw e;
   }
   replica = daemon.roomDoc.doc;
-  const web = (opts.web ?? local.httpUrl).replace(/\/+$/, "");
-  const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}&view=${localViewKey(local.key, roomName)}&relay=1`;
+  const browserUrl = localBrowserLink(roomUrl, me.name, localViewKey(local.key, roomName), findLocalViewer(), opts.web);
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
   graph.start();
   const session = {
@@ -39716,7 +39788,7 @@ async function leaveSession(s) {
   await s.daemon.stop();
   await s.local?.stop();
 }
-var timed, DEFAULT_WEB, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, httpOf;
+var timed, DEFAULT_WEB, VIEWER_MISSING, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, httpOf;
 var init_session = __esm({
   "packages/room-mcp/src/session.ts"() {
     "use strict";
@@ -39751,6 +39823,7 @@ var init_session = __esm({
     init_bridge();
     timed = (name2, work) => currentToolTiming()?.phase(name2, work) ?? Promise.resolve().then(work);
     DEFAULT_WEB = "http://localhost:5173";
+    VIEWER_MISSING = "not built; run npm run build -w @room/web";
     NoRoom = class extends RoomdError {
       constructor(roomName, detail, server) {
         super(detail, 3);
@@ -40186,7 +40259,7 @@ __export(files_exports, {
 });
 import { execFile as execFile9, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID5 } from "node:crypto";
 import fs35 from "node:fs";
 import os6 from "node:os";
 import path31 from "node:path";
@@ -40722,7 +40795,7 @@ function canonicalPreviewClonePath(cloneDir) {
 }
 async function previewKeyPath(cloneDir, repoDir = cloneDir) {
   const common = await fs35.promises.realpath(await gitCommonDir(repoDir));
-  const key2 = createHash11("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
+  const key2 = createHash12("sha256").update(canonicalPreviewClonePath(cloneDir)).digest("hex").slice(0, 20);
   const root = path31.join(common, "room-preview");
   await rejectPreviewLink(root);
   return path31.join(root, key2);
@@ -40942,7 +41015,7 @@ async function checkoutSettings(dir) {
   }
   const systemAttributes = await systemAttributePaths(dir);
   const relevant = [...values].filter(([key2]) => checkoutConfigKeys.has(key2) || /^filter\..+\.(smudge|clean|process|required)$/.test(key2)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const hash2 = createHash11("sha256").update(JSON.stringify(relevant)).update("\0");
+  const hash2 = createHash12("sha256").update(JSON.stringify(relevant)).update("\0");
   for (const [kind, identity2, file] of [
     ["info", infoAttributes, infoAttributes],
     ["user", userIdentity, userAttributes],
@@ -41907,7 +41980,7 @@ __export(worker_registry_exports, {
 });
 import fs37 from "node:fs";
 import path33 from "node:path";
-import { createHash as createHash12, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash13, randomBytes as randomBytes4 } from "node:crypto";
 import { execFileSync as execFileSync8 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
 function base32(value2, length2) {
@@ -42389,7 +42462,7 @@ var init_worker_registry = __esm({
         return path33.join(this.commonDir, "room", "sessions", sessionId.replace(/[^a-zA-Z0-9_-]/g, "_"), "idle-claims");
       }
       idleClaimsFile(roomKey2, sessionId, idleEpoch) {
-        const key2 = createHash12("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
+        const key2 = createHash13("sha256").update(`${roomKey2}\0${sessionId}\0${idleEpoch}`).digest("hex");
         return path33.join(this.idleClaimsDir(sessionId), `${key2}.json`);
       }
       pendingIdleClaims(roomKey2, sessionId, idleEpoch, participant) {
@@ -42748,7 +42821,7 @@ var init_worker_registry = __esm({
       }
       async withCollectLease(worktree, work) {
         const canonical = fs37.realpathSync(worktree);
-        const key2 = createHash12("sha256").update(canonical).digest("hex");
+        const key2 = createHash13("sha256").update(canonical).digest("hex");
         const file = path33.join(this.root, "collect", `${key2}.json`);
         const deadline = performance5.now() + GUARD_WAIT_MS3;
         for (; ; ) {
@@ -42968,7 +43041,7 @@ var init_worker_registry = __esm({
       /** Store the hash before linking a stable patch; replay validates the published bytes. */
       async recordDiscardPatch(id3, bytes) {
         const file = path33.join(this.root, "patches", `${id3}.patch`);
-        const sha256 = createHash12("sha256").update(bytes).digest("hex");
+        const sha256 = createHash13("sha256").update(bytes).digest("hex");
         const record2 = this.read(id3);
         if (!record2?.discard || record2.phase !== "discarding") throw new Error("discard plan missing");
         if (record2.discard.patch && record2.discard.patch.path !== file) throw new Error("discard patch path changed");
@@ -42986,7 +43059,7 @@ var init_worker_registry = __esm({
           if (error2.code !== "ENOENT") throw error2;
         }
         if (existing) {
-          if (existing.isFile() && createHash12("sha256").update(fs37.readFileSync(file)).digest("hex") === sha256) return file;
+          if (existing.isFile() && createHash13("sha256").update(fs37.readFileSync(file)).digest("hex") === sha256) return file;
           this.quarantine(file, "discard patch hash mismatch");
         }
         const scratch = path33.join(this.root, "patches", `${id3}.${randomBytes4(8).toString("hex")}.tmp`);
@@ -43106,7 +43179,7 @@ var init_worker_registry = __esm({
           if (published) {
             const expected = path33.join(this.root, "patches", `${id3}.patch`);
             if (published.path !== expected) throw new Error(`discard patch path changed for ${id3}`);
-            const valid = fs37.existsSync(expected) && fs37.lstatSync(expected).isFile() && createHash12("sha256").update(fs37.readFileSync(expected)).digest("hex") === published.sha256;
+            const valid = fs37.existsSync(expected) && fs37.lstatSync(expected).isFile() && createHash13("sha256").update(fs37.readFileSync(expected)).digest("hex") === published.sha256;
             if (!valid) {
               if (!owned) throw new Error(`discard patch missing after worktree removal: ${expected}`);
               await saveDiscardPatch(leadDir, own2, (bytes) => this.recordDiscardPatch(id3, bytes));
@@ -53844,8 +53917,8 @@ init_context();
 init_disk_text();
 init_worker_registry();
 import fs38 from "node:fs";
-import { createHash as createHash13, randomUUID as randomUUID6 } from "node:crypto";
-var hash = (value2) => createHash13("sha256").update(value2).digest("hex");
+import { createHash as createHash14, randomUUID as randomUUID6 } from "node:crypto";
+var hash = (value2) => createHash14("sha256").update(value2).digest("hex");
 var slotKey = (owner, kind, other, path50, subject = "") => [owner, kind, other, path50, subject].join("\0");
 var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
 var ROOM = { name: "room", kind: "agent" };
@@ -56460,13 +56533,13 @@ import os10 from "node:os";
 import path41 from "node:path";
 import { execFile as execFile10 } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // packages/room-mcp/src/stale-version.ts
 init_plugin();
 import { existsSync as existsSync4, readFileSync as readFileSync2, readdirSync as readdirSync2 } from "node:fs";
 import { basename as basename4, dirname as dirname5, join as join5, resolve as resolve4 } from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 function version2(value2) {
   if (typeof value2 !== "string" || !/^\d+\.\d+\.\d+$/.test(value2)) return void 0;
   const parts2 = value2.split(".").map(Number);
@@ -56480,7 +56553,7 @@ function pluginRoot(modulePath) {
   const dir = dirname5(modulePath);
   return basename4(dir) === "src" && basename4(dirname5(dir)) === "room-mcp" ? resolve4(dir, "../../../plugins/room") : resolve4(dir, "..");
 }
-function createStaleVersionWarning(modulePath = fileURLToPath3(import.meta.url), runningVersion = plugin_default.version, disk = {}) {
+function createStaleVersionWarning(modulePath = fileURLToPath4(import.meta.url), runningVersion = plugin_default.version, disk = {}) {
   const readFile = disk.readFile ?? ((path50) => readFileSync2(path50, "utf8"));
   const exists = disk.exists ?? existsSync4;
   const readdir3 = disk.readdir ?? readdirSync2;
@@ -56732,7 +56805,7 @@ async function collectDoctorFacts(dir, inSession = false, selected) {
     claudeHooks: read2(claude?.root && path41.join(claude.root, "hooks", "common.mjs")),
     codexHooks: read2(codex?.hooksRoot && path41.join(codex.hooksRoot, "hooks", "common.mjs")),
     codexTrust: read2(path41.join(process.env.CODEX_HOME ?? path41.join(os10.homedir(), ".codex"), "config.toml")),
-    stale: inSession ? createStaleVersionWarning(fileURLToPath4(import.meta.url))() : void 0
+    stale: inSession ? createStaleVersionWarning(fileURLToPath5(import.meta.url))() : void 0
   };
   try {
     const config2 = selected ?? await resolveConfig({ dir });
@@ -58196,7 +58269,7 @@ init_disk_text();
 init_git();
 import fs46 from "node:fs";
 import path42 from "node:path";
-import { createHash as createHash14, randomUUID as randomUUID9 } from "node:crypto";
+import { createHash as createHash15, randomUUID as randomUUID9 } from "node:crypto";
 var HooksBridge = class {
   constructor(s, o) {
     this.s = s;
@@ -58335,7 +58408,7 @@ var HooksBridge = class {
 var hookHealth = /* @__PURE__ */ new WeakMap();
 var PROCESS_STARTED_AT = Date.now();
 function hookReceiptPath(sessionDir, sessionId) {
-  return path42.join(sessionDir, "..", "..", "hook-receipts", createHash14("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
+  return path42.join(sessionDir, "..", "..", "hook-receipts", createHash15("sha256").update(sessionId).digest("hex").slice(0, 32) + ".json");
 }
 function readBoundedJson(file) {
   let fd;
@@ -58818,11 +58891,11 @@ init_leases2();
 init_worker_registry();
 import fs49 from "node:fs";
 import path45 from "node:path";
-import { createHash as createHash15, randomUUID as randomUUID10 } from "node:crypto";
+import { createHash as createHash16, randomUUID as randomUUID10 } from "node:crypto";
 var REPLY_LEASE_MS = 6e4;
 var HOOK_LEASE_MS = 1e4;
 function noticeId2(kind, text) {
-  return `n:${kind}:${createHash15("sha256").update(text).digest("hex").slice(0, 16)}`;
+  return `n:${kind}:${createHash16("sha256").update(text).digest("hex").slice(0, 16)}`;
 }
 var Batch = class {
   constructor(id3, kind, leaseMs) {

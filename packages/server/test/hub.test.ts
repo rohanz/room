@@ -15,7 +15,7 @@ import { docs, setPersistence, setupWSConnection } from '@y/websocket-server/uti
 import { RoomDoc } from '@room/shared'
 import { SETTLE_MS, encodeFrame, serializedStore, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
 import { contractSuite, fakeClock, holder, socketClient, waitFor, type ContractClient, type FakeClock, type MakeEnv } from '../../hub-core/test/contract.js'
-import { ServerHubs, bindHub, incarnationFile, type PersistenceProvider } from '../src/hub.js'
+import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from '../src/hub.js'
 import { DocumentIdentityGuard, bindDocumentIdentity, capDocSize, makeReadOnly, type DocumentIdentityMode } from '../src/readonly.js'
 import { docNameOf, roomNameOf } from '../src/names.js'
 import { devServers } from './dev-server.js'
@@ -31,7 +31,7 @@ async function hubServer(clock: FakeClock, opts: { full?: () => boolean; identit
     async storeUpdate(name, update) { const s = stored.get(name); stored.set(name, s ? Y.mergeUpdates([s, update]) : update) },
   }
   const dir = tmp()
-  const hubs = new ServerHubs({ store: incarnationFile(dir, 0), log: () => {}, full: () => opts.full?.() ?? false, mono: clock.mono, wall: clock.wall })
+  const hubs = new ServerHubs({ store: incarnationFile(dir, 0), leaseFile: room => serverLeaseFile(dir, 0, room), log: () => {}, full: () => opts.full?.() ?? false, mono: clock.mono, wall: clock.wall })
   setPersistence(hubs.persistence(provider))
   const wss = new WebSocketServer({ noServer: true })
   const guards = new Map<string, DocumentIdentityGuard>()
@@ -87,6 +87,7 @@ const serverEnv: MakeEnv = async clock => {
     connect: () => s.open(),
     async tick() { s.hubs.current(ROOM)!.tick() },
     async restart(state) {
+      await s.hubs.current(ROOM)!.flushLeases()
       await anchor.close()
       for (const conn of [...(docs.get(ROOM)?.conns.keys() ?? [])] as { close(): void }[]) conn.close()
       await waitFor(() => !docs.has(ROOM))

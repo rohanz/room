@@ -1,4 +1,10 @@
 import crypto from 'node:crypto'
+import type { EventEmitter } from 'node:events'
+
+/** Install before any websocket wrapper can receive a protocol error. */
+export function catchSocketErrors(socket: Pick<EventEmitter, 'on'>, log: (message: string) => void): void {
+  socket.on('error', error => log(`websocket error: ${error instanceof Error ? error.message : String(error)}`))
+}
 
 export type Credential = { kind: 'session' | 'view' | 'token'; value: string }
 export interface ClosableSocket { close(code: number, reason: string): void; once(event: 'close', listener: () => void): void }

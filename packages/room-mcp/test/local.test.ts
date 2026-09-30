@@ -94,7 +94,10 @@ describe('local mode (no server)', () => {
     const worker = await joinSession({ dir: wt, room, server: 'local', name: 'Ada', tag: 'w', joinOnly: true, log: () => {} }); sessions.push(worker)
     expect(worker.local?.owned).toBe(false)
     expect(worker.roomUrl).toBe(lead.roomUrl)
-    expect(worker.browserUrl.startsWith(`${lead.local!.httpUrl}/#room=${encodeURIComponent(lead.roomUrl)}&`)).toBe(true)
+    if (worker.browserUrl.startsWith('file:')) {
+      expect(worker.browserUrl).toMatch(/^file:\/\/.+\/viewer\.html#room=/)
+      expect(new URLSearchParams(new URL(worker.browserUrl).hash.slice(1)).get('room')).toBe(lead.roomUrl)
+    } else expect(worker.browserUrl).toContain('not built')
   })
 
   it('a worker in its lead\'s clone starts the relay when the lead\'s relay is gone', async () => {

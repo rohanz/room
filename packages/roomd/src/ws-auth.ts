@@ -22,6 +22,10 @@ export function authorizedWebSocket(credentials: { session?: string; token?: str
         this.timer = setTimeout(() => this.close(1008, 'secure handshake timeout'), 5000)
         this.timer.unref?.()
       } else super(address, protocols, { headers })
+      // ws treats an unobserved 'error' as fatal. y-websocket normally attaches its
+      // handler immediately after construction, but a handshake error can race it.
+      // This listener leaves the event available to the provider's own listener.
+      this.on('error', () => {})
     }
     override emit(event: string | symbol, ...args: unknown[]): boolean {
       if (!this.secure) return super.emit(event, ...args)

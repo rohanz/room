@@ -79,6 +79,56 @@ describe('migrateRepo', () => {
     expect(performance.now() - start).toBeLessThan(10000)
     expect(f.entry.unresolved).toBeGreaterThan(0)
   })
+  it('uses overlay, deletion and receipted-message evidence even when their source is pruned', async () => {
+    for (const evidence of ['overlay', 'deletion', 'receipt'] as const) {
+      const f = fixture()
+      const other = new RoomDoc()
+      if (evidence === 'overlay') other.overlays.set('cy', new Y.Map())
+      if (evidence === 'deletion') other.legacyDeleted.set('cy', new Y.Map())
+      if (evidence === 'receipt') { other.mail.set('old', { id: 'old', type: 'question', from: 'cy', to: 'cy', fromKind: 'agent', priority: 'notify', at: 1, text: 'old' } as Msg); other.seen('cy').set('old', 1) }
+      f.docs.set(two, Y.encodeStateAsUpdate(other.doc))
+      f.io.maxTargetBytes = Math.ceil((f.docs.get(one)!.byteLength * 2 + 10) / 0.9) // first fits estimate; second does not
+      await migrateRepo(repo, f.entry, f.io)
+      const target = new RoomDoc(await f.io.load(repo))
+      expect(target.mail.get('q1')?.to).toMatch(/^\?/) // different cy in source two
+      expect(f.entry.unresolved).toBeGreaterThan(0)
+      expect(f.entry.migrationSkippedSources).toBeGreaterThan(0)
+    }
+  })
+  it('skips known oversized sources without loading and yields between many sources', async () => {
+    const f = fixture()
+    const loaded: string[] = []
+    const load = f.io.load
+    f.io.size = async name => name === two ? 10_000 : f.docs.get(name)?.byteLength
+    f.io.load = async name => { loaded.push(name); return load(name) }
+    f.io.maxReadBytes = 1000
+    let timerFired = false
+    setTimeout(() => { timerFired = true }, 0)
+    await migrateRepo(repo, f.entry, f.io)
+    expect(loaded).not.toContain(two)
+    expect(timerFired).toBe(true)
+  })
+  it('bounds rebuilds when many translations overflow the target', async () => {
+    const f = fixture()
+    for (let i = 0; i < 80; i++) {
+      const room = new RoomDoc()
+      room.scopes.set('ben', { by: 'ben', byKind: 'agent', area: 'a', summary: 'x'.repeat(200), paths: ['a'], at: 1 })
+      f.docs.set(`${repo}/bulk-${i}`, Y.encodeStateAsUpdate(room.doc))
+    }
+    let builds = 0, reads = 0, yielded = false
+    f.io.onBuild = () => { builds++ }
+    f.io.size = async name => f.docs.get(name)?.byteLength
+    const load = f.io.load
+    f.io.load = async name => { reads += f.docs.get(name)?.byteLength ?? 0; return load(name) }
+    f.io.maxReadBytes = 20_000
+    f.io.maxTargetBytes = 2_000
+    setTimeout(() => { yielded = true }, 0)
+    await migrateRepo(repo, f.entry, f.io)
+    expect(builds).toBeLessThanOrEqual(6) // initial, four rebuilds, empty fallback
+    expect(reads).toBeLessThanOrEqual(20_000)
+    expect(yielded).toBe(true)
+    expect(f.docs.get(repo)!.byteLength).toBeLessThanOrEqual(2_000)
+  })
   it('skips malformed and oversized records before translation', async () => {
     const f = fixture()
     const doc = new RoomDoc()

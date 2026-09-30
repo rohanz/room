@@ -1,5 +1,5 @@
 // Bundles room-mcp (with @room/relay, the local relay) into a single file so the Codex plugin runs from its cache dir with no node_modules,
-// and ships the built browser view next to it (plugins/room/web) so a local relay can serve it.
+// and ships the hosted assets plus a self-contained local viewer (plugins/room/web/viewer.html).
 import { build } from 'esbuild'
 import { execSync } from 'node:child_process'
 import fs from 'node:fs'
