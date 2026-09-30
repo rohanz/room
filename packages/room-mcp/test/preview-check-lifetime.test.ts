@@ -24,7 +24,7 @@ for (const [ignoresTerm, useCache] of [[false, true], [true, true], [false, fals
       const cmd = `node ${JSON.stringify(checker)} >/dev/null 2>&1 & while [ ! -f ${JSON.stringify(ready)} ]; do sleep 0.01; done; echo '1 passed'`
       const result = await runInMergedTree({ dir: root } as Session, head, new Map([['app.txt', 'FIRST\n']]), cmd)
       expect(result.passed, result.text).toBe(true)
-      expect(result.text).toContain('stopped 1 leftover process(es) from the check')
+      expect(result.text).toContain('stopped leftover processes from the check')
       expect(fs.readFileSync(observed, 'utf8')).toBe('FIRST\n')
       const pid = Number(fs.readFileSync(ready, 'utf8'))
       expect(() => process.kill(pid, 0)).toThrow()

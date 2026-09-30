@@ -584,7 +584,7 @@ function previewGroupAlive(pid: number): boolean {
   catch { return false }
 }
 
-function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: number }> {
+function runTrackedProcess(file: string, args: string[], cwd: string, timeout: number, maxBuffer: number, lock?: PreviewUnlock, env = process.env): Promise<{ code: number; stdout: string; stderr: string; stopped: boolean }> {
   return new Promise((resolve, reject) => {
     const child = spawn('sh', ['-c', previewProcessGate, 'sh', file, ...args], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = [], err: Buffer[] = []
@@ -628,7 +628,7 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
     child.on('exit', code => {
       exited = true
       void (async () => {
-        const stopped = child.pid && previewGroupAlive(child.pid) ? 1 : 0
+        const stopped = !!child.pid && previewGroupAlive(child.pid)
         if (stopped) terminate()
         while (child.pid && previewGroupAlive(child.pid)) {
           if (termAt !== undefined && Date.now() - termAt >= 2000) signalGroup('SIGKILL')
@@ -1083,6 +1083,13 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
+      // Windows has no process groups to signal (and never caches): its check keeps execFile's own deadline.
+      if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>(resolve => {
+        execFile(command, args, { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+          const raw = err ? (err as { code?: unknown }).code : 0
+          resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
+        })
+      })
       const tracked = await runTrackedProcess(command, args, dir!, 5 * 60_000, 4 * 1024 * 1024, previewProcesses.getStore()?.lock, env)
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
@@ -1090,7 +1097,7 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     completed = await previewPhase('collect', () => {
       const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}${result.stopped ? `\nstopped ${result.stopped} leftover process(es) from the check` : ''}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
     })
     return completed
   } catch (error) {
