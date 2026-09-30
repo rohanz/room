@@ -193,9 +193,9 @@ Before (`codex plugin list`, `codex plugin marketplace list`):
 
 ```
 Marketplace `room`
-/Users/rohan/Documents/progwork/aitinkerhackathon/.agents/plugins/marketplace.json
-room@room  installed, enabled  0.16.39  /Users/rohan/Documents/progwork/aitinkerhackathon/plugins/room
-room                    /Users/rohan/Documents/progwork/aitinkerhackathon
+<room checkout>/.agents/plugins/marketplace.json
+room@room  installed, enabled  0.16.39  <room checkout>/plugins/room
+room                    <room checkout>
 ```
 
 For the install, the override applied to that one command only; the marketplace config was not changed:
@@ -203,7 +203,7 @@ For the install, the override applied to that one command only; the marketplace 
 ```
 $ codex plugin add room@room -c marketplaces.room.source="/tmp/room-redesign"
 Added plugin `room` from marketplace `room`.
-Installed plugin root: /Users/rohan/.codex/plugins/cache/room/room/0.17.0
+Installed plugin root: ~/.codex/plugins/cache/room/room/0.17.0
 ```
 
 Restore, at 18:16:22:
@@ -213,15 +213,15 @@ $ codex plugin remove room@room
 Removed plugin `room` from marketplace `room`.
 $ codex plugin add room@room
 Added plugin `room` from marketplace `room`.
-Installed plugin root: /Users/rohan/.codex/plugins/cache/room/room/0.16.39
+Installed plugin root: ~/.codex/plugins/cache/room/room/0.16.39
 $ codex plugin list | grep room@room
-room@room  installed, enabled  0.16.39  /Users/rohan/Documents/progwork/aitinkerhackathon/plugins/room
+room@room  installed, enabled  0.16.39  <room checkout>/plugins/room
 $ grep '"version"' ~/.codex/plugins/cache/room/room/*/.codex-plugin/plugin.json
   "version": "0.16.39",
 ```
 
 `~/.codex/config.toml` still has `[plugins."room@room"] enabled = true`, `[marketplaces.room] source =
-"/Users/rohan/Documents/progwork/aitinkerhackathon"` and the same two `hooks.state."room@room:…"` trusted hashes.
+"<room checkout>"` and the same two `hooks.state."room@room:…"` trusted hashes.
 `plugins/room/hooks.json` is byte-identical to main's.
 
 ## Cleanup
