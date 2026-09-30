@@ -2,7 +2,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll } from 'vitest'
+import { afterAll, beforeEach, expect } from 'vitest'
+import { startWatchdog } from './packages/shared/src/test-watchdog.js'
 
 // Host and Room identity must not leak into tests or the child processes they spawn: a suite run inside a
 // Claude or Codex session, or inside a Room worker, would otherwise act as that session or worker.
@@ -17,3 +18,11 @@ process.env.XDG_CONFIG_HOME = configHome
 process.env.CODEX_HOME = path.join(configHome, 'codex')
 process.env.CLAUDE_CONFIG_DIR = path.join(configHome, 'claude')
 afterAll(() => fs.rmSync(configHome, { recursive: true, force: true }))
+
+// A worker whose event loop is blocked cannot time its own test out; the watchdog names it and ends the wait.
+const watchdog = startWatchdog({ describe: () => {
+  const state = expect.getState()
+  const file = state.testPath ? path.relative(process.cwd(), state.testPath) : ''
+  return [file, state.currentTestName].filter(Boolean).join(' > ')
+} })
+beforeEach(watchdog.beat)

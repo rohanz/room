@@ -20,7 +20,8 @@ for (const [ignoresTerm, useCache] of [[false, true], [true, true], [false, fals
       const ready = path.join(root, 'child.pid')
       const observed = path.join(root, 'observed')
       const checker = path.join(root, 'checker.cjs')
-      fs.writeFileSync(checker, `const fs=require('fs'); fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)); process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(observed)}, fs.readFileSync('app.txt','utf8')); ${ignoresTerm ? '' : 'process.exit(0)'} }); setInterval(() => {}, 1000);`)
+      // The handler is installed before the pid file appears: the check ends, and SIGTERM may follow, as soon as the file exists.
+      fs.writeFileSync(checker, `const fs=require('fs'); process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(observed)}, fs.readFileSync('app.txt','utf8')); ${ignoresTerm ? '' : 'process.exit(0)'} }); fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`)
       const cmd = `node ${JSON.stringify(checker)} >/dev/null 2>&1 & while [ ! -f ${JSON.stringify(ready)} ]; do sleep 0.01; done; echo '1 passed'`
       const result = await runInMergedTree({ dir: root } as Session, head, new Map([['app.txt', 'FIRST\n']]), cmd)
       expect(result.passed, result.text).toBe(true)

@@ -116,6 +116,9 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - The plugin manifests and marketplace entry carry the release version; `package.json` versions at 0.1.0 are private workspace package versions, not the plugin release version. The MCP handshake reads the Claude plugin manifest version.
 - `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
+  A test worker whose event loop stands still for 120 s, or whose file runs past 15 minutes, is reported by
+  `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
+  wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
   grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall
