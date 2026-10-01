@@ -222,6 +222,22 @@ describe('room_send refresh=true', () => {
     expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
   })
 
+  it('refuses when the worker replaced a tracked file with a folder of ignored output, unstaged', async () => {
+    put(repo, '.gitignore', '*.log\n'); put(repo, 'out', 'a file\n'); commit(repo, 'track out')
+    const t = world()
+    const w = await t.spawn('replacer')
+    fs.rmSync(path.join(w.dir, 'out'))
+    put(w.dir, 'out/build.log', 'built\n')
+    await t.finish('replacer')
+    put(repo, 'later.txt', 'x\n'); commit(repo, 'unrelated')
+    const before = git(w.dir, 'rev-parse', 'HEAD')
+    const reply = await t.call('room_send', { type: 'note', to: 'replacer', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('out')
+    expect(read(w.dir, 'out/build.log')).toBe('built\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
   it('checks for dir= borrowers again under the operation lease', async () => {
     const t = world()
     const owner = await t.spawn('lender')

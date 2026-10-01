@@ -62,10 +62,9 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
     const entries = ignored.map(p => p.replace(/\/+$/, ''))
     const covered = new Set(entries)
     const holdsIgnored = new Set(entries.flatMap(p => p.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
-    // Every path your HEAD tracks that the worker's index does not: a staged untracking is not in a HEAD-to-HEAD diff.
-    const indexed = new Set(lines(await git(w.dir, ['ls-files', '-z']), '\0'))
-    const incoming = lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0').filter(p => !indexed.has(p))
-    const clobbered = incoming.filter(p =>
+    // Every path your HEAD tracks, not only a HEAD-to-HEAD diff: the worker may have untracked a file (staged) or
+    // replaced it with a folder (unstaged) that now holds ignored output.
+    const clobbered = lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0').filter(p =>
       covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/'))))
     if (clobbered.length) return refuse(`your HEAD tracks ${clobbered.slice(0, MAX_LISTED).join(', ')}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ''}, where the worker has ignored files that a checkout would overwrite`)
   }
