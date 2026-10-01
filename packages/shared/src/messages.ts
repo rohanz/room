@@ -103,6 +103,24 @@ export function parseClaimRelease(text: string): { path: string; from: number; t
   return { path: match[1], from, to, sha: match[4] }
 }
 
+/** Room's own notices: posted as the bot `room`, never a participant. */
+export function isRoomNotice(m: Pick<Msg, 'from' | 'fromKind'>): boolean {
+  return m.from === 'room' && m.fromKind === 'bot'
+}
+
+/**
+ * Room 0.16's branch-following notice (roomd warnBranchSwitch, from 0.16.1 until 0.17 made rooms
+ * per repository): "you switched to B; the room is for R; commits here are not the room's base until
+ * they are pushed to R". It is the only branch-following text 0.16 posted to a bus; its tool-reply
+ * lines ("[room] your clone switched to branch …") never were. Meaningless in a repository room:
+ * migrations drop it and no inbox delivers it. A migration from before rc7 may have replaced the
+ * sender with an ambiguous-name placeholder (`?<16 hex>`).
+ */
+export function isLegacyBranchNotice(m: Msg): boolean {
+  return m.type === 'note' && m.fromKind === 'bot' && (m.from === 'room' || /^\?[0-9a-f]{16}$/.test(m.from))
+    && typeof m.text === 'string' && /^you switched to \S+; the room is for \S+;/.test(m.text)
+}
+
 const builtins = {
   claim: { priority: 'fyi', audience: 'claim-holders', inbox: false, wakes: 'never', format: (m, context) => context?.claims && !context.claims.some(c => c.id === m.claimId)
     ? `${priority(m)}earlier: ${who(m)} claimed ${m.path}:${m.from_line}-${m.to_line} (${new Date(m.at).toISOString().slice(11, 19)}) — ${m.intent}`

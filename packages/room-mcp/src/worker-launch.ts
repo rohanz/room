@@ -27,7 +27,7 @@ interface Policy {
   usedPorts?: number[]; preferredPort?: number
 }
 type Command =
-  | { mode: 'fresh'; task: string; links: string[]; carriedPaths?: string[]; sessionId?: string }
+  | { mode: 'fresh'; task: string; links: string[]; carriedPaths?: string[]; deps?: string; sessionId?: string }
   | { mode: 'resume'; sessionId: string; followUp: string; oldPort?: number }
 
 export interface WorkerLaunchResult {
@@ -79,7 +79,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const prompt = command.mode === 'fresh'
       ? workerPrompt(policy.lead, tag, command.task, { threads: policy.budget.threads,
         memGb: Number(env.ROOM_WORKER_MEM_GB), nice: scheduling.nice, effort: policy.effort,
-        link: command.links, carriedPaths: command.carriedPaths, port })
+        link: command.links, carriedPaths: command.carriedPaths, deps: command.deps, port })
       : `${command.followUp}${portChanged ? `\n\nYour dev-server port is ${port} (PORT=${port}).` : ''}`
     let maxBudgetUsd: string | undefined
     try { maxBudgetUsd = workerMaxBudget() }

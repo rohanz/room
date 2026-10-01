@@ -18,7 +18,7 @@ import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { DISK_READ_PATH, MATERIALIZED_PATH, containedRepoPath, isInsideRoot, validRepoPath } from '@room/roomd'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
-import { buildCombinedTree } from './combined-tree.js'
+import { PreviewMoved, buildCombinedTree, previewSettler } from './combined-tree.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText, readBoundedDiskTextSync, readBoundedHistoricalText } from './disk-text.js'
 import { previewCheck, previewPhase } from '../timing.js'
@@ -329,8 +329,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const run = typeof a.run === 'string' && a.run.trim() ? a.run.trim() : ''
       const noTestsNote = run ? '' : `no tests were run on the combined code; pass run="${testCommandFor(caller.dir)}" to check it`
-      try {
-        const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
+      const movedReply = (moved: string[]) => {
+        recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
+        return `${(moved.length ? moved : people).join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
+      }
+      // A move after the combined tree was built (during the test run, say) waits for the same bounded settle.
+      const settler = previewSettler(state, participants)
+      try { for (;;) {
+        const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { settler, resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
         const anchors = await anchorsFor(result)
         const anchorNote = anchors.length ? `; included ${anchors.join(', ')}` : ''
         const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out, gaps } = result
@@ -350,6 +356,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (noTestsNote) out.push(noTestsNote)
         const appliedFromOthers = [...result.owners.values()].some(owners => owners.some(owner => owner !== caller.me.name))
         let ranOk = !run
+        if (run && !hardCount && !result.isCurrent()) {
+          if (await settler.settle(result.settledWorkers)) continue
+          return movedReply(result.moved())
+        }
         if (run) {
           if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
           else {
@@ -378,8 +388,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
         if (!result.isCurrent()) {
-          recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
-          return `${people.join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
+          if (await settler.settle(result.settledWorkers)) continue
+          return movedReply(result.moved())
         }
         recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,
           ...(run ? { partialPassed: !complete && hardCount === 0 && ranOk && appliedFromOthers, testsCommand: run } : {}) })
@@ -387,7 +397,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         // A passing preview is part of the branch's story (room_pr_note lists them); a failing one is not.
         if (previewGenerations.get(caller) === generation && complete && !hardCount && ranOk && appliedFromOthers) await caller.post<NoteMsg>(caller.me, { type: 'note', text: `merge preview with ${people.join(', ')}: ${conflictCount ? `${conflictCount} resolvable conflict(s)` : 'no conflicts'} across ${paths.length} path(s)${anchorNote}${run ? `; "${run}" passed` : ''}`, priority: 'fyi' })
         return previewPhase('collect', () => out.join('\n'))
-      } catch (error) {
+      } } catch (error) {
+        if (error instanceof PreviewMoved) return movedReply(error.people)
         const message = error instanceof Error ? error.message : String(error)
         if (!isGitTimeout(error)) throw error
         recordPreview({ clean: false, complete: false })

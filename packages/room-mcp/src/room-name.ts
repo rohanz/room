@@ -10,3 +10,16 @@ export function normalizeExplicitRoomName(name: string, log?: (text: string) => 
   }
   return name
 }
+
+/**
+ * Room 0.16 named a local room after the main worktree's branch: `local/<main worktree basename>/<branch>`
+ * (roomd localRoomName; `detached` off a branch). A name of that shape is a 0.16 per-branch room and maps to the
+ * 0.17 repository room `local/<basename>`; anything else (`local/experiments`, another repository's prefix) is a
+ * custom name. A custom name deliberately shaped like `local/<basename>/<x>` cannot be told apart, so only
+ * choices written before 0.17 are tested against this (choice.ts marks 0.17 writes).
+ */
+export function legacyLocalBranchRoom(room: string, mainBase: string): string | undefined {
+  const repo = `local/${mainBase}`
+  const branch = room.startsWith(`${repo}/`) ? room.slice(repo.length + 1) : ''
+  return branch && !branch.startsWith('/') && !branch.endsWith('/') && !branch.includes('//') ? repo : undefined
+}

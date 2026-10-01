@@ -34,7 +34,32 @@ export function parsePsLstartUtc(line: string): number | undefined {
   return Number.isInteger(seconds) ? seconds : undefined
 }
 
-/** Read the kernel's process birth marker and executable, without inspecting argv or environment.
+/** The files a Linux process name is read from; a reader throws when its file is unreadable. */
+export interface LinuxNameFiles { comm(): string; cmdline(): string; exe(): string }
+
+/**
+ * Name a Linux process as invoked, as macOS `ps -o comm=` does, not by the file it runs: the native
+ * Claude installer links `claude` to `.../claude/versions/<version>`, so the executable is named
+ * `2.1.286`, and a binary replaced by an update reads as `<path> (deleted)`. Order: comm (the
+ * execve basename); argv[0] when comm is missing or may be cut at the kernel's 15 characters; a
+ * Claude version file counts as `claude`; else the executable. Node-hosted scripts stay `node`.
+ * plugins/room/hooks/common.mjs keeps a copy of this rule: `session.ts` compares records from both.
+ */
+export function linuxProcessName(files: LinuxNameFiles): string | undefined {
+  const read = (file: () => string) => { try { return file() } catch { return undefined } }
+  let name = read(files.comm)?.replace(/\n$/, '') || undefined
+  if (!name || name.length >= 15) {
+    const argv0 = read(files.cmdline)?.split('\0')[0]
+    const invoked = argv0 ? path.basename(argv0) : undefined
+    if (invoked && (!name || invoked.startsWith(name))) name = invoked
+  }
+  if (name && !/^\d+(?:\.\d+)+/.test(name)) return name
+  const exe = read(files.exe)?.replace(/ \(deleted\)$/, '')
+  if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return 'claude'
+  return name ?? (exe ? path.basename(exe) : undefined)
+}
+
+/** Read the kernel's process birth marker and executable name, without inspecting environment.
  * macOS gives Node one-second start-time resolution. Reuse of the same pid in that same second is
  * not a practical risk: pids increment and wrap only after about 99,999, and the executable must also match. */
 export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
@@ -49,8 +74,8 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
       if (!/^\d+$/.test(startTicks ?? '')) return unreadable()
       const bootId = readers.readFile('/proc/sys/kernel/random/boot_id').trim()
       if (!bootId) return unreadable()
-      let executable: string | undefined
-      try { executable = path.basename(readers.readLink(`/proc/${pid}/exe`)) } catch { /* start time is still useful to record */ }
+      const executable = linuxProcessName({ comm: () => readers.readFile(`/proc/${pid}/comm`),
+        cmdline: () => readers.readFile(`/proc/${pid}/cmdline`), exe: () => readers.readLink(`/proc/${pid}/exe`) })
       return { startTime: `linux:${bootId}:${startTicks}`, executable }
     }
     if (readers.platform === 'darwin') {

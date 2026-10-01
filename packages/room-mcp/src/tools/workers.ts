@@ -3,6 +3,7 @@ import { Bridge } from '../bridge.js'
 import { pidPresent, pidIsOurWorker, probeProcess, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
 import { WORKER_EFFORTS } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
+import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
 import { decideStop, isOwnedWorkerWorktree, workerRealState } from '../worker-state.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { publisherLine, retainedList } from './share.js'
@@ -48,6 +49,8 @@ export const defs: ToolDef[] = [
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()
+  /** Leads already told that carry=false leaves their uncommitted changes out; a failed carry is reported every time. */
+  const headStartExplained = new WeakSet<Session>()
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
@@ -228,13 +231,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
         catch (e) { throw new Error(`could not link inputs: ${e instanceof Error ? e.message : String(e)}`) }
+        const deps = created ? workspaceDepsNotes(await linkWorkspaceDeps(s.dir, dir)) : { reply: [] }
         let launched: Awaited<ReturnType<typeof launchWorkerProcess>>
         try {
           launched = await timed('launch', () => launchWorkerProcess({ session: s, id, tag, dir, lead: s.me.name, owner,
             host, model, effort, share: effectiveShare, run: 1, nonce, registry: registry.root, budget: { threads, memGb }, server,
             isWorker, token: s.local ? undefined : s.token, claudeChannel: config.claudeChannel,
             usedPorts, spawner: ctx.spawner, probe: ctx.probe, log: state.log, at: now },
-          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, sessionId: hostSessionId },
+          { mode: 'fresh', task, links: link, carriedPaths: carried?.paths, deps: deps.prompt, sessionId: hostSessionId },
           { setHandle: (workerId, proc) => rooms.setHandle(s, workerId, proc),
             watch: (_workerId, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
           async pid => { await registry.update(id, old => ({ ...old, runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid } }], seq: old.seq + 1 })) },
@@ -296,15 +300,20 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           out.push(`${parts.length ? `carried your uncommitted work into its worktree: ${parts.join(', ')}` : 'no uncommitted work carried'}${skippedCarry?.length ? `; not carried: ${skippedCarry.map(({ path: p, reason }) => `${p} (${reason})`).join(', ')}` : ''}`)
         } else if (created && !outside) {
           if (carryFailed && carryError) out.push(`note: carry failed: ${carryError}`)
-          const pending = await uncommittedCount(lead.dir).catch(() => 0)
+          // An explicit carry=false chose HEAD: say what stays behind once per lead session, not on every spawn.
+          const chosen = a.carry === false && !carryFailed
+          const pending = chosen && headStartExplained.has(lead) ? 0 : await uncommittedCount(lead.dir).catch(() => 0)
           if (pending) {
-            out.push(`note: ${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}. Commit them (locally is enough) first if the task builds on them.`)
+            const missing = `${pending} uncommitted change${pending === 1 ? '' : 's'} in your clone ${pending === 1 ? 'is' : 'are'} not in this worktree, which starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`
+            out.push(chosen ? `note: carry=false: ${missing}` : `note: ${missing} Commit them (locally is enough) first if the task builds on them.`)
+            if (chosen) headStartExplained.add(lead)
           } else if (carryFailed) out.push(`note: could not carry your uncommitted changes${carryError ? ` (${carryError})` : ''}; this worktree starts from HEAD${base ? ` ${base.slice(0, 10)}` : ''}.`)
         }
         if (!suppliedDir) {
           const warning = watcherExclusionWarning(lead.dir)
           if (warning) out.push(warning)
         }
+        out.push(...deps.reply)
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')

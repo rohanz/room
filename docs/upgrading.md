@@ -91,6 +91,8 @@ On a migrated team repository, a 0.16 client gets HTTP **403** or WebSocket clos
 
 End running 0.16 local sessions before joining with 0.17. The new local relay has a separate discovery file and generation. A 0.16 local session never finds the 0.17 relay: it can sit alone **without a warning**. The 0.17 relay can copy retained local messages, claims and scopes while the old relay is still present, then finish migration when that relay exits. Verify room state after closing the old session.
 
+A clone that remembered a 0.16 local room `local/<main worktree folder>/<branch>` joins the repository room `local/<main worktree folder>` instead. The first 0.17 join rewrites the remembered choice and says so once. Any other remembered local name, such as `local/experiments`, is a custom room and is kept. So is a local room chosen with 0.17.0-rc7 or later, whatever its shape. 0.16's branch notices (`you switched to <branch>; the room is for <branch>; …`) are not copied into the new room, and any already copied are never delivered.
+
 Update a lead and all its workers together. A mixed-version lead and worker may fail admission or miss addressed messages. Finish, collect or stop old workers before starting new ones; workers that were already collected or discarded cannot resume.
 
 For any setup problem, ask **“is Room set up right?”** or run `room-doctor` from the installed plugin's `bin/` folder (paths in [the quickstart](../README.md#start-in-five-minutes)). See [the reference](reference.md#updating-plugins) for cache locations, sharing and diagnostics.

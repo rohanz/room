@@ -79,14 +79,24 @@ it('rechecks B after a reset to A when the daemon never observed B (S1 re-review
   expect(ledger.candidates(s).map(m => m.id)).not.toContain(notice.id)
 })
 
-it('a legacy "you switched to B" branch note is owed only while the clone is still on B (replaces join.ts markSeen)', () => {
+it('a Room 0.16 "you switched to B" branch note already in a bus is never owed, on any branch (rc7)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'room-relevance-')); dirs.push(dir)
   const s = memorySession({ name: 'Pat', kind: 'agent' }, dir)
   const ledger = new Ledger({ sessionId: () => 'session', route: () => ({}), relevant: createRelevance() })
   ledger.bind(s)
-  const note = hubAppend<NoteMsg>(s.room, { name: 'room', kind: 'bot' }, { type: 'note', to: 'Pat', priority: 'notify', text: 'you switched to main; the room is for other; commits here are not the room base' })
-  expect(ledger.candidates(s).map(m => m.id)).toContain(note.id)
-  ;(s.daemon as { branch: string }).branch = 'other'
-  expect(ledger.candidates(s).map(m => m.id)).not.toContain(note.id)
+  const room = { name: 'room', kind: 'bot' as const }
+  const text = "you switched to main; the room is for other; commits here are not the room's base until they are pushed to other"
+  const notes = Array.from({ length: 13 }, () => hubAppend<NoteMsg>(s.room, room, { type: 'note', to: 'Pat', priority: 'notify', text }))
+  // A local migration before rc7 could replace Room's name with an ambiguous-name placeholder.
+  const placeholder = hubAppend<NoteMsg>(s.room, { name: '?0123456789abcdef', kind: 'bot' }, { type: 'note', to: 'Pat', priority: 'notify', text })
+  const forged = hubAppend<NoteMsg>(s.room, { name: 'Ben', kind: 'agent' }, { type: 'note', to: 'Pat', priority: 'notify', text })
+  const release = hubAppend<NoteMsg>(s.room, room, { type: 'note', to: 'Pat', priority: 'notify', text: 'released your claim on a.py:1-2: that code changed in abcdef0123' })
+  for (const branch of ['main', 'other']) {
+    ;(s.daemon as { branch: string }).branch = branch
+    const owed = ledger.candidates(s).map(m => m.id)
+    for (const note of [...notes, placeholder]) expect(owed).not.toContain(note.id)
+    expect(owed).toContain(forged.id)
+    expect(owed).toContain(release.id)
+  }
   expect(s.room.seen('Pat').size).toBe(0)
 })

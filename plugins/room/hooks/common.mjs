@@ -125,42 +125,70 @@ export function writeStdout(text) {
  * This hook's ancestor processes as `{pid, startTime, executable}`, the identity room-mcp's probeProcess
  * reads (relay/src/process.ts), so the MCP can find the record whose chain holds its host (registry §17).
  */
-export function processChain(start = process.ppid, depth = 8) {
-  const table = processTable()
+export function processChain(start = process.ppid, depth = 8, readers = systemProcessReaders) {
+  const table = processTable(readers)
   const chain = []
   for (let pid = start; pid > 1 && chain.length < depth; pid = table.get(pid)?.ppid ?? 0) {
     const entry = table.get(pid)
     if (!entry?.startTime) break
-    chain.push({ pid, startTime: entry.startTime, executable: entry.executable })
+    chain.push({ pid, startTime: entry.startTime, executable: entry.executable?.() })
   }
   return chain
 }
 
-function processTable() {
+const systemProcessReaders = {
+  platform: process.platform,
+  readFile: file => fs.readFileSync(file, 'utf8'),
+  readLink: file => fs.readlinkSync(file),
+  readDir: dir => fs.readdirSync(dir),
+  exec: (file, args, options) => execFileSync(file, args, { encoding: 'utf8', ...options }),
+}
+
+/**
+ * Copy of linuxProcessName in packages/relay/src/process.ts (hooks cannot import it; a test keeps
+ * them equal): the name as invoked, so a native Claude linked to `.../claude/versions/2.1.286` is `claude`.
+ */
+export function linuxProcessName(files) {
+  const read = file => { try { return file() } catch { return undefined } }
+  let name = read(files.comm)?.replace(/\n$/, '') || undefined
+  if (!name || name.length >= 15) {
+    const argv0 = read(files.cmdline)?.split('\0')[0]
+    const invoked = argv0 ? path.basename(argv0) : undefined
+    if (invoked && (!name || invoked.startsWith(name))) name = invoked
+  }
+  if (name && !/^\d+(?:\.\d+)+/.test(name)) return name
+  const exe = read(files.exe)?.replace(/ \(deleted\)$/, '')
+  if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return 'claude'
+  return name ?? (exe ? path.basename(exe) : undefined)
+}
+
+function processTable(readers) {
   const table = new Map()
   try {
-    if (process.platform === 'linux') {
-      const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
-      for (const name of fs.readdirSync('/proc')) {
+    if (readers.platform === 'linux') {
+      const bootId = readers.readFile('/proc/sys/kernel/random/boot_id').trim()
+      for (const name of readers.readDir('/proc')) {
         if (!/^\d+$/.test(name)) continue
         try {
-          const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8')
+          const stat = readers.readFile(`/proc/${name}/stat`)
           const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
-          let executable
-          try { executable = path.basename(fs.readlinkSync(`/proc/${name}/exe`)) } catch { /* not ours to read */ }
+          // Named only when it joins the chain: most of the table is never read.
+          const executable = () => linuxProcessName({ comm: () => readers.readFile(`/proc/${name}/comm`),
+            cmdline: () => readers.readFile(`/proc/${name}/cmdline`), exe: () => readers.readLink(`/proc/${name}/exe`) })
           table.set(Number(name), { ppid: Number(fields[1]), startTime: `linux:${bootId}:${fields[19]}`, executable })
         } catch { /* exited while listing */ }
       }
-    } else if (process.platform === 'darwin') {
+    } else if (readers.platform === 'darwin') {
       const env = { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' }
-      const boot = execFileSync('sysctl', ['-n', 'kern.boottime'], { encoding: 'utf8', timeout: 1000, env }).match(/sec\s*=\s*(\d+)/)?.[1]
-      const out = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,lstart=,comm='], { encoding: 'utf8', timeout: 2000, env, maxBuffer: 8 * 1024 * 1024 })
+      const boot = readers.exec('sysctl', ['-n', 'kern.boottime'], { timeout: 1000, env }).match(/sec\s*=\s*(\d+)/)?.[1]
+      const out = readers.exec('ps', ['-A', '-o', 'pid=,ppid=,lstart=,comm='], { timeout: 2000, env, maxBuffer: 8 * 1024 * 1024 })
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
       for (const line of out.split('\n')) {
         const m = /^\s*(\d+)\s+(\d+)\s+\w{3} (\w{3})\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})\s+(.*)$/.exec(line)
         if (!m || !boot) continue
         const seconds = Date.UTC(Number(m[8]), months.indexOf(m[3]), Number(m[4]), Number(m[5]), Number(m[6]), Number(m[7])) / 1000
-        table.set(Number(m[1]), { ppid: Number(m[2]), startTime: `darwin:${boot}:${seconds}`, executable: path.basename(m[9].trim()) })
+        const executable = path.basename(m[9].trim())
+        table.set(Number(m[1]), { ppid: Number(m[2]), startTime: `darwin:${boot}:${seconds}`, executable: () => executable })
       }
     }
   } catch { /* no identity: the session binds by other means (registry §17) */ }

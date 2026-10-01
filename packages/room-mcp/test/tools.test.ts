@@ -27,6 +27,7 @@ import { catchUpLocal } from '@room/relay/local-migrate'
 import { claimDigest } from '@room/roomd'
 import { AutoJoin } from '../src/auto-join.js'
 import { createHandlerState } from '../src/tools/state.js'
+import { PREVIEW_SETTLE_MS } from '../src/tools/combined-tree.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
@@ -78,7 +79,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   }
 }
 
-function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake; staleVersionWarning?: () => string | undefined } = {}) {
+function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake; staleVersionWarning?: () => string | undefined; now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo' })
   setParticipantBase(a, 'Rohan', base)
@@ -90,6 +91,7 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
   const created: boolean[] = []
   const tools = createTools({
     config: opts.config, staleVersionWarning: opts.staleVersionWarning, getSession: () => session, setSession: s => { session = s }, cwd: dir, admit: async () => {},
+    ...(opts.now ? { now: opts.now } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.wake ? { wake: opts.wake, binding: { bound: () => ({ id: 'claude-1', host: 'claude' as const }), id: () => 'claude-1', dir: () => undefined, commonDir: () => undefined } } : {}),
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
     leave: async () => {},
@@ -779,7 +781,7 @@ describe('reading', () => {
     expect(state).toContain('  - Rohan+old · agent: another session in this checkout; scope api: old session (app.py)')
     expect(state).not.toContain('Rohan+old: app.py')
     expect(state).not.toContain('Rohan+old · agent: working on')
-    expect(state).toContain('Rohan+old: 1 claim(s)')
+    expect(state).toContain('Rohan+old: 1 claim')
     peer.destroy()
     await t.tools.shutdown()
   })
@@ -1486,7 +1488,7 @@ describe('merge preview scratch tree', () => {
        const compact = await t.tools.call('room_state', {})
        expect(compact).toContain('my unique claim')
        expect(compact).toContain('overlapping unique claim')
-       expect(compact).toContain('Other: 100 claim(s) · unrelated/')
+       expect(compact).toContain('Other: 100 claims · unrelated/')
        expect(compact).not.toContain('unrelated claim detail long')
        expect(compact).toContain('room_state path=')
        expect(compact.length).toBeLessThan(8100)
@@ -1497,6 +1499,51 @@ describe('merge preview scratch tree', () => {
        const full = await t.tools.call('room_state', { all: true })
        expect(full).toContain('unrelated/99.ts')
        expect(full).toContain('unrelated claim detail')
+     } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+   })
+
+   it('summarizes unrelated claims by their most specific places, bounded', async () => {
+     const t = setup()
+     try {
+       await t.tools.call('room_scope', { area: 'mine', summary: 'my work', paths: ['mine/'] })
+       const claim = (by: string, path: string) => t.other.addClaim({ by, byKind: 'agent', path, from: 1, to: 2, intent: 'elsewhere' })
+       claim('Ada', 'packages/room-mcp/src/tools/scope.ts')
+       claim('Ada', 'packages/room-mcp/src/tools/workers.ts')
+       claim('Ada', 'packages/shared/src/views.ts')
+       claim('Bea', 'packages/web/src/app.ts')
+       for (const p of ['a/x/1.ts', 'b/y/2.ts', 'c/3.ts', 'd/4.ts', 'e/5.ts', 'e/6.ts']) claim('Cy', p)
+       for (const p of ['pkg/a/1.ts', 'pkg/b/2.ts', 'pkg/c/3.ts', 'pkg/d/4.ts', 'top.ts']) claim('Dee', p)
+       const out = await t.tools.call('room_state', {})
+       expect(out).toContain('  Ada: 3 claims · packages/room-mcp/src/tools/ (2), packages/shared/src/views.ts (1)\n')
+       expect(out).toContain('  Bea: 1 claim · packages/web/src/app.ts\n')
+       expect(out).toContain('  Cy: 6 claims · e/ (2), a/x/1.ts (1), b/y/2.ts (1), +2 more\n')
+       expect(out).toContain('  Dee: 5 claims · pkg/ (4), top.ts (1)\n')
+       expect(out).not.toContain('claim(s)')
+     } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
+   })
+
+   it('cuts recent bus lines to one line and names where the full text is', async () => {
+     const t = setup()
+     try {
+       const me = { name: 'Rohan', kind: 'agent' as const }
+       const long = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'finished: ' + 'x'.repeat(600) })
+       const multi = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'first line\nsecond line' })
+       const short = hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'short note' })
+       const out = await t.tools.call('room_state', {})
+       const line = (id: string) => out.split('\n').find(l => l.includes(`[${id}]`))!
+       expect(line(long.id).endsWith('…')).toBe(true)
+       expect(line(long.id).length).toBeLessThanOrEqual(`  - [${long.id}] `.length + 160)
+       expect(line(multi.id)).toMatch(/first line…$/)
+       expect(out).not.toContain('second line')
+       expect(line(short.id)).toMatch(/short note$/)
+       expect(out).toContain('  (long messages cut to one line; room_state all=true shows them in full)')
+       const full = await t.tools.call('room_state', { all: true })
+       expect(full).toContain('x'.repeat(600))
+       expect(full).toContain('first line\nsecond line')
+       expect(full).not.toContain('long messages cut to one line')
+       hubAppend<NoteMsg>(t.room, me, { type: 'note', text: 'another short note' })
+       for (let i = 0; i < 10; i++) hubAppend<NoteMsg>(t.room, me, { type: 'note', text: `short ${i}` })
+       expect(await t.tools.call('room_state', {})).not.toContain('long messages cut to one line')
      } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
    })
  })
@@ -1556,7 +1603,7 @@ it('scoped room_state shows scope overlap, hides unrelated claims and their owne
     const out = await t.tools.call('room_state', {})
     expect(out).toContain('Ada')
     expect(out).toContain("1 others: Bea's agent (all:true for detail)")
-    expect(out).toContain('Bea: 1 claim(s)')
+    expect(out).toContain('Bea: 1 claim · other/file.ts\n')
     expect(out).not.toContain('elsewhere')
   } finally { ada.destroy(); bea.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
 })
@@ -1583,7 +1630,7 @@ it('scoped room_state hides a disjoint claim owner while still showing same-path
     t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 10, to: 12, intent: 'bottom' })
     const out = await t.tools.call('room_state', {})
     expect(out).toContain("1 others: Ada's agent (all:true for detail)")
-    expect(out).toContain('Ada: 1 claim(s)')
+    expect(out).toContain('Ada: 1 claim\n')
     expect(out).toContain('bottom')
   } finally { ada.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
 })
@@ -1639,4 +1686,72 @@ it('omits caches and Room files from preview omissions but keeps requested-artif
     for (const name of [...ignored, '.room.json', 'artifact.bin', '.gitignore']) rmSync(join(dir, name), { recursive: true, force: true })
     await t.tools.shutdown(); t.session?.awareness.destroy()
   }
+})
+
+it('summarises gitignored build output in one preview line and still names other ignored paths', async () => {
+  const t = setup()
+  const made = ['packages/a/dist', 'packages/b/dist', 'coverage']
+  try {
+    writeFileSync(join(dir, '.gitignore'), 'dist/\ncoverage/\nartifact.bin\n')
+    for (const name of made) { mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, 'out.js'), 'built') }
+    writeFileSync(join(dir, 'artifact.bin'), 'artifact')
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED)
+    const result = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+    expect(result).toContain('build output not previewed (gitignored, regenerable): 3 folders (coverage/, dist/) from Rohan')
+    expect(result).toContain('NOT previewed (gitignored, Rohan): artifact.bin')
+    expect(result).not.toContain('packages/a/dist')
+  } finally {
+    for (const name of ['packages', 'coverage', 'artifact.bin', '.gitignore']) rmSync(join(dir, name), { recursive: true, force: true })
+    await t.tools.shutdown(); t.session?.awareness.destroy()
+  }
+})
+
+describe('a preview waits for participants to settle', () => {
+  const theirs = COMMITTED.replace('return x', 'return x + 1')
+
+  it('re-checks after a participant moves once mid-preview, as a finishing worker does', async () => {
+    let offset = 0
+    const t = setup({ now: () => Date.now() + offset, sleep: async ms => { offset += ms; await new Promise(resolve => setImmediate(resolve)) } })
+    const flag = join(mkdtempSync(join(tmpdir(), 'room-settle-')), 'moved')
+    publishFixture(t.other, 'Kieran', 'app.py', theirs)
+    let moves = 0
+    // room_done republishes the worker's overlay, then its exit ends its holder: one move after the snapshot.
+    const watch = setInterval(() => {
+      if (moves) return
+      try { readFileSync(flag) } catch { return }
+      moves++
+      publishFixture(t.other, 'Kieran', 'app.py', theirs)
+    }, 2)
+    try {
+      const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: `touch '${flag}' && sleep 0.3 && cat app.py` })
+      expect(moves).toBe(1)
+      expect(out).not.toContain('moved during the preview')
+      expect(out).toContain('tests: exit 0')
+      expect(out).toContain('rev 2')
+      expect(out).toContain('return x + 1')
+      expect(offset).toBeGreaterThan(0)
+      expect(offset).toBeLessThanOrEqual(PREVIEW_SETTLE_MS)
+    } finally {
+      clearInterval(watch)
+      rmSync(join(flag, '..'), { recursive: true, force: true })
+      await t.tools.shutdown(); t.session?.awareness.destroy()
+    }
+  })
+
+  it('still reports a participant that keeps moving, within the bound', async () => {
+    let offset = 0
+    const move = () => publishFixture(t.other, 'Kieran', 'app.py', theirs)
+    const t = setup({ now: () => Date.now() + offset, sleep: async ms => { offset += ms; move(); await new Promise(resolve => setImmediate(resolve)) } })
+    publishFixture(t.other, 'Kieran', 'app.py', theirs)
+    const busy = setInterval(move, 1)
+    try {
+      const out = await t.tools.call('room_preview_merge', { person: 'Kieran' })
+      expect(out).toContain('Kieran moved during the preview; re-run')
+      expect(offset).toBeGreaterThan(0)
+      expect(offset).toBeLessThanOrEqual(PREVIEW_SETTLE_MS)
+    } finally {
+      clearInterval(busy)
+      await t.tools.shutdown(); t.session?.awareness.destroy()
+    }
+  })
 })

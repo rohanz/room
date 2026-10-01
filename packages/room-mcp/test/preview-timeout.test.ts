@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest'
 
 const build = vi.hoisted(() => vi.fn())
-vi.mock('../src/tools/combined-tree.js', () => ({ buildCombinedTree: build, supersetSide: vi.fn() }))
+vi.mock('../src/tools/combined-tree.js', () => ({ buildCombinedTree: build, supersetSide: vi.fn(), previewSettler: () => ({ settle: async () => false }), PreviewMoved: class extends Error {} }))
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return {

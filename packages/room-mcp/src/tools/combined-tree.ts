@@ -8,19 +8,80 @@ import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
-import { acceptedGit, participantRecord, participantsView, snapshot, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
+import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
 
 interface PreviewGap { person: string; path?: string; why: string }
+type Participant = { person: string; session: Session }
 
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+/** How long one preview waits for participants' published changes to settle before reporting a move. */
+export const PREVIEW_SETTLE_MS = 12_000
+const SETTLE_QUIET_MS = 1_000, SETTLE_POLL_MS = 250
+
+export class PreviewMoved extends Error {
+  constructor(readonly people: string[]) { super(`${people.join(', ')} moved during the preview; re-run`) }
+}
+
+const viewOf = (state: HandlerState, session: Session) => session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []
+const movedSince = (state: HandlerState, snaps: readonly { person: string; session: Session; snap: ParticipantSnapshot | undefined }[]) =>
+  snaps.filter(({ session, snap }) => snap && !snapshotStillCurrent(session.room, snap, viewOf(state, session))).map(({ person }) => person)
+
+/**
+ * One bounded wait per preview. A worker's room_done republishes its overlay and its exit then ends its
+ * holder, so a preview called on its completion message sees it move once or twice within seconds.
+ */
+export function previewSettler(state: HandlerState, participants: readonly Participant[]) {
+  const now = () => state.now?.() ?? Date.now()
+  const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const deadline = now() + PREVIEW_SETTLE_MS
+  const capture = (except: ReadonlySet<string>) => participants.filter(({ person }) => !except.has(person)).map(({ person, session }) => {
+    const meta = snapshotMetadata(session.room, person, viewOf(state, session))
+    return { person, session, snap: meta && { ...meta, texts: new Map<string, string>() } }
+  })
+  return {
+    /** Waits until nobody (but `except`) has moved for a quiet interval or the bound is spent; false once it already was. */
+    async settle(except: ReadonlySet<string> = new Set()): Promise<boolean> {
+      if (now() >= deadline) return false
+      let snaps = capture(except), quietSince = now()
+      while (now() - quietSince < SETTLE_QUIET_MS && now() < deadline) {
+        await sleep(Math.min(SETTLE_POLL_MS, deadline - now()))
+        if (movedSince(state, snaps).length) { snaps = capture(except); quietSince = now() }
+      }
+      return true
+    },
+  }
+}
+
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; settler?: ReturnType<typeof previewSettler> } = {}) {
+  const settler = options.settler ?? previewSettler(state, participants)
+  for (;;) {
     const result = await buildCombinedTreeOnce(state, caller, participants, options)
     if (result.current) return result
+    if (!await settler.settle(result.settledWorkers)) throw new PreviewMoved(result.moved())
   }
-  throw new Error('participants\' changes moved during the preview; re-run')
+}
+
+const SILENT_IGNORED = /(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/
+const BUILD_DIRS = new Set<string>(REGENERABLE_BUILD_DIRS)
+
+/** Caches stay silent; regenerable build output is one line for everyone; other ignored paths are named per person. */
+export function ignoredOutputNotes(byPerson: ReadonlyMap<string, readonly string[]>): string[] {
+  const notes: string[] = [], kinds = new Set<string>(), owners: string[] = []
+  let count = 0, allFolders = true
+  for (const [person, ignored] of byPerson) {
+    const visible = ignored.filter(p => !SILENT_IGNORED.test(p))
+    const built = visible.filter(isRegenerableBuildPath)
+    for (const p of built) kinds.add((p.split('/').find(part => BUILD_DIRS.has(part)) ?? p) + '/')
+    if (built.length) owners.push(person)
+    count += built.length
+    allFolders &&= built.every(p => p.endsWith('/'))
+    const other = visible.filter(p => !isRegenerableBuildPath(p))
+    if (other.length) notes.push('NOT previewed (gitignored, ' + person + '): ' + other.join(', '))
+  }
+  if (count) notes.unshift(`build output not previewed (gitignored, regenerable): ${formatCount(count, allFolders ? 'folder' : 'path')} (${[...kinds].sort().join(', ')}) ${owners.length === 1 ? `from ${owners[0]}` : `across ${owners.length} participants`}`)
+  return notes
 }
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
@@ -39,12 +100,16 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const gaps: PreviewGap[] = []
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
+  // A finished worker read from its worktree cannot move the preview: its exit (last publish, ended lease) only changes its overlay.
+  const settledWorkers = new Set<string>()
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
     if (byPerson.has(person)) continue
     const candidate = (s.local || options.diskWorkers?.has(person)) ? await trustedWorker(s, person) : undefined
-    const worker = candidate && decidePreview(await workerRealState(s.dir, candidate), true) === 'disk' ? candidate : undefined
+    const real = candidate && await workerRealState(s.dir, candidate)
+    const worker = real && decidePreview(real, true) === 'disk' ? candidate : undefined
+    if (worker && real?.finished) settledWorkers.add(person)
     byPerson.set(person, worker)
   }
   const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
@@ -143,6 +208,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   /** Paths a participant may have changed; the rest only the caller changed. */
   const theirPaths = new Set<string>()
   const ignoredNotes: string[] = []
+  const ignoredBy = new Map<string, string[]>()
   const committedPaths = async (person: string, from: string, to: string) => {
     const paths = [...new Set((await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', from, to])).split('\0').filter(Boolean))]
     if (paths.length > 2000) gaps.push({ person, why: `committed path enumeration exceeded 2000 (${paths.length}); using manifest paths only` })
@@ -160,8 +226,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const worker = previewWorker(item.session, item.person)
     const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
     const ignored = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
-    const visibleIgnored = ignored.filter(p => !/(^|\/)(?:\.venv|venv|__pycache__|node_modules|\.room|\.git|\.cache|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox)(?:\/|$)|(^|\/)\.room\.json$|\.tsbuildinfo$|\.py[co]$/.test(p))
-    if (visibleIgnored.length) ignoredNotes.push('NOT previewed (gitignored, ' + item.person + '): ' + visibleIgnored.join(', '))
+    if (ignored.length) ignoredBy.set(item.person, [...ignoredBy.get(item.person) ?? [], ...ignored])
     if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) {
       await new Promise<void>(resolve => setImmediate(resolve))
       if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
@@ -180,6 +245,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       }
     }
   }
+  ignoredNotes.push(...ignoredOutputNotes(ignoredBy))
   // ls-files represents nested repositories/submodules as directory entries.
   // They are not file text and cannot participate in a file merge preview.
   const safetySides = [{ session: caller, person: caller.me.name }, ...participants].map(({ session, person }) => {
@@ -398,8 +464,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  const isCurrent = () => [...snapshots.values()].every(({ session, snap }) => !snap || snapshotStillCurrent(session.room, snap, session.awareness ? participantsView(session.room, session.awareness, state.now?.() ?? Date.now()) : []))
-  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent }
+  const moved = () => movedSince(state, [...snapshots].filter(([person]) => !settledWorkers.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))
+  const isCurrent = () => moved().length === 0
+  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

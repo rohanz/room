@@ -386,3 +386,40 @@ it('uses a prior global ledger only for the room proved by its source names', ()
   expect(fs.existsSync(oldLedger)).toBe(false)
   expect(fs.existsSync(ledgerFile('local/two'))).toBe(true)
 })
+
+it('drops Room 0.16 branch-following notices and keeps a normal message', () => {
+  const room = 'local/room-redesign', dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  const source = new RoomDoc(new Y.Doc())
+  // 0.16 roomd posted this once per daemon start while the clone was off the room's branch.
+  for (let i = 0; i < 13; i++) source.mail.set(`branch-${i}`, { id: `branch-${i}`, type: 'note', from: 'room', fromKind: 'bot', to: 'rohanz', priority: 'notify', at: i,
+    text: "you switched to redesign; the room is for redesign-wave0; commits here are not the room's base until they are pushed to redesign-wave0" })
+  source.bus.push([{ id: 'branch-bus', type: 'note', from: 'room', fromKind: 'bot', priority: 'notify', at: 14,
+    text: "you switched to main; the room is for redesign-wave0; commits here are not the room's base until they are pushed to redesign-wave0" }])
+  source.bus.push([{ id: 'normal', type: 'note', from: 'ada', fromKind: 'agent', text: 'tests pass on main', at: 15, priority: 'fyi' }])
+  fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/redesign-wave0`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  const target = new RoomDoc(new Y.Doc())
+  catchUpLocal(common, room, target.doc)
+  expect([...target.bus.toArray().map(m => m.id), ...target.mail.keys()]).toEqual(['normal'])
+  const reloaded = new RoomDoc(loadMemory(common, room))
+  expect([...reloaded.bus.toArray().map(m => m.id), ...reloaded.mail.keys()]).toEqual(['normal'])
+})
+
+it('imports exact duplicate Room notices once', () => {
+  const room = 'local/shop', dir = path.join(common, 'room-local')
+  fs.mkdirSync(dir, { recursive: true })
+  for (const branch of ['main', 'feature']) {
+    const source = new RoomDoc(new Y.Doc())
+    for (const n of [1, 2]) source.mail.set(`${branch}-${n}`, { id: `${branch}-${n}`, type: 'note', from: 'room', fromKind: 'bot', to: 'ben', priority: 'notify', at: n,
+      text: 'released your claim on app.py:1-2: that code changed in abcdef0123' })
+    source.mail.set(`${branch}-ada`, { id: `${branch}-ada`, type: 'note', from: 'ada', fromKind: 'agent', to: 'ben', priority: 'notify', at: 3, text: 'same words twice' })
+    fs.writeFileSync(path.join(dir, `${encodeURIComponent(`${room}/${branch}`)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
+  }
+  const target = new RoomDoc(new Y.Doc())
+  catchUpLocal(common, room, target.doc)
+  const mail = [...target.mail.values()] as { from: string; text: string }[]
+  // A person's repeated words are theirs to repeat; only Room's own identical notices collapse,
+  // and Room's bot identity is never an ambiguous legacy person.
+  expect(mail.filter(m => m.text === 'same words twice')).toHaveLength(2)
+  expect(mail.filter(m => m.text.startsWith('released')).map(m => m.from)).toEqual(['room'])
+})

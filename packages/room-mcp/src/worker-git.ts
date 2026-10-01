@@ -9,6 +9,7 @@ import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
+import { linkWorkspaceDeps } from './worker-deps.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
 
 const WORKERS_DIR = path.join('.room', 'workers')
@@ -435,7 +436,10 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
       let branchExists = true
       try { await git(leadDir, ['rev-parse', '--verify', `refs/heads/${w.branch}`]) } catch { branchExists = false }
       if (!branchExists) await internalGit(leadDir, ['branch', w.branch, head])
-      if (!fs.existsSync(path.join(w.dir, '.git'))) await internalGit(leadDir, ['worktree', 'add', '-q', w.dir, w.branch])
+      if (!fs.existsSync(path.join(w.dir, '.git'))) {
+        await internalGit(leadDir, ['worktree', 'add', '-q', w.dir, w.branch])
+        await linkWorkspaceDeps(leadDir, w.dir)
+      }
       for (const [ref, sha] of refs) await internalGit(leadDir, ['update-ref', ref, sha])
       for (const entry of w.carriedUntracked ?? []) {
         if (!validRepoPath(entry.path, RECORDED_PATH)) continue

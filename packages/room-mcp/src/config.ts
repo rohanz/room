@@ -9,7 +9,9 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { gitCommonDir } from '@room/roomd'
+import { mainWorktree } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
+import { legacyLocalBranchRoom } from './room-name.js'
 
 export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
 export const LOCAL = 'local'
@@ -29,6 +31,8 @@ export interface ResolvedConfig {
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
   claudeChannel: string; workerId?: string
+  /** A remembered Room 0.16 per-branch local room and its repository room; a join to that room migrates the choice. */
+  legacyLocalRoom?: { from: string; to: string }
 }
 
 const value = (v: unknown): string | undefined => typeof v === 'string' && v.trim() ? v.trim() : undefined
@@ -67,11 +71,14 @@ export function resolveShare(raw: unknown, source = 'share'): { level: ShareLeve
   return level ? { level } : { level: 'intent', warning: `${source}='${String(raw)}' is not a level; sharing plans only` }
 }
 
-async function readRememberedChoice(dir: string): Promise<{ where?: string; room?: string }> {
+async function readRememberedChoice(dir: string): Promise<{ where?: string; room?: string; legacy?: { from: string; to: string } }> {
   try {
     const file = path.join(await gitCommonDir(dir), 'room-choice.json')
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; room?: unknown }
-    return { where: value(parsed.where), room: value(parsed.room) }
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { where?: unknown; room?: unknown; schema?: unknown }
+    const where = value(parsed.where), room = value(parsed.room)
+    // Only a choice written before 0.17 (no schema mark) can hold a 0.16 per-branch local room.
+    const to = room && normaliseWhere(where) === LOCAL && parsed.schema === undefined ? legacyLocalBranchRoom(room, path.basename(await mainWorktree(dir))) : undefined
+    return to ? { where, legacy: { from: room!, to } } : { where, room }
   } catch { return {} }
 }
 
@@ -109,6 +116,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const rawShare = args.share ?? e.ROOM_SHARE
   const sharing = resolveShare(rawShare, args.share !== undefined ? 'share' : 'ROOM_SHARE')
   const credentialsPath = resolveCredentialsPath(args, e)
+  const explicitRoom = value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined)
   return {
     // Empty explicitly disables development channels; do not discard it with value().
     claudeChannel: (args.claudeChannel ?? e.ROOM_CLAUDE_CHANNEL ?? DEFAULT_CLAUDE_CHANNEL).trim(),
@@ -119,7 +127,8 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),
-    room: value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined) ?? (whereRule === 'remembered' && where === LOCAL ? rememberedChoice.room : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
+    room: explicitRoom ?? (whereRule === 'remembered' && where === LOCAL ? rememberedChoice.room : undefined), web: value(args.web) ?? value(e.ROOM_WEB),
+    ...(where === LOCAL && rememberedChoice.legacy ? { legacyLocalRoom: rememberedChoice.legacy } : {}),
   }
 }
 

@@ -259,6 +259,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ownGit = participantRecord(s.room, s.me.name)?.git
       const out = [`${a.create && !s.local ? 'opened and joined' : 'joined'} ${s.roomName} as ${displayName(s.me)} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''}, clone ${s.dir})`]
       if (cur) out.unshift(`moved from ${cur.roomName} to ${s.roomName}; links to the old room no longer show this session.`)
+      if (s.upgradeNote) { out.push(s.upgradeNote); delete s.upgradeNote }
       out.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} — chosen by ${choice.rule === 'argument' ? 'your instruction (remembered for this clone and its worktrees)' : choice.rule === 'env' ? resolved.whereEnv : choice.rule === 'remembered' ? 'the choice remembered for this clone (room_leave forget=true clears it)' : 'default'}`)
       await offerTeamSharingDisclosure(s, ledger)
       if (s.local) out.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? ' run by this session' : ''}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? 'room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates.' : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`)

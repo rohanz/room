@@ -120,7 +120,7 @@ describe('areas from CODEOWNERS', () => {
     expect(mine).not.toContain('Kieran · agent')
     expect(mine).toContain("1 others: Kieran's agent (all:true for detail)")
     expect(mine).toContain('open claims (1):')
-    expect(mine).toContain('Kieran: 1 claim(s) · api/')
+    expect(mine).toContain('Kieran: 1 claim · api/a.py\n')
     expect(mine).not.toContain('tune a')
     expect(mine).toContain('uncommitted changes in your areas (1 file elsewhere):')
     expect(mine).not.toContain('Kieran: api/a.py')

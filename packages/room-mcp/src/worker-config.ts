@@ -80,6 +80,20 @@ export function workerBudget({ cores, memBytes, maxWorkers, running }: { cores: 
 
 const WORKER_THREAD_CAPS = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'LOKY_MAX_CPU_COUNT', 'RAYON_NUM_THREADS'] as const
 
+/**
+ * A virtualenv activated from the lead's checkout would run the lead's editable installs; point it, and its
+ * PATH entry, at the same place in the worker's worktree, where `uv sync` creates the worker's own.
+ */
+function workerVirtualEnv(leadDir: string, workerDir: string, inherited: NodeJS.ProcessEnv): Record<string, string> {
+  const venv = inherited.VIRTUAL_ENV
+  if (!venv) return {}
+  const rel = path.relative(leadDir, venv), mine = path.relative(workerDir, venv)
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !(mine.startsWith('..') || path.isAbsolute(mine))) return {}
+  const own = path.join(workerDir, rel), bin = process.platform === 'win32' ? 'Scripts' : 'bin'
+  const PATH = inherited.PATH?.split(path.delimiter).map(p => p && path.resolve(p) === path.join(venv, bin) ? path.join(own, bin) : p).join(path.delimiter)
+  return { VIRTUAL_ENV: own, ...(PATH === undefined ? {} : { PATH }) }
+}
+
 export function workerProcessEnv(options: {
   threads: number; memGb: number; host: WorkerHost; model?: string; effort?: string
   server: string; room: string; dir: string; tag: string; lead: string; owner: string
@@ -93,7 +107,7 @@ export function workerProcessEnv(options: {
     caps[key] = options.isWorker ? String(Number.isSafeInteger(cap) && cap >= 1 ? Math.min(cap, options.threads) : options.threads) : inherited[key] ?? String(options.threads)
   }
   return {
-    ...caps, ROOM_WORKER_THREADS: String(options.threads), ROOM_WORKER_MEM_GB: String(options.memGb),
+    ...caps, ...workerVirtualEnv(options.logDir, options.dir, inherited), ROOM_WORKER_THREADS: String(options.threads), ROOM_WORKER_MEM_GB: String(options.memGb),
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
     ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
@@ -114,7 +128,7 @@ export function validTag(tag: unknown): string | undefined {
 }
 
 /** The fixed preamble every worker gets, then the task. */
-export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[] }): string {
+export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
     `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
@@ -127,6 +141,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
       ...(context.link?.length ? [`Read-only inputs linked from the lead's clone: ${context.link.join(', ')}. Do not modify these paths or their contents; write outputs elsewhere.`] : []),
       ...(context.carriedPaths?.length ? [`Carried edits are the lead's work in progress, already in your worktree for you to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Carried paths: ${context.carriedPaths.slice(0, 20).join(', ')}${context.carriedPaths.length > 20 ? `, and ${context.carriedPaths.length - 20} more` : ''}.`] : []),
+      ...(context.deps ? [context.deps] : []),
     ] : []),
     '',
     `TASK: ${task}`,

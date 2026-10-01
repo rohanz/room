@@ -157,9 +157,9 @@ export function createTools(ctx: ToolCtx): Tools {
         if (s2) await greeted(s2.hub)
         const paused = s2?.lease?.paused() ?? s2?.hub.paused()
         const health = s2 ? hookHealthNote(s2, ctx.binding?.dir(), !s2.local || hasCompany(s2, state.myWorkers(s2), state.now()).company, state.now(), name, !s2.local) : ''
-        const autoTag = s2?.autoTagNote
-        if (s2) delete s2.autoTagNote
-        return notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
+        const autoTag = s2?.autoTagNote, upgrade = s2?.upgradeNote
+        if (s2) { delete s2.autoTagNote; delete s2.upgradeNote }
+        return notices + (paused ? paused + '\n\n' : '') + (health ? health + '\n\n' : '') + (upgrade ? upgrade + '\n\n' : '') + (autoTag ? autoTag + '\n\n' : '') + (unread ? unread + body : body)
       } catch (e) {
         // The reply is an error line now: whatever was selected for it is not in it (M5).
         ledger.discard(batch)

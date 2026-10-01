@@ -26,6 +26,7 @@ import { testPolicyStore } from './policy-fixture.js'
 import { hubAppend, setParticipantBase } from '@room/shared/testing'
 import { visiblePeer } from './fixtures/visible.js'
 import { clearFixtureProcesses, finishFixtureProcess, fixtureLiveness, fixtureProbe, fixtureProcess, spawnFixtureProcess } from './fixtures/process-liveness.js'
+import { workspaceRepo } from './fixtures/workspace-repo.js'
 
 vi.mock('../src/leases.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/leases.js')>()
@@ -651,6 +652,17 @@ describe('room_spawn / room_done / room_collect discard', () => {
     } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
   })
 
+  it('says once per lead session that an explicit carry=false leaves uncommitted work out', async () => {
+    const t = setup(async (repo, tag) => ({ dir: join(repo, '.room', 'workers', tag), branch: `room/${tag}`, created: true, base }), 3)
+    writeFileSync(join(dir, 'wip.txt'), 'work in progress\n')
+    try {
+      const first = await t.leadTools.call('room_spawn', { tag: 'head1', task: 'a', carry: false })
+      expect(first).toContain(`note: carry=false: 1 uncommitted change in your clone is not in this worktree, which starts from HEAD ${base.slice(0, 10)}.`)
+      expect(first).not.toContain('Commit them')
+      for (const tag of ['head2', 'head3']) expect(await t.leadTools.call('room_spawn', { tag, task: 'b', carry: false })).not.toMatch(/uncommitted change/)
+    } finally { rmSync(join(dir, 'wip.txt'), { force: true }) }
+  })
+
   it('refuses an unmanaged surviving branch without altering its worker commits or lead WIP', async () => {
     const initial = await prepareWorktree(dir, 'reusedbranch', 'rohanz')
     writeFileSync(join(initial.dir, 'branch.txt'), 'old worker work')
@@ -981,7 +993,9 @@ describe('worker safety', () => {
 
   it('reads Linux stat field 22 with an injected boot id and executable reader', () => {
     const stat = `42 (worker with ) in name) S ${Array(18).fill('0').join(' ')} 987654 0`
-    expect(probeProcess(42, { platform: 'linux', readFile: file => file.endsWith('/stat') ? stat : 'boot-123\n',
+    const unreadable = (file: string): never => { throw new Error(`EACCES ${file}`) }
+    // comm and cmdline unreadable: the executable names it (the naming rule is in process-name.test.ts).
+    expect(probeProcess(42, { platform: 'linux', readFile: file => file.endsWith('/stat') ? stat : file.endsWith('/boot_id') ? 'boot-123\n' : unreadable(file),
       readLink: () => '/usr/local/bin/codex', exec: () => { throw new Error('unexpected') } }))
       .toEqual({ startTime: 'linux:boot-123:987654', executable: 'codex' })
   })
@@ -1259,6 +1273,21 @@ describe('worker safety', () => {
       expect(reply).toContain('tag in use: same')
       expect(t.specs).toHaveLength(0)
     } finally { rmSync(join(repo, 'lead-only.txt'), { force: true }) }
+  })
+  it('gives a new worktree its own workspace packages in node_modules, or tells the lead and the worker it could not', async () => {
+    const linked = workspaceRepo()
+    scratchRepos.push(linked.repo)
+    const t = setupLead(linked.repo, linked.head)
+    expect(await t.leadTools.call('room_spawn', { tag: 'deps', task: 'change a' })).toContain('node_modules: links to your install, with workspace packages @fx/a, @fx/b')
+    const worker = join(linked.repo, '.room', 'workers', 'deps')
+    expect(realpathSync(join(worker, 'node_modules', '@fx', 'a'))).toBe(join(worker, 'packages', 'a'))
+    expect(t.specs[0].args.join(' ')).toContain("node_modules here links the lead's installed packages")
+    const bare = workspaceRepo({ lockfile: false })
+    scratchRepos.push(bare.repo)
+    const u = setupLead(bare.repo, bare.head)
+    const warning = "cross-package tests in this worktree would run the lead's code for @fx/a, @fx/b"
+    expect(await u.leadTools.call('room_spawn', { tag: 'nodeps', task: 'change a' })).toContain(`warning: ${warning}`)
+    expect(u.specs[0].args.join(' ')).toContain(warning)
   })
 })
 
@@ -2109,5 +2138,55 @@ describe('worker follow-up sessions', () => {
     await registry.update(finished.id!, old => ({ ...old, phase: 'retired', seq: old.seq + 1 }))
     expect(await t.leadTools.call('room_send', { type: 'note', to: 'missingfollowup', text: 'fix' })).toContain('collected or discarded')
     expect(t.specs).toHaveLength(1)
+  })
+})
+
+describe('preview of a finished local worker', () => {
+  it('reads its worktree without waiting on its exit: a final publish and an ended lease are not moves', async () => {
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const { a, b } = pair()
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
+    let ls: Session | null = fakeSession(a, lead)
+    const exits: ((code: number | null) => void)[] = []
+    const sleeps: number[] = []
+    const leadTools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2, probe: fixtureProbe,
+      sleep: async ms => { sleeps.push(ms) },
+      spawner: () => { const pid = 5300 + exits.length; spawnFixtureProcess(pid)
+        const callbacks: ((code: number | null) => void)[] = []
+        exits.push(code => { finishFixtureProcess(pid); for (const callback of callbacks) callback(code) })
+        return { pid, started: Promise.resolve(), onExit: cb => { callbacks.push(cb) }, kill: () => true } },
+      worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
+    })
+    const flagDir = mkdtempSync(join(tmpdir(), 'room-finished-')), flag = join(flagDir, 'exited')
+    let exited = false
+    const watch = setInterval(() => {
+      if (exited || !existsSync(flag)) return
+      exited = true
+      // Its process exits during the preview: a last publish, then the hub ends its name lease.
+      publishFixture(b, 'rohanz+settled', 'app.py', 'x = 7\n')
+      const holder = b.participants.get('rohanz+settled\u0000holder') as Record<string, unknown>
+      b.participants.set('rohanz+settled\u0000holder', { ...holder, ended: 'released' })
+    }, 2)
+    try {
+      expect(await leadTools.call('room_spawn', { tag: 'settled', task: 'x = 7' })).toContain('spawned settled')
+      const worker = workerByTag(dir, 'settled')!
+      writeFileSync(join(worker.dir, 'app.py'), 'x = 7\n')
+      publishFixture(b, 'rohanz+settled', 'app.py', 'x = 7\n')
+      exits[0](0)
+      await vi.waitFor(() => expect(workerByTag(dir, 'settled')?.status).not.toBe('running'))
+      const out = await leadTools.call('room_preview_merge', { person: 'rohanz+settled', run: `touch '${flag}' && sleep 0.3 && cat app.py` })
+      expect(exited).toBe(true)
+      expect(out).toContain('rohanz+settled: trusted local worktree')
+      expect(out).toContain('x = 7')
+      expect(out).not.toContain('moved during the preview')
+      expect(sleeps).toEqual([])
+    } finally {
+      clearInterval(watch)
+      rmSync(flagDir, { recursive: true, force: true })
+      await leadTools.call('room_collect', { discard: true, tag: 'settled' })
+      await leadTools.shutdown()
+      vi.unstubAllEnvs()
+    }
   })
 })

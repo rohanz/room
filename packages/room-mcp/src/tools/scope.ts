@@ -5,7 +5,7 @@ import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
 import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
-import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
+import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatCount, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { localWorkerView } from '../worker-projector.js'
@@ -213,7 +213,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const [person, claims] of [...byPerson].sort(([a], [b]) => a === s.me.name ? -1 : b === s.me.name ? 1 : a.localeCompare(b))) {
         const full = claims.filter(c => a.all === true || c.by === s.me.name || overlapsMyPath(c.path))
         const rest = claims.filter(c => !full.includes(c))
-        out.push(`  ${person}: ${claims.length} claim(s)${rest.length ? ` · ${commonDirectory(rest.map(c => c.path))}` : ''}`)
+        out.push(`  ${person}: ${formatCount(claims.length, 'claim')}${rest.length ? ` · ${claimPlaces(rest.map(c => c.path))}` : ''}`)
         for (const c of full) out.push(claimLine(s, c))
         summarizedClaims += rest.length
       }
@@ -245,7 +245,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         .filter(x => all || x.to === s.me.name || x.from === s.me.name || x.type === 'base' || msgInMyAreas(s, x))
         .slice(-10)
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
-      for (const x of msgs) out.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`)
+      // Worker reports run to a thousand characters: one line each here, in full with all=true.
+      let cut = false
+      for (const x of msgs) {
+        const text = formatRoomMessage(s, x)
+        const line = a.all === true ? text : oneLine(text)
+        cut ||= line.length < text.trimEnd().length
+        out.push(`  - [${x.id}] ${line}`)
+      }
+      if (cut) out.push('  (long messages cut to one line; room_state all=true shows them in full)')
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       out.push(...formatWorkerLines(await Promise.all(myWorkers(s).flatMap(worker => { const view = localWorkerView(s, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), activity: liveWorkerActivity(s.dir, worker, processGone, now()), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
@@ -345,12 +353,48 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
   return { loadAreas, areasOf, areasFor, myAreas, inMyAreas, areaLines, ownerHints, msgInMyAreas, claimLine, ledgerLines, scopeLine, personLine }
 }
 
-function commonDirectory(paths: string[]): string {
-  const parts = paths.map(p => p.split('/').slice(0, -1))
-  const prefix = parts[0] ?? []
+const RECENT_LINE_MAX = 160
+const oneLine = (text: string): string => {
+  const first = text.split('\n', 1)[0].trimEnd()
+  return first.length > RECENT_LINE_MAX ? `${first.slice(0, RECENT_LINE_MAX - 1)}…` : first === text.trimEnd() ? first : `${first}…`
+}
+
+const CLAIM_PLACES = 3
+const dirOf = (key: string): string => key.endsWith('/') ? key : key.slice(0, key.lastIndexOf('/') + 1)
+const commonDir = (a: string, b: string): string => {
+  const x = a.split('/'), y = b.split('/')
   let n = 0
-  while (n < prefix.length && parts.every(p => p[n] === prefix[n])) n++
-  return n ? prefix.slice(0, n).join('/') + '/' : './'
+  while (n < x.length - 1 && x[n] === y[n]) n++
+  return x.slice(0, n).map(part => part + '/').join('')
+}
+
+/** Claimed paths as their most specific places with counts: a file, or a directory once several claimed files share it. */
+function claimPlaces(paths: string[]): string {
+  let places = new Map<string, number>()
+  const regroup = (into: (key: string) => string) => {
+    const next = new Map<string, number>()
+    for (const [key, n] of places) next.set(into(key), (next.get(into(key)) ?? 0) + n)
+    places = next
+  }
+  for (const p of paths) places.set(p, (places.get(p) ?? 0) + 1)
+  const files = new Map<string, number>()
+  for (const key of places.keys()) if (!key.endsWith('/')) files.set(dirOf(key), (files.get(dirOf(key)) ?? 0) + 1)
+  regroup(key => !key.endsWith('/') && dirOf(key) && files.get(dirOf(key))! > 1 ? dirOf(key) : key)
+  // Too many places: merge those sharing the deepest directory, never up to the repository root.
+  while (places.size > CLAIM_PLACES) {
+    const keys = [...places.keys()]
+    let deepest = ''
+    for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+      const common = commonDir(dirOf(keys[i]), dirOf(keys[j]))
+      if (common.length > deepest.length) deepest = common
+    }
+    if (!deepest) break
+    regroup(key => key.startsWith(deepest) ? deepest : key)
+  }
+  const sorted = [...places].sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+  const more = sorted.slice(CLAIM_PLACES).reduce((n, [, count]) => n + count, 0)
+  if (sorted.length === 1) return sorted[0][0]
+  return [...sorted.slice(0, CLAIM_PLACES).map(([key, n]) => `${key} (${n})`), ...more ? [`+${more} more`] : []].join(', ')
 }
 
 function compactState(lines: string[], summarizedClaims: number): string {

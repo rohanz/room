@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
+import { RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
 import { probeProcess, type ProcessProbe } from './process.js'
 import { saveMemory } from './memory.js'
 
@@ -88,6 +88,9 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
   const target = new RoomDoc(targetDoc)
   const messages = new Set(ledger.messages), claims = new Set(ledger.claims), scopes = new Set(ledger.scopes)
   const existing = new Set([...target.bus.toArray().map(m => m.id), ...target.mail.keys()])
+  // Room's own notices repeat word for word (one per daemon start, one per branch room): import each once.
+  const noticeKey = (m: Msg) => `${m.type}\0${m.to ?? ''}\0${JSON.stringify((m as { text?: unknown }).text ?? null)}`
+  const notices = new Set([...target.bus.toArray(), ...target.mail.values()].filter(isRoomNotice).map(noticeKey))
   const loaded: { name: string; mtime: number; source: RoomDoc; doc: Y.Doc }[] = []
   let unreadable = false
   for (const { file, name, mtime } of files) {
@@ -110,7 +113,7 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
     for (const claim of source.claims.values()) mark(claim.by, name)
     for (const person of source.overlays.keys()) mark(person, name)
     for (const person of source.legacyDeleted.keys()) mark(person, name)
-    for (const msg of [...source.bus.toArray(), ...source.mail.values()]) { mark(msg.from, name); mark(msg.to, name) }
+    for (const msg of [...source.bus.toArray(), ...source.mail.values()]) { if (!isRoomNotice(msg)) mark(msg.from, name); mark(msg.to, name) }
   }
   const aliases = targetDoc.getMap<string>('aliases')
   const placeholder = (person: string, source: string) => `?${crypto.createHash('sha256').update(`${source}\0${person}`).digest('hex').slice(0, 16)}`
@@ -169,8 +172,11 @@ export function catchUpLocal(common: string, room: string, targetDoc: Y.Doc, log
     targetDoc.transact(() => {
       for (const msg of [...source.bus.toArray(), ...source.mail.values()]) {
         if (messages.has(msg.id)) continue
-        if (!existing.has(msg.id)) {
-          const copy = { ...msg, from: translated(msg.from, name), ...(msg.to ? { to: translated(msg.to, name) } : {}) } as Msg
+        // 0.16 branch-following notices mean nothing in a repository room, and a repeat of a Room notice already here adds nothing.
+        const skip = isLegacyBranchNotice(msg) || isRoomNotice(msg) && notices.has(noticeKey(msg))
+        if (!existing.has(msg.id) && !skip) {
+          if (isRoomNotice(msg)) notices.add(noticeKey(msg))
+          const copy = { ...msg, from: isRoomNotice(msg) ? msg.from : translated(msg.from, name), ...(msg.to ? { to: translated(msg.to, name) } : {}) } as Msg
           if (msg.to) {
             if (!source.seen(msg.to).has(msg.id)) { target.mail.set(msg.id, copy); existing.add(msg.id); changed = true }
           } else { target.bus.push([copy]); existing.add(msg.id); changed = true }
