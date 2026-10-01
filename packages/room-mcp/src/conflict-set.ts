@@ -122,8 +122,8 @@ export class ConflictSlots {
       ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now, ...episode,
       ...(result.kind === 'contract' && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
-      // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
-      ...(result.status === 'clean' && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
+      // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
+      ...((result.status === 'clean' || result.status === 'unknown') && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
       // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
       ...((result.status === 'clean' || result.status === 'unknown') && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
       ...(result.kind === 'edit-in-claim' ? mergeTurns(result, prev) : {}),

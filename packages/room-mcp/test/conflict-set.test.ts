@@ -219,6 +219,20 @@ describe('ConflictSlots', () => {
     expect(post.mock.calls.filter(c => c[1].to === 'A').at(-1)![1].text).toMatch(/; merges cleanly$/)
   })
 
+  it('replays a cleared overlap under the same id and wording after an unreadable pass', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, '1')
+    const key = slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), base = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', subject: 'c' }
+    await slots.settle(key, { ...base, status: 'conflict', inputs: 'i1', factId: 'f', merges: 'clean' })
+    await slots.settle(key, { ...base, status: 'clean', inputs: 'reverted', factId: '' })
+    const cleared = post.mock.calls.at(-1)!
+    await slots.settle(key, { ...base, status: 'unknown', inputs: 'unreadable', factId: '', why: 'cannot map claim' })
+    await slots.replay('A')
+    const replayed = post.mock.calls.at(-1)!
+    expect(replayed[2].id).toBe(cleared[2].id)
+    expect(formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...replayed[1] } as any)).toContain('overlap cleared on x: the overlap with B cleared')
+  })
+
   it('keeps an overlap an overlap through an unreadable pass, so its release says "overlap cleared"', async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
     const slots = new ConflictSlots(room, post, '1')
