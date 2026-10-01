@@ -600,7 +600,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
       owners: authors(lines[i], names),
       claims: sourceLines(lines[i], names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? []),
       conflicts: regions.filter(s => s.start <= i && s.end >= i).map(s => ({
-        people: s.people, resolved: s.resolved, resolution: s.resolution,
+        people: s.people, resolved: s.resolved, overlap: s.overlap && !s.claimOnly, resolution: s.resolution,
         range: `Merged lines ${offset + s.start + 1}-${offset + s.end + 1}`,
         status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : conflictSpanStatus({ merges: s.overlap ? 'clean' : undefined }),
       })),

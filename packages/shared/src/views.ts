@@ -410,7 +410,7 @@ export interface ConflictSpan {
   claims: Claim[]
   resolvedBy?: ConflictResolution
   hidden: boolean
-  /** The latest notice's `merges` (ConflictMsg): an overlap that merges cleanly, not a conflict. */
+  /** Every editor's latest notice has `merges` (ConflictMsg): an overlap that merges cleanly, not a conflict. */
   merges?: 'clean'
 }
 
@@ -428,6 +428,8 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
   const current = new Map(claims.map(c => [c.id, c]))
   for (const c of claims) if (!known.has(c.id)) known.set(c.id, c)
   const spans: ConflictSpan[] = []
+  /** Per span, each editor's latest `merges`: one editor's clean overlap does not hide another's conflict. */
+  const merging = new Map<ConflictSpan, Map<string, 'clean' | undefined>>()
   const pairKey = (path: string, people: string[]) => JSON.stringify([path, [...people].sort()])
   for (const m of bus) {
     let path: string, people: string[], ids: string[] = [], from: number | undefined, to: number | undefined
@@ -441,6 +443,8 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
       }
       const range = m.text.slice(m.text.indexOf(`${path}:`) + path.length + 1).match(/^(\d+)-(\d+)/)
       if (range) { from = Number(range[1]); to = Number(range[2]) }
+      // An edit inside one claim names no range of its own ("inside tiers's claim at lines 2-7"): the claim's.
+      else if (ids.length === 1 && known.has(ids[0])) { from = known.get(ids[0])!.from; to = known.get(ids[0])!.to }
     } else if (m.type === 'note') {
       const match = m.text.match(/^your (.+) and (.+)'s now conflict around lines? ([\d, ]+);/)
       if (!match || !m.to) continue
@@ -456,7 +460,14 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
     if (!span) { span = { id, path, people, claimIds: ids, from, to, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
     if (ids.length === 2 && span.claimIds.length < 2) { span.claimIds = ids; span.claims = cs }
     span.events.push(m)
-    if (m.type === 'conflict') span.merges = m.merges
+    if (m.type === 'conflict') {
+      // The editor's own notice is addressed to them; the holder's copy names them first.
+      const holder = known.get(m.claimId)?.by
+      const editor = m.to && m.to !== holder ? m.to : m.text.match(/^(.+?)(?:'s agent edited | edited |'s earlier change to )/)?.[1] ?? m.to ?? ''
+      const editors = merging.get(span) ?? new Map<string, 'clean' | undefined>()
+      merging.set(span, editors.set(editor, m.merges))
+      span.merges = [...editors.values()].every(value => value === 'clean') ? 'clean' : undefined
+    }
   }
   // Claims can overlap before a conflict notification is delivered.
   for (let i = 0; i < claims.length; i++) for (const b of claims.slice(i + 1)) {
@@ -490,7 +501,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
 export interface LineDetailInput {
   owners?: readonly string[]
   claims?: readonly Claim[]
-  conflicts?: readonly { people: readonly string[]; detail?: string; resolved: boolean; range?: string; status?: string; resolution?: string }[]
+  conflicts?: readonly { people: readonly string[]; detail?: string; resolved: boolean; overlap?: boolean; range?: string; status?: string; resolution?: string }[]
 }
 
 export function lineDetail(input: LineDetailInput) {
@@ -511,7 +522,7 @@ export function lineDetail(input: LineDetailInput) {
 export function lineAnnotation(input: LineDetailInput): string {
   const detail = lineDetail(input)
   const conflict = detail.conflicts.find(c => !c.resolved) ?? detail.conflicts[0]
-  if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : ' · conflict')
+  if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : conflict.overlap ? ' · overlap' : ' · conflict')
   if (detail.claims.length) return detail.claims.map(c => c.by + ' · claimed: ' + c.intent).join(' · ')
   return detail.ownership
 }

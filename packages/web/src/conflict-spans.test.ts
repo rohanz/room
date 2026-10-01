@@ -2,7 +2,7 @@ import { deriveConflictSpans } from '@room/shared'
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
-import { colorFor, type Claim, type Msg } from '@room/shared'
+import { colorFor, lineAnnotation, type Claim, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
 import { classifyThreeWay } from './merged.ts'
 import { conflictCard, renderCodeLines } from './panels.ts'
@@ -355,29 +355,46 @@ it('uses the specified theme tints and 60% owner borders with at least 4.5:1 cod
   }
 })
 
+// Shaped as ConflictSlots posts them: the editor's notice and the holder's copy, no range in `path:from-to` form.
+const editNotice = (editor: string, at: number, merges?: 'clean'): Msg[] => [
+  { ...conflict, id: `${editor}${at}`, at, claimId: 'c1', otherClaimId: '', to: editor, text: `you edited a.ts inside tiers's claim at lines 2-7 (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
+  { ...conflict, id: `${editor}${at}:holder`, at, priority: 'notify', claimId: 'c1', otherClaimId: '', to: 'tiers', text: `${editor} edited a.ts inside your claim (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
+]
+
 it('draws an overlap that merges cleanly as an overlap, and a later non-merging notice as a conflict', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
-  const overlap: Msg = { ...conflict, id: 'overlap', claimId: 'c1', otherClaimId: '', to: 'money', text: "you edited a.ts:2-7 inside tiers's claim; merges cleanly", merges: 'clean' }
   const lines = Array.from({ length: 8 }, (_, i) => ({ text: 'code', side: 'common' as const, changedBy: null, conflict: false, aLine: i + 1 }))
   const render = (messages: Msg[]) => {
     const spans = deriveConflictSpans(messages, [claims[1]])
     const host = new Element()
     renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, spans)
-    return { span: spans[0], tags: host.find('conflict-tag'), host, card: conflictCard(spans[0]) as unknown as Element }
+    return { spans, span: spans[0], tags: host.find('conflict-tag'), host, card: conflictCard(spans[0]) as unknown as Element }
   }
-  const clean = render([overlap])
-  expect(clean.span.merges).toBe('clean')
+  const clean = render(editNotice('money', 10, 'clean'))
+  expect(clean.spans).toHaveLength(1)
+  expect(clean.span).toMatchObject({ merges: 'clean', from: 2, to: 7 })
   expect(clean.tags.map(tag => tag.children[0])).toEqual(['overlap'])
   expect(clean.tags[0].ariaLabel).toContain('Overlap: merges cleanly')
   expect(clean.tags[0].ariaLabel).not.toContain('conflict')
   expect(clean.host.find('conflict-line')).toHaveLength(0)
+  expect(clean.host.find('claim-overlap-line').length).toBeGreaterThan(0)
   expect(clean.card.textContent).toContain('overlap · money ↔ tiers')
   expect(clean.card.textContent).not.toContain('conflict ·')
-  expect(clean.card.textContent).toContain("overlap a.ts · you edited a.ts:2-7 inside tiers's claim; merges cleanly")
+  expect(clean.card.textContent).toContain("overlap a.ts · you edited a.ts inside tiers's claim at lines 2-7 (update tiers); merges cleanly")
   expect(clean.card.textContent).not.toContain('conflict a.ts')
-  const stopped = render([overlap, { ...overlap, id: 'stopped', at: 12, text: "you edited a.ts:2-7 inside tiers's claim", merges: undefined }])
+  const stopped = render([...editNotice('money', 10, 'clean'), ...editNotice('money', 12)])
   expect(stopped.span.merges).toBeUndefined()
   expect(stopped.tags.map(tag => tag.children[0])).toEqual(['conflict'])
   expect(stopped.tags[0].ariaLabel).toContain('Unresolved conflict')
   expect(stopped.card.textContent).toContain('conflict · money ↔ tiers')
+})
+
+it("one editor's clean overlap does not hide another editor's conflict in the same claim", () => {
+  expect(deriveConflictSpans([...editNotice('money', 10), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBeUndefined()
+  expect(deriveConflictSpans([...editNotice('money', 10, 'clean'), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBe('clean')
+})
+
+it('the line annotation names a clean overlap an overlap', () => {
+  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }] })).toBe('money ↔ tiers · overlap')
+  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false }] })).toBe('money ↔ tiers · conflict')
 })
