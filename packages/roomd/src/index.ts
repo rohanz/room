@@ -156,6 +156,8 @@ export interface RoomdOptions {
   onFullScan?: (policy: SharingPolicy, entries: ReadonlyMap<string, PlannedEntry>, unsettled: readonly string[]) => Promise<void>
   /** In-memory transport override for tests that cannot open loopback sockets. */
   providerFactory?: (serverUrl: string, roomName: string, doc: Y.Doc) => WebsocketProvider
+  /** Called with the daemon's provider as soon as it exists, before startup connects and publishes. */
+  onProvider?: (provider: WebsocketProvider) => void
   /** Test scheduler for remote repair; callback is awaited by the test without a wall clock. */
   remoteRepairSchedule?: (run: () => Promise<void>) => () => void
   /** Test hook after the seed scan, before the watcher is established. */
@@ -413,6 +415,7 @@ class Daemon implements Roomd {
           WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
           params: { schema: '2' },
         })
+    options.onProvider?.(this.provider)
     this.publisher = new Publisher(this)
     this.setStatus('syncing', { host: options.host, model: options.model, effort: options.effort })
   }

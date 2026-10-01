@@ -29987,6 +29987,7 @@ var init_src4 = __esm({
           WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
           params: { schema: "2" }
         });
+        options.onProvider?.(this.provider);
         this.publisher = new Publisher(this);
         this.setStatus("syncing", { host: options.host, model: options.model, effort: options.effort });
       }
@@ -39968,7 +39969,6 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
     params: { schema: "2" }
   }));
-  const startupCapClose = captureCapClose(probe);
   const closeProbe = () => {
     probe.destroy();
     probe.awareness.destroy();
@@ -40058,6 +40058,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   const { requested: _requested, requestedExplicit: _requestedExplicit, ceiling: _ceiling, ...daemonOptions } = options;
   let post;
   let started;
+  let startupCapClose = () => void 0;
   let policyStore;
   try {
     policyStore = await PolicyStore.open({
@@ -40092,6 +40093,10 @@ async function startAutoTaggedRoomd(options, explicitTag) {
       lease: () => lease.fence(),
       policy: policyStore.policy,
       carried: workerCarried(options.dir),
+      // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
+      onProvider: (provider) => {
+        startupCapClose = captureCapClose(provider);
+      },
       post: (from2, body2, opts) => {
         if (post) return post(from2, body2, opts);
         options.log?.(`not posted before the hub connection: ${body2.type}`);
@@ -40200,7 +40205,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   }, onRebind: (listener) => {
     rebindListener = listener;
     watchRecords();
-  }, startupCapClose };
+  }, startupCapClose: () => startupCapClose() };
 }
 function claimLegacyIdentity(room, dir, name2) {
   return reclaimLegacyIdentity(room, readRoomFile(dir)?.legacy, name2);

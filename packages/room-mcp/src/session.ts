@@ -547,7 +547,6 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
         WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
         params: { schema: '2' },
       }))
-  const startupCapClose = captureCapClose(probe)
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
   const binding = createSessionBinding(options.dir)
   const sessionId = options.sessionId ?? binding.id()
@@ -607,6 +606,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   // The daemon's automatic posts go through this connection's hub, under the name lease (hub §2.3).
   let post: Post | undefined
   let started: Roomd
+  let startupCapClose: () => CapClose | undefined = () => undefined
   let policyStore: PolicyStore
   try {
     policyStore = await PolicyStore.open({ dir: options.dir, room, participant: name, server: new URL(options.room).origin, requested: options.requested, ceiling: options.ceiling,
@@ -622,6 +622,8 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     if (lease.fence()) publishing = await attachPublication()
     else policyStore.setPublisher(false)
     started = daemon = await timed('daemon start', () => startRoomd({ ...daemonOptions, name, label, sessionId, lease: () => lease.fence(), policy: policyStore.policy, carried: workerCarried(options.dir),
+      // Startup publishes on the daemon's own provider (not the probe) before watchClosed exists.
+      onProvider: provider => { startupCapClose = captureCapClose(provider) },
       post: (from, body, opts) => {
         if (post) return post(from, body, opts)
         options.log?.(`not posted before the hub connection: ${body.type}`)
@@ -687,7 +689,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   publishRuntime()
   const stop = started.stop.bind(started)
   started.stop = async (reason?: string) => { clearInterval(watcher); await stop(reason) }
-  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: publishRuntime, onHookActivity: listener => { hookActivity = listener }, onRebind: listener => { rebindListener = listener; watchRecords() }, startupCapClose }
+  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: publishRuntime, onHookActivity: listener => { hookActivity = listener }, onRebind: listener => { rebindListener = listener; watchRecords() }, startupCapClose: () => startupCapClose() }
 }
 
 /** Resolve an ambiguous 0.16 branch-room identity using this worktree's old room.json. */

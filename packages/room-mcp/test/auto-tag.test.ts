@@ -53,6 +53,21 @@ describe('automatic session tags (registry §15: local lease, then hub lease)', 
     await expect(start(room, repo(), 'custom', 'second', { id: 'oidc:second', login: 'name', readOnly: false }))
       .rejects.toThrow('name+custom belongs to another principal')
   })
+  it('keeps a size-cap close the daemon provider gets during startup for the session handler', async () => {
+    // The probe and the daemon have separate providers; startup publishes on the daemon's.
+    const room = hubRoom(), dir = repo(), config = await resolveConfig({ dir, env: {} })
+    let providers = 0
+    const result = await startAutoTaggedRoomd({ dir, room: 'ws://test/room', localKey: 'key', name: 'name', label: config.tag, owner: 'name', kind: 'agent',
+      requested: 'full', sessionId: 'cap-startup', log: vi.fn(), providerFactory: (_s, _r, doc: Y.Doc) => {
+        const p = room.provider(doc)
+        if (++providers > 1) setImmediate(() => (p as unknown as { emit: (ev: string, e: unknown) => void }).emit('connection-close', { code: 4413, reason: 'room is over its size cap (64 MB)' }))
+        return p
+      } }, config.tag)
+    cleanup.push(() => result.daemon.stop())
+    expect(providers).toBeGreaterThan(1)
+    expect(result.startupCapClose()).toEqual({ code: 4413, reason: 'room is over its size cap (64 MB)' })
+    expect(result.startupCapClose()).toBeUndefined()
+  })
   it('production join passes hub pushed acceptance back to the daemon', async () => {
     const room = hubRoom(), s = await start(room)
     const fromSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: s.dir, encoding: 'utf8' }).trim()
