@@ -67,7 +67,7 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
     // The snapshot itself never holds an ignored path.
     const written = new Set([
       ...lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0'),
-      ...lines(await git(w.dir, ['log', '--format=', '--name-only', '--no-renames', '-z', `${start}..${from}`]), '\0').map(p => p.trim()).filter(Boolean),
+      ...lines(await git(w.dir, ['log', '--format=', '--name-only', '--no-renames', '-z', `${start}..${from}`]), '\0'), // NUL-terminated names, no framing: never trim a path
     ])
     const clobbered = [...written].filter(p =>
       covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/'))))

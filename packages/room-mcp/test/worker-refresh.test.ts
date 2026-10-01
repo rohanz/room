@@ -239,20 +239,24 @@ describe('room_send refresh=true', () => {
   })
 
   it('refuses when replaying the worker\'s own commits would overwrite its ignored output', async () => {
-    put(repo, '.gitignore', 'artifact.log\n'); commit(repo, 'ignore artifact.log')
+    put(repo, '.gitignore', '*.log\n'); commit(repo, 'ignore logs')
     const t = world()
-    const w = await t.spawn('replayer')
-    put(w.dir, 'artifact.log', 'v1\n'); git(w.dir, 'add', '-f', 'artifact.log'); git(w.dir, 'commit', '-qm', 'track artifact')
-    git(w.dir, 'rm', '--cached', '-q', 'artifact.log'); git(w.dir, 'commit', '-qm', 'untrack artifact')
-    put(w.dir, 'artifact.log', 'fresh output\n')
-    await t.finish('replayer')
-    put(repo, 'later.txt', 'x\n'); commit(repo, 'unrelated')
-    const before = git(w.dir, 'rev-parse', 'HEAD')
-    const reply = await t.call('room_send', { type: 'note', to: 'replayer', text: 'carry on', refresh: true })
-    expect(reply).toMatch(/^error: /m)
-    expect(reply).toContain('artifact.log')
-    expect(read(w.dir, 'artifact.log')).toBe('fresh output\n')
-    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+    let n = 0
+    for (const name of ['artifact.log', ' spaced.log']) { // a name with edge whitespace is matched as written
+      const tag = `replayer${n++}`
+      const w = await t.spawn(tag)
+      put(w.dir, name, 'v1\n'); git(w.dir, 'add', '-f', '--', name); git(w.dir, 'commit', '-qm', 'track artifact')
+      git(w.dir, 'rm', '--cached', '-q', '--', name); git(w.dir, 'commit', '-qm', 'untrack artifact')
+      put(w.dir, name, 'fresh output\n')
+      await t.finish(tag)
+      put(repo, `later${n}.txt`, 'x\n'); commit(repo, 'unrelated')
+      const before = git(w.dir, 'rev-parse', 'HEAD')
+      const reply = await t.call('room_send', { type: 'note', to: tag, text: 'carry on', refresh: true })
+      expect(reply).toMatch(/^error: /m)
+      expect(reply).toContain(name)
+      expect(read(w.dir, name)).toBe('fresh output\n')
+      expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+    }
   })
 
   it('checks for dir= borrowers again under the operation lease', async () => {

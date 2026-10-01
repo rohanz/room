@@ -59888,7 +59888,8 @@ async function refreshWorkerBase(leadDir, w) {
     const holdsIgnored = new Set(entries.flatMap((p) => p.split("/").slice(0, -1).map((_, i2, parts2) => parts2.slice(0, i2 + 1).join("/"))));
     const written = /* @__PURE__ */ new Set([
       ...lines(await git(w.dir, ["ls-tree", "-r", "-z", "--name-only", target]), "\0"),
-      ...lines(await git(w.dir, ["log", "--format=", "--name-only", "--no-renames", "-z", `${start2}..${from2}`]), "\0").map((p) => p.trim()).filter(Boolean)
+      ...lines(await git(w.dir, ["log", "--format=", "--name-only", "--no-renames", "-z", `${start2}..${from2}`]), "\0")
+      // NUL-terminated names, no framing: never trim a path
     ]);
     const clobbered = [...written].filter((p) => covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/"))));
     if (clobbered.length) return refuse(`the rebase would write ${clobbered.slice(0, MAX_LISTED).join(", ")}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ""} (tracked in your HEAD or the worker's commits), where the worker has ignored files that it would overwrite`);
