@@ -85,10 +85,8 @@ from the local soak.
 The server rebuilds the room from its current values into a fresh `Y.Doc` (`compactDoc`) and stamps it
 with a new random `meta.generation`. A replica of an older generation must never be merged into it. Its
 structs carry IDs the new document doesn't have, so a merge would bring back the whole history and
-duplicate every value. So clients state their generation before syncing:
-- A stale replica is served the previous generation, which the server keeps.
-- Its unsynced writes are translated into the new generation by value.
-- The client then replaces the stale replica with a fresh one.
+duplicate every value. So clients state their generation before syncing, and a stale replica is
+replaced the way a process restart replaces it: discarded, then joined afresh under the same name.
 
 Measured in the harness (compact when the store passes 20,000 structs; the member replica resyncs from
 scratch), 50,000 posts:
@@ -148,6 +146,14 @@ it too or leaves history growing.
 
 ## 5. Design
 
+**The rule:** for a client, a generation change is a restart of its replica. Room already depends on
+restarts being safe: every MCP process restart, leave-and-rejoin and relay takeover discards a replica and
+joins afresh under the same name, and the soak's at-least-once accounting covers them. Compaction adds
+no new client semantics. It adds three guarantees around the replacement so it loses less than a crash:
+- everything a connected client sent before the close is kept (§5.3);
+- posts in flight settle over the stale connection (§5.5);
+- a tool call that spans the replacement reports that instead of success (§5.5).
+
 ### 5.1 Generations and the generation frame
 
 `meta.generation` is a random 128-bit hex string written only by compaction. A document without one
@@ -156,21 +162,20 @@ it too or leaves history growing.
 **The server announces the generation before any document data.**
 - A client that sends a `gen` URL parameter gets one generation frame: message type 8
   (`MSG_GENERATION`), JSON `{ g, current }`.
-  - `g` is the generation this connection serves.
+  - `g` is the generation the connection's document data comes from: `current` on a normal
+    connection, none on a stale one (§5.2).
   - `current` is the room's current generation.
-  - They differ only on a straggler connection (§5.5).
 - The server sends the frame in the upgrade callback, before `setupWSConnection` sends sync step 1. TCP
   keeps order, so the frame precedes every byte of document state the connection carries, sync and
   broadcast updates alike.
 
 **Pinning.**
-- Each `Y.Doc` pins `g` from the first frame any of its providers receives. Until then it is `fresh`:
-  it holds no server state, and whatever it wrote locally names no server item, so it merges into any
-  generation.
+- Each `Y.Doc` pins `g` from the first frame that carries one. Until then it is `fresh`: it holds no
+  server state, and whatever it wrote locally names no server item, so it merges into any generation.
 - A replica that received any server data has therefore always pinned the generation that data came
   from, even if it disconnected before `sync` completed.
-- Pins belong to documents, not sessions. room-mcp's probe and roomd's daemon have separate documents,
-  each with its own pin and handler. The probe's document is destroyed after the name is chosen.
+- Pins belong to documents. room-mcp's probe and roomd's daemon have separate documents, each with its
+  own pin and handler.
 
 **Reconnects.** Every Room websocket URL carries `gen=<pin or fresh>` beside `schema=2`. The provider's
 `params` object gets an enumerable getter, so every reconnect sends the current value.
@@ -183,18 +188,25 @@ it too or leaves history growing.
 ### 5.2 The gate (server, at upgrade)
 
 It runs after the room's document has loaded under the repo lock, at the start of `handleUpgrade`'s
-callback. It runs before the hub, identity and read-only wrappers and before `setupWSConnection`, so the
-server has sent no sync step and read nothing the client sent.
+callback, before the hub, identity and read-only wrappers and before `setupWSConnection`. The server has
+sent no sync step and read nothing the client sent.
 
-The current generation is `G`. `P` is the previous generation, if the server still keeps it (§5.4).
+The room's current generation is `G`.
 
 | `gen` param | result |
 |---|---|
-| `fresh` or `G` | serve the room's document; frame `{ g: G, current: G }` |
-| `P` | serve the previous generation as a **straggler** (§5.5); frame `{ g: P, current: G }` |
-| any other value | close **4409** "room document compacted twice since this replica synced; join again" (§5.6) |
-| absent (rc client), `G` is `0` | serve the room's document, no frame (rc clients are unaffected until the first compaction) |
+| `fresh` or `G` | normal connection; frame `{ g: G, current: G }` |
+| any other value | **stale connection**: frame `{ current: G }`, hub frames only (below) |
+| absent (rc client), `G` is `0` | normal connection, no frame (rc clients are unaffected until the first compaction) |
 | absent, `G` is not `0` | close **4403** "update Room to 0.17.0 or later: this room's document was compacted" |
+
+**A stale connection** gets the frame and `bindHub`, and nothing else:
+- no `setupWSConnection`, so no sync, no broadcast and no awareness;
+- every non-hub message it sends is dropped unread. Its replica can never merge into the room.
+- Its hub frames reach the room's hub, so the old session's leases renew and its pending posts settle
+  (§5.5).
+- It is closed when the client drops the session, and it counts against the connection limits like any
+  other.
 
 **Why 4403 for rc clients.** Every rc client already treats it as final:
 - rc room-mcp's `watchClosed` stops reconnecting;
@@ -213,42 +225,51 @@ The current generation is `G`. `P` is the previous generation, if the server sti
 - At the soak's rate that is every ~2–3 h; at real rates every day or two.
 - A room compacts at most once per `ROOM_COMPACT_MIN_INTERVAL_MIN` (default 10).
 
-**At load (the only compaction routine).**
-- `ServerHubs.persistence().bindState` reads the stored document. If it is over the trigger, it:
-  1. builds `compactDoc(stored, newGeneration)`;
-  2. stores the uncompacted state as the room's **previous generation**, under its own key (§5.4);
-  3. writes the copy with `provider.replace`, atomically (one LevelDB batch, or the memory map);
-  4. applies the copy to the live `WSSharedDoc`.
-- A server restart or an idle room's next load therefore compacts before any client syncs.
-- A provider without `replace`, or a failed write, leaves the room uncompacted. That is logged, and the
-  next load tries again.
+**The routine, `compactStored(room)`.** It runs with the document unloaded and nothing connected:
+1. Read the stored document.
+2. If it is over the trigger, build `compactDoc(stored, newGeneration)` and write it with
+   `provider.replace`. That is one atomic write: a LevelDB batch, or the memory map. Nothing else is
+   stored, so a failed or interrupted write leaves the previous document, and its generation, intact.
+3. A provider without `replace`, or a failed write, leaves the room uncompacted. That is logged, and the
+   next attempt starts over.
 
-**Live: drain and unload.** `ServerHubs.tick` measures each loaded room every 60 s. Over the trigger,
-the server recycles the room under the repo lock, so upgrades queue behind it:
+**At load.** `ServerHubs.persistence().bindState` runs the routine's check on the document it reads,
+before applying it to the live `WSSharedDoc`. A server restart or an idle room's next load therefore
+compacts before any client syncs.
+
+**Live: drain, unload, compact.** `ServerHubs.tick` measures each loaded room every 60 s. Over the
+trigger, the server recycles the room under the repo lock, so upgrades queue behind the whole sequence:
 1. **Anchor the document.** Put a placeholder connection (open, sends nothing) into `doc.conns`.
-   Stock y-websocket unloads a document when `conns` empties. It also drops a socket from `conns` the
-   first time it broadcasts to that socket while it is `CLOSING`. Without the anchor, one client's late
-   update could unload the document under the others' in-flight updates.
-2. **Flush the hub's leases.** Then close every room socket with **1012** ("service restart"),
-   reconnectable: clients come back on their own.
+   - Stock y-websocket unloads a document when `conns` empties.
+   - It also drops a socket from `conns` the first time it broadcasts to that socket while it is
+     `CLOSING`.
+   - Without the anchor, one client's late update could unload the document under the others'
+     in-flight updates.
+2. **Close every room socket** with **1012** ("service restart"). It is reconnectable, so clients come
+   back on their own.
 3. **Drain.** Wait for every socket's `close` event, bounded at 5 s, after which the rest are
    terminated.
    - A socket keeps delivering messages until the client's close frame, and stock y-websocket applies
      them. Hub frames are answered by the hub.
-   - A client's unacknowledged post is retried by its own `HubClient` after the reconnect, and answered
-     by id (`duplicate`) if it was accepted.
-4. **Unload.** Remove the anchor and `docs` entry, write the final state through the same persistence
-   `writeState` (which waits out storage failures), then destroy the document, which stops its hub.
-5. **Reset per-document state.** Drop the room's identity-guard shadow, size meter, awareness owners and
+   - So everything a client sent before it saw the close reaches the document.
+4. **Quiesce the hub.**
+   - With no sockets left, no lease request can arrive.
+   - Await the hub's final lease flush (`flushLeases`, which retries until the store accepts the last
+     snapshot), then stop it.
+5. **Unload.** Remove the anchor and `docs` entry, write the final state through the same persistence
+   `writeState` (which waits out storage failures), then destroy the document.
+6. **Run `compactStored(room)`.**
+7. **Reset per-document state.** Drop the room's identity-guard shadow, size meter, awareness owners and
    budget, as `stopDoc` does. Then release the lock.
 
-The clients' reconnects load the room through the load-time path, which compacts, and then meet the gate
-with their old generation: they become stragglers (§5.5). If the compaction failed, the generation is
-unchanged and they simply resume. Nothing was discarded.
+**After the lock is released**, the clients reconnect. They load the compacted room and meet the gate
+with their old generation, which makes their connections stale (§5.5).
 
-### 5.4 What `compactDoc` copies, and the previous generation
+**If the compaction failed**, the generation is unchanged, and they resume as after any server restart.
+A client's replica is only ever discarded once a new generation exists.
 
-**The copy.**
+### 5.4 What `compactDoc` copies
+
 - **Every root, by value, whatever its name.**
   - Maps, arrays and text, including roots that arrived by update and were never read: their kind is
     read from their items.
@@ -266,94 +287,80 @@ unchanged and they simply resume. Nothing was discarded.
   - Seqs and epochs in the copied `bus`, `mail` and `meta` mirrors are values, so `highestSeq` and the
     ledger cursor (`cursor.json` frontier) are unaffected.
 
-**The previous generation.**
-- The uncompacted final state is kept as one record per room (`prevgen:<room>`: its generation and
-  update), replaced by the next compaction and removed with the room.
-- That costs one uncompacted document of disk per room (≤ the 64 MB cap) and no memory unless a
-  straggler connects.
-- It is the old generation exactly as last persisted, so a straggler's sync step 2 against it carries
-  precisely what the server never had.
+### 5.5 Clients: replacing a stale replica
 
-### 5.5 Straggler connections
+**When.** A replica is stale when a generation frame's `current` differs from its pin. A `fresh` replica
+is never stale.
 
-A connection whose `gen` is `P` is served a **straggler document** `O`:
-- `O` is loaded from `prevgen:<room>` on the first straggler, shared by all of them, and dropped when the
-  last one disconnects.
-- y-websocket syncs it normally, so the client's sync step 2 delivers every struct and deletion of its
-  replica that the old generation lacks: offline writes, writes after the drain, late tool writes. Yjs
-  computes this exactly; nothing is inferred.
-- The hub frames of a straggler connection go to the room's hub (the live generation's), so leases,
-  posts and retries work unchanged.
-- The same read-only and identity wrappers apply. The identity guard keeps its own shadow of `O`.
-
-**The translator.** It turns every remote transaction on `O` into value operations on the live
-document. It works from the transaction's Yjs events, which still hold deleted values during the
-transaction: `oldValue` for maps, the deleted items' content for arrays.
-
-| Change on `O` | Applied to the live document |
-|---|---|
-| Map key set (JSON value) | set, unless the live value is already equal |
-| Map key set (nested type) | the nested value copied as in `compactDoc` |
-| Map key deleted | deleted, if the live value still deep-equals the event's `oldValue` (the value the client deleted) |
-| Array insert | appended, unless an equal element is present (chat, `retiredWorkers`: elements carry ids) |
-| Array delete | the first deep-equal live element deleted, so `retiredWorkers`' 200 cap carries over |
-| Text delta (an overlay) | applied to the same path's live text, which only its owner (this straggler) writes. If the live text differs from `O`'s pre-transaction text, the whole text is replaced instead |
-| Claim set with an anchor | its anchor re-created against the live text, as in `compactDoc` |
-
-**Properties of the translator.**
-- **Idempotent.** A straggler that reconnects after a server restart resends the same structs, and
-  they change nothing twice.
-- **One-way.** Live changes are not copied back to `O`, so `O` doesn't grow beyond its stragglers'
-  writes. In exchange, a straggler reads the room as of the compaction until it replaces its replica
-  (§5.6). Its posts still reach the live bus through the hub, and its receipts and claims through the
-  translator.
-- **Bounded size.** The size cap measures the live document, which the translated writes land in.
-
-### 5.6 Clients: replacing a stale replica
-
-**When.** A replica is stale when a generation frame's `current` differs from its pin. Its connection is
-a straggler connection, and it keeps working.
-
-**room-mcp.** A stale primary starts a **replacement**. It is the host-rebind path, run with the same
+**room-mcp: the replacement.** A stale primary starts it. It is the host-rebind path, run with the same
 session id, and it runs to completion:
-1. **Settle the old session's pending posts.** Its `HubClient` retries them over the straggler
-   connection to the same hub until each is acknowledged (`duplicate` if already accepted) or fails as
-   it would without compaction. Its tool calls in flight keep running; their writes reach the room
-   through the translator.
-2. **Join and adopt a fresh session.**
-   - `joinSession` takes a new, `fresh` replica, which syncs the live generation. Its acquire
-     supersedes the old session's lease, so the old session's roomd, ledger and projectors stop at
-     their fence.
+1. **Stop new work on the old session.** New tool calls wait on the replacement, as they wait on a
+   rebind.
+2. **Let the old session's work settle**, bounded at 60 s.
+   - Tool calls already running finish.
+   - Its `HubClient`'s pending posts settle over the stale connection. Each is answered by the hub:
+     accepted, `duplicate` if the drain had already accepted it, or refused. Each post's outcome is
+     therefore true.
+   - Document writes the old session makes now land in a replica that will be discarded. A tool call
+     that started on the old session, and wrote to its document after the session went stale, returns
+     an error saying the room's document was replaced during the call and to check `room_state` before
+     retrying. It never returns success.
+   - Posts don't need that error: their outcome comes from the hub.
+3. **Drop the old session.** Its leave releases the lease over the stale connection.
+4. **Join and adopt a fresh session.**
+   - `joinSession` takes a new, `fresh` replica.
    - It is adopted with `adopt(s, false)`, which skips `clearStale`, so the participant's own claims and
-     scope (live in the new generation) are not mistaken for an earlier session's.
-   - New tool calls wait on the replacement, as on a rebind.
-3. **Re-attach secondary rooms.** Each secondary (the local workers room) is rejoined and re-attached
+     scope (in the new generation) are not mistaken for an earlier session's.
+5. **Re-attach secondary rooms.** Each secondary (the local workers room) is rejoined and re-attached
    (`attachWorkersRoom`), which rebuilds the workers bridge against the new primary.
-4. **Drop the old session once it is idle.** Wait until no tool call that started on it is still
-   running. The old session stays connected as a straggler until then, so a late write still lands.
-   Then it is dropped.
-5. **Retry until done.** The replacement keeps the intended room set and its progress. A stage that
-   fails (a join refused, a relay down) is retried with backoff until every room is back. An idle agent
-   is not left without its workers room. Until the primary is adopted, the old session remains the
-   session.
+6. **Retry until done.** The replacement keeps the intended room set and its progress. A stage that
+   fails (a join refused, a relay down) is retried with backoff until every room is back, so an idle
+   agent is not left without its workers room.
 
 **roomd** runs inside the session and is replaced with it.
 
 **Web view.** It sends `gen` and disables BroadcastChannel.
-- A stale frame, or 4409, reloads the page: a read-only view has no writes to keep. The reload trades
-  its view key for a new ticket.
+- A stale frame reloads the page: a read-only view has no writes. The reload trades its view key for a
+  new ticket.
 - On 4403 it shows the reason, as today.
 
 **roomagent (`packages/agent`).** It sends `gen` and disables BroadcastChannel.
-- On a stale frame it finishes its current turn on the straggler connection, then exits non-zero with
-  the reason.
-- On 4409 or 4403 it exits.
+- On a stale frame it settles its pending posts as in step 2, then exits non-zero with the reason.
+- On 4403 it exits.
 - Its supervisor (or its human) restarts it with a fresh replica, which is what a restart already does.
 
-**4409 (two compactions behind).** The replica predates the previous generation, which is gone: the
-client has been away for at least one full compaction interval, far past its 45 s lease fence. Its
-unsynced writes from that time are lost, as a leave or a process restart loses them today.
-room-mcp then runs the same replacement without step 1.
+### 5.6 Writes a replacement does not carry
+
+What a replacement can lose is what a crash of the client at that moment loses. It is limited to
+document writes that never reached the server:
+- **A connected client** loses only what its background writers wrote between the server's close frame
+  and the stale frame, typically under a second.
+- **A client that was disconnected** when the room compacted loses its offline writes. Its lease fence
+  stops writers 45 s into a disconnection, so these are at most 45 s of writes.
+
+| Write | After the replacement |
+|---|---|
+| Receipts (`seen:<me>`) | Not carried. The messages are delivered again: duplicates, within at-least-once, as after a restart |
+| Overlays, manifest, `basetextFlat` | Republished by roomd's `reconcile('all')` at start |
+| `participants` `id`/`proj`/`git` | Rewritten at start |
+| Worker views, graphs, colours, coordination | Rebuilt on `sync` |
+| Claims, scope, release (tool calls) | Refused while unsynced. A call spanning the replacement reports it (§5.5 step 2) |
+| Worker retirement (projector) | **Re-verified on every sync** (new, below) |
+| Claim re-anchoring by roomd on a HEAD transition | The claim shows its last synced lines until roomd's next transition |
+| `pushedPending` (a `pushed` notice a HEAD transition owes) | The notice is not sent |
+| roomagent chat lines | Not carried |
+
+**Retirement re-verification** is the one targeted change.
+- Today a projector that retires a worker offline marks the room's cleanup `done` on disk. If its
+  replica is then discarded, by a restart or now by a replacement, nothing retries the retirement, and
+  the worker's view, claims and names linger until the room's stale expiry.
+- The projector will now, on every `sync`, re-run `retireWorker` for records retired in the last 7 days
+  whose entry is missing from the room's `retiredWorkers`. `retireWorker` is idempotent and guarded by
+  `workerOwnsName`.
+- This closes the gap for restarts too.
+
+The last three rows are accepted, as they are for restarts today. Each costs a stale range or a notice,
+never a coordination fact another participant relies on.
 
 ### 5.7 Local relay rooms
 
@@ -362,8 +369,8 @@ Relay rooms are unchanged in 0.17.0, and the relay ignores `gen` and sends no fr
   restarts don't accumulate history.
 - **Known gap, unchanged.** A survivor reconnecting with pre-snapshot identities is the relay's
   existing, documented gap (`relay/src/memory.ts`, deduped by id).
-- **The fix, later.** The generation gate and straggler path would close that gap there too. It is a
-  follow-up with its own tests.
+- **The fix, later.** The same gate would close that gap there too. It is a follow-up with its own
+  tests.
 
 ## 6. Costs
 
@@ -371,18 +378,17 @@ Relay rooms are unchanged in 0.17.0, and the relay ignores `gen` and sends no fr
 - One URL parameter (`gen`) and one message type (8, the generation frame, sent only to clients that
   send `gen`).
 - One `meta` key (`generation`).
-- A new close code (4409), plus 4403 with a new reason for rc clients and 1012 for a recycle.
+- 4403 with a new reason for rc clients, and 1012 for a recycle.
 - `disableBc` on every provider.
 - Hub protocol unchanged (`HUB_PROTO` 1). Schema unchanged (`schema=2`).
 
-**Server.**
-- The compaction routine, the gate, the drain-and-unload recycle.
-- The previous-generation record and the straggler document with its translator. The translator is
-  the largest new piece, and it is pure value code, testable offline.
+**Server.** The compaction routine, the gate with its stale (hub-only) connections, and the
+drain-and-unload recycle.
 
 **Clients.**
 - The generation frame handler and `gen` getter.
-- room-mcp's replacement sequencing (an extension of the rebind path).
+- room-mcp's replacement, an extension of the rebind path with a settle step and the spanning-call error.
+- The projector's re-verification.
 - Reload in the web view and exit in roomagent.
 
 **Migration.**
@@ -392,19 +398,16 @@ Relay rooms are unchanged in 0.17.0, and the relay ignores `gen` and sends no fr
 - **rc clients** keep working in a room until its first compaction. After it, they are closed with
   4403 and the update text, which every rc client treats as final. An rc client must update to 0.17.0.
 
-**Offline.**
-- Exact while the previous generation is kept: a straggler's unsynced writes, deletions included,
-  reach the live document (§5.5).
-- A replica two compactions old loses its unsynced writes (§5.6).
+**Offline.** Per §5.6: a crash's losses at the moment of the replacement, minus what the drain, the
+settle step and the re-verification keep.
 
 **Availability.**
 - A live recycle disconnects every client of one room for about the time of a hub restart. The soak
   measured 2–5 s back after `/health`.
-- Replacements then run in the background, with tool calls waiting only for the adopt step.
+- Replacements then run in each client, with tool calls waiting for at most the settle step plus a join.
 
-**Memory.**
-- The compaction transiently holds the stored document plus its copy, at load only.
-- A straggler document lives only while stragglers are connected.
+**Memory.** The compaction transiently holds the stored document plus its copy, with the live document
+already unloaded.
 
 ## 7. Tests (failing first)
 
@@ -419,30 +422,28 @@ Relay rooms are unchanged in 0.17.0, and the relay ignores `gen` and sends no fr
   - Claim anchors resolve to the same lines.
   - XML types throw.
 - **Generation frame:** a replica that received an update, but no sync step 2, has pinned `g`. A
-  `fresh` replica merges into any generation. `params.gen` follows the pin.
+  `fresh` replica is never stale. `params.gen` follows the pin.
 - **Server:**
-  - **Load-time compaction:** a stored document over the threshold loads compacted, the previous
-    generation is stored, and the next load is not compacted again.
+  - **Load-time compaction:** a stored document over the threshold loads compacted; the next load is
+    not compacted again; a failing `replace` leaves the old document and generation.
   - **Restart reloads compact.**
-  - **Gate:** each row of §5.2.
+  - **Gate:** each row of §5.2. A stale connection's sync and update messages are dropped, and its hub
+    frames are answered.
   - **Recycle drain:** updates several clients sent after the server's close frame went out, but before
     theirs, are all persisted. This test fails without the anchor.
+  - **Lease release during the drain:** a release made during the drain is in the lease store the next
+    hub adopts.
   - **Counters:** `seq` after compaction is above every earlier one, with no reuse.
   - **Leases:** a lease survives a recycle (same epoch, renew ok).
-- **Translator:**
-  - Each table row, including a deletion whose value only the event still holds, and an array delete
-    keeping `retiredWorkers` at its cap.
-  - Idempotence on resend after a restart.
-  - A text delta against changed live text falls back to replacement.
-- **Delivery:**
-  - An addressed message receipted offline across a compaction is not redelivered.
-  - A post accepted during the drain, whose reply was lost, is answered `duplicate` on retry, and
-    delivered once.
+- **Delivery:** a post accepted during the drain, whose reply was lost, settles as `duplicate` over the
+  stale connection and is delivered once.
 - **Client (room-mcp):**
   - A stale frame starts a replacement that keeps the name, doesn't clear its own claims, re-attaches
     the workers room, and survives a failed secondary join by retrying.
-  - A `room_claim` that resumes after the adopt still lands in the room.
+  - A `room_claim` spanning the replacement returns the replacement error, not success.
   - BroadcastChannel is off.
+- **Projector:** a retirement whose replica was discarded is re-applied on the next sync, and an
+  already-retired worker is not touched.
 
 ## 8. Soak
 
@@ -454,29 +455,32 @@ trigger) against rc5's 11,200/hour line, and the server's heap slope.
 
 ## 9. Why this is not implemented tonight
 
-The two review rounds (§10) showed where the work is. Compaction itself is small: the spike, the
-trigger and the load-time path. The hard part is giving a client's unsynced writes and in-flight
-operations exact semantics across a generation change. Two client-side designs each failed review on a
-real hole:
-- replacing the replica outright: lost offline retirements and in-flight tool writes;
-- replaying from the client: Yjs drops deleted values, deletions don't advance the clock, and pending
-  posts die with the dropped session.
-
-The straggler design closes those holes, but it adds a server translator, a previous-generation record
-and a staged client replacement. Each needs failing-first tests across server, room-mcp, web and agent,
-then review rounds, then a soak. Rushing that overnight would trade a known, slow memory drift for
-silent data loss in coordination state, so it stops at the reviewed spec.
+The three review rounds (§10) showed where the work is.
+- **Compaction itself is small:** the spike, the trigger and the load-time path.
+- **The hard part is the generation change on clients.** Two exact designs (client replay, then a
+  server-side translator) each failed review on several real holes.
+- **This draft gives up exactness for restart semantics**, which Room already relies on, plus three
+  narrow guarantees. It is the smallest design that survived review.
+- **It is still a cross-cutting change:** the server gate and recycle, room-mcp's replacement, the
+  projector, web and agent. It needs failing-first tests in each, review rounds, the full suite and a
+  ≥60 min soak.
+- **Rushing that overnight** would trade a known, slow memory drift for regressions in leases and
+  delivery, so it stops at the reviewed spec.
 
 What exists on the `compaction` branch:
-- the spike (`packages/shared/src/compact.ts`: `compactDoc`, used by the harness);
+- the spike (`packages/shared/src/compact.ts`: `compactDoc`, with its unit tests, used by the harness);
 - the harness (`scripts/doc-history.mts`, §3);
-- unit tests for the shared pieces, written failing-first.
+- a per-root breakdown in `soak.mts structs`.
 
 **Implementation order for 0.17.0.**
-1. Shared: generation frame, trigger, gate verdict, translator. All offline-testable.
-2. Server: load-time compaction plus the previous-generation record, the gate, then the recycle with
-   its drain test.
-3. Clients: frame and `gen` on all four providers, `disableBc`, then room-mcp's replacement.
+1. Shared: generation frame, trigger, gate verdict. All offline-testable.
+2. Server: `compactStored` at load, the gate with stale connections, then the recycle with its drain and
+   lease tests.
+3. Clients:
+   - frame and `gen` on all four providers, plus `disableBc`;
+   - the projector's re-verification;
+   - room-mcp's replacement;
+   - web reload and agent exit.
 4. Review, the full suite, and a ≥60 min local soak in `structs` mode against rc5's line.
 
 ## 10. Review log
@@ -497,6 +501,24 @@ What exists on the `compaction` branch:
   - An equal generation after a failed compaction lost writes.
   - A failed secondary rejoin stranded the bridge.
   - The probe and roomd don't share a document.
+- **Round 3** (Astra, 9 must-fix), against the straggler-translator draft:
+  - Reloading the old generation replays translated writes.
+  - Deleted nested types expose no old value.
+  - Re-anchored claims never match a deletion.
+  - Array translation broke the cap.
+  - No upload barrier before dropping an idle replica.
+  - Posts after the lease is superseded.
+  - The previous-generation record isn't atomic with the compaction.
+  - No final lease flush after the drain.
+  - The old-generation document was unbounded.
 
-  The third draft replaces client replay with straggler connections and the server-side translator
-  (§5.5), and staged, retried replacement (§5.6).
+  The fourth draft removes the translator and the previous generation and adopts restart semantics. It
+  keeps:
+  - the anchored drain;
+  - hub-only stale connections, so posts settle;
+  - a final lease flush;
+  - the 4409-free gate: a stale connection replaces its replica, and no compaction, no replacement;
+  - an error for spanning tool calls;
+  - retirement re-verification.
+
+  It states the remaining losses (§5.6).

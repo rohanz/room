@@ -442,7 +442,16 @@ async function structs(): Promise<void> {
     for (const list of (doc.store as any).clients.values()) for (const st of list) { count++; if (st.constructor.name === 'Item') { items++; if (st.deleted) deleted++ } }
     // A Y.Map's _map keeps one entry per key ever set, deleted ones included.
     const keys = Object.fromEntries([...doc.share].map(([k, v]) => [k, (v as any)._map?.size ?? (v as any)._length ?? 0]))
-    const row = { room, clients: (doc.store as any).clients.size, structs: count, items, deleted, encodedKB: Math.round(Y.encodeStateAsUpdate(doc).length / 1024), keys }
+    // Structs per root (seen:<P> and chat:<P> grouped): which writers the history comes from.
+    const rootName = new Map<unknown, string>([...doc.share].map(([k, v]) => [v, k.startsWith('seen:') ? 'seen:*' : k.startsWith('chat:') ? 'chat:*' : k]))
+    const byRoot: Record<string, number> = {}
+    for (const list of (doc.store as any).clients.values()) for (const st of list) {
+      let parent = st.parent
+      while (parent?._item) parent = parent._item.parent
+      const name = rootName.get(parent) ?? (st.constructor.name === 'GC' ? '(gc)' : '?')
+      byRoot[name] = (byRoot[name] ?? 0) + 1
+    }
+    const row = { room, clients: (doc.store as any).clients.size, structs: count, items, deleted, encodedKB: Math.round(Y.encodeStateAsUpdate(doc).length / 1024), keys, byRoot }
     emit(row); console.log(JSON.stringify(row))
     p.destroy(); doc.destroy()
   }

@@ -16,7 +16,7 @@ type Kind = 'map' | 'array' | 'text'
 type Shape = { _map: Map<string, unknown>; _start: { deleted: boolean; content: { constructor: { name: string } }; right: unknown } | null }
 
 /** A root's kind. Roots that arrived by update and were never read are plain AbstractTypes: read their items. */
-function kindOf(type: Y.AbstractType<unknown>): Kind | undefined {
+function kindOf(type: Y.AbstractType<any>): Kind | undefined {
   if (type instanceof Y.Map) return 'map'
   if (type instanceof Y.Array) return 'array'
   if (type instanceof Y.Text) return 'text'
@@ -37,7 +37,7 @@ function copyValue(value: unknown): unknown {
     for (const [key, inner] of value.entries()) out.set(key, copyValue(inner))
     return out
   }
-  if (value instanceof Y.Array) return Y.Array.from(value.toArray().map(copyValue))
+  if (value instanceof Y.Array) return Y.Array.from(value.toArray().map(copyValue) as never[])
   if (value instanceof Y.Text) {
     const out = new Y.Text()
     out.applyDelta(value.toDelta())
@@ -77,6 +77,7 @@ export function compactDoc(source: Y.Doc, generation: string): Y.Doc {
       else if (kind === 'text') copy.getText(name).applyDelta(source.getText(name).toDelta())
     }
     copy.getMap('meta').set(GENERATION_KEY, generation)
+    if (!anchors.size) return
     const copied = copy.getMap<Claim>('claims')
     for (const [id, at] of anchors) {
       const claim = copied.get(id)!
