@@ -22,6 +22,7 @@ export function memoryTransport(room: RoomDoc): HubTransport & { up(): void; dow
   const conn = {}
   const frames = new Set<(bytes: Uint8Array) => void>()
   const reconnects = new Set<() => void>()
+  const closes = new Set<() => void>()
   let connected = true
   return {
     connected: () => connected,
@@ -32,8 +33,9 @@ export function memoryTransport(room: RoomDoc): HubTransport & { up(): void; dow
     },
     onFrame(fn) { frames.add(fn); return () => frames.delete(fn) },
     onReconnect(fn) { reconnects.add(fn); return () => reconnects.delete(fn) },
+    onClose(fn) { closes.add(fn); return () => closes.delete(fn) },
     up() { connected = true; for (const fn of reconnects) fn() },
-    down() { connected = false },
+    down() { connected = false; for (const fn of closes) fn() },
   }
 }
 

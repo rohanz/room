@@ -1,3 +1,6 @@
 .git
 node_modules
 **/node_modules
+# Worker checkouts and host-compiled server artifacts are not build inputs.
+.room/
+packages/server/dist/

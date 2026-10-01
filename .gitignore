@@ -16,3 +16,5 @@ dist/
 .playwright-mcp/
 .claude/worktrees/
 .room/
+# Compiled hosted server (built in the Docker build stage).
+packages/server/dist/

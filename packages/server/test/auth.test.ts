@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Auth } from '../src/auth.js'
+import { FileStore } from '../src/store.js'
 
 type Call = { url: string; body?: any }
 function fakeGitHub(script: { tokenResponses: any[]; login?: string; userStatus?: number }) {
@@ -132,6 +133,25 @@ describe('device-flow auth', () => {
     auth.sweepSessions()
     expect(removed).toEqual([`${session}:session expired`])
     expect(auth.peek(session)).toBeUndefined()
+  })
+
+  it('keeps in-memory logins valid across the periodic session reconciliation', async () => {
+    let now = 1000
+    const removed: string[] = []
+    const store = new FileStore()
+    const auth = new Auth({ clientId: 'fake', production: false, store, now: () => now,
+      onSessionRemoved: id => removed.push(id) })
+    await auth.ready
+    const { session } = await auth.poll((await auth.startDevice()).device, { fakeLogin: 'octo' }) as { session: string }
+    now += 60_000
+    await auth.reconcileSessions()
+    expect(auth.resolve(session)).toMatchObject({ login: 'octo' })
+    await auth.reconcileSessions()
+    expect(removed).toEqual([])
+    auth.logout(session)
+    await auth.reconcileSessions()
+    expect(auth.peek(session)).toBeUndefined()
+    expect(removed).toEqual([session])
   })
 
   it('notices an operator deleting a persisted session', async () => {

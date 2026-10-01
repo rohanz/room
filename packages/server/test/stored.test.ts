@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { keyEncoding, LeveldbPersistence } from 'y-leveldb'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables, levelLoad } from '../src/stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, RAW_PER_SST_BYTE, levelStoredUpdates, levelCopyRaw, levelReplace, levelReadTables, levelLoad } from '../src/stored.js'
 import { migrateRepo, type MigrationIO } from '../src/migrate.js'
 import type { OpenRepo } from '../src/store.js'
 import { takeInventory, formatInventory } from '../src/inventory.js'
@@ -28,6 +28,52 @@ async function fixture() {
   for (const update of updates) await provider.storeUpdate('from', update)
   return { provider, db: await levelDbOf(provider), doc, updates }
 }
+it('leaves a small document unflagged with memtable slack and no update reads', async () => {
+  const f = await fixture()
+  const tables = await levelStoredTables(f.db, ['from'])
+  const streams = vi.spyOn(f.db, 'createReadStream')
+  const inventory = await takeInventory(['from'], {}, async (name, limit) => levelInventorySize(name, limit, tables), 8 * 1048576, tables)
+  expect(inventory.docs[0]).toMatchObject({ bytes: 0, updates: 0, over: false })
+  expect(levelInventorySize('from', 8 * 1048576, tables).reason).toBe('estimated from table metadata')
+  expect(levelInventorySize('from', 8 * 1048576).over).toBe(true) // no native metadata must never imply safety
+  expect(levelInventorySize('from', tables!.memtableSlack - 1, tables).over).toBe(true)
+  expect(streams).not.toHaveBeenCalled()
+  f.doc.destroy()
+})
+it.each([['8388608', 8 * 1048576], ['invalid', 4 * 1048576]])('uses native memory slack or the default write buffer (%s)', async (memory, expected) => {
+  const f = await fixture(), native = f.db.db!.db!
+  const getProperty = native.getProperty!.bind(native)
+  const property = vi.spyOn(native, 'getProperty').mockImplementation(name =>
+    name === 'leveldb.approximate-memory-usage' ? memory : getProperty(name))
+  const streams = vi.spyOn(f.db, 'createReadStream')
+  try {
+    const tables = await levelStoredTables(f.db, ['from'])
+    expect(tables!.memtableSlack).toBe(expected)
+    expect(levelInventorySize('from', expected - 1, tables).over).toBe(true)
+    expect(streams).not.toHaveBeenCalled()
+  } finally { property.mockRestore(); f.doc.destroy() }
+})
+it('flags only when the compressed SST bound plus memtable slack exceeds the limit', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-inventory-compressed-'))
+  let provider = new LeveldbPersistence(dir)
+  cleanups.push(async () => { await provider.destroy(); fs.rmSync(dir, { recursive: true, force: true }) })
+  const doc = new Y.Doc(); doc.getMap('padding').set('data', 'x'.repeat(2 * 1048576))
+  await provider.storeUpdate('compressed', Y.encodeStateAsUpdate(doc)); doc.destroy()
+  await provider.destroy(); provider = new LeveldbPersistence(dir)
+  const db = await levelDbOf(provider), tables = await levelStoredTables(db, ['compressed'])
+  const streams = vi.spyOn(db, 'createReadStream')
+  const measured = levelInventorySize('compressed', 32 * 1048576, tables)
+  expect(measured.bytes).toBeGreaterThan(0)
+  expect(measured.bytes).toBeLessThan(1048576)
+  expect(measured).toMatchObject({ updates: 0, over: false, reason: 'estimated from table metadata' })
+  const bound = measured.bytes * RAW_PER_SST_BYTE + tables!.memtableSlack
+  expect(levelInventorySize('compressed', bound - 1, tables)).toMatchObject({ bytes: measured.bytes, updates: 0, over: true })
+  expect(levelInventorySize('compressed', bound - 1, tables).reason).toContain('possibly over:')
+  expect(levelInventorySize('compressed', bound, tables).over).toBe(false)
+  expect(streams).not.toHaveBeenCalled()
+  // Loading still uses its original exact raw-byte gate.
+  expect(await levelStoredSize(db, 'compressed', 1048576, tables)).toMatchObject({ over: true })
+})
 it('loads a document with more than 500 records without writing (y-leveldb getYDoc would append a snapshot)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-stored-load-')), provider = new LeveldbPersistence(dir)
   cleanups.push(async () => { await provider.destroy(); fs.rmSync(dir, { recursive: true, force: true }) })

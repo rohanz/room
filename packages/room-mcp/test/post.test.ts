@@ -77,7 +77,7 @@ describe('Session.post through the hub (hub §11)', () => {
   })
 
   it('a hub that never answers is reported as unreachable, not as sent', async () => {
-    const silent: HubTransport = { connected: () => true, send() {}, onFrame: () => () => {}, onReconnect: () => () => {} }
+    const silent: HubTransport = { connected: () => true, send() {}, onFrame: () => () => {}, onReconnect: () => () => {}, onClose: () => () => {} }
     const room = new RoomDoc()
     const hub = new HubClient({ transport: silent, client: 'test', sessionId: 's1' })
     cleanups.push(() => hub.close())

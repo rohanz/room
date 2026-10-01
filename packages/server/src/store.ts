@@ -110,7 +110,9 @@ export class FileStore implements Store {
   }
 
   async loadSessions(): Promise<Record<string, StoredSession>> {
-    this.sessions = this.readJson<Record<string, StoredSession>>(this.sessionsFile) ?? {}
+    // Without a file, this map is the source of truth. Reload only persistent sessions so
+    // operator deletions still revoke logins during Auth's periodic reconciliation.
+    if (this.sessionsFile) this.sessions = this.readJson<Record<string, StoredSession>>(this.sessionsFile) ?? {}
     return { ...this.sessions }
   }
   /** Sessions hold GitHub tokens: the file is 0600. */

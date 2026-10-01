@@ -76,7 +76,11 @@ export async function levelDbOf(provider: LevelProvider): Promise<LevelDb> {
 }
 
 interface StoredTable { level: number; file: number; bytes: number; first: Buffer; last: Buffer }
-interface StoredTables { tables: StoredTable[]; names: Buffer[]; firstVector: Buffer }
+interface StoredTables { tables: StoredTable[]; names: Buffer[]; firstVector: Buffer; memtableSlack: number }
+// Snappy's best case copies 64 bytes with a 3-byte tag (~21.3x); 24x leaves headroom.
+export const RAW_PER_SST_BYTE = 24
+// y-leveldb uses leveldown's default 4 MiB write buffer.
+const LEVEL_WRITE_BUFFER_BYTES = 4 * 1048576
 const escapedKey = (text: string): Buffer => {
   const bytes: number[] = []
   for (let i = 0; i < text.length; i++) {
@@ -93,6 +97,13 @@ export async function levelStoredTables(db: LevelDb, names?: readonly string[]):
   await db.open?.()
   const native = db.db?.db
   if (!native?.getProperty) return undefined // Other adapters fall back to the early-exit value scan.
+  let memtableSlack = LEVEL_WRITE_BUFFER_BYTES
+  try {
+    // Includes active/immutable memtables and the block cache, so it can overestimate.
+    // Capture before tables: a concurrent flush is counted here or in the newer SST list.
+    const memory = Number(native.getProperty('leveldb.approximate-memory-usage'))
+    if (Number.isSafeInteger(memory) && memory >= 0) memtableSlack = Math.max(memtableSlack, memory)
+  } catch { /* Older adapters may not expose this property; retain the default write buffer. */ }
   const tables: StoredTable[] = []
   let level = -1
   for (const line of native.getProperty('leveldb.sstables').split('\n')) {
@@ -109,7 +120,7 @@ export async function levelStoredTables(db: LevelDb, names?: readonly string[]):
   // Discovery keys occupy the small v1_sv space; never seek keys inside an update block.
   const knownNames: readonly string[] = names ?? (await getAllDocs(db, false, true) as Key[]).map(key => key[1] as string)
   const firstVector = knownNames.map(name => keyEncoding.encode(['v1_sv', name]) as Buffer).sort(Buffer.compare)[0] ?? keyEncoding.encode(['v1_sv'])
-  return { tables, names: knownNames.map(name => keyEncoding.encode(['v1', name]) as Buffer).sort(Buffer.compare), firstVector }
+  return { tables, names: knownNames.map(name => keyEncoding.encode(['v1', name]) as Buffer).sort(Buffer.compare), firstVector, memtableSlack }
 }
 
 /** Operator visibility for large final blocks that L0 can read even when seeking beyond a table. */
@@ -134,6 +145,21 @@ export function levelReadTables(tables: readonly StoredTable[], start: Buffer, e
     if (intersects) advancing.add(table.level); else advancing.delete(table.level)
     return reads
   })
+}
+
+/** Inventory must not fault stored values into native memory. Bound raw bytes with the
+ *  compression ceiling and a whole-database memtable allowance, attributed to each doc.
+ *  updates=0 means uncounted here; even key-only update iteration can read large native data blocks. */
+export function levelInventorySize(name: string, limit: number, snapshot?: StoredTables): StoredSize {
+  if (!snapshot) return { bytes: 0, updates: 0, over: true, reason: 'possibly over: LevelDB table metadata unavailable' }
+  const start = keyEncoding.encode(updateRange(name).gte), end = keyEncoding.encode(updateRange(name).lt)
+  const bytes = (snapshot?.tables ?? []).filter(table => Buffer.compare(table.last, start) >= 0 && Buffer.compare(table.first, end) < 0)
+    .reduce((sum, table) => sum + table.bytes, 0)
+  const bound = bytes * RAW_PER_SST_BYTE + snapshot.memtableSlack
+  const over = bound > limit
+  return { bytes, updates: 0, over, reason: over
+    ? `possibly over: overlapping SST bytes × ${RAW_PER_SST_BYTE} + ${snapshot.memtableSlack} memtable slack exceed ${limit} bytes`
+    : 'estimated from table metadata' }
 }
 
 /** Gate on tables an iterator can read, then sum raw bytes with early exit.

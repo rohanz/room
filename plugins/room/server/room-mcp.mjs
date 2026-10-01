@@ -7278,612 +7278,6 @@ var init_identity = __esm({
   }
 });
 
-// node_modules/diff/libesm/diff/base.js
-var Diff;
-var init_base = __esm({
-  "node_modules/diff/libesm/diff/base.js"() {
-    "use strict";
-    Diff = class {
-      diff(oldStr, newStr, options = {}) {
-        let callback;
-        if (typeof options === "function") {
-          callback = options;
-          options = {};
-        } else if ("callback" in options) {
-          callback = options.callback;
-        }
-        const oldString = this.castInput(oldStr, options);
-        const newString = this.castInput(newStr, options);
-        const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
-        const newTokens = this.removeEmpty(this.tokenize(newString, options));
-        return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
-      }
-      diffWithOptionsObj(oldTokens, newTokens, options, callback) {
-        var _a3;
-        const done = (value2) => {
-          value2 = this.postProcess(value2, options);
-          if (callback) {
-            setTimeout(function() {
-              callback(value2);
-            }, 0);
-            return void 0;
-          } else {
-            return value2;
-          }
-        };
-        const newLen = newTokens.length, oldLen = oldTokens.length;
-        let editLength = 1;
-        let maxEditLength = newLen + oldLen;
-        if (options.maxEditLength != null) {
-          maxEditLength = Math.min(maxEditLength, options.maxEditLength);
-        }
-        const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
-        const abortAfterTimestamp = Date.now() + maxExecutionTime;
-        const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
-        let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
-        if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-          return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
-        }
-        let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
-        const execEditLength = () => {
-          for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
-            let basePath;
-            const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
-            if (removePath) {
-              bestPath[diagonalPath - 1] = void 0;
-            }
-            let canAdd = false;
-            if (addPath) {
-              const addPathNewPos = addPath.oldPos - diagonalPath;
-              canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
-            }
-            const canRemove = removePath && removePath.oldPos + 1 < oldLen;
-            if (!canAdd && !canRemove) {
-              bestPath[diagonalPath] = void 0;
-              continue;
-            }
-            if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
-              basePath = this.addToPath(addPath, true, false, 0, options);
-            } else {
-              basePath = this.addToPath(removePath, false, true, 1, options);
-            }
-            newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
-            if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
-              return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
-            } else {
-              bestPath[diagonalPath] = basePath;
-              if (basePath.oldPos + 1 >= oldLen) {
-                maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
-              }
-              if (newPos + 1 >= newLen) {
-                minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
-              }
-            }
-          }
-          editLength++;
-        };
-        if (callback) {
-          (function exec2() {
-            setTimeout(function() {
-              if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
-                return callback(void 0);
-              }
-              if (!execEditLength()) {
-                exec2();
-              }
-            }, 0);
-          })();
-        } else {
-          while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
-            const ret = execEditLength();
-            if (ret) {
-              return ret;
-            }
-          }
-        }
-      }
-      addToPath(path50, added, removed, oldPosInc, options) {
-        const last2 = path50.lastComponent;
-        if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
-          return {
-            oldPos: path50.oldPos + oldPosInc,
-            lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
-          };
-        } else {
-          return {
-            oldPos: path50.oldPos + oldPosInc,
-            lastComponent: { count: 1, added, removed, previousComponent: last2 }
-          };
-        }
-      }
-      extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
-        const newLen = newTokens.length, oldLen = oldTokens.length;
-        let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
-        while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
-          newPos++;
-          oldPos++;
-          commonCount++;
-          if (options.oneChangePerToken) {
-            basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
-          }
-        }
-        if (commonCount && !options.oneChangePerToken) {
-          basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
-        }
-        basePath.oldPos = oldPos;
-        return newPos;
-      }
-      equals(left, right, options) {
-        if (options.comparator) {
-          return options.comparator(left, right);
-        } else {
-          return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
-        }
-      }
-      removeEmpty(array2) {
-        const ret = [];
-        for (let i2 = 0; i2 < array2.length; i2++) {
-          if (array2[i2]) {
-            ret.push(array2[i2]);
-          }
-        }
-        return ret;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      castInput(value2, options) {
-        return value2;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      tokenize(value2, options) {
-        return Array.from(value2);
-      }
-      join(chars) {
-        return chars.join("");
-      }
-      postProcess(changeObjects, options) {
-        return changeObjects;
-      }
-      get useLongestToken() {
-        return false;
-      }
-      buildValues(lastComponent, newTokens, oldTokens) {
-        const components = [];
-        let nextComponent;
-        while (lastComponent) {
-          components.push(lastComponent);
-          nextComponent = lastComponent.previousComponent;
-          delete lastComponent.previousComponent;
-          lastComponent = nextComponent;
-        }
-        components.reverse();
-        const componentLen = components.length;
-        let componentPos = 0, newPos = 0, oldPos = 0;
-        for (; componentPos < componentLen; componentPos++) {
-          const component = components[componentPos];
-          if (!component.removed) {
-            if (!component.added && this.useLongestToken) {
-              let value2 = newTokens.slice(newPos, newPos + component.count);
-              value2 = value2.map(function(value3, i2) {
-                const oldValue = oldTokens[oldPos + i2];
-                return oldValue.length > value3.length ? oldValue : value3;
-              });
-              component.value = this.join(value2);
-            } else {
-              component.value = this.join(newTokens.slice(newPos, newPos + component.count));
-            }
-            newPos += component.count;
-            if (!component.added) {
-              oldPos += component.count;
-            }
-          } else {
-            component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
-            oldPos += component.count;
-          }
-        }
-        return components;
-      }
-    };
-  }
-});
-
-// node_modules/diff/libesm/diff/character.js
-function diffChars(oldStr, newStr, options) {
-  return characterDiff.diff(oldStr, newStr, options);
-}
-var CharacterDiff, characterDiff;
-var init_character = __esm({
-  "node_modules/diff/libesm/diff/character.js"() {
-    "use strict";
-    init_base();
-    CharacterDiff = class extends Diff {
-    };
-    characterDiff = new CharacterDiff();
-  }
-});
-
-// node_modules/diff/libesm/diff/line.js
-function diffLines(oldStr, newStr, options) {
-  return lineDiff.diff(oldStr, newStr, options);
-}
-function tokenize(value2, options) {
-  if (options.stripTrailingCr) {
-    value2 = value2.replace(/\r\n/g, "\n");
-  }
-  const retLines = [], linesAndNewlines = value2.split(/(\n|\r\n)/);
-  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
-    linesAndNewlines.pop();
-  }
-  for (let i2 = 0; i2 < linesAndNewlines.length; i2++) {
-    const line = linesAndNewlines[i2];
-    if (i2 % 2 && !options.newlineIsToken) {
-      retLines[retLines.length - 1] += line;
-    } else {
-      retLines.push(line);
-    }
-  }
-  return retLines;
-}
-var LineDiff, lineDiff;
-var init_line = __esm({
-  "node_modules/diff/libesm/diff/line.js"() {
-    "use strict";
-    init_base();
-    LineDiff = class extends Diff {
-      constructor() {
-        super(...arguments);
-        this.tokenize = tokenize;
-      }
-      equals(left, right, options) {
-        if (options.ignoreWhitespace) {
-          if (!options.newlineIsToken || !left.includes("\n")) {
-            left = left.trim();
-          }
-          if (!options.newlineIsToken || !right.includes("\n")) {
-            right = right.trim();
-          }
-        } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
-          if (left.endsWith("\n")) {
-            left = left.slice(0, -1);
-          }
-          if (right.endsWith("\n")) {
-            right = right.slice(0, -1);
-          }
-        }
-        return super.equals(left, right, options);
-      }
-    };
-    lineDiff = new LineDiff();
-  }
-});
-
-// node_modules/diff/libesm/diff/array.js
-function diffArrays(oldArr, newArr, options) {
-  return arrayDiff.diff(oldArr, newArr, options);
-}
-var ArrayDiff, arrayDiff;
-var init_array = __esm({
-  "node_modules/diff/libesm/diff/array.js"() {
-    "use strict";
-    init_base();
-    ArrayDiff = class extends Diff {
-      tokenize(value2) {
-        return value2.slice();
-      }
-      join(value2) {
-        return value2;
-      }
-      removeEmpty(value2) {
-        return value2;
-      }
-    };
-    arrayDiff = new ArrayDiff();
-  }
-});
-
-// node_modules/diff/libesm/patch/create.js
-function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  let optionsObj;
-  if (!options) {
-    optionsObj = {};
-  } else if (typeof options === "function") {
-    optionsObj = { callback: options };
-  } else {
-    optionsObj = options;
-  }
-  if (typeof optionsObj.context === "undefined") {
-    optionsObj.context = 4;
-  }
-  const context2 = optionsObj.context;
-  if (optionsObj.newlineIsToken) {
-    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
-  }
-  if (!optionsObj.callback) {
-    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
-  } else {
-    const { callback } = optionsObj;
-    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff) => {
-      const patch = diffLinesResultToPatch(diff);
-      callback(patch);
-    } }));
-  }
-  function diffLinesResultToPatch(diff) {
-    if (!diff) {
-      return;
-    }
-    diff.push({ value: "", lines: [] });
-    function contextLines(lines) {
-      return lines.map(function(entry) {
-        return " " + entry;
-      });
-    }
-    const hunks = [];
-    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
-    for (let i2 = 0; i2 < diff.length; i2++) {
-      const current = diff[i2], lines = current.lines || splitLines(current.value);
-      current.lines = lines;
-      if (current.added || current.removed) {
-        if (!oldRangeStart) {
-          const prev = diff[i2 - 1];
-          oldRangeStart = oldLine;
-          newRangeStart = newLine;
-          if (prev) {
-            curRange = context2 > 0 ? contextLines(prev.lines.slice(-context2)) : [];
-            oldRangeStart -= curRange.length;
-            newRangeStart -= curRange.length;
-          }
-        }
-        for (const line of lines) {
-          curRange.push((current.added ? "+" : "-") + line);
-        }
-        if (current.added) {
-          newLine += lines.length;
-        } else {
-          oldLine += lines.length;
-        }
-      } else {
-        if (oldRangeStart) {
-          if (lines.length <= context2 * 2 && i2 < diff.length - 2) {
-            for (const line of contextLines(lines)) {
-              curRange.push(line);
-            }
-          } else {
-            const contextSize = Math.min(lines.length, context2);
-            for (const line of contextLines(lines.slice(0, contextSize))) {
-              curRange.push(line);
-            }
-            const hunk2 = {
-              oldStart: oldRangeStart,
-              oldLines: oldLine - oldRangeStart + contextSize,
-              newStart: newRangeStart,
-              newLines: newLine - newRangeStart + contextSize,
-              lines: curRange
-            };
-            hunks.push(hunk2);
-            oldRangeStart = 0;
-            newRangeStart = 0;
-            curRange = [];
-          }
-        }
-        oldLine += lines.length;
-        newLine += lines.length;
-      }
-    }
-    for (const hunk2 of hunks) {
-      for (let i2 = 0; i2 < hunk2.lines.length; i2++) {
-        if (hunk2.lines[i2].endsWith("\n")) {
-          hunk2.lines[i2] = hunk2.lines[i2].slice(0, -1);
-        } else {
-          hunk2.lines.splice(i2 + 1, 0, "\\ No newline at end of file");
-          i2++;
-        }
-      }
-    }
-    return {
-      oldFileName,
-      newFileName,
-      oldHeader,
-      newHeader,
-      hunks
-    };
-  }
-}
-function formatPatch(patch, headerOptions) {
-  if (!headerOptions) {
-    headerOptions = INCLUDE_HEADERS;
-  }
-  if (Array.isArray(patch)) {
-    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
-      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
-    }
-    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
-  }
-  const ret = [];
-  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
-    ret.push("Index: " + patch.oldFileName);
-  }
-  if (headerOptions.includeUnderline) {
-    ret.push("===================================================================");
-  }
-  if (headerOptions.includeFileHeaders) {
-    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
-    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
-  }
-  for (let i2 = 0; i2 < patch.hunks.length; i2++) {
-    const hunk2 = patch.hunks[i2];
-    if (hunk2.oldLines === 0) {
-      hunk2.oldStart -= 1;
-    }
-    if (hunk2.newLines === 0) {
-      hunk2.newStart -= 1;
-    }
-    ret.push("@@ -" + hunk2.oldStart + "," + hunk2.oldLines + " +" + hunk2.newStart + "," + hunk2.newLines + " @@");
-    for (const line of hunk2.lines) {
-      ret.push(line);
-    }
-  }
-  return ret.join("\n") + "\n";
-}
-function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
-  if (typeof options === "function") {
-    options = { callback: options };
-  }
-  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
-    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
-    if (!patchObj) {
-      return;
-    }
-    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
-  } else {
-    const { callback } = options;
-    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
-      if (!patchObj) {
-        callback(void 0);
-      } else {
-        callback(formatPatch(patchObj, options.headerOptions));
-      }
-    } }));
-  }
-}
-function splitLines(text) {
-  const hasTrailingNl = text.endsWith("\n");
-  const result2 = text.split("\n").map((line) => line + "\n");
-  if (hasTrailingNl) {
-    result2.pop();
-  } else {
-    result2.push(result2.pop().slice(0, -1));
-  }
-  return result2;
-}
-var INCLUDE_HEADERS;
-var init_create = __esm({
-  "node_modules/diff/libesm/patch/create.js"() {
-    "use strict";
-    init_line();
-    INCLUDE_HEADERS = {
-      includeIndex: true,
-      includeUnderline: true,
-      includeFileHeaders: true
-    };
-  }
-});
-
-// node_modules/diff/libesm/index.js
-var init_libesm = __esm({
-  "node_modules/diff/libesm/index.js"() {
-    "use strict";
-    init_character();
-    init_line();
-    init_array();
-    init_create();
-  }
-});
-
-// packages/shared/src/text-diff.ts
-function commonEdges(a, b) {
-  const shortest = Math.min(a.length, b.length);
-  let head = 0;
-  while (head < shortest && a.charCodeAt(head) === b.charCodeAt(head)) head++;
-  if (head > 0 && isHigh(a.charCodeAt(head - 1))) head--;
-  let tail = 0;
-  while (tail < shortest - head && a.charCodeAt(a.length - 1 - tail) === b.charCodeAt(b.length - 1 - tail)) tail++;
-  if (tail > 0 && isLow(a.charCodeAt(a.length - tail))) tail--;
-  return [head, tail];
-}
-function fromChanges(changes) {
-  return changes.map((c) => [c.added ? 1 : c.removed ? -1 : 0, c.value]);
-}
-function disjoint(a, b) {
-  const seen = /* @__PURE__ */ new Set();
-  for (let i2 = 0; i2 < a.length; i2++) seen.add(a.charCodeAt(i2));
-  for (let i2 = 0; i2 < b.length; i2++) if (seen.has(b.charCodeAt(i2))) return false;
-  return true;
-}
-function hunk(before, after, budget, stats) {
-  if (!before || !after) return [replace(before, after), 0];
-  const [head, tail] = commonEdges(before, after);
-  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
-  const edges = (middle) => [
-    ...head ? [[0, before.slice(0, head)]] : [],
-    ...middle,
-    ...tail ? [[0, before.slice(before.length - tail)]] : []
-  ];
-  if (!a || !b) return [edges(replace(a, b)), 0];
-  if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0];
-  const tokens = a.length + b.length;
-  const maxEditLength = editBudget(tokens, budget);
-  if (maxEditLength > 0 && stats) stats.charCalls++;
-  const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : void 0;
-  if (!changes) {
-    const spent2 = tokens * maxEditLength;
-    if (stats) stats.work += spent2;
-    return [edges(replace(a, b)), spent2];
-  }
-  const ops = fromChanges(changes);
-  const spent = tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0);
-  if (stats) stats.work += spent;
-  return [edges(ops), spent];
-}
-function boundedTextDiff(before, after, stats) {
-  if (before === after) return before ? [[0, before]] : [];
-  const [head, tail] = commonEdges(before, after);
-  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
-  const out2 = head ? [[0, before.slice(0, head)]] : [];
-  if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
-    out2.push(...hunk(a, b, SMALL_WORK, stats)[0]);
-    if (tail) out2.push([0, before.slice(before.length - tail)]);
-    return out2.filter(([, value2]) => value2.length);
-  }
-  let budget = WORK;
-  const lineCount = (s) => s.split("\n").length;
-  const lineTokens = lineCount(a) + lineCount(b);
-  const lineEdits = editBudget(lineTokens, budget / 2);
-  if (a && b && lineEdits > 0 && stats) {
-    stats.lineCalls++;
-    stats.work += lineTokens * lineEdits;
-  }
-  const lines = a && b && lineEdits > 0 ? diffLines(a, b, { maxEditLength: lineEdits }) : void 0;
-  budget /= 2;
-  if (!lines) out2.push(...hunk(a, b, budget, stats)[0]);
-  else {
-    let removed = "", added = "";
-    const flush = () => {
-      if (!removed && !added) return;
-      const [ops, spent] = hunk(removed, added, budget, stats);
-      out2.push(...ops);
-      budget = Math.max(0, budget - spent);
-      removed = added = "";
-    };
-    for (const change of lines) {
-      if (change.removed) removed += change.value;
-      else if (change.added) added += change.value;
-      else {
-        flush();
-        out2.push([0, change.value]);
-      }
-    }
-    flush();
-  }
-  if (tail) out2.push([0, before.slice(before.length - tail)]);
-  return out2.filter(([, value2]) => value2.length);
-}
-var WORK, SMALL_MIDDLE, SMALL_WORK, isHigh, isLow, editBudget, replace;
-var init_text_diff = __esm({
-  "packages/shared/src/text-diff.ts"() {
-    "use strict";
-    init_libesm();
-    WORK = 2e6;
-    SMALL_MIDDLE = 4096;
-    SMALL_WORK = 35e4;
-    isHigh = (code) => code >= 55296 && code <= 56319;
-    isLow = (code) => code >= 56320 && code <= 57343;
-    editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
-    replace = (before, after) => [
-      ...before ? [[-1, before]] : [],
-      ...after ? [[1, after]] : []
-    ];
-  }
-});
-
 // node_modules/lib0/map.js
 var create, copy, setIfUndefined, any;
 var init_map = __esm({
@@ -7926,7 +7320,7 @@ var init_set = __esm({
 
 // node_modules/lib0/array.js
 var last, appendTo, from, isArray;
-var init_array2 = __esm({
+var init_array = __esm({
   "node_modules/lib0/array.js"() {
     "use strict";
     last = (arr) => arr[arr.length - 1];
@@ -7947,7 +7341,7 @@ var init_observable = __esm({
     "use strict";
     init_map();
     init_set();
-    init_array2();
+    init_array();
     ObservableV2 = class {
       constructor() {
         this._observers = create();
@@ -8192,7 +7586,7 @@ var init_encoding = __esm({
     init_number();
     init_binary();
     init_string();
-    init_array2();
+    init_array();
     Encoder = class {
       constructor() {
         this.cpos = 0;
@@ -9344,7 +8738,7 @@ var init_yjs = __esm({
   "node_modules/yjs/dist/yjs.mjs"() {
     "use strict";
     init_observable();
-    init_array2();
+    init_array();
     init_math();
     init_map();
     init_encoding();
@@ -15905,6 +15299,123 @@ var init_yjs = __esm({
   }
 });
 
+// packages/shared/src/bus-index.ts
+var BusIndex;
+var init_bus_index = __esm({
+  "packages/shared/src/bus-index.ts"() {
+    "use strict";
+    init_yjs();
+    init_messages();
+    BusIndex = class {
+      constructor(bus, onChange2 = () => {
+      }) {
+        this.bus = bus;
+        this.onChange = onChange2;
+        this.rebuild();
+        bus.observe(this.observe);
+        bus.doc?.on("destroy", () => bus.unobserve(this.observe));
+      }
+      bus;
+      onChange;
+      entries = /* @__PURE__ */ new Map();
+      ids = /* @__PURE__ */ new Map();
+      changed = /* @__PURE__ */ new Set();
+      bytes = 0;
+      invalid = 0;
+      touched = /* @__PURE__ */ new Set();
+      /** Changed values inspected; instrumentation for deterministic scaling tests. */
+      visits = 0;
+      sizes = /* @__PURE__ */ new Map();
+      encoder = new TextEncoder();
+      observe = (_event, tx) => {
+        this.touched = /* @__PURE__ */ new Set();
+        try {
+          iterateDeletedStructs(tx, tx.deleteSet, (struct) => {
+            if (!(struct instanceof Item)) throw new Error("unexpected deleted struct");
+            if (struct.parent !== this.bus) return;
+            for (let i2 = 0; i2 < struct.length; i2++) this.remove(`${struct.id.client}:${struct.id.clock + i2}`);
+          });
+          for (const [client, end] of tx.afterState) {
+            const start2 = tx.beforeState.get(client) ?? 0;
+            if (start2 === end) continue;
+            const structs = tx.doc.store.clients.get(client);
+            if (!structs) throw new Error("missing client range");
+            for (let i2 = findIndexSS(structs, start2); i2 < structs.length; i2++) {
+              const struct = structs[i2];
+              if (struct.id.clock >= end) break;
+              if (!(struct instanceof Item)) throw new Error("unexpected new struct");
+              if (struct.parent !== this.bus || struct.deleted) continue;
+              if (!(struct.content instanceof ContentAny || struct.content instanceof ContentJSON)) throw new Error("unexpected bus content");
+              const values = struct.content.getContent();
+              for (let offset = Math.max(0, start2 - struct.id.clock); offset < values.length; offset++) {
+                this.add(`${client}:${struct.id.clock + offset}`, values[offset]);
+              }
+            }
+          }
+          this.onChange(this.touched);
+        } catch {
+          this.rebuild();
+          this.onChange(this.touched, true);
+        }
+      };
+      add(key2, m) {
+        this.visits++;
+        if (this.entries.has(key2)) return;
+        this.entries.set(key2, m);
+        if (!validMessageShape(m)) this.invalid++;
+        const size2 = this.encoder.encode(JSON.stringify(m) ?? "null").length;
+        this.sizes.set(key2, size2);
+        this.bytes += size2;
+        const id3 = m?.id;
+        if (typeof id3 !== "string") return;
+        let values = this.ids.get(id3);
+        if (!values) this.ids.set(id3, values = /* @__PURE__ */ new Map());
+        values.set(key2, m);
+        this.changed.add(id3);
+        this.touched.add(id3);
+      }
+      remove(key2) {
+        this.visits++;
+        if (!this.entries.has(key2)) return;
+        const m = this.entries.get(key2);
+        this.entries.delete(key2);
+        if (!validMessageShape(m)) this.invalid--;
+        this.bytes -= this.sizes.get(key2) ?? 0;
+        this.sizes.delete(key2);
+        const id3 = m?.id;
+        if (typeof id3 !== "string") return;
+        const values = this.ids.get(id3);
+        values?.delete(key2);
+        if (!values?.size) {
+          this.ids.delete(id3);
+          this.changed.delete(id3);
+        } else this.changed.add(id3);
+        this.touched.add(id3);
+      }
+      rebuild() {
+        this.changed.clear();
+        this.entries.clear();
+        this.ids.clear();
+        this.sizes.clear();
+        this.bytes = 0;
+        this.invalid = 0;
+        for (const structs of this.bus.doc.store.clients.values()) for (const struct of structs) {
+          if (!(struct instanceof Item) || struct.parent !== this.bus || struct.deleted) continue;
+          const values = struct.content.getContent();
+          values.forEach((m, i2) => this.add(`${struct.id.client}:${struct.id.clock + i2}`, m));
+        }
+      }
+      count(id3) {
+        return this.ids.get(id3)?.size ?? 0;
+      }
+      first(id3) {
+        const values = this.ids.get(id3);
+        return values?.size === 1 ? values.values().next().value : values?.size ? this.bus.toArray().find((m) => m?.id === id3) : void 0;
+      }
+    };
+  }
+});
+
 // packages/shared/src/ledger.ts
 function compactRetiredWorker(record2) {
   const files2 = [...new Set(record2.files)];
@@ -15967,6 +15478,992 @@ var init_ledger = __esm({
   }
 });
 
+// packages/shared/src/delivery.ts
+function isOwed(doc, m) {
+  return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
+}
+function answeredIds(messages) {
+  const out2 = /* @__PURE__ */ new Set();
+  for (const m of messages) if ((m.type === "answer" || m.type === "note") && m.inReplyTo) out2.add(m.inReplyTo);
+  return out2;
+}
+function replyEligible(m, answered, now) {
+  return !!m.to && (m.type === "question" || m.type === "note") && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS;
+}
+function highestSeq(doc) {
+  let high = 0;
+  for (const m of doc.messages()) if (typeof m.seq === "number" && m.seq > high) high = m.seq;
+  return high;
+}
+function owed(doc, me, cursor, route, relevant = () => true) {
+  const out2 = /* @__PURE__ */ new Map();
+  const offer = (m) => {
+    if (!out2.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out2.set(m.id, m);
+  };
+  for (const m of [...doc.mail.values()].sort(byAge)) if (addressedTo(m, me.name)) offer(m);
+  for (const m of doc.messages()) {
+    if (m.to) {
+      if (addressedTo(m, me.name)) offer(m);
+    } else if ((m.seq ?? 0) > cursor.frontier && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m);
+  }
+  return [...out2.values()];
+}
+function compact(m, scopes) {
+  const entry = [m.type, m.from, m.at, messageAreas(m, scopes)];
+  if (m.type === "release" && m.unfulfilled?.length) {
+    entry.push({ path: m.path, plans: m.unfulfilled, ...m.summary ? { summary: m.summary } : {} });
+  }
+  return entry;
+}
+function evictionClass(m, owedNow) {
+  if (!owedNow) return 0;
+  if (m.type === "question") return 4;
+  return m.priority === "fyi" ? 1 : m.priority === "notify" ? 2 : 3;
+}
+function newest(entries, max2, budget) {
+  const kept = /* @__PURE__ */ new Set();
+  let spent = 0;
+  for (const e of [...entries].sort((a, b) => byAge(b, a))) {
+    if (kept.size >= max2 || spent + e.size > budget) break;
+    kept.add(e.id);
+    spent += e.size;
+  }
+  return kept;
+}
+function trim(doc, now, opts = {}) {
+  const report = { archived: 0, mailed: 0, expired: 0, evicted: 0, removed: 0 };
+  const rawBus = doc.messages();
+  const badBus = [];
+  rawBus.forEach((m, i2) => {
+    if (!validMessageShape(m)) badBus.push(i2);
+  });
+  if (badBus.length) doc.doc.transact(() => {
+    for (const i2 of badBus.reverse()) doc.bus.delete(i2, 1);
+  }, opts.origin);
+  const bus = doc.messages();
+  const mail = new Map([...doc.mail.entries()].filter(([id3, m]) => typeof id3 === "string" && validMessageShape(m)));
+  const answered = answeredIds([...bus, ...mail.values()]);
+  const eligible = (m) => replyEligible(m, answered, now);
+  let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
+  for (let i2 = bus.length - 1, bytes = 0; i2 >= cutoff; i2--) {
+    bytes += sizeOf(bus[i2]);
+    if (bytes > (opts.busBytes ?? BUS_BYTES)) {
+      cutoff = i2 + 1;
+      break;
+    }
+  }
+  const stored = /* @__PURE__ */ new Map();
+  for (const [id3, m] of mail) if (isOwed(doc, m) || eligible(m)) stored.set(id3, m);
+  for (const m of bus.slice(0, cutoff)) if (!stored.has(m.id) && !mail.has(m.id) && (isOwed(doc, m) || eligible(m))) stored.set(m.id, m);
+  const pending = /* @__PURE__ */ new Map();
+  for (const m of [...stored.values(), ...bus.slice(cutoff)]) if (!pending.has(m.id) && isOwed(doc, m)) pending.set(m.id, m);
+  const ended = /* @__PURE__ */ new Map();
+  const end = (m, outcome) => {
+    ended.set(m.id, { to: m.to, from: m.from, outcome, at: now });
+    pending.delete(m.id);
+    stored.delete(m.id);
+    if (outcome === "expired") report.expired++;
+    else report.evicted++;
+  };
+  for (const m of [...pending.values()]) if (now - m.at > OWED_TTL_MS) end(m, "expired");
+  const byRecipient = /* @__PURE__ */ new Map();
+  for (const m of pending.values()) {
+    const list = byRecipient.get(m.to);
+    if (list) list.push(m);
+    else byRecipient.set(m.to, [m]);
+  }
+  const evictionOrder = (a, b) => evictionClass(a, pending.has(a.id)) - evictionClass(b, pending.has(b.id)) || byAge(a, b);
+  for (const list of byRecipient.values()) {
+    let count = list.length, bytes = list.reduce((n, m) => n + sizeOf(m), 0);
+    for (const m of list.sort(evictionOrder)) {
+      if (count <= OWED_PER_RECIPIENT && bytes <= OWED_BYTES_PER_RECIPIENT) break;
+      end(m, "over-cap");
+      count--;
+      bytes -= sizeOf(m);
+    }
+  }
+  let mailCount = stored.size, mailBytes = [...stored.values()].reduce((n, m) => n + sizeOf(m), 0);
+  for (const m of [...stored.values()].sort(evictionOrder)) {
+    if (mailCount <= MAIL_MAX && mailBytes <= MAIL_BYTES) break;
+    mailCount--;
+    mailBytes -= sizeOf(m);
+    if (pending.has(m.id)) end(m, "over-cap");
+    else {
+      stored.delete(m.id);
+      report.evicted++;
+    }
+  }
+  const scopes = [...doc.scopes.values()].filter((s) => s && typeof s.area === "string" && Array.isArray(s.paths));
+  const leaving = bus.filter((m, i2) => i2 < cutoff || ended.has(m.id));
+  const archived = /* @__PURE__ */ new Map();
+  for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes));
+  const archive = [...doc.archive.entries(), ...archived.entries()].filter(([id3, entry]) => typeof id3 === "string" && Array.isArray(entry) && typeof entry[2] === "number" && Array.isArray(entry[3])).map(([id3, entry]) => ({ id: id3, at: entry[2], size: id3.length + sizeOf(entry), unfulfilled: !!entry[4] }));
+  const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES);
+  for (const id3 of newest(archive.filter((e) => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id3);
+  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id3]) => !doc.outcomes.has(id3))].filter(([id3, o]) => typeof id3 === "string" && o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired"].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS).map(([id3, o]) => ({ id: id3, at: o.at, size: id3.length + sizeOf(o) }));
+  const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES);
+  doc.doc.transact(() => {
+    for (const [id3, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id3);
+    for (const [id3, entry] of archived) if (keepArchive.has(id3)) {
+      doc.archive.set(id3, entry);
+      report.archived++;
+    }
+    for (const id3 of [...doc.archive.keys()]) if (!keepArchive.has(id3)) doc.archive.delete(id3);
+    for (const id3 of [...doc.mail.keys()]) if (!stored.has(id3)) doc.mail.delete(id3);
+    for (const [id3, m] of stored) if (!doc.mail.has(id3)) {
+      doc.mail.set(id3, m);
+      report.mailed++;
+    }
+    for (const [id3, o] of ended) if (keepOutcomes.has(id3) && !doc.outcomes.has(id3)) doc.outcomes.set(id3, o);
+    for (const id3 of [...doc.outcomes.keys()]) if (!keepOutcomes.has(id3)) doc.outcomes.delete(id3);
+    for (let i2 = bus.length - 1; i2 >= 0; ) {
+      if (i2 >= cutoff && !ended.has(bus[i2].id)) {
+        i2--;
+        continue;
+      }
+      let start2 = i2;
+      while (start2 > 0 && (start2 - 1 < cutoff || ended.has(bus[start2 - 1].id))) start2--;
+      doc.bus.delete(start2, i2 - start2 + 1);
+      report.removed += i2 - start2 + 1;
+      i2 = start2 - 1;
+    }
+  }, opts.origin);
+  deliveryIndex(doc).markTrimmed(now, opts);
+  return report;
+}
+function deliveryIndex(doc) {
+  let index = indexes.get(doc.doc);
+  if (!index) {
+    index = new DeliveryIndex(doc);
+    indexes.set(doc.doc, index);
+  }
+  return index;
+}
+function admit(doc, m, now, opts = {}) {
+  const size2 = sizeOf(m);
+  if (size2 > MAX_MESSAGE_BYTES) return { ok: false, reason: `the message is ${Math.ceil(size2 / KiB)} KiB; the limit is ${MAX_MESSAGE_BYTES / KiB} KiB` };
+  if (!m.to) return { ok: true };
+  const index = deliveryIndex(doc);
+  const caps = () => {
+    const theirs2 = index.recipients.get(m.to) ?? { count: 0, bytes: 0 };
+    if (theirs2.count >= OWED_PER_RECIPIENT || theirs2.bytes + size2 > OWED_BYTES_PER_RECIPIENT)
+      return { ok: false, reason: `${m.to} has ${theirs2.count} undelivered messages; wait until it reads them` };
+    if (index.owedBytes + size2 > MAIL_BYTES)
+      return { ok: false, reason: `the room's message store is full (${Math.round(index.owedBytes / KiB)} KiB owed to others)` };
+    return { ok: true };
+  };
+  const answer = caps();
+  if (index.certain(now) && (answer.ok || index.trimmed(now, opts))) return answer;
+  trim(doc, now, opts);
+  const pending = /* @__PURE__ */ new Map();
+  for (const x of [...doc.mail.values(), ...doc.messages()]) if (!pending.has(x.id) && isOwed(doc, x)) pending.set(x.id, x);
+  const theirs = [...pending.values()].filter((x) => x.to === m.to);
+  const theirBytes = theirs.reduce((n, x) => n + sizeOf(x), 0);
+  if (theirs.length >= OWED_PER_RECIPIENT || theirBytes + size2 > OWED_BYTES_PER_RECIPIENT)
+    return { ok: false, reason: `${m.to} has ${theirs.length} undelivered messages; wait until it reads them` };
+  const owedBytes = [...pending.values()].reduce((n, x) => n + sizeOf(x), 0);
+  if (owedBytes + size2 > MAIL_BYTES) return { ok: false, reason: `the room's message store is full (${Math.round(owedBytes / KiB)} KiB owed to others)` };
+  return { ok: true };
+}
+function archiveSummary(doc, area) {
+  const out2 = { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] };
+  for (const [id3, [type, from2, at, areas, unfulfilled]] of doc.archive.entries()) {
+    if (area !== void 0 && !areas.includes(area)) continue;
+    out2.messages++;
+    out2.counts[type] = (out2.counts[type] ?? 0) + 1;
+    out2.lastSeen[from2] = Math.max(out2.lastSeen[from2] ?? 0, at);
+    out2.lastAt = Math.max(out2.lastAt, at);
+    if (unfulfilled) out2.unfulfilled.push({ id: id3, from: from2, at, ...unfulfilled });
+  }
+  out2.unfulfilled.sort(byAge);
+  return out2;
+}
+var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, compare, byAge, selfSent, addressedTo, receipted, DeliveryIndex, indexes;
+var init_delivery = __esm({
+  "packages/shared/src/delivery.ts"() {
+    "use strict";
+    init_bus_index();
+    init_ledger();
+    init_messages();
+    KiB = 1024;
+    MiB = 1024 * KiB;
+    DAY_MS = 24 * 60 * 60 * 1e3;
+    BUS_KEEP = 2e3;
+    BUS_BYTES = 1.5 * MiB;
+    MAIL_MAX = 2e3;
+    MAIL_BYTES = 1.5 * MiB;
+    OWED_PER_RECIPIENT = 200;
+    OWED_BYTES_PER_RECIPIENT = 256 * KiB;
+    ARCHIVE_MAX = 5e3;
+    ARCHIVE_BYTES = 512 * KiB;
+    ARCHIVE_UNFULFILLED_MAX = 200;
+    OUTCOMES_MAX = 2e3;
+    OUTCOMES_BYTES = 256 * KiB;
+    OUTCOMES_TTL_MS = 30 * DAY_MS;
+    RECEIPTS_BYTES = 256 * KiB;
+    LEDGER_BUDGET = BUS_BYTES + MAIL_BYTES + ARCHIVE_BYTES + OUTCOMES_BYTES + RECEIPTS_BYTES;
+    REPLY_WINDOW_MS = 14 * DAY_MS;
+    OWED_TTL_MS = 14 * DAY_MS;
+    MAX_MESSAGE_BYTES = 64 * KiB;
+    encoder = new TextEncoder();
+    sizeOf = (value2) => encoder.encode(JSON.stringify(value2)).length;
+    compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+    byAge = (a, b) => a.at - b.at || compare(a.id, b.id);
+    selfSent = (m) => m.from === m.to && m.fromKind !== "human";
+    addressedTo = (m, name2) => m.to === name2 && !selfSent(m);
+    receipted = (doc, name2, id3) => doc.seen(name2).has(id3);
+    DeliveryIndex = class {
+      constructor(doc) {
+        this.doc = doc;
+        this.bus = new BusIndex(doc.bus, (ids, rebuilt) => {
+          this.clean = false;
+          if (rebuilt) this.rebuild();
+          else for (const id3 of ids) this.refresh(id3);
+        });
+        doc.mail.observe((e) => {
+          for (const key2 of e.keysChanged) {
+            const oldId = this.mailIds.get(key2);
+            this.checkMail(key2);
+            if (oldId) this.refresh(oldId);
+            const id3 = this.mailIds.get(key2);
+            if (id3 && id3 !== oldId) this.refresh(id3);
+          }
+        });
+        doc.outcomes.observe((e) => {
+          for (const id3 of e.keysChanged) {
+            this.checkOutcome(id3);
+            this.refresh(id3);
+          }
+        });
+        doc.archive.observe((e) => {
+          for (const id3 of e.keysChanged) if (this.bus.count(id3)) this.bus.changed.add(id3);
+        });
+        this.rebuild();
+      }
+      doc;
+      bus;
+      recipients = /* @__PURE__ */ new Map();
+      pending = /* @__PURE__ */ new Map();
+      owedBytes = 0;
+      sizes = /* @__PURE__ */ new Map();
+      ambiguous = /* @__PURE__ */ new Set();
+      badMail = /* @__PURE__ */ new Set();
+      badOutcomes = /* @__PURE__ */ new Set();
+      watched = /* @__PURE__ */ new Set();
+      mailCopies = /* @__PURE__ */ new Map();
+      mailIds = /* @__PURE__ */ new Map();
+      clean = false;
+      cleanKeep = BUS_KEEP;
+      cleanBytes = BUS_BYTES;
+      oldest = Infinity;
+      oldestOutcome = Infinity;
+      checkMail(key2) {
+        const old = this.mailIds.get(key2);
+        if (old) {
+          const copies = this.mailCopies.get(old);
+          copies?.delete(key2);
+          if (!copies?.size) this.mailCopies.delete(old);
+          this.mailIds.delete(key2);
+        }
+        const m = this.doc.mail.get(key2);
+        if (this.doc.mail.has(key2) && (!validMessageShape(m) || m.id !== key2)) this.badMail.add(key2);
+        else this.badMail.delete(key2);
+        if (validMessageShape(m)) {
+          let copies = this.mailCopies.get(m.id);
+          if (!copies) this.mailCopies.set(m.id, copies = /* @__PURE__ */ new Map());
+          copies.set(key2, m);
+          this.mailIds.set(key2, m.id);
+        }
+      }
+      checkOutcome(id3) {
+        const o = this.doc.outcomes.get(id3);
+        if (this.doc.outcomes.has(id3) && (!o || !Number.isFinite(o.at) || typeof o.to !== "string" || typeof o.from !== "string" || !["expired", "over-cap", "recipient-retired"].includes(o.outcome))) this.badOutcomes.add(id3);
+        else this.badOutcomes.delete(id3);
+        if (o && Number.isFinite(o.at)) this.oldestOutcome = Math.min(this.oldestOutcome, o.at);
+        if (this.bus.count(id3)) this.bus.changed.add(id3);
+      }
+      refresh(id3) {
+        const prior = this.pending.get(id3);
+        if (prior) {
+          const size2 = this.sizes.get(id3);
+          const count = this.recipients.get(prior.to);
+          count.count--;
+          count.bytes -= size2;
+          this.owedBytes -= size2;
+          if (!count.count) this.recipients.delete(prior.to);
+          this.pending.delete(id3);
+          this.sizes.delete(id3);
+        }
+        const mail = this.mailCopies.get(id3);
+        const bus = this.bus.ids.get(id3);
+        if ((bus?.size ?? 0) > 1 || (mail?.size ?? 0) > 1 || mail?.size && bus?.size) this.ambiguous.add(id3);
+        else this.ambiguous.delete(id3);
+        const mailValues = (mail?.size ?? 0) > 1 ? [...this.doc.mail.values()].filter((m2) => m2?.id === id3) : [...mail?.values() ?? []];
+        const busValues = (bus?.size ?? 0) > 1 ? this.doc.messages().filter((m2) => m2?.id === id3) : [...bus?.values() ?? []];
+        const candidates = [...mailValues, ...busValues];
+        const m = candidates.find((m2) => m2 && validMessageShape(m2) && isOwed(this.doc, m2));
+        for (const value2 of candidates) if (value2 && validMessageShape(value2) && value2.to && !this.watched.has(value2.to)) {
+          const name2 = value2.to;
+          this.watched.add(name2);
+          this.doc.seen(name2).observe((e) => {
+            for (const changed of e.keysChanged) this.refresh(changed);
+          });
+        }
+        if (m) {
+          const size2 = sizeOf(m);
+          const count = this.recipients.get(m.to) ?? { count: 0, bytes: 0 };
+          count.count++;
+          count.bytes += size2;
+          this.owedBytes += size2;
+          this.recipients.set(m.to, count);
+          this.pending.set(id3, m);
+          this.sizes.set(id3, size2);
+          this.oldest = Math.min(this.oldest, m.at);
+        }
+        if (prior || m || candidates.some((m2) => m2?.to || m2 && "inReplyTo" in m2 && m2.inReplyTo)) this.clean = false;
+      }
+      /** Debug/recovery check: callers can snapshot aggregates, rebuild, then compare to full recompute. */
+      rebuild() {
+        this.bus.rebuild();
+        this.pending.clear();
+        this.recipients.clear();
+        this.sizes.clear();
+        this.ambiguous.clear();
+        this.badMail.clear();
+        this.badOutcomes.clear();
+        this.mailCopies.clear();
+        this.mailIds.clear();
+        this.owedBytes = 0;
+        this.oldest = this.oldestOutcome = Infinity;
+        this.clean = false;
+        for (const id3 of this.doc.mail.keys()) this.checkMail(id3);
+        for (const id3 of this.doc.outcomes.keys()) this.checkOutcome(id3);
+        for (const id3 of /* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()])) this.refresh(id3);
+      }
+      markTrimmed(now, opts) {
+        this.cleanKeep = opts.busKeep ?? BUS_KEEP;
+        this.cleanBytes = opts.busBytes ?? BUS_BYTES;
+        this.oldest = Math.min(Infinity, ...[...this.pending.values()].map((m) => m.at));
+        this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].map((o) => o.at));
+        this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size && now - this.oldest <= OWED_TTL_MS;
+      }
+      certain(now) {
+        return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size && now - this.oldestOutcome <= OUTCOMES_TTL_MS;
+      }
+      trimmed(now, opts) {
+        return this.clean && this.certain(now) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
+      }
+    };
+    indexes = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// node_modules/diff/libesm/diff/base.js
+var Diff;
+var init_base = __esm({
+  "node_modules/diff/libesm/diff/base.js"() {
+    "use strict";
+    Diff = class {
+      diff(oldStr, newStr, options = {}) {
+        let callback;
+        if (typeof options === "function") {
+          callback = options;
+          options = {};
+        } else if ("callback" in options) {
+          callback = options.callback;
+        }
+        const oldString = this.castInput(oldStr, options);
+        const newString = this.castInput(newStr, options);
+        const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
+        const newTokens = this.removeEmpty(this.tokenize(newString, options));
+        return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+      }
+      diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+        var _a3;
+        const done = (value2) => {
+          value2 = this.postProcess(value2, options);
+          if (callback) {
+            setTimeout(function() {
+              callback(value2);
+            }, 0);
+            return void 0;
+          } else {
+            return value2;
+          }
+        };
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let editLength = 1;
+        let maxEditLength = newLen + oldLen;
+        if (options.maxEditLength != null) {
+          maxEditLength = Math.min(maxEditLength, options.maxEditLength);
+        }
+        const maxExecutionTime = (_a3 = options.timeout) !== null && _a3 !== void 0 ? _a3 : Infinity;
+        const abortAfterTimestamp = Date.now() + maxExecutionTime;
+        const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
+        let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options);
+        if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+        }
+        let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+        const execEditLength = () => {
+          for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+            let basePath;
+            const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+            if (removePath) {
+              bestPath[diagonalPath - 1] = void 0;
+            }
+            let canAdd = false;
+            if (addPath) {
+              const addPathNewPos = addPath.oldPos - diagonalPath;
+              canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+            }
+            const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+            if (!canAdd && !canRemove) {
+              bestPath[diagonalPath] = void 0;
+              continue;
+            }
+            if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+              basePath = this.addToPath(addPath, true, false, 0, options);
+            } else {
+              basePath = this.addToPath(removePath, false, true, 1, options);
+            }
+            newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options);
+            if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+              return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+            } else {
+              bestPath[diagonalPath] = basePath;
+              if (basePath.oldPos + 1 >= oldLen) {
+                maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+              }
+              if (newPos + 1 >= newLen) {
+                minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+              }
+            }
+          }
+          editLength++;
+        };
+        if (callback) {
+          (function exec2() {
+            setTimeout(function() {
+              if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+                return callback(void 0);
+              }
+              if (!execEditLength()) {
+                exec2();
+              }
+            }, 0);
+          })();
+        } else {
+          while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+            const ret = execEditLength();
+            if (ret) {
+              return ret;
+            }
+          }
+        }
+      }
+      addToPath(path50, added, removed, oldPosInc, options) {
+        const last2 = path50.lastComponent;
+        if (last2 && !options.oneChangePerToken && last2.added === added && last2.removed === removed) {
+          return {
+            oldPos: path50.oldPos + oldPosInc,
+            lastComponent: { count: last2.count + 1, added, removed, previousComponent: last2.previousComponent }
+          };
+        } else {
+          return {
+            oldPos: path50.oldPos + oldPosInc,
+            lastComponent: { count: 1, added, removed, previousComponent: last2 }
+          };
+        }
+      }
+      extractCommon(basePath, newTokens, oldTokens, diagonalPath, options) {
+        const newLen = newTokens.length, oldLen = oldTokens.length;
+        let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+        while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options)) {
+          newPos++;
+          oldPos++;
+          commonCount++;
+          if (options.oneChangePerToken) {
+            basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
+          }
+        }
+        if (commonCount && !options.oneChangePerToken) {
+          basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+        }
+        basePath.oldPos = oldPos;
+        return newPos;
+      }
+      equals(left, right, options) {
+        if (options.comparator) {
+          return options.comparator(left, right);
+        } else {
+          return left === right || !!options.ignoreCase && left.toLowerCase() === right.toLowerCase();
+        }
+      }
+      removeEmpty(array2) {
+        const ret = [];
+        for (let i2 = 0; i2 < array2.length; i2++) {
+          if (array2[i2]) {
+            ret.push(array2[i2]);
+          }
+        }
+        return ret;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      castInput(value2, options) {
+        return value2;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      tokenize(value2, options) {
+        return Array.from(value2);
+      }
+      join(chars) {
+        return chars.join("");
+      }
+      postProcess(changeObjects, options) {
+        return changeObjects;
+      }
+      get useLongestToken() {
+        return false;
+      }
+      buildValues(lastComponent, newTokens, oldTokens) {
+        const components = [];
+        let nextComponent;
+        while (lastComponent) {
+          components.push(lastComponent);
+          nextComponent = lastComponent.previousComponent;
+          delete lastComponent.previousComponent;
+          lastComponent = nextComponent;
+        }
+        components.reverse();
+        const componentLen = components.length;
+        let componentPos = 0, newPos = 0, oldPos = 0;
+        for (; componentPos < componentLen; componentPos++) {
+          const component = components[componentPos];
+          if (!component.removed) {
+            if (!component.added && this.useLongestToken) {
+              let value2 = newTokens.slice(newPos, newPos + component.count);
+              value2 = value2.map(function(value3, i2) {
+                const oldValue = oldTokens[oldPos + i2];
+                return oldValue.length > value3.length ? oldValue : value3;
+              });
+              component.value = this.join(value2);
+            } else {
+              component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+            }
+            newPos += component.count;
+            if (!component.added) {
+              oldPos += component.count;
+            }
+          } else {
+            component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+            oldPos += component.count;
+          }
+        }
+        return components;
+      }
+    };
+  }
+});
+
+// node_modules/diff/libesm/diff/character.js
+function diffChars(oldStr, newStr, options) {
+  return characterDiff.diff(oldStr, newStr, options);
+}
+var CharacterDiff, characterDiff;
+var init_character = __esm({
+  "node_modules/diff/libesm/diff/character.js"() {
+    "use strict";
+    init_base();
+    CharacterDiff = class extends Diff {
+    };
+    characterDiff = new CharacterDiff();
+  }
+});
+
+// node_modules/diff/libesm/diff/line.js
+function diffLines(oldStr, newStr, options) {
+  return lineDiff.diff(oldStr, newStr, options);
+}
+function tokenize(value2, options) {
+  if (options.stripTrailingCr) {
+    value2 = value2.replace(/\r\n/g, "\n");
+  }
+  const retLines = [], linesAndNewlines = value2.split(/(\n|\r\n)/);
+  if (!linesAndNewlines[linesAndNewlines.length - 1]) {
+    linesAndNewlines.pop();
+  }
+  for (let i2 = 0; i2 < linesAndNewlines.length; i2++) {
+    const line = linesAndNewlines[i2];
+    if (i2 % 2 && !options.newlineIsToken) {
+      retLines[retLines.length - 1] += line;
+    } else {
+      retLines.push(line);
+    }
+  }
+  return retLines;
+}
+var LineDiff, lineDiff;
+var init_line = __esm({
+  "node_modules/diff/libesm/diff/line.js"() {
+    "use strict";
+    init_base();
+    LineDiff = class extends Diff {
+      constructor() {
+        super(...arguments);
+        this.tokenize = tokenize;
+      }
+      equals(left, right, options) {
+        if (options.ignoreWhitespace) {
+          if (!options.newlineIsToken || !left.includes("\n")) {
+            left = left.trim();
+          }
+          if (!options.newlineIsToken || !right.includes("\n")) {
+            right = right.trim();
+          }
+        } else if (options.ignoreNewlineAtEof && !options.newlineIsToken) {
+          if (left.endsWith("\n")) {
+            left = left.slice(0, -1);
+          }
+          if (right.endsWith("\n")) {
+            right = right.slice(0, -1);
+          }
+        }
+        return super.equals(left, right, options);
+      }
+    };
+    lineDiff = new LineDiff();
+  }
+});
+
+// node_modules/diff/libesm/diff/array.js
+function diffArrays(oldArr, newArr, options) {
+  return arrayDiff.diff(oldArr, newArr, options);
+}
+var ArrayDiff, arrayDiff;
+var init_array2 = __esm({
+  "node_modules/diff/libesm/diff/array.js"() {
+    "use strict";
+    init_base();
+    ArrayDiff = class extends Diff {
+      tokenize(value2) {
+        return value2.slice();
+      }
+      join(value2) {
+        return value2;
+      }
+      removeEmpty(value2) {
+        return value2;
+      }
+    };
+    arrayDiff = new ArrayDiff();
+  }
+});
+
+// node_modules/diff/libesm/patch/create.js
+function structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  let optionsObj;
+  if (!options) {
+    optionsObj = {};
+  } else if (typeof options === "function") {
+    optionsObj = { callback: options };
+  } else {
+    optionsObj = options;
+  }
+  if (typeof optionsObj.context === "undefined") {
+    optionsObj.context = 4;
+  }
+  const context2 = optionsObj.context;
+  if (optionsObj.newlineIsToken) {
+    throw new Error("newlineIsToken may not be used with patch-generation functions, only with diffing functions");
+  }
+  if (!optionsObj.callback) {
+    return diffLinesResultToPatch(diffLines(oldStr, newStr, optionsObj));
+  } else {
+    const { callback } = optionsObj;
+    diffLines(oldStr, newStr, Object.assign(Object.assign({}, optionsObj), { callback: (diff) => {
+      const patch = diffLinesResultToPatch(diff);
+      callback(patch);
+    } }));
+  }
+  function diffLinesResultToPatch(diff) {
+    if (!diff) {
+      return;
+    }
+    diff.push({ value: "", lines: [] });
+    function contextLines(lines) {
+      return lines.map(function(entry) {
+        return " " + entry;
+      });
+    }
+    const hunks = [];
+    let oldRangeStart = 0, newRangeStart = 0, curRange = [], oldLine = 1, newLine = 1;
+    for (let i2 = 0; i2 < diff.length; i2++) {
+      const current = diff[i2], lines = current.lines || splitLines(current.value);
+      current.lines = lines;
+      if (current.added || current.removed) {
+        if (!oldRangeStart) {
+          const prev = diff[i2 - 1];
+          oldRangeStart = oldLine;
+          newRangeStart = newLine;
+          if (prev) {
+            curRange = context2 > 0 ? contextLines(prev.lines.slice(-context2)) : [];
+            oldRangeStart -= curRange.length;
+            newRangeStart -= curRange.length;
+          }
+        }
+        for (const line of lines) {
+          curRange.push((current.added ? "+" : "-") + line);
+        }
+        if (current.added) {
+          newLine += lines.length;
+        } else {
+          oldLine += lines.length;
+        }
+      } else {
+        if (oldRangeStart) {
+          if (lines.length <= context2 * 2 && i2 < diff.length - 2) {
+            for (const line of contextLines(lines)) {
+              curRange.push(line);
+            }
+          } else {
+            const contextSize = Math.min(lines.length, context2);
+            for (const line of contextLines(lines.slice(0, contextSize))) {
+              curRange.push(line);
+            }
+            const hunk2 = {
+              oldStart: oldRangeStart,
+              oldLines: oldLine - oldRangeStart + contextSize,
+              newStart: newRangeStart,
+              newLines: newLine - newRangeStart + contextSize,
+              lines: curRange
+            };
+            hunks.push(hunk2);
+            oldRangeStart = 0;
+            newRangeStart = 0;
+            curRange = [];
+          }
+        }
+        oldLine += lines.length;
+        newLine += lines.length;
+      }
+    }
+    for (const hunk2 of hunks) {
+      for (let i2 = 0; i2 < hunk2.lines.length; i2++) {
+        if (hunk2.lines[i2].endsWith("\n")) {
+          hunk2.lines[i2] = hunk2.lines[i2].slice(0, -1);
+        } else {
+          hunk2.lines.splice(i2 + 1, 0, "\\ No newline at end of file");
+          i2++;
+        }
+      }
+    }
+    return {
+      oldFileName,
+      newFileName,
+      oldHeader,
+      newHeader,
+      hunks
+    };
+  }
+}
+function formatPatch(patch, headerOptions) {
+  if (!headerOptions) {
+    headerOptions = INCLUDE_HEADERS;
+  }
+  if (Array.isArray(patch)) {
+    if (patch.length > 1 && !headerOptions.includeFileHeaders) {
+      throw new Error("Cannot omit file headers on a multi-file patch. (The result would be unparseable; how would a tool trying to apply the patch know which changes are to which file?)");
+    }
+    return patch.map((p) => formatPatch(p, headerOptions)).join("\n");
+  }
+  const ret = [];
+  if (headerOptions.includeIndex && patch.oldFileName == patch.newFileName) {
+    ret.push("Index: " + patch.oldFileName);
+  }
+  if (headerOptions.includeUnderline) {
+    ret.push("===================================================================");
+  }
+  if (headerOptions.includeFileHeaders) {
+    ret.push("--- " + patch.oldFileName + (typeof patch.oldHeader === "undefined" ? "" : "	" + patch.oldHeader));
+    ret.push("+++ " + patch.newFileName + (typeof patch.newHeader === "undefined" ? "" : "	" + patch.newHeader));
+  }
+  for (let i2 = 0; i2 < patch.hunks.length; i2++) {
+    const hunk2 = patch.hunks[i2];
+    if (hunk2.oldLines === 0) {
+      hunk2.oldStart -= 1;
+    }
+    if (hunk2.newLines === 0) {
+      hunk2.newStart -= 1;
+    }
+    ret.push("@@ -" + hunk2.oldStart + "," + hunk2.oldLines + " +" + hunk2.newStart + "," + hunk2.newLines + " @@");
+    for (const line of hunk2.lines) {
+      ret.push(line);
+    }
+  }
+  return ret.join("\n") + "\n";
+}
+function createTwoFilesPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options) {
+  if (typeof options === "function") {
+    options = { callback: options };
+  }
+  if (!(options === null || options === void 0 ? void 0 : options.callback)) {
+    const patchObj = structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, options);
+    if (!patchObj) {
+      return;
+    }
+    return formatPatch(patchObj, options === null || options === void 0 ? void 0 : options.headerOptions);
+  } else {
+    const { callback } = options;
+    structuredPatch(oldFileName, newFileName, oldStr, newStr, oldHeader, newHeader, Object.assign(Object.assign({}, options), { callback: (patchObj) => {
+      if (!patchObj) {
+        callback(void 0);
+      } else {
+        callback(formatPatch(patchObj, options.headerOptions));
+      }
+    } }));
+  }
+}
+function splitLines(text) {
+  const hasTrailingNl = text.endsWith("\n");
+  const result2 = text.split("\n").map((line) => line + "\n");
+  if (hasTrailingNl) {
+    result2.pop();
+  } else {
+    result2.push(result2.pop().slice(0, -1));
+  }
+  return result2;
+}
+var INCLUDE_HEADERS;
+var init_create = __esm({
+  "node_modules/diff/libesm/patch/create.js"() {
+    "use strict";
+    init_line();
+    INCLUDE_HEADERS = {
+      includeIndex: true,
+      includeUnderline: true,
+      includeFileHeaders: true
+    };
+  }
+});
+
+// node_modules/diff/libesm/index.js
+var init_libesm = __esm({
+  "node_modules/diff/libesm/index.js"() {
+    "use strict";
+    init_character();
+    init_line();
+    init_array2();
+    init_create();
+  }
+});
+
+// packages/shared/src/text-diff.ts
+function commonEdges(a, b) {
+  const shortest = Math.min(a.length, b.length);
+  let head = 0;
+  while (head < shortest && a.charCodeAt(head) === b.charCodeAt(head)) head++;
+  if (head > 0 && isHigh(a.charCodeAt(head - 1))) head--;
+  let tail = 0;
+  while (tail < shortest - head && a.charCodeAt(a.length - 1 - tail) === b.charCodeAt(b.length - 1 - tail)) tail++;
+  if (tail > 0 && isLow(a.charCodeAt(a.length - tail))) tail--;
+  return [head, tail];
+}
+function fromChanges(changes) {
+  return changes.map((c) => [c.added ? 1 : c.removed ? -1 : 0, c.value]);
+}
+function disjoint(a, b) {
+  const seen = /* @__PURE__ */ new Set();
+  for (let i2 = 0; i2 < a.length; i2++) seen.add(a.charCodeAt(i2));
+  for (let i2 = 0; i2 < b.length; i2++) if (seen.has(b.charCodeAt(i2))) return false;
+  return true;
+}
+function hunk(before, after, budget, stats) {
+  if (!before || !after) return [replace(before, after), 0];
+  const [head, tail] = commonEdges(before, after);
+  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
+  const edges = (middle) => [
+    ...head ? [[0, before.slice(0, head)]] : [],
+    ...middle,
+    ...tail ? [[0, before.slice(before.length - tail)]] : []
+  ];
+  if (!a || !b) return [edges(replace(a, b)), 0];
+  if (a.length >= 128 && b.length >= 128 && disjoint(a, b)) return [edges(replace(a, b)), 0];
+  const tokens = a.length + b.length;
+  const maxEditLength = editBudget(tokens, budget);
+  if (maxEditLength > 0 && stats) stats.charCalls++;
+  const changes = maxEditLength > 0 ? diffChars(a, b, { maxEditLength }) : void 0;
+  if (!changes) {
+    const spent2 = tokens * maxEditLength;
+    if (stats) stats.work += spent2;
+    return [edges(replace(a, b)), spent2];
+  }
+  const ops = fromChanges(changes);
+  const spent = tokens * ops.filter(([kind]) => kind !== 0).reduce((n, [, v]) => n + v.length, 0);
+  if (stats) stats.work += spent;
+  return [edges(ops), spent];
+}
+function boundedTextDiff(before, after, stats) {
+  if (before === after) return before ? [[0, before]] : [];
+  const [head, tail] = commonEdges(before, after);
+  const a = before.slice(head, before.length - tail), b = after.slice(head, after.length - tail);
+  const out2 = head ? [[0, before.slice(0, head)]] : [];
+  if (a.length <= SMALL_MIDDLE && b.length <= SMALL_MIDDLE) {
+    out2.push(...hunk(a, b, SMALL_WORK, stats)[0]);
+    if (tail) out2.push([0, before.slice(before.length - tail)]);
+    return out2.filter(([, value2]) => value2.length);
+  }
+  let budget = WORK;
+  const lineCount = (s) => s.split("\n").length;
+  const lineTokens = lineCount(a) + lineCount(b);
+  const lineEdits = editBudget(lineTokens, budget / 2);
+  if (a && b && lineEdits > 0 && stats) {
+    stats.lineCalls++;
+    stats.work += lineTokens * lineEdits;
+  }
+  const lines = a && b && lineEdits > 0 ? diffLines(a, b, { maxEditLength: lineEdits }) : void 0;
+  budget /= 2;
+  if (!lines) out2.push(...hunk(a, b, budget, stats)[0]);
+  else {
+    let removed = "", added = "";
+    const flush = () => {
+      if (!removed && !added) return;
+      const [ops, spent] = hunk(removed, added, budget, stats);
+      out2.push(...ops);
+      budget = Math.max(0, budget - spent);
+      removed = added = "";
+    };
+    for (const change of lines) {
+      if (change.removed) removed += change.value;
+      else if (change.added) added += change.value;
+      else {
+        flush();
+        out2.push([0, change.value]);
+      }
+    }
+    flush();
+  }
+  if (tail) out2.push([0, before.slice(before.length - tail)]);
+  return out2.filter(([, value2]) => value2.length);
+}
+var WORK, SMALL_MIDDLE, SMALL_WORK, isHigh, isLow, editBudget, replace;
+var init_text_diff = __esm({
+  "packages/shared/src/text-diff.ts"() {
+    "use strict";
+    init_libesm();
+    WORK = 2e6;
+    SMALL_MIDDLE = 4096;
+    SMALL_WORK = 35e4;
+    isHigh = (code) => code >= 55296 && code <= 56319;
+    isLow = (code) => code >= 56320 && code <= 57343;
+    editBudget = (tokens, budget) => Math.floor(budget / Math.max(1, tokens));
+    replace = (before, after) => [
+      ...before ? [[-1, before]] : [],
+      ...after ? [[1, after]] : []
+    ];
+  }
+});
+
 // packages/shared/src/doc.ts
 import { randomBytes } from "node:crypto";
 function holderFence(holder) {
@@ -16013,6 +16510,7 @@ var validColorIndex, RoomDoc;
 var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
+    init_delivery();
     init_claims();
     init_messages();
     init_text_diff();
@@ -16446,7 +16944,7 @@ var init_doc = __esm({
       }
       /** A message on the bus, else in mail. */
       message(id3) {
-        return this.messages().find((m) => m.id === id3) ?? this.mail.get(id3);
+        return deliveryIndex(this).bus.first(id3) ?? this.mail.get(id3);
       }
       lastMessages(n) {
         const messages = this.messages();
@@ -17175,223 +17673,6 @@ var init_wake = __esm({
     init_identity();
     init_claims();
     init_messages();
-  }
-});
-
-// packages/shared/src/delivery.ts
-function isOwed(doc, m) {
-  return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
-}
-function answeredIds(messages) {
-  const out2 = /* @__PURE__ */ new Set();
-  for (const m of messages) if ((m.type === "answer" || m.type === "note") && m.inReplyTo) out2.add(m.inReplyTo);
-  return out2;
-}
-function replyEligible(m, answered, now) {
-  return !!m.to && (m.type === "question" || m.type === "note") && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS;
-}
-function highestSeq(doc) {
-  let high = 0;
-  for (const m of doc.messages()) if (typeof m.seq === "number" && m.seq > high) high = m.seq;
-  return high;
-}
-function owed(doc, me, cursor, route, relevant = () => true) {
-  const out2 = /* @__PURE__ */ new Map();
-  const offer = (m) => {
-    if (!out2.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out2.set(m.id, m);
-  };
-  for (const m of [...doc.mail.values()].sort(byAge)) if (addressedTo(m, me.name)) offer(m);
-  for (const m of doc.messages()) {
-    if (m.to) {
-      if (addressedTo(m, me.name)) offer(m);
-    } else if ((m.seq ?? 0) > cursor.frontier && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m);
-  }
-  return [...out2.values()];
-}
-function compact(m, scopes) {
-  const entry = [m.type, m.from, m.at, messageAreas(m, scopes)];
-  if (m.type === "release" && m.unfulfilled?.length) {
-    entry.push({ path: m.path, plans: m.unfulfilled, ...m.summary ? { summary: m.summary } : {} });
-  }
-  return entry;
-}
-function evictionClass(m, owedNow) {
-  if (!owedNow) return 0;
-  if (m.type === "question") return 4;
-  return m.priority === "fyi" ? 1 : m.priority === "notify" ? 2 : 3;
-}
-function newest(entries, max2, budget) {
-  const kept = /* @__PURE__ */ new Set();
-  let spent = 0;
-  for (const e of [...entries].sort((a, b) => byAge(b, a))) {
-    if (kept.size >= max2 || spent + e.size > budget) break;
-    kept.add(e.id);
-    spent += e.size;
-  }
-  return kept;
-}
-function trim(doc, now, opts = {}) {
-  const report = { archived: 0, mailed: 0, expired: 0, evicted: 0, removed: 0 };
-  const rawBus = doc.messages();
-  const badBus = [];
-  rawBus.forEach((m, i2) => {
-    if (!validMessageShape(m)) badBus.push(i2);
-  });
-  if (badBus.length) doc.doc.transact(() => {
-    for (const i2 of badBus.reverse()) doc.bus.delete(i2, 1);
-  }, opts.origin);
-  const bus = doc.messages();
-  const mail = new Map([...doc.mail.entries()].filter(([id3, m]) => typeof id3 === "string" && validMessageShape(m)));
-  const answered = answeredIds([...bus, ...mail.values()]);
-  const eligible = (m) => replyEligible(m, answered, now);
-  let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
-  for (let i2 = bus.length - 1, bytes = 0; i2 >= cutoff; i2--) {
-    bytes += sizeOf(bus[i2]);
-    if (bytes > BUS_BYTES) {
-      cutoff = i2 + 1;
-      break;
-    }
-  }
-  const stored = /* @__PURE__ */ new Map();
-  for (const [id3, m] of mail) if (isOwed(doc, m) || eligible(m)) stored.set(id3, m);
-  for (const m of bus.slice(0, cutoff)) if (!stored.has(m.id) && !mail.has(m.id) && (isOwed(doc, m) || eligible(m))) stored.set(m.id, m);
-  const pending = /* @__PURE__ */ new Map();
-  for (const m of [...stored.values(), ...bus.slice(cutoff)]) if (!pending.has(m.id) && isOwed(doc, m)) pending.set(m.id, m);
-  const ended = /* @__PURE__ */ new Map();
-  const end = (m, outcome) => {
-    ended.set(m.id, { to: m.to, from: m.from, outcome, at: now });
-    pending.delete(m.id);
-    stored.delete(m.id);
-    if (outcome === "expired") report.expired++;
-    else report.evicted++;
-  };
-  for (const m of [...pending.values()]) if (now - m.at > OWED_TTL_MS) end(m, "expired");
-  const byRecipient = /* @__PURE__ */ new Map();
-  for (const m of pending.values()) {
-    const list = byRecipient.get(m.to);
-    if (list) list.push(m);
-    else byRecipient.set(m.to, [m]);
-  }
-  const evictionOrder = (a, b) => evictionClass(a, pending.has(a.id)) - evictionClass(b, pending.has(b.id)) || byAge(a, b);
-  for (const list of byRecipient.values()) {
-    let count = list.length, bytes = list.reduce((n, m) => n + sizeOf(m), 0);
-    for (const m of list.sort(evictionOrder)) {
-      if (count <= OWED_PER_RECIPIENT && bytes <= OWED_BYTES_PER_RECIPIENT) break;
-      end(m, "over-cap");
-      count--;
-      bytes -= sizeOf(m);
-    }
-  }
-  let mailCount = stored.size, mailBytes = [...stored.values()].reduce((n, m) => n + sizeOf(m), 0);
-  for (const m of [...stored.values()].sort(evictionOrder)) {
-    if (mailCount <= MAIL_MAX && mailBytes <= MAIL_BYTES) break;
-    mailCount--;
-    mailBytes -= sizeOf(m);
-    if (pending.has(m.id)) end(m, "over-cap");
-    else {
-      stored.delete(m.id);
-      report.evicted++;
-    }
-  }
-  const scopes = [...doc.scopes.values()].filter((s) => s && typeof s.area === "string" && Array.isArray(s.paths));
-  const leaving = bus.filter((m, i2) => i2 < cutoff || ended.has(m.id));
-  const archived = /* @__PURE__ */ new Map();
-  for (const m of leaving) if (!doc.archive.has(m.id) && !archived.has(m.id)) archived.set(m.id, compact(m, scopes));
-  const archive = [...doc.archive.entries(), ...archived.entries()].filter(([id3, entry]) => typeof id3 === "string" && Array.isArray(entry) && typeof entry[2] === "number" && Array.isArray(entry[3])).map(([id3, entry]) => ({ id: id3, at: entry[2], size: id3.length + sizeOf(entry), unfulfilled: !!entry[4] }));
-  const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES);
-  for (const id3 of newest(archive.filter((e) => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id3);
-  const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id3]) => !doc.outcomes.has(id3))].filter(([id3, o]) => typeof id3 === "string" && o && Number.isFinite(o.at) && typeof o.to === "string" && typeof o.from === "string" && ["expired", "over-cap", "recipient-retired"].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS).map(([id3, o]) => ({ id: id3, at: o.at, size: id3.length + sizeOf(o) }));
-  const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES);
-  doc.doc.transact(() => {
-    for (const [id3, m] of doc.mail.entries()) if (!validMessageShape(m)) doc.mail.delete(id3);
-    for (const [id3, entry] of archived) if (keepArchive.has(id3)) {
-      doc.archive.set(id3, entry);
-      report.archived++;
-    }
-    for (const id3 of [...doc.archive.keys()]) if (!keepArchive.has(id3)) doc.archive.delete(id3);
-    for (const id3 of [...doc.mail.keys()]) if (!stored.has(id3)) doc.mail.delete(id3);
-    for (const [id3, m] of stored) if (!doc.mail.has(id3)) {
-      doc.mail.set(id3, m);
-      report.mailed++;
-    }
-    for (const [id3, o] of ended) if (keepOutcomes.has(id3) && !doc.outcomes.has(id3)) doc.outcomes.set(id3, o);
-    for (const id3 of [...doc.outcomes.keys()]) if (!keepOutcomes.has(id3)) doc.outcomes.delete(id3);
-    for (let i2 = bus.length - 1; i2 >= 0; ) {
-      if (i2 >= cutoff && !ended.has(bus[i2].id)) {
-        i2--;
-        continue;
-      }
-      let start2 = i2;
-      while (start2 > 0 && (start2 - 1 < cutoff || ended.has(bus[start2 - 1].id))) start2--;
-      doc.bus.delete(start2, i2 - start2 + 1);
-      report.removed += i2 - start2 + 1;
-      i2 = start2 - 1;
-    }
-  }, opts.origin);
-  return report;
-}
-function admit(doc, m, now, opts = {}) {
-  const size2 = sizeOf(m);
-  if (size2 > MAX_MESSAGE_BYTES) return { ok: false, reason: `the message is ${Math.ceil(size2 / KiB)} KiB; the limit is ${MAX_MESSAGE_BYTES / KiB} KiB` };
-  if (!m.to) return { ok: true };
-  trim(doc, now, opts);
-  const pending = /* @__PURE__ */ new Map();
-  for (const x of [...doc.mail.values(), ...doc.messages()]) if (!pending.has(x.id) && isOwed(doc, x)) pending.set(x.id, x);
-  const theirs = [...pending.values()].filter((x) => x.to === m.to);
-  const theirBytes = theirs.reduce((n, x) => n + sizeOf(x), 0);
-  if (theirs.length >= OWED_PER_RECIPIENT || theirBytes + size2 > OWED_BYTES_PER_RECIPIENT) {
-    return { ok: false, reason: `${m.to} has ${theirs.length} undelivered messages; wait until it reads them` };
-  }
-  const owedBytes = [...pending.values()].reduce((n, x) => n + sizeOf(x), 0);
-  if (owedBytes + size2 > MAIL_BYTES) return { ok: false, reason: `the room's message store is full (${Math.round(owedBytes / KiB)} KiB owed to others)` };
-  return { ok: true };
-}
-function archiveSummary(doc, area) {
-  const out2 = { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] };
-  for (const [id3, [type, from2, at, areas, unfulfilled]] of doc.archive.entries()) {
-    if (area !== void 0 && !areas.includes(area)) continue;
-    out2.messages++;
-    out2.counts[type] = (out2.counts[type] ?? 0) + 1;
-    out2.lastSeen[from2] = Math.max(out2.lastSeen[from2] ?? 0, at);
-    out2.lastAt = Math.max(out2.lastAt, at);
-    if (unfulfilled) out2.unfulfilled.push({ id: id3, from: from2, at, ...unfulfilled });
-  }
-  out2.unfulfilled.sort(byAge);
-  return out2;
-}
-var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPIENT, OWED_BYTES_PER_RECIPIENT, ARCHIVE_MAX, ARCHIVE_BYTES, ARCHIVE_UNFULFILLED_MAX, OUTCOMES_MAX, OUTCOMES_BYTES, OUTCOMES_TTL_MS, RECEIPTS_BYTES, LEDGER_BUDGET, REPLY_WINDOW_MS, OWED_TTL_MS, MAX_MESSAGE_BYTES, encoder, sizeOf, compare, byAge, selfSent, addressedTo, receipted;
-var init_delivery = __esm({
-  "packages/shared/src/delivery.ts"() {
-    "use strict";
-    init_ledger();
-    init_messages();
-    KiB = 1024;
-    MiB = 1024 * KiB;
-    DAY_MS = 24 * 60 * 60 * 1e3;
-    BUS_KEEP = 2e3;
-    BUS_BYTES = 1.5 * MiB;
-    MAIL_MAX = 2e3;
-    MAIL_BYTES = 1.5 * MiB;
-    OWED_PER_RECIPIENT = 200;
-    OWED_BYTES_PER_RECIPIENT = 256 * KiB;
-    ARCHIVE_MAX = 5e3;
-    ARCHIVE_BYTES = 512 * KiB;
-    ARCHIVE_UNFULFILLED_MAX = 200;
-    OUTCOMES_MAX = 2e3;
-    OUTCOMES_BYTES = 256 * KiB;
-    OUTCOMES_TTL_MS = 30 * DAY_MS;
-    RECEIPTS_BYTES = 256 * KiB;
-    LEDGER_BUDGET = BUS_BYTES + MAIL_BYTES + ARCHIVE_BYTES + OUTCOMES_BYTES + RECEIPTS_BYTES;
-    REPLY_WINDOW_MS = 14 * DAY_MS;
-    OWED_TTL_MS = 14 * DAY_MS;
-    MAX_MESSAGE_BYTES = 64 * KiB;
-    encoder = new TextEncoder();
-    sizeOf = (value2) => encoder.encode(JSON.stringify(value2)).length;
-    compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-    byAge = (a, b) => a.at - b.at || compare(a.id, b.id);
-    selfSent = (m) => m.from === m.to && m.fromKind !== "human";
-    addressedTo = (m, name2) => m.to === name2 && !selfSent(m);
-    receipted = (doc, name2, id3) => doc.seen(name2).has(id3);
   }
 });
 
@@ -24216,6 +24497,7 @@ var init_hub = __esm({
         this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono());
         this.startedAt = this.maintainedAt = this.host.mono();
         this.adoptStored();
+        deliveryIndex(this.doc);
         this.adoptSynced();
         this.doc.doc.on("update", this.onUpdate);
         this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`);
@@ -24496,7 +24778,10 @@ var init_hub = __esm({
           this.doc.bus.push([record2]);
           this.doc.metaMap.set("hubSeq", seq);
         }, HUB_ORIGIN);
-        if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN });
+        const keep = this.host.busKeep ?? BUS_KEEP;
+        const highBytes = BUS_BYTES - MAX_MESSAGE_BYTES - 1024;
+        if (this.doc.bus.length > keep + Math.max(1, Math.ceil(keep / 10)) || deliveryIndex(this.doc).bus.bytes > highBytes)
+          trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9 });
         return record2;
       }
       // ---- requests ----
@@ -24643,7 +24928,7 @@ var init_hub = __esm({
         if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         const retryMs = this.limited(`lease:${req.lease.name}`, POST_RATE_PER_LEASE) ?? this.limited(`principal:${this.principal(p)}`, POST_RATE_PER_PRINCIPAL) ?? this.limited("room", POST_RATE_PER_ROOM);
         if (retryMs) return fail("rate-limited", "posting too quickly; retry shortly", { retryMs });
-        const found = this.doc.messages().find((m) => m.id === msg.id) ?? this.doc.mail.get(msg.id);
+        const found = this.doc.message(msg.id);
         if (found) {
           const seq = found.seq;
           return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
@@ -24693,7 +24978,7 @@ var init_hub = __esm({
         const now = this.host.mono();
         if (now - this.maintainedAt >= MAINTENANCE_MS) {
           this.maintainedAt = now;
-          trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN });
+          trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep });
           this.expire();
         }
       }
@@ -24722,6 +25007,10 @@ var init_hub = __esm({
           if (meta2.get("hubIncarnation") !== this.incarnation) meta2.set("hubIncarnation", this.incarnation);
           if (this.lastEpoch !== void 0 && meta2.get("hubEpoch") !== this.lastEpoch) meta2.set("hubEpoch", this.lastEpoch);
           if (this.lastSeq !== void 0 && meta2.get("hubSeq") !== this.lastSeq) meta2.set("hubSeq", this.lastSeq);
+          const index = deliveryIndex(doc).bus;
+          const changed = new Set(index.changed);
+          index.changed.clear();
+          if (![...changed].some((id3) => index.count(id3) > 1 || index.count(id3) && archived(id3))) return;
           const seen = /* @__PURE__ */ new Set();
           const drop = [];
           doc.bus.toArray().forEach((m, i2) => {
@@ -37708,9 +37997,11 @@ function hubTransport(provider) {
     throw new Error("hub unreachable");
   }, connected: () => false, onFrame: () => () => {
   }, onReconnect: () => () => {
+  }, onClose: () => () => {
   } };
   const listeners = /* @__PURE__ */ new Set();
   const reconnects = /* @__PURE__ */ new Set();
+  const closes = /* @__PURE__ */ new Set();
   const old = provider.messageHandlers[MSG_HUB];
   provider.messageHandlers[MSG_HUB] = (_encoder, decoder) => {
     try {
@@ -37722,6 +38013,7 @@ function hubTransport(provider) {
   };
   const status = (event) => {
     if (event.status === "connected") for (const fn of reconnects) fn();
+    if (event.status === "disconnected") for (const fn of closes) fn();
   };
   provider.on("status", status);
   return {
@@ -37741,12 +38033,19 @@ function hubTransport(provider) {
       reconnects.add(fn);
       return () => {
         reconnects.delete(fn);
-        if (!reconnects.size) provider.off("status", status);
+        if (!reconnects.size && !closes.size) provider.off("status", status);
+      };
+    },
+    onClose(fn) {
+      closes.add(fn);
+      return () => {
+        closes.delete(fn);
+        if (!reconnects.size && !closes.size) provider.off("status", status);
       };
     }
   };
 }
-var PAUSED, NOT_SENT, NOT_SENT_LEASE, NameLeaseUnavailable, HubClient, HubError;
+var PAUSED, NOT_SENT, NOT_SENT_LEASE, NameLeaseUnavailable, TransportUnavailable, HubClient, HubError;
 var init_hub_client = __esm({
   "packages/room-mcp/src/hub-client.ts"() {
     "use strict";
@@ -37755,6 +38054,11 @@ var init_hub_client = __esm({
     NOT_SENT = "not sent: hub unreachable";
     NOT_SENT_LEASE = "not sent: name lease is no longer held; rejoin to take a new name";
     NameLeaseUnavailable = class extends Error {
+    };
+    TransportUnavailable = class extends Error {
+      constructor() {
+        super("hub unreachable");
+      }
     };
     HubClient = class {
       constructor(options) {
@@ -37791,7 +38095,8 @@ var init_hub_client = __esm({
           this.transport.onFrame((bytes) => this.receive(bytes)),
           this.transport.onReconnect(() => {
             void this.reconnect();
-          })
+          }),
+          this.transport.onClose(() => this.disconnected())
         ];
       }
       /**
@@ -37801,8 +38106,8 @@ var init_hub_client = __esm({
       attach(transport) {
         this.assertOpen();
         for (const unsub of this.unsubs) unsub();
+        this.disconnected();
         this.transport = transport;
-        this.helloOk = false;
         this.unsubs = this.subscribe();
         if (transport.connected()) void this.reconnect().then(() => this.renewAll());
       }
@@ -37839,9 +38144,12 @@ var init_hub_client = __esm({
         if (this.pauseReason) return `${PAUSED} ${this.pauseReason}`;
         return this.helloOk && this.lostLeases.size === 0 ? void 0 : PAUSED;
       }
-      async hello() {
+      hello() {
+        return this.handshake();
+      }
+      async handshake(budgetMs) {
         try {
-          const reply = await this.request({ op: "hello", proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId });
+          const reply = await this.request({ op: "hello", proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId }, void 0, budgetMs);
           const old = this.incarnation;
           this.incarnation = Number(reply.incarnation);
           this.helloOk = true;
@@ -37957,6 +38265,14 @@ var init_hub_client = __esm({
         } catch {
         }
       }
+      disconnected() {
+        this.helloOk = false;
+        for (const pending of this.pending.values()) {
+          clearTimeout(pending.timer);
+          pending.reject(new TransportUnavailable());
+        }
+        this.pending.clear();
+      }
       receive(bytes) {
         let frame;
         try {
@@ -37978,39 +38294,61 @@ var init_hub_client = __esm({
         clearTimeout(pending.timer);
         pending.resolve(frame);
       }
-      async request(body2, onSend) {
+      async request(body2, onSend, budgetMs) {
         this.assertOpen();
         const startedMono = this.mono(), startedWall = this.wall();
-        const startingBudget = this.timeoutMs + SETTLE_MS;
+        const startingBudget = budgetMs ?? this.timeoutMs + SETTLE_MS;
         const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall);
+        let interrupted = false;
+        const remaining = () => (interrupted ? this.timeoutMs : startingBudget) - elapsed();
         for (; ; ) {
-          const t = await this.requestOnce(body2, onSend);
+          if (interrupted) {
+            if (remaining() <= 0) throw new TransportUnavailable();
+            if (!this.reachable()) {
+              await this.retryDelay(Math.min(100, remaining()));
+              continue;
+            }
+          }
+          let t;
+          try {
+            t = await this.requestOnce(body2, onSend, Math.min(this.timeoutMs, remaining()));
+          } catch (error2) {
+            if (body2.op !== "post" || !(error2 instanceof TransportUnavailable)) throw error2;
+            interrupted = true;
+            continue;
+          }
           this.assertOpen();
           if (t.ok) return t;
           if (t.reason === "starting" || t.reason === "unavailable" || t.reason === "rate-limited") {
-            const remaining = startingBudget - elapsed();
-            if (remaining <= 0) throw new HubError(t.reason, t.text);
-            await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), remaining));
+            const left = remaining();
+            if (left <= 0) throw new HubError(t.reason, t.text);
+            await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), left));
             this.assertOpen();
-            if (elapsed() >= startingBudget) throw new HubError(t.reason, t.text);
+            if (remaining() <= 0) throw new HubError(t.reason, t.text);
             continue;
           }
           if (t.reason === "hello-first" && body2.op !== "hello") {
-            await this.hello();
+            if (remaining() <= 0) throw new TransportUnavailable();
+            try {
+              await this.handshake(remaining());
+            } catch (error2) {
+              if (body2.op !== "post" || !(error2 instanceof TransportUnavailable)) throw error2;
+              interrupted = true;
+            }
             continue;
           }
           throw new HubError(t.reason, t.text);
         }
       }
-      requestOnce(body2, onSend) {
+      requestOnce(body2, onSend, timeoutMs2 = this.timeoutMs) {
         if (this.closed) return Promise.reject(new Error("hub client closed"));
-        if (!this.transport.connected()) return Promise.reject(new Error("hub unreachable"));
+        if (!this.transport.connected()) return Promise.reject(new TransportUnavailable());
         const id3 = `r${++this.nextId}`;
         return new Promise((resolve5, reject) => {
           const timer = setTimeout(() => {
             this.pending.delete(id3);
             reject(new Error("the hub did not answer"));
-          }, this.timeoutMs);
+          }, timeoutMs2);
           this.pending.set(id3, { resolve: resolve5, reject, timer });
           try {
             this.assertOpen();

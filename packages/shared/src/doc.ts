@@ -1,3 +1,4 @@
+import { deliveryIndex } from './delivery.js'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import { boundedTextDiff, type DiffStats, type TextOp } from './text-diff.js'
@@ -477,7 +478,7 @@ export class RoomDoc {
   /** Compact records of every message the trim removed from the bus. */
   get archive(): Y.Map<ArchivedMsg> { return this.doc.getMap<ArchivedMsg>('archive') }
   /** A message on the bus, else in mail. */
-  message(id: string): Msg | undefined { return this.messages().find(m => m.id === id) ?? this.mail.get(id) }
+  message(id: string): Msg | undefined { return deliveryIndex(this).bus.first(id) ?? this.mail.get(id) }
   lastMessages(n: number): Msg[] {
     const messages = this.messages()
     return messages.slice(Math.max(0, messages.length - n))

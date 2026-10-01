@@ -4,7 +4,7 @@
  * and a durable incarnation record, and call `tick` every second.
  */
 import {
-  BUS_KEEP, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, newId, trim, validMessageShape, validParticipantName,
+  BUS_BYTES, BUS_KEEP, deliveryIndex, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, newId, trim, validMessageShape, validParticipantName,
   type Msg, type MsgType, type ParticipantView, type ReleasePoster, type RoomDoc,
 } from '@room/shared'
 import {
@@ -98,6 +98,8 @@ export interface HubHost {
   full?(): boolean
   /** Server: why the room cannot take coordination writes now (its storage is failing); undefined when it can. */
   unavailable?(): string | undefined
+  /** Tests: retained history size for the operation-count scaling proof. */
+  busKeep?: number
   /** Tests: a smaller per-incarnation counter limit than 2^21. */
   counterLimit?: number
 }
@@ -267,6 +269,7 @@ class RoomHub implements Hub {
     this.tenure = new ExpiryTenure(`inc:${this.incarnation}`, () => this.host.mono())
     this.startedAt = this.maintainedAt = this.host.mono()
     this.adoptStored()
+    deliveryIndex(this.doc) // Start observers before the first member update.
     this.adoptSynced() // only mirror baselines; never ownership
     this.doc.doc.on('update', this.onUpdate)
     this.host.log(`hub: incarnation ${this.incarnation}, ${this.leases.size} lease(s) carried over`)
@@ -520,7 +523,11 @@ class RoomHub implements Hub {
       this.doc.bus.push([record])
       this.doc.metaMap.set('hubSeq', seq)
     }, HUB_ORIGIN)
-    if (this.doc.bus.length > BUS_KEEP) trim(this.doc, wall, { origin: HUB_ORIGIN })
+    const keep = this.host.busKeep ?? BUS_KEEP
+    // Count hysteresis amortises the full O(n) pass; byte hysteresis reserves one maximum post.
+    const highBytes = BUS_BYTES - MAX_MESSAGE_BYTES - 1024
+    if (this.doc.bus.length > keep + Math.max(1, Math.ceil(keep / 10)) || deliveryIndex(this.doc).bus.bytes > highBytes)
+      trim(this.doc, wall, { origin: HUB_ORIGIN, busKeep: keep, busBytes: highBytes * 0.9 })
     return record
   }
 
@@ -674,7 +681,7 @@ class RoomHub implements Hub {
       ?? this.limited(`principal:${this.principal(p)}`, POST_RATE_PER_PRINCIPAL)
       ?? this.limited('room', POST_RATE_PER_ROOM)
     if (retryMs) return fail('rate-limited', 'posting too quickly; retry shortly', { retryMs })
-    const found = this.doc.messages().find(m => m.id === msg.id) ?? this.doc.mail.get(msg.id)
+    const found = this.doc.message(msg.id)
     if (found) {
       const seq = (found as { seq?: unknown }).seq
       return { v: 1, re: req.id, ok: true, ...(isCounter(seq) ? { seq } : {}), at: found.at, duplicate: true }
@@ -715,7 +722,8 @@ class RoomHub implements Hub {
     const now = this.host.mono()
     if (now - this.maintainedAt >= MAINTENANCE_MS) {
       this.maintainedAt = now
-      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN })
+      // Deliberate full O(n) maintenance pass once per minute (TTL, mail/archive/outcome bounds).
+      trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep })
       this.expire()
     }
   }
@@ -744,6 +752,11 @@ class RoomHub implements Hub {
       if (meta.get('hubIncarnation') !== this.incarnation) meta.set('hubIncarnation', this.incarnation)
       if (this.lastEpoch !== undefined && meta.get('hubEpoch') !== this.lastEpoch) meta.set('hubEpoch', this.lastEpoch)
       if (this.lastSeq !== undefined && meta.get('hubSeq') !== this.lastSeq) meta.set('hubSeq', this.lastSeq)
+      const index = deliveryIndex(doc).bus
+      const changed = new Set(index.changed)
+      index.changed.clear()
+      // Ordinary ticks inspect only changed ids. A rare duplicate/archive resurrection needs array order.
+      if (![...changed].some(id => index.count(id) > 1 || (index.count(id) && archived(id)))) return
       const seen = new Set<string>()
       const drop: number[] = []
       doc.bus.toArray().forEach((m, i) => {

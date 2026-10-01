@@ -46,7 +46,7 @@ import { storeFromEnv, writeAtomicFile, type AuditEntry, type OpenRepo } from '.
 import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type PersistenceProvider } from './hub.js'
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
-import { levelDbOf, levelStoredTables, levelStoredSize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
+import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
@@ -266,7 +266,9 @@ async function inventorySnapshot() {
     if (process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_INVENTORY_DELAY_MS) await new Promise(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_INVENTORY_DELAY_MS)))
     const names = await listDocs()
     const tables = await storedTables(names)
-    return takeInventory(names, Object.fromEntries(rooms), (name, limit) => storedSize(name, limit, tables), LOAD_MAX_BYTES, tables)
+    const level = isLevelProvider(provider())
+    return takeInventory(names, Object.fromEntries(rooms), async (name, limit) =>
+      level ? levelInventorySize(name, limit, tables) : storedSize(name, limit), LOAD_MAX_BYTES, tables)
   })()
   inventoryScan = work
   try { return await work } finally { inventoryScan = undefined }
@@ -274,6 +276,7 @@ async function inventorySnapshot() {
 void roomsLoaded.then(async () => {
   const inventory = await inventorySnapshot()
   for (const line of formatInventory(inventory).split('\n')) if (line.startsWith('  !')) console.log(`stored inventory: ${line.trim()}`)
+  console.log(`stored inventory complete: ${inventory.docs.length} document(s)`)
 }).catch(error => console.log(`stored inventory failed: ${error instanceof Error ? error.message : error}`))
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)

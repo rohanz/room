@@ -14,6 +14,7 @@ class FakeTransport implements HubTransport {
   answer?: (request: Req) => Omit<Reply, 'v' | 're'> | undefined
   private frames = new Set<(bytes: Uint8Array) => void>()
   private reconnects = new Set<() => void>()
+  private closes = new Set<() => void>()
   connected() { return this.up }
   send(bytes: Uint8Array) {
     const req = decodeFrame(bytes) as Req
@@ -23,10 +24,12 @@ class FakeTransport implements HubTransport {
   }
   onFrame(fn: (bytes: Uint8Array) => void) { this.frames.add(fn); return () => this.frames.delete(fn) }
   onReconnect(fn: () => void) { this.reconnects.add(fn); return () => this.reconnects.delete(fn) }
+  onClose(fn: () => void) { this.closes.add(fn); return () => this.closes.delete(fn) }
   emit(frame: Reply | { v: 1; push: 'lease-lost'; name: string; epoch: number; reason: 'expired' }) {
     for (const fn of this.frames) fn(encodeFrame(frame))
   }
   reconnect() { this.up = true; for (const fn of this.reconnects) fn() }
+  disconnect() { this.up = false; for (const fn of this.closes) fn() }
 }
 
 function fixture(local = true) {
@@ -50,6 +53,104 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('HubClient', () => {
+  it('resends an interrupted post with the same message id after reconnect and hello', async () => {
+    const { client, transport, advance } = fixture(false)
+    await client.hello(); await client.acquire('alice', holder)
+    const answer = transport.answer!
+    let attempts = 0
+    transport.answer = req => req.op === 'post'
+      ? (++attempts === 1 ? undefined : { ok: true, seq: 5, at: 1, duplicate: true })
+      : answer(req)
+    let reply: Reply | undefined
+    const pending = client.post({ id: 'stable-id', type: 'release', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
+      .then(result => { reply = result })
+    advance(500); await vi.advanceTimersByTimeAsync(500)
+    transport.disconnect()
+    advance(2000); await vi.advanceTimersByTimeAsync(2000)
+    transport.reconnect()
+    advance(100); await vi.advanceTimersByTimeAsync(100)
+    expect(reply).toMatchObject({ ok: true, seq: 5, duplicate: true })
+    await pending
+    expect(transport.sent.filter(r => r.op === 'post').map(r => r.msg.id)).toEqual(['stable-id', 'stable-id'])
+    expect(transport.sent.map(r => r.op)).toEqual(['hello', 'acquire', 'post', 'hello', 'post'])
+    client.close()
+  })
+
+  it.each(['acquire', 'renew', 'release'] as const)('fails an interrupted %s promptly without replaying it', async op => {
+    const { client, transport } = fixture(false)
+    await client.hello(); await client.acquire('alice', holder)
+    transport.answer = () => undefined
+    let error: Error | undefined
+    const pending = (op === 'acquire' ? client.acquire('bob', holder) : client[op]('alice'))
+      .catch(reason => { error = reason })
+    transport.disconnect()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(error?.message).toContain('hub unreachable')
+    await pending
+    const attempts = transport.sent.filter(r => r.op === op).length
+    transport.reconnect()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(transport.sent.filter(r => r.op === op)).toHaveLength(attempts)
+    client.close()
+  })
+
+  it('rechecks its lease before resending a post interrupted by disconnect', async () => {
+    const { client, transport } = fixture(false)
+    await client.hello(); await client.acquire('alice', holder)
+    const answer = transport.answer!
+    transport.answer = req => req.op === 'post' ? undefined : answer(req)
+    const pending = expect(client.post({ id: 'lost-lease', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } }))
+      .rejects.toThrow('not sent: name lease is no longer held')
+    transport.disconnect()
+    transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch: 42, reason: 'expired' })
+    transport.reconnect()
+    await vi.advanceTimersByTimeAsync(100)
+    await pending
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    client.close()
+  })
+
+  it('expires an interrupted post at its original budget when no reconnect arrives', async () => {
+    const { client, transport, advance } = fixture(false)
+    await client.hello(); await client.acquire('alice', holder)
+    transport.answer = () => undefined
+    let error: Error | undefined
+    const pending = client.post({ id: 'offline-id', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
+      .catch(reason => { error = reason })
+    advance(2000); await vi.advanceTimersByTimeAsync(2000)
+    transport.disconnect()
+    advance(REQUEST_TIMEOUT_TEAM_MS - 2001); await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_TEAM_MS - 2001)
+    expect(error).toBeUndefined()
+    advance(1); await vi.advanceTimersByTimeAsync(1)
+    expect(error?.message).toContain('hub unreachable')
+    await pending
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(1)
+    client.close()
+  })
+
+  it.each([false, true])('keeps the original deadline after reconnect, including another hello-first: %s', async helloFirst => {
+    const { client, transport, advance } = fixture(false)
+    await client.hello(); await client.acquire('alice', holder)
+    const answer = transport.answer!
+    transport.answer = () => undefined
+    let error: Error | undefined
+    const pending = client.post({ id: 'deadline-id', type: 'note', from: 'alice' }, { lease: { name: 'alice', epoch: 42 } })
+      .catch(reason => { error = reason })
+    advance(2000); await vi.advanceTimersByTimeAsync(2000)
+    transport.disconnect()
+    advance(6000); await vi.advanceTimersByTimeAsync(6000)
+    let hellos = 0
+    transport.answer = req => req.op === 'hello' && ++hellos === 1 ? answer(req)
+      : req.op === 'post' && helloFirst ? { ok: false, reason: 'hello-first', text: 'hello first' } : undefined
+    transport.reconnect()
+    advance(100); await vi.advanceTimersByTimeAsync(100)
+    expect(transport.sent.filter(r => r.op === 'post')).toHaveLength(2)
+    advance(REQUEST_TIMEOUT_TEAM_MS - 8100); await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_TEAM_MS - 8100)
+    expect(error).toBeInstanceOf(Error)
+    await pending
+    client.close()
+  })
+
   it('sends no post without a valid lease of the poster (wave 4)', async () => {
     const { client, transport } = fixture()
     await client.hello()
@@ -344,6 +445,22 @@ it('hubTransport forwards type-7 frames after y-websocket consumes the type byte
   expect(received).toEqual([frame])
   expect(encoding.length(encoder)).toBe(0)
   unsubscribe()
+})
+
+it('hubTransport forwards close status and retains the listener until both status subscriptions end', () => {
+  const on = vi.fn(), off = vi.fn()
+  const provider = { messageHandlers: [], on, off } as unknown as WebsocketProvider
+  const transport = hubTransport(provider)
+  const closed = vi.fn(), connected = vi.fn()
+  const stopClose = transport.onClose(closed), stopConnect = transport.onReconnect(connected)
+  const status = on.mock.calls[0][1] as (event: { status: string }) => void
+  status({ status: 'disconnected' })
+  expect(closed).toHaveBeenCalledOnce()
+  expect(connected).not.toHaveBeenCalled()
+  stopConnect()
+  expect(off).not.toHaveBeenCalled()
+  stopClose()
+  expect(off).toHaveBeenCalledWith('status', status)
 })
 
 describe('HubClient handover and lease queries (wave 4)', () => {

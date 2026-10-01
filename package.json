@@ -10,11 +10,13 @@
     "test": "vitest run",
     "knip": "knip",
     "typecheck": "tsc -b packages/shared packages/hub-core packages/relay packages/server packages/roomd packages/room-mcp packages/agent && tsc -p packages/web",
-    "server": "tsx packages/server/src/index.ts",
+    "server": "node packages/server/dist/server.mjs",
     "mcp": "tsx packages/room-mcp/src/index.ts",
     "web": "npm run dev -w @room/web",
     "build:plugin": "node scripts/build-plugin.mjs",
-    "eval:mocks": "node --import tsx scripts/eval-mocks.mts"
+    "eval:mocks": "node --import tsx scripts/eval-mocks.mts",
+    "build:server": "node scripts/build-server.mjs",
+    "server:dev": "tsx packages/server/src/index.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

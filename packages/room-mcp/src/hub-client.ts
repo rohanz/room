@@ -10,15 +10,17 @@ export interface HubTransport {
   connected(): boolean
   onFrame(fn: (bytes: Uint8Array) => void): () => void
   onReconnect(fn: () => void): () => void
+  onClose(fn: () => void): () => void
 }
 
 /** y-websocket dispatches by provider.messageHandlers (src/y-websocket.js:118-124).
  * Each provider owns a copy (line 358), and an empty encoder sends no reply (line 231). */
 export function hubTransport(provider: WebsocketProvider): HubTransport {
   // An in-memory provider (RoomdOptions.providerFactory) has no hub channel: the hub is unreachable over it.
-  if (!provider.messageHandlers) return { send() { throw new Error('hub unreachable') }, connected: () => false, onFrame: () => () => {}, onReconnect: () => () => {} }
+  if (!provider.messageHandlers) return { send() { throw new Error('hub unreachable') }, connected: () => false, onFrame: () => () => {}, onReconnect: () => () => {}, onClose: () => () => {} }
   const listeners = new Set<(bytes: Uint8Array) => void>()
   const reconnects = new Set<() => void>()
+  const closes = new Set<() => void>()
   const old = provider.messageHandlers[MSG_HUB]
   provider.messageHandlers[MSG_HUB] = (_encoder, decoder) => {
     // The provider has consumed the type. Re-encode it so the transport has one wire format.
@@ -30,6 +32,7 @@ export function hubTransport(provider: WebsocketProvider): HubTransport {
   }
   const status = (event: { status: string }) => {
     if (event.status === 'connected') for (const fn of reconnects) fn()
+    if (event.status === 'disconnected') for (const fn of closes) fn()
   }
   provider.on('status', status)
   return {
@@ -44,7 +47,11 @@ export function hubTransport(provider: WebsocketProvider): HubTransport {
     },
     onReconnect(fn) {
       reconnects.add(fn)
-      return () => { reconnects.delete(fn); if (!reconnects.size) provider.off('status', status) }
+      return () => { reconnects.delete(fn); if (!reconnects.size && !closes.size) provider.off('status', status) }
+    },
+    onClose(fn) {
+      closes.add(fn)
+      return () => { closes.delete(fn); if (!reconnects.size && !closes.size) provider.off('status', status) }
     },
   }
 }
@@ -53,6 +60,10 @@ const PAUSED = '[room] hub unreachable; coordination paused. Your files are unaf
 const NOT_SENT = 'not sent: hub unreachable'
 const NOT_SENT_LEASE = 'not sent: name lease is no longer held; rejoin to take a new name'
 export class NameLeaseUnavailable extends Error {}
+/** Distinguishes transport loss from a caller's lease check or a hub refusal. */
+class TransportUnavailable extends Error {
+  constructor() { super('hub unreachable') }
+}
 
 type Lease = { epoch: number; ttlMs: number; t0: number; w0: number }
 type RequestBody = Req extends infer R ? R extends Req ? Omit<R, 'v' | 'id'> : never : never
@@ -98,6 +109,7 @@ export class HubClient {
     return [
       this.transport.onFrame(bytes => this.receive(bytes)),
       this.transport.onReconnect(() => { void this.reconnect() }),
+      this.transport.onClose(() => this.disconnected()),
     ]
   }
 
@@ -108,8 +120,8 @@ export class HubClient {
   attach(transport: HubTransport): void {
     this.assertOpen()
     for (const unsub of this.unsubs) unsub()
+    this.disconnected()
     this.transport = transport
-    this.helloOk = false
     this.unsubs = this.subscribe()
     if (transport.connected()) void this.reconnect().then(() => this.renewAll())
   }
@@ -149,9 +161,11 @@ export class HubClient {
     return this.helloOk && this.lostLeases.size === 0 ? undefined : PAUSED
   }
 
-  async hello(): Promise<Reply> {
+  hello(): Promise<Reply> { return this.handshake() }
+
+  private async handshake(budgetMs?: number): Promise<Reply> {
     try {
-      const reply = await this.request({ op: 'hello', proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId })
+      const reply = await this.request({ op: 'hello', proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId }, undefined, budgetMs)
       const old = this.incarnation
       this.incarnation = Number(reply.incarnation)
       this.helloOk = true
@@ -264,6 +278,15 @@ export class HubClient {
     try { await this.hello() } catch { /* The next reconnect or caller can retry. */ }
   }
 
+  private disconnected(): void {
+    this.helloOk = false
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(new TransportUnavailable())
+    }
+    this.pending.clear()
+  }
+
   private receive(bytes: Uint8Array): void {
     let frame: unknown
     try { frame = decodeFrame(bytes) } catch { return }
@@ -282,40 +305,62 @@ export class HubClient {
     pending.resolve(frame as Reply)
   }
 
-  private async request(body: RequestBody, onSend?: () => void): Promise<Extract<Reply, { ok: true }>> {
+  private async request(body: RequestBody, onSend?: () => void, budgetMs?: number): Promise<Extract<Reply, { ok: true }>> {
     this.assertOpen()
     const startedMono = this.mono(), startedWall = this.wall()
-    const startingBudget = this.timeoutMs + SETTLE_MS
+    const startingBudget = budgetMs ?? this.timeoutMs + SETTLE_MS
     const elapsed = () => Math.max(this.mono() - startedMono, this.wall() - startedWall)
+    let interrupted = false
+    const remaining = () => (interrupted ? this.timeoutMs : startingBudget) - elapsed()
     for (;;) {
-      const t = await this.requestOnce(body, onSend)
+      // Posts are deduped by msg.id. Only they can replay an unknown outcome; lease
+      // operations fail immediately so their callers can recover explicitly.
+      if (interrupted) {
+        if (remaining() <= 0) throw new TransportUnavailable()
+        if (!this.reachable()) {
+          await this.retryDelay(Math.min(100, remaining()))
+          continue
+        }
+      }
+      let t: Reply
+      try { t = await this.requestOnce(body, onSend, Math.min(this.timeoutMs, remaining())) }
+      catch (error) {
+        if (body.op !== 'post' || !(error instanceof TransportUnavailable)) throw error
+        interrupted = true
+        continue
+      }
       this.assertOpen()
       if (t.ok) return t
       if (t.reason === 'starting' || t.reason === 'unavailable' || t.reason === 'rate-limited') {
-        const remaining = startingBudget - elapsed()
-        if (remaining <= 0) throw new HubError(t.reason, t.text)
-        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), remaining))
+        const left = remaining()
+        if (left <= 0) throw new HubError(t.reason, t.text)
+        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), left))
         this.assertOpen()
-        if (elapsed() >= startingBudget) throw new HubError(t.reason, t.text)
+        if (remaining() <= 0) throw new HubError(t.reason, t.text)
         continue
       }
       if (t.reason === 'hello-first' && body.op !== 'hello') {
-        await this.hello()
+        if (remaining() <= 0) throw new TransportUnavailable()
+        try { await this.handshake(remaining()) }
+        catch (error) {
+          if (body.op !== 'post' || !(error instanceof TransportUnavailable)) throw error
+          interrupted = true
+        }
         continue
       }
       throw new HubError(t.reason, t.text)
     }
   }
 
-  private requestOnce(body: RequestBody, onSend?: () => void): Promise<Reply> {
+  private requestOnce(body: RequestBody, onSend?: () => void, timeoutMs = this.timeoutMs): Promise<Reply> {
     if (this.closed) return Promise.reject(new Error('hub client closed'))
-    if (!this.transport.connected()) return Promise.reject(new Error('hub unreachable'))
+    if (!this.transport.connected()) return Promise.reject(new TransportUnavailable())
     const id = `r${++this.nextId}`
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error('the hub did not answer'))
-      }, this.timeoutMs)
+      }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       try { this.assertOpen(); onSend?.(); this.assertOpen(); this.transport.send(encodeFrame({ ...body, v: 1, id } as Req)) }
       catch (error) {
