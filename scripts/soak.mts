@@ -4,6 +4,7 @@
 //   npx tsx scripts/soak.mts run [--minutes 180] [--restart-at 90] [--participants 8]   # the soak (orchestrator)
 //   npx tsx scripts/soak.mts report                                                   # re-analyse a finished run
 //   npx tsx scripts/soak.mts cleanup                                                  # delete credentials
+//   npx tsx scripts/soak.mts metrics                                                  # one server memory/CPU sample
 //
 // Env: SOAK_SERVER (default https://room-rohanz-staging.fly.dev), SOAK_DIR (default /tmp/room-soak),
 //      SOAK_FLY_APP / SOAK_FLY_MACHINE (metrics over `flyctl ssh console`, read-only; the single restart at
@@ -31,7 +32,7 @@ const HTTP = (process.env.SOAK_SERVER ?? 'https://room-rohanz-staging.fly.dev').
 const WS = HTTP.replace(/^http/, 'ws')
 const DIR = process.env.SOAK_DIR ?? '/tmp/room-soak'
 const APP = process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
-const MACHINE = process.env.SOAK_FLY_MACHINE ?? '82de15a703de48'
+const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2863604c406678'
 if (APP === 'room-rohanz') throw new Error('refusing to run against the production app room-rohanz')
 if (!/^\/tmp\/|room-soak/.test(DIR)) throw new Error(`refusing SOAK_DIR ${DIR}: must be under /tmp or contain room-soak`)
 const EVENTS = path.join(DIR, 'events'), CREDS = path.join(DIR, 'creds'), WORK = path.join(DIR, 'work'), LOGS = path.join(DIR, 'logs')
@@ -284,7 +285,7 @@ async function participant(name: string, repo: RepoKey, restartAt: number, count
 
 // ---------------------------------------------------------------- orchestrator: observer, health, Fly metrics
 
-const REMOTE = 'for p in /proc/[0-9]*; do c=$(tr "\\0" " " < $p/cmdline 2>/dev/null); case "$c" in sh\\ *) ;; *loader.mjs*packages/server*) echo SRV ${p#/proc/} $(grep VmRSS $p/status | tr -s " " | cut -d" " -f2) $(grep VmHWM $p/status | tr -s " " | cut -d" " -f2) $(cut -d" " -f14,15 $p/stat);; *tsx\\ packages/server*) echo WRAP ${p#/proc/} $(grep VmRSS $p/status | tr -s " " | cut -d" " -f2);; esac; done; echo DATA $(du -sk /data | cut -f1); echo MEMAVAIL $(grep MemAvailable /proc/meminfo | tr -s " " | cut -d" " -f2); echo UPTIME $(cut -d" " -f1 /proc/uptime)'
+const REMOTE = 'for p in /proc/[0-9]*; do c=$(tr "\\0" " " < $p/cmdline 2>/dev/null); case "$c" in sh\\ *) ;; *loader.mjs*packages/server*|node\\ packages/server/dist/server.mjs*) echo SRV ${p#/proc/} $(grep VmRSS $p/status | tr -s " " | cut -d" " -f2) $(grep VmHWM $p/status | tr -s " " | cut -d" " -f2) $(cut -d" " -f14,15 $p/stat);; *tsx\\ packages/server*) echo WRAP ${p#/proc/} $(grep VmRSS $p/status | tr -s " " | cut -d" " -f2);; esac; done; echo DATA $(du -sk /data | cut -f1); echo MEMAVAIL $(grep MemAvailable /proc/meminfo | tr -s " " | cut -d" " -f2); echo UPTIME $(cut -d" " -f1 /proc/uptime); echo STAT $(head -1 /proc/stat)'
 async function flyMetrics(): Promise<Record<string, number> | { error: string }> {
   if (!APP) return { error: 'fly disabled' }
   try {
@@ -297,6 +298,8 @@ async function flyMetrics(): Promise<Record<string, number> | { error: string }>
       if (f[0] === 'DATA') out.dataKb = +f[1]
       if (f[0] === 'MEMAVAIL') out.memAvailKb = +f[1]
       if (f[0] === 'UPTIME') out.uptimeS = +f[1]
+      // Machine-wide ticks: cpu user nice system idle iowait irq softirq steal …; steal is CPU the host withheld.
+      if (f[0] === 'STAT' && f[1] === 'cpu') { const v = f.slice(2, 10).map(Number); out.totalTicks = v.reduce((a, b) => a + b, 0); out.stealTicks = v[7] }
     }
     return out
   } catch (e) { return { error: String(e).slice(0, 300) } }
@@ -437,15 +440,18 @@ function report(): void {
   const metrics = orch.filter(e => e.ev === 'metrics' && e.rssKb)
   const rooms = obs.filter(e => e.ev === 'room')
   const errorsAll: string[] = []
-  out.push('| min | phase | server RSS MB | HWM MB | CPU % | /data KB | alpha doc KB | beta doc KB | live leases | present | bus | mail | Fly log lines | error lines |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  out.push('| min | phase | server RSS MB | HWM MB | CPU % | steal % | /data KB | alpha doc KB | beta doc KB | live leases | present | bus | mail | Fly log lines | error lines |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   let prev: any
   for (const m of metrics) {
-    const cpu = prev && prev.pid === m.pid && prev.cpuTicks !== undefined ? (100 * (m.cpuTicks - prev.cpuTicks) / 100 / ((m.t - prev.t) / 1000)).toFixed(1) : '-'
+    // A restarted machine can reuse the pid; its uptime going down marks a new process.
+    const same = prev && prev.pid === m.pid && !(m.uptimeS < prev.uptimeS)
+    const cpu = same && prev.cpuTicks !== undefined ? (100 * (m.cpuTicks - prev.cpuTicks) / 100 / ((m.t - prev.t) / 1000)).toFixed(1) : '-'
+    const steal = same && prev.totalTicks !== undefined && m.totalTicks > prev.totalTicks ? (100 * (m.stealTicks - prev.stealTicks) / (m.totalTicks - prev.totalTicks)).toFixed(1) : '-'
     const near = (room: string) => rooms.filter(r => r.room === room && Math.abs(r.t - m.t) < 120_000).at(-1)
     const a = near(REPOS.alpha), b = near(REPOS.beta)
     const errs = (m.errors ?? []) as string[]
     errorsAll.push(...errs)
-    out.push(`| ${m.t >= t0 ? min(m.t) : 'pre'} | ${m.phase} | ${(m.rssKb / 1024).toFixed(1)} | ${(m.hwmKb / 1024).toFixed(1)} | ${cpu} | ${m.dataKb ?? '-'} | ${a ? (a.docBytes / 1024).toFixed(0) : '-'} | ${b ? (b.docBytes / 1024).toFixed(0) : '-'} | ${a && b ? a.live + b.live : '-'} | ${a && b ? a.present.length + b.present.length : '-'} | ${a && b ? a.bus + b.bus : '-'} | ${a && b ? a.mail + b.mail : '-'} | ${m.logLines ?? '-'} | ${errs.length} |`)
+    out.push(`| ${m.t >= t0 ? min(m.t) : 'pre'} | ${m.phase} | ${(m.rssKb / 1024).toFixed(1)} | ${(m.hwmKb / 1024).toFixed(1)} | ${cpu} | ${steal} | ${m.dataKb ?? '-'} | ${a ? (a.docBytes / 1024).toFixed(0) : '-'} | ${b ? (b.docBytes / 1024).toFixed(0) : '-'} | ${a && b ? a.live + b.live : '-'} | ${a && b ? a.present.length + b.present.length : '-'} | ${a && b ? a.bus + b.bus : '-'} | ${a && b ? a.mail + b.mail : '-'} | ${m.logLines ?? '-'} | ${errs.length} |`)
     prev = m
   }
   const final = orch.filter(e => e.ev === 'metrics' && e.phase === 'final').at(-1)
@@ -533,7 +539,9 @@ function report(): void {
   // The window in which /health failed outside the planned restart (CPU throttling on staging).
   const healthAll = orch.filter(e => e.ev === 'health')
   const outsideRestart = (t: number) => !(restartBegin && restartHealthy && t >= restartBegin.t - 5_000 && t <= restartHealthy.t + 15_000)
-  const stallFails = healthAll.filter(e => e.status !== 200 && outsideRestart(e.t))
+  // Only clustered failures (3 or more within 5 minutes) make a stall window; isolated probe timeouts do not.
+  const fails = healthAll.filter(e => e.status !== 200 && outsideRestart(e.t))
+  const stallFails = fails.filter(e => fails.filter(f => Math.abs(f.t - e.t) <= 5 * 60_000).length >= 3)
   const stallFrom = stallFails.length ? stallFails[0].t - 5 * 60_000 : Infinity, stallTo = stallFails.at(-1)?.t ?? -Infinity
   const inStall = (t: number) => t >= stallFrom && t <= stallTo + 60_000
   // Leases of disconnected participants: disconnects longer than TTL + 15 s must show a new epoch after.
@@ -554,7 +562,7 @@ function report(): void {
   const leaveEnds = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => e.ev === 'leave').map(e => {
     const sample = rooms.find(r => r.t > e.t + 5_000 && r.holders.some((h: any) => h.name === n))
     const h = sample?.holders.find((h: any) => h.name === n)
-    return { n, t: e.t, ended: h?.ended ?? null, epoch: h?.epoch, left: e.epoch }
+    return { n, t: e.t, ended: h?.ended ?? (h && h.epoch !== e.epoch ? 'rejoined' : null), epoch: h?.epoch, left: e.epoch }
   }))
   // Restart: per participant, time from the restart until hub reachable again with a lease (status events).
   const restartRows: string[] = []
@@ -584,10 +592,10 @@ function report(): void {
   }
   md.push('## Pass criteria', '')
   md.push(`- Memory: first-hour average ${memFirst.toFixed(1)} MB, last-hour average ${memLast.toFixed(1)} MB (pass: last within 15% of first). ${pf(memPass)}`)
-  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Graceful leaves ended on the hub by the next sample: ${leaveEnds.filter(l => l.ended === 'released' && l.epoch === l.left).length}/${leaveEnds.length}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !lateExpiry.length && rejoins.every(r => !r.r || r.r.sameName) && leaveEnds.every(l => l.ended))}`)
+  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Graceful leaves ended on the hub by the next sample (released, or already replaced by the rejoin): ${leaveEnds.filter(l => l.ended).length}/${leaveEnds.length}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !lateExpiry.length && rejoins.every(r => !r.r || r.r.sameName) && leaveEnds.every(l => l.ended))}`)
   md.push(`- Delivery: ${sent.length} addressed messages accepted; lost (accepted, never in the room, never delivered) ${lost.length}; still owed at the stop (in the room, recipient offline or stalled) ${owedAtStop.length}; duplicate deliveries ${dups.length}; same-id resends answered with the original (duplicate) ${resent.length - resentBad.length}/${resent.length}. ${pf(lost.length === 0 && dups.length === 0 && resentBad.length === 0)}${lost.length ? `\n  - lost: ${lost.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${owedAtStop.length ? `\n  - owed at the stop: ${owedAtStop.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${dups.length ? `\n  - duplicates: ${dups.slice(0, 10).map(([k, c]) => `${k.replace('\0', ':')}×${c}`).join(', ')}` : ''}`)
   md.push(`- Monotonic counters: seq problems ${seqProblems.length}, epoch problems ${epochProblems.length}, post-restart values at or below pre-restart ${postRestartBelow.length}. ${pf(!seqProblems.length && !epochProblems.length && !postRestartBelow.length)}${[...seqProblems, ...epochProblems].slice(0, 10).map(p => `\n  - ${p}`).join('')}`)
-  md.push(`- Health: ${health.length} probes, ${badHealth.length} non-200 (8 s timeouts) outside the restart window${badHealth.length ? `, from minute ${min(badHealth[0].t)} to ${min(badHealth.at(-1)!.t)}` : ''}. ${pf(!badHealth.length)}`)
+  md.push(`- Health: ${health.length} probes, ${badHealth.length} non-200 (8 s timeouts) outside the restart window${badHealth.length ? ` at minutes ${badHealth.length > 8 ? `${min(badHealth[0].t)}–${min(badHealth.at(-1)!.t)}` : badHealth.map(h => min(h.t)).join(', ')}` : ''}; clustered (3+ within 5 min) ${stallFails.length}. ${pf(!badHealth.length)}`)
   md.push(`- Fly log lines since the start: ${flyLines.length}; matching error words: ${flyErrors.length}.${flyErrors.slice(0, 15).map(l => `\n  - \`${l.slice(0, 220).replace(/`/g, "'")}\``).join('')}`)
   md.push(`  - known info lines: ${[...kinds].map(([k, c]) => `${c} × ${k}`).join('; ') || 'none'}`)
   md.push(`  - other lines (${other.length}):${other.slice(0, 25).map(l => `\n    - \`${l.slice(0, 200).replace(/`/g, "'")}\``).join('')}`)
@@ -603,6 +611,7 @@ const [mode, ...rest] = process.argv.slice(2)
 const flag = (n: string, d: number) => { const i = rest.indexOf(n); return i >= 0 ? Number(rest[i + 1]) : d }
 if (mode === 'participant') await participant(rest[0], rest[1] as RepoKey, Number(rest[2] ?? 0), Number(rest[3] ?? ROSTER.length))
 else if (mode === 'run') await orchestrate(flag('--minutes', 180), flag('--restart-at', 90), flag('--participants', 8), flag('--post-idle', 3))
+else if (mode === 'metrics') console.log(JSON.stringify(await flyMetrics()))
 else if (mode === 'report') report()
 else if (mode === 'cleanup') { fs.rmSync(CREDS, { recursive: true, force: true }); console.log(`removed ${CREDS}`) }
 else { console.error('usage: npx tsx scripts/soak.mts run|report|cleanup [--minutes 180] [--restart-at 90] [--participants 8]'); process.exit(2) }
