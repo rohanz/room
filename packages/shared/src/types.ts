@@ -96,7 +96,8 @@ export interface ReleaseMsg extends MsgBase { type: 'release'; claimId: string; 
 export interface ChangedMsg extends MsgBase { type: 'changed'; paths: string[]; summary: string; symbols?: string[] }
 export interface QuestionMsg extends MsgBase { type: 'question'; text: string }
 export interface AnswerMsg extends MsgBase { type: 'answer'; inReplyTo: string; text: string }
-export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string; clearedFrom?: 'conflict' | 'possible' }
+/** `merges: 'clean'`: an edit inside a claim whose two versions merge without conflict as they stand (an overlap). */
+export interface ConflictMsg extends MsgBase { type: 'conflict'; claimId: string; otherClaimId: string; path: string; text: string; clearedFrom?: 'conflict' | 'possible'; merges?: 'clean' }
 /** An observed foreign contract edit that a file in the recipient's work references. */
 export interface MergeConflictMsg extends MsgBase { type: 'merge-conflict'; path: string; text: string; clearedFrom?: 'conflict' | 'possible' }
 export interface ContractMsg extends MsgBase { type: 'contract'; path: string; symbol: string; text: string }

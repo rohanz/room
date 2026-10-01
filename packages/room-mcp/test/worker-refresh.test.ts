@@ -90,22 +90,24 @@ function world() {
     expect(w, reply).toBeTruthy()
     return w!
   }
-  async function finish(tag: string) {
+  /** The worker calls room_done; unless `exit` is false, its host then exits. */
+  async function finish(tag: string, summary = `${tag} finished`, exit = true) {
     const w = workerByTag(repo, tag)!
     let ws: Session | null = fakeSession(rb, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
     const record = registry.list().find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
-    await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
+    if (!registry.reports(record.id).some(report => report.run === run.n)) await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id
-    try { expect(await tools.call('room_done', { summary: `${tag} finished` })).toContain('marked done') }
+    try { expect(await tools.call('room_done', { summary })).toContain('marked done') }
     finally { delete process.env.ROOM_WORKER_ID }
     await tools.shutdown(); ws?.graph?.stop()
+    if (!exit) return
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
-  return { call, spawn, finish, launches }
+  return { call, spawn, finish, launches, messages: () => ra.messages() }
 }
 
 /** Everything about a worker that a refused refresh must leave as it was. */
@@ -402,5 +404,30 @@ describe('brief path warnings', () => {
     ].join(' ') })
     expect(reply.split('\n').filter(line => line.includes('named in the task'))).toEqual(['warning: build/spec.md named in the task is not in this worktree (untracked or ignored in the lead clone).'])
     expect(reply).toContain('warning: build/spec.md named in the task is not in this worktree')
+  })
+})
+
+
+describe('every room_done reaches the lead once', () => {
+  // rc9 dogfood: a follow-up sent while a reported worker's host was still exiting reached it live, in the same
+  // run; its second room_done was recorded as already posted and never reached the lead.
+  it.each([
+    ['a follow-up the still-running worker reads live', 'live'],
+    ['a resumed worker', 'resume'],
+    ['a worker resumed with refresh=true', 'refresh'],
+  ] as const)('%s', async (_, how) => {
+    const t = world()
+    await t.spawn('again')
+    await t.finish('again', 'FIRST_REPORT', how !== 'live')
+    expect(await t.call('room_wait', { timeoutMs: 200 })).toContain('FIRST_REPORT')
+    const sent = await t.call('room_send', { type: 'note', to: 'again', text: 'one more thing', ...how === 'refresh' ? { refresh: true } : {} })
+    expect(sent).toContain(how === 'live' ? 'sent' : 'resumed again')
+    await t.finish('again', 'SECOND_REPORT')
+    const second = await t.call('room_wait', { timeoutMs: 200 })
+    expect(second).toContain('SECOND_REPORT')
+    expect(second).not.toContain('FIRST_REPORT')
+    expect(await t.call('room_wait', { timeoutMs: 200 })).not.toMatch(/FIRST_REPORT|SECOND_REPORT/)
+    const done = t.messages().filter(m => m.type === 'done')
+    expect(done.map(m => m.type === 'done' && m.summary)).toEqual(['FIRST_REPORT', 'SECOND_REPORT'])
   })
 })

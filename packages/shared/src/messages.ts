@@ -32,9 +32,9 @@ export interface MessageKind<M extends MsgBase = Msg> {
 const who = (m: MsgBase) => displayName({ name: m.from, kind: m.fromKind })
 const to = (m: MsgBase) => m.to ? ` → ${displayName({ name: m.to, kind: 'agent' })}` : ''
 const priority = (m: MsgBase) => `[${m.priority}] `
-const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible' }) => m.clearedFrom === 'possible'
-  ? 'POSSIBLE conflict cleared' : m.clearedFrom === 'conflict' ? 'CONFLICT cleared'
-    : m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
+const conflictLabel = (m: MsgBase & { text: string; clearedFrom?: 'conflict' | 'possible'; merges?: 'clean' }) => m.clearedFrom === 'possible'
+  ? 'POSSIBLE conflict cleared' : m.clearedFrom === 'conflict' ? m.merges === 'clean' ? 'overlap cleared' : 'CONFLICT cleared'
+    : m.merges === 'clean' ? 'overlap' : m.priority !== 'fyi' ? 'CONFLICT' : 'POSSIBLE conflict'
 const scopePaths = (paths: readonly string[]) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join('\u0000')
 
 export const BASE_CATCH_UP = 'Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.'
@@ -65,7 +65,7 @@ export function validMessageShape(value: unknown): value is Msg {
     release: ['claimId', 'path', 'summary', 'unfulfilled'],
     changed: ['paths', 'summary', 'symbols'],
     question: ['text'], note: ['text', 'inReplyTo'], answer: ['inReplyTo', 'text'],
-    conflict: ['claimId', 'otherClaimId', 'path', 'text', 'clearedFrom'],
+    conflict: ['claimId', 'otherClaimId', 'path', 'text', 'clearedFrom', 'merges'],
     'merge-conflict': ['path', 'text', 'clearedFrom'], contract: ['path', 'symbol', 'text'],
     scope: ['area', 'summary', 'paths'], base: ['base', 'prev', 'commits', 'paths', 'summary'],
     pushed: ['branch', 'upstream', 'fromSha', 'toSha', 'commits', 'paths', 'summary', 'rewrite'],
@@ -79,6 +79,7 @@ export function validMessageShape(value: unknown): value is Msg {
     case 'question': case 'note': return str('text') && str('inReplyTo', false)
     case 'answer': return str('inReplyTo') && str('text')
     case 'conflict': return str('claimId') && str('otherClaimId') && str('path') && str('text') && (m.clearedFrom === undefined || ['conflict', 'possible'].includes(m.clearedFrom as string))
+      && (m.merges === undefined || m.merges === 'clean')
     case 'merge-conflict': return str('path') && str('text') && (m.clearedFrom === undefined || ['conflict', 'possible'].includes(m.clearedFrom as string))
     case 'contract': return str('path') && str('symbol') && str('text')
     case 'scope': return str('area') && str('summary') && arr('paths')

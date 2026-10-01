@@ -749,6 +749,40 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  // rc9 dogfood: an edit inside another's claim that merged cleanly arrived as a CONFLICT notify.
+  it.each([
+    ['merges cleanly', 'a\nb\nc\nD4\n', false],
+    ['conflicts', 'a\nX2\nc\nd\n', true],
+  ] as const)('words an edit inside a claim by whether the two versions merge: %s', async (_, theirs, conflicts) => {
+    const f = fixture({ x: 'a\nb\nc\nd\n' })
+    try {
+      f.holder('A'); f.holder('B')
+      f.entry('A', 'a\nB2\nc\nd\n'); f.entry('B', theirs)
+      const claim = f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 4, intent: 'rewrite x' })
+      const set = new ConflictSet(f.session('A'))
+      await set.reconcile('edit in claim')
+      // The end-of-reconcile replay re-posts under the same id; the hub keeps one.
+      const lines = () => [...new Map(f.post.mock.calls.filter(c => c[1].type === 'conflict').map(c => [c[2].id, c[1]])).values()]
+        .map(body => ({ to: body.to, line: formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...body } as any) }))
+      const notices = lines()
+      expect(notices.map(n => n.to).sort()).toEqual(['A', 'B'])
+      for (const { line } of notices) {
+        if (conflicts) {
+          expect(line).toMatch(/CONFLICT on x: /)
+          expect(line).not.toContain('merges cleanly')
+        } else {
+          expect(line).not.toContain('CONFLICT')
+          expect(line).toMatch(/overlap on x: .*; merges cleanly$/)
+        }
+      }
+      f.room.removeClaim(claim.id)
+      await set.reconcile('released')
+      const cleared = lines().slice(notices.length)
+      expect(cleared).toHaveLength(1)
+      expect(cleared[0]!.line).toContain(conflicts ? 'CONFLICT cleared on x: the conflict with B cleared' : 'overlap cleared on x: the overlap with B cleared')
+    } finally { f.cleanup() }
+  })
+
   it('treats a directory claim as covering a changed file beneath it', async () => {
     const f = fixture()
     try {

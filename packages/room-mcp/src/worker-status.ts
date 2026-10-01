@@ -17,7 +17,8 @@ export interface RunReport {
   run: number; nonce: string; chain: ProcessIdentity[]; joinedAt: number; hostSessionId?: string
   /** Parent host captured at admission; null means it could not be verified (the first chain member is the MCP). */
   hostProcess?: ProcessIdentity | null
-  done?: { at: number; summary: string; changed: string[] }; posted?: string
+  /** `k` numbers the run's reports from 1 (absent: 1); `posted` names the completion message last posted. */
+  done?: { at: number; summary: string; changed: string[]; k?: number }; posted?: string
 }
 export type PrepStep = 'plan' | 'worktree' | 'branch' | 'carry-commit' | 'carry-refs' | 'untracked' | 'prepared'
 export interface PrepJournal {

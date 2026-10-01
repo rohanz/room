@@ -10,6 +10,11 @@ The sharing manifest now describes `declared` as paths of eligible changed files
 
 **Known limits:** Codex `/quit` can leave a participant name reserved until its lease expires. Everyone admitted to a team room is trusted; finer server permissions remain [future work](docs/roadmap.md). Claims are advisory and inferred contract impact still needs tests.
 
+**0.17.0-rc10** fixes two findings from leading the rc9 batch ([rc10 dogfood notes](docs/superpowers/rehearsals/2026-10-02-dogfood-rc10.md)).
+
+- **Every `room_done` reaches the lead.** A message to a worker that has reported done but whose process is still exiting reaches it in the same run, not as a resume. Its next `room_done` was recorded as already posted and never reached the lead, although the worker was told it had. Each report in a run now has its own completion message (`wk:<worker>:<run>:<n>` from the second on), posted once; a retried `room_done` whose post was refused replaces the unposted report rather than adding one. Resumed and `refresh=true` runs already got their own message, and tests now cover all three.
+- **A clean overlap is not a CONFLICT.** An edit inside another participant's claim was announced as `CONFLICT` even when the two versions merged cleanly. Room now three-way merges them first: if they merge, both sides get `overlap on <path>: … overlaps <name>'s new claim …; merges cleanly`, and later `overlap cleared`. `CONFLICT` is kept for versions that do not merge, and an overlap that stops merging is announced again as a `CONFLICT`.
+
 **0.17.0-rc9** fixes what a single-developer C++/JUCE project (on 0.16.40 and rc8) and the rc8 batch found, and brings the user docs up to date with rc1–rc8 ([rc9 dogfood notes](docs/superpowers/rehearsals/2026-10-01-dogfood-rc9.md)).
 
 - **A room is quiet while you are alone.** A branch note woke an idle solo session and cost it a turn. With no company (your own workers count only for their own notices; your human's messages always pass), nothing wakes the session or reaches its hook inbox. Waiting items appear in `room_state` and the next Room tool reply.

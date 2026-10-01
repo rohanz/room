@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { performance } from 'node:perf_hooks'
 import * as Y from 'yjs'
-import { completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
+import { completionId, completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } from '@room/shared'
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
@@ -248,10 +248,13 @@ const reportShape = (value: unknown): value is RunReport => object(value) && Num
   && typeof value.joinedAt === 'number' && (value.hostSessionId === undefined || typeof value.hostSessionId === 'string')
   && (value.posted === undefined || typeof value.posted === 'string')
   && (value.done === undefined || (object(value.done) && typeof value.done.at === 'number'
-    && typeof value.done.summary === 'string' && Array.isArray(value.done.changed)))
+    && typeof value.done.summary === 'string' && Array.isArray(value.done.changed)
+    && (value.done.k === undefined || Number.isSafeInteger(value.done.k) && (value.done.k as number) >= 1)))
 /** Schema-2 admission explicitly distinguishes an unverified parent from the worker MCP. */
 const admittedHost = (report: RunReport): RunReport['chain'][number] | undefined =>
   report.hostProcess !== undefined ? report.hostProcess ?? undefined : report.chain[1]
+const laterDone = (a: NonNullable<RunReport['done']>, b: NonNullable<RunReport['done']>): boolean =>
+  (a.k ?? 1) !== (b.k ?? 1) ? (a.k ?? 1) > (b.k ?? 1) : a.at >= b.at
 const exitShape = (value: unknown): value is ExitObservation => object(value) && Number.isSafeInteger(value.run)
   && (value.code === null || Number.isSafeInteger(value.code)) && typeof value.at === 'number'
   && typeof value.witnessed === 'boolean' && (value.signal === undefined || typeof value.signal === 'string')
@@ -784,7 +787,9 @@ export class WorkerRegistry {
     const record = this.read(id), run = record?.runs.at(-1)
     const prior = this.reports(id).find(report => report.run === n)
     if (!run || run.n !== n || !prior) throw new Error('worker run not admitted')
-    await this.writeReport(id, { ...prior, done: { at: this.now(), summary, changed } })
+    // A report after a posted one is the run's next; one whose post failed is replaced (room_done's retry).
+    const k = !prior.done ? 1 : (prior.done.k ?? 1) + (prior.posted === completionId(id, n, prior.done.k) ? 1 : 0)
+    await this.writeReport(id, { ...prior, done: { at: this.now(), summary, changed, ...k > 1 ? { k } : {} } })
     return this.reports(id).find(report => report.run === n)!
   }
 
@@ -796,8 +801,8 @@ export class WorkerRegistry {
     if (!record || !run || !report?.done) throw new Error('worker completion not reported')
     // A clean exit may have produced a no-report notice. The late real report has its
     // own deterministic ID and supersedes that fallback in the registry projection.
-    if (report.posted || run.posted && !run.posted.endsWith(':no-report')) return false
-    const messageId = `wk:${id}:${n}`
+    const messageId = completionId(id, n, report.done.k)
+    if (report.posted === messageId || run.posted && !run.posted.endsWith(':no-report')) return false
     await post(messageId, record, report)
     await this.writeReport(id, { ...report, posted: messageId })
     return true
@@ -1071,11 +1076,14 @@ export class WorkerRegistry {
       if (owner?.nonce !== this.identity.nonce) throw new Error('run writer belongs to another instance')
       const previous = this.readFact(this.reportFile(id, report.run), reportShape)
       if (previous && previous.nonce !== report.nonce) throw new Error('run report nonce mismatch')
+      // The later report wins (by number, then time); `posted` follows it when either write posted it.
+      const done = !previous?.done || report.done && laterDone(report.done, previous.done) ? report.done : previous.done
+      const posted = [report.posted, previous?.posted].find(value => done && value === completionId(id, report.run, done.k))
       writeAtomic(this.reportFile(id, report.run), previous ? { ...previous,
         chain: previous.chain, joinedAt: previous.joinedAt,
         hostProcess: previous.hostProcess !== undefined ? previous.hostProcess : report.hostProcess,
         hostSessionId: previous.hostSessionId ?? report.hostSessionId,
-        done: previous.done ?? report.done, posted: previous.posted ?? report.posted } : report)
+        done, posted: posted ?? previous.posted ?? report.posted } : report)
     })
     this.changed(id)
   }

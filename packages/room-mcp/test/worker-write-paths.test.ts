@@ -83,6 +83,26 @@ describe('registry write paths', () => {
     expect(worker.reports(record.id)[0]).toMatchObject({ done: { summary: 'finished' }, posted: 'wk:w_write:1' })
   })
 
+  it('posts a second report in the same run under its own ID, once, even when its first post is refused', async () => {
+    const { root, record } = fixture()
+    const lead = await open(root)
+    await lead.writeIntent({ ...record, phase: 'prepared' })
+    const worker = await open(root, 'worker')
+    await worker.admit({ id: record.id, run: 1, nonce: 'nonce-1', dir: record.dir, chain: [{ pid: 201, startTime: 'child', executable: 'claude' }] })
+    await lead.finishOperation(record.id)
+    const posted: string[] = []
+    await worker.reportDone(record.id, 1, 'first', [])
+    await worker.postCompletion(record.id, 1, id => { posted.push(id) })
+    await worker.reportDone(record.id, 1, 'second', [])
+    await expect(worker.postCompletion(record.id, 1, () => { throw new Error('hub unreachable') })).rejects.toThrow('hub unreachable')
+    // room_done's retry replaces the unposted report rather than numbering a third.
+    await worker.reportDone(record.id, 1, 'second, retried', [])
+    await worker.postCompletion(record.id, 1, id => { posted.push(id) })
+    await worker.postCompletion(record.id, 1, id => { posted.push(id) })
+    expect(posted).toEqual(['wk:w_write:1', 'wk:w_write:1:2'])
+    expect(worker.reports(record.id)[0]).toMatchObject({ done: { summary: 'second, retried', k: 2 }, posted: 'wk:w_write:1:2' })
+  })
+
   it('posts a witnessed failure with the same deterministic run ID once', async () => {
     const { root, record } = fixture()
     const store = await open(root)

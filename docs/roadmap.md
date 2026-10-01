@@ -27,6 +27,10 @@ use broke and proposes the order of work.
 - **Per-person permissions** and validated operations.
 - **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
 - **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew. Codex runs only the installed plugin (it has no `--plugin-dir`), so Codex workers of a lead on a development checkout run the installed version; the spawn reply warns on a mismatch. Codex's shared app-server daemon does not pass the shell's `ROOM_*` variables to Room, so `ROOM_SERVER` and similar settings need `codex --no-daemon`.
+- **Prune preview caches.** `room preview cache` worktrees under `.git/room-preview/` outlive the sessions that made them and are never pruned (rc9 dogfood).
+- **One disk pass per batch.** roomd runs `onDiskChange` once per changed path in a watcher batch (rc9 dogfood, low).
+- **Gate roomagent's wake path.** `packages/agent` keeps its own wake path, which the solo gate does not cover (rc9 dogfood, low).
+- **Say when room_claim clamps.** `room_claim to=561` on a 560-line file becomes 560 with no word (rc9 dogfood, low).
 - **Codex wake through MCP Events.** OpenAI announced support for the proposed MCP Events extension (the Triggers and Events working group) at DevDay on 2026-09-30, for ChatGPT plugin automations. Codex CLI 0.159.2 does not consume them yet. When a Codex release lists the feature (`codex features list`), have the MCP server push room events over its open connection (the push mode, `events/stream`), with the same wake rules as Claude, and retire the Codex wake workarounds and the daemon caveat above. Room's side is about a day; the webhook mode needs a public HTTPS endpoint and does not fit local rooms.
 
 ## Fixed in 0.16.3

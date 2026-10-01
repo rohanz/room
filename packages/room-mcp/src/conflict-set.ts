@@ -34,6 +34,8 @@ export interface ConflictSlot {
   why?: string
   /** Present when the owner's overlapping edit was already there when the claim was made. */
   earlierSha?: string | null
+  /** An edit inside a claim whose two versions merge without conflict as they stand: an overlap, not a CONFLICT. */
+  merges?: 'clean'
   fence: string
   checkedAt: number
   burstAt?: number
@@ -49,7 +51,7 @@ export interface ConflictSlot {
   /** This slot joined an episode another slot opened: that slot's notice covers it. */
   possibleJoined?: boolean
 }
-export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'retrySource' | 'consumers'>
+export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
 
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
@@ -115,6 +117,8 @@ export class ConflictSlots {
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...(result.status === 'clean' && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
+      // What cleared was an overlap that merged, not a CONFLICT.
+      ...(result.status === 'clean' && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
       ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
@@ -183,7 +187,7 @@ export class ConflictSlots {
       ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate`
         : slot.kind === 'claims' ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate`
           : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge`
-      : status === 'clean' ? `the ${slot.clearedFrom === 'possible' ? 'possible conflict' : 'conflict'} with ${slot.other} cleared`
+      : status === 'clean' ? `the ${slot.clearedFrom === 'possible' ? 'possible conflict' : slot.merges ? 'overlap' : 'conflict'} with ${slot.other} cleared`
       : slot.kind === 'edit-in-claim' ? slot.earlierSha !== undefined
         ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}`
         : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ''}`
@@ -191,11 +195,13 @@ export class ConflictSlots {
       : slot.kind === 'contract' ? `${slot.other} changed ${slot.subject ?? 'a symbol'} in ${slot.path}${slot.why ? ` (${slot.why})` : ''}`
       : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`
     const clearedFrom = status === 'clean' ? slot.clearedFrom : undefined
+    const merges = slot.kind === 'edit-in-claim' && slot.merges === 'clean' && (status === 'conflict' || clearedFrom === 'conflict') ? { merges: 'clean' as const } : undefined
+    const mergeNote = merges && status === 'conflict' ? '; merges cleanly' : ''
     const body = (slot.kind === 'merge'
       ? { type: 'merge-conflict', path: slot.path, to: slot.owner, priority, text, ...(clearedFrom ? { clearedFrom } : {}) }
       : slot.kind === 'contract'
         ? { type: 'contract', path: slot.path, symbol: slot.subject ?? '', to: slot.owner, priority, text }
-        : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text, ...(clearedFrom ? { clearedFrom } : {}) }) as unknown as PostBody<Msg>
+        : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text: text + mergeNote, ...(clearedFrom ? { clearedFrom } : {}), ...merges }) as unknown as PostBody<Msg>
     try {
       const posted = await this.post(ROOM, body, { id, auto: true })
       if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
@@ -206,7 +212,7 @@ export class ConflictSlots {
         const holderText = slot.earlierSha !== undefined
           ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps your new claim`
           : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}`
-        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
+        const holder = await this.holderPost(ROOM, { ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, { id: `${noticeId(key, slot.epoch)}:holder`, auto: true })
         if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
       } catch (e) { this.log(`conflict holder notice ${id}: ${String(e)}`) }
     }
@@ -782,6 +788,12 @@ export class ConflictSet {
         const ranges = changed.has(path) ? changedRanges(ancestor, ownText) : []
         const hit = ranges.find(r => claimsOverlap({ path, ...mapped }, { path, ...r }) && !ownClaims.some(c => claimsOverlap(c, { path, ...r })))
         let earlierSha: string | null | undefined
+        let merges: 'clean' | undefined
+        if (hit && !mapped.approximate && theirText !== undefined) {
+          await this.budget()
+          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: 'base', theirs: other })
+          if (!merged.conflicts.length) merges = 'clean'
+        }
         if (hit) {
           const entryAt = mine.entries.get(path)?.at
           if (entryAt !== undefined && entryAt <= claim.at) earlierSha = null
@@ -792,7 +804,8 @@ export class ConflictSet {
           }
         }
         await this.settle(key, { owner: this.owner, other, kind: 'edit-in-claim', path, subject: claim.id, status: hit ? mapped.approximate ? 'possible' : 'conflict' : 'clean', inputs,
-          factId: hit ? hash(JSON.stringify([claim.id, hit, mapped])) : '', ...(hit ? { lines: [hit.from], why: mapped.approximate ? 'approximate range' : claim.intent, ...(earlierSha !== undefined ? { earlierSha } : {}) } : {}) })
+          // Whether it merges is part of the fact: an overlap that stops merging is a new notice, a CONFLICT.
+          factId: hit ? hash(JSON.stringify([claim.id, hit, mapped, ...merges ? [merges] : []])) : '', ...(hit ? { lines: [hit.from], why: mapped.approximate ? 'approximate range' : claim.intent, ...(earlierSha !== undefined ? { earlierSha } : {}), ...(merges ? { merges } : {}) } : {}) })
       }
     }
     for (const a of ownClaims) for (const b of theirClaims) {

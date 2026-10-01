@@ -17646,7 +17646,7 @@ function validMessageShape(value2) {
     question: ["text"],
     note: ["text", "inReplyTo"],
     answer: ["inReplyTo", "text"],
-    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom"],
+    conflict: ["claimId", "otherClaimId", "path", "text", "clearedFrom", "merges"],
     "merge-conflict": ["path", "text", "clearedFrom"],
     contract: ["path", "symbol", "text"],
     scope: ["area", "summary", "paths"],
@@ -17669,7 +17669,7 @@ function validMessageShape(value2) {
     case "answer":
       return str4("inReplyTo") && str4("text");
     case "conflict":
-      return str4("claimId") && str4("otherClaimId") && str4("path") && str4("text") && (m.clearedFrom === void 0 || ["conflict", "possible"].includes(m.clearedFrom));
+      return str4("claimId") && str4("otherClaimId") && str4("path") && str4("text") && (m.clearedFrom === void 0 || ["conflict", "possible"].includes(m.clearedFrom)) && (m.merges === void 0 || m.merges === "clean");
     case "merge-conflict":
       return str4("path") && str4("text") && (m.clearedFrom === void 0 || ["conflict", "possible"].includes(m.clearedFrom));
     case "contract":
@@ -17748,7 +17748,7 @@ var init_messages = __esm({
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
-    conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? "CONFLICT cleared" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
+    conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
     builtins = {
@@ -17860,7 +17860,7 @@ var init_claims = __esm({
 
 // packages/shared/src/worker-messages.ts
 function completionMessage(record2, run3, status, report) {
-  const id3 = `wk:${record2.id}:${run3.n}`;
+  const id3 = completionId(record2.id, run3.n, report?.done?.k);
   if (report?.done || status.status === "done") return { id: id3, body: {
     type: "done",
     tag: record2.tag,
@@ -17877,9 +17877,11 @@ function completionMessage(record2, run3, status, report) {
   } };
   return void 0;
 }
+var completionId;
 var init_worker_messages = __esm({
   "packages/shared/src/worker-messages.ts"() {
     "use strict";
+    completionId = (worker, run3, k = 1) => `wk:${worker}:${run3}${k > 1 ? `:${k}` : ""}`;
   }
 });
 
@@ -43926,7 +43928,7 @@ function discoverLegacyWorktrees(commonDir2) {
   }
   return out2;
 }
-var readJson2, files, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, missing, safeId, safeTag, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, object3, tokenShape, processShape, runShape, recordShape, reportShape, admittedHost, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
+var readJson2, files, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, missing, safeId, safeTag, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, object3, tokenShape, processShape, runShape, recordShape, reportShape, admittedHost, laterDone, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -43996,8 +43998,9 @@ var init_worker_registry = __esm({
       }
     };
     recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && (value2.logFile === void 0 || typeof value2.logFile === "string") && object3(value2.prep) && typeof value2.prep.step === "string" && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
-    reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && (value2.hostProcess === void 0 || value2.hostProcess === null || processShape(value2.hostProcess)) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed));
+    reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && (value2.hostProcess === void 0 || value2.hostProcess === null || processShape(value2.hostProcess)) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed) && (value2.done.k === void 0 || Number.isSafeInteger(value2.done.k) && value2.done.k >= 1));
     admittedHost = (report) => report.hostProcess !== void 0 ? report.hostProcess ?? void 0 : report.chain[1];
+    laterDone = (a, b) => (a.k ?? 1) !== (b.k ?? 1) ? (a.k ?? 1) > (b.k ?? 1) : a.at >= b.at;
     exitShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
     LegacySnapshotUnavailable = class extends Error {
     };
@@ -44597,7 +44600,8 @@ var init_worker_registry = __esm({
         const record2 = this.read(id3), run3 = record2?.runs.at(-1);
         const prior = this.reports(id3).find((report) => report.run === n);
         if (!run3 || run3.n !== n || !prior) throw new Error("worker run not admitted");
-        await this.writeReport(id3, { ...prior, done: { at: this.now(), summary, changed } });
+        const k = !prior.done ? 1 : (prior.done.k ?? 1) + (prior.posted === completionId(id3, n, prior.done.k) ? 1 : 0);
+        await this.writeReport(id3, { ...prior, done: { at: this.now(), summary, changed, ...k > 1 ? { k } : {} } });
         return this.reports(id3).find((report) => report.run === n);
       }
       /** The post callback must use the deterministic id with RoomDoc.post. */
@@ -44606,8 +44610,8 @@ var init_worker_registry = __esm({
         const record2 = this.read(id3), run3 = record2?.runs.find((value2) => value2.n === n);
         const report = this.reports(id3).find((value2) => value2.run === n);
         if (!record2 || !run3 || !report?.done) throw new Error("worker completion not reported");
-        if (report.posted || run3.posted && !run3.posted.endsWith(":no-report")) return false;
-        const messageId = `wk:${id3}:${n}`;
+        const messageId = completionId(id3, n, report.done.k);
+        if (report.posted === messageId || run3.posted && !run3.posted.endsWith(":no-report")) return false;
         await post(messageId, record2, report);
         await this.writeReport(id3, { ...report, posted: messageId });
         return true;
@@ -44909,14 +44913,16 @@ var init_worker_registry = __esm({
           if (owner?.nonce !== this.identity.nonce) throw new Error("run writer belongs to another instance");
           const previous = this.readFact(this.reportFile(id3, report.run), reportShape);
           if (previous && previous.nonce !== report.nonce) throw new Error("run report nonce mismatch");
+          const done = !previous?.done || report.done && laterDone(report.done, previous.done) ? report.done : previous.done;
+          const posted = [report.posted, previous?.posted].find((value2) => done && value2 === completionId(id3, report.run, done.k));
           writeAtomic(this.reportFile(id3, report.run), previous ? {
             ...previous,
             chain: previous.chain,
             joinedAt: previous.joinedAt,
             hostProcess: previous.hostProcess !== void 0 ? previous.hostProcess : report.hostProcess,
             hostSessionId: previous.hostSessionId ?? report.hostSessionId,
-            done: previous.done ?? report.done,
-            posted: previous.posted ?? report.posted
+            done,
+            posted: posted ?? previous.posted ?? report.posted
           } : report);
         });
         this.changed(id3);
@@ -55699,6 +55705,8 @@ var ConflictSlots = class {
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...result2.status === "clean" && prev?.settled === "clean" && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {},
+      // What cleared was an overlap that merged, not a CONFLICT.
+      ...result2.status === "clean" && prev?.merges && (prev.settled === "conflict" || prev.settled === "clean" && prev.clearedFrom) ? { merges: prev.merges } : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {},
       ...result2.kind === "edit-in-claim" && result2.status === "conflict" ? { burstAt: prev?.status === "conflict" ? prev.burstAt ?? now : now } : {}
     };
@@ -55745,9 +55753,11 @@ var ConflictSlots = class {
     const held = this.room.openClaims().filter((c) => c.by === slot.other && c.path === slot.path && !c.path.endsWith("/"));
     const claimed = (claims) => `${slot.other}'s claim${claims.length > 1 ? "s" : ""}${claims.length ? ` at line${claims.length > 1 || claims[0].from !== claims[0].to ? "s" : ""} ${claims.sort((a, b) => a.from - b.from).map((c) => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(", ")}` : ""}`;
     const ownClaim = () => claimed(held.filter((c) => c.id === slot.subject));
-    const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
+    const text = status === "possible" ? slot.kind === "edit-in-claim" ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate` : slot.kind === "claims" ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate` : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge` : status === "clean" ? `the ${slot.clearedFrom === "possible" ? "possible conflict" : slot.merges ? "overlap" : "conflict"} with ${slot.other} cleared` : slot.kind === "edit-in-claim" ? slot.earlierSha !== void 0 ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}` : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ""}` : slot.kind === "claims" ? `concurrent overlapping claims in ${slot.path} with ${slot.other}` : slot.kind === "contract" ? `${slot.other} changed ${slot.subject ?? "a symbol"} in ${slot.path}${slot.why ? ` (${slot.why})` : ""}` : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(", ")}` : ""}`;
     const clearedFrom = status === "clean" ? slot.clearedFrom : void 0;
-    const body2 = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} };
+    const merges = slot.kind === "edit-in-claim" && slot.merges === "clean" && (status === "conflict" || clearedFrom === "conflict") ? { merges: "clean" } : void 0;
+    const mergeNote = merges && status === "conflict" ? "; merges cleanly" : "";
+    const body2 = slot.kind === "merge" ? { type: "merge-conflict", path: slot.path, to: slot.owner, priority: priority2, text, ...clearedFrom ? { clearedFrom } : {} } : slot.kind === "contract" ? { type: "contract", path: slot.path, symbol: slot.subject ?? "", to: slot.owner, priority: priority2, text } : { type: "conflict", claimId: slot.subject?.split("\0")[0] ?? "", otherClaimId: slot.subject?.split("\0")[1] ?? "", path: slot.path, to: slot.owner, priority: priority2, text: text + mergeNote, ...clearedFrom ? { clearedFrom } : {}, ...merges };
     try {
       const posted = await this.post(ROOM, body2, { id: id3, auto: true });
       if (!posted.ok) this.log(`conflict notice ${id3}: ${posted.text}`);
@@ -55758,7 +55768,7 @@ var ConflictSlots = class {
       if (!current()) return;
       try {
         const holderText = slot.earlierSha !== void 0 ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ""} overlaps your new claim` : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ""}`;
-        const holder = await this.holderPost(ROOM, { ...body2, to: slot.other, priority: "notify", text: holderText }, { id: `${noticeId(key2, slot.epoch)}:holder`, auto: true });
+        const holder = await this.holderPost(ROOM, { ...body2, to: slot.other, priority: "notify", text: holderText + mergeNote }, { id: `${noticeId(key2, slot.epoch)}:holder`, auto: true });
         if (!holder.ok) this.log(`conflict holder notice ${id3}: ${holder.text}`);
       } catch (e) {
         this.log(`conflict holder notice ${id3}: ${String(e)}`);
@@ -56452,6 +56462,12 @@ var ConflictSet = class _ConflictSet {
         const ranges = changed.has(path54) ? changedRanges(ancestor, ownText) : [];
         const hit = ranges.find((r) => claimsOverlap({ path: path54, ...mapped }, { path: path54, ...r }) && !ownClaims.some((c) => claimsOverlap(c, { path: path54, ...r })));
         let earlierSha;
+        let merges;
+        if (hit && !mapped.approximate && theirText !== void 0) {
+          await this.budget();
+          const merged = await gitMergeFile(ancestor, ownText, theirText, { ours: this.owner, base: "base", theirs: other });
+          if (!merged.conflicts.length) merges = "clean";
+        }
         if (hit) {
           const entryAt = mine.entries.get(path54)?.at;
           if (entryAt !== void 0 && entryAt <= claim2.at) earlierSha = null;
@@ -56469,8 +56485,9 @@ var ConflictSet = class _ConflictSet {
           subject: claim2.id,
           status: hit ? mapped.approximate ? "possible" : "conflict" : "clean",
           inputs,
-          factId: hit ? hash(JSON.stringify([claim2.id, hit, mapped])) : "",
-          ...hit ? { lines: [hit.from], why: mapped.approximate ? "approximate range" : claim2.intent, ...earlierSha !== void 0 ? { earlierSha } : {} } : {}
+          // Whether it merges is part of the fact: an overlap that stops merging is a new notice, a CONFLICT.
+          factId: hit ? hash(JSON.stringify([claim2.id, hit, mapped, ...merges ? [merges] : []])) : "",
+          ...hit ? { lines: [hit.from], why: mapped.approximate ? "approximate range" : claim2.intent, ...earlierSha !== void 0 ? { earlierSha } : {}, ...merges ? { merges } : {} } : {}
         });
       }
     }
