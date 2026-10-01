@@ -127,6 +127,26 @@ describe('worker workspace links', () => {
     expect(workspaceDepsNotes(result).reply.join('\n')).toContain('would run the lead\'s code')
   })
 
+  it('workspace patterns it cannot expand (braces) warn instead of silently using the lead\'s code', async () => {
+    const { repo, worktree } = fixture()
+    const worker = worktree()
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'fx-root', private: true, workspaces: ['packages/{a,b}'] }))
+    const result = await linkWorkspaceDeps(repo, worker)
+    expect(result.linked).toBe(false)
+    expect(result.reason).toContain('packages/{a,b}')
+    expect(workspaceDepsNotes(result).reply.join('\n')).toContain('would run the lead\'s code')
+  })
+
+  it('declared workspaces that match no package warn', async () => {
+    const { repo, worktree } = fixture()
+    const worker = worktree()
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'fx-root', private: true, workspaces: ['libs/*'] }))
+    const result = await linkWorkspaceDeps(repo, worker)
+    expect(result.linked).toBe(false)
+    expect(result.reason).toContain('libs/*')
+    expect(workspaceDepsNotes(result).reply.join('\n')).toContain('would run the lead\'s code')
+  })
+
   it.skipIf(process.getuid?.() === 0)('a discovery failure before any package is named still warns', async () => {
     const { repo, worktree } = fixture()
     const worker = worktree()

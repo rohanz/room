@@ -154,9 +154,13 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
   try {
     const patterns = workspacePatterns(leadDir)
     if (!patterns) return result({ linked: false, names })
+    // Only `*`, `?` and `**` are expanded; any other glob syntax could miss packages that then resolve to the lead.
+    const unsupported = patterns.filter(p => /[{}[\]()]/.test(p))
+    if (unsupported.length) return result({ linked: false, names, reason: `workspace pattern ${unsupported.join(', ')} is not supported` })
     const packages = await workspacePackages(leadDir, patterns, tick)
     names = [...packages.keys()].sort()
-    if (!names.length) return result({ linked: false, names })
+    const declared = patterns.filter(p => !p.startsWith('!'))
+    if (!names.length) return result(declared.length ? { linked: false, names, reason: `no workspace package matches ${declared.join(', ')}` } : { linked: false, names })
     // A workspace only the lead's checkout has (uncommitted, or renamed since HEAD) would otherwise link back to the lead.
     const absent = [...packages.values()].filter(rel => !isRealDir(path.join(workerDir, rel)))
     if (absent.length) return result({ linked: false, names, reason: `${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not in the worktree` })

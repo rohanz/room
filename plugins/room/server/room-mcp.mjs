@@ -32172,9 +32172,12 @@ async function linkWorkspaceDeps(leadDir, workerDir, options = {}) {
   try {
     const patterns = workspacePatterns(leadDir);
     if (!patterns) return result2({ linked: false, names });
+    const unsupported = patterns.filter((p) => /[{}[\]()]/.test(p));
+    if (unsupported.length) return result2({ linked: false, names, reason: `workspace pattern ${unsupported.join(", ")} is not supported` });
     const packages = await workspacePackages(leadDir, patterns, tick);
     names = [...packages.keys()].sort();
-    if (!names.length) return result2({ linked: false, names });
+    const declared = patterns.filter((p) => !p.startsWith("!"));
+    if (!names.length) return result2(declared.length ? { linked: false, names, reason: `no workspace package matches ${declared.join(", ")}` } : { linked: false, names });
     const absent = [...packages.values()].filter((rel) => !isRealDir(path17.join(workerDir, rel)));
     if (absent.length) return result2({ linked: false, names, reason: `${absent.join(", ")} ${absent.length === 1 ? "is" : "are"} not in the worktree` });
     if (!isRealDir(path17.join(leadDir, "node_modules"))) return result2({ linked: false, names, reason: "your clone has no node_modules" });
