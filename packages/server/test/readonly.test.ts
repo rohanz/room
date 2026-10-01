@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
@@ -277,6 +277,26 @@ describe('document identity binding', () => {
     expect(conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:b.py', 'added')))).toBe(true)
     expect(room.baseText('alice', 'sha', 'a.py')).toBe('forged')
     expect(violations).toEqual(['basetextFlat mutation for alice', 'basetextFlat mutation for alice'])
+    server.destroy()
+  })
+
+  it('observe mode keeps its shadow in step without an O(document) rebuild per flagged packet', () => {
+    const server = new Y.Doc(), room = new RoomDoc(server)
+    room.setBaseText('alice', 'sha', 'a.py', 'real')
+    const guard = new DocumentIdentityGuard(() => server), violations: string[] = []
+    const conn = connect(server, guard, 'bob', violations)
+    conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('bob\u0000sha:warm.py', 'ok'))) // builds the shadow once
+    const reset = vi.spyOn(guard as unknown as { reset(source: Y.Doc): void }, 'reset')
+    for (let i = 0; i < 5; i++) conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set(`alice\u0000sha:f${i}.py`, 'x')))
+    conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('bob\u0000sha:mine.py', 'ok')))
+    conn.emit('message', packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:late.py', 'x')))
+    expect(reset).not.toHaveBeenCalled()
+    expect(violations).toEqual([...Array(5).fill('basetextFlat mutation for alice'), 'basetextFlat mutation for alice'])
+    const enforced = new DocumentIdentityGuard(() => server)
+    expect(enforced.accept(packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:e.py', 'x')), 'bob', 'enforce').ok).toBe(false)
+    const enforcedReset = vi.spyOn(enforced as unknown as { reset(source: Y.Doc): void }, 'reset')
+    expect(enforced.accept(packet(server, doc => doc.getMap('basetextFlat').set('alice\u0000sha:e2.py', 'x')), 'bob', 'enforce').ok).toBe(false)
+    expect(enforcedReset).toHaveBeenCalledTimes(1)
     server.destroy()
   })
 

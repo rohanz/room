@@ -25173,23 +25173,43 @@ var init_hub = __esm({
         const now = this.host.mono();
         if (now - this.maintainedAt >= MAINTENANCE_MS) {
           this.maintainedAt = now;
-          const owedCopy = (m) => !!m.to && !(m.from === m.to && m.fromKind !== "human") && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id);
-          this.doc.doc.transact(() => {
-            for (const [key2, m] of this.doc.mail) {
-              if (!validMessageShape(m) || key2 === m.id) continue;
-              const canonical = this.doc.mail.get(m.id);
-              if (!validMessageShape(canonical) || !owedCopy(canonical) && owedCopy(m)) {
-                const busOwed = [...deliveryIndex(this.doc).bus.ids.get(m.id)?.values() ?? []].some((x) => validMessageShape(x) && owedCopy(x));
-                if (owedCopy(m) || !busOwed) this.doc.mail.set(m.id, m);
-              }
-              this.doc.mail.delete(key2);
-            }
-          }, HUB_ORIGIN);
+          this.repairMailAliases();
           trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep });
           const drift = deliveryIndex(this.doc).verify();
           if (drift) this.host.log(`hub: ledger index drift corrected (${drift})`);
           this.expire();
         }
+      }
+      /**
+       * Re-key member mail held under a key other than its message id, a state the hub never writes (it keeps the
+       * index's certainty guard on). Decided from one snapshot, grouped by embedded id, so an alias key that names
+       * another message's id can't lose either message. Per id the survivor is the legacy winner: the first owed
+       * copy in mail order, else the first copy, unless the bus holds an owed copy (non-owed canonical mail would
+       * stop trim moving it to mail). Canonical mail+bus pairs are left as they are.
+       */
+      repairMailAliases() {
+        const entries = [...this.doc.mail.entries()].filter(([, m]) => validMessageShape(m));
+        const aliased = entries.filter(([key2, m]) => key2 !== m.id);
+        if (!aliased.length) return;
+        const owedCopy = (m) => !!m.to && !(m.from === m.to && m.fromKind !== "human") && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id);
+        const ids = new Set(aliased.map(([, m]) => m.id));
+        const keys2 = /* @__PURE__ */ new Set([...aliased.map(([key2]) => key2), ...ids]);
+        const copies = /* @__PURE__ */ new Map();
+        for (const [, m] of entries) if (ids.has(m.id)) copies.set(m.id, [...copies.get(m.id) ?? [], m]);
+        const target = /* @__PURE__ */ new Map();
+        for (const [id3, list] of copies) {
+          const winner = list.find(owedCopy);
+          const busOwed = [...deliveryIndex(this.doc).bus.ids.get(id3)?.values() ?? []].some((x) => validMessageShape(x) && owedCopy(x));
+          if (winner || !busOwed) target.set(id3, winner ?? list[0]);
+        }
+        this.doc.doc.transact(() => {
+          for (const key2 of keys2) {
+            const want = target.get(key2);
+            if (!want) {
+              if (this.doc.mail.has(key2)) this.doc.mail.delete(key2);
+            } else if (this.doc.mail.get(key2) !== want) this.doc.mail.set(key2, want);
+          }
+        }, HUB_ORIGIN);
       }
       /** Rewrite hub-owned values a stale replica won back (§4.4). */
       reassert() {

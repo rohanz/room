@@ -722,29 +722,45 @@ class RoomHub implements Hub {
     const now = this.host.mono()
     if (now - this.maintainedAt >= MAINTENANCE_MS) {
       this.maintainedAt = now
-      // Repair aliased member mail, a state the hub never writes, outside pure trim.
-      // Prefer canonical mail, but preserve an alias if it is the only owed mail copy.
-      // Never create non-owed canonical mail that would block an owed bus copy's move.
-      // Canonical mail+bus copies can come from replication/migration: leave them intact.
-      const owedCopy = (m: Msg) => !!m.to && !(m.from === m.to && m.fromKind !== 'human')
-        && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id)
-      this.doc.doc.transact(() => {
-        for (const [key, m] of this.doc.mail) {
-          if (!validMessageShape(m) || key === m.id) continue
-          const canonical = this.doc.mail.get(m.id)
-          if (!validMessageShape(canonical) || !owedCopy(canonical) && owedCopy(m)) {
-            const busOwed = [...(deliveryIndex(this.doc).bus.ids.get(m.id)?.values() ?? [])].some(x => validMessageShape(x) && owedCopy(x))
-            if (owedCopy(m) || !busOwed) this.doc.mail.set(m.id, m)
-          }
-          this.doc.mail.delete(key)
-        }
-      }, HUB_ORIGIN)
+      this.repairMailAliases()
       // Deliberate full O(n) maintenance pass once per minute (TTL, mail/archive/outcome bounds).
       trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep })
       const drift = deliveryIndex(this.doc).verify()
       if (drift) this.host.log(`hub: ledger index drift corrected (${drift})`)
       this.expire()
     }
+  }
+
+  /**
+   * Re-key member mail held under a key other than its message id, a state the hub never writes (it keeps the
+   * index's certainty guard on). Decided from one snapshot, grouped by embedded id, so an alias key that names
+   * another message's id can't lose either message. Per id the survivor is the legacy winner: the first owed
+   * copy in mail order, else the first copy, unless the bus holds an owed copy (non-owed canonical mail would
+   * stop trim moving it to mail). Canonical mail+bus pairs are left as they are.
+   */
+  private repairMailAliases(): void {
+    const entries = [...this.doc.mail.entries()].filter(([, m]) => validMessageShape(m))
+    const aliased = entries.filter(([key, m]) => key !== m.id)
+    if (!aliased.length) return
+    const owedCopy = (m: Msg) => !!m.to && !(m.from === m.to && m.fromKind !== 'human')
+      && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id)
+    const ids = new Set(aliased.map(([, m]) => m.id))
+    const keys = new Set([...aliased.map(([key]) => key), ...ids])
+    const copies = new Map<string, Msg[]>()
+    for (const [, m] of entries) if (ids.has(m.id)) copies.set(m.id, [...copies.get(m.id) ?? [], m])
+    const target = new Map<string, Msg>()
+    for (const [id, list] of copies) {
+      const winner = list.find(owedCopy)
+      const busOwed = [...deliveryIndex(this.doc).bus.ids.get(id)?.values() ?? []].some(x => validMessageShape(x) && owedCopy(x))
+      if (winner || !busOwed) target.set(id, winner ?? list[0]!)
+    }
+    this.doc.doc.transact(() => {
+      for (const key of keys) {
+        const want = target.get(key)
+        if (!want) { if (this.doc.mail.has(key)) this.doc.mail.delete(key) }
+        else if (this.doc.mail.get(key) !== want) this.doc.mail.set(key, want)
+      }
+    }, HUB_ORIGIN)
   }
 
   /** Rewrite hub-owned values a stale replica won back (§4.4). */

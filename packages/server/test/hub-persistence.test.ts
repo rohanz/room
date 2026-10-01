@@ -198,6 +198,35 @@ it('bounds process-wide rooms awaiting persistence before admitting another room
   expect(hubs.storageFailure('room-16')).toContain('backlog is full')
 })
 
+it('appends updates queued behind an in-flight write as one merged update, not a document snapshot', async () => {
+  const appended: Uint8Array[] = []
+  let release!: () => void
+  let gate: Promise<void> | undefined
+  const replace = vi.fn(async () => {})
+  const provider: PersistenceProvider = {
+    getYDoc: async () => new Y.Doc(),
+    storeUpdate: async (_name, update) => { appended.push(update); await gate; return appended.length },
+    replace,
+  }
+  const hubs = new ServerHubs({ store: { advance: async floor => floor }, log: () => {}, full: () => false })
+  const persistence = hubs.persistence(provider), doc = new Y.Doc()
+  await persistence.bindState('room', doc)
+  await hubs.flush(doc)
+  replace.mockClear(); appended.length = 0
+  gate = new Promise<void>(resolve => { release = resolve })
+  doc.getMap('edits').set('first', 0)
+  try {
+    for (let i = 0; i < 50; i++) doc.getMap('edits').set(`k${i}`, i)
+    release(); gate = undefined
+    await hubs.flush(doc)
+    expect(replace).not.toHaveBeenCalled()
+    expect(appended).toHaveLength(2)
+    const replay = new Y.Doc()
+    for (const update of appended) Y.applyUpdate(replay, update)
+    expect(replay.getMap('edits').toJSON()).toEqual(doc.getMap('edits').toJSON())
+  } finally { doc.destroy() }
+})
+
 // Real LevelDB catches full snapshots accumulating between cold joins and coalesced writes.
 it.each(['cold', 'burst', 'incremental'])('bounds stored snapshots through repeated %s writes', async kind => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hub-snapshots-'))
@@ -224,9 +253,10 @@ it.each(['cold', 'burst', 'incremental'])('bounds stored snapshots through repea
       } else { await adapter.writeState('room'); live.destroy(); live = undefined }
       const measured = await stored.levelStoredSize(await stored.levelDbOf(provider), 'room')
       expect(measured.bytes).toBeLessThan(2 * logical)
-      expect(measured.updates).toBeLessThan(20)
+      expect(measured.updates).toBeLessThan(kind === 'burst' ? 130 : 20)
     }
-    expect(replace.mock.calls.length).toBeGreaterThan(kind === 'incremental' ? 1 : 20)
+    // Cold joins snapshot every time; bursts and increments append merges and snapshot only by size.
+    expect(replace.mock.calls.length).toBeGreaterThan(kind === 'cold' ? 20 : 0)
   } finally { live?.destroy(); await provider.destroy(); await fs.rm(dir, { recursive: true, force: true }) }
 }, 30_000)
 

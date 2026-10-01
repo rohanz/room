@@ -210,6 +210,22 @@ it.each(['alias', 'duplicate', 'outcome-count', 'outcome-bytes', 'outcome-ttl', 
     read.mockRestore(); hub.stop(); doc.doc.destroy()
   })
 
+it.each([
+  ['a colliding chain', [['alias-a', 'a'], ['a', 'b']]],
+  ['a cycle', [['a', 'b'], ['b', 'a']]],
+])('alias repair keeps every owed message in %s', async (_case, layout) => {
+  const doc = new RoomDoc(), clock = fakeClock(), now = clock.wall()
+  let durable: number | undefined
+  const hub = await startHub({ doc, fresh: true, mono: clock.mono, wall: clock.wall, log() {},
+    store: serializedStore({ read: async () => durable, write: async x => { durable = x } }) })
+  doc.doc.transact(() => { for (const [key, id] of layout) doc.mail.set(key, { ...message(id), to: 'pat', at: now }) })
+  clock.advance(60000); hub.tick()
+  expect([...doc.mail.entries()].map(([key, m]) => [key, m.id]).sort()).toEqual([['a', 'a'], ['b', 'b']])
+  const cursor = { frontier: 0, routed: new Set<string>() }, route = { scopes: [], claims: [] }
+  expect(owed(doc, { name: 'pat' }, cursor, route).map(m => m.id).sort()).toEqual(['a', 'b'])
+  hub.stop(); doc.doc.destroy()
+})
+
 it.each(['mail', 'bus'])('alias repair preserves the only owed %s copy', async source => {
   const doc = new RoomDoc(), clock = fakeClock(), now = clock.wall()
   let durable: number | undefined

@@ -47,7 +47,7 @@ import { ServerHubs, bindHub, incarnationFile, serverLeaseFile, type Persistence
 import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
-import { takeInventory, formatInventory, classifyDoc } from './inventory.js'
+import { takeInventory, classifyDoc } from './inventory.js'
 import { HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
@@ -273,11 +273,8 @@ async function inventorySnapshot() {
   inventoryScan = work
   try { return await work } finally { inventoryScan = undefined }
 }
-void roomsLoaded.then(async () => {
-  const inventory = await inventorySnapshot()
-  for (const line of formatInventory(inventory).split('\n')) if (line.startsWith('  !')) console.log(`stored inventory: ${line.trim()}`)
-  console.log(`stored inventory complete: ${inventory.docs.length} document(s)`)
-}).catch(error => console.log(`stored inventory failed: ${error instanceof Error ? error.message : error}`))
+// No startup inventory: loads are size-checked lazily (loadDoc), and operators run
+// scripts/room-inventory.mts or GET /admin/inventory, which sizes from table metadata on request.
 const loadDoc = async (name: string): Promise<Y.Doc> => {
   const live = docs.get(name)
   if (live) return live

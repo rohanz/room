@@ -1,4 +1,4 @@
-/** Runs real startup with only listen stubbed: inventory must never iterate stored values. */
+/** Runs real startup with only listen stubbed: startup must not scan stored documents. */
 import { expect, it } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { LeveldbPersistence } from 'y-leveldb'
 import * as Y from 'yjs'
 
-it('performs zero value reads during startup inventory of several persisted documents', async () => {
+it('reads no stored values and runs no inventory at startup with several persisted documents', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'room-startup-inventory-'))
   const preload = path.join(dir, 'probe.cjs')
   const provider = new LeveldbPersistence(dir)
@@ -31,14 +31,14 @@ LevelUP.prototype.createReadStream = function (opts) {
   if (opts?.values !== false) valueReads++; else keyReads++;
   return original.call(this, opts);
 };
-require('node:net').Server.prototype.listen = function () { return this; };
+require('node:net').Server.prototype.listen = function (...args) { const done = args.find(a => typeof a === 'function'); if (done) setImmediate(done); return this; };
 const log = console.log;
 const finish = () => { log('PROBE ' + JSON.stringify({ valueReads, keyReads, completed })); process.exit(0); };
 const timer = setTimeout(finish, 10000);
 console.log = (...args) => {
   log(...args);
-  if (String(args[0]).startsWith('stored inventory complete:')) {
-    completed = true; clearTimeout(timer); setImmediate(finish);
+  if (String(args[0]).startsWith('room server listening')) {
+    completed = true; clearTimeout(timer); setTimeout(finish, 2000);
   }
 };
 `)
@@ -49,10 +49,8 @@ console.log = (...args) => {
           YPERSISTENCE: dir, DATABASE_URL: '', PORT: '4401' },
       })
     const probe = JSON.parse(stdout.split('\n').find(line => line.startsWith('PROBE '))!.slice(6))
-    expect(probe.keyReads).toBeGreaterThan(0)
     expect(probe.valueReads).toBe(0)
     expect(probe.completed).toBe(true)
-    expect(stdout).not.toContain('stored inventory:') // no small document is flagged
-    expect(stdout).not.toContain('stored inventory failed:')
+    expect(stdout).not.toContain('stored inventory')
   } finally { await provider.destroy(); await fs.rm(dir, { recursive: true, force: true }) }
 })

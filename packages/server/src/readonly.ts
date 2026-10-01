@@ -246,7 +246,7 @@ export class DocumentIdentityGuard {
 
   constructor(private readonly current: () => Y.Doc | undefined) {}
 
-  accept(message: Uint8Array, login: string): { ok: true } | { ok: false; reason: string } {
+  accept(message: Uint8Array, login: string, mode: DocumentIdentityMode = 'observe'): { ok: true } | { ok: false; reason: string } {
     const update = syncUpdate(message)
     if (!update) return isWriteMessage(message) ? { ok: false, reason: 'malformed Yjs update' } : { ok: true }
     const source = this.current()
@@ -258,8 +258,11 @@ export class DocumentIdentityGuard {
     catch { this.violations.push('malformed Yjs update') }
     finally { this.login = undefined }
     if (!this.violations.length) return { ok: true }
-    const reason = this.violations[0]
-    this.reset(source)
+    const reason = this.violations[0]!
+    // Enforce drops the packet, so the shadow (which applied it) is rebuilt from the real document. Observe
+    // applies it to the real document too, so the shadow is already in step: a rebuild there is O(document)
+    // per flagged packet, and grew the server's CPU with the room. A malformed packet may half-apply: rebuild.
+    if (mode === 'enforce' || reason === 'malformed Yjs update') this.reset(source)
     return { ok: false, reason }
   }
 
@@ -386,7 +389,7 @@ export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: Do
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event === 'message') {
-      const result = guard.accept(toBytes(args[0]), login)
+      const result = guard.accept(toBytes(args[0]), login, mode)
       if (!result.ok) {
         onViolation(login, result.reason)
         if (mode === 'enforce') return false

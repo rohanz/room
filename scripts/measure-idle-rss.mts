@@ -29,7 +29,7 @@ const shutdown = new AbortController()
 const interrupt = () => shutdown.abort(new Error('RSS probe interrupted'))
 process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt)
 let child: ReturnType<typeof spawn> | undefined, childExit: Promise<void> | undefined
-let log = '', failed: Error | undefined, inventoryFinished = false
+let log = '', failed: Error | undefined, listening = false
 const exec = promisify(execFile)
 async function diskBytes(dir: string): Promise<number> {
   let bytes = 0
@@ -96,20 +96,20 @@ try {
   child.on('error', error => { failed = error })
   for (const stream of [child.stdout!, child.stderr!]) stream.on('data', chunk => {
     log = (log + chunk).slice(-32768)
-    if (log.includes('stored inventory complete:')) inventoryFinished = true
+    if (log.includes('room server listening')) listening = true
   })
-  // Servers before rc4 do not log completion: give their scan 30 s, then measure.
-  const deadline = Date.now() + 30_000
-  while (!inventoryFinished) {
+  const deadline = Date.now() + 60_000
+  while (!listening) {
     if (failed) throw failed
     if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Server exited during startup: ${log}`)
-    if (log.includes('stored inventory failed:')) throw new Error(`Inventory failed: ${log}`)
-    if (Date.now() > deadline) { console.error('Inventory completion not reported; measuring after 30 s'); break }
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for the server to listen: ${log}`)
     await delay(100, undefined, { signal: shutdown.signal })
   }
+  // Startup work (rc3's stored-inventory scan) runs after listening: let it finish before the idle window.
+  await delay(30_000, undefined, { signal: shutdown.signal })
   const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]) })
   if (!response.ok) throw new Error(`Health returned ${response.status}: ${log}`)
-  console.error('Inventory complete; sampling after 60 seconds idle')
+  console.error('Startup settled; sampling after 60 seconds idle')
   const idleStart = Date.now()
   // Short waits keep shutdown and early child failures responsive.
   while (Date.now() - idleStart < 60_000) {
@@ -119,7 +119,7 @@ try {
   }
   const sample = await rssTree(child.pid!)
   console.log(JSON.stringify({ command, requestedMB: mb, rawUpdateBytes, storedBytes, records,
-    documents: 8, inventoryFinished, idleMs: Date.now() - idleStart,
+    documents: 8, idleMs: Date.now() - idleStart,
     mallocArenaMax: process.env.MALLOC_ARENA_MAX ?? null, platform: process.platform,
     nodeVersion: process.version, ...sample }, null, 2))
 } finally {

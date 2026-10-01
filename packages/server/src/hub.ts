@@ -97,7 +97,10 @@ export interface PersistenceProvider {
 
 interface Entry { doc: Y.Doc; room: RoomDoc; hub?: Hub; stopped?: boolean; startError?: string; startFailed?: boolean; lastTickError?: number }
 interface Loading { loaded: Promise<void>; stored: () => Promise<void> }
-interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean; appendedBytes: number; snapshotBytes: number; pendingUpdate?: Uint8Array; pending?: Promise<void>; error?: string; retry?: ReturnType<typeof setTimeout>; delay: number }
+/** Appended records before the next write is a snapshot (y-leveldb's own reader trims at 500). */
+const MAX_APPENDED_RECORDS = 128
+/** `updates` queue behind an in-flight write and are appended as one merge; `full` asks for a snapshot instead. */
+interface WriteState { doc: Y.Doc; provider: PersistenceProvider; dirty: boolean; appendedBytes: number; appendedRecords: number; snapshotBytes: number; updates: Uint8Array[]; queuedBytes: number; full: boolean; pending?: Promise<void>; error?: string; retry?: ReturnType<typeof setTimeout>; delay: number }
 
 export interface ServerHubsOptions {
   store: IncarnationStore
@@ -137,8 +140,17 @@ export class ServerHubs {
   anyStorageFailure(): boolean { return [...this.writes.values()].some(state => !!state.error) }
   private dirtyCount(): number { return [...this.writes.values()].filter(state => state.dirty || state.pending || state.error).length }
 
+  /** Past this, appended updates are folded into one snapshot (and a long queue is dropped for one). Records
+   *  are bounded too: a load reads every one, and many tiny appends never reach the byte threshold. */
+  private snapshotDue(state: WriteState): boolean {
+    return state.appendedBytes + state.queuedBytes > Math.max(1048576, state.snapshotBytes / 2) || state.appendedRecords >= MAX_APPENDED_RECORDS
+  }
+
   private queueWrite(name: string, state: WriteState, update?: Uint8Array): void {
-    if (!state.pending && !state.error) state.pendingUpdate = update
+    // Snapshotting on every write behind an in-flight one made each write O(document) under steady load.
+    if (update && !state.full && !state.error) { state.updates.push(update); state.queuedBytes += update.byteLength }
+    else state.full = true
+    if (state.full || this.snapshotDue(state)) { state.full = true; state.updates = []; state.queuedBytes = 0 }
     state.dirty = true
     if (!state.error) this.write(name, state)
   }
@@ -149,16 +161,16 @@ export class ServerHubs {
       while (state.dirty) {
         state.dirty = false
         try {
-          const full = !state.pendingUpdate || state.appendedBytes > Math.max(1048576, state.snapshotBytes / 2)
-          const update = full ? Y.encodeStateAsUpdate(state.doc) : state.pendingUpdate!
-          state.pendingUpdate = undefined
+          const full = state.full || !state.updates.length || this.snapshotDue(state)
+          const update = full ? Y.encodeStateAsUpdate(state.doc) : state.updates.length === 1 ? state.updates[0]! : Y.mergeUpdates(state.updates)
+          state.updates = []; state.queuedBytes = 0; state.full = false
           if (full && state.provider.replace) {
             await state.provider.replace(name, update)
-            state.appendedBytes = 0; state.snapshotBytes = update.byteLength
+            state.appendedBytes = 0; state.appendedRecords = 0; state.snapshotBytes = update.byteLength
           } else {
             // y-leveldb's _transact swallows the write's error and resolves null instead of the clock.
             if (await state.provider.storeUpdate(name, update) === null) throw new Error('document write failed')
-            state.appendedBytes += update.byteLength
+            state.appendedBytes += update.byteLength; state.appendedRecords++
           }
           if (state.error) {
             this.opts.log(`room ${name}: storage recovered`)
@@ -169,7 +181,7 @@ export class ServerHubs {
           state.delay = 250
         } catch (error) {
           state.dirty = true
-          state.pendingUpdate = undefined
+          state.full = true; state.updates = []; state.queuedBytes = 0
           state.error = error instanceof Error ? error.message : String(error)
           this.opts.log(`room ${name}: storage failed: ${state.error}`)
           state.retry = setTimeout(() => { state.retry = undefined; this.write(name, state) }, state.delay)
@@ -197,7 +209,7 @@ export class ServerHubs {
     return {
       provider,
       bindState: (docName, doc) => {
-        const state: WriteState = { doc, provider, dirty: false, appendedBytes: 0, snapshotBytes: 0, delay: 250 }
+        const state: WriteState = { doc, provider, dirty: false, appendedBytes: 0, appendedRecords: 0, snapshotBytes: 0, updates: [], queuedBytes: 0, full: false, delay: 250 }
         const store = (update: Uint8Array, origin: unknown) => {
           if (origin === HUB_ORIGIN) this.opts.hubBytes?.(docName, update.byteLength)
           this.queueWrite(docName, state, update)

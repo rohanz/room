@@ -215,25 +215,20 @@ add a branch. The hub keeps its leases in its own files (`<YPERSISTENCE>/hub/lea
 
 ## Memory
 
-The runtime image sets `MALLOC_ARENA_MAX=2`. glibc's per-thread malloc arenas can fragment
-under native addons' threadpool I/O, including LevelDB, and retain freed memory in RSS.
-This limits arena growth; validate the effect with an idle measurement and a longer soak.
-The image runs compiled JavaScript directly, avoiding resident tsx and esbuild processes.
-For a production server outside Docker, run `npm run build:server` once, then
-`MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server` (or `npm start -w @room/server`).
-Use `npm run server:dev` for source development.
+The image runs the server as compiled JavaScript under plain `node` (no resident tsx or esbuild
+processes) and sets `MALLOC_ARENA_MAX=2`: glibc's per-thread malloc arenas fragment under native
+addons' threadpool I/O, LevelDB included, and keep freed memory resident. Outside Docker, run
+`npm run build:server` once, then `MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server`;
+`npm run server:dev` runs the source.
 
-Startup and `/admin/inventory` use only LevelDB table metadata and discovery keys. Their
-`bytes` field is the physical size of overlapping SST files, `updates: 0` means uncounted,
-and raw size is conservatively estimated as SST bytes × 24 plus memtable slack. Snappy's
-best case copies 64 bytes with a 3-byte tag (about 21× compression); 24× leaves headroom.
-Slack is at least the default 4 MiB write buffer, increased to LevelDB's native memory-usage
-estimate when larger (that includes active/immutable memtables and block cache). Only an
-estimate above the load budget sets `over: true` with a `possibly over` reason; small
-documents say `estimated from table metadata` and remain unflagged. Missing table metadata
-is also flagged as possibly over. The load guard still checks raw updates before loading;
-`scripts/room-inventory.mts` remains the exact, stopped-server preflight in disposable scratch.
-To compare idle RSS with synthetic persisted data, run
-`npx tsx scripts/measure-idle-rss.mts --mb 60`; it waits for startup inventory and 60 seconds
-of idle time before printing JSON. Use `--cmd 'node --import tsx packages/server/src/index.ts'`
-to compare the source runtime, or set `MALLOC_ARENA_MAX=2` in the probe's environment.
+The server reads no stored documents at startup. Each load is size-checked first, and
+`GET /admin/inventory` (for `ROOM_ADMINS`) sizes documents on request from LevelDB table metadata
+alone: `bytes` is the size of the SST files overlapping the document and `updates: 0` means
+uncounted. A document is flagged `possibly over` when those bytes × 24 (above snappy's best
+compression ratio, about 21×) plus memtable slack could exceed the load budget, or when metadata is
+missing; the estimate never calls an oversized document safe. `scripts/room-inventory.mts` is the
+exact pre-flight over a stopped server's directory.
+
+To compare idle memory on synthetic persisted data, run `npx tsx scripts/measure-idle-rss.mts --mb 60`
+(add `--cmd 'node --import tsx packages/server/src/index.ts'` for the source runtime); it prints the
+server's RSS after startup and 60 seconds idle.
