@@ -35,6 +35,8 @@ export interface WorkerRecord {
   host: 'claude' | 'codex'; model?: string; effort?: string
   budget: { threads: number; memGb: number; nice: number }; share: ShareLevel; link?: string[]; task: string
   dir: string; outside: boolean; branch: string; prep: PrepJournal
+  /** The host's log, `<lead>/.room/workers/<tag>.log`; records before 0.17.0-rc8 lack it (see workerLogFile). */
+  logFile?: string
   /** A dir= worker borrows another worker's checkout and must never remove it. */
   sharedWith?: string
   base?: string; carriedBase?: string; carriedUntracked?: { path: string; sha: string; mode?: number }[]

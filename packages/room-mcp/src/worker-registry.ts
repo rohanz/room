@@ -160,9 +160,14 @@ export function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env)
  * A run that exited cleanly without room_done gets the evidence from its log: the no-report summary
  * carries the log tail, and either form names background shell tasks its exit killed (count only).
  */
+/** Where the host writes the worker's log; an older record's owned worktree sits beside it in `.room/workers`. */
+export function workerLogFile(record: Pick<WorkerRecord, 'dir' | 'tag' | 'logFile'>): string {
+  return record.logFile ?? path.join(path.dirname(record.dir), `${record.tag}.log`)
+}
+
 /** " — background work was still running (…)" when the run's exit killed background shell tasks, else ''. */
-export function backgroundAtExit(record: Pick<WorkerRecord, 'dir' | 'tag' | 'host'>, run: Pick<Run, 'logStart'>): string {
-  const killed = unawaitedBackgroundTasks(path.join(path.dirname(record.dir), `${record.tag}.log`), run.logStart, record.host)
+export function backgroundAtExit(record: Pick<WorkerRecord, 'dir' | 'tag' | 'host' | 'logFile'>, run: Pick<Run, 'logStart'>): string {
+  const killed = unawaitedBackgroundTasks(workerLogFile(record), run.logStart, record.host)
   return killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
 }
 
@@ -170,7 +175,7 @@ function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): Worke
   const run = status.run
   const resumedWithoutDone = status.status === 'failed' && status.exitCode === 0 && run?.mode === 'resume'
   if (!run || !status.noReport && !resumedWithoutDone) return status
-  const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+  const logFile = workerLogFile(record)
   const background = backgroundAtExit(record, run)
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
@@ -230,7 +235,7 @@ const recordShape = (value: unknown, id: string): value is WorkerRecord => objec
   && object(value.lead) && typeof value.lead.participant === 'string' && typeof value.lead.room === 'string' && tokenShape(value.lead.instance)
   && ['claude', 'codex'].includes(value.host as string) && object(value.budget)
   && typeof value.task === 'string' && typeof value.dir === 'string' && typeof value.branch === 'string'
-  && typeof value.outside === 'boolean' && object(value.prep) && typeof value.prep.step === 'string'
+  && typeof value.outside === 'boolean' && (value.logFile === undefined || typeof value.logFile === 'string') && object(value.prep) && typeof value.prep.step === 'string'
   && object(value.capabilities) && typeof value.capabilities.resume === 'boolean' && typeof value.capabilities.signal === 'boolean'
   && ['delta', 'copy', 'none'].includes(value.capabilities.collect as string)
   && ['intent', 'preparing', 'prepared', 'active', 'collecting', 'discarding', 'retiring', 'retired', 'abandoned'].includes(value.phase as string)
@@ -541,7 +546,7 @@ export class WorkerRegistry {
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
       || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
     // A follow-up that ended without its own room_done is "done" by the earlier report; its exit may still have killed work.
-    const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+    const logFile = workerLogFile(record)
     const background = backgroundAtExit(record, run)
     return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart),
       ...(background ? { note: `follow-up ended without room_done${background}` } : {}) }
@@ -727,7 +732,7 @@ export class WorkerRegistry {
   }
 
   /** Append the next run while the same capacity guard used by fresh spawn is held. */
-  async resume(id: string, capacity: number, input: { nonce: string; busFrontier: number; promptMsgIds?: string[]; logStart: number }): Promise<WorkerRecord> {
+  async resume(id: string, capacity: number, input: { nonce: string; busFrontier: number; promptMsgIds?: string[]; logStart: number; logFile?: string }): Promise<WorkerRecord> {
     const candidate = this.read(id)
     const owner = candidate && this.worktreeOwner(candidate)
     if (owner) await this.beginOperation(owner.id, 'resume')
@@ -744,7 +749,8 @@ export class WorkerRegistry {
         const run = { n: old.runs.at(-1)!.n + 1, mode: 'resume' as const, intentAt: this.now(),
           nonce: input.nonce, busFrontier: input.busFrontier, promptMsgIds: input.promptMsgIds ?? [],
           launcher: this.identity, logStart: input.logStart }
-        const record: WorkerRecord = { ...old, phase: 'prepared', stop: undefined, runs: [...old.runs, run], seq: old.seq + 1 }
+        // The resuming session's log, which this run's logStart measures, is where the host writes now.
+        const record: WorkerRecord = { ...old, ...(input.logFile ? { logFile: input.logFile } : {}), phase: 'prepared', stop: undefined, runs: [...old.runs, run], seq: old.seq + 1 }
         writeAtomic(this.workerFile(id), record)
         return record
       })
@@ -806,7 +812,7 @@ export class WorkerRegistry {
       : current
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
       || (status.status !== 'failed' && !status.noReport && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
-    const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+    const logFile = workerLogFile(record)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
     const tail = workerLogTail(logFile, run.logStart)

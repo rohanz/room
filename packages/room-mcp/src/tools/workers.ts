@@ -199,7 +199,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         v: 1, id, tag, name, mode: s === lead ? 'here' : 'local', room: s.roomName, ...(s === lead ? {} : { projectedInto: lead.roomName }),
         lead: { participant: s.me.name, room: s.roomName, instance: registry.instance },
         host, model, effort, budget: { threads, memGb, nice: 10 }, share: effectiveShare, task,
-        dir, outside, branch, prep, hostSessionId, ...(sharedOwner ? { sharedWith: sharedOwner.id } : {}),
+        dir, outside, branch, prep, hostSessionId, logFile: path.join(s.dir, '.room', 'workers', `${tag}.log`), ...(sharedOwner ? { sharedWith: sharedOwner.id } : {}),
         capabilities: { resume: true, signal: true, collect: outside ? 'none' : 'delta' }, phase: 'intent',
         runs: [{ n: 1, mode: 'fresh', intentAt: now(), nonce, busFrontier: highestSeq(s.room), promptMsgIds: [], launcher: registry.instance, logStart: 0 }],
         createdAt: now(), seq: 1,

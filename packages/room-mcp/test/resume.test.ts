@@ -352,6 +352,19 @@ describe('resumed worker boundaries', () => {
     expect(workerByTag(t.dir, 'bg')?.summary).not.toContain('sleep 40')
   })
 
+  it('reads the lead-side log of a worker started in a checkout outside the repo', async () => {
+    const t = setup()
+    const outside = mkdtempSync(join(tmpdir(), 'room-sibling-'))
+    try {
+      execFileSync('git', ['-C', t.dir, 'worktree', 'add', '-q', '--detach', join(outside, 'checkout')])
+      expect(await t.tools.call('room_spawn', { tag: 'sib', task: 'test', host: 'claude', dir: join(outside, 'checkout'), allowOutside: true })).toContain('spawned sib')
+      writeFileSync(join(t.dir, '.room', 'workers', 'sib.log'), unawaited())
+      t.exits[0](0)
+      const said = 'ended without a report — background work was still running (1 background task(s) killed at exit)'
+      await vi.waitFor(() => expect(workerByTag(t.dir, 'sib')?.summary).toContain(said))
+    } finally { rmSync(outside, { recursive: true, force: true }) }
+  })
+
   it('names killed background work when a resumed run exits without room_done', async () => {
     const t = setup()
     await t.seed('bgresume', { status: 'failed', exitCode: 1 })

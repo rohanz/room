@@ -43357,7 +43357,8 @@ __export(worker_registry_exports, {
   ownWorkerNames: () => ownWorkerNames,
   registryForDir: () => registryForDir,
   registrySnapshotForDir: () => registrySnapshotForDir,
-  workerCarried: () => workerCarried
+  workerCarried: () => workerCarried,
+  workerLogFile: () => workerLogFile
 });
 import fs39 from "node:fs";
 import path35 from "node:path";
@@ -43489,15 +43490,18 @@ function workerCarried(dir, env = process.env) {
     return void 0;
   }
 }
+function workerLogFile(record2) {
+  return record2.logFile ?? path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
+}
 function backgroundAtExit(record2, run3) {
-  const killed = unawaitedBackgroundTasks(path35.join(path35.dirname(record2.dir), `${record2.tag}.log`), run3.logStart, record2.host);
+  const killed = unawaitedBackgroundTasks(workerLogFile(record2), run3.logStart, record2.host);
   return killed ? ` \u2014 background work was still running (${killed} background task(s) killed at exit)` : "";
 }
 function unreportedExit(record2, status) {
   const run3 = status.run;
   const resumedWithoutDone = status.status === "failed" && status.exitCode === 0 && run3?.mode === "resume";
   if (!run3 || !status.noReport && !resumedWithoutDone) return status;
-  const logFile = path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
+  const logFile = workerLogFile(record2);
   const background = backgroundAtExit(record2, run3);
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run3.logStart)}` };
   return background ? { ...status, note: `${status.note ?? "exited without room_done"}${background}` } : status;
@@ -43701,7 +43705,7 @@ var init_worker_registry = __esm({
           return false;
       }
     };
-    recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && object3(value2.prep) && typeof value2.prep.step === "string" && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
+    recordShape = (value2, id3) => object3(value2) && value2.v === 1 && value2.id === id3 && typeof value2.tag === "string" && safeTag(value2.tag) && typeof value2.name === "string" && ["local", "here"].includes(value2.mode) && typeof value2.room === "string" && object3(value2.lead) && typeof value2.lead.participant === "string" && typeof value2.lead.room === "string" && tokenShape(value2.lead.instance) && ["claude", "codex"].includes(value2.host) && object3(value2.budget) && typeof value2.task === "string" && typeof value2.dir === "string" && typeof value2.branch === "string" && typeof value2.outside === "boolean" && (value2.logFile === void 0 || typeof value2.logFile === "string") && object3(value2.prep) && typeof value2.prep.step === "string" && object3(value2.capabilities) && typeof value2.capabilities.resume === "boolean" && typeof value2.capabilities.signal === "boolean" && ["delta", "copy", "none"].includes(value2.capabilities.collect) && ["intent", "preparing", "prepared", "active", "collecting", "discarding", "retiring", "retired", "abandoned"].includes(value2.phase) && Array.isArray(value2.runs) && value2.runs.length > 0 && value2.runs.every(runShape) && typeof value2.createdAt === "number" && Number.isSafeInteger(value2.seq);
     reportShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && typeof value2.nonce === "string" && Array.isArray(value2.chain) && value2.chain.every(processShape) && (value2.hostProcess === void 0 || value2.hostProcess === null || processShape(value2.hostProcess)) && typeof value2.joinedAt === "number" && (value2.hostSessionId === void 0 || typeof value2.hostSessionId === "string") && (value2.posted === void 0 || typeof value2.posted === "string") && (value2.done === void 0 || object3(value2.done) && typeof value2.done.at === "number" && typeof value2.done.summary === "string" && Array.isArray(value2.done.changed));
     admittedHost = (report) => report.hostProcess !== void 0 ? report.hostProcess ?? void 0 : report.chain[1];
     exitShape = (value2) => object3(value2) && Number.isSafeInteger(value2.run) && (value2.code === null || Number.isSafeInteger(value2.code)) && typeof value2.at === "number" && typeof value2.witnessed === "boolean" && (value2.signal === void 0 || typeof value2.signal === "string");
@@ -43999,7 +44003,7 @@ var init_worker_registry = __esm({
         const run3 = status.run;
         if (status.noReport) return status;
         if (status.status !== "done" || run3?.mode !== "resume" || reports.some((report) => report.run === run3.n && report.done) || !exits.some((exit) => exit.run === run3.n && exit.witnessed && exit.code === 0)) return status;
-        const logFile = path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
+        const logFile = workerLogFile(record2);
         const background = backgroundAtExit(record2, run3);
         return {
           ...status,
@@ -44257,7 +44261,7 @@ var init_worker_registry = __esm({
                 launcher: this.identity,
                 logStart: input.logStart
               };
-              const record2 = { ...old, phase: "prepared", stop: void 0, runs: [...old.runs, run3], seq: old.seq + 1 };
+              const record2 = { ...old, ...input.logFile ? { logFile: input.logFile } : {}, phase: "prepared", stop: void 0, runs: [...old.runs, run3], seq: old.seq + 1 };
               writeAtomic(this.workerFile(id3), record2);
               return record2;
             });
@@ -44325,7 +44329,7 @@ var init_worker_registry = __esm({
         const current = this.status(id3);
         const status = record2?.phase === "retiring" && !record2.stop ? unreportedExit(record2, statusOf({ ...record2, phase: "active" }, record2.runs, this.reports(id3), this.exits(id3), this.alive, this.now())) : current;
         if (!record2 || !run3 || !status || !exit?.witnessed || run3.posted || report?.posted || status.status !== "failed" && !status.noReport && !(record2.phase === "retiring" && !record2.stop) && !report?.done) return false;
-        const logFile = path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
+        const logFile = workerLogFile(record2);
         const missing2 = record2.host === "claude" && run3.mode === "resume" && !!record2.hostSessionId && missingClaudeSession(logFile, record2.hostSessionId, run3.logStart);
         const tail = workerLogTail(logFile, run3.logStart);
         const answer = run3.mode === "resume" ? followUpAnswer(logFile, record2.host, run3.logStart) : "";
@@ -57124,6 +57128,7 @@ var Rooms = class _Rooms {
       const next = await registry2.resume(record2.id, config2.maxWorkers, {
         nonce: randomUUID7(),
         logStart,
+        logFile,
         busFrontier: highestSeq(s.room)
       });
       run3 = next.runs.at(-1);
@@ -57616,6 +57621,7 @@ function handlers4(state) {
         branch,
         prep,
         hostSessionId,
+        logFile: path42.join(s.dir, ".room", "workers", `${tag}.log`),
         ...sharedOwner ? { sharedWith: sharedOwner.id } : {},
         capabilities: { resume: true, signal: true, collect: outside ? "none" : "delta" },
         phase: "intent",

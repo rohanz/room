@@ -273,7 +273,7 @@ export class Rooms {
     try { logStart = fs.statSync(logFile).size } catch { /* a new log starts at zero */ }
     let run: import('./worker-status.js').Run
     try {
-      const next = await registry.resume(record.id, config.maxWorkers, { nonce: randomUUID(), logStart,
+      const next = await registry.resume(record.id, config.maxWorkers, { nonce: randomUUID(), logStart, logFile,
         busFrontier: highestSeq(s.room) })
       run = next.runs.at(-1)!
     } catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
