@@ -5,10 +5,10 @@ import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
 import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
-import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
+import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
 import { decideCollect, decideDiscard, decideStop, workerRealState } from '../worker-state.js'
-import { buildCombinedTree } from './combined-tree.js'
+import { buildCombinedTree, scratchCollectNote } from './combined-tree.js'
 import { addCarriedUntrackedModes, gitTreeModes, materializeMergedFile, mergedFileMode } from './files.js'
 import { releaseClaimsOnDone } from './claims.js'
 import { RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
@@ -665,6 +665,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         throw e
       }
       out.push('Changes from ' + selected.map(x => x.w.tag).join(', ') + ': ' + (changes.map(x => x.p).join(', ') || 'already present') + '. Nothing committed or staged.')
+      // Worker scratch is not merged; keep a copy before cleanup removes the worktrees.
+      const scratchSelected = selected.filter(({ w }) => result.scratch.has(w.name))
+      const scratchNote = scratchCollectNote(result.scratch, name => selected.find(x => x.w.name === name)?.w.tag ?? name,
+        saveWorkerScratch(leadRoot, scratchSelected.map(({ w }) => ({ tag: w.tag, root: workerRoots.get(w)!, paths: result.scratch.get(w.name)! }))))
+      if (scratchNote) out.push(scratchNote)
       nextPhase('cleanup')
       for (const { s, w } of selected) {
         let archived: { entry: RetiredWorker; keptWorktree?: string } | undefined

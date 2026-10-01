@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setImmediate } from 'node:timers/promises'
-import { git, gitBlobInfoMany, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
+import { git, gitBlobInfoMany, gitWholeTree, wholeTreeTimeoutMs, type GitBlobInfo } from './git.js'
 import { authorizesText, defaultExcludedPath, defaultIgnoredPath, isTrackedOnlyLockfile, type DiskFact, type PublicationInputs } from './policy.js'
 
 /** Thrown when the inputs a scan or prepare captured are replaced mid-way; the caller drops that publication. */
@@ -26,6 +26,19 @@ export async function ignoredTrackedPaths(dir: string, paths: readonly string[])
       : reject(new Error(`git check-ignore failed: ${error.trim() || `exit ${code}`}`)) })
     child.stdin.end(paths.join('\0') + '\0')
   })
+}
+
+/**
+ * Untracked folders that match an ignore rule, without a trailing slash: the watcher prunes them whole.
+ * `ls-files --directory` reports an ignored folder as one entry without descending into it, and descends into
+ * any folder holding a tracked file. It also reports a folder whose present contents all happen to be ignored
+ * (libs/ holding only libs/JUCE/); check-ignore keeps only folders a rule matches, so a new file there is still seen.
+ */
+export async function gitIgnoredDirs(dir: string): Promise<Set<string>> {
+  const listed = (await gitWholeTree(dir, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory']))
+    .split('\0').filter(entry => entry.endsWith('/'))
+  const matched = await ignoredTrackedPaths(dir, listed)
+  return new Set(listed.filter(entry => matched.has(entry)).map(entry => entry.slice(0, -1)))
 }
 
 const formats = new Map<string, 'sha1' | 'sha256'>()

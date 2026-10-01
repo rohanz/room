@@ -145,6 +145,18 @@ describe('tool timing', () => {
     expect(lines[1]).toBe('slow tool room_preview_merge 2100ms: merge 2100ms')
   })
 
+  it('counts Git processes inside a slow preview merge, so a per-file spawn pattern shows in the log', async () => {
+    let now = 0
+    const lines: string[] = []
+    const tracker = new ToolTimingTracker({ now: () => now, log: line => lines.push(line) })
+    await tracker.run('room_preview_merge', async () => {
+      const timing = currentToolTiming()!
+      await previewPhase('merge', () => { for (let i = 0; i < 3; i++) { now += 1000; timing.recordGit(['cat-file', '-s', 'abc'], 900) } })
+      timing.recordGit(['status'], 5)
+    })
+    expect(lines).toEqual(['slow tool room_preview_merge 3000ms: merge 3000ms (git 3 calls 2700ms)'])
+  })
+
   it('counts other fresh markers, ignores stale-age and dead-pid markers, and removes none of them', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-preview-marker-test-'))
     const markerDir = path.join(root, 'room-preview-checks')

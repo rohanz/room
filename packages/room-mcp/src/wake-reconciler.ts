@@ -1,7 +1,8 @@
 /**
  * Wakes, level-triggered (ledger "Wake (MF8)"). One reconciler per host session, across its rooms. A message
  * is wakeable when it is owed, its kind wakes (`shouldWakeOnMsg`), it is above the session's frontier, no
- * batch holds it, no pending room_wait will return it, and this session was not already woken for it.
+ * batch holds it, no pending room_wait will return it, this session was not already woken for it, and it has
+ * company (solo.ts: a room is silent while alone).
  * All wakeable messages go out as one content-free pointer over the host's path; only a successful send is
  * recorded, in `wakes.json`, and a wake is never a receipt: the message stays owed until a reply, a wait or
  * the edit hook hands it off.
@@ -40,6 +41,8 @@ export interface WakeReconcilerOptions {
   send: SendWake
   /** A lead's own workers: their routine progress notes do not wake it. */
   ownWorkers?: (s: Session) => ReadonlySet<string>
+  /** Whether company makes `m` wakeable now (solo.ts); a room is silent while alone. Default: always. */
+  audible?: (s: Session) => (m: Msg) => boolean
   log?: (line: string) => void
   now?: () => number
   backoffMs?: readonly number[]
@@ -62,6 +65,8 @@ export class WakeReconciler {
   private silent = false
   private readonly codexTurn: Pick<CodexTurnProbe, 'busy'>
   private readonly releaseChecks = new Map<string, { own: boolean; at: number }>()
+  /** Messages already logged as held back while alone (one line each). */
+  private readonly held = new Set<string>()
 
   constructor(private readonly o: WakeReconcilerOptions) { this.codexTurn = o.codexTurn ?? new CodexTurnProbe() }
 
@@ -107,10 +112,17 @@ export class WakeReconciler {
       const uncommitted = manifestPaths(s.room, s.me.name).length > 0
       const workers = this.o.ownWorkers?.(s)
       const done = woken[s.roomName] ?? {}
+      const audible = this.o.audible?.(s)
       for (const m of ledger.candidates(s)) {
         // Messages owed before this session existed are left for its first reply or hook.
         if ((m.seq ?? 0) <= frontier || done[m.id] || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || this.ownCommitRelease(s, m)) continue
-        if (shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) out.push({ s, m })
+        if (!shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) continue
+        if (audible && !audible(m)) {
+          const key = `${s.roomName}\0${m.id}`
+          if (!this.held.has(key)) { if (this.held.size >= 1000) this.held.clear(); this.held.add(key); this.o.log?.(`wake: not waking for ${m.type} ${m.id} in ${s.roomName}: alone here; it stays in room_state`) }
+          continue
+        }
+        out.push({ s, m })
       }
     }
     return out

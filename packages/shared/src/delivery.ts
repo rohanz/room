@@ -65,15 +65,20 @@ function replyEligible(m: Msg, answered: ReadonlySet<string>, now: number): bool
   return !!m.to && (m.type === 'question' || m.type === 'note') && !answered.has(m.id) && now - m.at < REPLY_WINDOW_MS
 }
 
-/** The highest hub `seq` on the bus (hub §3: seqs only increase, across hub restarts too); 0 when there is none. */
+/**
+ * The highest hub `seq` issued (hub §3: seqs only increase, across hub restarts too); 0 when there is none. Mail and
+ * the hub's `hubSeq` mirror count too: the trim moves a message off the bus with its seq, and can empty the bus.
+ */
 export function highestSeq(doc: RoomDoc): number {
-  let high = 0
+  const mirrored = doc.metaMap.get('hubSeq')
+  let high = typeof mirrored === 'number' && Number.isSafeInteger(mirrored) ? mirrored : 0
   for (const m of doc.messages()) if (typeof m.seq === 'number' && m.seq > high) high = m.seq
+  for (const m of doc.mail.values()) if (typeof m.seq === 'number' && m.seq > high) high = m.seq
   return high
 }
 
 /**
- * Everything `me` is owed: addressed messages in bus ∪ mail, and bus broadcasts above the session's
+ * Everything `me` is owed: addressed messages in bus ∪ mail (above `addressedFrom`, when set), and bus broadcasts above the session's
  * frontier seq and outside `routed` that `messageForMe` accepts; minus receipts, outcomes and `!relevant`. Deduped
  * by id. Pure: relevance and routing are read-time decisions and write nothing.
  */
@@ -83,9 +88,11 @@ export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryC
   const offer = (m: Msg) => {
     if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m)
   }
-  for (const m of [...doc.mail.values()].sort(byAge)) if (addressedTo(m, me.name)) offer(m)
+  // Addressed messages are owed whenever they were sent, except to a worker that took over the name after them.
+  const mine = (m: Msg) => addressedTo(m, me.name) && (cursor.addressedFrom === undefined || (m.seq ?? 0) > cursor.addressedFrom)
+  for (const m of [...doc.mail.values()].sort(byAge)) if (mine(m)) offer(m)
   for (const m of doc.messages()) {
-    if (m.to) { if (addressedTo(m, me.name)) offer(m) }
+    if (m.to) { if (mine(m)) offer(m) }
     else if ((m.seq ?? 0) > cursor.frontier && !cursor.routed.has(m.id) && messageForMe(me, m, route)) offer(m)
   }
   return [...out.values()]

@@ -12,19 +12,21 @@ use broke and proposes the order of work.
 ## Fixed in 0.17.0
 
 - **Repository rooms:** Every participant carries a branch and base inside one room per repository; branch switches keep scope and claims. The PR mirror considers participants’ branches, and local relay state migrates to a separate schema-2 generation.
+- **Workers you can trust (rc6–rc8, found by leading Room's own batches):** a worker's `node_modules` links to the lead's packages with workspace packages pointing at the worker's own sources, its shell no longer sees Room's `ROOM_*` variables, `room_state` shows each live worker's latest action, and a worker that exits with background jobs still running is reported as such. Details are in the [reference](reference.md#workers-and-previews) and the [CHANGELOG](../CHANGELOG.md).
+- **Smaller 0.17 fixes:** the local relay enforces the same live document cap as the server, a 0.16 name used on several branches migrates as itself when the audit log proves one owner, exporting an archive with no stored document says so instead of writing an empty file, and Room on Linux recognises a natively installed Claude Code.
 
 ## Post-0.17
 
 - **One local database.** Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
 - **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.
-- **Trim the large modules.** `worker-registry.ts` (about 1.26k lines) and `conflict-set.ts` (about 0.8k) after the database move.
+- **Trim the large modules.** `worker-registry.ts` (about 1.28k lines) and `conflict-set.ts` (about 0.8k) after the database move.
 - **Threat model.** Write one for 0.17, and write threat models alongside future specs.
 - **Standalone local daemon.** Consider one instead of the relay living in the first session.
 - **Simplification pass** after the trial.
 - **Protocol version negotiation** and a compatibility window, before the user base grows.
 - **Per-person permissions** and validated operations.
 - **The rc2 deferred list:** [2026-09-30-rc2-deferred.md](superpowers/specs/2026-09-30-rc2-deferred.md).
-- **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew.
+- **Codex host follow-ups:** the plugin-broker thread cleanup is upstream; hooks load from the marketplace while the MCP loads from the cache, and the two can skew. Codex runs only the installed plugin (it has no `--plugin-dir`), so Codex workers of a lead on a development checkout run the installed version; the spawn reply warns on a mismatch. Codex's shared app-server daemon does not pass the shell's `ROOM_*` variables to Room, so `ROOM_SERVER` and similar settings need `codex --no-daemon`.
 
 ## Fixed in 0.16.3
 
@@ -75,7 +77,7 @@ Proved fixed earlier by the triage and marked inline below: preview em dash (0.1
 
 ## Found 2026-09-29, left to the redesign
 
-From the [Werkzeug](rehearsal-2026-09-29-werkzeug.md), [httpx](rehearsal-2026-09-29-httpx.md) and [Flask](rehearsal-2026-09-29-flask.md) rehearsals on 0.16.37. The redesign (branch `redesign`, specs in `docs/superpowers/specs/2026-09-28-*.md`) replaces these mechanisms, so 0.16.38 does not patch them:
+From the [Werkzeug](rehearsal-2026-09-29-werkzeug.md), [httpx](rehearsal-2026-09-29-httpx.md) and [Flask](rehearsal-2026-09-29-flask.md) rehearsals on 0.16.37. The redesign (specs in `docs/superpowers/specs/2026-09-28-*.md`) replaces these mechanisms, so 0.16.38 does not patch them. 0.17.0 ships the redesign; rerun these rehearsals on it before marking them fixed:
 
 - **Codex replays its queued inbox after finishing** (Werkzeug 3, httpx 3, Flask 2): answered questions and pulled base notices come back as new turns, and a base notice says "You have uncommitted work" on a clean tree. Covered by ledger.md "Wake (MF8)" (a content-free pointer, owed and not yet consumed messages only) and "The one selection function"; reporooms.md "B4. `pushed` notices" drops notices whose commit is already in HEAD.
 - **A quit Codex session stays in the room** (Werkzeug 4, httpx 1, Flask 4): its MCP server lives on under the shared `codex app-server` daemon. Covered by registry.md "18. Presence end and the idle lease" and "17. Host session binding". The spec keeps a quit session that still holds scope or claims present for up to 8 hours.
@@ -246,7 +248,9 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
 - **Done in 0.15.0: finished-worker follow-ups.** An addressed message resumes a finished
   worker's retained session in its worktree. Collection or discard ends that option.
 - **Quiet workers require a status check.** State already labels workers quiet after five minutes
-  without activity. Proactive detection of a worker needing intervention remains open.
+  without activity, and since 0.17.0 shows each live worker's latest action (`editing api/tax.py · 20s ago`)
+  and reports background work killed when a worker exits without a report. Proactive detection of a
+  worker needing intervention remains open.
 - **No lead summary.** `room_state` lists everything; a lead wants "3 done, 2 waiting on you,
   1 quiet" as the first lines, with the questions addressed to it.
 - **Done in 0.13.0: background batches, with the lead as a worker.** Tested for real on
@@ -255,7 +259,8 @@ but never called `room_wait`, never previewed a merge and integrated by copying 
   finished. The top collected everything in one step; its own uncommitted work was untouched.
   A worker's workers share its advisory compute budget, split among them. The browser shows the
   lead-worker once, with its workers nested under it. Workers spawned by a `--plugin-dir` session
-  run the installed `room@room` plugin, not the plugin-dir build. This run took about 80 seconds;
+  then ran the installed `room@room` plugin; Claude workers now load the lead's plugin directory,
+  while Codex workers still run the installed plugin. This run took about 80 seconds;
   whether a headless lead holds a `room_wait` loop for hours remains unmeasured.
 - **Detached background leads.** A lead-worker still dies with the human's session: when that
   session ends, the lead-worker and its workers stop together and say "the lead's session ended".
@@ -513,16 +518,20 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
 - **Permission checks beyond GitHub.com.** Only GitHub.com rooms verify push access. On GitHub
   Enterprise, GitLab or Bitbucket, anyone who passes single sign-on can enter any repo's room.
 - **Secret redaction.** The daemon broadcasts uncommitted text; scan before publish.
-- **Mixed plugin versions in one room.** The document has no schema version; add one and a
-  compatibility rule, since clients update at different times.
+- **Mixed plugin versions in one room.** Since 0.17.0 the document has a schema version (2) and the
+  hub a protocol version (1), and an older client is refused with upgrade text; there is no
+  compatibility window yet ("Protocol version negotiation" above), so clients update together.
 - **Server operations.** One process, one machine, one volume; a deploy drops every connection.
   Needs room-to-node affinity or a Redis-backed sync layer, backups, metrics, rolling deploys.
-- **Claude Code wake-ups need a research-preview flag.** Needs Room on Anthropic's channel
-  allowlist; a conversation, not code.
+- **Done: Claude Code wake-ups no longer need a research-preview flag.** Claude Code 2.1.224+
+  wakes an idle session through its cross-session messaging inbox with plain `claude`; the
+  channels path remains only as a fallback for older versions. An organization can turn
+  cross-session messaging off.
 - **Scale limits degrade by truncation.** File watcher on very large trees, the 8 MB sharing
   budget during a mass codemod, the graph cap. Scoping the daemon to the declared area of work
   addresses all three.
-- **Platforms.** Windows, sparse checkouts, submodules and LFS are untested.
+- **Platforms.** Windows, sparse checkouts, submodules and LFS are untested. Linux runs CI but
+  has had little live use; the open Linux risks are in the [rc6 notes](superpowers/rehearsals/2026-10-01-dogfood-rc6.md#linux-readiness-fix-6).
 
 ## Housekeeping
 
@@ -531,7 +540,11 @@ the code pane re-runs the merge for the open file each time (542 ms for a 2,523-
 - **Published server image** (see decisions, 2026-09-16): multi-stage Dockerfile, GHCR on tags.
 - **Hook at the point of decision** for built-in subagents: only if trials show agents picking
   built-in subagents for parallel edits. The phrasing check on 2026-09-21 was six of six after
-  one tool-description change, so it is not needed yet.
+  one tool-description change. A 0.16.40 lead, whose room-workers skill asked for "independent parts with
+  disjoint files where possible", first recommended built-in subagents and conceded only after its human twice said that
+  overlapping files are what Room handles. 0.17's instructions split by task even when tasks share
+  files and serialize only work on the same lines or that needs another's result; the
+  `same-file-parallel` eval checks it. Add the hook if this recurs on 0.17.
 
 ## What decides the order
 

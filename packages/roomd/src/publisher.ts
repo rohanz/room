@@ -28,7 +28,6 @@ interface Host {
   abs(p: string): string
   isSafeRoomPath(p: string): boolean
   bumpLastActive(): void
-  noteSkip(p: string, reason: string): void
   syncSkipReasons?(reasons: ReadonlyMap<string, string>): void
   reconcileGitChanges(): Promise<void>
   carried(): Baseline | undefined
@@ -315,7 +314,12 @@ export class Publisher {
     else host.skips.ignore.add(p)
     host.syncSkipReasons?.(desired.excludedReasons)
     this.errors.clear()
-    for (const p of desired.textPaths) host.batch.published(p)
+    // Only a real text change counts toward the hot-path throttle: every reconcile carries every
+    // changed file, so counting unchanged republications would defer a file after edits elsewhere.
+    for (const p of desired.textPaths) {
+      const op = prepared.textOps.get(p)
+      if (!op || op.before !== desired.entries.get(p)?.text) host.batch.published(p)
+    }
     if (desired.entries.size || desired.excluded.length) host.bumpLastActive()
     return true
   }

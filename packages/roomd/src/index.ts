@@ -17,10 +17,10 @@ import { execFileSync } from 'node:child_process'
 import { DiskBatch } from './disk-batch.js'
 import { CoalescedPoll } from './poll.js'
 import { Publisher, type PreparedPublication } from './publisher.js'
-import { SkipSummaryGate } from './skip-summary.js'
-import { StalePublication } from './disk-scan.js'
+import { IGNORED_FOLDER, SkipSummaryGate, formatSkips } from './skip-summary.js'
+import { StalePublication, gitIgnoredDirs } from './disk-scan.js'
 import { markManifestIncomplete } from './manifest-publish.js'
-import { authorizesText, rulesFromText, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
+import { authorizesText, rulesFromText, defaultIgnoredPath, type SharingPolicy, type PublicationInputs, type PlannedEntry } from './policy.js'
 import type { ShareLevel } from './share-level.js'
 export { SHARE_LEVELS, parseShare, clampShare, type ShareLevel } from './share-level.js'
 export { policyFromLevel, authorizesText, rulesFromText, plan, defaultIgnoredPath, DEFAULT_IGNORED_DIRS, type SharingPolicy, type PublicationInputs, type ExclusionRules } from './policy.js'
@@ -166,8 +166,6 @@ export interface RoomdOptions {
   reconcileIntervalMs?: number
   /** Test scheduler for the periodic reconciliation. */
   periodicReconcileSchedule?: (run: () => void, intervalMs: number) => () => void
-  /** After startup, skipped files are logged as one count per this window; default 10s. */
-  skipLogMs?: number
 }
 
 export interface Skipped { size: string[]; budget: string[]; ignore: string[] }
@@ -209,6 +207,8 @@ export class RoomdError extends Error {
 
 const ROOM_FILE = '.room.json'
 const ROOMIGNORE = '.roomignore'
+/** Gitignored folders are listed again at least this often, besides on .gitignore changes and new ignored output. */
+const IGNORED_DIRS_REFRESH_MS = 60_000
 
 export function tokenParams(token?: string): Record<string, string> {
   const t = token?.trim()
@@ -335,14 +335,17 @@ class Daemon implements Roomd {
   private workQueue: Promise<void> = Promise.resolve()
   private readonly watchedDirectory: string
   private symlinks = new Set<string>()
-  private loggedSkips = new Set<string>()
-  /** Skips not yet logged: reason -> count, with one example path; logged as one line per window. */
-  private pendingSkips = new Map<string, number>()
-  private pendingSkipExample = ''
+  /** Wholly gitignored untracked folders (from Git, no trailing slash): pruned from the watcher, never enumerated. */
+  private ignoredDirs = new Set<string>()
+  /** Watched directories closed when their folder became ignored; re-added if it stops being ignored. */
+  private unwatchedDirs = new Map<string, string[]>()
+  /** Set when a .gitignore changed or a listing failed: the next tracked refresh asks Git again. */
+  private ignoredDirsStale = false
+  private ignoredDirsAt = 0
+  private ignoredDirsRefresh?: Promise<void>
+  private ignoredDirsFailure?: string
   private readonly skipSummaryGate = new SkipSummaryGate()
   private publishedSkipReasons = new Map<string, string>()
-  private skipLogTimer?: NodeJS.Timeout
-  private readonly skipLogMs: number
   private started = false
   private diskWork = new Set<Promise<void>>()
   stopped = false
@@ -402,7 +405,6 @@ class Daemon implements Roomd {
     this.totalBudget = options.totalBudget ?? 8 * 1024 * 1024
     this.inputs = { policy: options.policy, rules: rulesFromText('', this.sizeCap, this.totalBudget), head: '' }
     this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000
-    this.skipLogMs = options.skipLogMs ?? 10_000
     this.onScanned = options.onScanned
     this.beforePublishWrite = options.beforePublishWrite
     this.beforeBaseRead = options.beforeBaseRead
@@ -426,11 +428,16 @@ class Daemon implements Roomd {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
 
-    const [branch, base, tracked, remote] = await this.step('git', () => Promise.all([
+    const [branch, base, tracked, remote, ignoredDirs] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
       gitTracked(this.dir),
       this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
+      gitIgnoredDirs(this.dir).catch(error => {
+        this.ignoredDirsStale = true
+        this.log(`warn: could not list gitignored folders (${errMsg(error)}); watching them file by file until a later listing works`)
+        return new Set<string>()
+      }),
     ]))
     this.branch = branchName(branch)
     this.base = base
@@ -438,6 +445,8 @@ class Daemon implements Roomd {
     this.remote = remote
     this.tracked = tracked.paths
     this.indexed = tracked.indexed
+    this.ignoredDirs = ignoredDirs
+    this.ignoredDirsAt = Date.now()
 
     await this.step('sync', () => this.waitForSync())
     this.observeOwnedData()
@@ -462,9 +471,9 @@ class Daemon implements Roomd {
     if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
     this.trackedPoll = new CoalescedPoll('tracked refresh', this.trackedRefreshMs, () => this.refreshTracked(), this.log)
     if (this.basePollMs > 0) this.headPoll = new CoalescedPoll('HEAD poll', this.basePollMs, () => this.queuedHeadPoll(), this.log)
-    this.pendingSkips.clear() // the startup scan's skips are counted in the synced line
     this.started = true
-    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummaryGate.shouldLog(this.publishedSkipReasons) ? this.skipSummary() : ''}`)
+    const skips = this.skipEntries()
+    this.log(`synced ${manifestPaths(this.roomDoc, this.name).length} changed paths as ${this.name} (${this.branch}@${this.base.slice(0, 7)}, sharing ${this.share})${this.skipSummaryGate.shouldLog(skips) ? `; skipped ${formatSkips(skips)}` : ''}`)
   }
 
   private step<T>(phase: string, work: () => Promise<T>): Promise<T> {
@@ -477,24 +486,27 @@ class Daemon implements Roomd {
     return { size: Array.from(this.skips.size), budget: Array.from(this.skips.budget), ignore: Array.from(this.skips.ignore) }
   }
 
-  private skipSummary(): string {
-    const n = this.skips.size.size + this.skips.budget.size + this.skips.ignore.size
-    if (!n) return ''
-    const parts = [['size', this.skips.size.size], ['budget', this.skips.budget.size], ['ignore', this.skips.ignore.size]].filter(([, c]) => c).map(([k, c]) => `${c} ${k}`)
-    return `; skipped ${n} file(s) (${parts.join(', ')})`
+  /**
+   * The stable skip set: changed files the publisher withheld, plus one entry per pruned gitignored folder.
+   * Folders named like build or dependency output (node_modules/, test-results/, ...) are pruned without a mention.
+   */
+  private skipEntries(): Map<string, string> {
+    const skips = new Map<string, string>(this.publishedSkipReasons)
+    for (const dir of this.ignoredDirs) if (!defaultIgnoredPath(dir) && !isRegenerableBuildPath(dir)) skips.set(`${dir}/`, IGNORED_FOLDER)
+    return skips
+  }
+
+  /** Logs only when the skip set changed (or as the hourly reminder); callers may call it on every cycle. */
+  private logSkipSummary(): void {
+    if (!this.started) return
+    const skips = this.skipEntries()
+    if (this.skipSummaryGate.shouldLog(skips)) this.log(`skipped ${formatSkips(skips)}`)
   }
 
   /** Publisher calls this on every reconcile, including unchanged skip sets. */
   syncSkipReasons(reasons: ReadonlyMap<string, string>): void {
     this.publishedSkipReasons = new Map(reasons)
-    if (this.started && this.skipSummaryGate.shouldLog(reasons)) {
-      const counts = new Map<string, number>()
-      for (const reason of reasons.values()) {
-        const label = reason === 'size' ? 'over size cap' : reason === 'budget' ? 'over total budget' : reason === 'untracked lockfile' ? reason : 'ignore'
-        counts.set(label, (counts.get(label) ?? 0) + 1)
-      }
-      if (counts.size) this.log(`skipped ${reasons.size} file(s) (${[...counts].map(([reason, count]) => `${count} ${reason}`).join(', ')}), e.g. ${reasons.keys().next().value}`)
-    }
+    this.logSkipSummary()
   }
 
   // ---- sharing policy --------------------------------------------------
@@ -534,7 +546,6 @@ class Daemon implements Roomd {
     this.trackedPoll?.stop()
     this.headPoll?.stop()
     this.cancelPeriodicReconcile?.()
-    this.flushSkipLog()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     this.batch.stop()
     await this.watcher?.close().catch(() => {})
@@ -1174,40 +1185,18 @@ class Daemon implements Roomd {
     return path.join(this.dir, ...relpath.split('/'))
   }
 
+  /** Path rules only. What a skip means for publication is reported from the publisher's stable skip set. */
   private isIgnoredPath(relpath: string): boolean {
-    if (!relpath || relpath === ROOM_FILE) return true
-    if (defaultIgnoredPath(relpath)) {
-      if (!relpath.split('/').some(part => DEFAULT_IGNORED_DIRS.has(part))) this.skipIgnored(relpath, 'default ignore')
-      return true
-    }
-    if (this.roomIgnore.ignores(relpath)) {
-      this.skipIgnored(relpath, ROOMIGNORE)
-      return true
+    return !relpath || relpath === ROOM_FILE || defaultIgnoredPath(relpath) || this.roomIgnore.ignores(relpath)
+  }
+
+  /** Is this path one of the pruned gitignored folders, or below one? */
+  private inIgnoredDir(relpath: string): boolean {
+    if (!this.ignoredDirs.size) return false
+    for (let end = relpath.length; end > 0; end = relpath.lastIndexOf('/', end - 1)) {
+      if (this.ignoredDirs.has(relpath.slice(0, end))) return true
     }
     return false
-  }
-
-  skipIgnored(relpath: string, reason: string): void {
-    this.skips.ignore.add(relpath)
-    if (!this.loggedSkips.has(relpath)) { this.loggedSkips.add(relpath); this.noteSkip(relpath, reason) }
-  }
-
-  /** Count a skip for the next summary line: a test run can write thousands of ignored files. */
-  noteSkip(relpath: string, reason: string): void {
-    if (!this.pendingSkips.size) this.pendingSkipExample = relpath
-    this.pendingSkips.set(reason, (this.pendingSkips.get(reason) ?? 0) + 1)
-    if (this.skipLogTimer || !this.started) return
-    this.skipLogTimer = setTimeout(() => this.flushSkipLog(), this.skipLogMs)
-    this.skipLogTimer.unref?.()
-  }
-
-  private flushSkipLog(): void {
-    clearTimeout(this.skipLogTimer)
-    this.skipLogTimer = undefined
-    if (!this.pendingSkips.size) return
-    const n = Array.from(this.pendingSkips.values()).reduce((a, b) => a + b, 0)
-    this.log(`skipped ${n} file(s) (${Array.from(this.pendingSkips, ([reason, count]) => `${count} ${reason}`).join(', ')}), e.g. ${this.pendingSkipExample}`)
-    this.pendingSkips.clear()
   }
 
   isSafeRoomPath(relpath: string, applyIgnore = true): boolean {
@@ -1222,7 +1211,7 @@ class Daemon implements Roomd {
         const relative = path.relative(this.dir, current)
         if (fs.lstatSync(current).isSymbolicLink()) this.symlinks.add(relative)
         else this.symlinks.delete(relative)
-        if (this.symlinks.has(path.relative(this.dir, current))) { this.skipIgnored(relpath, 'symlink'); return false }
+        if (this.symlinks.has(path.relative(this.dir, current))) return false
         const real = path.relative(fs.realpathSync(this.dir), fs.realpathSync(current))
         if (real === '..' || real.startsWith(`..${path.sep}`) || path.isAbsolute(real)) return false
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false }
@@ -1258,6 +1247,8 @@ class Daemon implements Roomd {
       ignored: (absolute: string) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
         if (relpath === '') return false
+        // A wholly gitignored folder (a vendored SDK, generated output) is pruned here, so it is never listed or stat'ed.
+        if (this.inIgnoredDir(relpath)) return true
         // Build and test output (test-results/, .astro/, ...) can hold thousands of files per run; watch it only when git tracks or offers something in it.
         if (isRegenerableBuildPath(relpath.slice(relpath.lastIndexOf('/') + 1)) && !this.holdsTracked(relpath)) return true
         if (defaultIgnoredPath(relpath)) return this.isIgnoredPath(relpath)
@@ -1270,9 +1261,10 @@ class Daemon implements Roomd {
       if (event === 'add') countFile(absolute, true)
       else if (event === 'unlink') countFile(absolute, false)
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
-      if (!this.isSafeRoomPath(relpath)) { this.onScanned?.(relpath); return }
+      if (this.inIgnoredDir(relpath) || !this.isSafeRoomPath(relpath)) { this.onScanned?.(relpath); return }
       if (event === 'addDir' || event === 'unlinkDir') return
       if (path.basename(relpath) === '.gitignore') {
+        this.ignoredDirsStale = true
         if (this.trackedPoll) this.trackedPoll.trigger()
         else observeCallback(() => this.refreshTracked(), error => this.log(`warn: ${errMsg(error)}`))
       }
@@ -1317,7 +1309,16 @@ class Daemon implements Roomd {
 
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
     if (this.stopped) return
-    if (await gitIgnored(this.dir, relpath)) { this.tracked.delete(relpath); await this.publisher.reconcile('all', this.publicationComplete()); return }
+    const pruned = this.inIgnoredDir(relpath)
+    if (pruned || await gitIgnored(this.dir, relpath)) {
+      // Only a path this daemon offered or withheld before has anything to withdraw.
+      if (this.tracked.delete(relpath) || this.publisher.pathsToReconcile().has(relpath)) await this.publisher.reconcile('all', this.publicationComplete())
+      // A file in a folder that became ignored after the last listing (fresh build output): learn the folder, so the
+      // rest of the batch, and later events, stop at it instead of asking Git file by file.
+      const parent = relpath.slice(0, relpath.lastIndexOf('/') + 1)
+      if (!pruned && parent && await gitIgnored(this.dir, parent)) await this.refreshIgnoredDirs()
+      return
+    }
     if (!this.tracked.has(relpath) && !manifestPaths(this.roomDoc, this.name).includes(relpath)) {
       if (!isNew || !fs.existsSync(this.abs(relpath))) return
       this.tracked.add(relpath)
@@ -1332,9 +1333,52 @@ class Daemon implements Roomd {
     return false
   }
 
+  /** Ask Git for the wholly ignored folders again; concurrent callers share one listing. Never throws. */
+  private refreshIgnoredDirs(): Promise<void> {
+    this.ignoredDirsRefresh ??= (async () => {
+      this.ignoredDirsStale = false
+      try {
+        const next = await gitIgnoredDirs(this.dir)
+        this.ignoredDirsAt = Date.now()
+        this.ignoredDirsFailure = undefined
+        if (!this.stopped) this.applyIgnoredDirs(next)
+      } catch (error) {
+        this.ignoredDirsStale = true
+        const text = errMsg(error)
+        if (this.ignoredDirsFailure !== text) this.log(`warn: could not list gitignored folders (${text}); keeping the last known ${this.ignoredDirs.size}, and watching new ones file by file`)
+        this.ignoredDirsFailure = text
+      } finally { this.ignoredDirsRefresh = undefined }
+    })()
+    return this.ignoredDirsRefresh
+  }
+
+  /** Close the watches inside newly ignored folders; watch folders that are no longer ignored. */
+  private applyIgnoredDirs(next: Set<string>): void {
+    const added = [...next].filter(dir => !this.ignoredDirs.has(dir))
+    const removed = [...this.ignoredDirs].filter(dir => !next.has(dir))
+    if (!added.length && !removed.length) return
+    this.ignoredDirs = next
+    const watcher = this.watcher
+    if (watcher) {
+      const watched = Object.keys(watcher.getWatched())
+      for (const dir of added) {
+        const absolute = this.abs(dir)
+        const closing = watched.filter(w => w === absolute || w.startsWith(absolute + path.sep))
+        if (closing.length) { watcher.unwatch(closing); this.unwatchedDirs.set(dir, closing) }
+      }
+      for (const dir of removed) {
+        const reopen = this.unwatchedDirs.get(dir) ?? []
+        this.unwatchedDirs.delete(dir)
+        if (fs.existsSync(this.abs(dir))) watcher.add([this.abs(dir), ...reopen])
+      }
+    }
+    this.logSkipSummary()
+  }
+
   private async refreshTracked(): Promise<void> {
     if (this.stopped) return
-    const next = await gitTracked(this.dir)
+    const [next] = await Promise.all([gitTracked(this.dir),
+      this.ignoredDirsStale || Date.now() - this.ignoredDirsAt >= IGNORED_DIRS_REFRESH_MS ? this.refreshIgnoredDirs() : undefined])
     const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
     const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath))
     const demoted = Array.from(this.indexed).filter(relpath => !next.indexed.has(relpath) && next.paths.has(relpath))

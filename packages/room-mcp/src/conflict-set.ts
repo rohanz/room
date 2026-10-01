@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotPath, snapshotStillCurrent, versionOf, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git } from '@room/roomd/git'
@@ -41,6 +41,13 @@ export interface ConflictSlot {
   retrySource?: string
   /** Consumer paths are published only while their text grants remain valid. */
   consumers?: string[]
+  /**
+   * A possible edit-in-claim's episode (1, 2, …), shared by every claim of the same holder on the same path: an
+   * approximate mapping covers the whole file, so it is one fact with one notice and one "cleared". Kept after it clears.
+   */
+  possibleEpisode?: number
+  /** This slot joined an episode another slot opened: that slot's notice covers it. */
+  possibleJoined?: boolean
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'retrySource' | 'consumers'>
 
@@ -100,11 +107,14 @@ export class ConflictSlots {
       ? prev?.settled !== result.status || prev.factId !== result.factId : false
     const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0)
     const settled = result.status === 'unknown' ? prev?.settled ?? 'none' : result.status
+    const episode = result.kind === 'edit-in-claim' ? this.joinPossibleEpisode(key, result, settled, prev) : {}
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
     const slot: ConflictSlot = {
-      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now,
+      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now, ...episode,
       ...(result.kind === 'contract' && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
+      // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
+      ...(result.status === 'clean' && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
       ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
@@ -114,22 +124,49 @@ export class ConflictSlots {
     return slot
   }
 
+  /** The other edit-in-claim slots of this owner for the same holder and path. */
+  private claimGroup(key: string, slot: Pick<ConflictSlot, 'owner' | 'other' | 'path'>): [string, ConflictSlot][] {
+    return this.owned(slot.owner).filter(([k, s]) => k !== key && s.kind === 'edit-in-claim' && s.other === slot.other && s.path === slot.path)
+  }
+
+  /** Join the open possible episode of this holder and path, or open a new one; a clean slot keeps the episode it clears. */
+  private joinPossibleEpisode(key: string, result: Evaluation, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined): Pick<ConflictSlot, 'possibleEpisode' | 'possibleJoined'> {
+    if (settled !== 'possible') return settled === 'clean' && (prev?.settled === 'possible' || prev?.settled === 'clean') && prev.possibleEpisode !== undefined
+      ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {}
+    if (prev?.settled === 'possible' && prev.possibleEpisode !== undefined) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined }
+    const group = this.claimGroup(key, result)
+    const open = group.find(([, s]) => s.settled === 'possible' && s.possibleEpisode !== undefined)?.[1]
+    if (open) return { possibleEpisode: open.possibleEpisode, possibleJoined: true }
+    // Numbered like a slot's epoch, so its "cleared" shares the id of the same path's other cleared notices.
+    return { possibleEpisode: 1 + Math.max(prev?.possibleEpisode ?? 0, ...group.map(([, s]) => s.possibleEpisode ?? 0)), possibleJoined: false }
+  }
+
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
   async replay(owner: string): Promise<void> {
     for (const [key, slot] of this.owned(owner)) {
-      if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot)
+      if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot, true)
     }
   }
 
-  async postNotice(key: string, slot: ConflictSlot): Promise<void> {
+  async postNotice(key: string, slot: ConflictSlot, replay = false): Promise<void> {
     const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
     if (!current()) return
     const workerView = this.room.workerViewOf(slot.other)
     if (slot.kind === 'edit-in-claim' && workerView?.lead === slot.owner && workerView.status !== 'running') return
+    const episode = slot.kind === 'edit-in-claim' && slot.possibleEpisode !== undefined && (slot.settled === 'possible' || slot.clearedFrom === 'possible')
+      ? slot.possibleEpisode : undefined
+    if (episode !== undefined) {
+      const open = this.claimGroup(key, slot).filter(([, s]) => s.settled === 'possible' && s.possibleEpisode === episode)
+      // One notice per episode: its opener posts it (on a replay, the first open slot), and the last to clear posts "cleared".
+      if (slot.settled === 'possible' && (replay ? open.some(([k]) => k < key) : slot.possibleJoined)) return
+      if (slot.settled === 'clean' && open.length) return
+    }
     const workerBurst = slot.kind === 'edit-in-claim' && slot.status === 'conflict' && workerView?.lead === slot.owner
       ? Math.min(...this.owned(slot.owner).filter(([, other]) => other.kind === 'edit-in-claim' && other.other === slot.other && other.path === slot.path && other.status === 'conflict').map(([, other]) => other.burstAt ?? other.checkedAt))
       : undefined
-    const id = slot.settled === 'clean' && slot.kind !== 'contract'
+    const id = episode !== undefined
+      ? `cf:${hash([slot.owner, slot.other, slot.path, 'possible', episode].join('\0'))}:${slot.settled === 'clean' ? 'clean' : 'possible'}`
+      : slot.settled === 'clean' && slot.kind !== 'contract'
       ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
       : workerBurst !== undefined
         ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join('\0'))}:worker`
@@ -137,14 +174,19 @@ export class ConflictSlots {
     const status = slot.settled
     const ownWorker = workerView?.lead === slot.owner
     const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? 'interrupt' : 'notify'
+    // Name the claimed lines: an exact conflict is about one claim, a possible one about all of the holder's claims here.
+    const held = this.room.openClaims().filter(c => c.by === slot.other && c.path === slot.path && !c.path.endsWith('/'))
+    const claimed = (claims: Claim[]) => `${slot.other}'s claim${claims.length > 1 ? 's' : ''}${claims.length
+      ? ` at line${claims.length > 1 || claims[0]!.from !== claims[0]!.to ? 's' : ''} ${claims.sort((a, b) => a.from - b.from).map(c => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(', ')}` : ''}`
+    const ownClaim = () => claimed(held.filter(c => c.id === slot.subject))
     const text = status === 'possible'
-      ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${slot.other}'s claim; line mapping is approximate`
+      ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate`
         : slot.kind === 'claims' ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate`
           : `${slot.why ?? slot.other} changed ${slot.path} too, outside their declared area; Room cannot check this merge`
       : status === 'clean' ? `the ${slot.clearedFrom === 'possible' ? 'possible conflict' : 'conflict'} with ${slot.other} cleared`
       : slot.kind === 'edit-in-claim' ? slot.earlierSha !== undefined
-        ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps ${slot.other}'s new claim`
-        : `you edited ${slot.path} inside ${slot.other}'s claim${slot.why ? ` (${slot.why})` : ''}`
+        ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}`
+        : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ''}`
       : slot.kind === 'claims' ? `concurrent overlapping claims in ${slot.path} with ${slot.other}`
       : slot.kind === 'contract' ? `${slot.other} changed ${slot.subject ?? 'a symbol'} in ${slot.path}${slot.why ? ` (${slot.why})` : ''}`
       : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`

@@ -17,6 +17,7 @@ import { offerTeamSharingDisclosure } from '../src/tools/join.js'
 import type { SessionBinding } from '../src/binding.js'
 import type { Session } from '../src/session.js'
 import { memorySession } from './fixtures/session.js'
+import { presentPeer } from './fixtures/visible.js'
 
 const me = { name: 'Pat', kind: 'agent' as const }
 const quinn = { name: 'Quinn', kind: 'agent' as const }
@@ -156,6 +157,7 @@ it('M6: a notice receipt without the marker (a crash between them) is recovered,
 it('F-M2: 40 owed messages of 500 characters: the hook and the reply each take a bounded share, the rest stays owed', async () => {
   const dir = tmp('room-budget-')
   const s = memorySession(me, dir)
+  presentPeer(s.room, s.awareness, quinn.name) // the hook delivers only with company
   for (let i = 0; i < 40; i++) hubAppend<NoteMsg>(s.room, quinn, { type: 'note', to: me.name, text: `${String(i).padStart(2, '0')} ${'x'.repeat(496)}` })
   const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
   const hook = tools.hookSelect()

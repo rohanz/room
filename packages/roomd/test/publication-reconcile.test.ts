@@ -230,7 +230,7 @@ it('rejects a first validated path changed at a later validation boundary', asyn
     inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 1024, 1024 * 1024), head: base },
     batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
     log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
-    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
+    bumpLastActive() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
   const publisher = new Publisher(host)
   const paths = Array.from({ length: 96 }, (_, i) => `gate-${String(i).padStart(3, '0')}.txt`)
   for (const p of paths) fs.writeFileSync(path.join(checkout, p), 'before\n')
@@ -288,7 +288,7 @@ it('republishes, narrows, and deletes 2050 shared files without retaining conten
     inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 512 * 1024, 8 * 1024 * 1024), head: base },
     batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
     log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
-    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
+    bumpLastActive() {}, reconcileGitChanges: async () => {}, carried: () => undefined }
   const publisher = new Publisher(host)
   const paths = Array.from({ length: 2050 }, (_, i) => `many/f-${String(i).padStart(4, '0')}.txt`)
   fs.mkdirSync(path.join(checkout, 'many'))
@@ -334,7 +334,7 @@ it('leaves an explicit base gap for an oversized carried blob replaced by six by
     inputs: { policy: policyFromLevel('full'), rules: rulesFromText('', 512 * 1024, 1024 * 1024), head: base },
     batch: { published() {} }, skips: { size: new Set(), budget: new Set(), ignore: new Set() },
     log() {}, abs: (p: string) => path.join(checkout, p), isSafeRoomPath: () => true,
-    bumpLastActive() {}, noteSkip() {}, reconcileGitChanges: async () => {}, carried: () => ({
+    bumpLastActive() {}, reconcileGitChanges: async () => {}, carried: () => ({
       worker: 'Alice', sha: base, dir: checkout, carriedCommit: false, untracked: new Map([['carried.txt', { sha: blob }]]),
     }) }
   const calls: string[][] = []

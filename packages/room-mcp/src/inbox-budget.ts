@@ -20,10 +20,10 @@ export interface Chosen { s: Session; m: Msg }
 /**
  * Reserve into `batch`, in inbox order, what `sources` owe while `cost` (the rendered size) fits `budget`,
  * stopping at the first item that does not. `atLeastOne` takes the first item whatever its size (a tool
- * reply has room for it; a hook does not). `more` counts what stays owed.
+ * reply has room for it; a hook does not). `more` counts what stays owed among what `filter` accepts.
  */
-export function selectWithin(ledger: Ledger, sources: readonly Session[], batch: Batch, budget: number, cost: (c: Chosen) => number, atLeastOne = false): { chosen: Chosen[]; more: number } {
-  const all: Chosen[] = sources.flatMap(s => ledger.available(s, batch).map(m => ({ s, m })))
+export function selectWithin(ledger: Ledger, sources: readonly Session[], batch: Batch, budget: number, cost: (c: Chosen) => number, atLeastOne = false, filter?: (s: Session) => (m: Msg) => boolean): { chosen: Chosen[]; more: number } {
+  const all: Chosen[] = sources.flatMap(s => ledger.available(s, batch, filter?.(s)).map(m => ({ s, m })))
   all.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || a.m.at - b.m.at)
   const chosen: Chosen[] = []
   let used = 0

@@ -14,7 +14,7 @@ import { createTools } from '../src/tools.js'
 import { startArbitration } from '../src/arbitration.js'
 import type { SessionBinding } from '../src/binding.js'
 import { memorySession } from './fixtures/session.js'
-import { visiblePeer } from './fixtures/visible.js'
+import { presentPeer, visiblePeer } from './fixtures/visible.js'
 
 it('counts a teammate with a different machine checkout id, while deduping the same physical checkout', () => {
   const own = new Y.Doc(), foreign = new Y.Doc(), remote = new Y.Doc()
@@ -85,6 +85,7 @@ describe('two sessions in one worktree under two names (ledger test 12)', () => 
     const bea = await mcp('session-b', { name: 'Bea', kind: 'agent' }, room)
     try {
       const cy = { name: 'Cy', kind: 'agent' as const }
+      for (const s of [ada.s, bea.s]) presentPeer(room, s.awareness, cy.name) // hooks deliver only with company
       const toAda = hubAppend<NoteMsg>(room, cy, { type: 'note', to: 'Ada', text: 'for Ada' })
       const toBea = hubAppend<NoteMsg>(room, cy, { type: 'note', to: 'Bea', text: 'for Bea' })
       await new Promise(r => setTimeout(r, 250))

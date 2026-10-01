@@ -29,11 +29,16 @@ import { postWorkerMessage } from '../post.js'
 import { watcherExclusionWarning } from '../watcher-exclusions.js'
 import { currentToolTiming } from '../timing.js'
 
+/** Repo paths a brief names that exist in the lead clone but not in the worker's worktree. */
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
   const paths = new Set<string>()
-  for (const match of task.matchAll(/(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
-    const rel = match[0].replace(/^\.\//, '')
+  // A path that continues another (`/abs/x`, `~/x`, `a.b/x`, a URL) is not a repo-relative reference.
+  for (const match of task.matchAll(/(?<![\w.~/:@-])(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
+    // A sentence's full stop is not part of the path it ends with.
+    const rel = match[0].replace(/^\.\//, '').replace(/\.+$/, '')
     if (rel.split('/').some(part => part === '..' || part === '.')) continue
+    // Room's own directory (worker worktrees, logs) and Git's are never carried into a worktree.
+    if (/^\.(?:room|git)(?:\/|$)/.test(rel)) continue
     const source = path.join(leadDir, rel), target = path.join(workerDir, rel)
     if (fs.existsSync(source) && !fs.existsSync(target)) paths.add(rel)
   }

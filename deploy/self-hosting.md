@@ -17,7 +17,7 @@ git clone https://github.com/rohanz/room.git && cd room
 npm ci && npm run build -w @room/web          # the browser view baked into the image
 cp deploy/.env.example deploy/.env             # fill in PUBLIC_URL and a login provider
 docker compose -f deploy/docker-compose.yml up -d
-curl https://room.example.com/health           # {"ok":true}
+curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1}
 curl https://room.example.com/auth/config      # {"github":"device","providers":["github","oidc"],...}
 ```
 
@@ -62,6 +62,9 @@ server is open (fine on a laptop, not on the internet).
 | `ROOM_SHARE_MAX` | Ceiling on what clients may share into a room: `intent`, `declared` or `full`. | `full` |
 | `ROOM_IDENTITY_GUARD` | Member identity-guard mode. Only literal `enforce` blocks objected document packets; every other value observes them, rate-limits logs and `identity_violation` audits to once per login per minute, and applies the packet unchanged. `enforce` is experimental and can desynchronise a client's causal stream. Read-only viewer document and awareness writes remain blocked in either mode. | observe-only |
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
+| `ROOM_LEGACY_DAYS` | Days after a repository's 0.17 migration before its archived 0.16 branch rooms are removed. | `30` |
+| `ROOM_DOC_MAX_MB` | Live room document cap: once a room is over it, writers are closed with 4413 and reads continue. | `64` |
+| `ROOM_MAX_MESSAGE_MB` | Largest websocket message accepted. | `16` |
 | `ROOM_STATIC` | Directory with the built browser view. | `./public` |
 
 Which rooms a login can enter:

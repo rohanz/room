@@ -38,7 +38,7 @@ export class Batch {
 }
 
 /** `frontier`: the highest hub seq the session had observed at its first bind in the room (ledger "Cursor"). */
-interface Cursor { participant: string; frontier: number; routed: Set<string> }
+interface Cursor { participant: string; frontier: number; routed: Set<string>; addressedFrom?: number }
 type CursorFile = Record<string, { participant: string; frontier: number; routed: string[] }>
 
 export interface LedgerOptions {
@@ -247,6 +247,9 @@ export class Ledger {
     s.room.pruneSeen(s.me.name, () => this.fenced(s))
   }
 
+  /** The seq a worker's addressed messages start after (its first run's spawn): earlier ones went to a previous worker of that name. */
+  spawnFrontier(s: Session, workerId: string, name = s.me.name): number | undefined { return spawnFrontier(s, workerId, name) }
+
   // ---- cursor (ledger "Cursor") -------------------------------------------------------------
 
   /** The cursor, with this call's routing decisions recorded: a broadcast `messageForMe` rejects goes to `routed` (MF2). */
@@ -271,9 +274,11 @@ export class Ledger {
     if (cursor?.participant === s.me.name) return cursor
     const stored = this.readCursors()[s.roomName]
     const kept = stored?.participant === s.me.name && Number.isSafeInteger(stored.frontier)
+    const spawn = ownSpawnFrontier(s)
     cursor = kept
       ? { participant: s.me.name, frontier: stored.frontier, routed: new Set(stored.routed) }
       : { participant: s.me.name, frontier: ownLaunchFrontier(s) ?? highestSeq(s.room), routed: new Set() }
+    if (spawn !== undefined) cursor.addressedFrom = spawn
     this.cursors.set(s, cursor)
     if (!kept) this.persistCursor(s, cursor)
     return cursor
@@ -327,5 +332,24 @@ function ownLaunchFrontier(s: Session): number | undefined {
   try {
     const record = registrySnapshotForDir(s.dir).read(id)
     return record?.name === s.me.name ? record.runs.find(r => r.n === run)?.busFrontier : undefined
+  } catch { return undefined }
+}
+
+/**
+ * A spawned worker's first run's `busFrontier`: addressed messages at or below it went to an earlier worker under
+ * the same name (a reused tag). A resumed run keeps this anchor, so what was sent while it was stopped stays owed.
+ */
+function ownSpawnFrontier(s: Session): number | undefined {
+  const id = process.env.ROOM_WORKER_ID
+  return id ? spawnFrontier(s, id, s.me.name) : undefined
+}
+
+function spawnFrontier(s: Session, id: string, name: string): number | undefined {
+  try {
+    const record = registrySnapshotForDir(s.dir).read(id)
+    if (record?.name !== name || record.room !== s.roomName) return undefined
+    // An imported 0.16 worker's record has no spawn seq (0): its earlier mail is its own.
+    const spawn = record.runs.find(r => r.n === 1)?.busFrontier ?? record.runs[0]?.busFrontier
+    return spawn ? spawn : undefined
   } catch { return undefined }
 }

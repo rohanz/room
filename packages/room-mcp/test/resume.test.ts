@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, highestSeq } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { Rooms } from '../src/registry.js'
 import { decideResume, type WorkerRealState } from '../src/worker-state.js'
@@ -133,6 +133,20 @@ describe('resumed worker boundaries', () => {
     expect(t.room.seen(record.name).has(old.id)).toBe(false)
     expect(ledger.candidates(worker).map(m => m.id)).toContain(old.id)
   })
+  it("a resume prompt carries what was sent while the worker was stopped, never an earlier same-name worker's mail", async () => {
+    const t = setup()
+    const stale = hubAppend(t.room, { name: 'rohanz', kind: 'agent' }, { type: 'answer', to: 'rohanz+reused', inReplyTo: 'q-old', text: 'STALE_FOR_THE_EARLIER_WORKER' })
+    await t.seed('reused')
+    const registry = await registryForDir(t.dir), seeded = (await t.record('reused'))!
+    await registry.update(seeded.id, old => ({ ...old, runs: old.runs.map(r => r.n === 1 ? { ...r, busFrontier: highestSeq(t.room) } : r), seq: old.seq + 1 }))
+    const whileStopped = hubAppend(t.room, { name: 'teammate', kind: 'agent' }, { type: 'question', to: 'rohanz+reused', text: 'SENT_WHILE_STOPPED' })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'reused', text: 'NEW_FOLLOW_UP' })).toContain('resumed reused')
+    const run = (await t.record('reused'))!.runs.at(-1)!
+    expect(run.promptMsgIds).toContain(whileStopped.id)
+    expect(run.promptMsgIds).not.toContain(stale.id)
+    expect(t.specs[0].args.join(' ')).not.toContain('STALE_FOR_THE_EARLIER_WORKER')
+  })
+
   it('keeps a posted follow-up owed until the resumed turn is accepted', async () => {
     const t = setup()
     await t.seed('owed')

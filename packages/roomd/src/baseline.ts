@@ -223,9 +223,37 @@ export function carriedUnchanged(baseline: Baseline, path: string): boolean {
   } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return false; throw e }
 }
 
-/** The carried untracked paths the worker left as spawn carried them (carriedUnchanged). */
+/**
+ * The carried untracked paths the worker left as spawn carried them (carriedUnchanged), with one
+ * `hash-object` for every regular file: a lead's generated sources are hundreds of carried files.
+ */
 export function carriedUnchangedPaths(baseline: Baseline | undefined): Set<string> {
-  return new Set([...baseline?.untracked.keys() ?? []].filter(path => carriedUnchanged(baseline!, path)))
+  const unchanged = new Set<string>()
+  if (!baseline?.untracked.size) return unchanged
+  let root: string
+  try { root = fs.realpathSync(baseline.dir) } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return unchanged; throw e }
+  const files: string[] = []
+  for (const [path, carried] of baseline.untracked) {
+    if (!validRepoPath(path, CARRIED_PATH)) continue
+    let stat: fs.Stats
+    try {
+      if (!containedRepoPath(root, nodePath.join(root, path), { leaf: 'replace-link' }).ok) continue
+      stat = fs.lstatSync(nodePath.join(root, path))
+    } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) continue; throw e }
+    if (stat.isSymbolicLink()) { if (carriedUnchanged(baseline, path)) unchanged.add(path); continue }
+    if (!stat.isFile() || (carried.mode !== undefined && (stat.mode & 0o777) !== carried.mode)) continue
+    files.push(path)
+  }
+  let hashes: string[]
+  // A file removed after its stat fails the batch; the per-file check then reports the rest exactly.
+  try { hashes = carriedContentHashes(root, files) }
+  catch (e) {
+    if (/timed out/.test(String(e))) throw e
+    for (const path of files) if (carriedUnchanged(baseline, path)) unchanged.add(path)
+    return unchanged
+  }
+  files.forEach((path, i) => { if (hashes[i] === baseline.untracked.get(path)!.sha) unchanged.add(path) })
+  return unchanged
 }
 
 /** Paths changed by a worker from its own recorded base, excluding unchanged carried inputs. */
@@ -235,5 +263,6 @@ export async function workerChangedPaths(worker: BaselineSource): Promise<string
   const exclusions = ['.room', ...(worker.link ?? [])].map(p => `:(exclude,literal)${p}`)
   const tracked = (await boundedGit(worker.dir, ['diff', '--name-only', '-z', base, '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
   const untracked = (await boundedGit(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
-  return [...new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter(p => !baseline || !carriedUnchanged(baseline, p)).sort()
+  const unchanged = carriedUnchangedPaths(baseline)
+  return [...new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter(p => !unchanged.has(p)).sort()
 }

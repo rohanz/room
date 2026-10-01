@@ -72,13 +72,17 @@ packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans)
 packages/server/         y-websocket server: GitHub device login + OIDC (auth.ts), admission (admit.ts),
                          open/close/list repos, GitHub PR proxy, read-only view keys, doc/message caps,
                          audit, LevelDB docs + File/Pg store (store.ts)
-packages/relay/          loopback relay for local rooms: discovery file + key, /health, serves the web view
-packages/roomd/          push-only daemon: clone -> my overlay; base tracking; share levels; .roomignore,
-                         default ignores + size budget; never writes disk
+packages/hub-core/       the hub shared by server and relay: name leases, bus order, trim, expiry (hub.ts),
+                         hub protocol frames (protocol.ts), the live document size cap (doc-cap.ts)
+packages/relay/          loopback relay for local rooms: discovery file + key, /health, encrypted websockets;
+                         serves no page (the plugin ships a file viewer, plugins/room/web/viewer.html)
+packages/roomd/          push-only daemon run inside a session: clone -> my overlay; base tracking; share
+                         levels; .roomignore, default ignores + size budget; never writes disk
 packages/room-mcp/       src/tools/* (one module per concern: join, scope, claims, messaging, files,
                          workers, share, prs; index.ts assembles DEFS), registry.ts (a process holds several
-                         rooms), config.ts (arg > env > remembered > default), session.ts, workers.ts,
-                         bridge.ts (lead in two rooms), conflicts.ts, hooks-bridge.ts, prs.ts, graph-index.ts;
+                         rooms), config.ts (arg > env > remembered > default), session.ts,
+                         bridge.ts (lead in two rooms), conflict-set.ts, hooks-bridge.ts, prs.ts, graph-index.ts;
+                         worker-*.ts (registry, launch, deps: node_modules links, shell-env: ROOM_* scrub, activity);
                          src/parse/ (engine.ts, spec.ts, index.ts, languages/*) is the tree-sitter indexer
 packages/agent/          roomagent: on-duty Codex thread fed by chat + interrupts/addressed notifies
 packages/web/            read-only room view: participants, overlays with claim gutters, feed, network
@@ -88,6 +92,8 @@ examples/demo-repo/      tiny Python service used in the demo (uv)
 scripts/demo.sh          server + shared origin + two clones on one machine
 scripts/say.mts          post a message into a person's agent chat and watch the room
 scripts/build-plugin.mjs esbuild bundle of room-mcp into plugins/room/server
+scripts/build-server.mjs esbuild bundle of the server for the image (`npm run build:server`)
+scripts/room-inventory.mts read-only LevelDB pre-flight for the 0.17 cutover (docs/upgrading.md)
 ```
 
 ## Host features change weekly: read the current docs first
@@ -116,6 +122,9 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
 - The plugin manifests and marketplace entry carry the release version; `package.json` versions at 0.1.0 are private workspace package versions, not the plugin release version. The MCP handshake reads the Claude plugin manifest version.
 - `env -u ROOM_TAG -u ROOM_OWNER -u ROOM_SERVER npm test` runs every package's vitest suite
   (some suites listen on loopback; inherited ROOM_* variables change identity-sensitive tests).
+  Every package has a `vitest.config.ts` that reuses the root `vitest.shared.ts`, so a run from
+  `packages/<pkg>` gets the same setup (`isolateTestEnv` clears inherited `ROOM_*`, `CLAUDE_*`, `CODEX_*`,
+  `OIDC_*`, git location, worker launch and server variables) as a run from the root.
   A test worker whose event loop stands still for 120 s, or whose file runs past 15 minutes, is reported by
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
@@ -126,7 +135,8 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   only the server bundle (for sandboxes that cannot build the web view); never commit from it.
 - Tool descriptions are how a human's plain words reach the right tool. Keep the routing words
   ("another agent", "in parallel", "in the background", "codex/claude to do part of it") when
-  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, and rerun the
+  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, regenerate the eval
+  mocks (`evals/mocks/room/_tools.json`) with `npm run eval:mocks` (`eval-mocks.test.ts` fails until you do), and rerun the
   `claude plugin eval` suite in `evals/` after routing changes: a trim once sent "get codex to do half" to
   a built-in subagent. From the repo root, run `claude plugin eval . --scaffold --allow-tools Edit Write`
   (Claude Code 2.1.269+; [eval docs](https://code.claude.com/docs/en/plugin-evals)). Add
@@ -141,7 +151,8 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   leads room batches, reviews, integrates and deploys. Codex's sandbox cannot write a git dir
   outside its cwd and cannot listen on sockets: give it a standalone clone (`git clone … /tmp/room-x`,
   `npm install`), expect the socket suites to fail there, and run the full suite yourself before
-  merging. Room batches: one lead (`claude -p` with the room plugin, no ROOM_SERVER) spawns
+  merging. A Room worker's worktree needs no install: its `node_modules` links to the lead's packages,
+  with `@room/*` pointing at the worktree's own sources (see docs/reference.md, "Workers and previews"). Room batches: one lead (`claude -p` with the room plugin, no ROOM_SERVER) spawns
   Codex workers into worktrees, commits their worktrees itself, previews and octopus-merges.
   The [2026-09-24 Codex host survey](docs/host-survey-2026-09-24-codex.md) reports that
   Codex 0.156.1 (2026-09-23) lists GPT-6 Sol and GPT-6 Luna (the 2026-09-24 batch ran

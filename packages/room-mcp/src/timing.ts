@@ -25,6 +25,8 @@ export class ToolTiming {
   private readonly phases = new Map<string, number>()
   private gitCalls = 0
   private gitMs = 0
+  private mergeGitCalls = 0
+  private mergeGitMs = 0
   private worktreeAddMs = 0
   private readonly activePhases = new Set<string>()
   private queueStarted?: number
@@ -67,7 +69,9 @@ export class ToolTiming {
     finally { end() }
   }
 
+  /** Git processes count toward spawn's prepare phase or, failing that, preview's merge phase; others are not counted. */
   recordGit(args: readonly string[], elapsed: number): void {
+    if (!this.activePhases.has('prepare') && this.activePhases.has('merge')) { this.mergeGitCalls++; this.mergeGitMs += elapsed; return }
     this.gitCalls++
     this.gitMs += elapsed
     if (args.includes('worktree') && args.includes('add')) this.worktreeAddMs += elapsed
@@ -95,6 +99,7 @@ export class ToolTiming {
         if (this.worktreeAddMs) piece += `, worktree add ${ms(this.worktreeAddMs)}`
         piece += ')'
       }
+      if (name === 'merge' && previewPhases && this.mergeGitCalls) piece += ` (git ${this.mergeGitCalls} calls ${ms(this.mergeGitMs)})`
       pieces.push(piece)
       if (name === 'check' && previewPhases && this.overlappingPreviewChecks !== undefined) pieces.push(`overlapped ${this.overlappingPreviewChecks} other preview check(s)`)
     }
@@ -178,11 +183,11 @@ export async function previewPhase<T>(name: 'merge' | 'setup' | 'check' | 'colle
   return timing?.name === 'room_preview_merge' ? timing.phase(name, work) : work()
 }
 
-/** Install once in the MCP process; roomd observes Git regardless of which module launched it. */
+/** Install once in the MCP process; roomd observes Git regardless of which module launched it (spawn's prepare, preview's merge). */
 export function registerPrepareGitTiming(): void {
   setGitObserver((args, elapsed) => {
     const timing = currentToolTiming()
-    if (timing?.isPhaseActive('prepare')) timing.recordGit(args, elapsed)
+    if (timing?.isPhaseActive('prepare') || timing?.isPhaseActive('merge')) timing.recordGit(args, elapsed)
   })
 }
 

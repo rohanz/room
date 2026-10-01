@@ -7,6 +7,8 @@ import type { PostResult } from '../post.js'
 import { isPrName } from '../prs.js'
 import { knownNames, resolveDisplayedName } from './names.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { registryForDir } from '../worker-registry.js'
+import { refreshRefusal, refreshWorkerBase, refreshedCommits, type RefreshOutcome } from '../worker-refresh.js'
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
@@ -29,12 +31,13 @@ export const defs: ToolDef[] = [
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
       to: str('recipient; omit to broadcast'),
-      text: str('message text / change summary; or use message'),
+      text: str('text or change summary'),
       message: str('alias for text'),
-      paths: strs('paths touched (changed)'),
+      paths: strs('changed paths'),
       symbols: strs('changed symbols'),
-      inReplyTo: str('question id (answer) or addressed note id (note reply)'),
-      priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency override' },
+      inReplyTo: str('question or addressed note id'),
+      priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency' },
+      refresh: { type: 'boolean', description: 'rebase stopped worker on your HEAD' },
     }, required: ['type'] } },
   { name: 'room_wait', annotations: RO, description: 'Use when waiting for an answer, claim release, worker completion, or interrupt. On timeout, wait again if still blocked.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 100000') } } }
@@ -173,6 +176,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (inferredQuestionId) notes.push(`answered ${inferredQuestionId}`)
       const addressedWorker = to ? myWorkers(s).find(w => w.name === to) : undefined
       const resume = !!addressedWorker && addressedWorker.lead === s.me.name && addressedWorker.status !== 'running'
+      if (a.refresh !== undefined && typeof a.refresh !== 'boolean') return 'error: refresh must be a boolean'
+      const refresh = a.refresh === true
+      if (refresh) {
+        if (!addressedWorker || addressedWorker.lead !== s.me.name) return 'error: refresh=true rebases one of your own workers: name it in to; nothing sent'
+        // A rebase under a working agent can overwrite the edit it is making; its daemon also pins its base at start.
+        if (!resume) return `error: ${addressedWorker.tag} is running, so nothing was rebased and nothing sent. Room rebases only a stopped worker: ask it to call room_done (priority=interrupt), wait for its done, then send again with refresh=true; or respawn it to start from your HEAD.`
+        const registry = await registryForDir(s.dir)
+        const record = registry.read(addressedWorker.id)
+        const refused = record ? refreshRefusal(s.dir, record, registry.checkoutUsers(record).map(user => user.record.tag)) : 'it has no local worker record'
+        if (refused) return `error: cannot refresh ${addressedWorker.tag}: ${refused}; nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
+      }
       const paths = sendType === 'changed' && Array.isArray(a.paths) ? a.paths.filter((x): x is string => typeof x === 'string') : []
       const symbols = sendType === 'changed' && Array.isArray(a.symbols) ? a.symbols.filter((x): x is string => typeof x === 'string') : []
       const body: PostBody = sendType === 'changed' ? withPr({ type: 'changed', paths, summary: text, ...(symbols.length ? { symbols } : {}), ...(to ? { to } : {}) }) as PostBody<ChangedMsg>
@@ -181,13 +195,40 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         : withPr({ type: 'note', text, ...(to ? { to } : {}), ...(repliedNote ? { inReplyTo: repliedNote.id } : {}) }) as PostBody<NoteMsg>
       // A follow-up to a finished worker is posted only once the worker can resume, and it resumes only once posted.
       let posted: PostResult | undefined
-      const post = async () => { posted = await s.post(s.me, body); return posted.ok ? undefined : posted.text }
+      /** Told to a refreshed worker with the follow-up: its base moved, and what came in. */
+      let baseNote: string | undefined
+      const sent = (): PostBody => {
+        if (!baseNote) return body
+        const field = body.type === 'changed' ? 'summary' : 'text', fields = body as unknown as Record<string, string>
+        return { ...fields, [field]: `${fields[field]}\n\n${baseNote}` } as unknown as PostBody
+      }
+      const post = async () => { posted = await s.post(s.me, sent()); return posted.ok ? undefined : posted.text }
       let resumed = false
       if (resume) {
         const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, async () => {
+          // The previous run has exited and this call holds the worker's operation lease.
+          if (refresh) {
+            const tag = addressedWorker!.tag
+            const registry = await registryForDir(s.dir)
+            const record = registry.read(addressedWorker!.id)
+            if (!record) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`
+            let outcome: RefreshOutcome
+            try { outcome = await refreshWorkerBase(s.dir, record) }
+            catch (error) { return `error: could not refresh ${tag}: ${error instanceof Error ? error.message : String(error)}; nothing sent. Check ${record.dir} with git status before collecting.` }
+            if (outcome.kind === 'refused') return `error: did not refresh ${tag}: ${outcome.reason}; nothing changed and nothing sent. Send without refresh to have it resolve this, or respawn it to start from your HEAD.`
+            if (outcome.kind === 'current') notes.push(`${tag} already has your HEAD ${outcome.head.slice(0, 10)}; nothing to rebase`)
+            else {
+              const moved = outcome
+              try { await registry.update(record.id, old => ({ ...old, base: moved.base, carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, seq: old.seq + 1 })) }
+              catch (error) { return `error: rebased ${tag} onto your HEAD but could not record its new base (${error instanceof Error ? error.message : String(error)}); nothing sent. A preview or collect may count your commits as its changes.` }
+              const came = refreshedCommits(moved.commits)
+              notes.push(`rebased ${tag} onto your HEAD ${moved.to.slice(0, 10)}; ${came}${moved.carryDropped ? '; the work carried at spawn is now in your history' : ''}`)
+              baseNote = `[Room] your base moved: your lead rebased your branch onto their HEAD ${moved.to.slice(0, 10)} before this message; ${came}. Your uncommitted edits are still uncommitted on top.`
+            }
+          }
           const refused = await post()
           if (refused) return refused
-          const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set() }, {})
+          const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set(), addressedFrom: state.ledger.spawnFrontier(s, addressedWorker!.id, to!) }, {})
             .filter(m => m.to === to)
           // Only reserve IDs whose complete message is in this one resume turn. The new
           // follow-up always leads; oversized backlog stays owed for ordinary delivery.

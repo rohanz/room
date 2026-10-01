@@ -509,29 +509,39 @@ export function lineAnnotation(input: LineDetailInput): string {
   return detail.ownership
 }
 
+/** A bus message the room's hub never sequenced, in a room a hub serves: history a migration copied from
+ *  Room 0.16, whose relay and server assigned no `seq`. It is the room's past, never its recent activity. */
+export function importedHistory(room: RoomDoc, m: { seq?: number }): boolean {
+  return typeof m.seq !== 'number' && room.metaMap.get('hubIncarnation') !== undefined
+}
+
 /** A migration `unresolved` entry, keyed `<old room>\0<old name>`. */
 export interface UnresolvedEntry { placeholder: string; claims?: readonly unknown[]; scope?: unknown }
 
 /** One plain line per ambiguous migrated name: what is owed to it and who it could be. `messagesTo`
- *  counts mail addressed to each placeholder. At most `maxNames` lines and three candidates per line. */
+ *  counts mail addressed to each placeholder. At most `maxNames` lines and three candidates per line.
+ *  A name with nothing owed has no line (nobody needs to rejoin for it), and Room's own bot `room` never
+ *  has one: it cannot be asked to rejoin. */
 export function unresolvedLines(roomName: string, entries: Iterable<[string, UnresolvedEntry]>, messagesTo: ReadonlyMap<string, number>, maxNames = 5): string[] {
-  const groups = new Map<string, { candidates: string[]; messages: number; claims: number; scopes: number }>()
+  const all = new Map<string, { candidates: string[]; messages: number; claims: number; scopes: number }>()
   for (const [key, entry] of entries) {
     const split = key.indexOf('\0')
     const source = key.slice(0, split), person = key.slice(split + 1)
+    if (person === 'room') continue
     let where = source.startsWith('archive:') ? 'the old room' : source.startsWith(`${roomName}/`) ? source.slice(roomName.length + 1) : source
     try { where = decodeURIComponent(where) } catch { /* keep the stored spelling */ }
-    let group = groups.get(person)
-    if (!group) { group = { candidates: [], messages: 0, claims: 0, scopes: 0 }; groups.set(person, group) }
+    let group = all.get(person)
+    if (!group) { group = { candidates: [], messages: 0, claims: 0, scopes: 0 }; all.set(person, group) }
     group.candidates.push(`${person} on ${where}`)
     group.messages += messagesTo.get(entry.placeholder) ?? 0
     group.claims += Array.isArray(entry.claims) ? entry.claims.length : 0
     if (entry.scope) group.scopes++
   }
+  const groups = new Map([...all].filter(([, group]) => group.messages || group.claims || group.scopes))
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
   const out = [...groups.values()].slice(0, maxNames).map(group => {
     const owed = [group.messages ? plural(group.messages, 'message') : '', group.claims ? plural(group.claims, 'claim') : ''].filter(Boolean).join(' and ')
-      || (group.scopes ? 'a declared scope' : 'nothing owed')
+      || 'a declared scope'
     const names = group.candidates.slice(0, 3).join(' or ') + (group.candidates.length > 3 ? `, +${group.candidates.length - 3} more` : '')
     return `${owed} for an unresolved name (${names}): ask them to rejoin`
   })

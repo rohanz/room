@@ -195,7 +195,8 @@ export function createTools(ctx: ToolCtx): Tools {
       if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
       const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatMsg(m)}`
       const room = budget - notices.reduce((n, text) => n + text.length + 1, 0)
-      const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3) : { chosen: [], more: 0 }
+      // Silent while alone (solo.ts): what has no company stays for room_state and the next Room tool reply.
+      const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3, false, state.audible) : { chosen: [], more: 0 }
       const items: HookItem[] = chosen.map(c => ({ id: c.m.id, priority: c.m.priority, line: line(c) }))
       return { batch, items, notices, more }
     },

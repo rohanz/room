@@ -37,7 +37,7 @@ async function until(check: () => boolean, ms = 10_000): Promise<void> {
 it('does not digest gitignored untracked files as repository changes', async () => {
   const dir = repo({ '.gitignore': 'logs/\n', 'app.py': 'x = 1\n' })
   const logs: string[] = []
-  const daemon = await start(dir, line => logs.push(line), { skipLogMs: 300 })
+  const daemon = await start(dir, line => logs.push(line))
   try {
     fs.mkdirSync(path.join(dir, 'logs'))
     for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(dir, 'logs', `run-${i}.log`), `line ${i}\n`)
@@ -70,7 +70,7 @@ it.each(['full', 'declared'] as const)('shares a tracked lockfile but skips an u
   fs.writeFileSync(path.join(dir, 'uv.lock'), 'tracked change\n')
   fs.mkdirSync(path.join(dir, 'nested'))
   fs.writeFileSync(path.join(dir, 'nested', 'uv.lock'), 'generated\n')
-  const daemon = await start(dir, line => logs.push(line), { policy: policyFromLevel(share, ['uv.lock', 'nested/uv.lock']), skipLogMs: 20 })
+  const daemon = await start(dir, line => logs.push(line), { policy: policyFromLevel(share, ['uv.lock', 'nested/uv.lock']) })
   try {
     expect(manifestText(daemon.roomDoc, 'uv.lock', 'Test')).toBe('tracked change\n')
     expect(manifestText(daemon.roomDoc, 'nested/uv.lock', 'Test')).toBeUndefined()

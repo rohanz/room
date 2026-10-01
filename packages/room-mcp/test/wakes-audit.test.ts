@@ -19,6 +19,7 @@ import type { LocalWorker } from '../src/worker-status.js'
 import { createInbox, handlers } from '../src/tools/messaging.js'
 import { hubAppend } from '@room/shared/testing'
 import { hubSeam } from './fixtures/hub.js'
+import { presentPeer } from './fixtures/visible.js'
 
 /** The lead's worker `money`, as its registry lists it. */
 const money = (status: LocalWorker['status'], exitCode?: number): LocalWorker => ({ id: 'w_money', tag: 'money', name: 'lead+money', lead: 'lead',
@@ -281,10 +282,12 @@ describe('wakes (ledger test 11, MF8)', () => {
     const s = { room, awareness: new Awareness(room.doc), me: { name: 'Rohan', kind: 'agent' }, dir, roomUrl: 'ws://127.0.0.1:9/r', roomName: 'r', browserUrl: '',
       shareMax: 'full', shareRequested: 'full', ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true }, daemon: { touch() {}, async stop() {} } } as unknown as Session
     const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: sdir, commonDir: () => join(dir, '.git') }
+    // Kieran is here, as whoever posts is in a real room: a room is silent while alone (solo-quiet.test.ts).
+    const leave = presentPeer(room, s.awareness, kieran.name)
     const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, hookLeaseMs })
     tools.attachHooks(s)
     const arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => tools.hookSelect(), hookLeaseMs })
-    return { s, tools, async close() { await arbitration.close(); await tools.shutdown(); s.awareness.destroy() } }
+    return { s, tools, async close() { await arbitration.close(); await tools.shutdown(); leave(); s.awareness.destroy() } }
   }
   const recorder = () => {
     const texts: string[] = []

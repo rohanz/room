@@ -17,6 +17,7 @@ import { Ledger } from '../ledger.js'
 import { createRelevance } from '../relevance.js'
 import { decideShutdown, workerRealState } from '../worker-state.js'
 import { hasCompany } from '../company.js'
+import { SoloGate } from '../solo.js'
 import { trustedWorker, workerText, NotJoined, type HandlerState, type ToolCtx } from './context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
@@ -41,9 +42,11 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
    */
   const attach = (s: Session, role: Role, lead?: Session): Attachment => {
     ledger.bind(s)
+    const unwatch = solo.watch(s)
     wakes.attach(s)
     const hooks = role === 'primary' ? new HooksBridge(s, {
-      owedCount: () => ledger.candidates(s).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
+      // Only what may reach the hooks: while alone nothing does, and the hook stays quiet.
+      owedCount: () => ledger.candidates(s).filter(solo.audible(s)).length, noticeCount: () => ledger.noticeCount(), fenced: () => ledger.fenced(s),
       sessionDir: () => ctx.binding?.dir(), paused: () => s.rejected
         ? `[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`
         : s.lease?.paused() ?? s.hub.paused(), company: () => company(s), log,
@@ -61,7 +64,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     }
     return {
       stop() {
-        wakes.detach(s); hooks?.stop(); watcher?.stop()
+        wakes.detach(s); unwatch(); hooks?.stop(); watcher?.stop()
         if (hooks && primaryHooks === hooks) primaryHooks = null
         if (role === 'primary') prs.stopPrSync()
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
@@ -138,8 +141,11 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ledger, bound: () => ctx.binding?.bound(), sessionDir: () => ctx.binding?.dir(), log,
     send: ctx.wake ?? (async () => undefined), // without a host sender (tests), wakes are off
     codexTurn: ctx.wakeProbe,
-    ownWorkers: s => new Set(workers.myWorkers(s).map(w => w.name)),
+    ownWorkers: s => ownWorkers(s),
+    audible: s => solo.audible(s),
   })
+  const ownWorkers = (s: Session) => new Set(workers.myWorkers(s).map(w => w.name))
+  const solo = new SoloGate({ company: s => company(s), ownWorkers, onChange: () => { scheduleInboxWrite(); wakes.reconcile() } })
   const inboxServices = createInbox({ ledger, rooms, log, scheduleInboxWrite, mine, msgInMyAreas: areas.msgInMyAreas, others, upgraded, readVersion })
   const prs = createPrs({ ctx, presences, log, now })
   const share = createShare()
@@ -156,7 +162,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine, 
-    hasCompany: company, others, presences,
+    hasCompany: company, audible: s => solo.audible(s), others, presences,
     shareOf, setPresence, baseFor, baseText, readVersion, readText, lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],
     scheduleInboxWrite,

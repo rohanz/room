@@ -7,7 +7,7 @@ import type { Session } from '../session.js'
 import { gitMergeFile } from '../merge.js'
 import { workerOwnedPaths } from '../worker-git.js'
 import { decidePreview, workerRealState } from '../worker-state.js'
-import { carriedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
+import { carriedPaths, carriedUnchangedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
 import { carriedFrom, localWorkerBaseline, localWorkers } from '../worker-registry.js'
@@ -83,6 +83,49 @@ export function ignoredOutputNotes(byPerson: ReadonlyMap<string, readonly string
   }
   if (count) notes.unshift(`build output not previewed (gitignored, regenerable): ${formatCount(count, allFolders ? 'folder' : 'path')} (${[...kinds].sort().join(', ')}) ${owners.length === 1 ? `from ${owners[0]}` : `across ${owners.length} participants`}`)
   return notes
+}
+
+/**
+ * Worker scratch names: logs, plus the temp, swap and OS files among roomd's default ignores (defaultIgnoredPath).
+ * Its data files (.bin, .zip, .sqlite...) and folders stay previewed and collected: a worker's new test fixture is
+ * one. An untracked scratch file that no base holds and spawn did not carry is a worker's own output, not a change
+ * to merge; tracked or carried ones are merged like any file.
+ */
+export const isScratchName = (p: string) => {
+  const name = p.slice(p.lastIndexOf('/') + 1)
+  return /\.(?:log|tmp)$/i.test(name) || name === '.DS_Store' || name.endsWith('~') || /^(?:\.#.*|\.tmp(?:[.-].*)?|\..+\.(?:tmp(?:[.-].*)?|sw[opx]|part|atomic))$/i.test(name)
+}
+
+const SCRATCH_LISTED = 20
+const andList = (names: readonly string[]) => names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+const scratchKind = 'untracked logs or temp files, never committed'
+/** Path -> the participants whose worktree holds it as scratch, in path order. */
+function scratchByPath(byPerson: ReadonlyMap<string, ReadonlySet<string>>): Map<string, string[]> {
+  const byPath = new Map<string, string[]>()
+  for (const [person, paths] of byPerson) for (const p of paths) byPath.set(p, [...byPath.get(p) ?? [], person])
+  return new Map([...byPath].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+}
+const listScratch = (byPath: ReadonlyMap<string, readonly string[]>, describe: (people: readonly string[]) => string) => {
+  const items = [...byPath].slice(0, SCRATCH_LISTED).map(([p, people]) => `${p} (${describe(people)})`)
+  return items.join(', ') + (byPath.size > SCRATCH_LISTED ? ` and ${byPath.size - SCRATCH_LISTED} more` : '')
+}
+/** One low-key preview line for worker scratch; two workers' same-named logs are not a conflict. */
+function scratchPreviewNote(byPerson: ReadonlyMap<string, ReadonlySet<string>>): string | undefined {
+  const byPath = scratchByPath(byPerson)
+  if (!byPath.size) return undefined
+  return `worker scratch, not previewed (${scratchKind}): ${listScratch(byPath, people => people.length > 1 ? `${andList(people)} each wrote one` : people[0])}; collect does not bring it in`
+}
+
+/** Collect's line for worker scratch it did not bring in: where each worker's copy was saved, and anything not saved. */
+export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<string>>, tagOf: (person: string) => string,
+  outcome: { saved: ReadonlyMap<string, readonly string[]>; skipped: readonly { tag: string; path: string; reason: string }[] }): string | undefined {
+  const byPath = scratchByPath(byPerson)
+  if (!byPath.size) return undefined
+  const folders = [...outcome.saved.keys()].sort().map(tag => `.room/scratch/${tag}/`)
+  const unsaved = outcome.skipped.slice(0, SCRATCH_LISTED).map(({ tag, path: p, reason }) => `${p} (${tag}: ${reason})`).join(', ')
+    + (outcome.skipped.length > SCRATCH_LISTED ? ` and ${outcome.skipped.length - SCRATCH_LISTED} more` : '')
+  return `not collected: worker scratch (${scratchKind}): ${listScratch(byPath, people => people.map(tagOf).join(', '))}`
+    + (folders.length ? `; saved under ${andList(folders)}` : '') + (unsaved ? `; NOT saved, removed with the worktree: ${unsaved}` : '')
 }
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
@@ -211,6 +254,19 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const pairs = new Map<string, Baseline | undefined>()
   for (const { person, session } of participants) pairs.set(person, await pairBaseline(callerWorker, carriedFrom(session.dir, person)?.baseline, ancestor, descends))
   const deltaBases = new Map([...pairs].map(([person, pair]) => [person, pair?.sha ?? ancestor]))
+  // A carried file a worker left as spawn carried it is the lead's, not the worker's change: nothing of it is
+  // read or merged for that worker. One hash-object per worker decides it; a lead's generated sources can be
+  // hundreds of carried files, and reading each one's base cost two Git processes per file per read.
+  const untouched = new Map<string, ReadonlySet<string>>()
+  for (const { person, session } of participants) {
+    const pair = pairs.get(person), worker = previewWorker(session, person)
+    if (!pair?.untracked.size || !worker || pair.worker !== person) continue
+    const root = rootOf(worker.dir)
+    let own = false
+    try { own = fs.realpathSync(pair.dir) === root } catch { /* a vanished baseline checkout reads every file */ }
+    if (own) untouched.set(person, carriedUnchangedPaths({ ...pair, dir: root }))
+  }
+  const leftAlone = (person: string | undefined, p: string) => !!person && !!untouched.get(person)?.has(p)
   const pathSet = new Set<string>()
   /** Paths a participant may have changed; the rest only the caller changed. */
   const theirPaths = new Set<string>()
@@ -225,27 +281,37 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // the worker inherited at spawn. Compare those carried paths explicitly.
   for (const pair of pairs.values()) if (carriesWork(pair)) for (const p of await carriedPaths(pair)) {
     await new Promise<void>(resolve => setImmediate(resolve))
+    if (leftAlone(pair.worker, p)) continue
     pathSet.add(p)
     theirPaths.add(p)
   }
+  const carriedAnywhere = new Set([callerBaseline, ...pairs.values()].flatMap(pair => [...pair?.untracked.keys() ?? []]))
+  /** Participant -> its worker scratch: untracked logs and temp files never committed or carried, neither previewed nor collected. */
+  const scratchBy = new Map<string, ReadonlySet<string>>()
+  const workerScratch = async (untracked: readonly string[], changed: readonly string[]) => {
+    const tracked = new Set(changed)
+    const candidates = untracked.filter(p => isScratchName(p) && !tracked.has(p) && !carriedAnywhere.has(p))
+    const committed = new Set<string>()
+    if (candidates.length) for (const sha of new Set([ancestor, ...bases.map(item => item.base), ...deltaBases.values()])) {
+      for (const [p, blob] of await gitBlobInfoMany(caller.dir, sha, candidates)) if (blob) committed.add(p)
+    }
+    return new Set(candidates.filter(p => !committed.has(p)))
+  }
   for (const [index, item] of [{ person: caller.me.name, session: caller }, ...participants].entries()) {
-    const add = (p: string) => { pathSet.add(p); if (index > 0) theirPaths.add(p) }
     const worker = previewWorker(item.session, item.person)
     const dir = worker?.dir ?? (item.person === caller.me.name ? caller.dir : undefined)
     const ignored = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).split('\0').filter(Boolean) : []
     if (ignored.length) ignoredBy.set(item.person, [...ignoredBy.get(item.person) ?? [], ...ignored])
+    const changed = dir ? (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean) : []
+    const untracked = dir ? (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean) : []
+    const scratch = index > 0 && worker ? await workerScratch(untracked, changed) : new Set<string>()
+    if (scratch.size) scratchBy.set(item.person, scratch)
+    const add = (p: string) => { if (index > 0 && (leftAlone(item.person, p) || scratch.has(p))) return; pathSet.add(p); if (index > 0) theirPaths.add(p) }
     if (!options.diskOnly) for (const p of snapshots.get(item.person)?.snap?.entries.keys() ?? []) {
       await new Promise<void>(resolve => setImmediate(resolve))
       if (!ignored.some(i => p === i || (i.endsWith('/') && p.startsWith(i)))) add(p)
     }
-    if (dir) {
-      for (const p of (await gitWholeTree(dir, ['diff', '--name-only', '-z', ancestor, '--'])).split('\0').filter(Boolean)) {
-        await new Promise<void>(resolve => setImmediate(resolve)); add(p)
-      }
-      for (const p of (await gitWholeTree(dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean)) {
-        await new Promise<void>(resolve => setImmediate(resolve)); add(p)
-      }
-    }
+    for (const p of [...changed, ...untracked]) { await new Promise<void>(resolve => setImmediate(resolve)); add(p) }
     for (const base of new Set([baseFor(item.session, item.person), deltaBases.get(item.person) ?? callerBaseline?.sha ?? ancestor])) {
       if (base !== ancestor) for (const p of await committedPaths(item.person, ancestor, base)) {
         await new Promise<void>(resolve => setImmediate(resolve)); add(p)
@@ -253,6 +319,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     }
   }
   ignoredNotes.push(...ignoredOutputNotes(ignoredBy))
+  // A path only the caller changed keeps the caller's text when skipCallerOnly: only the caller's own side is checked,
+  // so a lead's hundreds of untracked files cost one check each, not one per participant and a remote lookup.
+  const callerOnlyPath = (p: string) => !!options.skipCallerOnly && !theirPaths.has(p)
   // ls-files represents nested repositories/submodules as directory entries.
   // They are not file text and cannot participate in a file merge preview.
   const safetySides = [{ session: caller, person: caller.me.name }, ...participants].map(({ session, person }) => {
@@ -265,7 +334,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   for (const p of pathSet) {
     await new Promise<void>(resolve => setImmediate(resolve))
     let excluded = false
-    for (const { person, root, linkedInputs } of safetySides) {
+    const callerOnlyHere = callerOnlyPath(p)
+    for (const { person, root, linkedInputs } of callerOnlyHere ? safetySides.slice(0, 1) : safetySides) {
       let reason = linkedInputs.includes(p) ? 'linked input' : undefined
       if (!reason && root) {
         try {
@@ -282,7 +352,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       }
     }
     if (excluded) { pathSet.delete(p); continue }
-    if (diskDirs.some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
+    if ((callerOnlyHere ? diskDirs.slice(0, 1) : diskDirs).some(dir => { try { return fs.lstatSync(path.join(dir, p)).isDirectory() } catch { return false } })) {
       pathSet.delete(p)
       ignoredNotes.push('NOT previewed (directory or nested repository): ' + p)
       gaps.push({ person: caller.me.name, path: p, why: 'directory or nested repository' })
@@ -290,6 +360,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
   if (!options.diskOnly) for (const p of [...pathSet]) {
     await new Promise<void>(resolve => setImmediate(resolve))
+    if (callerOnlyPath(p)) continue
     for (const { person, session } of participants) {
       if (previewWorker(session, person)) continue
       const version = await remoteVersion(session, person, p)
@@ -306,7 +377,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   let callerOnly = 0
   if (options.skipCallerOnly) for (const p of pathSet) {
     await new Promise<void>(resolve => setImmediate(resolve))
-    if (!theirPaths.has(p)) { pathSet.delete(p); callerOnly++ }
+    if (callerOnlyPath(p)) { pathSet.delete(p); callerOnly++ }
   }
   const baseTexts = new Map<string, string | null>()
   const historicalInfo = new Map<string, Promise<Map<string, GitBlobInfo | undefined>>>()
@@ -320,16 +391,25 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     }
     return baseTexts.get(key)!
   }
+  // Each carried base is read once per preview: the checks below and every merge step reuse it.
+  const carriedTexts = new Map<string, Promise<string>>()
   const baseAt = async (pair: Baseline | undefined, p: string) => {
     if (!pair) return textAt(ancestor, p)
     if (!pair.untracked.has(p)) return textAt(pair.sha, p)
-    const carried = await readBoundedCheckoutText(pair.dir, pair.untracked.get(p)!.sha, p, options.encoding)
-    if (carried === undefined) throw new MissingBaseBlob(p)
-    return carried
+    const sha = pair.untracked.get(p)!.sha, key = pair.dir + '\0' + sha + '\0' + p
+    let text = carriedTexts.get(key)
+    if (!text) {
+      text = readBoundedCheckoutText(pair.dir, sha, p, options.encoding).then(carried => {
+        if (carried === undefined) throw new MissingBaseBlob(p)
+        return carried
+      })
+      carriedTexts.set(key, text)
+    }
+    return text
   }
   for (const pair of new Set([callerBaseline, ...pairs.values()])) for (const p of pair?.untracked.keys() ?? []) {
     await new Promise<void>(resolve => setImmediate(resolve))
-    if (pathSet.has(p)) await baseAt(pair, p).catch(error => {
+    if (pathSet.has(p) && !leftAlone(pair?.worker, p)) await baseAt(pair, p).catch(error => {
       if (!(error instanceof MissingBaseBlob)) throw error
       pathSet.delete(p)
       ignoredNotes.push(error.message)
@@ -341,7 +421,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     try {
       await textAt(ancestor, p)
       await baseAt(callerBaseline, p)
-      for (const pair of pairs.values()) await baseAt(pair, p)
+      for (const [person, pair] of pairs) if (!leftAlone(person, p)) await baseAt(pair, p)
     } catch (error) {
       if (!(error instanceof HistoricalTextTooLarge)) throw error
       pathSet.delete(p)
@@ -372,6 +452,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   const fallbacks = new Set<string>()
 
   out.push(...coverageLines, ...ignoredNotes)
+  const scratchNote = scratchPreviewNote(scratchBy)
+  if (scratchNote) out.push(scratchNote)
   let hardCount = 0
   let conflictCount = 0
   const resolvedText = new Map<string, string>()
@@ -382,6 +464,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     for (const p of paths) {
       // A preview of many rewritten files must let other room calls run between files.
       await new Promise<void>(resolve => setImmediate(resolve))
+      if (leftAlone(person, p) || scratchBy.get(person)?.has(p)) continue
       const mine = merged.get(p)
       const b = await baseAt(pair, p)
       const theirsRaw = await previewText(session, p, person)
@@ -459,7 +542,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
         owners.set(p, [...prior, person])
         if (options.resolve === true) resolvedText.set(p, text)
       } else hardCount++
-      conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
+      // Two different files created at one path share no lines to place a conflict around.
+      if (unresolved && b === null) conflicts.push(`${p}: ${andList([...conflictsWith, person])} each created this new file (not in the base) with different contents — needs a human or a rewrite`)
+      else conflicts.push(`${p}${unresolved ? '' : ' (resolvable)'}\n${detail.join('\n')}`)
     }
     out.push(`step ${index + 1}: merge ${person} into ${[caller.me.name, ...people.slice(0, index)].join(' + ')}${pair && pair.sha !== ancestor ? ` (against ${pair.worker}'s base ${pair.sha.slice(0, 10)})` : ''}`)
     if (onlyOne.length) out.push(`only ${person} changed ${onlyOne.length === 1 ? 'this file' : 'these files'} since its start${pair?.carriedCommit ? ', which already includes your carried edits' : ''}: ${onlyOne.join(', ')}`)
@@ -477,7 +562,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     return [...new Set([...resumed, ...movedSince(state, [...snapshots].filter(([person]) => !settledRuns.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))])]
   }
   const isCurrent = () => moved().length === 0
-  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers }
+  return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, scratch: scratchBy, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers }
 }
 /** 'a' if b's lines appear in order inside a (a built on b), 'b' if the reverse, else undefined. */
 export function supersetSide(a: string[], b: string[]): 'a' | 'b' | undefined {

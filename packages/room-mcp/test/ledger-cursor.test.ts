@@ -95,3 +95,53 @@ describe('the seq frontier', () => {
     expect(ledger().frontier(someone)).toBe(highestSeq(room))
   })
 })
+
+describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
+  const lead = { name: 'lead', kind: 'agent' as const }
+  const text = (messages: readonly Msg[]) => messages.map(m => 'text' in m ? m.text : '')
+
+  /** An earlier batch's lead+docs was told things it never read; then a new worker is spawned under the same tag. */
+  async function reusedName(room: RoomDoc, tag: string) {
+    hubAppend(room, lead, { type: 'answer', to: 'lead+docs', inReplyTo: 'q-old', text: 'old answer: update doctor-entry.test.ts' })
+    const mailed = hubAppend(room, lead, { type: 'note', to: 'lead+docs', text: 'old note, trimmed to mail' })
+    room.doc.transact(() => { room.bus.delete(room.bus.toArray().findIndex(m => m.id === mailed.id), 1); room.mail.set(mailed.id, mailed) })
+    const atIntent = highestSeq(room)
+    const { record } = await seedRegistryWorker(dir, tag, { name: 'lead+docs', room: 'r' })
+    const registry = await registryForDir(dir)
+    await registry.update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: atIntent }], seq: old.seq + 1 }))
+    const briefing = hubAppend(room, lead, { type: 'note', to: 'lead+docs', text: 'new briefing' })
+    return { record, registry, briefing }
+  }
+
+  it("a new worker under a reused name is not owed the earlier worker's addressed messages or mail", async () => {
+    const room = new RoomDoc()
+    const { record } = await reusedName(room, 'docs')
+    vi.stubEnv('ROOM_WORKER_ID', record.id)
+    vi.stubEnv('ROOM_WORKER_RUN', '1')
+    const s = session(room, 'lead+docs'), l = ledger()
+    l.bind(s)
+    expect(text(l.candidates(s))).toEqual(['new briefing'])
+  })
+
+  it('a resumed worker is still owed what was sent to it while it was stopped', async () => {
+    const room = new RoomDoc()
+    const { record, registry } = await reusedName(room, 'docs-resumed')
+    const whileStopped = hubAppend(room, lead, { type: 'question', to: 'lead+docs', text: 'did the rename land?' })
+    const run2 = highestSeq(room)
+    await registry.update(record.id, old => ({ ...old, runs: [...old.runs, { ...old.runs[0], n: 2, mode: 'resume', busFrontier: run2 }], seq: old.seq + 1 }))
+    vi.stubEnv('ROOM_WORKER_ID', record.id)
+    vi.stubEnv('ROOM_WORKER_RUN', '2')
+    const s = session(room, 'lead+docs'), l = ledger()
+    l.bind(s)
+    expect(ids(l.candidates(s))).toContain(whileStopped.id)
+    expect(text(l.candidates(s))).not.toContain('old answer: update doctor-entry.test.ts')
+  })
+
+  it('a lead or human session still gets mail sent while it was offline', async () => {
+    const room = new RoomDoc()
+    await reusedName(room, 'docs-lead')
+    const s = session(room, 'lead+docs'), l = ledger() // no worker environment: not a spawned worker
+    l.bind(s)
+    expect(text(l.candidates(s))).toEqual(['old note, trimmed to mail', 'old answer: update doctor-entry.test.ts', 'new briefing'])
+  })
+})

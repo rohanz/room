@@ -35,12 +35,28 @@ it('lists an ambiguous migrated name once, with its owed messages and candidates
   expect(out).not.toContain('unresolved from')
 })
 
+it('prints no line for an unresolved name with nothing owed, nor ever for the Room bot (rc8)', async () => {
+  const out = await roomState(room => {
+    const unresolved = room.doc.getMap('unresolved')
+    // rc8 dogfood: the user's own 0.16 name and the bot `room`, both with nothing owed, repeated on every call.
+    unresolved.set(`${repo}/redesign\0rohanz`, { placeholder: '?rohanz', claims: [] })
+    unresolved.set(`${repo}/redesign-wave0\0room`, { placeholder: '?room0', claims: [] })
+    unresolved.set(`${repo}/redesign\0room`, { placeholder: '?room1', claims: [{ id: 'c1', by: '?room1', byKind: 'bot', path: 'a.ts', from: 1, to: 2, intent: 'edit', at: 1 }] })
+    room.mail.set('q1', question('q1', '?room1'))
+  })
+  expect(out).not.toContain('unresolved name')
+  expect(out).not.toContain('nothing owed')
+})
+
 it('bounds the candidate names and the number of unresolved lines', async () => {
   const out = await roomState(room => {
     const unresolved = room.doc.getMap('unresolved')
     for (let i = 0; i < 5; i++) unresolved.set(`${repo}/b${i}\0ben`, { placeholder: `?ben${i}`, claims: [] })
     room.mail.set('q1', question('q1', '?ben0'))
-    for (let i = 0; i < 8; i++) unresolved.set(`${repo}/main\0p${i}`, { placeholder: `?p${i}`, claims: [] })
+    for (let i = 0; i < 8; i++) {
+      unresolved.set(`${repo}/main\0p${i}`, { placeholder: `?p${i}`, claims: [] })
+      room.mail.set(`p${i}`, question(`p${i}`, `?p${i}`))
+    }
   })
   expect(out).toContain('1 message for an unresolved name (ben on b0 or ben on b1 or ben on b2, +2 more): ask them to rejoin')
   expect(out.split('\n').filter(line => line.includes('for an unresolved name'))).toHaveLength(5)

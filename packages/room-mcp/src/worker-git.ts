@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isRegenerableBuildPath } from '@room/shared'
 import type { LocalWorker } from './worker-status.js'
-import { LINK_INPUT_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
+import { LINK_INPUT_PATH, MATERIALIZED_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
 import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
@@ -173,7 +173,7 @@ const carriedSubject = (leadName: string) => `${ROOM_CARRY_IDENTITY.subjectPrefi
 
 /** A worktree for the worker, created from the lead's HEAD on branch room/<tag>; reused if it already exists. */
 const internalGit = (dir: string, args: string[]) => git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', 'core.autocrlf=false', ...args])
-const carryRef = (tag: string) => `refs/room/carry/${tag}`
+export const carryRef = (tag: string) => `refs/room/carry/${tag}`
 const carriedUntrackedRef = (tag: string) => `refs/room/carry-untracked/${tag}`
 const pathExcluded = (rel: string, exclusions: string[]) => exclusions.some(p => rel === p || rel.startsWith(p.replace(/\/$/, '') + '/'))
 /** Stable, apply-compatible patch policy for both carry and discard. */
@@ -497,4 +497,58 @@ export async function saveDiscardPatch(leadDir: string, w: LocalWorker,
     finally { await internalGit(leadDir, ['worktree', 'remove', '--force', verifyDir]) }
     return publish(patch)
   } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
+}
+
+/** Carry's limits bound saved scratch too. */
+const SCRATCH_FILE_LIMIT = 5 * 1024 * 1024, SCRATCH_TOTAL_LIMIT = 50 * 1024 * 1024
+const SCRATCH_DIR = path.join('.room', 'scratch')
+
+/**
+ * Copy workers' scratch (untracked logs and temp files collect does not bring in) to <lead>/.room/scratch/<tag>/
+ * before their worktrees are removed; a re-collect of a tag replaces its folder. No link is followed on either side:
+ * a linked .room, .room/scratch or source path is refused and named, as is a file over carry's limits.
+ */
+export function saveWorkerScratch(leadRoot: string, workers: readonly { tag: string; root: string; paths: Iterable<string> }[]): { saved: Map<string, string[]>; skipped: { tag: string; path: string; reason: string }[] } {
+  const saved = new Map<string, string[]>(), skipped: { tag: string; path: string; reason: string }[] = []
+  let total = 0
+  const realDir = (dir: string) => {
+    try { if (!fs.lstatSync(dir).isDirectory()) return false } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; fs.mkdirSync(dir) }
+    return fs.lstatSync(dir).isDirectory()
+  }
+  for (const { tag, root, paths } of workers) {
+    const list = [...paths].sort()
+    if (!list.length) continue
+    const refuse = (reason: string) => { for (const p of list) skipped.push({ tag, path: p, reason }) }
+    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(tag)) { refuse('invalid worker tag'); continue }
+    if (!realDir(path.join(leadRoot, '.room')) || !realDir(path.join(leadRoot, SCRATCH_DIR))) { refuse('.room or .room/scratch is not a plain folder'); continue }
+    const target = path.join(leadRoot, SCRATCH_DIR, tag)
+    try { if (fs.lstatSync(target).isSymbolicLink()) { refuse(`${SCRATCH_DIR}/${tag} is a link`); continue } }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
+    fs.rmSync(target, { recursive: true, force: true })
+    fs.mkdirSync(target)
+    for (const p of list) {
+      const skip = (reason: string) => skipped.push({ tag, path: p, reason })
+      if (!validRepoPath(p, MATERIALIZED_PATH)) { skip('unsafe path'); continue }
+      let fd: number
+      try {
+        if (!containedRepoPath(root, path.join(root, p), { leaf: 'reject-link' }).ok) { skip('link'); continue }
+        fd = fs.openSync(path.join(root, p), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+      } catch (e) { skip((e as NodeJS.ErrnoException).code === 'ELOOP' ? 'link' : 'unreadable'); continue }
+      try {
+        const stat = fs.fstatSync(fd)
+        if (!stat.isFile()) { skip('not a file'); continue }
+        if (stat.size > SCRATCH_FILE_LIMIT) { skip('over 5 MB'); continue }
+        if (total + stat.size > SCRATCH_TOTAL_LIMIT) { skip('over the 50 MB total'); continue }
+        const bytes = Buffer.alloc(stat.size)
+        let read = 0
+        while (read < bytes.length) { const n = fs.readSync(fd, bytes, read, bytes.length - read, read); if (!n) break; read += n }
+        const destination = path.join(target, p)
+        fs.mkdirSync(path.dirname(destination), { recursive: true })
+        fs.writeFileSync(destination, bytes.subarray(0, read), { flag: 'wx', mode: stat.mode & 0o777 })
+        total += read
+        saved.set(tag, [...saved.get(tag) ?? [], p])
+      } finally { fs.closeSync(fd) }
+    }
+  }
+  return { saved, skipped }
 }

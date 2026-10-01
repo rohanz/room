@@ -95,6 +95,8 @@ export interface HandlerState {
   closeWorkersRoom: (preserveFacts?: boolean) => Promise<void>
   runningWorkers: (s: Session) => { s: Session; w: LocalWorker }[]
   hasCompany: (s: Session) => CompanyState
+  /** Whether a message may wake this session or reach its hooks now (solo.ts: silent while alone). */
+  audible: (s: Session) => (m: Msg) => boolean
   dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], cancelled?: AbortSignal) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]

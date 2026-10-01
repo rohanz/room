@@ -9,7 +9,8 @@ Anyone with `flyctl` access to the app can do everything below. Nothing here nee
 |---|---|
 | `packages/server/**`, `Dockerfile`, `deploy/fly.toml` | server deploy (below) |
 | `packages/web/**` | server deploy (the server serves the built view) AND plugin rebuild (the plugin ships a copy) |
-| `packages/room-mcp`, `packages/roomd`, `packages/shared`, `plugins/room/**` | `npm run build:plugin`, commit the bundle, push; users reinstall the plugin |
+| `packages/shared`, `packages/hub-core` | server deploy (the server bundles both) AND plugin rebuild |
+| `packages/room-mcp`, `packages/roomd`, `packages/relay`, `plugins/room/**` | `npm run build:plugin`, commit the bundle, push; users reinstall the plugin |
 | docs only | push |
 
 ## Deploy
@@ -21,7 +22,7 @@ cd <repo root>
 npm run build -w @room/web            # the image copies packages/web/dist
 flyctl deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
 flyctl releases -a room-rohanz | head -3
-curl -s https://room-rohanz.fly.dev/health     # {"ok":true}
+curl -s https://room-rohanz.fly.dev/health     # {"ok":true,"schema":2,"hub":1}
 curl -s https://room-rohanz.fly.dev/auth/config  # {"github":"device","clientIdSet":true,...}
 ```
 
@@ -86,7 +87,7 @@ run against the shipped code:
 
 ```sh
 claude plugin marketplace update room && claude plugin uninstall room@room && claude plugin install room@room --scope user
-codex plugin remove room@room && codex plugin add room@room
+codex plugin marketplace upgrade room && codex plugin remove room@room && codex plugin add room@room
 ```
 
 ## Configuration on the app

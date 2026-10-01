@@ -16,7 +16,7 @@ import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
-import { unresolvedLines, type UnresolvedEntry } from '@room/shared'
+import { importedHistory, unresolvedLines, type UnresolvedEntry } from '@room/shared'
 
 
 export const defs: ToolDef[] = [
@@ -240,7 +240,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)
       const waits = await waitingOn(s)
       if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
-      const msgs = s.room.lastMessages(all ? 10 : 30)
+      // Migrated Room 0.16 history is not recent: it would push out current lines. all=true shows it.
+      const history = a.all === true ? 0 : s.room.messages().filter(x => importedHistory(s.room, x)).length
+      const msgs = (history ? s.room.messages().filter(x => !importedHistory(s.room, x)).slice(all ? -10 : -30) : s.room.lastMessages(all ? 10 : 30))
         .filter(x => !(x.to && x.to !== s.me.name && x.from !== s.me.name))
         .filter(x => all || x.to === s.me.name || x.from === s.me.name || x.type === 'base' || msgInMyAreas(s, x))
         .slice(-10)
@@ -254,6 +256,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`  - [${x.id}] ${line}`)
       }
       if (cut) out.push('  (long messages cut to one line; room_state all=true shows them in full)')
+      if (history) out.push(`  (migrated Room 0.16 history: ${history} message${history === 1 ? '' : 's'}, room_state all=true shows them)`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
       out.push(...formatWorkerLines(await Promise.all(myWorkers(s).flatMap(worker => { const view = localWorkerView(s, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), activity: liveWorkerActivity(s.dir, worker, processGone, now()), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
