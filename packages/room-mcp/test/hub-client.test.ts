@@ -72,11 +72,11 @@ describe('HubClient', () => {
     expect(reply).toMatchObject({ ok: true, seq: 5, duplicate: true })
     await pending
     expect(transport.sent.filter(r => r.op === 'post').map(r => r.msg.id)).toEqual(['stable-id', 'stable-id'])
-    expect(transport.sent.map(r => r.op)).toEqual(['hello', 'acquire', 'post', 'hello', 'post'])
+    expect(transport.sent.map(r => r.op)).toEqual(['hello', 'acquire', 'post', 'hello', 'renew', 'post'])
     client.close()
   })
 
-  it.each(['acquire', 'renew', 'release'] as const)('fails an interrupted %s promptly without replaying it', async op => {
+  it.each(['acquire', 'release'] as const)('fails an interrupted %s promptly without replaying it', async op => {
     const { client, transport } = fixture(false)
     await client.hello(); await client.acquire('alice', holder)
     transport.answer = () => undefined

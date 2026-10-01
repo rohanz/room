@@ -66,6 +66,7 @@ class TransportUnavailable extends Error {
 }
 
 type Lease = { epoch: number; ttlMs: number; t0: number; w0: number }
+type Renewal = { promise: Promise<void>; wake?: () => void }
 type RequestBody = Req extends infer R ? R extends Req ? Omit<R, 'v' | 'id'> : never : never
 type Pending = { resolve: (reply: Reply) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 export interface HubClientOptions {
@@ -90,9 +91,8 @@ export class HubClient {
   private readonly interval: ReturnType<typeof setInterval>
   private nextId = 0
   private helloOk = false
-  private incarnation?: number
   private pauseReason?: string
-  private renewing = new Set<string>()
+  private readonly renewing = new Map<Lease, Renewal>()
   private closed = false
 
   constructor(private readonly options: HubClientOptions) {
@@ -123,7 +123,7 @@ export class HubClient {
     this.disconnected()
     this.transport = transport
     this.unsubs = this.subscribe()
-    if (transport.connected()) void this.reconnect().then(() => this.renewAll())
+    if (transport.connected()) void this.reconnect()
   }
 
   /** The hub answered hello on the current connection, which is still up. */
@@ -166,11 +166,9 @@ export class HubClient {
   private async handshake(budgetMs?: number): Promise<Reply> {
     try {
       const reply = await this.request({ op: 'hello', proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId }, undefined, budgetMs)
-      const old = this.incarnation
-      this.incarnation = Number(reply.incarnation)
       this.helloOk = true
       this.pauseReason = undefined
-      if (old !== undefined && old !== this.incarnation) void this.renewAll()
+      this.renewAll(true)
       return reply
     } catch (error) {
       this.helloOk = false
@@ -207,21 +205,40 @@ export class HubClient {
     this.dropExpired()
     const lease = this.leases.get(name)
     if (!lease) throw new Error(NOT_SENT)
-    let t0 = 0, w0 = 0
-    try {
-      const reply = await this.request({ op: 'renew', name, epoch: lease.epoch }, () => {
-        if (!this.valid(lease)) {
-          if (this.leases.get(name) === lease) this.lose(name)
-          throw new Error(NOT_SENT)
-        }
-        t0 = this.mono(); w0 = this.wall()
-      })
-      if (this.leases.get(name) !== lease) return
-      if (!this.valid(lease)) { this.lose(name); return }
-      this.leases.set(name, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 })
-    } catch (error) {
-      if (error instanceof HubError && (error.reason === 'stale' || error.reason === 'not-yours') && this.leases.get(name) === lease) this.lose(name)
-      throw error
+    const existing = this.renewing.get(lease)
+    if (existing) return existing.promise
+    const renewal = {} as Renewal
+    this.renewing.set(lease, renewal)
+    renewal.promise = this.renewLease(name, lease, renewal).finally(() => this.renewing.delete(lease))
+    return renewal.promise
+  }
+
+  private async renewLease(name: string, lease: Lease, renewal: Renewal): Promise<void> {
+    let backoffMs = 1_000
+    for (;;) {
+      this.assertOpen()
+      this.dropExpired()
+      if (this.leases.get(name) !== lease) throw new Error(NOT_SENT)
+      let t0 = 0, w0 = 0
+      try {
+        const reply = await this.request({ op: 'renew', name, epoch: lease.epoch }, () => {
+          this.dropExpired()
+          if (this.leases.get(name) !== lease) throw new Error(NOT_SENT)
+          t0 = this.mono(); w0 = this.wall()
+        }, Math.min(this.remainingValidity(lease), this.timeoutMs + SETTLE_MS), renewal)
+        if (this.leases.get(name) !== lease) return
+        if (!this.valid(lease)) { this.lose(name); return }
+        Object.assign(lease, { ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 })
+        return
+      } catch (error) {
+        if (error instanceof HubError && (error.reason === 'stale' || error.reason === 'not-yours') && this.leases.get(name) === lease) this.lose(name)
+        this.dropExpired()
+        if (this.closed || this.leases.get(name) !== lease) throw error
+        // The last acknowledged send remains the fence, even if an unacknowledged
+        // attempt extended the hub's TTL. Never send or wait past our own window.
+        await this.retryDelay(Math.min(backoffMs, this.remainingValidity(lease)), renewal)
+        backoffMs = Math.min(backoffMs * 2, 4_000)
+      }
     }
   }
 
@@ -230,7 +247,10 @@ export class HubClient {
     const lease = this.leases.get(name)
     if (!lease) { this.lostLeases.delete(name); return }
     await this.request({ op: 'release', name, epoch: lease.epoch })
-    if (this.leases.get(name) === lease) this.leases.delete(name)
+    if (this.leases.get(name) === lease) {
+      this.leases.delete(name)
+      this.renewing.get(lease)?.wake?.()
+    }
     this.lostLeases.delete(name)
   }
 
@@ -252,7 +272,11 @@ export class HubClient {
   }
 
   private valid(lease: Lease): boolean {
-    return Math.max(this.mono() - lease.t0, this.wall() - lease.w0) < lease.ttlMs
+    return this.remainingValidity(lease) > 0
+  }
+
+  private remainingValidity(lease: Lease): number {
+    return lease.ttlMs - Math.max(this.mono() - lease.t0, this.wall() - lease.w0)
   }
 
   private dropExpired(): void {
@@ -260,17 +284,22 @@ export class HubClient {
   }
 
   private lose(name: string): void {
+    const lease = this.leases.get(name)
     this.leases.delete(name)
     this.lostLeases.add(name)
+    if (lease) this.renewing.get(lease)?.wake?.()
   }
 
-  private async renewAll(): Promise<void> {
+  private renewAll(immediate = false): void {
     if (!this.helloOk) return
     this.dropExpired()
-    for (const name of this.leases.keys()) {
-      if (this.renewing.has(name)) continue
-      this.renewing.add(name)
-      void this.renew(name).catch(() => {}).finally(() => this.renewing.delete(name))
+    for (const [name, lease] of this.leases) {
+      const renewal = this.renewing.get(lease)
+      if (renewal) {
+        if (immediate) renewal.wake?.()
+        continue
+      }
+      void this.renew(name).catch(() => {})
     }
   }
 
@@ -305,7 +334,7 @@ export class HubClient {
     pending.resolve(frame as Reply)
   }
 
-  private async request(body: RequestBody, onSend?: () => void, budgetMs?: number): Promise<Extract<Reply, { ok: true }>> {
+  private async request(body: RequestBody, onSend?: () => void, budgetMs?: number, renewal?: Renewal): Promise<Extract<Reply, { ok: true }>> {
     this.assertOpen()
     const startedMono = this.mono(), startedWall = this.wall()
     const startingBudget = budgetMs ?? this.timeoutMs + SETTLE_MS
@@ -313,8 +342,8 @@ export class HubClient {
     let interrupted = false
     const remaining = () => (interrupted ? this.timeoutMs : startingBudget) - elapsed()
     for (;;) {
-      // Posts are deduped by msg.id. Only they can replay an unknown outcome; lease
-      // operations fail immediately so their callers can recover explicitly.
+      // Posts are deduped by msg.id and replay here. Lease operations leave recovery
+      // to their callers, including renew's loop bounded by the validity window.
       if (interrupted) {
         if (remaining() <= 0) throw new TransportUnavailable()
         if (!this.reachable()) {
@@ -334,7 +363,7 @@ export class HubClient {
       if (t.reason === 'starting' || t.reason === 'unavailable' || t.reason === 'rate-limited') {
         const left = remaining()
         if (left <= 0) throw new HubError(t.reason, t.text)
-        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), left))
+        await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1_000), left), renewal)
         this.assertOpen()
         if (remaining() <= 0) throw new HubError(t.reason, t.text)
         continue
@@ -375,12 +404,19 @@ export class HubClient {
     if (this.closed) throw new Error('hub client closed')
   }
 
-  private retryDelay(ms: number): Promise<void> {
+  private retryDelay(ms: number, renewal?: Renewal): Promise<void> {
     this.assertOpen()
     return new Promise((resolve, reject) => {
       const wait = { timer: undefined as unknown as ReturnType<typeof setTimeout>, reject }
-      wait.timer = setTimeout(() => { this.retryWaits.delete(wait); resolve() }, ms)
+      const done = () => {
+        clearTimeout(wait.timer)
+        this.retryWaits.delete(wait)
+        if (renewal) renewal.wake = undefined
+        resolve()
+      }
+      wait.timer = setTimeout(done, ms)
       this.retryWaits.add(wait)
+      if (renewal) renewal.wake = done
     })
   }
 }

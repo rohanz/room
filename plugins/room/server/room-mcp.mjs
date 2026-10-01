@@ -38319,9 +38319,8 @@ var init_hub_client = __esm({
       interval;
       nextId = 0;
       helloOk = false;
-      incarnation;
       pauseReason;
-      renewing = /* @__PURE__ */ new Set();
+      renewing = /* @__PURE__ */ new Map();
       closed = false;
       subscribe() {
         return [
@@ -38342,7 +38341,7 @@ var init_hub_client = __esm({
         this.disconnected();
         this.transport = transport;
         this.unsubs = this.subscribe();
-        if (transport.connected()) void this.reconnect().then(() => this.renewAll());
+        if (transport.connected()) void this.reconnect();
       }
       /** The hub answered hello on the current connection, which is still up. */
       reachable() {
@@ -38383,11 +38382,9 @@ var init_hub_client = __esm({
       async handshake(budgetMs) {
         try {
           const reply = await this.request({ op: "hello", proto: HUB_PROTO, schema: 2, client: this.options.client, sessionId: this.options.sessionId }, void 0, budgetMs);
-          const old = this.incarnation;
-          this.incarnation = Number(reply.incarnation);
           this.helloOk = true;
           this.pauseReason = void 0;
-          if (old !== void 0 && old !== this.incarnation) void this.renewAll();
+          this.renewAll(true);
           return reply;
         } catch (error2) {
           this.helloOk = false;
@@ -38424,25 +38421,41 @@ var init_hub_client = __esm({
         this.dropExpired();
         const lease = this.leases.get(name2);
         if (!lease) throw new Error(NOT_SENT);
-        let t0 = 0, w0 = 0;
-        try {
-          const reply = await this.request({ op: "renew", name: name2, epoch: lease.epoch }, () => {
+        const existing = this.renewing.get(lease);
+        if (existing) return existing.promise;
+        const renewal = {};
+        this.renewing.set(lease, renewal);
+        renewal.promise = this.renewLease(name2, lease, renewal).finally(() => this.renewing.delete(lease));
+        return renewal.promise;
+      }
+      async renewLease(name2, lease, renewal) {
+        let backoffMs = 1e3;
+        for (; ; ) {
+          this.assertOpen();
+          this.dropExpired();
+          if (this.leases.get(name2) !== lease) throw new Error(NOT_SENT);
+          let t0 = 0, w0 = 0;
+          try {
+            const reply = await this.request({ op: "renew", name: name2, epoch: lease.epoch }, () => {
+              this.dropExpired();
+              if (this.leases.get(name2) !== lease) throw new Error(NOT_SENT);
+              t0 = this.mono();
+              w0 = this.wall();
+            }, Math.min(this.remainingValidity(lease), this.timeoutMs + SETTLE_MS), renewal);
+            if (this.leases.get(name2) !== lease) return;
             if (!this.valid(lease)) {
-              if (this.leases.get(name2) === lease) this.lose(name2);
-              throw new Error(NOT_SENT);
+              this.lose(name2);
+              return;
             }
-            t0 = this.mono();
-            w0 = this.wall();
-          });
-          if (this.leases.get(name2) !== lease) return;
-          if (!this.valid(lease)) {
-            this.lose(name2);
+            Object.assign(lease, { ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
             return;
+          } catch (error2) {
+            if (error2 instanceof HubError && (error2.reason === "stale" || error2.reason === "not-yours") && this.leases.get(name2) === lease) this.lose(name2);
+            this.dropExpired();
+            if (this.closed || this.leases.get(name2) !== lease) throw error2;
+            await this.retryDelay(Math.min(backoffMs, this.remainingValidity(lease)), renewal);
+            backoffMs = Math.min(backoffMs * 2, 4e3);
           }
-          this.leases.set(name2, { ...lease, ttlMs: Number(reply.ttlMs ?? LEASE_TTL_MS), t0, w0 });
-        } catch (error2) {
-          if (error2 instanceof HubError && (error2.reason === "stale" || error2.reason === "not-yours") && this.leases.get(name2) === lease) this.lose(name2);
-          throw error2;
         }
       }
       async release(name2) {
@@ -38453,7 +38466,10 @@ var init_hub_client = __esm({
           return;
         }
         await this.request({ op: "release", name: name2, epoch: lease.epoch });
-        if (this.leases.get(name2) === lease) this.leases.delete(name2);
+        if (this.leases.get(name2) === lease) {
+          this.leases.delete(name2);
+          this.renewing.get(lease)?.wake?.();
+        }
         this.lostLeases.delete(name2);
       }
       /** Every post carries the poster's own lease (hub §2.3), valid here by the send-time clock. */
@@ -38473,23 +38489,31 @@ var init_hub_client = __esm({
         }
       }
       valid(lease) {
-        return Math.max(this.mono() - lease.t0, this.wall() - lease.w0) < lease.ttlMs;
+        return this.remainingValidity(lease) > 0;
+      }
+      remainingValidity(lease) {
+        return lease.ttlMs - Math.max(this.mono() - lease.t0, this.wall() - lease.w0);
       }
       dropExpired() {
         for (const [name2, lease] of this.leases) if (!this.valid(lease)) this.lose(name2);
       }
       lose(name2) {
+        const lease = this.leases.get(name2);
         this.leases.delete(name2);
         this.lostLeases.add(name2);
+        if (lease) this.renewing.get(lease)?.wake?.();
       }
-      async renewAll() {
+      renewAll(immediate = false) {
         if (!this.helloOk) return;
         this.dropExpired();
-        for (const name2 of this.leases.keys()) {
-          if (this.renewing.has(name2)) continue;
-          this.renewing.add(name2);
+        for (const [name2, lease] of this.leases) {
+          const renewal = this.renewing.get(lease);
+          if (renewal) {
+            if (immediate) renewal.wake?.();
+            continue;
+          }
           void this.renew(name2).catch(() => {
-          }).finally(() => this.renewing.delete(name2));
+          });
         }
       }
       async reconnect() {
@@ -38527,7 +38551,7 @@ var init_hub_client = __esm({
         clearTimeout(pending.timer);
         pending.resolve(frame);
       }
-      async request(body2, onSend, budgetMs) {
+      async request(body2, onSend, budgetMs, renewal) {
         this.assertOpen();
         const startedMono = this.mono(), startedWall = this.wall();
         const startingBudget = budgetMs ?? this.timeoutMs + SETTLE_MS;
@@ -38555,7 +38579,7 @@ var init_hub_client = __esm({
           if (t.reason === "starting" || t.reason === "unavailable" || t.reason === "rate-limited") {
             const left = remaining();
             if (left <= 0) throw new HubError(t.reason, t.text);
-            await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), left));
+            await this.retryDelay(Math.min(Math.max(1, t.retryMs ?? 1e3), left), renewal);
             this.assertOpen();
             if (remaining() <= 0) throw new HubError(t.reason, t.text);
             continue;
@@ -38598,15 +38622,19 @@ var init_hub_client = __esm({
       assertOpen() {
         if (this.closed) throw new Error("hub client closed");
       }
-      retryDelay(ms2) {
+      retryDelay(ms2, renewal) {
         this.assertOpen();
         return new Promise((resolve5, reject) => {
           const wait = { timer: void 0, reject };
-          wait.timer = setTimeout(() => {
+          const done = () => {
+            clearTimeout(wait.timer);
             this.retryWaits.delete(wait);
+            if (renewal) renewal.wake = void 0;
             resolve5();
-          }, ms2);
+          };
+          wait.timer = setTimeout(done, ms2);
           this.retryWaits.add(wait);
+          if (renewal) renewal.wake = done;
         });
       }
     };
