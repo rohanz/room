@@ -16,6 +16,7 @@ import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-sta
 import { realStateInput, type LocalWorker } from './worker-status.js'
 import { cleanupWorker, cleanupWorkerLogs, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch } from './worker-git.js'
 import { pidAlive, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation } from './worker-process.js'
+import { sameStartTime } from '@room/relay/process'
 
 export interface LegacySource {
   key: string; tag: string; dir: string; branch: string; host: 'claude' | 'codex'
@@ -988,7 +989,7 @@ export class WorkerRegistry {
     const chain = report?.chain ?? []
     const reportedHost = launch?.outcome === 'launched' ? chain.find(value => value.pid === launch.pid) : undefined
     if (launch?.outcome === 'launched' && launch.process && reportedHost
-      && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return
+      && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return
     const host = launch?.outcome === 'launched' ? launch.process ?? reportedHost : undefined
     const identities = [host, ...chain.filter(value => value.pid !== host?.pid)]
       .filter((value): value is NonNullable<typeof value> => !!value)

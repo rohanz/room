@@ -24265,6 +24265,11 @@ function pidAlive(pid) {
     return e.code === "EPERM";
   }
 }
+function sameStartTime(a, b) {
+  if (a === b) return true;
+  const x = /^darwin:(\d+):(\d+)$/.exec(a), y = /^darwin:(\d+):(\d+)$/.exec(b);
+  return !!x && !!y && x[2] === y[2] && Math.abs(Number(x[1]) - Number(y[1])) <= 60;
+}
 function parsePsLstartUtc(line) {
   const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim());
   if (!match) return void 0;
@@ -24357,7 +24362,7 @@ function oldRunning(common, probe) {
     const info2 = JSON.parse(fs10.readFileSync(path7.join(common, "room-local.json"), "utf8"));
     const observed = probe(Number(info2.pid));
     if (!observed) return false;
-    if (info2.startTime && observed.startTime && info2.startTime !== observed.startTime) return false;
+    if (info2.startTime && observed.startTime && !sameStartTime(info2.startTime, observed.startTime)) return false;
     if (info2.executable && observed.executable && info2.executable !== observed.executable) return false;
     return true;
   } catch {
@@ -25567,7 +25572,7 @@ import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
   const observed = probe(identity3.pid);
   if (!observed) return "dead";
-  if (observed.startTime && identity3.startTime && observed.startTime !== identity3.startTime) return "dead";
+  if (observed.startTime && identity3.startTime && !sameStartTime(observed.startTime, identity3.startTime)) return "dead";
   if (observed.executable && identity3.executable && observed.executable !== identity3.executable) return "dead";
   if (!observed.startTime || !observed.executable || !identity3.startTime || !identity3.executable) return "unknown";
   return "alive";
@@ -31765,7 +31770,7 @@ function workerProcessOwnership(pid, w, probe = probeProcess) {
   if (!info2) return "not-ours";
   if (!w.processStartTime) return "unknown";
   if (!info2?.startTime || !info2.executable) return "unknown";
-  if (info2.startTime !== w.processStartTime) return "not-ours";
+  if (!sameStartTime(info2.startTime, w.processStartTime)) return "not-ours";
   const executable = path16.basename(info2.executable);
   return executable === w.host || executable === "node" ? "ours" : "not-ours";
 }
@@ -40378,7 +40383,7 @@ function processIdentity(pid, probe) {
   return info2?.startTime && info2.executable ? { pid, startTime: info2.startTime, executable: info2.executable } : void 0;
 }
 function sameProcess(a, b) {
-  return a.pid === b.pid && a.startTime === b.startTime && a.executable === b.executable;
+  return a.pid === b.pid && sameStartTime(a.startTime, b.startTime) && a.executable === b.executable;
 }
 function defaultCommonDir(cwd) {
   try {
@@ -41310,6 +41315,7 @@ var init_session = __esm({
     init_presence();
     init_choice();
     init_worker_process();
+    init_process();
     init_leases2();
     init_policy_store();
     init_worker_registry();
@@ -43935,6 +43941,7 @@ var init_worker_registry = __esm({
     init_worker_status();
     init_worker_git();
     init_worker_process();
+    init_process();
     readJson2 = (file) => {
       try {
         return JSON.parse(fs39.readFileSync(file, "utf8"));
@@ -44821,7 +44828,7 @@ var init_worker_registry = __esm({
           const report = this.reports(id3).find((value2) => value2.run === run3.n && value2.nonce === run3.nonce);
           const chain = report?.chain ?? [];
           const reportedHost = launch?.outcome === "launched" ? chain.find((value2) => value2.pid === launch.pid) : void 0;
-          if (launch?.outcome === "launched" && launch.process && reportedHost && (launch.process.startTime !== reportedHost.startTime || launch.process.executable !== reportedHost.executable)) return;
+          if (launch?.outcome === "launched" && launch.process && reportedHost && (!sameStartTime(launch.process.startTime, reportedHost.startTime) || launch.process.executable !== reportedHost.executable)) return;
           const host = launch?.outcome === "launched" ? launch.process ?? reportedHost : void 0;
           const identities = [host, ...chain.filter((value2) => value2.pid !== host?.pid)].filter((value2) => !!value2);
           if (!record2.discard.steps.stop) await this.beginStop(id3, "discarded");
@@ -55706,7 +55713,7 @@ var ConflictSlots = class {
   }
   /** Join the open possible episode of this holder and path, or open a new one; a clean slot keeps the episode it clears. */
   joinPossibleEpisode(key2, result2, settled, prev) {
-    if (settled !== "possible") return settled === "clean" && (prev?.settled === "possible" || prev?.settled === "clean") && prev.possibleEpisode !== void 0 ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {};
+    if (settled !== "possible") return prev?.possibleEpisode !== void 0 ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {};
     if (prev?.settled === "possible" && prev.possibleEpisode !== void 0) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined };
     const group = this.claimGroup(key2, result2);
     const open3 = group.find(([, s]) => s.settled === "possible" && s.possibleEpisode !== void 0)?.[1];
@@ -59876,8 +59883,10 @@ async function refreshWorkerBase(leadDir, w) {
   const start2 = carried ? (await git(w.dir, ["rev-parse", `${base}^`])).trim() : base;
   const ignored = lines(await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]), "\0");
   if (ignored.length) {
-    const covered = new Set(ignored);
-    const clobbered = lines(await git(w.dir, ["diff", "--name-only", "-z", from2, target]), "\0").filter((p) => covered.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/") + "/")));
+    const entries = ignored.map((p) => p.replace(/\/+$/, ""));
+    const covered = new Set(entries);
+    const holdsIgnored = new Set(entries.flatMap((p) => p.split("/").slice(0, -1).map((_, i2, parts2) => parts2.slice(0, i2 + 1).join("/"))));
+    const clobbered = lines(await git(w.dir, ["diff", "--name-only", "-z", from2, target]), "\0").filter((p) => covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/"))));
     if (clobbered.length) return refuse(`your commits add ${clobbered.slice(0, MAX_LISTED).join(", ")}, which ${clobbered.length === 1 ? "is an ignored file" : "are ignored files"} in the worker's tree`);
   }
   let savedIndex;
@@ -60123,6 +60132,8 @@ ${baseNote}` };
             const registry2 = await registryForDir(s.dir);
             const record2 = registry2.read(addressedWorker.id);
             if (!record2) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`;
+            const refusedNow = refreshRefusal(s.dir, record2, registry2.checkoutUsers(record2).map((user) => user.record.tag));
+            if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`;
             let outcome;
             try {
               outcome = await refreshWorkerBase(s.dir, record2);
@@ -61367,8 +61378,8 @@ function spawnFrontier(s, id3, name2) {
   try {
     const record2 = registrySnapshotForDir(s.dir).read(id3);
     if (record2?.name !== name2 || record2.room !== s.roomName) return void 0;
-    const spawn6 = record2.runs.find((r) => r.n === 1)?.busFrontier ?? record2.runs[0]?.busFrontier;
-    return spawn6 ? spawn6 : void 0;
+    const first = record2.runs.find((r) => r.n === 1) ?? record2.runs[0];
+    return !first || first.launch?.outcome === "imported" ? void 0 : first.busFrontier;
   } catch {
     return void 0;
   }

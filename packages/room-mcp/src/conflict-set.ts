@@ -131,8 +131,8 @@ export class ConflictSlots {
 
   /** Join the open possible episode of this holder and path, or open a new one; a clean slot keeps the episode it clears. */
   private joinPossibleEpisode(key: string, result: Evaluation, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined): Pick<ConflictSlot, 'possibleEpisode' | 'possibleJoined'> {
-    if (settled !== 'possible') return settled === 'clean' && (prev?.settled === 'possible' || prev?.settled === 'clean') && prev.possibleEpisode !== undefined
-      ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {}
+    // Every state keeps the episode number, so a later possibility (even after an exact conflict) numbers past it.
+    if (settled !== 'possible') return prev?.possibleEpisode !== undefined ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {}
     if (prev?.settled === 'possible' && prev.possibleEpisode !== undefined) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined }
     const group = this.claimGroup(key, result)
     const open = group.find(([, s]) => s.settled === 'possible' && s.possibleEpisode !== undefined)?.[1]

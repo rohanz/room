@@ -123,6 +123,22 @@ describe('addressed messages to a reused worker name (rc9 dogfood)', () => {
     expect(text(l.candidates(s))).toEqual(['new briefing'])
   })
 
+  it('a first worker after a migration (spawn frontier 0) is not owed unsequenced 0.16 mail to its name', async () => {
+    const room = new RoomDoc()
+    // Migrated 0.16 history carries no hub seq.
+    room.doc.transact(() => room.bus.push([{ id: 'm-016', type: 'answer', from: 'lead', fromKind: 'agent', to: 'lead+docs', inReplyTo: 'q-old', text: 'old 0.16 answer', at: 1 } as Msg]))
+    expect(highestSeq(room)).toBe(0)
+    const { record } = await seedRegistryWorker(dir, 'docs-zero', { name: 'lead+docs', room: 'r' })
+    const registry = await registryForDir(dir)
+    await registry.update(record.id, old => ({ ...old, runs: [{ ...old.runs[0], busFrontier: 0 }], seq: old.seq + 1 }))
+    hubAppend(room, lead, { type: 'note', to: 'lead+docs', text: 'new briefing' })
+    vi.stubEnv('ROOM_WORKER_ID', record.id)
+    vi.stubEnv('ROOM_WORKER_RUN', '1')
+    const s = session(room, 'lead+docs'), l = ledger()
+    l.bind(s)
+    expect(text(l.candidates(s))).toEqual(['new briefing'])
+  })
+
   it('a resumed worker is still owed what was sent to it while it was stopped', async () => {
     const room = new RoomDoc()
     const { record, registry } = await reusedName(room, 'docs-resumed')

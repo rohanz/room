@@ -167,6 +167,11 @@ describe('local leases', () => {
     const dead = token('old', 500)
     expect(liveness(dead, () => ({ startTime: 'new-birth', executable: 'node' }))).toBe('dead')
     expect(liveness(dead, () => ({ startTime: 'new-birth' }))).toBe('dead')
+    // macOS derives kern.boottime from wall clock minus uptime: a clock correction moves it, not the process start.
+    const mac = { pid: 1, startTime: 'darwin:1789781722:1790860993', executable: 'claude' }
+    expect(liveness(mac, () => ({ startTime: 'darwin:1789781723:1790860993', executable: 'claude' }))).toBe('alive')
+    expect(liveness(mac, () => ({ startTime: 'darwin:1789781723:1790860994', executable: 'claude' }))).toBe('dead')
+    expect(liveness(mac, () => ({ startTime: 'darwin:1789900000:1790860993', executable: 'claude' }))).toBe('dead')
     expect(createExclusive(file, { holder: dead })).toBe(true)
     expect(recover(file, value => value.holder.nonce === 'old', () => ({ startTime: 'new-birth', executable: 'node' }))).toBe(true)
     expect(createExclusive(file, { holder: token('new') })).toBe(true)

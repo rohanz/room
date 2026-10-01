@@ -212,6 +212,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const registry = await registryForDir(s.dir)
             const record = registry.read(addressedWorker!.id)
             if (!record) return `error: ${tag} has no local worker record; nothing rebased and nothing sent`
+            // Checked again under the lease: a dir= worker may have started in this checkout since the first check.
+            const refusedNow = refreshRefusal(s.dir, record, registry.checkoutUsers(record).map(user => user.record.tag))
+            if (refusedNow) return `error: cannot refresh ${tag}: ${refusedNow}; nothing rebased and nothing sent. Respawn it to start from your HEAD, or tell it what changed.`
             let outcome: RefreshOutcome
             try { outcome = await refreshWorkerBase(s.dir, record) }
             catch (error) { return `error: could not refresh ${tag}: ${error instanceof Error ? error.message : String(error)}; nothing sent. Check ${record.dir} with git status before collecting.` }

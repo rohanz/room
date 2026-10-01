@@ -93,6 +93,12 @@ describe('Linux process naming (relay probeProcess and hooks processChain share 
     expect(workerProcessOwnership(42, { ...rec, host: 'codex' }, pid => probeProcess(pid, readers))).toBe('not-ours')
   })
 
+  it('keeps a macOS worker ours when the derived boot time moved by a second', () => {
+    const rec = { host: 'claude' as const, processStartTime: 'darwin:1789781722:1790860993' }
+    expect(workerProcessOwnership(42, rec, () => ({ startTime: 'darwin:1789781723:1790860993', executable: 'claude' }))).toBe('ours')
+    expect(workerProcessOwnership(42, rec, () => ({ startTime: 'darwin:1789781723:1790860999', executable: 'claude' }))).toBe('not-ours')
+  })
+
   it('binds the MCP to the session the hook recorded for a native Linux Claude', async () => {
     const readers = fixture({ 42: nativeClaude })
     const hook = await import(path.join(HOOKS, 'common.mjs'))

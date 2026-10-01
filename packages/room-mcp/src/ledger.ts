@@ -348,8 +348,8 @@ function spawnFrontier(s: Session, id: string, name: string): number | undefined
   try {
     const record = registrySnapshotForDir(s.dir).read(id)
     if (record?.name !== name || record.room !== s.roomName) return undefined
-    // An imported 0.16 worker's record has no spawn seq (0): its earlier mail is its own.
-    const spawn = record.runs.find(r => r.n === 1)?.busFrontier ?? record.runs[0]?.busFrontier
-    return spawn ? spawn : undefined
+    const first = record.runs.find(r => r.n === 1) ?? record.runs[0]
+    // An imported 0.16 worker has no spawn point: its earlier mail is its own. A spawn's frontier may be 0.
+    return !first || first.launch?.outcome === 'imported' ? undefined : first.busFrontier
   } catch { return undefined }
 }

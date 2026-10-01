@@ -74,3 +74,14 @@ it('an exact edit-in-claim conflict is per claim and names that claim\'s lines',
     `you edited ${PATH} inside rohanz+envfix's claim at line 2084 (approximate range)`,
   ])
 })
+
+it('a possibility after an exact conflict is a new notice, not the first possibility\'s delivered id', async () => {
+  const { post, add, settle } = fixture()
+  add(claim('c1', 1, 2))
+  await settle('c1', 'possible')
+  await settle('c1', 'conflict')
+  await settle('c1', 'possible', 'again')
+  const possibleIds = post.mock.calls.filter(c => c[2].id.endsWith(':possible')).map(c => c[2].id)
+  expect(possibleIds).toHaveLength(2)
+  expect(new Set(possibleIds).size).toBe(2)
+})

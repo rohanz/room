@@ -3,7 +3,7 @@
 // prepareWorktree; only the host process is stubbed (as in carry-wip.test.ts).
 import { setParticipantBase } from '@room/shared/testing'
 import { workerByTag } from './registry-fixture.js'
-import { registryForDir } from '../src/worker-registry.js'
+import { registryForDir, WorkerRegistry } from '../src/worker-registry.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -179,6 +179,50 @@ describe('room_send refresh=true', () => {
     expect(reply).toContain('nothing sent')
     expect(git(owner.dir, 'rev-parse', 'HEAD')).toBe(before)
     expect(t.launches.get('borrower')!.length).toBe(spawned)
+  })
+
+  it('refuses when a lead commit would replace an ignored file or folder in either direction', async () => {
+    put(repo, '.gitignore', 'cache\nout/\n'); commit(repo, 'ignore cache and out/')
+    const t = world()
+    const w = await t.spawn('clobber')
+    put(w.dir, 'cache', 'precious\n')
+    put(w.dir, 'out/a.txt', 'built\n')
+    await t.finish('clobber')
+    // The lead's commit adds cache/index.ts where the worker has an ignored FILE named cache.
+    put(repo, 'cache/index.ts', 'export {}\n'); git(repo, 'add', '-f', 'cache/index.ts'); git(repo, 'commit', '-qm', 'track cache/')
+    const before = git(w.dir, 'rev-parse', 'HEAD')
+    let reply = await t.call('room_send', { type: 'note', to: 'clobber', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('cache/index.ts')
+    expect(read(w.dir, 'cache')).toBe('precious\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+    // The other way: the lead's commit adds a FILE named out where the worker has an ignored folder out/.
+    git(repo, 'reset', '-q', '--hard', 'HEAD~1')
+    put(repo, 'out', 'a file now\n'); git(repo, 'add', '-f', 'out'); git(repo, 'commit', '-qm', 'track out')
+    reply = await t.call('room_send', { type: 'note', to: 'clobber', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('out')
+    expect(read(w.dir, 'out/a.txt')).toBe('built\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
+  it('checks for dir= borrowers again under the operation lease', async () => {
+    const t = world()
+    const owner = await t.spawn('lender')
+    await t.finish('lender')
+    await t.spawn('lodger', { dir: owner.dir })
+    put(repo, 'later.txt', 'x\n'); commit(repo, 'later')
+    const before = git(owner.dir, 'rev-parse', 'HEAD')
+    // The first check sees no borrower (as if lodger started between the check and the lease).
+    const real = WorkerRegistry.prototype.checkoutUsers
+    let calls = 0
+    const spy = vi.spyOn(WorkerRegistry.prototype, 'checkoutUsers').mockImplementation(function (this: WorkerRegistry, o) { return calls++ === 0 ? [] : real.call(this, o) })
+    try {
+      const reply = await t.call('room_send', { type: 'note', to: 'lender', text: 'hi', refresh: true })
+      expect(reply).toMatch(/^error: /m)
+      expect(reply).toContain('lodger')
+    } finally { spy.mockRestore() }
+    expect(git(owner.dir, 'rev-parse', 'HEAD')).toBe(before)
   })
 
   it('refuses a running worker and sends nothing', async () => {

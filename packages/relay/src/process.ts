@@ -25,6 +25,17 @@ const systemProcessReaders: ProcessReaders = {
     ...(file === 'ps' ? { env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } } : {}) }),
 }
 
+/**
+ * Whether two recorded start times name one process start. macOS has no fixed boot time: `kern.boottime` is the
+ * wall clock minus uptime, so a clock correction can move it by a second while every process keeps its absolute
+ * start (`ps` lstart). Compare macOS starts by lstart, with the boot part allowed to drift by up to a minute.
+ */
+export function sameStartTime(a: string, b: string): boolean {
+  if (a === b) return true
+  const x = /^darwin:(\d+):(\d+)$/.exec(a), y = /^darwin:(\d+):(\d+)$/.exec(b)
+  return !!x && !!y && x[2] === y[2] && Math.abs(Number(x[1]) - Number(y[1])) <= 60
+}
+
 /** Parse the C-locale `ps` start line as UTC, independent of the MCP process's timezone. */
 export function parsePsLstartUtc(line: string): number | undefined {
   const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/.exec(line.trim())

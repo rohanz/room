@@ -28,6 +28,7 @@ import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
+import { sameStartTime } from '@room/relay/process'
 import { writeAtomic, type ProcessIdentity } from './leases.js'
 import { CeilingSource, PolicyStore } from './policy-store.js'
 import { admitWorkerEnvironment, workerCarried } from './worker-registry.js'
@@ -200,7 +201,7 @@ function processIdentity(pid: number, probe: ProcessProbe): ProcessIdentity | un
 }
 
 function sameProcess(a: ProcessIdentity, b: ProcessIdentity): boolean {
-  return a.pid === b.pid && a.startTime === b.startTime && a.executable === b.executable
+  return a.pid === b.pid && sameStartTime(a.startTime, b.startTime) && a.executable === b.executable
 }
 
 function defaultCommonDir(cwd: string): string | undefined {

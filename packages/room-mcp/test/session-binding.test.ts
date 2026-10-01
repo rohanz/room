@@ -27,6 +27,13 @@ describe('host session binding', () => {
     expect(readSessionRuntime(dir, 'two')).toBeUndefined()
   })
 
+  it('binds a macOS lead whose derived boot time moved by a second', () => {
+    const dir = common()
+    const mac: ProcessIdentity = { pid: 12150, startTime: 'darwin:1789781722:1790860993', executable: 'claude' }
+    record(dir, 'mac', 'claude', 1, [mac])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent: { ...mac, startTime: 'darwin:1789781723:1790860993' }, env: {} })).toEqual({ id: 'mac', host: 'claude' })
+  })
+
   it('binds each lead to its parent and rebinds Claude after /clear', () => {
     const dir = common()
     record(dir, 'claude-a', 'claude', 1, [parent])

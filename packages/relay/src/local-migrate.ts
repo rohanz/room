@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { RoomDoc, isLegacyBranchNotice, isRoomNotice, type Claim, type Msg, type Scope } from '@room/shared'
-import { probeProcess, type ProcessProbe } from './process.js'
+import { probeProcess, sameStartTime, type ProcessProbe } from './process.js'
 import { saveMemory } from './memory.js'
 
 interface Ledger { messages: string[]; claims: string[]; scopes: string[]; scopeSnapshots: Record<string, string>; sources: Record<string, number>; messageSources: Record<string, string>; identities: Record<string, string[]>; complete: boolean }
@@ -21,7 +21,7 @@ function oldRunning(common: string, probe: ProcessProbe): boolean {
     if (!observed) return false
     // Older discovery files carry only a pid. An unreadable identity is indeterminate,
     // so keep catching up until disappearance can be established.
-    if (info.startTime && observed.startTime && info.startTime !== observed.startTime) return false
+    if (info.startTime && observed.startTime && !sameStartTime(info.startTime, observed.startTime)) return false
     if (info.executable && observed.executable && info.executable !== observed.executable) return false
     return true
   } catch { return false }

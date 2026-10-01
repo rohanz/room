@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { pidAlive, probeProcess, type ProcessProbe } from './process.js'
+import { pidAlive, probeProcess, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
 export interface InstanceToken extends ProcessIdentity { sessionId: string; nonce: string }
@@ -12,7 +12,7 @@ export type Liveness = 'alive' | 'dead' | 'unknown'
 export function liveness(identity: ProcessIdentity, probe: ProcessProbe = probeProcess): Liveness {
   const observed = probe(identity.pid)
   if (!observed) return 'dead'
-  if (observed.startTime && identity.startTime && observed.startTime !== identity.startTime) return 'dead'
+  if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return 'dead'
   if (observed.executable && identity.executable && observed.executable !== identity.executable) return 'dead'
   if (!observed.startTime || !observed.executable || !identity.startTime || !identity.executable) return 'unknown'
   return 'alive'

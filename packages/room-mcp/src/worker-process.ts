@@ -232,7 +232,7 @@ export async function stopWorkerWithEscalation(options: {
 }
 
 export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+import { pidAlive, probeProcess, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
   return pid > 0 && probe(pid) !== undefined
@@ -247,7 +247,7 @@ export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: Pr
   if (!info) return 'not-ours'
   if (!w.processStartTime) return 'unknown'
   if (!info?.startTime || !info.executable) return 'unknown'
-  if (info.startTime !== w.processStartTime) return 'not-ours'
+  if (!sameStartTime(info.startTime, w.processStartTime)) return 'not-ours'
   const executable = path.basename(info.executable)
   return executable === w.host || executable === 'node' ? 'ours' : 'not-ours'
 }

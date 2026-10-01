@@ -58,9 +58,12 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
   // A checkout overwrites an ignored file without a word, and an abort cannot bring it back.
   const ignored = lines(await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']), '\0')
   if (ignored.length) {
-    const covered = new Set(ignored)
+    // Overlap either way: a commit path at or under an ignored entry, or an ignored entry under a commit path.
+    const entries = ignored.map(p => p.replace(/\/+$/, ''))
+    const covered = new Set(entries)
+    const holdsIgnored = new Set(entries.flatMap(p => p.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
     const clobbered = lines(await git(w.dir, ['diff', '--name-only', '-z', from, target]), '\0').filter(p =>
-      covered.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/') + '/')))
+      covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/'))))
     if (clobbered.length) return refuse(`your commits add ${clobbered.slice(0, MAX_LISTED).join(', ')}, which ${clobbered.length === 1 ? 'is an ignored file' : 'are ignored files'} in the worker's tree`)
   }
 
