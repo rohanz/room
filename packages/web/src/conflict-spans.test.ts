@@ -398,3 +398,20 @@ it('the line annotation names a clean overlap an overlap', () => {
   expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }] })).toBe('money ↔ tiers · overlap')
   expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false }] })).toBe('money ↔ tiers · conflict')
 })
+
+it('the parts of a clean overlap outside a text conflict stay an overlap', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const host = new Element()
+  const span = deriveConflictSpans(editNotice('money', 10, 'clean'), [claims[1]])[0]
+  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
+    text: 'code', side: 'common' as const, changedBy: null, conflict: i === 3, aLine: i + 1,
+  })), ['money', 'tiers'], undefined, [span])
+  expect(host.find('conflict-tag').map(tag => tag.children[0])).toEqual(['overlap', 'conflict', 'overlap'])
+  const rows = host.find('code-line')
+  expect(rows.filter(row => row.className.includes('claim-overlap-line'))).toHaveLength(5)
+  expect(rows[3].className).toContain('conflict-line')
+})
+
+it('a line in a clean overlap and a separate conflict is annotated as the conflict', () => {
+  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }, { people: ['money', 'third'], resolved: false }] })).toBe('money ↔ third · conflict')
+})

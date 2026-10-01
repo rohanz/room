@@ -566,7 +566,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
       for (let i = start; i <= end + 1; i++) {
         const uncovered = i <= end && !textRegions.some(r => i >= r.start && i <= r.end)
         if (uncovered && run < 0) run = i
-        if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly }); run = -1 }
+        if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly, overlap: s.merges === 'clean' }); run = -1 }
       }
     } else spans.push({ start, end, people, detail, resolution: s.resolvedBy ? resolutionLabel(s) : undefined, resolved: !!s.resolvedBy, claimOnly, overlap: s.merges === 'clean' })
   }

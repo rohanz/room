@@ -521,7 +521,7 @@ export function lineDetail(input: LineDetailInput) {
 
 export function lineAnnotation(input: LineDetailInput): string {
   const detail = lineDetail(input)
-  const conflict = detail.conflicts.find(c => !c.resolved) ?? detail.conflicts[0]
+  const conflict = detail.conflicts.find(c => !c.resolved && !c.overlap) ?? detail.conflicts.find(c => !c.resolved) ?? detail.conflicts[0]
   if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : conflict.overlap ? ' · overlap' : ' · conflict')
   if (detail.claims.length) return detail.claims.map(c => c.by + ' · claimed: ' + c.intent).join(' · ')
   return detail.ownership
