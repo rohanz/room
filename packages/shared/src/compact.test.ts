@@ -104,7 +104,7 @@ describe('the generation gate', () => {
     expect(params.gen).toBe('g7')
     expect(stale).toEqual(['g8'])
     const roomd = fake(), roomdParams: Record<string, string> = {}
-    trackGeneration(roomd, doc, roomdParams) // roomd's provider over the probe's replica
+    trackGeneration(roomd, doc, roomdParams) // a second provider over the same document shares its pin
     expect(roomdParams.gen).toBe('g7')
     expect(MSG_GENERATION).toBe(8)
   })
