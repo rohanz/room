@@ -62,11 +62,16 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
     const entries = ignored.map(p => p.replace(/\/+$/, ''))
     const covered = new Set(entries)
     const holdsIgnored = new Set(entries.flatMap(p => p.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
-    // Every path your HEAD tracks, not only a HEAD-to-HEAD diff: the worker may have untracked a file (staged) or
-    // replaced it with a folder (unstaged) that now holds ignored output.
-    const clobbered = lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0').filter(p =>
+    // Every path the rebase can write: all your HEAD tracks (the worker may have untracked a file, staged, or
+    // replaced it with a folder, unstaged) and all its replayed commits touch, even ones added and later removed.
+    // The snapshot itself never holds an ignored path.
+    const written = new Set([
+      ...lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0'),
+      ...lines(await git(w.dir, ['log', '--format=', '--name-only', '--no-renames', '-z', `${start}..${from}`]), '\0').map(p => p.trim()).filter(Boolean),
+    ])
+    const clobbered = [...written].filter(p =>
       covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/'))))
-    if (clobbered.length) return refuse(`your HEAD tracks ${clobbered.slice(0, MAX_LISTED).join(', ')}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ''}, where the worker has ignored files that a checkout would overwrite`)
+    if (clobbered.length) return refuse(`the rebase would write ${clobbered.slice(0, MAX_LISTED).join(', ')}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ''} (tracked in your HEAD or the worker's commits), where the worker has ignored files that it would overwrite`)
   }
 
   // Snapshot the worker's uncommitted edits (tracked and untracked; not Room's directory or linked inputs).
