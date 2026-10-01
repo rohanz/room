@@ -1,6 +1,6 @@
 # Room document history: compaction with a document generation (0.17.0)
 
-Status: design, 2026-10-02, reviewed (Astra, must-fix rounds to zero; §10). Not implemented yet: §9 says
+Status: design, 2026-10-02, reviewed (Astra, must-fix rounds; §10). Not implemented yet: §9 says
 why. Input: the [12-hour soak of rc5](../rehearsals/2026-10-02-soak-12h.md), finding 1.
 
 ## 1. Problem
@@ -203,8 +203,15 @@ The room's current generation is `G`.
 **A stale connection** gets the frame and `bindHub`, and nothing else:
 - no `setupWSConnection`, so no sync, no broadcast and no awareness;
 - every non-hub message it sends is dropped unread. Its replica can never merge into the room.
-- Its hub frames reach the room's hub, so the old session's leases renew and its pending posts settle
-  (§5.5).
+- **Its hub frames reach the room's hub.**
+  - The server starts that hub itself (`hubs.ensure` on the loaded document), because after a recycle
+    every first connection is stale and none would otherwise start it.
+  - While any stale connection is open, it keeps the room's document loaded with the same placeholder
+    anchor in `doc.conns` as the recycle, so the hub isn't stopped under it. The anchor is never sent
+    anything.
+  - When the last stale connection closes, the anchor is removed. If no normal connection remains, the
+    document unloads as stock y-websocket unloads it: `writeState`, then destroy.
+  - So the old session's leases renew and its pending posts settle (§5.5).
 - It is closed when the client drops the session, and it counts against the connection limits like any
   other.
 
@@ -292,30 +299,52 @@ A client's replica is only ever discarded once a new generation exists.
 **When.** A replica is stale when a generation frame's `current` differs from its pin. A `fresh` replica
 is never stale.
 
+**room-mcp: writes need a live connection.** This is the one change to tools.
+- Every tool write to the room's document is now preceded by a synchronous check that the session's
+  provider is connected and synced, and its replica not stale (`s.writable()`).
+- It runs immediately before the write, after the tool's awaits. A `room_claim` or `room_scope` that
+  was awaiting a file read when the connection dropped therefore returns `error: room not synced yet,
+  retry` without writing, instead of writing into a replica that may be discarded.
+- A write that passes the check is sent at once on an open socket. It reaches the server before the
+  client's close frame, so the drain keeps it (§5.3).
+- Background writers (roomd, ledger, projectors) are not tools. What they write in that window is the
+  §5.6 table.
+
 **room-mcp: the replacement.** A stale primary starts it. It is the host-rebind path, run with the same
-session id, and it runs to completion:
-1. **Stop new work on the old session.** New tool calls wait on the replacement, as they wait on a
-   rebind.
+session id:
+1. **Stop new work on the old session.** New tool calls wait for the replacement's first attempt, as they
+   wait on a rebind.
 2. **Let the old session's work settle**, bounded at 60 s.
-   - Tool calls already running finish.
+   - Tool calls already running finish. Their writes fail the `writable()` check, so none reports a
+     write that isn't in the room.
    - Its `HubClient`'s pending posts settle over the stale connection. Each is answered by the hub:
      accepted, `duplicate` if the drain had already accepted it, or refused. Each post's outcome is
      therefore true.
-   - Document writes the old session makes now land in a replica that will be discarded. A tool call
-     that started on the old session, and wrote to its document after the session went stale, returns
-     an error saying the room's document was replaced during the call and to check `room_state` before
-     retrying. It never returns success.
-   - Posts don't need that error: their outcome comes from the hub.
 3. **Drop the old session.** Its leave releases the lease over the stale connection.
 4. **Join and adopt a fresh session.**
    - `joinSession` takes a new, `fresh` replica.
    - It is adopted with `adopt(s, false)`, which skips `clearStale`, so the participant's own claims and
      scope (in the new generation) are not mistaken for an earlier session's.
-5. **Re-attach secondary rooms.** Each secondary (the local workers room) is rejoined and re-attached
-   (`attachWorkersRoom`), which rebuilds the workers bridge against the new primary.
-6. **Retry until done.** The replacement keeps the intended room set and its progress. A stage that
-   fails (a join refused, a relay down) is retried with backoff until every room is back, so an idle
-   agent is not left without its workers room.
+5. **Re-attach secondary rooms.**
+   - First, delete from the new primary the lead's bridge mirrors: claims with `mirrorOf` set and `by`
+     the lead's name. The dropped bridge's mapping from local claims to mirrors was in memory only,
+     and the new bridge re-mirrors every local claim at start, so keeping them would orphan them.
+   - The lead's own claims (no `mirrorOf`) are untouched.
+   - Then each secondary (the local workers room) is rejoined and re-attached (`attachWorkersRoom`),
+     which rebuilds the workers bridge against the new primary.
+6. **Failure.** The replacement keeps the intended room set and its progress.
+   - **Transient failure** (a join timing out, a relay down): retried with backoff until every room is
+     back.
+   - **Permanent failure** (`NotLoggedIn`, `NoRoom`, a 4403 or 4001 close; the errors auto-join already
+     treats as non-retryable) ends the replacement. The session is left closed with the reason, as
+     auto-join leaves it.
+   - Either way, after the first attempt tool calls stop waiting:
+     - `room_state` reports the replacement;
+     - `room_login`, `room_join`, `room_create` and `room_leave` run as usual, and `room_leave` cancels
+       a pending replacement;
+     - other tools return `error: rejoining the room after its document was compacted; retry` until it
+       completes.
+   - An idle agent is not left without its workers room while the retries run.
 
 **roomd** runs inside the session and is replaced with it.
 
@@ -344,7 +373,7 @@ document writes that never reached the server:
 | Overlays, manifest, `basetextFlat` | Republished by roomd's `reconcile('all')` at start |
 | `participants` `id`/`proj`/`git` | Rewritten at start |
 | Worker views, graphs, colours, coordination | Rebuilt on `sync` |
-| Claims, scope, release (tool calls) | Refused while unsynced. A call spanning the replacement reports it (§5.5 step 2) |
+| Claims, scope, release (tool calls) | Never written without a live, synced connection (`writable()`, §5.5) |
 | Worker retirement (projector) | **Re-verified on every sync** (new, below) |
 | Claim re-anchoring by roomd on a HEAD transition | The claim shows its last synced lines until roomd's next transition |
 | `pushedPending` (a `pushed` notice a HEAD transition owes) | The notice is not sent |
@@ -387,7 +416,9 @@ drain-and-unload recycle.
 
 **Clients.**
 - The generation frame handler and `gen` getter.
-- room-mcp's replacement, an extension of the rebind path with a settle step and the spanning-call error.
+- room-mcp's `writable()` check before tool writes.
+- The replacement: an extension of the rebind path with a settle step, mirror cleanup and failure
+  handling.
 - The projector's re-verification.
 - Reload in the web view and exit in roomagent.
 
@@ -428,7 +459,9 @@ already unloaded.
     not compacted again; a failing `replace` leaves the old document and generation.
   - **Restart reloads compact.**
   - **Gate:** each row of §5.2. A stale connection's sync and update messages are dropped, and its hub
-    frames are answered.
+    frames are answered, by a hub the stale connection itself started after a recycle.
+  - **Stale connections keep the room loaded** while they are open, and it unloads after the last one
+    closes.
   - **Recycle drain:** updates several clients sent after the server's close frame went out, but before
     theirs, are all persisted. This test fails without the anchor.
   - **Lease release during the drain:** a release made during the drain is in the lease store the next
@@ -440,7 +473,11 @@ already unloaded.
 - **Client (room-mcp):**
   - A stale frame starts a replacement that keeps the name, doesn't clear its own claims, re-attaches
     the workers room, and survives a failed secondary join by retrying.
-  - A `room_claim` spanning the replacement returns the replacement error, not success.
+  - A `room_claim` whose file read spans a disconnect returns `not synced` and writes nothing.
+  - After a replacement with a worker's mirrored claim, the team room holds exactly one mirror, and
+    releasing the local claim leaves none.
+  - A replacement that meets `NotLoggedIn` ends, leaves the session closed, and lets `room_login` run.
+  - A transient failure retries while tools return the rejoining error.
   - BroadcastChannel is off.
 - **Projector:** a retirement whose replica was discarded is re-applied on the next sync, and an
   already-retired worker is not touched.
@@ -455,7 +492,7 @@ trigger) against rc5's 11,200/hour line, and the server's heap slope.
 
 ## 9. Why this is not implemented tonight
 
-The three review rounds (§10) showed where the work is.
+The review rounds (§10) showed where the work is.
 - **Compaction itself is small:** the spike, the trigger and the load-time path.
 - **The hard part is the generation change on clients.** Two exact designs (client replay, then a
   server-side translator) each failed review on several real holes.
@@ -517,8 +554,15 @@ What exists on the `compaction` branch:
   - the anchored drain;
   - hub-only stale connections, so posts settle;
   - a final lease flush;
-  - the 4409-free gate: a stale connection replaces its replica, and no compaction, no replacement;
+  - a gate that replaces a replica only once a new generation exists;
   - an error for spanning tool calls;
   - retirement re-verification.
 
   It states the remaining losses (§5.6).
+- **Round 4** (Astra, 4 must-fix), fixed in the fifth draft:
+  - Rebuilding the bridge duplicated persisted mirror claims: mirrors are now deleted before re-attach.
+  - Writes between a disconnect and the stale frame went unreported: tool writes now require
+    `writable()`.
+  - Hub-only connections didn't start or keep a hub: they now start it and anchor the document.
+  - Replacement retries blocked recovery tools: permanent failures end the replacement, and tools stop
+    waiting after the first attempt.
