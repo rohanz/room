@@ -202,6 +202,34 @@ describe('ConflictSlots', () => {
     expect(new Set(post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)).size).toBe(1)
   })
 
+  it("tells the lead when its running worker's clean overlap stops merging, within one burst", async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
+    const slots = new ConflictSlots(room, post, '1')
+    const key = slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), base = { owner: 'A', other: 'A+w', kind: 'edit-in-claim' as const, path: 'x', subject: 'c', status: 'conflict' as const }
+    await slots.settle(key, { ...base, inputs: 'i1', factId: 'clean', merges: 'clean' })
+    await slots.settle(key, { ...base, inputs: 'i2', factId: 'conflicting' })
+    const toLead = [...new Map(post.mock.calls.filter(c => c[1].to === 'A').map(c => [c[2].id, c[1]])).values()]
+    expect(toLead.map(body => formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...body } as any).replace(/:.*/, '')))
+      .toEqual(['[notify] overlap on x', '[notify] CONFLICT on x'])
+    // And back: the burst's versions merge again, and the lead is told so.
+    await slots.settle(key, { ...base, inputs: 'i3', factId: 'clean again', merges: 'clean' })
+    const ids = post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)
+    expect(new Set(ids).size).toBe(3)
+    expect(post.mock.calls.filter(c => c[1].to === 'A').at(-1)![1].text).toMatch(/; merges cleanly$/)
+  })
+
+  it('keeps an overlap an overlap through an unreadable pass, so its release says "overlap cleared"', async () => {
+    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const slots = new ConflictSlots(room, post, '1')
+    const key = slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), base = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', subject: 'c' }
+    await slots.settle(key, { ...base, status: 'conflict', inputs: 'i1', factId: 'f', merges: 'clean' })
+    await slots.settle(key, { ...base, status: 'unknown', inputs: 'i2', factId: '', why: 'cannot map claim' })
+    await slots.settle(key, { ...base, status: 'clean', inputs: 'released', factId: '' })
+    const last = post.mock.calls.filter(c => c[1].to === 'A').at(-1)![1]
+    expect(formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...last } as any)).toContain('overlap cleared on x: the overlap with B cleared')
+  })
+
   it('describes an earlier committed edit as preceding a new claim', async () => {
     const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true }), holder = vi.fn().mockResolvedValue({ ok: true })
     const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, holder)

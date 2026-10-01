@@ -56,6 +56,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()
   /** Leads already told that carry=false leaves their uncommitted changes out; a failed carry is reported every time. */
   const headStartExplained = new WeakSet<Session>()
+  /**
+   * One room_done at a time records and posts its report: the run's reports are this process's alone (the run
+   * writer lease), and a report made while another is still posting would reuse that report's id.
+   */
+  let reporting: Promise<unknown> = Promise.resolve()
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state
   const handlers: Record<string, Handler> = {
     async room_done(a) {
@@ -80,7 +85,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         const changed = manifestPaths(s.room, s.me.name)
         let saved = false
-        try {
+        const report = reporting.then(async () => {
           await registry!.reportDone(myId, ownRun.n, summary, changed)
           saved = true
           release()
@@ -90,6 +95,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const posted = await s.post<DoneMsg>(s.me, message.body, { id, auto: true })
             if (!posted.ok) throw new Error(posted.text)
           })
+        })
+        reporting = report.catch(() => {})
+        try {
+          await report
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error)
           return saved

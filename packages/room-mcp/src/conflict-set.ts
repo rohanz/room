@@ -36,6 +36,8 @@ export interface ConflictSlot {
   earlierSha?: string | null
   /** An edit inside a claim whose two versions merge without conflict as they stand: an overlap, not a CONFLICT. */
   merges?: 'clean'
+  /** How many times an edit-in-claim conflict changed between merging and not: a burst notice per turn. */
+  mergeTurns?: number
   fence: string
   checkedAt: number
   burstAt?: number
@@ -53,6 +55,11 @@ export interface ConflictSlot {
 }
 export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
 
+/** A conflict that turns between merging and not counts a turn; any other state keeps the count. */
+const mergeTurns = (result: Evaluation, prev: ConflictSlot | undefined): Pick<ConflictSlot, 'mergeTurns'> => {
+  const turns = (prev?.mergeTurns ?? 0) + (result.status === 'conflict' && prev?.settled === 'conflict' && !result.merges !== !prev.merges ? 1 : 0)
+  return turns ? { mergeTurns: turns } : {}
+}
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
   [owner, kind, other, path, subject].join('\0')
@@ -117,8 +124,9 @@ export class ConflictSlots {
       ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
       // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...(result.status === 'clean' && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
-      // What cleared was an overlap that merged, not a CONFLICT.
-      ...(result.status === 'clean' && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
+      // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
+      ...((result.status === 'clean' || result.status === 'unknown') && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
+      ...(result.kind === 'edit-in-claim' ? mergeTurns(result, prev) : {}),
       ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
       ...(result.kind === 'edit-in-claim' && result.status === 'conflict' ? { burstAt: prev?.status === 'conflict' ? prev.burstAt ?? now : now } : {}),
     }
@@ -173,7 +181,8 @@ export class ConflictSlots {
       : slot.settled === 'clean' && slot.kind !== 'contract'
       ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
       : workerBurst !== undefined
-        ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join('\0'))}:worker`
+        // A burst's clean overlap has its own id, so the same burst turning into a CONFLICT is still told.
+        ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join('\0'))}:worker${slot.mergeTurns ? `:${slot.mergeTurns}` : ''}`
         : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
     const status = slot.settled
     const ownWorker = workerView?.lead === slot.owner

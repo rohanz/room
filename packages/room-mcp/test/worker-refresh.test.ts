@@ -90,18 +90,30 @@ function world() {
     expect(w, reply).toBeTruthy()
     return w!
   }
-  /** The worker calls room_done; unless `exit` is false, its host then exits. */
-  async function finish(tag: string, summary = `${tag} finished`, exit = true) {
+  /**
+   * The worker calls room_done once per summary, all at once from one MCP server (the first post held back
+   * `slowFirstPost` ms); unless `exit` is false, its host then exits.
+   */
+  async function finish(tag: string, summary: string | string[] = `${tag} finished`, exit = true, slowFirstPost = 0) {
     const w = workerByTag(repo, tag)!
     let ws: Session | null = fakeSession(rb, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
+    if (slowFirstPost) {
+      const post = ws.post
+      let first = true
+      ws.post = (async (...args: Parameters<Session['post']>) => {
+        if (first) { first = false; await new Promise(resolve => setTimeout(resolve, slowFirstPost)) }
+        return post(...args)
+      }) as Session['post']
+    }
     const tools = createTools({ getSession: () => ws, setSession: s => { ws = s }, cwd: w.dir })
     const registry = await registryForDir(repo)
     const record = registry.list().find(record => record.tag === tag)!
     const run = record.runs.at(-1)!
     if (!registry.reports(record.id).some(report => report.run === run.n)) await registry.admit({ id: record.id, run: run.n, nonce: run.nonce, dir: record.dir, chain: [] })
     process.env.ROOM_WORKER_ID = record.id
-    try { expect(await tools.call('room_done', { summary })).toContain('marked done') }
-    finally { delete process.env.ROOM_WORKER_ID }
+    try {
+      for (const reply of await Promise.all([summary].flat().map(text => tools.call('room_done', { summary: text })))) expect(reply).toContain('marked done')
+    } finally { delete process.env.ROOM_WORKER_ID }
     await tools.shutdown(); ws?.graph?.stop()
     if (!exit) return
     exits.get(tag)!(0)
@@ -429,5 +441,13 @@ describe('every room_done reaches the lead once', () => {
     expect(await t.call('room_wait', { timeoutMs: 200 })).not.toMatch(/FIRST_REPORT|SECOND_REPORT/)
     const done = t.messages().filter(m => m.type === 'done')
     expect(done.map(m => m.type === 'done' && m.summary)).toEqual(['FIRST_REPORT', 'SECOND_REPORT'])
+  })
+
+  it('two room_done calls at once from one worker both reach the lead', async () => {
+    const t = world()
+    await t.spawn('both')
+    await t.finish('both', ['FIRST_REPORT', 'SECOND_REPORT'], true, 300)
+    const done = t.messages().filter(m => m.type === 'done')
+    expect(done.map(m => m.type === 'done' && m.summary).sort()).toEqual(['FIRST_REPORT', 'SECOND_REPORT'])
   })
 })

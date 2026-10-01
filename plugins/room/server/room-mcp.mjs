@@ -55619,6 +55619,10 @@ init_disk_text();
 init_worker_registry();
 import fs40 from "node:fs";
 import { createHash as createHash14, randomUUID as randomUUID6 } from "node:crypto";
+var mergeTurns = (result2, prev) => {
+  const turns = (prev?.mergeTurns ?? 0) + (result2.status === "conflict" && prev?.settled === "conflict" && !result2.merges !== !prev.merges ? 1 : 0);
+  return turns ? { mergeTurns: turns } : {};
+};
 var hash = (value2) => createHash14("sha256").update(value2).digest("hex");
 var slotKey = (owner, kind, other, path54, subject = "") => [owner, kind, other, path54, subject].join("\0");
 var noticeId = (key2, epoch, episode) => `cf:${hash(key2)}:${epoch}${episode ? `:${episode}` : ""}`;
@@ -55705,8 +55709,9 @@ var ConflictSlots = class {
       ...result2.status === "clean" && (prev?.settled === "conflict" || prev?.settled === "possible") ? { clearedFrom: prev.settled } : {},
       // A cleared slot re-checked clean keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
       ...result2.status === "clean" && prev?.settled === "clean" && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {},
-      // What cleared was an overlap that merged, not a CONFLICT.
-      ...result2.status === "clean" && prev?.merges && (prev.settled === "conflict" || prev.settled === "clean" && prev.clearedFrom) ? { merges: prev.merges } : {},
+      // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
+      ...(result2.status === "clean" || result2.status === "unknown") && prev?.merges && (prev.settled === "conflict" || prev.settled === "clean" && prev.clearedFrom) ? { merges: prev.merges } : {},
+      ...result2.kind === "edit-in-claim" ? mergeTurns(result2, prev) : {},
       ...result2.status === "unknown" ? { retryAt: now + retryMinutes[unknownCount] * 6e4 } : {},
       ...result2.kind === "edit-in-claim" && result2.status === "conflict" ? { burstAt: prev?.status === "conflict" ? prev.burstAt ?? now : now } : {}
     };
@@ -55746,7 +55751,7 @@ var ConflictSlots = class {
       if (slot.settled === "clean" && open3.length) return;
     }
     const workerBurst = slot.kind === "edit-in-claim" && slot.status === "conflict" && workerView2?.lead === slot.owner ? Math.min(...this.owned(slot.owner).filter(([, other]) => other.kind === "edit-in-claim" && other.other === slot.other && other.path === slot.path && other.status === "conflict").map(([, other]) => other.burstAt ?? other.checkedAt)) : void 0;
-    const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : workerBurst !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join("\0"))}:worker` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
+    const id3 = episode !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, "possible", episode].join("\0"))}:${slot.settled === "clean" ? "clean" : "possible"}` : slot.settled === "clean" && slot.kind !== "contract" ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join("\0"))}:clean` : workerBurst !== void 0 ? `cf:${hash([slot.owner, slot.other, slot.path, workerBurst].join("\0"))}:worker${slot.mergeTurns ? `:${slot.mergeTurns}` : ""}` : noticeId(key2, slot.epoch, slot.episode) + (slot.settled === "clean" ? ":clean" : "");
     const status = slot.settled;
     const ownWorker = workerView2?.lead === slot.owner;
     const priority2 = status === "possible" || status === "clean" ? "fyi" : slot.kind === "edit-in-claim" && !ownWorker ? "interrupt" : "notify";
@@ -57778,6 +57783,7 @@ var defs4 = [
 function handlers4(state) {
   const spawnExplained = /* @__PURE__ */ new WeakSet();
   const headStartExplained = /* @__PURE__ */ new WeakSet();
+  let reporting = Promise.resolve();
   const { S, ensureWorkersRoom, workerAlive, myWorkers, mine, ctx, rooms, now, runningWorkers, setPresence, refreshPrs, myPr, postLedger } = state;
   const handlers10 = {
     async room_done(a) {
@@ -57802,16 +57808,21 @@ function handlers4(state) {
         }
         const changed = manifestPaths(s.room, s.me.name);
         let saved = false;
-        try {
+        const report = reporting.then(async () => {
           await registry2.reportDone(myId, ownRun.n, summary, changed);
           saved = true;
           release();
-          await registry2.postCompletion(myId, ownRun.n, async (id3, record2, report) => {
-            const message2 = completionMessage(record2, ownRun, registry2.status(myId), report);
+          await registry2.postCompletion(myId, ownRun.n, async (id3, record2, report2) => {
+            const message2 = completionMessage(record2, ownRun, registry2.status(myId), report2);
             if (!message2 || message2.id !== id3 || message2.body.type !== "done") throw new Error("worker completion message unavailable");
             const posted = await s.post(s.me, message2.body, { id: id3, auto: true });
             if (!posted.ok) throw new Error(posted.text);
           });
+        });
+        reporting = report.catch(() => {
+        });
+        try {
+          await report;
         } catch (error2) {
           const detail = error2 instanceof Error ? error2.message : String(error2);
           return saved ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again.` : `error: could not record worker report: ${detail}`;
