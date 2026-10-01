@@ -465,8 +465,11 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
       const holder = known.get(m.claimId)?.by
       const editor = m.to && m.to !== holder ? m.to : m.text.match(/^(.+?)(?:'s agent edited | edited |'s earlier change to )/)?.[1] ?? m.to ?? ''
       const editors = merging.get(span) ?? new Map<string, 'clean' | undefined>()
-      merging.set(span, editors.set(editor, m.merges))
-      span.merges = [...editors.values()].every(value => value === 'clean') ? 'clean' : undefined
+      merging.set(span, editors)
+      // A cleared editor no longer overlaps; with none left, the clearing notice says what it was.
+      if (m.clearedFrom) editors.delete(editor)
+      else editors.set(editor, m.merges)
+      span.merges = !editors.size ? m.merges : [...editors.values()].every(value => value === 'clean') ? 'clean' : undefined
     }
   }
   // Claims can overlap before a conflict notification is delivered.

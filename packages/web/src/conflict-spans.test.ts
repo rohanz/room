@@ -415,3 +415,10 @@ it('the parts of a clean overlap outside a text conflict stay an overlap', () =>
 it('a line in a clean overlap and a separate conflict is annotated as the conflict', () => {
   expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }, { people: ['money', 'third'], resolved: false }] })).toBe('money ↔ third · conflict')
 })
+
+it("a cleared editor's conflict no longer counts against another editor's clean overlap", () => {
+  const cleared = (editor: string, at: number, merges?: 'clean'): Msg => ({ ...conflict, id: `${editor}${at}:clean`, at, priority: 'fyi', claimId: 'c1', otherClaimId: '', to: editor, text: `the ${merges ? 'overlap' : 'conflict'} with tiers cleared`, clearedFrom: 'conflict', ...merges ? { merges } : {} })
+  expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBe('clean')
+  expect(deriveConflictSpans([...editNotice('money', 10, 'clean'), cleared('money', 11, 'clean')], [claims[1]])[0].merges).toBe('clean')
+  expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11)], [claims[1]])[0].merges).toBeUndefined()
+})
