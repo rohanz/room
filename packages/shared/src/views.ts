@@ -410,6 +410,8 @@ export interface ConflictSpan {
   claims: Claim[]
   resolvedBy?: ConflictResolution
   hidden: boolean
+  /** Whose version `from`/`to` number, when only one side's (an edit inside that participant's claim). */
+  rangeOf?: string
   /** Every editor's latest notice has `merges` (ConflictMsg): an overlap that merges cleanly, not a conflict. */
   merges?: 'clean'
 }
@@ -432,7 +434,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
   const merging = new Map<ConflictSpan, Map<string, 'clean' | undefined>>()
   const pairKey = (path: string, people: string[]) => JSON.stringify([path, [...people].sort()])
   for (const m of bus) {
-    let path: string, people: string[], ids: string[] = [], from: number | undefined, to: number | undefined
+    let path: string, people: string[], ids: string[] = [], from: number | undefined, to: number | undefined, rangeOf: string | undefined
     if (m.type === 'conflict') {
       path = m.path
       ids = [m.claimId, m.otherClaimId].filter(Boolean).sort()
@@ -444,7 +446,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
       const range = m.text.slice(m.text.indexOf(`${path}:`) + path.length + 1).match(/^(\d+)-(\d+)/)
       if (range) { from = Number(range[1]); to = Number(range[2]) }
       // An edit inside one claim names no range of its own ("inside tiers's claim at lines 2-7"): the claim's.
-      else if (ids.length === 1 && known.has(ids[0])) { from = known.get(ids[0])!.from; to = known.get(ids[0])!.to }
+      else if (ids.length === 1 && known.has(ids[0])) ({ from, to, by: rangeOf } = known.get(ids[0])!)
     } else if (m.type === 'note') {
       const match = m.text.match(/^your (.+) and (.+)'s now conflict around lines? ([\d, ]+);/)
       if (!match || !m.to) continue
@@ -457,7 +459,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
     if (cs.length === 2) { from = Math.max(...cs.map(c => c.from)); to = Math.min(...cs.map(c => c.to)) }
     const id = ids.length ? JSON.stringify([path, ids]) : pairKey(path, people)
     let span = spans.find(s => s.id === id || (people.length === 2 && pairKey(s.path, s.people) === pairKey(path, people) && ids.length === 0 && s.claimIds.length === 0))
-    if (!span) { span = { id, path, people, claimIds: ids, from, to, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
+    if (!span) { span = { id, path, people, claimIds: ids, from, to, ...rangeOf ? { rangeOf } : {}, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
     if (ids.length === 2 && span.claimIds.length < 2) { span.claimIds = ids; span.claims = cs }
     span.events.push(m)
     if (m.type === 'conflict') {

@@ -542,7 +542,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
   }
   for (const s of conflicts) {
     if (s.hidden || s.from === undefined || s.to === undefined) continue
-    const indices = lines.flatMap((line, i) => sourceLines(line, names).filter(([person]) => s.people.includes(person)).some(([, n]) => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
+    const indices = lines.flatMap((line, i) => sourceLines(line, names).filter(([person]) => s.rangeOf ? person === s.rangeOf : s.people.includes(person)).some(([, n]) => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
     if (!indices.length) continue
     const start = indices[0], end = indices.at(-1)!
     const regionClaims = new Map(s.claims.map(c => [c.id, c]))
