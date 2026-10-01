@@ -7,22 +7,13 @@
 import * as decoding from 'lib0/decoding'
 import * as encoding from 'lib0/encoding'
 import * as Y from 'yjs'
+import { isWriteMessage, sizeCapRefusal } from '@room/hub-core'
 import { validParticipantName } from './names.js'
+export { DocSizeMeter, isWriteMessage, sizeCapReason } from '@room/hub-core'
 
 const MESSAGE_SYNC = 0
 const SYNC_STEP2 = 1
 const SYNC_UPDATE = 2
-
-export function isWriteMessage(buf: Uint8Array): boolean {
-  try {
-    const d = decoding.createDecoder(buf)
-    if (decoding.readVarUint(d) !== MESSAGE_SYNC) return false
-    const sub = decoding.readVarUint(d)
-    return sub === SYNC_STEP2 || sub === SYNC_UPDATE
-  } catch {
-    return true // malformed: never let it through
-  }
-}
 
 function isAwarenessMessage(buf: Uint8Array): boolean {
   try { return decoding.readVarUint(decoding.createDecoder(buf)) === MESSAGE_AWARENESS } catch { return true }
@@ -399,12 +390,6 @@ export function bindDocumentIdentity(conn: EmitterLike, login: string, guard: Do
   }) as EmitterLike['emit']
 }
 
-/**
- * Refuse writes into a room whose document has grown past `maxBytes`: the connection keeps
- * reading, its sync updates are dropped, and `onCap` fires (rate-limit it in the caller). The
- * size is asked for lazily, with the write message's byte length, so callers can cache an
- * O(doc) measurement and refresh it by traffic (see DocSizeMeter).
- */
 const SYNC_STEP1 = 0
 const MESSAGE_QUERY_AWARENESS = 3
 
@@ -453,66 +438,18 @@ export function limitStateRequests(conn: EmitterLike, limit: StateRequestLimit):
   }) as EmitterLike['emit']
 }
 
-export function sizeCapReason(maxBytes: number): string { return `room is over its size cap (${(maxBytes / 1048576).toFixed(0)} MB)` }
-
+/**
+ * Refuse writes into a room whose document has grown past `maxBytes` (the shared rule in
+ * @room/hub-core/doc-cap.ts, which the local relay applies too): the connection keeps reading,
+ * its sync updates are dropped, and `onCap` fires (rate-limit it in the caller).
+ */
 export function capDocSize(conn: EmitterLike, sizeBytes: (messageBytes: number) => number, maxBytes: number, onCap: (size: number) => void): void {
   const emit = conn.emit.bind(conn)
   conn.emit = ((event: string | symbol, ...args: unknown[]) => {
     if (event === 'message') {
-      const buf = toBytes(args[0])
-      if (isWriteMessage(buf)) {
-        const size = sizeBytes(buf.byteLength)
-        if (size > maxBytes) { onCap(size); return false }
-      }
+      const size = sizeCapRefusal(toBytes(args[0]), sizeBytes, maxBytes)
+      if (size !== undefined) { onCap(size); return false }
     }
     return emit(event, ...args)
   }) as EmitterLike['emit']
-}
-
-export interface DocSizeMeterOptions {
-  /** Re-measure when the cached value is older than this. Default 30 s. */
-  maxAgeMs?: number
-  /** ... or after this many write messages since the last measurement. Default 200. */
-  maxWrites?: number
-  /** ... or after this many bytes of write messages since the last measurement. Default 8 MB. */
-  maxBytes?: number
-  now?: () => number
-}
-
-/**
- * A cached document-size measurement for one room. A purely time-based cache would let a
- * client push an unbounded amount through in the 30 s window between two measurements, so
- * the cache also expires by traffic: whichever of age, write count or bytes received trips
- * first forces a fresh measurement on the next write.
- */
-export class DocSizeMeter {
-  private cached?: { at: number; bytes: number }
-  private writes = 0
-  private received = 0
-  private readonly maxAgeMs: number
-  private readonly maxWrites: number
-  private readonly maxBytes: number
-  private readonly now: () => number
-
-  constructor(private readonly measure: () => number, o: DocSizeMeterOptions = {}) {
-    this.maxAgeMs = o.maxAgeMs ?? 30_000
-    this.maxWrites = o.maxWrites ?? 200
-    this.maxBytes = o.maxBytes ?? 8 * 1048576
-    this.now = o.now ?? Date.now
-  }
-
-  /** Size of the document as of the last measurement, counting this write message towards the next one. */
-  size(messageBytes = 0): number {
-    const c = this.cached
-    const stale = !c || this.now() - c.at >= this.maxAgeMs || this.writes >= this.maxWrites || this.received >= this.maxBytes
-    if (stale) {
-      const bytes = this.measure()
-      this.cached = { at: this.now(), bytes }
-      this.writes = 0
-      this.received = 0
-    }
-    this.writes++
-    this.received += messageBytes
-    return this.cached!.bytes
-  }
 }

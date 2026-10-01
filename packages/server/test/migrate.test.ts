@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc, type Msg } from '@room/shared'
 import { migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry, type MigrationIO } from '../src/migrate.js'
-import type { OpenRepo } from '../src/store.js'
+import type { AuditEntry, OpenRepo } from '../src/store.js'
 
 const repo = 'github.com/o/r'
 const one = `${repo}/main`, two = `${repo}/feature`
@@ -364,4 +364,47 @@ it('raw-copies an oversized canonical legacy document without decoding it', asyn
   expect(f.entry.legacy).toContain(moved)
   expect(f.docs.has(moved)).toBe(true)
   expect(f.entry.migratedAt).toBe(100)
+})
+
+describe('ambiguous names with audited logins', () => {
+  const join = (room: string, login: string, extra: Partial<AuditEntry> = {}): AuditEntry => ({ at: 1, event: 'join', room, login, provider: 'github', ...extra })
+  async function migrated(audit?: MigrationIO['audit'], maxAuditEntries?: number) {
+    const f = fixture()
+    f.io.audit = audit
+    if (maxAuditEntries !== undefined) f.io.maxAuditEntries = maxAuditEntries
+    await migrateRepo(repo, f.entry, f.io)
+    return { f, target: new RoomDoc(await f.io.load(repo)) }
+  }
+  const expectPlaceholders = ({ f, target }: Awaited<ReturnType<typeof migrated>>) => {
+    expect(f.entry.unresolved).toBe(2)
+    expect(target.doc.getMap('unresolved').size).toBe(2)
+    expect(target.scopes.has('ben')).toBe(false)
+    expect(target.mail.get('q1')?.from).toMatch(/^\?/)
+  }
+
+  it('resolves a name whose every candidate is the same provider-qualified login', async () => {
+    const { f, target } = await migrated(async () => [join(one, 'ben'), join(two, 'ben'), join(two, 'cy'), join(one, 'ben', { event: 'login' })])
+    expect(f.entry.unresolved).toBe(0)
+    expect(target.doc.getMap('unresolved').size).toBe(0)
+    expect(target.scopes.get('ben')).toMatchObject({ by: 'ben' })
+    expect(target.claims.get('c1')).toMatchObject({ by: 'ben', origin: one })
+    expect(target.mail.get('q1')).toMatchObject({ from: 'ben', to: 'cy' })
+    expect(target.mail.get('q2')).toMatchObject({ from: 'ben', to: 'ben' })
+  })
+
+  it('keeps placeholders when the same name belongs to different principals', async () => {
+    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(two, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' })]))
+  })
+
+  it('keeps placeholders when one candidate has two principals or none', async () => {
+    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(one, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' }), join(two, 'ben')]))
+    expectPlaceholders(await migrated(async () => [join(one, 'ben')]))
+    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(two, 'ben', { readOnly: true })]))
+  })
+
+  it('keeps placeholders when the audit is missing, unreadable or trimmed', async () => {
+    expectPlaceholders(await migrated())
+    expectPlaceholders(await migrated(async () => { throw new Error('audit unavailable') }))
+    expectPlaceholders(await migrated(async limit => [join(one, 'ben'), join(two, 'ben'), ...Array.from({ length: limit }, () => join(one, 'zed'))], 3))
+  })
 })

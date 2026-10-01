@@ -1,8 +1,9 @@
-import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS, LOAD_MAX_BYTES } from './limits.js'
+import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS, MIGRATION_AUDIT_MAX_ENTRIES, MIGRATION_AUDIT_MAX_BYTES, LOAD_MAX_BYTES } from './limits.js'
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
-import type { OpenRepo } from './store.js'
+import type { AuditEntry, OpenRepo } from './store.js'
+import { ownsName } from './readonly.js'
 import { archiveOwnerOf, parseRoomName, parseLegacyRoomName } from './names.js'
 import { servedBy016, classifyDoc } from './inventory.js'
 import type { StoredSize } from './stored.js'
@@ -61,7 +62,45 @@ export interface MigrationIO {
   maxSources?: number
   maxReadBytes?: number
   maxRecords?: number
+  /** The newest `limit` audit entries (more than `limit - 1` means trimmed); rejects past `maxBytes` of stored audit. */
+  audit?(limit: number, maxBytes: number): Promise<AuditEntry[]>
+  maxAuditEntries?: number
   onBuild?: () => void
+}
+
+/**
+ * The principals each repeated (source room, name) candidate joined as, keyed `<room>\0<name>`, or
+ * undefined without a complete audit. 0.16 documents hold names only (its document identity guard
+ * ran in observe mode), so the audit's `join` events are the only record tying a name in a room to
+ * a login: a candidate's principals are the writers who joined that room under a login owning the name.
+ */
+async function auditedPrincipals(io: MigrationIO, repo: string, candidates: Map<string, Set<string>>): Promise<Map<string, Set<string>> | undefined> {
+  if (!io.audit || !candidates.size) return undefined
+  const max = io.maxAuditEntries ?? MIGRATION_AUDIT_MAX_ENTRIES
+  let entries: AuditEntry[]
+  try { entries = await io.audit(max + 1, MIGRATION_AUDIT_MAX_BYTES) } catch { return undefined }
+  if (!Array.isArray(entries) || entries.length > max) return undefined
+  const rooms = new Map<string, Set<string>>()
+  for (const [person, sources] of candidates) for (const source of sources) {
+    const room = source.startsWith('archive:') ? repo : source
+    let people = rooms.get(room)
+    if (!people) { people = new Set(); rooms.set(room, people) }
+    people.add(person)
+  }
+  const found = new Map<string, Set<string>>()
+  for (const e of entries) {
+    if (e?.event !== 'join' || e.readOnly || typeof e.room !== 'string' || typeof e.login !== 'string' || !e.login) continue
+    const principal = typeof e.id === 'string' && e.id ? e.id : typeof e.provider === 'string' && e.provider ? `${e.provider}:${e.login}` : undefined
+    if (!principal) continue
+    for (const person of rooms.get(e.room) ?? []) {
+      if (!ownsName(person, e.login)) continue
+      const key = `${e.room}\0${person}`
+      let set = found.get(key)
+      if (!set) { set = new Set(); found.set(key, set) }
+      set.add(principal)
+    }
+  }
+  return found
 }
 
 /** An existing canonical key cannot be treated as absent after a failed inspection. */
@@ -225,17 +264,28 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       found.add(source.name)
       workRecords++
     }
+    // A name used on several branches by one audited principal is that person under the same 0.17 name
+    // (the hub admits a login only to `login` and `login+label`); different or unknown principals keep placeholders.
+    const repeated = new Map([...occurrences].filter(([, found]) => found.size > 1))
+    const principals = await auditedPrincipals(io, repo, repeated)
+    const resolved = new Set<string>()
+    if (principals) for (const [person, found] of repeated) {
+      const each = [...found].map(name => principals.get(`${name.startsWith('archive:') ? repo : name}\0${person}`))
+      const first = each[0]?.size === 1 ? [...each[0]][0] : undefined
+      if (first && each.every(set => set?.size === 1 && set.has(first))) resolved.add(person)
+    }
+    const isAmbiguous = (person: string) => (occurrences.get(person)?.size ?? 0) > 1 && !resolved.has(person)
     const recordCost = (included: Records[]) => included.reduce((n, source) => n + source.scopes.length + source.claims.length + source.messages.length + source.identities.size, 0)
     const makeTarget = (included: Records[]) => {
       io.onBuild?.()
       workRecords += recordCost(included)
       const baseDoc = new Y.Doc(); Y.applyUpdate(baseDoc, baseUpdate)
       const target = new RoomDoc(baseDoc)
-      const translated = (person: string, name: string) => (occurrences.get(person)?.size ?? 0) > 1
+      const translated = (person: string, name: string) => isAmbiguous(person)
         ? `?${crypto.createHash('sha256').update(`${name}\0${person}`).digest('hex').slice(0, 16)}` : person
       const groups = new Map<string, { placeholder: string; claims: Claim[]; scope?: Scope; ids: Set<string> }>()
       const includedNames = new Set(included.map(source => source.name))
-      for (const [person, found] of occurrences) if (found.size > 1) for (const name of found) if (includedNames.has(name)) groups.set(`${name}\0${person}`, { placeholder: translated(person, name), claims: [], ids: new Set() })
+      for (const [person, found] of occurrences) if (isAmbiguous(person)) for (const name of found) if (includedNames.has(name)) groups.set(`${name}\0${person}`, { placeholder: translated(person, name), claims: [], ids: new Set() })
       for (const source of included) {
         const name = source.name
         for (const [person, scope] of source.scopes) {

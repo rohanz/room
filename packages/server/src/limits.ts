@@ -23,6 +23,9 @@ export const WS_TICKET_TTL_MS = 60_000
 export const MIGRATION_MAX_RECORD_BYTES = 64 * 1024
 // Four halving retries fit an oversized migration without repeatedly rebuilding the whole document.
 export const MIGRATION_MAX_REBUILDS = 4
+// Login evidence for ambiguous migrated names: a longer audit history is treated as no evidence.
+export const MIGRATION_AUDIT_MAX_ENTRIES = 100_000
+export const MIGRATION_AUDIT_MAX_BYTES = 32 * 1048576
 // One export per identity leaves the other server slot available to another user's archive.
 export const MAX_EXPORTS_PER_PRINCIPAL = 1
 // Streams large archives in manageable writes without buffering another complete document.

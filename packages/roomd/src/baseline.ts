@@ -5,17 +5,22 @@
  */
 import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import nodePath from 'node:path'
 import { CARRIED_PATH, containedRepoPath, validRepoPath } from './repo-path.js'
 import { missingGitCwd, observeGit, timeoutMs, wholeTreeTimeoutMs, UNKNOWN_WHOLE_TREE_PATHS } from './git.js'
 
-/** Bounded binary Git reads used by the few synchronous carry/recovery operations. */
-export function boundedGitSync(dir: string, args: string[], options: { input?: Buffer; env?: NodeJS.ProcessEnv; maxBuffer?: number; wholeTreePaths?: number } = {}): Buffer {
-  const { wholeTreePaths, ...execOptions } = options
+/**
+ * Bounded binary Git reads used by the few synchronous carry/recovery operations. `stdinFile` is opened
+ * as the child's stdin: a synchronous child fed large `input` through a pipe can wait for EOF forever.
+ */
+export function boundedGitSync(dir: string, args: string[], options: { input?: Buffer; stdinFile?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number; wholeTreePaths?: number } = {}): Buffer {
+  const { wholeTreePaths, stdinFile, ...execOptions } = options
   const timeout = wholeTreePaths === undefined ? timeoutMs() : wholeTreeTimeoutMs(wholeTreePaths)
+  const stdin = stdinFile === undefined ? 'pipe' : fs.openSync(stdinFile, 'r')
   const done = observeGit(args)
   try {
-    return execFileSync('git', args, { cwd: dir, encoding: 'buffer', stdio: ['pipe', 'pipe', 'pipe'], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions })
+    return execFileSync('git', args, { cwd: dir, encoding: 'buffer', stdio: [stdin, 'pipe', 'pipe'], timeout, maxBuffer: execOptions.maxBuffer ?? 64 * 1024 * 1024, ...execOptions })
   } catch (error) {
     const stopped = error as NodeJS.ErrnoException & { signal?: string; killed?: boolean }
     const missing = missingGitCwd(dir, stopped)
@@ -24,6 +29,7 @@ export function boundedGitSync(dir: string, args: string[], options: { input?: B
     throw error
   } finally {
     done()
+    if (typeof stdin === 'number') fs.closeSync(stdin)
   }
 }
 
@@ -166,6 +172,36 @@ export function carriedContentHash(dir: string, path: string, write = false): st
     ? boundedGitSync(dir, [...args, '--stdin'], { input: Buffer.from(fs.readlinkSync(source)) })
     : boundedGitSync(dir, [...args, '--', path])
   return out.toString().trim()
+}
+
+/** A path as `hash-object --stdin-paths` reads a line: C-quoted when it holds a control character, quote or backslash. */
+const stdinPathLine = (path: string) => /[\x00-\x1f\x7f"\\]/.test(path)
+  ? '"' + path.replace(/["\\]/g, c => '\\' + c).replace(/[\x00-\x1f\x7f]/g, c => '\\' + c.charCodeAt(0).toString(8).padStart(3, '0')) + '"'
+  : path
+
+/**
+ * carriedContentHash for each of `paths`, in order, with one `hash-object --stdin-paths` for all files
+ * (its list read from a file, not a pipe). Each file is hashed with its own path's filters, as `--path` does;
+ * a link's text is only hashable as stdin, so links keep one call each.
+ */
+export function carriedContentHashes(dir: string, paths: readonly string[], write = false): string[] {
+  const hashes: string[] = []
+  const files: number[] = []
+  paths.forEach((path, i) => {
+    if (fs.lstatSync(nodePath.join(dir, path)).isSymbolicLink()) hashes[i] = carriedContentHash(dir, path, write)
+    else files.push(i)
+  })
+  if (!files.length) return hashes
+  const scratch = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'room-hash-paths-'))
+  try {
+    const list = nodePath.join(scratch, 'paths')
+    fs.writeFileSync(list, files.map(i => stdinPathLine(paths[i]) + '\n').join(''), { mode: 0o600 })
+    const out = boundedGitSync(dir, ['hash-object', ...(write ? ['-w'] : []), '--stdin-paths'], { stdinFile: list, wholeTreePaths: files.length })
+      .toString().split('\n').filter(Boolean)
+    if (out.length !== files.length) throw new Error(`git hash-object --stdin-paths returned ${out.length} hashes for ${files.length} files`)
+    files.forEach((index, n) => { hashes[index] = out[n] })
+    return hashes
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }) }
 }
 
 /**

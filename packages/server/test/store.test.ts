@@ -28,6 +28,9 @@ describe('FileStore', () => {
     expect((await b.readAudit()).map(e => e.event)).toEqual(['login', 'join', 'refused'])
     expect((await b.readAudit({ since: 20 })).map(e => e.at)).toEqual([20, 30])
     expect((await b.readAudit({ limit: 1 })).map(e => e.at)).toEqual([30])
+    // migration reads the audit with a byte bound and treats a larger file as no evidence
+    await expect(b.readAudit({ maxBytes: 10 })).rejects.toThrow('audit log is larger than 10 bytes')
+    expect(await b.readAudit({ maxBytes: 1 << 20 })).toHaveLength(3)
     // a corrupt line is skipped, not fatal
     fs.appendFileSync(path.join(dir, 'audit.log'), 'not json\n')
     expect(await b.readAudit()).toHaveLength(3)

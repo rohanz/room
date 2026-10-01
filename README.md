@@ -58,7 +58,7 @@ The hosted server is `wss://room-rohanz.fly.dev`. To choose it explicitly, launc
 | Automatic Git base fetch | Room may fetch a missing base commit from the room's remote, at most once per SHA per five minutes. | Set `ROOM_AUTO_FETCH=0` to disable it. |
 | Seven-day participant expiry | After seven days offline, Room removes that participant's overlay, scope, claims and other owned coordination state. Owed ledger messages remain. | Set `ROOM_STALE_DAYS` to a positive number. |
 | Server cleanup after 30 days | The server closes repositories idle for 30 days and removes legacy branch records 30 days after migration. | Server operators can set `ROOM_IDLE_DAYS` and `ROOM_LEGACY_DAYS`. |
-| Server size caps | The team server accepts up to 64 MiB per live room document and 16 MiB per WebSocket message. A local room has no live document cap; snapshots above 64 MiB are skipped, preserving the previous snapshot. Its identity guard observes by default. | Server operators can set `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, and experimental `ROOM_IDENTITY_GUARD=enforce`. |
+| Server size caps | The team server accepts up to 64 MiB per live room document and 16 MiB per WebSocket message. A local room applies the same rule to its live document at 64 MiB: once a room is over the cap, writers are refused (close 4413) and reads continue. Its snapshots above 64 MiB are skipped, preserving the previous snapshot. Its identity guard observes by default. | Server operators can set `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, and experimental `ROOM_IDENTITY_GUARD=enforce`. |
 
 ## How people use it
 

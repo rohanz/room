@@ -16,8 +16,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # The test suite and plugin build run on the hosted Ubuntu image.
+    # The suite alone takes about 6 minutes on an M-series Mac and longer on a 4-vCPU runner;
+    # the test watchdog already ends any single file after 15 minutes.
+    timeout-minutes: 45
+    # The test suite and plugin build run on the hosted Ubuntu image (the only CI platform).
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

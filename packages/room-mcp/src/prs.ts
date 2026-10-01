@@ -130,13 +130,13 @@ export function exportRoomLedger(s: Session, opts: { path?: string; now?: number
   return { path: outputPath, lines: markdown.trimEnd().split('\n').length }
 }
 
-/** Decode length-prefixed updates incrementally; bound a malicious frame before allocation. */
-async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> | null): Promise<void> {
+/** Decode length-prefixed updates incrementally; bound a malicious frame before allocation. Returns the frame count. */
+async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> | null): Promise<number> {
   if (!body) throw new Error('archive frame stream missing')
   const reader = body.getReader(), header = new Uint8Array(4)
   const frameMb = Number(process.env.ROOM_EXPORT_MAX_FRAME_MB ?? 64)
   const maxFrameBytes = (Number.isFinite(frameMb) && frameMb > 0 ? frameMb : 64) * 1048576
-  let headerAt = 0, update: Uint8Array | undefined, updateAt = 0, complete = false
+  let headerAt = 0, update: Uint8Array | undefined, updateAt = 0, complete = false, frames = 0
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -152,11 +152,12 @@ async function applyArchiveFrames(doc: Y.Doc, body: ReadableStream<Uint8Array> |
         }
         const count = Math.min(update.byteLength - updateAt, value.byteLength - at)
         update.set(value.subarray(at, at + count), updateAt); updateAt += count; at += count
-        if (updateAt === update.byteLength) { Y.applyUpdate(doc, update); update = undefined }
+        if (updateAt === update.byteLength) { Y.applyUpdate(doc, update); update = undefined; frames++ }
       }
     }
     if (headerAt || update) throw new Error('truncated archive frame')
     complete = true
+    return frames
   } finally { if (!complete) await reader.cancel().catch(() => {}); reader.releaseLock() }
 }
 
@@ -166,11 +167,21 @@ export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: 
   const a = await authFor(s)
   const res = await fetch(`${httpOf(a.server)}/archive/export`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ room: legacyRoom, schema: 2, session: a.session, token: a.token }), signal: AbortSignal.timeout(20000) })
-  if (!res.ok) throw new Error(`archive ${legacyRoom} unavailable: ${(await res.text()).trim() || `HTTP ${res.status}`}`)
+  // 404 carries the server's reason (unknown archive, or no stored document); say plainly that nothing was exported.
+  if (!res.ok) {
+    const reason = (await res.text()).trim() || `HTTP ${res.status}`
+    throw new Error(res.status === 404 ? `nothing to export from ${legacyRoom}: ${reason}` : `archive ${legacyRoom} unavailable: ${reason}`)
+  }
+  // Servers before 0.17.0-rc6 answered an absent document with 200 and no updates.
+  const absent = () => new Error(`nothing to export from ${legacyRoom}: no stored document for ${legacyRoom}`)
   const doc = new Y.Doc()
   try {
-    if (res.headers.get('content-type')?.split(';')[0] === 'application/vnd.room.updates') await applyArchiveFrames(doc, res.body)
-    else Y.applyUpdate(doc, new Uint8Array(await res.arrayBuffer()))
+    if (res.headers.get('content-type')?.split(';')[0] === 'application/vnd.room.updates') { if (!await applyArchiveFrames(doc, res.body)) throw absent() }
+    else {
+      const update = new Uint8Array(await res.arrayBuffer())
+      if (!update.byteLength) throw absent()
+      Y.applyUpdate(doc, update)
+    }
     const now = opts.now ?? Date.now(), timestamp = new Date(now).toISOString().replace(/[:.]/g, '-')
     const outputPath = opts.path ? path.resolve(s.dir, opts.path)
       : path.join(s.dir, '.room', 'ledger', `${legacyRoom.replaceAll('/', '_')}-${timestamp}.md`)

@@ -48,7 +48,7 @@ import { RepoLocks } from './repo-lock.js'
 import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames, safeRoomRegistry } from './migrate.js'
 import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, classifyDoc } from './inventory.js'
-import { HUB_ORIGIN } from '@room/hub-core'
+import { DOC_SIZE_CAP_CODE, HUB_ORIGIN } from '@room/hub-core'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 import {
@@ -349,6 +349,7 @@ async function migrateOpenRepo(repo: string): Promise<void> {
       list: listDocs, load: loadDoc, write: (name, update) => changed(() => writeDoc(name, update)), clear: name => changed(() => clearDoc(name)), save: saveRooms,
       stored: async (name, limit) => storedSize(name, limit, await (tables ??= storedTables())),
       copyRaw: (from, to) => changed(() => copyRaw(from, to)),
+      audit: (limit, maxBytes) => store.readAudit({ limit, maxBytes }),
       release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
       freeze: names => changed(() => freezeDocs(names, upgradeText(repo))),
       revoke: async names => {
@@ -807,7 +808,8 @@ const server = http.createServer((req, res) => {
       const updates = async function* () {
         if (!live && isLevelProvider(p)) yield* levelStoredUpdates(await levelDbOf(p), name)
         else {
-          yield live ? Y.encodeStateAsUpdate(live) : memoryDocs.get(name) ?? new Uint8Array([0, 0])
+          const stored = live ? Y.encodeStateAsUpdate(live) : memoryDocs.get(name)
+          if (stored) yield stored
         }
       }
       let total = 0, largest = 0, frames = 0
@@ -816,6 +818,8 @@ const server = http.createServer((req, res) => {
         if (cancellation.cancelled()) return
         total += update.byteLength; frames++; largest = Math.max(largest, update.byteLength)
       }
+      // A stored empty document still has a record (and a live one encodes to one frame); only an absent one has none.
+      if (!frames) return text(404, `no stored document for ${name}`)
       const reservation = largest + 4
       if (reservation > DOC_MAX_RESERVATION_BYTES || !slot.resize(reservation) || !responseWork?.resize(reservation))
         throw new HttpFailure(507, 'archive record too large to export; raise ROOM_DOC_MAX_MB or ROOM_MAX_TOTAL_QUEUED_MB')
@@ -933,7 +937,7 @@ const server = http.createServer((req, res) => {
  *  would otherwise make the room impossible to load. Measured per room at most every 30 s, and again
  *  after 200 write messages or 8 MB received, whichever comes first: a time-only cache would let an
  *  unbounded amount through between two measurements. The default 64 pairs with ROOM_DOC_MAX_BYTES in
- *  shared/src/memory.ts (the local relay's snapshot ceiling); the server image ships without @room/shared. */
+ *  shared/src/memory.ts, the local relay's live cap and snapshot ceiling (one rule: hub-core/src/doc-cap.ts). */
 const DOC_MAX_BYTES = Number(process.env.ROOM_DOC_MAX_MB ?? 64) * 1048576
 const docMeters = new Map<string, DocSizeMeter>()
 const capLogged = new Map<string, number>()
@@ -1109,7 +1113,7 @@ server.on('upgrade', (req, socket, head) => {
           if (failure) { ws.close(4507, failure); return }
           const now = Date.now()
           if ((capLogged.get(repo) ?? 0) < now - 60_000) { capLogged.set(repo, now); console.log(`refusing writes: room ${repo} is ${(size / 1048576).toFixed(1)} MB (cap ${(DOC_MAX_BYTES / 1048576).toFixed(0)} MB); close and reopen the repo, or raise ROOM_DOC_MAX_MB`) }
-          ws.close(4413, sizeCapReason(DOC_MAX_BYTES))
+          ws.close(DOC_SIZE_CAP_CODE, sizeCapReason(DOC_MAX_BYTES))
         })
         // Outermost of all: a state request costs an encoding of the whole document, for viewers and members alike.
         limitStateRequests(ws, { perMinute: 10, maxQueuedBytes: 1048576, queued: () => ws.bufferedAmount,

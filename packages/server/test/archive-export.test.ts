@@ -13,6 +13,8 @@ const servers = devServers()
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-export-'))
 const repo = 'github.com/archiver/project', archive = `${repo}/main`
 const compacted = `${repo}/compacted`, tooLarge = `${repo}/too-large`
+// Registered legacy rooms: one never stored a record, one stored an empty document.
+const absent = `${repo}/absent`, empty = `${repo}/empty`
 const historical = [`${repo}/feature%2Fx`, `${repo}/a%252Fb`, 'github.com/Archiver/Project', `${repo}/`]
 let port: number, base: string
 const post = (route: string, body: unknown, headers: Record<string, string> = {}) => fetch(`${base}${route}`, {
@@ -36,12 +38,13 @@ beforeAll(async () => {
     const old = new Y.Doc(); old.getMap('fixture').set('name', name)
     await db.storeUpdate(name, Y.encodeStateAsUpdate(old)); old.destroy()
   }
+  const blank = new Y.Doc(); await db.storeUpdate(empty, Y.encodeStateAsUpdate(blank)); blank.destroy()
   const canonical = new Y.Doc()
   for (let i = 0; i < 1005; i++) canonical.getMap('unresolved').set(`key-${i}-${'x'.repeat(8192)}`, {})
   await db.storeUpdate(repo, Y.encodeStateAsUpdate(canonical))
   canonical.destroy(); await db.destroy()
   fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({
-    [repo]: { at: Date.now(), branches: [archive, compacted, tooLarge, ...historical], legacy: [archive, compacted, tooLarge, ...historical], mode: 'repo', migratedAt: Date.now() },
+    [repo]: { at: Date.now(), branches: [archive, compacted, tooLarge, absent, empty, ...historical], legacy: [archive, compacted, tooLarge, absent, empty, ...historical], mode: 'repo', migratedAt: Date.now() },
   }))
   port = await new Promise<number>((resolve, reject) => {
     const socket = net.createServer(); socket.once('error', reject)
@@ -87,6 +90,20 @@ it('refuses an oversized later record before sending any archive headers or fram
   expect(result.status).toBe(507)
   expect(result.headers.get('content-type')).toBe('text/plain')
   expect(await result.text()).toContain('ROOM_DOC_MAX_MB')
+})
+it('refuses a registered archive with no stored document with 404 and a reason, before any frames', async () => {
+  const session = await login(), result = await post('/archive/export', { room: absent, schema: 2, session })
+  expect(result.status).toBe(404)
+  expect(result.headers.get('content-type')).toBe('text/plain')
+  expect(await result.text()).toBe(`no stored document for ${absent}`)
+})
+it('exports a stored empty document as one empty-update frame', async () => {
+  const session = await login(), result = await post('/archive/export', { room: empty, schema: 2, session })
+  expect(result.status).toBe(200)
+  expect(result.headers.get('content-type')).toBe('application/vnd.room.updates')
+  const framed = Buffer.from(await result.arrayBuffer())
+  expect(framed.readUInt32BE(0)).toBe(framed.length - 4)
+  const doc = new Y.Doc(); Y.applyUpdate(doc, framed.subarray(4)); expect(doc.share.size).toBe(0); doc.destroy()
 })
 it('exports exact percent-containing legacy names and refuses their purge', async () => {
   const session = await login(), headers = { authorization: `Bearer ${session}` }

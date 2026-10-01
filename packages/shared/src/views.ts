@@ -344,12 +344,22 @@ export interface WorkerLineInput {
   lastActive?: number
   changedCount: number
   last?: string
+  /** The latest tool or file event in the worker's host log (labels carry no message text or output). */
+  activity?: { label: string; at: number }
   now?: number
 }
 
-/** The two canonical room_state lines for one dispatched worker. */
-export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, now = Date.now() }: WorkerLineInput): [string, string] {
+const WORKER_ACTIVITY_MAX = 80
+const ago = (ms: number): string => {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : seconds < 86400 ? `${Math.floor(seconds / 3600)}h` : `${Math.floor(seconds / 86400)}d`
+}
+
+/** The canonical room_state lines for one dispatched worker; a live worker with known activity gets a third. */
+export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, activity, now = Date.now() }: WorkerLineInput): string[] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
+  const showActivity = activity && workerLive(w.status) && !processGone && !w.stopReason
+  if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at)
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
   const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION
     : w.stopReason === 'discarded' ? `discard pending (${w.status})`
@@ -360,6 +370,7 @@ export function workerLine({ worker: w, dir, processGone = false, lastActive, ch
   return [
     `  - ${w.tag} (${w.host}${w.model ? ` ${w.model}` : ''}${w.effort ? ` · ${w.effort}` : ''}, ${state}, ${age}m): ${w.task.slice(0, 80)}${w.task.length > 80 ? '…' : ''}`,
     `      ${formatCount(changedCount, 'changed file')} · branch ${w.branch}${workerLive(w.status) && processGone && dir && !stoppedWithSession(w) ? ` · worktree ${dir}` : ''}${summary ? ` · ${summary}` : ''}${w.followUp ? ` · follow-up: ${w.followUp.slice(0, 120)}` : ''}${last ? ` · last: ${last.slice(0, 100)}` : ''}`,
+    ...(showActivity ? [`      ${activity.label.slice(0, WORKER_ACTIVITY_MAX)} · ${ago(now - activity.at)} ago`] : []),
   ]
 }
 
@@ -494,4 +505,34 @@ export function lineAnnotation(input: LineDetailInput): string {
   if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : ' · conflict')
   if (detail.claims.length) return detail.claims.map(c => c.by + ' · claimed: ' + c.intent).join(' · ')
   return detail.ownership
+}
+
+/** A migration `unresolved` entry, keyed `<old room>\0<old name>`. */
+export interface UnresolvedEntry { placeholder: string; claims?: readonly unknown[]; scope?: unknown }
+
+/** One plain line per ambiguous migrated name: what is owed to it and who it could be. `messagesTo`
+ *  counts mail addressed to each placeholder. At most `maxNames` lines and three candidates per line. */
+export function unresolvedLines(roomName: string, entries: Iterable<[string, UnresolvedEntry]>, messagesTo: ReadonlyMap<string, number>, maxNames = 5): string[] {
+  const groups = new Map<string, { candidates: string[]; messages: number; claims: number; scopes: number }>()
+  for (const [key, entry] of entries) {
+    const split = key.indexOf('\0')
+    const source = key.slice(0, split), person = key.slice(split + 1)
+    let where = source.startsWith('archive:') ? 'the old room' : source.startsWith(`${roomName}/`) ? source.slice(roomName.length + 1) : source
+    try { where = decodeURIComponent(where) } catch { /* keep the stored spelling */ }
+    let group = groups.get(person)
+    if (!group) { group = { candidates: [], messages: 0, claims: 0, scopes: 0 }; groups.set(person, group) }
+    group.candidates.push(`${person} on ${where}`)
+    group.messages += messagesTo.get(entry.placeholder) ?? 0
+    group.claims += Array.isArray(entry.claims) ? entry.claims.length : 0
+    if (entry.scope) group.scopes++
+  }
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  const out = [...groups.values()].slice(0, maxNames).map(group => {
+    const owed = [group.messages ? plural(group.messages, 'message') : '', group.claims ? plural(group.claims, 'claim') : ''].filter(Boolean).join(' and ')
+      || (group.scopes ? 'a declared scope' : 'nothing owed')
+    const names = group.candidates.slice(0, 3).join(' or ') + (group.candidates.length > 3 ? `, +${group.candidates.length - 3} more` : '')
+    return `${owed} for an unresolved name (${names}): ask them to rejoin`
+  })
+  if (groups.size > maxNames) out.push(`+${groups.size - maxNames} more unresolved names`)
+  return out
 }

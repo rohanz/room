@@ -9,12 +9,14 @@ import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembers
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
 import { localWorkerView } from '../worker-projector.js'
+import { liveWorkerActivity } from '../worker-activity.js'
 import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
 import { parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
 import { isPrName } from '../prs.js'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { unresolvedLines, type UnresolvedEntry } from '@room/shared'
 
 
 export const defs: ToolDef[] = [
@@ -145,10 +147,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const ownGit = participantRecord(s.room, s.me.name)?.git
       out.push(`you: ${participantIdentityLine(ps, s.me.name)} in ${s.roomName} (on ${ownGit?.branch || 'detached'}, base ${(ownGit?.base ?? '?').slice(0, 10)}${ownGit?.ahead ? `, ${ownGit.ahead} unpushed` : ''})`)
       if (s.room.metaMap.get('localMigrating')) out.push('migrating from a running Room 0.16 session')
-      for (const [source, value] of s.room.doc.getMap<{ placeholder: string; claims: Claim[] }>('unresolved')) {
-        const [oldRoom, oldName] = source.split('\0')
-        const owed = [...s.room.mail.values()].filter(m => m.to === value.placeholder).length
-        out.push(`unresolved from ${oldRoom}: ${oldName} (${value.claims.length} claims, ${owed} questions); its owner must join to reclaim it; room_export room=${oldRoom} to read`)
+      const unresolved = s.room.doc.getMap<UnresolvedEntry>('unresolved')
+      if (unresolved.size) {
+        const messagesTo = new Map<string, number>()
+        for (const m of s.room.mail.values()) if (m.to?.startsWith('?')) messagesTo.set(m.to, (messagesTo.get(m.to) ?? 0) + 1)
+        out.push(...unresolvedLines(s.roomName, unresolved, messagesTo))
       }
       // Folder-scoped view: only people, claims and changes in my areas, unless all=true (or I am in none yet).
       const mineA = myAreas(s)
@@ -244,11 +247,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       out.push(`recent bus${all ? '' : ' in your areas'} (${msgs.length}):`)
       for (const x of msgs) out.push(`  - [${x.id}] ${formatRoomMessage(s, x)}`)
       out.push(...prLines(s)) // open PRs targeting this branch: intent from GitHub, never filtered by area
-      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).flatMap(worker => { const view = localWorkerView(s, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
+      out.push(...formatWorkerLines(await Promise.all(myWorkers(s).flatMap(worker => { const view = localWorkerView(s, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(s, worker); return { worker: view, dir: worker.dir, lastActive: presences(s).filter(p => p.user.name === worker.name).reduce((at, p) => Math.max(at, p.lastActive ?? 0), worker.startedAt), processGone, changedCount: await workerChangedCount(s, worker, processGone), activity: liveWorkerActivity(s.dir, worker, processGone, now()), last: (() => { const message = s.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(s, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: s.room.retiredWorkers().filter(w => w.lead === s.me.name) }))
       const ws = wsRoom
       if (ws) {
         out.push(`workers room ${ws.roomName}: your team scope covers ${workerPaths().length} path(s) from these workers; their claims appear in the team room under your name`)
-        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).flatMap(worker => { const view = localWorkerView(ws, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
+        out.push(...formatWorkerLines(await Promise.all(myWorkers(ws).flatMap(worker => { const view = localWorkerView(ws, worker.id); return view ? [{ worker, view }] : [] }).map(async ({ worker, view }) => { const processGone = worker.status === 'running' && !state.workerAlive(ws, worker); return { worker: view, dir: worker.dir, processGone, changedCount: await workerChangedCount(ws, worker, processGone), activity: liveWorkerActivity(ws.dir, worker, processGone, now()), last: (() => { const message = ws.room.messages().filter(x => x.from === worker.name).slice(-1)[0]; return message ? formatRoomMessage(ws, message) : undefined })(), now: now() } })), { all: a.all === true, retiredWorkers: ws.room.retiredWorkers().filter(w => w.lead === ws.me.name) }))
       }
       return a.all === true ? out.join('\n') : compactState(out, summarizedClaims)
     },

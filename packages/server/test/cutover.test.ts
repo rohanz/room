@@ -69,6 +69,9 @@ beforeAll(async () => {
   const ldb = new LeveldbPersistence(dir)
   await seed(main, 'ben', 'main scope')
   await seed(feature, 'cy', 'feature scope')
+  // eve used both branches under one audited GitHub login; fay used both with no login on record.
+  for (const name of [main, feature]) { await seed(name, 'eve', `eve on ${name}`); await seed(name, 'fay', `fay on ${name}`) }
+  fs.writeFileSync(path.join(dir, 'audit.log'), [main, feature].map(room => JSON.stringify({ at: 1, event: 'join', room, login: 'eve', provider: 'github' }) + '\n').join(''))
   await seed(otherMain, 'dee', 'another repository')
   for (const name of rejoins) {
     const doc = new Y.Doc(); doc.getMap('meta').set('schemaVersion', 2); doc.getText('padding').insert(0, 'x'.repeat(700_000))
@@ -125,6 +128,9 @@ it('serves 0.16 clients until the first 0.17 preflight, then migrates the record
   expect((migrated.getMap('scopes').get('ben') as { summary: string }).summary).toBe('main scope')
   expect((migrated.getMap('scopes').get('cy') as { summary: string }).summary).toBe('feature scope')
   expect(migrated.getMap('scopes').has('dee')).toBe(false)
+  expect((migrated.getMap('scopes').get('eve') as { by: string }).by).toBe('eve')
+  expect(migrated.getMap('scopes').has('fay')).toBe(false)
+  expect([...migrated.getMap('unresolved').keys()].sort()).toEqual([`${feature}\0fay`, `${main}\0fay`])
   ;(current as WebSocket).close()
 
   // Old clients now get the upgrade text on every entry point; the branch name with schema 2 is simply invalid.

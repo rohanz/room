@@ -54,7 +54,7 @@ Room 0.17 is a **hard cutover**. It uses schema version 2 and hub protocol 1, an
    ```
 
 3. End or restart running 0.16 agent sessions. A running session keeps its old MCP tools and instructions; reconnecting MCP with `/mcp` may load the new bundle. In Codex, accept the hooks prompt again if it appears.
-4. Join from each clone and ask **“show room state”**. It should show `room: github.com/<owner>/<repo>` and each participant's own branch and base. Resolve any `unresolved from <old room>` names in room state: the original owner must join to reclaim their claims and addressed questions.
+4. Join from each clone and ask **“show room state”**. It should show `room: github.com/<owner>/<repo>` and each participant's own branch and base. A name used on several branches by one GitHub (or OIDC) login, as recorded by the server's audit log, migrates under that name. Room state lists any other name used on several branches as `N messages for an unresolved name (ben on main or ben on feature): ask them to rejoin`: each original owner must join from their old clone to reclaim their claims and addressed questions.
 
 The server archives the old branch rooms during migration. To read one, use `room_export room=<legacy name>` from 0.17. Archives remain for `ROOM_LEGACY_DAYS` after migration (default **30 days**), then the server removes them. Export any history you need before then.
 

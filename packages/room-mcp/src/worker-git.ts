@@ -6,7 +6,7 @@ import { isRegenerableBuildPath } from '@room/shared'
 import type { LocalWorker } from './worker-status.js'
 import { LINK_INPUT_PATH, RECORDED_PATH, containedRepoPath, isInsideRoot, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { git, UNKNOWN_WHOLE_TREE_PATHS } from '@room/roomd/git'
-import { boundedGit, boundedGitSync, carriedContentHash, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { decideDiscard, roomWorkerPathMatchesBranch, workerRealState, ROOM_CARRY_IDENTITY, type WorktreeOwnershipRecord } from './worker-state.js'
 import { terminateWorktreeProcesses } from './worker-process.js'
 import type { PrepJournal, PrepStep } from './worker-status.js'
@@ -183,13 +183,17 @@ function retainUntrackedTree(dir: string, tag: string, paths: { path: string; sh
   if (!paths.length) return undefined
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'room-carry-index-'))
   const env = { ...process.env, GIT_INDEX_FILE: path.join(scratch, 'index') }
-  const run = (args: string[], wholeTreePaths?: number) => boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', ...args], { env, wholeTreePaths }).toString().trim()
+  const run = (args: string[], wholeTreePaths?: number, stdinFile?: string) => boundedGitSync(dir, ['-c', 'core.hooksPath=/dev/null', ...args], { env, wholeTreePaths, stdinFile }).toString().trim()
   try {
-    for (const entry of paths) {
+    const entries = paths.map(entry => {
       const stat = fs.lstatSync(path.join(dir, entry.path))
       const mode = stat.isSymbolicLink() ? '120000' : (stat.mode & 0o111) ? '100755' : '100644'
-      run(['update-index', '--add', '--cacheinfo', `${mode},${entry.sha},${entry.path}`])
-    }
+      return `${mode} blob ${entry.sha}\t${entry.path}\0`
+    })
+    // One process for every entry, read from a file rather than a pipe (see boundedGitSync).
+    const info = path.join(scratch, 'index-info')
+    fs.writeFileSync(info, entries.join(''), { mode: 0o600 })
+    run(['update-index', '-z', '--index-info'], paths.length, info)
     const tree = run(['write-tree'], paths.length)
     run(['update-ref', carriedUntrackedRef(tag), tree])
     return tree
@@ -266,6 +270,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
     const skippedCarry: { path: string; reason: string }[] = []
     let totalBytes = 0
     const carryRoot = fs.realpathSync(repoDir)
+    const copied: { path: string; mode: number }[] = []
     for (const rel of untracked) {
       if (pathExcluded(rel, exclusions)) { skippedCarry.push({ path: rel, reason: 'linked input' }); continue }
       const source = path.join(repoDir, rel), target = path.join(dir, rel)
@@ -290,16 +295,19 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
         fs.chmodSync(target, stat.mode)
         totalBytes += stat.size
       }
-      const sha = carriedContentHash(dir, rel, true)
-      carriedUntracked.push({ path: rel, sha, mode: stat.mode & 0o777 })
+      copied.push({ path: rel, mode: stat.mode & 0o777 })
     }
+    // One hash-object for every copied file: per-file processes made a large carry take seconds.
+    const copiedShas = carriedContentHashes(dir, copied.map(c => c.path), true)
+    copied.forEach((c, i) => carriedUntracked.push({ path: c.path, sha: copiedShas[i], mode: c.mode }))
     const snapshotStable = async () => {
       const latestPatch = await internalGit(repoDir, patchArgs(base, excluded))
       const latestUntracked = (await git(repoDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ':(exclude).room'])).split('\0').filter(Boolean)
-      const copiedStable = carriedUntracked.every(({ path: rel, sha }) => {
-        try { return carriedContentHash(repoDir, rel) === sha }
-        catch (error) { if (error instanceof Error && error.message.includes('timed out')) throw error; return false }
-      })
+      let copiedStable: boolean
+      try {
+        const latest = carriedContentHashes(repoDir, carriedUntracked.map(c => c.path))
+        copiedStable = carriedUntracked.every(({ sha }, i) => latest[i] === sha)
+      } catch (error) { if (error instanceof Error && error.message.includes('timed out')) throw error; copiedStable = false }
       return (await git(repoDir, ['rev-parse', 'HEAD'])).trim() === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
     }
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')

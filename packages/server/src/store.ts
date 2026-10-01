@@ -62,8 +62,8 @@ export interface Store {
   putSession(id: string, s: StoredSession): Promise<void>
   deleteSession(id: string): Promise<void>
   audit(e: AuditEntry): Promise<void>
-  /** Entries at or after `since` (ms), oldest first, at most `limit`. */
-  readAudit(o?: { since?: number; limit?: number }): Promise<AuditEntry[]>
+  /** Entries at or after `since` (ms), oldest first, at most `limit`. A file audit larger than `maxBytes` is refused. */
+  readAudit(o?: { since?: number; limit?: number; maxBytes?: number }): Promise<AuditEntry[]>
   close(): Promise<void>
 }
 
@@ -132,12 +132,13 @@ export class FileStore implements Store {
     this.memAudit.push(e)
     if (this.memAudit.length > MEM_AUDIT_MAX) this.memAudit.splice(0, this.memAudit.length - MEM_AUDIT_MAX)
   }
-  async readAudit(o: { since?: number; limit?: number } = {}): Promise<AuditEntry[]> {
+  async readAudit(o: { since?: number; limit?: number; maxBytes?: number } = {}): Promise<AuditEntry[]> {
     const since = o.since ?? 0
     const limit = o.limit ?? 1000
     let all: AuditEntry[]
     if (this.auditFile) {
       if (!fs.existsSync(this.auditFile)) return []
+      if (o.maxBytes !== undefined && fs.statSync(this.auditFile).size > o.maxBytes) throw new Error(`audit log is larger than ${o.maxBytes} bytes`)
       all = fs.readFileSync(this.auditFile, 'utf8').split('\n').filter(Boolean).flatMap(l => { try { return [JSON.parse(l) as AuditEntry] } catch { return [] } })
     } else all = this.memAudit
     const hits = all.filter(e => e.at >= since)
@@ -206,7 +207,7 @@ export class PgStore implements Store {
   async audit(e: AuditEntry): Promise<void> {
     await (await this.db()).query(`INSERT INTO room_audit (at, data) VALUES ($1, $2)`, [e.at, JSON.stringify(e)])
   }
-  async readAudit(o: { since?: number; limit?: number } = {}): Promise<AuditEntry[]> {
+  async readAudit(o: { since?: number; limit?: number; maxBytes?: number } = {}): Promise<AuditEntry[]> {
     const { rows } = await (await this.db()).query(`SELECT data FROM room_audit WHERE at >= $1 ORDER BY id DESC LIMIT $2`, [o.since ?? 0, o.limit ?? 1000])
     return rows.map(r => r.data as AuditEntry).reverse()
   }

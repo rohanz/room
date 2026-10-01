@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
@@ -350,6 +350,37 @@ it.each(['0.001', '0.02', '0', '-1', 'NaN', 'Infinity'])('validates ROOM_EXPORT_
     if (limit === '0.001') await expect(work).rejects.toThrow(/archive frame/)
     else await expect(work).resolves.toMatchObject({ path: join(dir, 'frame-limit.md') })
   } finally { archived.doc.destroy(); s.room.doc.destroy(); vi.unstubAllGlobals(); vi.unstubAllEnvs() }
+})
+
+it('room_export relays the server reason for an archive with no stored document and writes nothing', async () => {
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('no stored document for git/x/o/r/main', { status: 404, headers: { 'content-type': 'text/plain' } })))
+  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir })
+  const output = join(dir, 'absent-archive.md')
+  try {
+    expect(await tools.call('room_export', { room: 'git/x/o/r/main', path: output })).toContain('error: nothing to export from git/x/o/r/main: no stored document for git/x/o/r/main')
+    expect(existsSync(output)).toBe(false)
+  } finally { s.room.doc.destroy(); vi.unstubAllGlobals(); await tools.shutdown() }
+})
+
+it.each([['application/vnd.room.updates'], ['application/octet-stream']])('treats an empty %s body from an older server as no stored document and writes nothing', async type => {
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new Uint8Array(0), { headers: { 'content-type': type } })))
+  const output = join(dir, 'empty-body.md')
+  try {
+    await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: output })).rejects.toThrow('nothing to export from git/x/o/r/main: no stored document for git/x/o/r/main')
+    expect(existsSync(output)).toBe(false)
+  } finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
+})
+
+it('exports a stored empty archive document as a ledger', async () => {
+  const s = session(new RoomDoc(), { name: 'alice', kind: 'agent', owner: 'alice' }, 'git/x/o/r'); s.token = 'token'
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(new Uint8Array([0, 0, 0, 2, 0, 0]), { headers: { 'content-type': 'application/vnd.room.updates' } })))
+  const output = join(dir, 'empty-archive.md')
+  try {
+    await exportArchiveLedger(s, 'git/x/o/r/main', { path: output })
+    expect(existsSync(output)).toBe(true)
+  } finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
 })
 
 it.each([Buffer.from([0, 0]), Buffer.from([0, 0, 0, 10, 1]), Buffer.from([127, 255, 255, 255])])('rejects truncated or oversized archive frames without writing a ledger', async body => {

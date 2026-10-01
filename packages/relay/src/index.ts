@@ -28,8 +28,8 @@ import * as encoding from 'lib0/encoding'
 import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
-import { MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, startHub, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
-import { RoomDoc } from '@room/shared'
+import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS, MAX_HUB_FRAME_BYTES, HubRequestBudget, hubReplyId, decodeFrame, encodeFrame, sizeCapReason, sizeCapRefusal, startHub, type DocSizeMeterOptions, type Hub, type IncarnationStore, type Reply } from '@room/hub-core'
+import { ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
 export { SecureSession } from './secure.js'
@@ -61,11 +61,15 @@ export function stateRequestLimiter(now: () => number = Date.now): (buf: Uint8Ar
     return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES
   }
 }
-interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; closed?: boolean }
+interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; closed?: boolean; cap: RoomCap }
+/** The live size cap of one room (the server's rule, hub-core/src/doc-cap.ts) and when it last logged a refusal. */
+interface RoomCap { maxBytes: number; meter: DocSizeMeter; logged: number }
+/** A room's live document cap; by default ROOM_DOC_MAX_BYTES (also the snapshot ceiling), measured at the server's cadence. */
+export interface RelayDocCap { maxBytes?: number; meter?: DocSizeMeterOptions }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number }
+interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
@@ -129,8 +133,11 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
   if (opts.commonDir) catchUpLocal(opts.commonDir, decodeURIComponent(name), doc, opts.log)
   const awareness = new awarenessProtocol.Awareness(doc)
   awareness.setLocalState(null)
-  d = { doc, awareness, conns: new Map(), memory }
-  doc.on('update', (update: Uint8Array) => {
+  const meter = new DocSizeMeter(() => Y.encodeStateAsUpdate(doc).byteLength, opts.docCap?.meter)
+  d = { doc, awareness, conns: new Map(), memory, cap: { maxBytes: opts.docCap?.maxBytes ?? ROOM_DOC_MAX_BYTES, meter, logged: 0 } }
+  doc.on('update', (update: Uint8Array, origin: unknown) => {
+    // Hub writes count towards the next measurement, as the server's do.
+    if (origin === HUB_ORIGIN) meter.size(update.byteLength)
     const enc = encoding.createEncoder()
     encoding.writeVarUint(enc, MSG_SYNC)
     syncProtocol.writeUpdate(enc, update)
@@ -158,7 +165,8 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
 }
 function startRoomHub(d: RelayDoc, room: string, rt: RelayHubRuntime, commonDir: string, log: (line: string) => void): void {
   const roomDoc = d.room = new RoomDoc(d.doc)
-  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), holderDead: rt.holderDead, authority: () => rt.lock.held() })
+  startHub({ doc: roomDoc, mono: rt.mono, wall: rt.wall, log: line => log(`local room ${room}: ${line}`), store: rt.store, leases: relayLeaseFile(commonDir, room), holderDead: rt.holderDead, authority: () => rt.lock.held(),
+    full: () => d.cap.meter.size() > d.cap.maxBytes })
     .then(hub => {
       if (d.closed) { hub.stop(); return }
       hub.onPush((conn, push) => send(conn as WebSocket, encodeFrame(push)))
@@ -225,6 +233,15 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
     try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
     catch { conn.close(1008, 'invalid secure frame'); return }
     if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
+    // A view connection's writes are ignored below; a writer into a room over its cap is closed as the server does.
+    const { cap } = d
+    const over = opts.readOnly ? undefined : sizeCapRefusal(buf, bytes => cap.meter.size(bytes), cap.maxBytes)
+    if (over !== undefined) {
+      const now = Date.now()
+      if (cap.logged < now - 60_000) { cap.logged = now; opts.log?.(`local room ${decodeURIComponent(name)}: refusing writes: the document is ${(over / 1048576).toFixed(1)} MB (cap ${(cap.maxBytes / 1048576).toFixed(0)} MB)`) }
+      conn.close(DOC_SIZE_CAP_CODE, sizeCapReason(cap.maxBytes))
+      return
+    }
     try {
       const dec = decoding.createDecoder(buf)
       const enc = encoding.createEncoder()
@@ -386,6 +403,8 @@ export interface RelayOptions {
   seed?: { room: string; update: Uint8Array }
   /** Bytes that may wait for one socket before a consumer already behind is cut off; default RELAY_SOCKET_QUEUE_BYTES. */
   socketQueueBytes?: number
+  /** The live document cap per room; default ROOM_DOC_MAX_BYTES. */
+  docCap?: RelayDocCap
 }
 export interface StartedRelay {
   port: number
@@ -401,7 +420,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
   return new Promise((resolve, reject) => {
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
     const docOptions: DocOptions = {
-      commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes,
+      commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes, docCap: opts.docCap,
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
     const requestedTicketTtl = opts.ticketTtlMs ?? 60_000

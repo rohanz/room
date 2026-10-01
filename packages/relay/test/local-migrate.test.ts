@@ -68,7 +68,8 @@ it('catches up a running old relay by ID without resurrecting a released claim',
   expect(catchUpLocal(common, room, target.doc)).toBe(true)
   expect(target.bus.toArray().map(m => m.id)).toEqual(['m1', 'm2'])
   expect(target.claims.has('c1')).toBe(false)
-  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid: 999999 }))
+  // Above Linux's PID_MAX_LIMIT (4194304) and macOS's 99999: never a live process.
+  fs.writeFileSync(path.join(common, 'room-local.json'), JSON.stringify({ pid: 4_999_999 }))
   expect(catchUpLocal(common, room, target.doc)).toBe(false)
   expect(target.metaMap.get('localMigrating')).toBe(0)
   forgetLegacyLocal(common, room)
