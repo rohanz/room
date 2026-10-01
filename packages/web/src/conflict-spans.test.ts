@@ -2,7 +2,7 @@ import { deriveConflictSpans } from '@room/shared'
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
-import { colorFor, lineAnnotation, type Claim, type Msg } from '@room/shared'
+import { colorFor, lineAnnotation, type Claim, type ConflictSpan, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
 import { classifyThreeWay } from './merged.ts'
 import { conflictCard, renderCodeLines } from './panels.ts'
@@ -355,11 +355,13 @@ it('uses the specified theme tints and 60% owner borders with at least 4.5:1 cod
   }
 })
 
-// Shaped as ConflictSlots posts them: the editor's notice and the holder's copy, no range in `path:from-to` form.
+// Shaped as ConflictSlots posts them: the editor's notice and the holder's copy. They name no `path:from-to`
+// range, so the code view draws them only from a span that has one (`ranged`).
 const editNotice = (editor: string, at: number, merges?: 'clean'): Msg[] => [
   { ...conflict, id: `${editor}${at}`, at, claimId: 'c1', otherClaimId: '', to: editor, text: `you edited a.ts inside tiers's claim at lines 2-7 (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
   { ...conflict, id: `${editor}${at}:holder`, at, priority: 'notify', claimId: 'c1', otherClaimId: '', to: 'tiers', text: `${editor} edited a.ts inside your claim (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
 ]
+const ranged = (span: ConflictSpan): ConflictSpan => ({ ...span, from: 2, to: 7 })
 
 it('draws an overlap that merges cleanly as an overlap, and a later non-merging notice as a conflict', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
@@ -367,12 +369,12 @@ it('draws an overlap that merges cleanly as an overlap, and a later non-merging 
   const render = (messages: Msg[]) => {
     const spans = deriveConflictSpans(messages, [claims[1]])
     const host = new Element()
-    renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, spans)
+    renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, spans.map(ranged))
     return { spans, span: spans[0], tags: host.find('conflict-tag'), host, card: conflictCard(spans[0]) as unknown as Element }
   }
   const clean = render(editNotice('money', 10, 'clean'))
   expect(clean.spans).toHaveLength(1)
-  expect(clean.span).toMatchObject({ merges: 'clean', from: 2, to: 7 })
+  expect(clean.span).toMatchObject({ merges: 'clean' })
   expect(clean.tags.map(tag => tag.children[0])).toEqual(['overlap'])
   expect(clean.tags[0].ariaLabel).toContain('Overlap: merges cleanly')
   expect(clean.tags[0].ariaLabel).not.toContain('conflict')
@@ -402,7 +404,7 @@ it('the line annotation names a clean overlap an overlap', () => {
 it('the parts of a clean overlap outside a text conflict stay an overlap', () => {
   vi.stubGlobal('document', { createElement: () => new Element() })
   const host = new Element()
-  const span = deriveConflictSpans(editNotice('money', 10, 'clean'), [claims[1]])[0]
+  const span = ranged(deriveConflictSpans(editNotice('money', 10, 'clean'), [claims[1]])[0])
   renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
     text: 'code', side: 'common' as const, changedBy: null, conflict: i === 3, aLine: i + 1, bLine: i + 1,
   })), ['money', 'tiers'], undefined, [span])
@@ -421,14 +423,4 @@ it("a cleared editor's conflict no longer counts against another editor's clean 
   expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBe('clean')
   expect(deriveConflictSpans([...editNotice('money', 10, 'clean'), cleared('money', 11, 'clean')], [claims[1]])[0].merges).toBe('clean')
   expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11)], [claims[1]])[0].merges).toBeUndefined()
-})
-
-it("an edit-in-claim span is drawn at the claim's lines in the holder's version only", () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans(editNotice('money', 10, 'clean'), [claims[1]])[0]
-  // money prepended three lines: tiers's line n is money's line n + 3.
-  const lines = Array.from({ length: 11 }, (_, i) => ({ text: 'code', side: (i < 3 ? 'a' : 'common') as 'a' | 'common', changedBy: null, conflict: false, aLine: i + 1, bLine: i < 3 ? undefined : i - 2 }))
-  renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, [span])
-  expect(host.find('conflict-bar').map(bar => bar.style.gridRow)).toEqual(['5 / 11'])
 })
