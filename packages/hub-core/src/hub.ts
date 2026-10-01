@@ -722,8 +722,27 @@ class RoomHub implements Hub {
     const now = this.host.mono()
     if (now - this.maintainedAt >= MAINTENANCE_MS) {
       this.maintainedAt = now
+      // Repair aliased member mail, a state the hub never writes, outside pure trim.
+      // Prefer canonical mail, but preserve an alias if it is the only owed mail copy.
+      // Never create non-owed canonical mail that would block an owed bus copy's move.
+      // Canonical mail+bus copies can come from replication/migration: leave them intact.
+      const owedCopy = (m: Msg) => !!m.to && !(m.from === m.to && m.fromKind !== 'human')
+        && !this.doc.outcomes.has(m.id) && !this.doc.seen(m.to).has(m.id)
+      this.doc.doc.transact(() => {
+        for (const [key, m] of this.doc.mail) {
+          if (!validMessageShape(m) || key === m.id) continue
+          const canonical = this.doc.mail.get(m.id)
+          if (!validMessageShape(canonical) || !owedCopy(canonical) && owedCopy(m)) {
+            const busOwed = [...(deliveryIndex(this.doc).bus.ids.get(m.id)?.values() ?? [])].some(x => validMessageShape(x) && owedCopy(x))
+            if (owedCopy(m) || !busOwed) this.doc.mail.set(m.id, m)
+          }
+          this.doc.mail.delete(key)
+        }
+      }, HUB_ORIGIN)
       // Deliberate full O(n) maintenance pass once per minute (TTL, mail/archive/outcome bounds).
       trim(this.doc, this.host.wall(), { origin: HUB_ORIGIN, busKeep: this.host.busKeep })
+      const drift = deliveryIndex(this.doc).verify()
+      if (drift) this.host.log(`hub: ledger index drift corrected (${drift})`)
       this.expire()
     }
   }

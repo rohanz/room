@@ -31,11 +31,20 @@ export const OWED_TTL_MS = 14 * DAY_MS
 export const MAX_MESSAGE_BYTES = 64 * KiB
 
 const encoder = new TextEncoder()
-const sizeOf = (value: unknown): number => encoder.encode(JSON.stringify(value)).length
+// Unserializable member content must not break observers or minute maintenance.
+// A finite sentinel exceeds every ledger budget and remains exactly subtractable.
+const sizeOf = (value: unknown): number => {
+  try { return encoder.encode(JSON.stringify(value)).length }
+  catch { return 2 ** 32 }
+}
+const validOutcome = (o: Outcome | undefined): o is Outcome => !!o && Number.isFinite(o.at)
+  && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired'].includes(o.outcome)
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 /** The deterministic order `(at, id)`, oldest first. */
 const byAge = (a: { at: number; id: string }, b: { at: number; id: string }): number => a.at - b.at || compare(a.id, b.id)
 
+// Empty recipients and reply references intentionally retain legacy truthiness semantics.
+// Message ids themselves (including '') are always map keys, never presence booleans.
 const selfSent = (m: Msg): boolean => m.from === m.to && m.fromKind !== 'human'
 const addressedTo = (m: Msg, name: string): boolean => m.to === name && !selfSent(m)
 const receipted = (doc: RoomDoc, name: string, id: string): boolean => doc.seen(name).has(id)
@@ -179,7 +188,7 @@ export function trim(doc: RoomDoc, now: number, opts: TrimOptions = {}): TrimRep
   const keepArchive = newest(archive, ARCHIVE_MAX, ARCHIVE_BYTES)
   for (const id of newest(archive.filter(e => e.unfulfilled), ARCHIVE_UNFULFILLED_MAX, Infinity)) keepArchive.add(id)
   const outcomes = [...doc.outcomes.entries(), ...[...ended].filter(([id]) => !doc.outcomes.has(id))]
-    .filter(([id, o]) => typeof id === 'string' && o && Number.isFinite(o.at) && typeof o.to === 'string' && typeof o.from === 'string' && ['expired', 'over-cap', 'recipient-retired'].includes(o.outcome) && now - o.at <= OUTCOMES_TTL_MS)
+    .filter(([id, o]) => typeof id === 'string' && validOutcome(o) && now - o.at <= OUTCOMES_TTL_MS)
     .map(([id, o]) => ({ id, at: o.at, size: id.length + sizeOf(o) }))
   const keepOutcomes = newest(outcomes, OUTCOMES_MAX, OUTCOMES_BYTES)
 
@@ -216,6 +225,13 @@ export class DeliveryIndex {
   private sizes = new Map<string, number>()
   private badMail = new Set<string>()
   private badOutcomes = new Set<string>()
+  private outcomeSizes = new Map<string, number>()
+  private outcomeBytes = 0
+  private mailSizes = new Map<string, number>()
+  private mailBytes = 0
+  private aliases = new Set<string>()
+  private duplicateBus = new Set<string>()
+  private overCapRecipients = new Set<string>()
   private mailCopies = new Map<string, Map<string, Msg>>()
   private mailIds = new Map<string, string>()
   private clean = false
@@ -255,9 +271,9 @@ export class DeliveryIndex {
       for (const key of e.keysChanged) {
         const oldId = this.mailIds.get(key)
         this.checkMail(key)
-        if (oldId) this.changed.add(oldId)
+        if (oldId !== undefined) this.changed.add(oldId)
         const id = this.mailIds.get(key)
-        if (id) this.changed.add(id)
+        if (id !== undefined) this.changed.add(id)
       }
     })
     doc.outcomes.observe(e => {
@@ -272,12 +288,15 @@ export class DeliveryIndex {
 
   private checkMail(key: string): void {
     const old = this.mailIds.get(key)
-    if (old) {
+    if (old !== undefined) {
       const copies = this.mailCopies.get(old)
       copies?.delete(key)
       if (!copies?.size) this.mailCopies.delete(old)
-      this.mailIds.delete(key)
     }
+    this.mailIds.delete(key)
+    this.aliases.delete(key)
+    this.mailBytes -= this.mailSizes.get(key) ?? 0
+    this.mailSizes.delete(key)
     const m = this.doc.mail.get(key)
     if (this.doc.mail.has(key) && !validMessageShape(m)) this.badMail.add(key)
     else this.badMail.delete(key)
@@ -285,15 +304,23 @@ export class DeliveryIndex {
       let copies = this.mailCopies.get(m.id)
       if (!copies) this.mailCopies.set(m.id, copies = new Map())
       copies.set(key, m); this.mailIds.set(key, m.id)
+      if (key !== m.id) this.aliases.add(key)
+      const size = sizeOf(m)
+      this.mailSizes.set(key, size); this.mailBytes += size
     }
   }
 
   private checkOutcome(id: string): void {
+    this.outcomeBytes -= this.outcomeSizes.get(id) ?? 0
+    this.outcomeSizes.delete(id)
     const o = this.doc.outcomes.get(id)
-    if (this.doc.outcomes.has(id) && (!o || !Number.isFinite(o.at) || typeof o.to !== 'string'
-      || typeof o.from !== 'string' || !['expired', 'over-cap', 'recipient-retired'].includes(o.outcome))) this.badOutcomes.add(id)
+    if (this.doc.outcomes.has(id) && !validOutcome(o)) this.badOutcomes.add(id)
     else this.badOutcomes.delete(id)
-    if (o && Number.isFinite(o.at)) this.oldestOutcome = Math.min(this.oldestOutcome, o.at)
+    if (o && !this.badOutcomes.has(id)) {
+      const size = id.length + sizeOf(o)
+      this.outcomeSizes.set(id, size); this.outcomeBytes += size
+      this.oldestOutcome = Math.min(this.oldestOutcome, o.at)
+    }
     if (this.bus.count(id)) this.bus.changed.add(id)
   }
 
@@ -315,21 +342,31 @@ export class DeliveryIndex {
       const count = this.recipients.get(prior.to!)!
       count.count--; count.bytes -= size; this.owedBytes -= size
       if (!count.count) this.recipients.delete(prior.to!)
+      this.checkRecipient(prior.to!)
       this.pending.delete(id); this.sizes.delete(id)
     }
     const mail = this.mailCopies.get(id)
     const bus = this.bus.ids.get(id)
     const candidates = ordered ?? [...(mail?.values() ?? []), ...(bus?.values() ?? [])]
+    if ((bus?.size ?? 0) > 1) this.duplicateBus.add(id)
+    else this.duplicateBus.delete(id)
     const m = candidates.find(m => validMessageShape(m) && isOwed(this.doc, m))
     if (m) {
       const size = sizeOf(m)
       const count = this.recipients.get(m.to!) ?? { count: 0, bytes: 0 }
       count.count++; count.bytes += size; this.owedBytes += size
       this.recipients.set(m.to!, count); this.pending.set(id, m); this.sizes.set(id, size)
-      this.oldest = Math.min(this.oldest, m.at)
+      this.checkRecipient(m.to!)
+      if (Number.isFinite(m.at)) this.oldest = Math.min(this.oldest, m.at)
     }
     // Mail/receipt/outcome changes and answers can change a previous cap refusal.
     if (prior || m || candidates.some(m => validMessageShape(m) && (m.to || ('inReplyTo' in m && m.inReplyTo)))) this.clean = false
+  }
+
+  private checkRecipient(name: string): void {
+    const r = this.recipients.get(name)
+    if (r && (r.count > OWED_PER_RECIPIENT || r.bytes > OWED_BYTES_PER_RECIPIENT)) this.overCapRecipients.add(name)
+    else this.overCapRecipients.delete(name)
   }
 
   /** Debug/recovery check: callers can snapshot aggregates, rebuild, then compare to full recompute. */
@@ -338,9 +375,62 @@ export class DeliveryIndex {
     this.rebuildAggregates()
   }
 
+  /** Minute-only full recompute; correct any drift before the next post can use it. */
+  verify(): string | undefined {
+    let field = this.bus.drift()
+    const pending = new Map<string, Msg>(), sizes = new Map<string, number>(), recipients = new Map<string, { count: number; bytes: number }>()
+    const mailIds = new Map<string, string>(), mailSizes = new Map<string, number>(), outcomeSizes = new Map<string, number>()
+    const badMail = new Set<string>(), badOutcomes = new Set<string>(), aliases = new Set<string>(), duplicateBus = new Set<string>()
+    const busCounts = new Map<string, number>()
+    for (const m of this.doc.messages()) if (typeof m?.id === 'string') busCounts.set(m.id, (busCounts.get(m.id) ?? 0) + 1)
+    for (const [id, count] of busCounts) if (count > 1) duplicateBus.add(id)
+    let owedBytes = 0, mailBytes = 0, outcomeBytes = 0, oldest = Infinity, oldestOutcome = Infinity
+    for (const [key, m] of this.doc.mail) {
+      if (!validMessageShape(m)) { badMail.add(key); continue }
+      mailIds.set(key, m.id)
+      const size = sizeOf(m); mailSizes.set(key, size); mailBytes += size
+      if (key !== m.id) aliases.add(key)
+    }
+    for (const m of [...this.doc.mail.values(), ...this.doc.messages()]) {
+      if (!validMessageShape(m)) continue
+      if (!pending.has(m.id) && isOwed(this.doc, m)) {
+        pending.set(m.id, m)
+        const size = sizeOf(m), r = recipients.get(m.to!) ?? { count: 0, bytes: 0 }
+        r.count++; r.bytes += size; recipients.set(m.to!, r); owedBytes += size; sizes.set(m.id, size)
+        if (Number.isFinite(m.at)) oldest = Math.min(oldest, m.at)
+      }
+    }
+    for (const [id, o] of this.doc.outcomes) {
+      if (!validOutcome(o)) { badOutcomes.add(id); continue }
+      const size = id.length + sizeOf(o); outcomeSizes.set(id, size); outcomeBytes += size
+      oldestOutcome = Math.min(oldestOutcome, o.at)
+    }
+    const sameMap = <T>(a: ReadonlyMap<string, T>, b: ReadonlyMap<string, T>) => a.size === b.size && [...a].every(([id, value]) => b.get(id) === value)
+    const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every(id => b.has(id))
+    const overCap = new Set([...recipients].filter(([, r]) => r.count > OWED_PER_RECIPIENT || r.bytes > OWED_BYTES_PER_RECIPIENT).map(([name]) => name))
+    if (!field && owedBytes !== this.owedBytes) field = 'owedBytes'
+    if (!field && (!sameMap(pending, this.pending) || !sameMap(sizes, this.sizes))) field = 'pending'
+    if (!field && (recipients.size !== this.recipients.size || [...recipients].some(([name, r]) => {
+      const old = this.recipients.get(name); return r.count !== old?.count || r.bytes !== old.bytes
+    }))) field = 'recipients'
+    if (!field && (!sameMap(mailIds, this.mailIds) || !sameMap(mailSizes, this.mailSizes) || mailBytes !== this.mailBytes
+      || this.mailCopies.size !== new Set(mailIds.values()).size
+      || [...mailIds].some(([key, id]) => this.mailCopies.get(id)?.get(key) !== this.doc.mail.get(key))
+      || [...this.mailCopies.values()].reduce((n, copies) => n + copies.size, 0) !== mailIds.size)) field = 'mail'
+    if (!field && (!sameMap(outcomeSizes, this.outcomeSizes) || outcomeBytes !== this.outcomeBytes)) field = 'outcomes'
+    if (!field && (!sameSet(badMail, this.badMail) || !sameSet(badOutcomes, this.badOutcomes))) field = 'invalid'
+    if (!field && (!sameSet(aliases, this.aliases) || !sameSet(duplicateBus, this.duplicateBus) || !sameSet(overCap, this.overCapRecipients))) field = 'certainty'
+    // Minima may conservatively lag between writes, but markTrimmed recomputes them.
+    if (!field && (oldest !== this.oldest || oldestOutcome !== this.oldestOutcome)) field = 'oldest'
+    if (field) this.rebuild()
+    return field
+  }
+
   private rebuildAggregates(): void {
     this.pending.clear(); this.recipients.clear(); this.sizes.clear()
     this.badMail.clear(); this.badOutcomes.clear(); this.mailCopies.clear(); this.mailIds.clear(); this.owedBytes = 0
+    this.outcomeSizes.clear(); this.outcomeBytes = 0; this.mailSizes.clear(); this.mailBytes = 0
+    this.aliases.clear(); this.duplicateBus.clear(); this.overCapRecipients.clear()
     this.oldest = this.oldestOutcome = Infinity; this.clean = false
     for (const id of this.doc.mail.keys()) this.checkMail(id)
     for (const id of this.doc.outcomes.keys()) this.checkOutcome(id)
@@ -351,20 +441,36 @@ export class DeliveryIndex {
     this.cleanKeep = opts.busKeep ?? BUS_KEEP
     this.cleanBytes = opts.busBytes ?? BUS_BYTES
     // Recompute these minima once per full trim, not per post or tick.
-    this.oldest = Math.min(Infinity, ...[...this.pending.values()].map(m => m.at))
-    this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].map(o => o.at))
-    this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size
+    this.oldest = Math.min(Infinity, ...[...this.pending.values()].filter(m => Number.isFinite(m.at)).map(m => m.at))
+    this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].filter(o => o && Number.isFinite(o.at)).map(o => o.at))
+    this.clean = !this.bus.stale && this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size
       && now - this.oldest <= OWED_TTL_MS
   }
 
-  certain(now: number): boolean {
-    // Trim removes malformed/expired state. Aliases and duplicate ids are represented exactly.
-    return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size
+  certain(now: number, opts: TrimOptions = {}): boolean {
+    // Invariant against trim's steps:
+    // 1. Malformed roots are absent, and retention cannot change duplicate/alias winners.
+    // 2. Moving unique owed bus entries to mail preserves debt; deleting non-owed mail,
+    //    answers and reply-window expiry cannot activate debt. One canonical mail+bus
+    //    pair has an exact mail-if-owed/else-bus winner: trim preserves that debt or
+    //    removes it, never switches it to another recipient. Bus duplicates require
+    //    no retention/mail eviction; aliases require minute repair by the hub.
+    // 3. Expiry/recipient/mail eviction only reduces debt, except that new outcomes can
+    //    prune an existing suppressor. Require no such eviction risk when outcomes exist.
+    // 4. Archive pruning never affects isOwed. Existing outcomes survive TTL/count/bytes
+    //    pruning. Trim does not change receipts/seen; their transactions refresh the index.
+    const retention = this.bus.entries.size > (opts.busKeep ?? BUS_KEEP) || this.bus.bytes > (opts.busBytes ?? BUS_BYTES)
+    const mailRisk = this.mailSizes.size > MAIL_MAX || this.mailBytes > MAIL_BYTES
+      || retention && (this.mailSizes.size + this.bus.addressedCount > MAIL_MAX || this.mailBytes + this.bus.addressedBytes > MAIL_BYTES)
+    return !this.bus.stale && !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size
+      && this.outcomeSizes.size <= OUTCOMES_MAX && this.outcomeBytes <= OUTCOMES_BYTES
       && now - this.oldestOutcome <= OUTCOMES_TTL_MS
+      && !this.aliases.size && !(this.duplicateBus.size && (retention || mailRisk))
+      && !(this.outcomeSizes.size && (this.overCapRecipients.size || mailRisk || now - this.oldest > OWED_TTL_MS))
   }
 
   trimmed(now: number, opts: TrimOptions): boolean {
-    return this.clean && this.certain(now) && now - this.oldest <= OWED_TTL_MS
+    return this.clean && this.certain(now, opts) && now - this.oldest <= OWED_TTL_MS
       && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES)
   }
 }
@@ -396,8 +502,22 @@ export function admit(doc: RoomDoc, m: { to?: string; [field: string]: unknown }
     return { ok: true }
   }
   const answer = caps()
-  if (index.certain(now) && (answer.ok || index.trimmed(now, opts))) return answer
+  if (index.certain(now, opts) && (answer.ok || index.trimmed(now, opts))) return answer
   trim(doc, now, opts)
+  if (index.bus.stale) {
+    // Recovery could not publish a complete snapshot. This is the pre-index admission
+    // scan, after legacy trim, and must not consult even apparently healthy aggregates.
+    const pending = new Map<string, Msg>()
+    for (const x of [...doc.mail.values(), ...doc.messages()]) if (!pending.has(x.id) && isOwed(doc, x)) pending.set(x.id, x)
+    const theirs = [...pending.values()].filter(x => x.to === m.to)
+    const theirBytes = theirs.reduce((n, x) => n + sizeOf(x), 0)
+    if (theirs.length >= OWED_PER_RECIPIENT || theirBytes + size > OWED_BYTES_PER_RECIPIENT)
+      return { ok: false, reason: `${m.to} has ${theirs.length} undelivered messages; wait until it reads them` }
+    const owedBytes = [...pending.values()].reduce((n, x) => n + sizeOf(x), 0)
+    if (owedBytes + size > MAIL_BYTES)
+      return { ok: false, reason: `the room's message store is full (${Math.round(owedBytes / KiB)} KiB owed to others)` }
+    return { ok: true }
+  }
   return caps()
 }
 

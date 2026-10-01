@@ -384,7 +384,7 @@ it('matches the legacy per-id oracle for aliased mail, mail+bus and multiple cop
         if (rand(2)) room.markSeen('pat', [id], { s: 's', via: 'reply' })
       }
     })
-    expect(index.certain(1000)).toBe(true)
+    expect(index.certain(1000)).toBe(false) // aliased member mail needs hub repair
     check(room)
     const oracle = clone(room)
     const post = { to: rand(2) ? 'pat' : 'quinn', type: 'note', text: 'x' }
@@ -462,4 +462,131 @@ it('heals every uncertain malformed root once, then admits without scanning', ()
   const read = vi.spyOn(room.bus, 'toArray').mockImplementation(() => { throw new Error('healed state scanned bus') })
   expect(indexedAdmit(room, { to: 'pat', text: 'x' }, now)).toEqual({ ok: true })
   read.mockRestore(); room.doc.destroy()
+})
+
+
+it('keeps indexing after a nested bigint member value, and heals with legacy trim', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room)
+  const bad = { id: 'bad-bigint', type: 'note', from: 'ada', text: { nested: 1n } } as never
+  expect(() => room.bus.push([bad, ...Array.from({ length: 200 }, (_, i) => message(`after-${i}`, { to: 'pat' }))])).not.toThrow()
+  expect(index.bus.invalid).toBe(1)
+  expect(index.bus.entries.size).toBe(201)
+  expect(index.certain(1000)).toBe(false)
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, 1000)).toEqual(admit(oracle, post, 1000))
+  expect(index.bus.invalid).toBe(0)
+  check(room)
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+it('removes empty message id mail debt after member deletion and replacement', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room)
+  room.mail.set('alias', message('', { to: 'pat' }))
+  expect(index.pending.has('')).toBe(true)
+  room.mail.delete('alias')
+  expect(index.pending.has('')).toBe(false)
+  room.mail.set('alias', message('', { to: 'pat' }))
+  room.mail.set('alias', message('replacement', { to: 'quinn' }))
+  check(room)
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, 1000)).toEqual(admit(oracle, post, 1000))
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+it('caches legacy cap refusals with missing timestamps without expiring their debt', () => {
+  const room = new RoomDoc()
+  room.bus.push(Array.from({ length: 200 }, (_, i) => message(`missing-${i}`, { to: 'pat', at: undefined })))
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }, now = OWED_TTL_MS * 2
+  const expected = admit(oracle, post, now)
+  expect(indexedAdmit(room, post, now)).toEqual(expected)
+  expect(room.outcomes.size).toBe(0)
+  const read = vi.spyOn(room.bus, 'toArray').mockImplementation(() => { throw new Error('missing timestamp rescanned') })
+  expect(indexedAdmit(room, post, now)).toEqual(expected)
+  read.mockRestore(); room.doc.destroy(); oracle.doc.destroy()
+})
+
+it.each(['count', 'bytes'])('matches legacy when outcome %s pruning reactivates debt', budget => {
+  const room = new RoomDoc(), index = deliveryIndex(room), now = 1000
+  room.doc.transact(() => {
+    for (let i = 0; i < 200; i++) room.mail.set(`debt-${i}`, message(`debt-${i}`, { to: 'pat', at: now }))
+    room.outcomes.set('debt-0', { to: 'pat', from: 'ada', outcome: 'over-cap', at: now - 1 })
+    for (let i = 0; i < (budget === 'count' ? 2000 : 4); i++) room.outcomes.set(`o-${i}`, {
+      to: budget === 'bytes' ? 'x'.repeat(65536) : 'quinn', from: 'ada', outcome: 'over-cap', at: now,
+    })
+  })
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, now)).toEqual(admit(oracle, post, now))
+  expect(index.pending.size).toBe(200)
+  check(room)
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+
+it('keeps a failed rebuild stale and uses the legacy scan until a complete rebuild succeeds', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room)
+  room.bus.push(Array.from({ length: 200 }, (_, i) => message(`owed-${i}`, { to: 'pat' })))
+  room.bus.insert(50, [message('split')]) // ensure a genuinely partial first struct range
+  const oracle = clone(room), snapshot = index.bus.entries
+  const original = room.doc.store.clients.values.bind(room.doc.store.clients)
+  const fail = vi.spyOn(room.doc.store.clients, 'values').mockImplementation(function* () {
+    for (const structs of original()) { yield structs.slice(0, 1); break }
+    throw new Error('incomplete struct range')
+  })
+  index.bus.rebuild()
+  expect(index.bus.stale).toBe(true)
+  expect(index.bus.entries).toBe(snapshot) // no partial map published
+  index.pending.clear(); index.recipients.clear(); index.owedBytes = 0
+  const post = { to: 'pat', text: 'x' }
+  expect(index.certain(1000)).toBe(false)
+  expect(indexedAdmit(room, post, 1000)).toEqual(admit(oracle, post, 1000))
+  expect(index.bus.stale).toBe(true)
+  fail.mockRestore(); index.rebuild()
+  expect(index.bus.stale).toBe(false)
+  expect(index.certain(1000)).toBe(true)
+  check(room)
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+it.each(['expiry', 'recipient', 'mail'])('matches legacy when %s creates outcomes that prune a debt suppressor', trigger => {
+  const room = new RoomDoc(), index = deliveryIndex(room), now = OWED_TTL_MS + 1000
+  room.doc.transact(() => {
+    for (let i = 0; i < 200; i++) room.mail.set(`debt-${i}`, message(`debt-${i}`, { to: 'pat', at: now }))
+    room.outcomes.set('debt-0', { to: 'pat', from: 'ada', outcome: 'over-cap', at: now - 1 })
+    for (let i = 0; i < 1999; i++) room.outcomes.set(`out-${i}`, { to: 'quinn', from: 'ada', outcome: 'over-cap', at: now })
+    if (trigger === 'expiry') room.bus.push([message('expire', { to: 'quinn', at: 0 })])
+    if (trigger === 'recipient') room.bus.push(Array.from({ length: 201 }, (_, i) => message(`other-${i}`, { to: 'quinn', at: now })))
+    if (trigger === 'mail') for (let i = 0; i < 1801; i++) room.mail.set(`other-${i}`, message(`other-${i}`, { to: `person-${i}`, at: now }))
+  })
+  expect(index.certain(now)).toBe(false)
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, now)).toEqual(admit(oracle, post, now))
+  indexedTrim(room, now); trim(oracle, now)
+  expect(roots(room)).toEqual(roots(oracle))
+  check(room)
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+it('matches legacy when retention changes a duplicate bus recipient behind non-owed canonical mail', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room), now = 1000
+  room.mail.set('copy', message('copy', { to: 'ada', at: now })) // self-sent, not owed
+  room.bus.push([message('copy', { to: 'quinn', at: now }),
+    ...Array.from({ length: 199 }, (_, i) => message(`pat-${i}`, { to: 'pat', at: now })),
+    message('copy', { to: 'pat', at: now })])
+  expect(index.certain(now, { busKeep: 200 })).toBe(false)
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, now, { busKeep: 200 })).toEqual(admit(oracle, post, now, { busKeep: 200 }))
+  room.doc.destroy(); oracle.doc.destroy()
+})
+
+it('keeps legacy expiry for missing timestamps in mail and for canonical mail+bus pairs', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room), now = OWED_TTL_MS * 2
+  room.mail.set('pair', message('pair', { to: 'quinn', at: undefined }))
+  room.bus.push([message('pair', { to: 'pat', at: undefined })])
+  expect(index.certain(now, { busKeep: 0 })).toBe(true)
+  const oracle = clone(room), post = { to: 'pat', text: 'x' }
+  expect(indexedAdmit(room, post, now, { busKeep: 0 })).toEqual(admit(oracle, post, now, { busKeep: 0 }))
+  indexedTrim(room, now, { busKeep: 0 }); trim(oracle, now, { busKeep: 0 })
+  expect(roots(room)).toEqual(roots(oracle))
+  check(room)
+  room.doc.destroy(); oracle.doc.destroy()
 })
