@@ -4,7 +4,8 @@
  * is refused, the writer is closed with DOC_SIZE_CAP_CODE and sizeCapReason, and reads keep flowing.
  * A write is refused for the room it arrives in, not for the size it would reach: a client's first
  * sync may carry the whole document, and a room exactly at the cap still loads and takes the
- * deletions and trims that shrink it.
+ * deletions and trims that shrink it. The local relay also takes, over the cap, writes that insert
+ * nothing (allowNonGrowing), so newcomers can sync and a room nobody operates can shrink.
  */
 import * as decoding from 'lib0/decoding'
 
@@ -30,14 +31,63 @@ export function isWriteMessage(buf: Uint8Array): boolean {
 }
 
 /**
+ * True when a Yjs v1 update inserts no structs: a zero client count (the only form a Yjs encoder
+ * writes for "no structs") followed by a well-formed delete set that ends the update. So it is
+ * empty, as a newcomer's sync step 2 usually is, or deletions only. Anything else, malformed
+ * included, is false.
+ */
+export function insertsNothing(update: Uint8Array): boolean {
+  try {
+    const d = decoding.createDecoder(update)
+    if (decoding.readVarUint(d) !== 0) return false
+    // The delete set: per client, its id and (clock, length) ranges.
+    for (let clients = decoding.readVarUint(d); clients > 0; clients--) {
+      decoding.readVarUint(d)
+      for (let ranges = decoding.readVarUint(d); ranges > 0; ranges--) { decoding.readVarUint(d); decoding.readVarUint(d) }
+    }
+    return !decoding.hasContent(d)
+  } catch {
+    return false
+  }
+}
+
+/** The largest write allowNonGrowing decodes; a larger one into a room over the cap is refused unread. */
+export const NON_GROWING_MAX_DECODE_BYTES = 4 * 1048576
+
+export interface SizeCapOptions {
+  /**
+   * Take a write into a room over the cap when its update inserts nothing (insertsNothing): a
+   * newcomer's empty sync step 2 and deletions that shrink the room. The local relay sets this,
+   * since a local room has no operator to shrink it; the team server does not.
+   */
+  allowNonGrowing?: boolean
+  /** Decode at most this many message bytes for allowNonGrowing. Default NON_GROWING_MAX_DECODE_BYTES. */
+  maxDecodeBytes?: number
+}
+
+/** A sync write whose update inserts nothing; any other message, malformed included, is false. */
+function nonGrowingWrite(buf: Uint8Array): boolean {
+  try {
+    const d = decoding.createDecoder(buf)
+    decoding.readVarUint(d); decoding.readVarUint(d) // message type and sync step, read by isWriteMessage
+    const update = decoding.readVarUint8Array(d)
+    return !decoding.hasContent(d) && insertsNothing(update)
+  } catch {
+    return false
+  }
+}
+
+/**
  * The room's size when this message is a write it must refuse, else undefined. The size is asked for
  * lazily, with the write message's byte length, so callers can cache an O(doc) measurement and
  * refresh it by traffic (see DocSizeMeter).
  */
-export function sizeCapRefusal(buf: Uint8Array, sizeBytes: (messageBytes: number) => number, maxBytes: number): number | undefined {
+export function sizeCapRefusal(buf: Uint8Array, sizeBytes: (messageBytes: number) => number, maxBytes: number, o: SizeCapOptions = {}): number | undefined {
   if (!isWriteMessage(buf)) return undefined
   const size = sizeBytes(buf.byteLength)
-  return size > maxBytes ? size : undefined
+  if (size <= maxBytes) return undefined
+  if (o.allowNonGrowing && buf.byteLength <= (o.maxDecodeBytes ?? NON_GROWING_MAX_DECODE_BYTES) && nonGrowingWrite(buf)) return undefined
+  return size
 }
 
 export interface DocSizeMeterOptions {

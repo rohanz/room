@@ -895,6 +895,8 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
     hub, post,
   }
   trackConnection(session)
+  // The relay closes a writer into a room over its size cap with 4413, as the server does.
+  watchClosed(session, opts.log)
   return session
 }
 

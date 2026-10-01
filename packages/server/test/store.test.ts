@@ -28,12 +28,18 @@ describe('FileStore', () => {
     expect((await b.readAudit()).map(e => e.event)).toEqual(['login', 'join', 'refused'])
     expect((await b.readAudit({ since: 20 })).map(e => e.at)).toEqual([20, 30])
     expect((await b.readAudit({ limit: 1 })).map(e => e.at)).toEqual([30])
-    // migration reads the audit with a byte bound and treats a larger file as no evidence
-    await expect(b.readAudit({ maxBytes: 10 })).rejects.toThrow('audit log is larger than 10 bytes')
-    expect(await b.readAudit({ maxBytes: 1 << 20 })).toHaveLength(3)
-    // a corrupt line is skipped, not fatal
+    // migration reads the whole audit as evidence, or learns that it cannot
+    expect(await b.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: await b.readAudit(), complete: true })
+    expect(await b.readAllAudit({ limit: 2, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
+    expect(await b.readAllAudit({ limit: 3, maxBytes: 10 })).toEqual({ entries: [], complete: false })
+    // a corrupt line is skipped by the listing, and makes the whole audit incomplete
     fs.appendFileSync(path.join(dir, 'audit.log'), 'not json\n')
     expect(await b.readAudit()).toHaveLength(3)
+    expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
+    fs.writeFileSync(path.join(dir, 'audit.log'), '{"at":1,"event":"join"}\n7\n')
+    expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
+    fs.rmSync(path.join(dir, 'audit.log'))
+    expect(await b.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: true })
   })
 
   it('works in memory when no directory is given', async () => {
@@ -44,6 +50,8 @@ describe('FileStore', () => {
     await s.audit({ at: 1, event: 'logout', login: 'a' })
     expect(await s.loadRooms()).toEqual({})
     expect(await s.readAudit()).toEqual([{ at: 1, event: 'logout', login: 'a' }])
+    // the in-memory audit drops entries past MEM_AUDIT_MAX, so it is never evidence
+    expect(await s.readAllAudit({ limit: 10, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
   })
 
   it('persists migration progress as a complete registry snapshot', async () => {
@@ -99,7 +107,9 @@ describe('PgStore', () => {
       else if (text.startsWith('INSERT INTO room_sessions')) sessions.set(values[0] as string, JSON.parse(values[1] as string))
       else if (text.startsWith('DELETE FROM room_sessions')) sessions.delete(values[0] as string)
       else if (text.startsWith('INSERT INTO room_audit')) audit.push({ id: audit.length + 1, at: values[0] as number, data: JSON.parse(values[1] as string) })
-      else if (text.startsWith('SELECT data FROM room_audit')) for (const r of audit.filter(r => r.at >= (values[0] as number)).sort((a, b) => b.id - a.id).slice(0, values[1] as number)) rows.push({ data: r.data })
+      else if (text.startsWith('SELECT count(*)')) rows.push({ n: String(audit.length), bytes: String(audit.reduce((n, r) => n + JSON.stringify(r.data).length, 0)) })
+      else if (text.startsWith('SELECT data FROM room_audit ORDER BY id LIMIT')) for (const r of audit.slice(0, values[0] as number)) rows.push({ data: r.data })
+      else if (text.startsWith('SELECT data FROM room_audit WHERE')) for (const r of audit.filter(r => r.at >= (values[0] as number)).sort((a, b) => b.id - a.id).slice(0, values[1] as number)) rows.push({ data: r.data })
       else throw new Error(`unexpected SQL: ${text}`)
       return { rows }
     }
@@ -123,8 +133,29 @@ describe('PgStore', () => {
     for (const at of [1, 2, 3]) await s.audit({ at, event: 'join', room: 'r' })
     expect((await s.readAudit({ since: 2 })).map(e => e.at)).toEqual([2, 3])
     expect((await s.readAudit({ limit: 2 })).map(e => e.at)).toEqual([2, 3])
+    expect(await s.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: [1, 2, 3].map(at => ({ at, event: 'join', room: 'r' })), complete: true })
     await s.close()
     expect(pg.isEnded()).toBe(true)
+  })
+
+  it('counts the audit before fetching it whole, and refuses one over the entry or byte bound', async () => {
+    const pg = fakePg()
+    const s = new PgStore('postgres://x', async () => pg.pool)
+    for (const at of [1, 2, 3]) await s.audit({ at, event: 'join', room: 'r' })
+    const bytes = 3 * JSON.stringify({ at: 1, event: 'join', room: 'r' }).length
+    pg.log.length = 0
+    expect(await s.readAllAudit({ limit: 2, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
+    expect(await s.readAllAudit({ limit: 3, maxBytes: bytes - 1 })).toEqual({ entries: [], complete: false })
+    expect(pg.log).toEqual(['SELECT count(*) AS', 'SELECT count(*) AS'])
+    expect((await s.readAllAudit({ limit: 3, maxBytes: bytes })).complete).toBe(true)
+    expect(pg.log.slice(-2)).toEqual(['SELECT count(*) AS', 'SELECT data FROM'])
+    // an entry written between the count and the fetch is caught by the fetch's LIMIT
+    const raced = new PgStore('postgres://x', async () => ({ ...pg.pool, query: async (text: string, values?: unknown[]) => {
+      const result = await pg.pool.query(text, values)
+      if (text.startsWith('SELECT count(*)')) await pg.pool.query('INSERT INTO room_audit (at, data) VALUES ($1, $2)', [4, JSON.stringify({ at: 4, event: 'join', room: 'r' })])
+      return result
+    } }))
+    expect(await raced.readAllAudit({ limit: 3, maxBytes: 1 << 20 })).toEqual({ entries: [], complete: false })
   })
 
   it('overlapping PgStore writes never interleave: each full-table replacement completes before the next begins', async () => {

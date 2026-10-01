@@ -38,6 +38,10 @@ export interface OpenRepo {
 export interface StoredSession { login: string; id?: string; provider: 'github' | 'oidc'; ghToken?: string; at: number }
 type AuditEvent = 'login' | 'logout' | 'room_opened' | 'room_closed' | 'join' | 'refused' | 'identity_violation' | 'document_purged'
 export interface AuditEntry { at: number; event: AuditEvent; login?: string; id?: string; provider?: string; room?: string; reason?: string; readOnly?: boolean }
+/** The whole audit, or `complete: false` (and no entries) when any of it could be missing or unreadable. */
+export interface AuditRead { entries: AuditEntry[]; complete: boolean }
+const incomplete = (): AuditRead => ({ entries: [], complete: false })
+const isEntry = (e: unknown): e is AuditEntry => !!e && typeof e === 'object' && !Array.isArray(e)
 
 /** Most in-memory audit entries kept when there is no audit file: oldest are dropped past this. */
 export const MEM_AUDIT_MAX = 5000
@@ -62,8 +66,10 @@ export interface Store {
   putSession(id: string, s: StoredSession): Promise<void>
   deleteSession(id: string): Promise<void>
   audit(e: AuditEntry): Promise<void>
-  /** Entries at or after `since` (ms), oldest first, at most `limit`. A file audit larger than `maxBytes` is refused. */
-  readAudit(o?: { since?: number; limit?: number; maxBytes?: number }): Promise<AuditEntry[]>
+  /** Entries at or after `since` (ms), oldest first, at most `limit`. */
+  readAudit(o?: { since?: number; limit?: number }): Promise<AuditEntry[]>
+  /** Every entry, oldest first, as evidence: incomplete past `limit` entries or `maxBytes` stored, or with any unreadable entry. */
+  readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead>
   close(): Promise<void>
 }
 
@@ -132,17 +138,34 @@ export class FileStore implements Store {
     this.memAudit.push(e)
     if (this.memAudit.length > MEM_AUDIT_MAX) this.memAudit.splice(0, this.memAudit.length - MEM_AUDIT_MAX)
   }
-  async readAudit(o: { since?: number; limit?: number; maxBytes?: number } = {}): Promise<AuditEntry[]> {
+  async readAudit(o: { since?: number; limit?: number } = {}): Promise<AuditEntry[]> {
     const since = o.since ?? 0
     const limit = o.limit ?? 1000
     let all: AuditEntry[]
     if (this.auditFile) {
       if (!fs.existsSync(this.auditFile)) return []
-      if (o.maxBytes !== undefined && fs.statSync(this.auditFile).size > o.maxBytes) throw new Error(`audit log is larger than ${o.maxBytes} bytes`)
       all = fs.readFileSync(this.auditFile, 'utf8').split('\n').filter(Boolean).flatMap(l => { try { return [JSON.parse(l) as AuditEntry] } catch { return [] } })
     } else all = this.memAudit
     const hits = all.filter(e => e.at >= since)
     return hits.slice(Math.max(0, hits.length - limit))
+  }
+  /** The in-memory audit drops its oldest entries past MEM_AUDIT_MAX, so only an audit file can be complete. */
+  async readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead> {
+    if (!this.auditFile) return incomplete()
+    if (!fs.existsSync(this.auditFile)) return { entries: [], complete: true }
+    if (fs.statSync(this.auditFile).size > o.maxBytes) return incomplete()
+    const text = fs.readFileSync(this.auditFile)
+    if (text.byteLength > o.maxBytes) return incomplete()
+    const lines = text.toString('utf8').split('\n').filter(Boolean)
+    if (lines.length > o.limit) return incomplete()
+    const entries: AuditEntry[] = []
+    for (const line of lines) {
+      let e: unknown
+      try { e = JSON.parse(line) } catch { return incomplete() }
+      if (!isEntry(e)) return incomplete()
+      entries.push(e)
+    }
+    return { entries, complete: true }
   }
   async close(): Promise<void> { /* nothing open */ }
 }
@@ -207,9 +230,18 @@ export class PgStore implements Store {
   async audit(e: AuditEntry): Promise<void> {
     await (await this.db()).query(`INSERT INTO room_audit (at, data) VALUES ($1, $2)`, [e.at, JSON.stringify(e)])
   }
-  async readAudit(o: { since?: number; limit?: number; maxBytes?: number } = {}): Promise<AuditEntry[]> {
+  async readAudit(o: { since?: number; limit?: number } = {}): Promise<AuditEntry[]> {
     const { rows } = await (await this.db()).query(`SELECT data FROM room_audit WHERE at >= $1 ORDER BY id DESC LIMIT $2`, [o.since ?? 0, o.limit ?? 1000])
     return rows.map(r => r.data as AuditEntry).reverse()
+  }
+  /** Counted before it is fetched, so an oversized audit is refused without loading it; LIMIT bounds rows added in between. */
+  async readAllAudit(o: { limit: number; maxBytes: number }): Promise<AuditRead> {
+    const db = await this.db()
+    const { rows: [size] } = await db.query(`SELECT count(*) AS n, coalesce(sum(octet_length(data::text)), 0) AS bytes FROM room_audit`)
+    if (!(Number(size?.n) <= o.limit && Number(size?.bytes) <= o.maxBytes)) return incomplete()
+    const { rows } = await db.query(`SELECT data FROM room_audit ORDER BY id LIMIT $1`, [o.limit + 1])
+    if (rows.length > o.limit || !rows.every(r => isEntry(r.data))) return incomplete()
+    return { entries: rows.map(r => r.data as AuditEntry), complete: true }
   }
   async close(): Promise<void> { await this.pool?.end(); this.pool = undefined }
 }

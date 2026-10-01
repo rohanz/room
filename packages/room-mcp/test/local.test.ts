@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -73,6 +73,25 @@ describe('local mode (no server)', () => {
     expect(await tools.call('room_state', { link: true })).toContain(encodeURIComponent(encodeURIComponent(name)))
     expect((await tools.call('room_state', {})).split('\n')[1]).toContain(name)
   })
+
+  it('a local session refused for the size cap (4413) pauses publication, reconnects after a minute and clears once it holds', async () => {
+    const s = await joinSession({ dir, server: 'local', room: 'local/sizecap', log: () => {} })
+    sessions.push(s)
+    const p = s.provider as unknown as { emit: (ev: string, args: unknown[]) => void; shouldConnect: boolean; wsconnected: boolean; synced: boolean }
+    await vi.waitFor(() => expect(p.wsconnected && p.synced).toBe(true))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      // What y-websocket emits for the relay's refusal; on its own it would never reconnect after a 44xx close.
+      p.emit('connection-close', [{ code: 4413, reason: 'room is over its size cap (64 MB)' }, p])
+      expect(s.rejected?.reason).toBe('room is over its size cap (64 MB)')
+      expect(p.shouldConnect).toBe(false)
+      vi.advanceTimersByTime(60_000)
+      expect(p.shouldConnect).toBe(true)
+    } finally { vi.useRealTimers() }
+    // Back in, its publication is re-sent and the rejection clears.
+    await vi.waitFor(() => expect(s.rejected).toBeUndefined(), { timeout: 15_000 })
+    expect(p.wsconnected && p.synced).toBe(true)
+  }, 30_000)
 
   it('preserves an explicit local room for a worker', async () => {
     const name = `local/${basename(dir)}`

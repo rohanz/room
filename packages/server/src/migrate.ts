@@ -2,7 +2,7 @@ import { MIGRATION_MAX_RECORD_BYTES, MIGRATION_MAX_REBUILDS, MIGRATION_AUDIT_MAX
 import crypto from 'node:crypto'
 import * as Y from 'yjs'
 import { RoomDoc, type Claim, type Msg, type Scope } from '@room/shared'
-import type { AuditEntry, OpenRepo } from './store.js'
+import type { AuditRead, OpenRepo } from './store.js'
 import { ownsName } from './readonly.js'
 import { archiveOwnerOf, parseRoomName, parseLegacyRoomName } from './names.js'
 import { servedBy016, classifyDoc } from './inventory.js'
@@ -62,44 +62,58 @@ export interface MigrationIO {
   maxSources?: number
   maxReadBytes?: number
   maxRecords?: number
-  /** The newest `limit` audit entries (more than `limit - 1` means trimmed); rejects past `maxBytes` of stored audit. */
-  audit?(limit: number, maxBytes: number): Promise<AuditEntry[]>
-  maxAuditEntries?: number
+  /** The whole audit (Store.readAllAudit): incomplete past `limit` entries or `maxBytes`, and incomplete is no evidence. */
+  audit?(limit: number, maxBytes: number): Promise<AuditRead>
   onBuild?: () => void
 }
 
+/** The room a source's 0.16 clients joined: an archived canonical document was served under the repo name. */
+const joinedRoom = (repo: string, source: string) => source.startsWith('archive:') ? repo : source
+
 /**
- * The principals each repeated (source room, name) candidate joined as, keyed `<room>\0<name>`, or
- * undefined without a complete audit. 0.16 documents hold names only (its document identity guard
- * ran in observe mode), so the audit's `join` events are the only record tying a name in a room to
- * a login: a candidate's principals are the writers who joined that room under a login owning the name.
+ * The principals each repeated (source room, name) candidate joined as, as `room -> name -> principals`,
+ * or undefined without a complete audit. 0.16 documents hold names only (its document identity guard
+ * ran in observe mode), so the audit's `join` events are the only record tying a name in a room to a login.
+ *
+ * Only a GitHub join is evidence: principal `github:<login lowercased>` (a GitHub login names one account
+ * at a time, and it was the 0.16 name), for the candidates that login owns (`login`, `login+label`). A room
+ * with any writable join that has no GitHub principal has unknown writers and gives no evidence for any
+ * name: an open or shared-token server records no login, and an OIDC identity keys only the issuer host,
+ * so realms on one host collide. Not covered, and never defended by placeholders in 0.16 either: a GitHub
+ * login renamed and taken by someone else between two joins, and a writer using a name its login does not
+ * own while 0.16's identity guard only observed.
  */
-async function auditedPrincipals(io: MigrationIO, repo: string, candidates: Map<string, Set<string>>): Promise<Map<string, Set<string>> | undefined> {
+async function auditedPrincipals(io: MigrationIO, repo: string, candidates: Map<string, Set<string>>): Promise<Map<string, Map<string, Set<string>>> | undefined> {
   if (!io.audit || !candidates.size) return undefined
-  const max = io.maxAuditEntries ?? MIGRATION_AUDIT_MAX_ENTRIES
-  let entries: AuditEntry[]
-  try { entries = await io.audit(max + 1, MIGRATION_AUDIT_MAX_BYTES) } catch { return undefined }
-  if (!Array.isArray(entries) || entries.length > max) return undefined
-  const rooms = new Map<string, Set<string>>()
+  let audit: AuditRead
+  try { audit = await io.audit(MIGRATION_AUDIT_MAX_ENTRIES, MIGRATION_AUDIT_MAX_BYTES) } catch { return undefined }
+  if (audit?.complete !== true || !Array.isArray(audit.entries) || audit.entries.length > MIGRATION_AUDIT_MAX_ENTRIES) return undefined
+  // Candidates by room and owning login (the name before any '+'), so each join is one lookup.
+  const byOwner = new Map<string, string[]>()
   for (const [person, sources] of candidates) for (const source of sources) {
-    const room = source.startsWith('archive:') ? repo : source
-    let people = rooms.get(room)
-    if (!people) { people = new Set(); rooms.set(room, people) }
-    people.add(person)
+    const key = `${joinedRoom(repo, source)}\0${person.split('+', 1)[0]}`
+    const people = byOwner.get(key)
+    if (people) people.push(person)
+    else byOwner.set(key, [person])
   }
-  const found = new Map<string, Set<string>>()
-  for (const e of entries) {
-    if (e?.event !== 'join' || e.readOnly || typeof e.room !== 'string' || typeof e.login !== 'string' || !e.login) continue
-    const principal = typeof e.id === 'string' && e.id ? e.id : typeof e.provider === 'string' && e.provider ? `${e.provider}:${e.login}` : undefined
-    if (!principal) continue
-    for (const person of rooms.get(e.room) ?? []) {
-      if (!ownsName(person, e.login)) continue
-      const key = `${e.room}\0${person}`
-      let set = found.get(key)
-      if (!set) { set = new Set(); found.set(key, set) }
+  const found = new Map<string, Map<string, Set<string>>>()
+  const unknown = new Set<string>()
+  for (const e of audit.entries) {
+    if (e?.event !== 'join' || e.readOnly === true || typeof e.room !== 'string') continue
+    // GitHub logins never contain '+', which keeps the owner lookup exact.
+    const login = e.provider === 'github' && typeof e.login === 'string' && e.login && !e.login.includes('+') ? e.login : undefined
+    const principal = `github:${login?.toLowerCase()}`
+    if (!login || (e.id !== undefined && e.id !== principal)) { unknown.add(e.room); continue }
+    for (const person of byOwner.get(`${e.room}\0${login}`) ?? []) {
+      if (!ownsName(person, login)) continue
+      let people = found.get(e.room)
+      if (!people) { people = new Map(); found.set(e.room, people) }
+      let set = people.get(person)
+      if (!set) { set = new Set(); people.set(person, set) }
       set.add(principal)
     }
   }
+  for (const room of unknown) found.delete(room)
   return found
 }
 
@@ -264,13 +278,13 @@ export async function migrateRepo(repo: string, entry: OpenRepo, io: MigrationIO
       found.add(source.name)
       workRecords++
     }
-    // A name used on several branches by one audited principal is that person under the same 0.17 name
-    // (the hub admits a login only to `login` and `login+label`); different or unknown principals keep placeholders.
+    // A name used on several branches by one audited GitHub login is that person under the same 0.17 name
+    // (the hub admits a login only to `login` and `login+label`); any other evidence keeps placeholders.
     const repeated = new Map([...occurrences].filter(([, found]) => found.size > 1))
     const principals = await auditedPrincipals(io, repo, repeated)
     const resolved = new Set<string>()
     if (principals) for (const [person, found] of repeated) {
-      const each = [...found].map(name => principals.get(`${name.startsWith('archive:') ? repo : name}\0${person}`))
+      const each = [...found].map(name => principals.get(joinedRoom(repo, name))?.get(person))
       const first = each[0]?.size === 1 ? [...each[0]][0] : undefined
       if (first && each.every(set => set?.size === 1 && set.has(first))) resolved.add(person)
     }

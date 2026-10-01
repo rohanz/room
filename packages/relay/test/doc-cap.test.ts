@@ -48,6 +48,54 @@ it('refuses writes into a local room over the size cap as the server does, and t
   } finally { await relay.close() }
 })
 
+it('a local room over the cap still lets a newcomer join and takes the deletion that brings it back under', async () => {
+  const relay = await cappedRelay()
+  try {
+    const writer = relay.connect(), reader = relay.connect()
+    await expect.poll(() => writer.p.synced && reader.p.synced).toBe(true)
+    const big = 'x'.repeat(cap + 1024)
+    writer.doc.getMap('meta').set('big', big)
+    await expect.poll(() => reader.doc.getMap('meta').get('big')).toBe(big)
+    // The room is over the cap: an inserting write is refused.
+    writer.doc.getMap('meta').set('refused', 1)
+    await expect.poll(() => writer.closes[0]?.code).toBe(DOC_SIZE_CAP_CODE)
+    writer.p.disconnect()
+    // A newcomer's sync step 2 carries nothing the room lacks: it is taken, and the newcomer stays connected.
+    const late = relay.connect()
+    await expect.poll(() => late.p.synced && late.doc.getMap('meta').get('big') === big).toBe(true)
+    await wait(300)
+    expect(late.closes).toEqual([])
+    expect(late.p.wsconnected).toBe(true)
+    // Deleting the oversized entry is a deletion-only update: taken, and everyone sees it.
+    late.doc.getMap('meta').delete('big')
+    await expect.poll(() => reader.doc.getMap('meta').has('big')).toBe(false)
+    expect(late.closes).toEqual([])
+    // Back under the cap, ordinary writes flow again.
+    late.doc.getMap('meta').set('after', 1)
+    await expect.poll(() => reader.doc.getMap('meta').get('after')).toBe(1)
+    expect([...late.closes, ...reader.closes]).toEqual([])
+    expect(reader.doc.getMap('meta').has('refused')).toBe(false)
+  } finally { await relay.close() }
+})
+
+it('a local room over the cap refuses an inserting write from a newcomer, even alongside a deletion', async () => {
+  const relay = await cappedRelay()
+  try {
+    const writer = relay.connect(), reader = relay.connect()
+    await expect.poll(() => writer.p.synced && reader.p.synced).toBe(true)
+    const big = 'x'.repeat(cap + 1024)
+    writer.doc.getMap('meta').set('big', big)
+    await expect.poll(() => reader.doc.getMap('meta').get('big')).toBe(big)
+    // One transaction that deletes the big entry and inserts a small one still inserts: refused.
+    reader.doc.transact(() => { reader.doc.getMap('meta').delete('big'); reader.doc.getMap('meta').set('small', 1) })
+    await expect.poll(() => reader.closes[0]).toEqual({ code: DOC_SIZE_CAP_CODE, reason: sizeCapReason(cap) })
+    reader.p.disconnect()
+    await wait(200)
+    expect(writer.doc.getMap('meta').get('big')).toBe(big)
+    expect(writer.doc.getMap('meta').has('small')).toBe(false)
+  } finally { await relay.close() }
+})
+
 it('a local room exactly at the cap still takes writes, including the deletion that shrinks it', async () => {
   const relay = await cappedRelay()
   try {

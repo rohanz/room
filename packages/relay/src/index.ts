@@ -233,9 +233,11 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
     try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
     catch { conn.close(1008, 'invalid secure frame'); return }
     if (!allowState(buf, conn.bufferedAmount)) { conn.close(1013, 'too many state requests'); return }
-    // A view connection's writes are ignored below; a writer into a room over its cap is closed as the server does.
+    // A view connection's writes are ignored below; a writer into a room over its cap is closed as the server does,
+    // unless its write inserts nothing: a newcomer's sync step 2 and deletions still go through, so a local room
+    // (with no operator to trim it) stays joinable and can shrink.
     const { cap } = d
-    const over = opts.readOnly ? undefined : sizeCapRefusal(buf, bytes => cap.meter.size(bytes), cap.maxBytes)
+    const over = opts.readOnly ? undefined : sizeCapRefusal(buf, bytes => cap.meter.size(bytes), cap.maxBytes, { allowNonGrowing: true })
     if (over !== undefined) {
       const now = Date.now()
       if (cap.logged < now - 60_000) { cap.logged = now; opts.log?.(`local room ${decodeURIComponent(name)}: refusing writes: the document is ${(over / 1048576).toFixed(1)} MB (cap ${(cap.maxBytes / 1048576).toFixed(0)} MB)`) }

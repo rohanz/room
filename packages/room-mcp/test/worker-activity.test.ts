@@ -22,8 +22,28 @@ describe('activityFromEvent (Claude stream-json)', () => {
   })
   it('keeps only the program and subcommand of a shell command', () => {
     expect(activityFromEvent(claudeTool('Bash', { command: `cd ${wt} && npx vitest run test/x.test.ts --token=${SECRET}`, description: SECRET }), 'claude', wt)).toBe('running npx vitest')
-    expect(activityFromEvent(claudeTool('Bash', { command: `API_KEY=${SECRET} /usr/bin/curl -H "Authorization: ${SECRET}" https://x` }), 'claude', wt)).toBe('running curl')
+    expect(activityFromEvent(claudeTool('Bash', { command: `/usr/bin/curl -H "Authorization: ${SECRET}" https://x` }), 'claude', wt)).toBe('running curl')
     expect(activityFromEvent(claudeTool('Bash', { command: `git status` }), 'claude', wt)).toBe('running git status')
+    expect(activityFromEvent(claudeTool('Bash', { command: `uv run pytest -k ${SECRET}` }), 'claude', wt)).toBe('running uv run')
+  })
+  const bash = (command: string) => activityFromEvent(claudeTool('Bash', { command }), 'claude', wt)
+  it('never takes an argument for a subcommand', () => {
+    expect(bash('claude SecretToken123')).toBe('running claude')
+    expect(bash(`git ${SECRET}`)).toBe('running git')
+    expect(bash(`npm run ${SECRET}`)).toBe('running npm run')
+    expect(bash(`npx ${SECRET} --yes`)).toBe('running npx')
+    expect(bash(`codex exec ${SECRET}`)).toBe('running codex')
+  })
+  it('labels quoted or env-prefixed commands only as a command', () => {
+    expect(bash(`API_KEY='alpha ${SECRET} omega' npm test`)).toBe('running a command')
+    expect(bash(`API_KEY=${SECRET} /usr/bin/curl -H "Authorization: ${SECRET}" https://x`)).toBe('running a command')
+    expect(bash(`env API_KEY=${SECRET} npm test`)).toBe('running env')
+    expect(bash(`'${SECRET}' --flag`)).toBe('running a command')
+    expect(bash(`"/opt/my ${SECRET}/bin/tool" x`)).toBe('running a command')
+    expect(bash(`$HOME/${SECRET}/run`)).toBe('running a command')
+    expect(bash(`(${SECRET})`)).toBe('running a command')
+    // A cd whose argument is quoted is not skipped, so the words inside the quotes are never read.
+    expect(bash(`cd "x && ${SECRET} && y" && npm test`)).toBe('running cd')
   })
   it('names room and other tools without their arguments', () => {
     expect(activityFromEvent(claudeTool('mcp__plugin_room_room__room_claim', { intent: SECRET }), 'claude', wt)).toBe('room_claim')
@@ -47,6 +67,16 @@ describe('activityFromEvent (Codex exec --json)', () => {
     expect(activityFromEvent(codexItem({ type: 'command_execution', command: `/bin/bash -lc "cat ${wt}/secret.txt"`, aggregated_output: SECRET, exit_code: 0 }, 'item.completed'), 'codex', wt)).toBe('running cat')
     expect(activityFromEvent(codexItem({ type: 'mcp_tool_call', server: 'room', tool: 'room_scope', arguments: { summary: SECRET } }), 'codex', wt)).toBe('room_scope')
     expect(activityFromEvent(codexItem({ type: 'web_search', query: SECRET }), 'codex', wt)).toBe('searching the web')
+  })
+  it('applies the same command rule inside the shell wrapper', () => {
+    const run = (command: string) => activityFromEvent(codexItem({ type: 'command_execution', command, status: 'in_progress' }), 'codex', wt)
+    expect(run(`/bin/zsh -lc 'claude SecretToken123'`)).toBe('running claude')
+    expect(run(`/bin/zsh -lc "API_KEY='alpha ${SECRET} omega' npm test"`)).toBe('running a command')
+    expect(run(`/bin/bash -lc "'/opt/x ${SECRET}/bin' y"`)).toBe('running a command')
+    expect(run(`/bin/zsh -lc 'git ${SECRET} --all'`)).toBe('running git')
+    expect(run(`/bin/zsh -lc 'git diff --stat'`)).toBe('running git diff')
+    expect(run(`ssh -c 'aes' ${SECRET}`)).toBe('running ssh')
+    expect(run(`claude ${SECRET}`)).toBe('running claude')
   })
   it('never returns agent messages or reasoning', () => {
     expect(activityFromEvent(codexItem({ type: 'agent_message', text: SECRET }, 'item.completed'), 'codex', wt)).toBeUndefined()
@@ -104,6 +134,45 @@ describe('WorkerActivityTracker', () => {
     const written = 1_700_000_000_000
     fs.utimesSync(file, written / 1000, written / 1000)
     expect(new WorkerActivityTracker().poll(file, 'claude', wt, written + 20_000)).toEqual({ label: 'reading a.ts', at: written })
+  })
+  const text = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'thinking aloud' }] } }) + '\n'
+  it('does not date a tool event by a later line written in the same poll', () => {
+    const file = path.join(tmp, 'aged.log')
+    const base = 1_700_000_000_000
+    const touch = (at: number) => fs.utimesSync(file, at / 1000, at / 1000)
+    fs.writeFileSync(file, JSON.stringify({ type: 'system', subtype: 'init' }) + '\n')
+    touch(base)
+    const tracker = new WorkerActivityTracker()
+    expect(tracker.poll(file, 'claude', wt, base + 10_000)).toBeUndefined()
+    // The tool event and newer assistant text arrive between polls: the event is no fresher than the last poll.
+    fs.appendFileSync(file, claudeTool('Read', { file_path: `${wt}/a.ts` }) + '\n' + text)
+    touch(base + 50_000)
+    expect(tracker.poll(file, 'claude', wt, base + 60_000)).toEqual({ label: 'reading a.ts', at: base + 10_000 })
+    // More text later does not refresh it.
+    fs.appendFileSync(file, text)
+    touch(base + 90_000)
+    expect(tracker.poll(file, 'claude', wt, base + 100_000)).toEqual({ label: 'reading a.ts', at: base + 10_000 })
+    // A tool event that is the last line read takes the log's write time.
+    fs.appendFileSync(file, text + claudeTool('Edit', { file_path: `${wt}/b.ts` }) + '\n')
+    touch(base + 130_000)
+    expect(tracker.poll(file, 'claude', wt, base + 140_000)).toEqual({ label: 'editing b.ts', at: base + 130_000 })
+  })
+  it('dates an earlier line of a first poll by the run start, and uses an event timestamp when present', () => {
+    const file = path.join(tmp, 'first.log')
+    // Whole seconds: utimes takes float seconds, which do not round-trip every millisecond.
+    const start = Math.floor(Date.now() / 1000) * 1000
+    fs.writeFileSync(file, claudeTool('Read', { file_path: `${wt}/a.ts` }) + '\n' + text)
+    fs.utimesSync(file, (start + 60_000) / 1000, (start + 60_000) / 1000)
+    expect(new WorkerActivityTracker().poll(file, 'claude', wt, start + 120_000, start + 30_000)).toEqual({ label: 'reading a.ts', at: start + 30_000 })
+    const stamped = path.join(tmp, 'stamped.log')
+    const at = new Date(start + 45_000).toISOString()
+    fs.writeFileSync(stamped, JSON.stringify({ type: 'item.started', timestamp: at, item: { type: 'command_execution', command: 'ls' } }) + '\n' + JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'x' } }) + '\n')
+    fs.utimesSync(stamped, (start + 60_000) / 1000, (start + 60_000) / 1000)
+    expect(new WorkerActivityTracker().poll(stamped, 'codex', wt, start + 120_000, start)).toEqual({ label: 'running ls', at: start + 45_000 })
+    // A timestamp later than the log's last write is clamped to it.
+    fs.writeFileSync(stamped, JSON.stringify({ type: 'item.started', timestamp: new Date(start + 600_000).toISOString(), item: { type: 'command_execution', command: 'ls' } }) + '\n')
+    fs.utimesSync(stamped, (start + 60_000) / 1000, (start + 60_000) / 1000)
+    expect(new WorkerActivityTracker().poll(stamped, 'codex', wt, start + 120_000)).toEqual({ label: 'running ls', at: start + 60_000 })
   })
   it('reads a bounded tail of a large existing log and restarts after truncation', () => {
     const file = path.join(tmp, 'big.log')

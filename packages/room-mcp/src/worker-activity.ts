@@ -1,7 +1,7 @@
 /**
  * A worker's latest tool or file activity, read from its host's stream log (Claude stream-json, Codex
  * exec --json). The host writes that log directly, so it grows while the worker runs. The tracker reads
- * only bytes appended since its last poll. Labels never carry message text, tool output or whole commands.
+ * only bytes appended since its last poll. Labels never carry message text, tool output or command arguments.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,20 +29,30 @@ function shownPath(file: string, dir: string): string {
   return `…/${file.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}`
 }
 
-/** Programs whose second word is a subcommand rather than an argument that might carry data. */
-const SUBCOMMANDS = new Set(['git', 'npm', 'npx', 'pnpm', 'yarn', 'bun', 'uv', 'uvx', 'cargo', 'go', 'docker', 'make', 'gh', 'pip', 'codex', 'claude', 'deno', 'tsx', 'vitest'])
+/** Subcommands that are fixed words of their program. Any other second word may be data and is never shown. */
+const SUBCOMMANDS = new Map<string, readonly string[]>([
+  ['git', ['status', 'diff', 'commit', 'log', 'show', 'add', 'push', 'pull', 'fetch', 'checkout', 'switch', 'branch', 'merge', 'rebase', 'stash', 'reset', 'restore', 'rm', 'mv', 'worktree', 'clone', 'grep', 'blame', 'cherry-pick', 'rev-parse', 'tag', 'remote']],
+  ['npm', ['test', 'run', 'install', 'ci', 'exec']],
+  ['pnpm', ['test', 'run', 'install', 'exec']],
+  ['yarn', ['test', 'run', 'install']],
+  ['npx', ['vitest', 'tsc', 'tsx', 'eslint', 'prettier', 'playwright']],
+  ['uv', ['run', 'sync', 'add', 'lock', 'pip']],
+  ['cargo', ['build', 'test', 'run', 'check', 'clippy', 'fmt']],
+  ['go', ['build', 'test', 'run', 'vet', 'mod']],
+])
 
-/** Program and, for known tools, subcommand of the first non-cd step; never the arguments. */
+/**
+ * "running <program>" from the first word of the command, and only when that word is a plain path: an env
+ * assignment, quote or shell syntax there could put data in its place, so the label becomes "running a command".
+ * Leading `cd <plain path> &&` steps are skipped; a quoted cd argument is not, so nothing inside quotes is read.
+ */
 function commandLabel(command: string): string {
-  const wrapped = command.trim().match(/^\S*?(?:ba|z|da)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/)
-  const script = wrapped ? wrapped[2] : command
-  const step = script.split(/&&|\|\||[;|\n]/).map(s => s.trim()).find(s => s && !/^(cd|pushd)(\s|$)/.test(s)) ?? ''
-  const words = step.split(/\s+/).filter(Boolean)
-  while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || words[0] === 'env')) words.shift()
-  const program = words[0] ? path.basename(words[0]) : ''
-  if (!/^[\w.+-]{1,40}$/.test(program)) return 'running a command'
-  const sub = SUBCOMMANDS.has(program) && /^[A-Za-z][\w:-]{0,30}$/.test(words[1] ?? '') ? ` ${words[1]}` : ''
-  return bounded('running', program + sub)
+  const wrapped = command.trim().match(/^(?:\S*\/)?(?:ba|z|da)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/)
+  const script = (wrapped ? wrapped[2] : command).trim().replace(/^(?:(?:cd|pushd)\s+[\w.+/~-]+\s*&&\s*)+/, '')
+  const [first = '', second = ''] = script.split(/\s+/)
+  const program = path.posix.basename(first)
+  if (!/^[\w.+/~-]+$/.test(first) || !/^[\w.+-]{1,40}$/.test(program)) return 'running a command'
+  return bounded('running', SUBCOMMANDS.get(program)?.includes(second) ? `${program} ${second}` : program)
 }
 
 function toolLabel(name: string): string {
@@ -82,12 +92,26 @@ function codexItem(item: Record<string, unknown>, dir: string): string | undefin
 
 /** The activity one stream line records, if any; malformed lines and text-only events yield undefined. */
 export function activityFromEvent(line: string, host: WorkerHost, dir: string): string | undefined {
+  return eventActivity(line, host, dir)?.label
+}
+
+/** An event's own time, when the host writes one (ISO string or epoch milliseconds). */
+function eventTime(value: unknown): number | undefined {
+  const at = typeof value === 'string' ? Date.parse(value) : typeof value === 'number' ? value : NaN
+  return Number.isFinite(at) && at > 0 ? at : undefined
+}
+
+function eventActivity(line: string, host: WorkerHost, dir: string): { label: string; at?: number } | undefined {
   // Cheap prefilters keep large tool-result and message lines out of JSON.parse.
   if (host === 'claude' ? !line.includes('"tool_use"') : !line.includes('"item.')) return undefined
   let event: unknown
   try { event = JSON.parse(line) } catch { return undefined }
   if (!event || typeof event !== 'object') return undefined
-  const e = event as { type?: unknown; message?: { content?: unknown }; item?: unknown }
+  const label = labelOf(event as { type?: unknown; message?: { content?: unknown }; item?: unknown }, host, dir)
+  return label ? { label, at: eventTime((event as { timestamp?: unknown }).timestamp) } : undefined
+}
+
+function labelOf(e: { type?: unknown; message?: { content?: unknown }; item?: unknown }, host: WorkerHost, dir: string): string | undefined {
   if (host === 'claude') {
     if (e.type !== 'assistant' || !Array.isArray(e.message?.content)) return undefined
     let label: string | undefined
@@ -102,7 +126,7 @@ export function activityFromEvent(line: string, host: WorkerHost, dir: string): 
   return codexItem(e.item as Record<string, unknown>, dir)
 }
 
-interface Entry { offset: number; pending: string; decoder: StringDecoder; skipPartial: boolean; latest?: WorkerActivity }
+interface Entry { offset: number; pending: string; decoder: StringDecoder; skipPartial: boolean; polledAt?: number; latest?: WorkerActivity }
 
 /** Per-log incremental reader. One instance serves a lead process; state is memory only. */
 export class WorkerActivityTracker {
@@ -114,15 +138,20 @@ export class WorkerActivityTracker {
     this.maxEntries = options.maxEntries ?? 64
   }
 
-  /** Read what the log gained since the last poll; the activity is dated by the log's last write. */
-  poll(logFile: string, host: WorkerHost, dir: string, now = Date.now()): WorkerActivity | undefined {
+  /**
+   * Read what the log gained since the last poll. An activity is dated by its event's timestamp when it has
+   * one; otherwise by the log's last write only when it is the last line read, and by the previous poll (or,
+   * on a first poll, the run start `since` or the log's creation) when later lines were written after it.
+   */
+  poll(logFile: string, host: WorkerHost, dir: string, now = Date.now(), since?: number): WorkerActivity | undefined {
     let fd: number | undefined
     let entry = this.entries.get(logFile)
     try {
       fd = fs.openSync(logFile, 'r')
       const stat = fs.fstatSync(fd)
       if (!entry || stat.size < entry.offset) {
-        entry = { offset: 0, pending: '', decoder: new StringDecoder('utf8'), skipPartial: false }
+        // A rewritten log's lines all came after the previous poll, so its time still bounds them.
+        entry = { offset: 0, pending: '', decoder: new StringDecoder('utf8'), skipPartial: false, polledAt: entry?.polledAt }
         this.remember(logFile, entry)
       }
       if (stat.size - entry.offset > this.maxRead) {
@@ -132,7 +161,8 @@ export class WorkerActivityTracker {
         entry.skipPartial = true
       }
       const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, stat.size - entry.offset)))
-      let found: string | undefined
+      let found: { label: string; at?: number } | undefined
+      let foundLast = false
       while (entry.offset < stat.size) {
         const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, stat.size - entry.offset), entry.offset)
         if (!count) break
@@ -142,13 +172,20 @@ export class WorkerActivityTracker {
         while ((end = entry.pending.indexOf('\n')) >= 0) {
           const line = entry.pending.slice(0, end)
           entry.pending = entry.pending.slice(end + 1)
-          if (entry.skipPartial) { entry.skipPartial = false; continue }
-          found = activityFromEvent(line, host, dir) ?? found
+          if (entry.skipPartial) { entry.skipPartial = false; foundLast = false; continue }
+          const activity = eventActivity(line, host, dir)
+          if (activity) found = activity
+          foundLast = !!activity
         }
         // A line longer than one read window is tool output, never activity: drop it through its newline.
-        if (entry.pending.length > this.maxRead) { entry.pending = ''; entry.skipPartial = true }
+        if (entry.pending.length > this.maxRead) { entry.pending = ''; entry.skipPartial = true; foundLast = false }
       }
-      if (found) entry.latest = { label: found, at: Math.min(now, stat.mtimeMs) }
+      if (found) {
+        const written = Math.min(now, stat.mtimeMs)
+        const before = entry.polledAt ?? (Math.max(since ?? 0, stat.birthtimeMs || 0) || written)
+        entry.latest = { label: found.label, at: Math.min(found.at ?? (foundLast ? written : before), written) }
+      }
+      entry.polledAt = now
       return entry.latest
     } catch { return entry?.latest }
     finally { if (fd !== undefined) fs.closeSync(fd) }
@@ -164,7 +201,7 @@ export class WorkerActivityTracker {
 const workerActivity = new WorkerActivityTracker()
 
 /** room_state's activity for one of the lead's workers: only while its process is live. */
-export function liveWorkerActivity(sessionDir: string, worker: { tag: string; host: WorkerHost; dir: string; status: string }, processGone: boolean, now = Date.now()): WorkerActivity | undefined {
+export function liveWorkerActivity(sessionDir: string, worker: { tag: string; host: WorkerHost; dir: string; status: string; startedAt?: number }, processGone: boolean, now = Date.now()): WorkerActivity | undefined {
   if (worker.status !== 'running' || processGone) return undefined
-  return workerActivity.poll(path.join(sessionDir, '.room', 'workers', `${worker.tag}.log`), worker.host, worker.dir, now)
+  return workerActivity.poll(path.join(sessionDir, '.room', 'workers', `${worker.tag}.log`), worker.host, worker.dir, now, worker.startedAt)
 }

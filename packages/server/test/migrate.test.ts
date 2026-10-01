@@ -367,11 +367,11 @@ it('raw-copies an oversized canonical legacy document without decoding it', asyn
 })
 
 describe('ambiguous names with audited logins', () => {
-  const join = (room: string, login: string, extra: Partial<AuditEntry> = {}): AuditEntry => ({ at: 1, event: 'join', room, login, provider: 'github', ...extra })
-  async function migrated(audit?: MigrationIO['audit'], maxAuditEntries?: number) {
+  const join = (room: string, login: string | undefined, extra: Partial<AuditEntry> = {}): AuditEntry => ({ at: 1, event: 'join', room, login, provider: 'github', ...extra })
+  const whole = (entries: AuditEntry[]) => async () => ({ entries, complete: true })
+  async function migrated(audit?: MigrationIO['audit']) {
     const f = fixture()
     f.io.audit = audit
-    if (maxAuditEntries !== undefined) f.io.maxAuditEntries = maxAuditEntries
     await migrateRepo(repo, f.entry, f.io)
     return { f, target: new RoomDoc(await f.io.load(repo)) }
   }
@@ -382,8 +382,8 @@ describe('ambiguous names with audited logins', () => {
     expect(target.mail.get('q1')?.from).toMatch(/^\?/)
   }
 
-  it('resolves a name whose every candidate is the same provider-qualified login', async () => {
-    const { f, target } = await migrated(async () => [join(one, 'ben'), join(two, 'ben'), join(two, 'cy'), join(one, 'ben', { event: 'login' })])
+  it('resolves a name whose every candidate is the same GitHub login', async () => {
+    const { f, target } = await migrated(whole([join(one, 'ben'), join(two, 'ben'), join(two, 'cy'), join(one, 'ben', { event: 'login' }), join(one, 'zed', { provider: undefined, readOnly: true })]))
     expect(f.entry.unresolved).toBe(0)
     expect(target.doc.getMap('unresolved').size).toBe(0)
     expect(target.scopes.get('ben')).toMatchObject({ by: 'ben' })
@@ -392,19 +392,54 @@ describe('ambiguous names with audited logins', () => {
     expect(target.mail.get('q2')).toMatchObject({ from: 'ben', to: 'ben' })
   })
 
-  it('keeps placeholders when the same name belongs to different principals', async () => {
-    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(two, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' })]))
+  it('keeps placeholders when a copy has no writable join by the login that owns the name', async () => {
+    expectPlaceholders(await migrated(whole([join(one, 'ben')])))
+    // Names compare case as the hub does: Ben does not own ben.
+    expectPlaceholders(await migrated(whole([join(one, 'ben'), join(two, 'Ben')])))
+    expectPlaceholders(await migrated(whole([join(one, 'ben'), join(two, 'ben', { readOnly: true })])))
   })
 
-  it('keeps placeholders when one candidate has two principals or none', async () => {
-    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(one, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' }), join(two, 'ben')]))
-    expectPlaceholders(await migrated(async () => [join(one, 'ben')]))
-    expectPlaceholders(await migrated(async () => [join(one, 'ben'), join(two, 'ben', { readOnly: true })]))
+  it('takes no evidence from a room with a writable join that has no GitHub principal', async () => {
+    const both = [join(one, 'ben'), join(two, 'ben')]
+    // An open or shared-token server records joins with no login or provider: anyone could have written as ben.
+    expectPlaceholders(await migrated(whole([...both, join(two, undefined, { provider: undefined })])))
+    expectPlaceholders(await migrated(whole([...both, join(two, 'zed', { provider: undefined })])))
+    // OIDC identities key the issuer host, so realms on one host collide: an OIDC writer is an unknown writer.
+    expectPlaceholders(await migrated(whole([...both, join(one, 'ann@example.com', { provider: 'oidc', id: 'oidc:idp.example:42' })])))
+    expectPlaceholders(await migrated(whole([join(one, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' }), join(two, 'ben', { provider: 'oidc', id: 'oidc:idp.example:42' })])))
+    // A GitHub join carrying some other identity, or a login GitHub cannot issue, is not a GitHub principal either.
+    expectPlaceholders(await migrated(whole([...both, join(one, 'ben', { id: 'oidc:idp.example:42' })])))
+    expectPlaceholders(await migrated(whole([...both, join(two, 'ben+laptop')])))
+    // ... while a GitHub join that also carries its own principal counts.
+    expect((await migrated(whole([...both, join(one, 'ben', { id: 'github:ben' })]))).f.entry.unresolved).toBe(0)
   })
 
-  it('keeps placeholders when the audit is missing, unreadable or trimmed', async () => {
+  it('keeps placeholders when the audit is missing, unreadable or incomplete', async () => {
     expectPlaceholders(await migrated())
     expectPlaceholders(await migrated(async () => { throw new Error('audit unavailable') }))
-    expectPlaceholders(await migrated(async limit => [join(one, 'ben'), join(two, 'ben'), ...Array.from({ length: limit }, () => join(one, 'zed'))], 3))
+    expectPlaceholders(await migrated(async () => ({ entries: [join(one, 'ben'), join(two, 'ben')], complete: false })))
+    const limits: number[][] = []
+    expectPlaceholders(await migrated(async (limit, maxBytes) => { limits.push([limit, maxBytes]); return { entries: Array.from({ length: limit + 1 }, () => join(one, 'ben')).concat(join(two, 'ben')), complete: true } }))
+    expect(limits).toEqual([[100_000, 32 * 1048576]])
   })
+
+  it('indexes candidates by owning login: 20,000 names in two rooms against 50,000 joins', async () => {
+    const f = fixture()
+    const names = Array.from({ length: 20_000 }, (_, i) => `n${i}`)
+    for (const name of [one, two]) {
+      const room = new RoomDoc(new Y.Doc())
+      room.doc.transact(() => { for (const by of names) room.scopes.set(by, { by, byKind: 'agent', area: 'a', summary: '', paths: [], at: 1 }) })
+      f.docs.set(name, Y.encodeStateAsUpdate(room.doc)); room.doc.destroy()
+    }
+    const entries = [...names.flatMap(login => [join(one, login), join(two, login)]), ...Array.from({ length: 10_000 }, (_, i) => join(i % 2 ? one : two, `x${i}`))]
+    let evidenceStart = 0, evidenceMs = -1
+    f.io.audit = async () => { evidenceStart = performance.now(); return { entries, complete: true } }
+    f.io.onBuild = () => { if (evidenceMs < 0) evidenceMs = performance.now() - evidenceStart }
+    f.io.maxRecords = 1_000_000
+    await migrateRepo(repo, f.entry, f.io)
+    expect(entries).toHaveLength(50_000)
+    expect(evidenceMs).toBeGreaterThanOrEqual(0)
+    expect(evidenceMs).toBeLessThan(2000)
+    expect(f.entry.unresolved).toBe(0)
+  }, 60_000)
 })

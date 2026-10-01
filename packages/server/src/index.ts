@@ -349,7 +349,7 @@ async function migrateOpenRepo(repo: string): Promise<void> {
       list: listDocs, load: loadDoc, write: (name, update) => changed(() => writeDoc(name, update)), clear: name => changed(() => clearDoc(name)), save: saveRooms,
       stored: async (name, limit) => storedSize(name, limit, await (tables ??= storedTables())),
       copyRaw: (from, to) => changed(() => copyRaw(from, to)),
-      audit: (limit, maxBytes) => store.readAudit({ limit, maxBytes }),
+      audit: (limit, maxBytes) => store.readAllAudit({ limit, maxBytes }),
       release: (name, doc) => { if (docs.get(name) !== doc) doc.destroy() },
       freeze: names => changed(() => freezeDocs(names, upgradeText(repo))),
       revoke: async names => {

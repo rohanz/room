@@ -25363,12 +25363,41 @@ function isWriteMessage(buf) {
     return true;
   }
 }
-function sizeCapRefusal(buf, sizeBytes, maxBytes) {
+function insertsNothing(update) {
+  try {
+    const d = createDecoder(update);
+    if (readVarUint(d) !== 0) return false;
+    for (let clients = readVarUint(d); clients > 0; clients--) {
+      readVarUint(d);
+      for (let ranges = readVarUint(d); ranges > 0; ranges--) {
+        readVarUint(d);
+        readVarUint(d);
+      }
+    }
+    return !hasContent(d);
+  } catch {
+    return false;
+  }
+}
+function nonGrowingWrite(buf) {
+  try {
+    const d = createDecoder(buf);
+    readVarUint(d);
+    readVarUint(d);
+    const update = readVarUint8Array(d);
+    return !hasContent(d) && insertsNothing(update);
+  } catch {
+    return false;
+  }
+}
+function sizeCapRefusal(buf, sizeBytes, maxBytes, o = {}) {
   if (!isWriteMessage(buf)) return void 0;
   const size2 = sizeBytes(buf.byteLength);
-  return size2 > maxBytes ? size2 : void 0;
+  if (size2 <= maxBytes) return void 0;
+  if (o.allowNonGrowing && buf.byteLength <= (o.maxDecodeBytes ?? NON_GROWING_MAX_DECODE_BYTES) && nonGrowingWrite(buf)) return void 0;
+  return size2;
 }
-var MESSAGE_SYNC, SYNC_STEP2, SYNC_UPDATE, DOC_SIZE_CAP_CODE, DocSizeMeter;
+var MESSAGE_SYNC, SYNC_STEP2, SYNC_UPDATE, DOC_SIZE_CAP_CODE, NON_GROWING_MAX_DECODE_BYTES, DocSizeMeter;
 var init_doc_cap = __esm({
   "packages/hub-core/src/doc-cap.ts"() {
     "use strict";
@@ -25377,6 +25406,7 @@ var init_doc_cap = __esm({
     SYNC_STEP2 = 1;
     SYNC_UPDATE = 2;
     DOC_SIZE_CAP_CODE = 4413;
+    NON_GROWING_MAX_DECODE_BYTES = 4 * 1048576;
     DocSizeMeter = class {
       constructor(measure, o = {}) {
         this.measure = measure;
@@ -26400,7 +26430,7 @@ function attachReady(docs, conn, name2, opts, first) {
       return;
     }
     const { cap } = d;
-    const over = opts.readOnly ? void 0 : sizeCapRefusal(buf, (bytes) => cap.meter.size(bytes), cap.maxBytes);
+    const over = opts.readOnly ? void 0 : sizeCapRefusal(buf, (bytes) => cap.meter.size(bytes), cap.maxBytes, { allowNonGrowing: true });
     if (over !== void 0) {
       const now = Date.now();
       if (cap.logged < now - 6e4) {
@@ -40385,6 +40415,7 @@ async function joinLocal(dir, opts) {
     post
   };
   trackConnection(session);
+  watchClosed(session, opts.log);
   return session;
 }
 function watchClosed(s, log2) {
@@ -57687,17 +57718,23 @@ function shownPath(file, dir) {
   if (rel && !rel.startsWith("..") && !path42.isAbsolute(rel)) return rel;
   return `\u2026/${file.split(/[\\/]/).filter(Boolean).slice(-2).join("/")}`;
 }
-var SUBCOMMANDS = /* @__PURE__ */ new Set(["git", "npm", "npx", "pnpm", "yarn", "bun", "uv", "uvx", "cargo", "go", "docker", "make", "gh", "pip", "codex", "claude", "deno", "tsx", "vitest"]);
+var SUBCOMMANDS = /* @__PURE__ */ new Map([
+  ["git", ["status", "diff", "commit", "log", "show", "add", "push", "pull", "fetch", "checkout", "switch", "branch", "merge", "rebase", "stash", "reset", "restore", "rm", "mv", "worktree", "clone", "grep", "blame", "cherry-pick", "rev-parse", "tag", "remote"]],
+  ["npm", ["test", "run", "install", "ci", "exec"]],
+  ["pnpm", ["test", "run", "install", "exec"]],
+  ["yarn", ["test", "run", "install"]],
+  ["npx", ["vitest", "tsc", "tsx", "eslint", "prettier", "playwright"]],
+  ["uv", ["run", "sync", "add", "lock", "pip"]],
+  ["cargo", ["build", "test", "run", "check", "clippy", "fmt"]],
+  ["go", ["build", "test", "run", "vet", "mod"]]
+]);
 function commandLabel(command2) {
-  const wrapped = command2.trim().match(/^\S*?(?:ba|z|da)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
-  const script = wrapped ? wrapped[2] : command2;
-  const step = script.split(/&&|\|\||[;|\n]/).map((s) => s.trim()).find((s) => s && !/^(cd|pushd)(\s|$)/.test(s)) ?? "";
-  const words = step.split(/\s+/).filter(Boolean);
-  while (words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || words[0] === "env")) words.shift();
-  const program = words[0] ? path42.basename(words[0]) : "";
-  if (!/^[\w.+-]{1,40}$/.test(program)) return "running a command";
-  const sub = SUBCOMMANDS.has(program) && /^[A-Za-z][\w:-]{0,30}$/.test(words[1] ?? "") ? ` ${words[1]}` : "";
-  return bounded("running", program + sub);
+  const wrapped = command2.trim().match(/^(?:\S*\/)?(?:ba|z|da)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/);
+  const script = (wrapped ? wrapped[2] : command2).trim().replace(/^(?:(?:cd|pushd)\s+[\w.+/~-]+\s*&&\s*)+/, "");
+  const [first = "", second = ""] = script.split(/\s+/);
+  const program = path42.posix.basename(first);
+  if (!/^[\w.+/~-]+$/.test(first) || !/^[\w.+-]{1,40}$/.test(program)) return "running a command";
+  return bounded("running", SUBCOMMANDS.get(program)?.includes(second) ? `${program} ${second}` : program);
 }
 function toolLabel(name2) {
   const tool = name2.startsWith("mcp__") ? name2.split("__").at(-1) ?? name2 : name2;
@@ -57754,7 +57791,11 @@ function codexItem(item, dir) {
       return void 0;
   }
 }
-function activityFromEvent(line, host, dir) {
+function eventTime(value2) {
+  const at = typeof value2 === "string" ? Date.parse(value2) : typeof value2 === "number" ? value2 : NaN;
+  return Number.isFinite(at) && at > 0 ? at : void 0;
+}
+function eventActivity(line, host, dir) {
   if (host === "claude" ? !line.includes('"tool_use"') : !line.includes('"item.')) return void 0;
   let event;
   try {
@@ -57763,7 +57804,10 @@ function activityFromEvent(line, host, dir) {
     return void 0;
   }
   if (!event || typeof event !== "object") return void 0;
-  const e = event;
+  const label = labelOf(event, host, dir);
+  return label ? { label, at: eventTime(event.timestamp) } : void 0;
+}
+function labelOf(e, host, dir) {
   if (host === "claude") {
     if (e.type !== "assistant" || !Array.isArray(e.message?.content)) return void 0;
     let label;
@@ -57785,15 +57829,19 @@ var WorkerActivityTracker = class {
     this.maxRead = options.maxRead ?? 512 * 1024;
     this.maxEntries = options.maxEntries ?? 64;
   }
-  /** Read what the log gained since the last poll; the activity is dated by the log's last write. */
-  poll(logFile, host, dir, now = Date.now()) {
+  /**
+   * Read what the log gained since the last poll. An activity is dated by its event's timestamp when it has
+   * one; otherwise by the log's last write only when it is the last line read, and by the previous poll (or,
+   * on a first poll, the run start `since` or the log's creation) when later lines were written after it.
+   */
+  poll(logFile, host, dir, now = Date.now(), since) {
     let fd;
     let entry = this.entries.get(logFile);
     try {
       fd = fs45.openSync(logFile, "r");
       const stat4 = fs45.fstatSync(fd);
       if (!entry || stat4.size < entry.offset) {
-        entry = { offset: 0, pending: "", decoder: new StringDecoder2("utf8"), skipPartial: false };
+        entry = { offset: 0, pending: "", decoder: new StringDecoder2("utf8"), skipPartial: false, polledAt: entry?.polledAt };
         this.remember(logFile, entry);
       }
       if (stat4.size - entry.offset > this.maxRead) {
@@ -57804,6 +57852,7 @@ var WorkerActivityTracker = class {
       }
       const chunk = Buffer.alloc(Math.min(64 * 1024, Math.max(1, stat4.size - entry.offset)));
       let found;
+      let foundLast = false;
       while (entry.offset < stat4.size) {
         const count = fs45.readSync(fd, chunk, 0, Math.min(chunk.length, stat4.size - entry.offset), entry.offset);
         if (!count) break;
@@ -57815,16 +57864,25 @@ var WorkerActivityTracker = class {
           entry.pending = entry.pending.slice(end + 1);
           if (entry.skipPartial) {
             entry.skipPartial = false;
+            foundLast = false;
             continue;
           }
-          found = activityFromEvent(line, host, dir) ?? found;
+          const activity = eventActivity(line, host, dir);
+          if (activity) found = activity;
+          foundLast = !!activity;
         }
         if (entry.pending.length > this.maxRead) {
           entry.pending = "";
           entry.skipPartial = true;
+          foundLast = false;
         }
       }
-      if (found) entry.latest = { label: found, at: Math.min(now, stat4.mtimeMs) };
+      if (found) {
+        const written = Math.min(now, stat4.mtimeMs);
+        const before = entry.polledAt ?? (Math.max(since ?? 0, stat4.birthtimeMs || 0) || written);
+        entry.latest = { label: found.label, at: Math.min(found.at ?? (foundLast ? written : before), written) };
+      }
+      entry.polledAt = now;
       return entry.latest;
     } catch {
       return entry?.latest;
@@ -57841,7 +57899,7 @@ var WorkerActivityTracker = class {
 var workerActivity = new WorkerActivityTracker();
 function liveWorkerActivity(sessionDir, worker, processGone, now = Date.now()) {
   if (worker.status !== "running" || processGone) return void 0;
-  return workerActivity.poll(path42.join(sessionDir, ".room", "workers", `${worker.tag}.log`), worker.host, worker.dir, now);
+  return workerActivity.poll(path42.join(sessionDir, ".room", "workers", `${worker.tag}.log`), worker.host, worker.dir, now, worker.startedAt);
 }
 
 // packages/room-mcp/src/tools/scope.ts
