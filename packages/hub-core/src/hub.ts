@@ -747,7 +747,10 @@ class RoomHub implements Hub {
     const ids = new Set(aliased.map(([, m]) => m.id))
     const keys = new Set([...aliased.map(([key]) => key), ...ids])
     const copies = new Map<string, Msg[]>()
-    for (const [, m] of entries) if (ids.has(m.id)) copies.set(m.id, [...copies.get(m.id) ?? [], m])
+    for (const [, m] of entries) if (ids.has(m.id)) {
+      const list = copies.get(m.id)
+      if (list) list.push(m); else copies.set(m.id, [m])
+    }
     const target = new Map<string, Msg>()
     for (const [id, list] of copies) {
       const winner = list.find(owedCopy)

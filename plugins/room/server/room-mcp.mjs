@@ -25195,7 +25195,11 @@ var init_hub = __esm({
         const ids = new Set(aliased.map(([, m]) => m.id));
         const keys2 = /* @__PURE__ */ new Set([...aliased.map(([key2]) => key2), ...ids]);
         const copies = /* @__PURE__ */ new Map();
-        for (const [, m] of entries) if (ids.has(m.id)) copies.set(m.id, [...copies.get(m.id) ?? [], m]);
+        for (const [, m] of entries) if (ids.has(m.id)) {
+          const list = copies.get(m.id);
+          if (list) list.push(m);
+          else copies.set(m.id, [m]);
+        }
         const target = /* @__PURE__ */ new Map();
         for (const [id3, list] of copies) {
           const winner = list.find(owedCopy);

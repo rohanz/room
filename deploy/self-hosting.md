@@ -8,7 +8,7 @@ One container, one volume. Login with a GitHub OAuth App, with your company iden
 - A host with Docker (Compose v2) and a DNS name, e.g. `room.example.com`.
 - A reverse proxy terminating TLS (Caddy, nginx, Traefik, a cloud load balancer). Rooms are
   websockets, so the proxy must forward `Upgrade` (see below).
-- Node 22 is only needed if you run without Docker (`npm ci && npm run server`).
+- Node 22 is only needed if you run without Docker (`npm ci && npm run build:server && npm run server`).
 
 ## Quick start
 
@@ -190,8 +190,8 @@ docker compose -f deploy/docker-compose.yml up -d room
 
 For the 0.17 cutover, take the stopped-server snapshot described above **before** these commands. Earlier session records load as GitHub sessions, and Postgres tables are created with `IF NOT EXISTS`; this does not make a migrated 0.17 volume backward-compatible with 0.16. Clients must update together as described in [the upgrade guide](../docs/upgrading.md). The `docker compose` healthcheck hits `/health`.
 
-Running without Docker is the same server: `YPERSISTENCE=/var/lib/room PORT=8080 npm run server`
-under systemd, with the same environment.
+Running without Docker is the same server: build it once per checkout or upgrade (`npm run build:server`),
+then run `MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server` under systemd, with the same environment.
 
 ## Local path boundary
 
