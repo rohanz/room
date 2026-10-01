@@ -329,6 +329,41 @@ describe('resumed worker boundaries', () => {
     t.exits[0](0)
     await vi.waitFor(() => expect(workerByTag(t.dir, 'fresh')?.status).toBe('done'))
     await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done' && m.summary.includes('ended without a report'))).toHaveLength(1))
+    expect(workerByTag(t.dir, 'fresh')?.summary).not.toContain('background')
+  })
+
+  // Claude Code 2.1.286 stream-json: a background shell task the turn did not await is killed after the result.
+  const unawaited = (sessionId?: string) => [
+    { type: 'system', subtype: 'task_started', task_id: 'b4z', tool_use_id: 'toolu_1', description: 'sleep 40; echo done', is_backgrounded: true, task_type: 'local_bash' },
+    { type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: 'Tests are running in the background.' }] } },
+    { type: 'result', subtype: 'success', result: 'started', stop_reason: 'end_turn', session_id: sessionId },
+    { type: 'system', subtype: 'task_updated', task_id: 'b4z', patch: { status: 'killed', end_time: 3 } },
+    { type: 'system', subtype: 'task_notification', task_id: 'b4z', tool_use_id: 'toolu_1', status: 'stopped', output_file: '/tmp/x', summary: 'sleep 40; echo done' },
+  ].map(event => JSON.stringify(event)).join('\n') + '\n'
+
+  it('tells the lead a no-report worker exited with background work still running', async () => {
+    const t = setup()
+    expect(await t.tools.call('room_spawn', { tag: 'bg', task: 'test', host: 'claude' })).toContain('spawned bg')
+    writeFileSync(join(t.dir, '.room', 'workers', 'bg.log'), unawaited())
+    t.exits[0](0)
+    const said = 'ended without a report — background work was still running (1 background task(s) killed at exit)'
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1))
+    expect(workerByTag(t.dir, 'bg')?.summary).toContain(said)
+    expect(workerByTag(t.dir, 'bg')?.summary).not.toContain('sleep 40')
+  })
+
+  it('names killed background work when a resumed run exits without room_done', async () => {
+    const t = setup()
+    await t.seed('bgresume', { status: 'failed', exitCode: 1 })
+    expect(await t.tools.call('room_send', { type: 'note', to: 'bgresume', text: 'run the tests' })).toContain('resumed bgresume')
+    const record = (await t.record('bgresume'))!, run = record.runs.at(-1)!
+    writeFileSync(join(t.dir, '.room', 'workers', 'bgresume.log'), 'x'.repeat(run.logStart) + '\n' + unawaited(record.hostSessionId))
+    t.exits[0](0)
+    const said = 'exited without room_done — background work was still running (1 background task(s) killed at exit)'
+    await vi.waitFor(() => expect(workerByTag(t.dir, 'bgresume')).toMatchObject({ status: 'failed' }))
+    const registry = await registryForDir(t.dir)
+    expect(registry.status(record.id)?.note).toBe(said)
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt' && m.type === 'note' && m.text.includes(said))).toHaveLength(1))
   })
 
   it('fails a resumed nonzero exit with the death note', async () => {

@@ -347,6 +347,7 @@ class Daemon implements Roomd {
   private diskWork = new Set<Promise<void>>()
   stopped = false
   private lastActive = Date.now()
+  private readonly joinedAt = Date.now()
   /** The startup step in progress, named in a startup failure. */
   phase = 'git'
   onSeedProgress?: () => void
@@ -560,6 +561,7 @@ class Daemon implements Roomd {
       share: this.share,
       watchedDirectory: this.watchedDirectory,
       lastActive: this.lastActive,
+      joinedAt: this.joinedAt,
     }
     this.provider.awareness.setLocalState(state)
   }

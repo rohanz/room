@@ -1,22 +1,14 @@
-// Tests never write the user's Room config dir (machine-id, credentials, worker port reservations).
+// Runs before every test file, also when vitest starts in a package directory (each package's vitest.config.ts).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeEach, expect } from 'vitest'
+import { isolateTestEnv } from './packages/shared/src/test-env.js'
 import { startWatchdog } from './packages/shared/src/test-watchdog.js'
 
-// Host and Room identity must not leak into tests or the child processes they spawn: a suite run inside a
-// Claude or Codex session, or inside a Room worker, would otherwise act as that session or worker.
-for (const key of ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID']) delete process.env[key]
-for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
-
-delete process.env.CLAUDE_PLUGIN_ROOT
-
+// Host, Room, git and server state must not leak into tests or the child processes they spawn.
 const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'room-test-config-'))
-process.env.XDG_CONFIG_HOME = configHome
-// Nor read the user's Codex rollouts and plugin cache, or Claude Code's installed-plugin list.
-process.env.CODEX_HOME = path.join(configHome, 'codex')
-process.env.CLAUDE_CONFIG_DIR = path.join(configHome, 'claude')
+isolateTestEnv(process.env, configHome)
 afterAll(() => fs.rmSync(configHome, { recursive: true, force: true }))
 
 // A worker whose event loop is blocked cannot time its own test out; the watchdog names it and ends the wait.

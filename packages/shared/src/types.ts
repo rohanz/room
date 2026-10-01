@@ -236,6 +236,8 @@ export interface Presence {
   areas?: string[]
   /** epoch ms */
   lastActive?: number
+  /** epoch ms this session joined the room; earlier "done" notes under the name belong to a previous session. */
+  joinedAt?: number
   /** Minutes since this session's last Room call or hook contact, on its own clock (registry §18). */
   idleMin?: number
 }

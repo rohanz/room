@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, onTestFinished, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -62,6 +62,9 @@ describe('local mode (no server)', () => {
   })
 
   it('accepts a custom name and reports the actual room in the reply, browser and state', async () => {
+    // A checkout that has not built packages/web has no viewer file to link to; a configured web view always has one.
+    vi.stubEnv('ROOM_WEB', 'http://localhost:5173')
+    onTestFinished(() => { vi.unstubAllEnvs() })
     let session: Session | null = null
     const tools = createTools({ getSession: () => session, setSession: s => { session = s }, cwd: dir,
       join: async opts => { const s = await joinSession(opts); sessions.push(s); return s },

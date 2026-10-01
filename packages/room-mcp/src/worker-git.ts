@@ -465,7 +465,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
 export function cleanupWorkerLogs(leadDir: string, w: Pick<LocalWorker, 'dir' | 'tag'>): void {
   const parent = path.basename(path.dirname(w.dir)) === 'workers' && path.basename(path.dirname(path.dirname(w.dir))) === '.room'
     ? path.resolve(w.dir, '../../..') : leadDir
-  for (const suffix of ['.log', '.mcp.log']) {
+  for (const suffix of ['.log', '.mcp.log', '.env.sh']) {
     try { fs.rmSync(path.join(parent, WORKERS_DIR, w.tag + suffix), { force: true }) } catch { /* keep the log if the OS locks it */ }
   }
   for (const dir of [path.join(parent, WORKERS_DIR), path.join(parent, '.room')]) {

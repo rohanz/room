@@ -34,6 +34,8 @@ interface HostEvent {
   result?: unknown; message?: { content?: unknown } | string; item?: { type?: string; text?: unknown }
   error?: { message?: unknown }; is_error?: boolean
   num_turns?: number
+  task_id?: unknown; task_type?: unknown; is_backgrounded?: unknown; patch?: { status?: unknown }
+  tool_use_result?: { backgroundTaskId?: unknown }
 }
 
 /** Read complete JSON lines from one run, starting at its byte offset in the shared log. */
@@ -129,6 +131,41 @@ export function workerLogTail(logFile: string, logStart = 0): string {
     }).filter(Boolean).slice(-5).join('\n').slice(-600)
   } catch { return '(log unavailable)' }
   finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
+const UNFINISHED_TASK_STATUSES = new Set(['running', 'pending'])
+
+/**
+ * Background shell tasks this run started and never awaited: `claude -p` kills them when the turn
+ * ends. A backgrounded `local_bash` task counts when it had no terminal event before the run's last
+ * result, or none at all. Foreground tasks, subagents and monitors (the host awaits those) and tasks
+ * stopped before the result do not. Reads at most the last 16 MB of the run. Codex logs carry no
+ * task events, so they count nothing.
+ */
+export function unawaitedBackgroundTasks(logFile: string, logStart: number, host: 'claude' | 'codex'): number {
+  if (host !== 'claude') return 0
+  let size: number
+  try { size = fs.statSync(logFile).size } catch { return 0 }
+  const kinds = new Map<string, unknown>(), backgrounded = new Set<string>(), open = new Set<string>()
+  let atResult: Set<string> | undefined
+  for (const event of hostEvents(logFile, Math.max(logStart, size - 16 * 1024 * 1024))) {
+    const id = typeof event.task_id === 'string' ? event.task_id : undefined
+    if (event.type === 'result') atResult = new Set(open)
+    else if (event.type === 'user' && typeof event.tool_use_result?.backgroundTaskId === 'string') {
+      backgrounded.add(event.tool_use_result.backgroundTaskId)
+    } else if (event.type === 'system' && id) {
+      if (event.subtype === 'task_started') {
+        kinds.set(id, event.task_type)
+        if (event.is_backgrounded === true) backgrounded.add(id)
+        open.add(id)
+      } else if (event.subtype === 'task_notification'
+        || event.subtype === 'task_updated' && typeof event.patch?.status === 'string' && !UNFINISHED_TASK_STATUSES.has(event.patch.status)) {
+        open.delete(id)
+      }
+    }
+  }
+  const killed = new Set([...atResult ?? [], ...open])
+  return [...killed].filter(id => backgrounded.has(id) && kinds.get(id) === 'local_bash').length
 }
 
 /** Signal only the worker host pid. Its group may also contain processes outside the worktree. */

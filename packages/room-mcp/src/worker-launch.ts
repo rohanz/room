@@ -6,6 +6,7 @@ import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
 import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { leadClaudePluginDir, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
+import { workerShellEnvWarnings, writeWorkerShellEnv } from './worker-shell-env.js'
 import { realGitCommonDir } from '@room/roomd'
 
 export class WorkerLaunchError extends Error {
@@ -33,6 +34,8 @@ type Command =
 export interface WorkerLaunchResult {
   proc: SpawnedProcess; port: number; env: Record<string, string>; nice: number; logFile: string
   portChanged: boolean; startedAt: number
+  /** The worker's shell commands will still see Room's ROOM_ variables, and why. */
+  warnings: string[]
   processStartTime?: string
 }
 
@@ -66,7 +69,8 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     const port = reservation.port
     const nameEpoch = await reserveWorkerName(s, `${policy.owner}+${tag}`, id, policy.log)
     const portChanged = command.mode === 'resume' && port !== command.oldPort
-    const env = workerProcessEnv({ threads: policy.budget.threads, memGb: policy.budget.memGb,
+    const shellEnv = policy.host === 'claude' ? writeWorkerShellEnv(s.dir, tag) : {}
+    const env = workerProcessEnv({ shellEnvFile: shellEnv.file, threads: policy.budget.threads, memGb: policy.budget.memGb,
       host: policy.host, model: policy.model, effort: policy.effort, port, server: policy.server,
       room: s.roomName, dir: policy.dir, tag, lead: policy.lead, owner: policy.owner,
       share: policy.share, run: policy.run, nonce: policy.nonce, registry: policy.registry,
@@ -106,7 +110,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
     passed = true
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged,
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: workerShellEnvWarnings(tag, policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)

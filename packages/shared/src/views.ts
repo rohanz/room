@@ -299,7 +299,9 @@ export interface PersonLineInput {
 export function personLine(input: PersonLineInput): string {
   const p = input.presences.find(x => x.user.name === input.name && isAgentic(x.user.kind))
     ?? input.presences.find(x => x.user.name === input.name)
-  const lastDone = [...input.messages].reverse().find(m => m.from === input.name && m.text.startsWith('done'))
+  const lastDone = [...input.messages].reverse().find(m => m.from === input.name && m.text.startsWith('done')
+    // A session that joined after the note is a new one under the same name: the note is not its status.
+    && !(p?.joinedAt !== undefined && m.at < p.joinedAt))
   let what: string
   if (input.projectedStale) what = `projection stale/updating via ${input.projectedStale}`
   else if (input.projectedWorker) what = `${input.scope ? `working on ${scopeLine(input.scope)}; ` : ''}via ${input.projectedWorker.lead} (${input.projectedWorker.status})`

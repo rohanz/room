@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { DEFS } from '../src/tools/index.js'
 import { AGENT_INSTRUCTIONS } from '../src/prompt.js'
+import { workerPrompt } from '../src/worker-config.js'
 
 describe('room-workers skill', () => {
   it('has discovery frontmatter and references only registered tools', () => {
@@ -37,6 +38,14 @@ it('gives the agent the shared branch instruction through the MCP prompt', () =>
 it('lists TypeScript incremental state among regenerable worker output', () => {
   const skill = readFileSync(new URL('../../../plugins/room/skills/room-workers/SKILL.md', import.meta.url), 'utf8')
   expect(skill).toContain('`*.tsbuildinfo`')
+})
+
+it('tells workers, and leads briefing them, that background jobs die when the turn ends', () => {
+  expect(workerPrompt('lead', 'a', 'task')).toContain('Run tests and builds in the foreground and wait for them')
+  for (const name of ['room-workers', 'room-etiquette']) {
+    const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
+    expect(skill, name).toMatch(/tests and builds in the foreground[^.]*kills (its )?background jobs/)
+  }
 })
 
 it('explains that a finished worker can resume until collection', () => {

@@ -33,6 +33,8 @@ const split = (value: string) => value.split('\0').filter(Boolean)
 const COLLECT_TEXT_LIMIT = 512 * 1024
 const COLLECT_YIELD_EVERY = 32
 const COPY_INSTALL_LIMIT = 4_096
+/** How long collect waits for a finished worker's host to exit; room_wait's done notice states it. */
+const EXIT_WAIT_MS = 15_000
 
 type FileIdentity = { size: number; mtimeMs: number; ino: number; dev: number; mode: number } | null
 
@@ -438,9 +440,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     const timing = currentToolTiming()
     let endPhase = timing?.begin('inspect')
     const nextPhase = (name: string) => { endPhase?.(); endPhase = timing?.begin(name) }
+    const now = state.now ?? Date.now
+    const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
     try {
       for (const item of candidates) {
         const { s } = item; let { w } = item
+        // A worker that reported done is running until its host exits; the done notice promises this wait.
+        const reported = registrySnapshotForDir(s.dir).status(w.id)
+        if (w.status === 'running' && reported?.status === 'running' && reported.summary !== undefined) {
+          const deadline = now() + EXIT_WAIT_MS
+          let current: LocalWorker | undefined = w
+          while (current?.status === 'running' && now() < deadline) {
+            await sleep(Math.min(250, deadline - now()))
+            current = localWorkers(s.dir, record => record.id === w.id)[0]
+          }
+          if (!current) { out.push('skipped ' + w.tag + ': changed while waiting'); continue }
+          if (current.status === 'running') { out.push(`skipped ${w.tag}: reported done, but its process is still exiting after 15 s; call room_collect tag=${w.tag} again in a few seconds`); continue }
+          w = current
+        }
         const unsafe = await unverifiedLive(s, w)
         if (unsafe) { out.push(unsafe); continue }
         const stopped = w.pid > 0 && !state.workerAlive(s, w) && !pidPresent(w.pid, state.ctx?.probe)
@@ -477,9 +494,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const terminated = await stopOwnedWorktreeProcesses(lead.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
         if (terminated.length) out.push('stopped processes from ' + w.tag + ': ' + terminated.join(', '))
         out.push(...cleanupErrors.map(error => `${w.tag}: ${error}`))
-        const now = state.now ?? Date.now
-        const sleep = state.ctx?.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
-        const deadline = now() + 15_000
+        const deadline = now() + EXIT_WAIT_MS
         while (state.workerAlive(s, w) && now() < deadline) await sleep(Math.min(250, deadline - now()))
         if (state.workerAlive(s, w)) { out.push(`skipped ${w.tag}: process still exiting after 15 s; call room_collect tag=${w.tag} again in a few seconds`); continue }
         const unsafeAfterWait = await unverifiedLive(s, w)

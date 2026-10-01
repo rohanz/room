@@ -9,7 +9,7 @@ import { completionMessage, participantRecord, RoomDoc, ROOM_DOC_MAX_BYTES } fro
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { followUpAnswer, missingClaudeSession, probeProcess, workerLogTail } from './worker-process.js'
+import { followUpAnswer, missingClaudeSession, probeProcess, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
@@ -156,6 +156,21 @@ export function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env)
   if (!id || !safeId(id)) return undefined
   try { return registrySnapshotForDir(dir).read(id) } catch { return undefined }
 }
+/**
+ * A run that exited cleanly without room_done gets the evidence from its log: the no-report summary
+ * carries the log tail, and either form names background shell tasks its exit killed (count only).
+ */
+function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
+  const run = status.run
+  const resumedWithoutDone = status.status === 'failed' && status.exitCode === 0 && run?.mode === 'resume'
+  if (!run || !status.noReport && !resumedWithoutDone) return status
+  const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
+  const killed = unawaitedBackgroundTasks(logFile, run.logStart, record.host)
+  const background = killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
+  if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
+  return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
+}
+
 const missing = (file: string): boolean => !fs.existsSync(file)
 const safeId = (value: string): boolean => /^w_[A-Za-z0-9_-]{1,64}$/.test(value)
 const safeTag = (value: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== '..'
@@ -515,12 +530,9 @@ export class WorkerRegistry {
     const record = this.read(id)
     if (!record) return undefined
     const reports = this.reports(id), exits = this.exits(id)
-    const status = statusOf(record, record.runs, reports, exits, this.alive, this.now())
+    const status = unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now()))
     const run = status.run
-    if (status.noReport && run) {
-      const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
-      return { ...status, summary: `ended without a report; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
-    }
+    if (status.noReport) return status
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
       || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
@@ -781,12 +793,9 @@ export class WorkerRegistry {
     const exit = this.exits(id).find(value => value.run === n)
     const report = this.reports(id).find(value => value.run === n)
     const current = this.status(id)
-    const terminal = record?.phase === 'retiring' && !record.stop
-      ? statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now())
+    const status = record?.phase === 'retiring' && !record.stop
+      ? unreportedExit(record, statusOf({ ...record, phase: 'active' }, record.runs, this.reports(id), this.exits(id), this.alive, this.now()))
       : current
-    const status = terminal?.noReport && run
-      ? { ...terminal, summary: `ended without a report; last lines of its log: ${workerLogTail(path.join(path.dirname(record!.dir), `${record!.tag}.log`), run.logStart)}` }
-      : terminal
     if (!record || !run || !status || !exit?.witnessed || run.posted || report?.posted
       || (status.status !== 'failed' && !status.noReport && !(record.phase === 'retiring' && !record.stop) && !report?.done)) return false
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)

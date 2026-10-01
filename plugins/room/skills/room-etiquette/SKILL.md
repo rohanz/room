@@ -33,7 +33,8 @@ While alone, work normally. With company:
    `room_done(summary)` with one line. Report the result and any unresolved blocker.
    Never commit or push unless asked; do not ask as a finishing ritual. Workers report
    progress in `room_done` and send notes only when the lead must know before they finish;
-   notes from your own workers do not wake you.
+   notes from your own workers do not wake you. A worker runs tests and builds in the foreground
+   and waits: ending its turn ends the headless process and kills background jobs.
 
 Room never changes your files unless you ask it to bring in a worker's output; explicit
 exports write the ledger. `room_close` removes the repository room for everyone on every branch

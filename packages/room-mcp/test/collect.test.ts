@@ -1137,6 +1137,33 @@ describe('room_collect', () => {
     expect(await t.call({ tag: 'test', force: true })).toContain('skipped test: process still exiting')
     expect(at).toBe(30_000)
   })
+  /** A worker that called room_done while its host process still runs. */
+  async function reportedRunning() {
+    const t = setup('running'); t.set('test', { ...t.w, status: 'running', pid: 4_190_001 })
+    await t.sync()
+    const registry = await registryForDir(lead)
+    const record = registry.list().find(r => r.tag === 'test')!, run = record.runs[0]
+    await registry.writeReport(record.id, { run: 1, nonce: run.nonce, chain: [], joinedAt: record.createdAt, done: { at: Date.now(), summary: 'finished', changed: [] } })
+    expect(registry.status(record.id)).toMatchObject({ status: 'running', summary: 'finished' })
+    let at = 0
+    t.state.now = () => at
+    return { t, tick: (ms: number) => { at += ms }, elapsed: () => at }
+  }
+  it('waits for a reported worker whose process is still exiting, then collects it', async () => {
+    const { t, tick, elapsed } = await reportedRunning()
+    let sleeps = 0
+    t.state.ctx = { listCwdProcesses: () => [], sleep: async (ms: number) => { tick(ms); if (++sleeps === 8) await finishWorker(t.s, 'test') } } as HandlerState['ctx']
+    put(worker, 'new.txt', 'new')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+    expect(elapsed()).toBe(2_000)
+  })
+  it('bounds the wait for a reported worker at 15 seconds and says why it skipped', async () => {
+    const { t, tick, elapsed } = await reportedRunning()
+    t.state.ctx = { listCwdProcesses: () => [], sleep: async (ms: number) => { tick(ms) } } as HandlerState['ctx']
+    expect(await t.call({ tag: 'test' })).toContain('skipped test: reported done, but its process is still exiting after 15 s; call room_collect tag=test again in a few seconds')
+    expect(elapsed()).toBe(15_000)
+    expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
+  })
 
   it('keeps a worker in room presence if its process is live at final collection', async () => {
     const t = setup()

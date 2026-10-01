@@ -532,10 +532,14 @@ describe('roomd v2 push-only overlays', () => {
   it('pushes disk changes, clears files restored to base, and marks deletions', async () => {
     const dir = await makeRepo({ 'app.py': 'base\n', 'gone.py': 'present\n' })
     const daemon = await start({ room: room(), dir, name: 'Alice' })
+    const joinedAt = daemon.provider.awareness.getLocalState()?.joinedAt
+    expect(joinedAt).toEqual(expect.any(Number))
 
     await fsp.writeFile(path.join(dir, 'app.py'), 'edited\n')
     await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Alice') === 'edited\n')
     expect(daemon.provider.awareness.getLocalState()?.lastActive).toEqual(expect.any(Number))
+    // Activity moves lastActive; joinedAt marks the session and stays put.
+    expect(daemon.provider.awareness.getLocalState()?.joinedAt).toBe(joinedAt)
 
     await fsp.writeFile(path.join(dir, 'app.py'), 'base\n')
     await waitFor(() => manifestText(daemon.roomDoc, 'app.py', 'Alice') === undefined)

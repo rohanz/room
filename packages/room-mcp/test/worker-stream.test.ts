@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { workerCommand } from '../src/worker-config.js'
-import { followUpAnswer, resumeAccepted, workerLogTail } from '../src/worker-process.js'
+import { followUpAnswer, resumeAccepted, unawaitedBackgroundTasks, workerLogTail } from '../src/worker-process.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'room-worker-stream-'))
 afterEach(() => rmSync(join(dir, 'run.log'), { force: true }))
@@ -71,6 +71,54 @@ describe('Claude stream-json worker runs', () => {
     expect(workerLogTail(file)).toBe('Working.\nFinished.')
     writeFileSync(file, '{"type":"assistant"\n', { flag: 'a' })
     expect(workerLogTail(file)).toBe('Working.\nFinished.')
+  })
+
+  // Claude Code 2.1.286 `claude -p --output-format stream-json --verbose` task events, in log order.
+  const bg = (id: string) => [
+    { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: id, task_type: 'local_bash', description: 'sleep 40; echo done' }] },
+    { type: 'system', subtype: 'task_started', task_id: id, tool_use_id: `toolu_${id}`, description: 'sleep 40; echo done', is_backgrounded: true, task_type: 'local_bash' },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `toolu_${id}` }] }, tool_use_result: { backgroundTaskId: id } },
+  ]
+  const finished = (id: string, status = 'completed') => [
+    { type: 'system', subtype: 'task_updated', task_id: id, patch: { status, end_time: 2 } },
+    { type: 'system', subtype: 'task_notification', task_id: id, tool_use_id: `toolu_${id}`, status, output_file: '/tmp/x', summary: 'sleep 40; echo done' },
+  ]
+  const foreground = (id: string) => [
+    { type: 'system', subtype: 'task_started', task_id: id, tool_use_id: `toolu_${id}`, description: 'npm test', task_type: 'local_bash' },
+    { type: 'system', subtype: 'task_notification', task_id: id, tool_use_id: `toolu_${id}`, status: 'completed', output_file: '/tmp/y', summary: 'npm test' },
+  ]
+  const text = { type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: 'started' }] } }
+  const end = { type: 'result', subtype: 'success', result: 'started', stop_reason: 'end_turn', session_id: sid }
+  const killedAtExit = (id: string) => [
+    { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+    { type: 'system', subtype: 'task_updated', task_id: id, patch: { status: 'killed', end_time: 3 } },
+    { type: 'system', subtype: 'task_notification', task_id: id, tool_use_id: `toolu_${id}`, status: 'stopped', output_file: '/tmp/x', summary: 'sleep 40; echo done' },
+  ]
+
+  it('counts background shell tasks still running when the turn ended', () => {
+    expect(unawaitedBackgroundTasks(log([...bg('b4z'), text, end, ...killedAtExit('b4z')]), 0, 'claude')).toBe(1)
+    expect(unawaitedBackgroundTasks(log([...bg('a'), ...bg('b'), text, end]), 0, 'claude')).toBe(2)
+  })
+
+  it('counts nothing for awaited, stopped, foreground, or absent tasks', () => {
+    expect(unawaitedBackgroundTasks(log([...bg('b4z'), ...finished('b4z'), ...foreground('f1'), text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(log([...bg('b4z'), ...finished('b4z', 'killed'), text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(log([...foreground('f1'), { type: 'system', subtype: 'task_started', task_id: 'f2', description: 'npm test', task_type: 'local_bash' }, text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(log([text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(log([{ type: 'system', subtype: 'task_started', task_id: 's', is_backgrounded: true, task_type: 'local_agent' }, text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(join(dir, 'missing.log'), 0, 'claude')).toBe(0)
+  })
+
+  it('judges by the last result and counts a task that never terminated', () => {
+    // An earlier turn's result does not make a task finished later in the run unawaited.
+    expect(unawaitedBackgroundTasks(log([...bg('b'), text, end, ...finished('b'), text, end]), 0, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(log([...bg('b'), text]), 0, 'claude')).toBe(1)
+  })
+
+  it('reads only this run and never reads Codex logs as task evidence', () => {
+    const file = log([...bg('old'), text, end])
+    expect(unawaitedBackgroundTasks(file, statSync(file).size, 'claude')).toBe(0)
+    expect(unawaitedBackgroundTasks(file, 0, 'codex')).toBe(0)
   })
 
   it('starts a resumed failure tail at this run, even when the prior done is near the end', () => {

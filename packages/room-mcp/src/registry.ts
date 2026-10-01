@@ -322,7 +322,7 @@ export class Rooms {
         this.dropHandle(s, record.id)
         await registry.postObservedFailure(record.id, run.n, message => postWorkerMessage(s.post, record, message))
       })
-      return `resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`
+      return [`resumed ${record.tag}'s retained conversation with your message${launched.portChanged ? `; dev-server PORT is ${launched.port}` : ''}`, ...launched.warnings].join('\n')
     } catch (error) {
       const launchError = error instanceof WorkerLaunchError ? error : new WorkerLaunchError('start', String(error))
       if (!launchError.delivered) await registry.update(record.id, old => ({ ...old, phase: 'active',

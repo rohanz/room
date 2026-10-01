@@ -15,6 +15,7 @@ import { resolveConfig } from '../src/config.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { prepareWorkerLinks, prepareWorktree, cleanupPreparedWorktree } from '../src/worker-git.js'
 import { workerBudget, workerPriority, workerCommand, workerPrompt, validTag, workerEnv } from '../src/worker-config.js'
+import { CODEX_SHELL_FILTER } from '../src/worker-shell-env.js'
 import { workerLogTail, defaultSpawner, pidAlive, pidIsOurWorker, workerProcessOwnership, probeProcess, parsePsLstartUtc, type SpawnSpec } from '../src/worker-process.js'
 import { reserveWorkerPort } from '../src/port-reservations.js'
 import { registerWorkers, workerByTag } from './registry-fixture.js'
@@ -810,6 +811,20 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(out).toContain('worker reported done; its process is still exiting (room_collect waits up to 15 s for it):')
     expect(out).toContain('done in cents')
   })
+
+  it('room_collect waits for a worker that reported done while its process is still exiting', async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'switch prices to cents' })
+    writeFileSync(join(workerByTag(dir, 'money')!.dir, 'cents.txt'), 'cents\n')
+    await t.workerTools.call('room_done', { summary: 'done in cents' })
+    // The host takes a couple of seconds to exit after room_done, as a headless Claude worker does.
+    const exiting = setTimeout(() => t.exits[0](0), 2000)
+    try {
+      const out = await t.leadTools.call('room_collect', { tag: 'money' })
+      expect(out).not.toContain('skipped')
+      expect(out).toContain('cents.txt')
+    } finally { clearTimeout(exiting) }
+  }, 30_000)
 
   it("room_wait says ready to collect when the worker's process has exited", async () => {
     const t = setup()
@@ -1812,11 +1827,11 @@ it('passes documented effort and session flags to Claude and Codex', () => {
   expect(workerCommand('claude', undefined, 'task').args).not.toContain('--effort')
   expect(workerCommand('claude', undefined, 'task', '', 'minimal').args).toContain('low')
   expect(workerCommand('codex', undefined, 'task', '', 'medium').args).toContain('model_reasoning_effort=medium')
-  expect(workerCommand('codex', undefined, 'task').args).not.toContain('-c')
+  expect(workerCommand('codex', undefined, 'task').args.some(arg => arg.startsWith('model_reasoning_effort='))).toBe(false)
   expect(workerCommand('claude', 'opus', 'fix', '', 'high', { tag: 'money', sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
     .toEqual(['-p', '--resume', '550e8400-e29b-41d4-a716-446655440000', 'fix', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money'])
   expect(workerCommand('codex', 'gpt-6-sol', 'fix', '', 'high', { sessionId: '550e8400-e29b-41d4-a716-446655440000', resume: true }).args)
-    .toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'fix'])
+    .toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', 'fix'])
   expect(workerEnv({ ROOM_WORKER_HOST: 'claude', ROOM_WORKER_MODEL: 'old', ROOM_WORKER_EFFORT: 'high' }, {})).toEqual({})
 })
 
@@ -2081,7 +2096,7 @@ describe('worker follow-up sessions', () => {
     const resumePrompt = t.specs[1].args.at(-1)!
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
     expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'repair the failure', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
-    expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', resumePrompt])
+    expect(t.specs[1].args).toEqual(['exec', 'resume', '550e8400-e29b-41d4-a716-446655440000', '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, '-m', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', '--json', resumePrompt])
     expect(t.specs[1].cwd).toBe(initial.dir)
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', exitCode: undefined, hostSessionId: '550e8400-e29b-41d4-a716-446655440000' })
   })

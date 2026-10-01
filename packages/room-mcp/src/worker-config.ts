@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { normalizeExplicitRoomName } from './room-name.js'
+import { CODEX_SHELL_FILTER } from './worker-shell-env.js'
 
 export type WorkerHost = 'claude' | 'codex'
 
@@ -100,6 +101,8 @@ export function workerProcessEnv(options: {
   share: string; run: number; nonce: string; registry: string; id: string; token?: string; logDir: string; isWorker: boolean; port?: number; leadClone?: string
   /** The epoch of the lead's reservation of the worker's name, which the worker takes over (hub §2.3). */
   nameEpoch?: number
+  /** A Claude worker's CLAUDE_ENV_FILE, which keeps the ROOM_ variables below from its shell commands (worker-shell-env.ts). */
+  shellEnvFile?: string
 }, inherited: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const caps: Record<string, string> = {}
   for (const key of WORKER_THREAD_CAPS) {
@@ -111,6 +114,7 @@ export function workerProcessEnv(options: {
     ROOM_WORKER_HOST: options.host, ...(options.model ? { ROOM_WORKER_MODEL: options.model } : {}), ...(options.effort ? { ROOM_WORKER_EFFORT: options.effort } : {}),
     ROOM_SERVER: options.server, ROOM_ROOM: options.server === 'local' ? options.room : normalizeExplicitRoomName(options.room), ROOM_DIR: options.dir, PWD: options.dir,
     ...(options.port ? { PORT: String(options.port) } : {}),
+    ...(options.host === 'claude' && options.shellEnvFile ? { CLAUDE_ENV_FILE: options.shellEnvFile } : {}),
     ROOM_TAG: options.tag, ROOM_LEAD: options.lead, ROOM_OWNER: options.owner, ROOM_SHARE: options.share,
     ROOM_WORKER_ID: options.id, ROOM_WORKER_RUN: String(options.run), ROOM_LAUNCH_NONCE: options.nonce,
     ROOM_REGISTRY: options.registry,
@@ -136,6 +140,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
     `Report progress in room_done; send notes only when the lead must know before you finish.`,
+    `Run tests and builds in the foreground and wait for them: ending your turn ends this process and kills background jobs. Finish with room_done.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
@@ -186,8 +191,8 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
   effort = hostWorkerEffort(host, effort)
   if (options.resume && !options.sessionId) throw new Error('resuming a worker requires its host session id')
   if (host === 'codex') return { cmd: 'codex', args: options.resume
-    ? ['exec', 'resume', options.sessionId!, '-c', 'sandbox_mode="workspace-write"', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt]
-    : ['exec', '-s', 'workspace-write', ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
+    ? ['exec', 'resume', options.sessionId!, '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt]
+    : ['exec', '-s', 'workspace-write', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
   return {
     cmd: 'claude',
     args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir, '--settings', JSON.stringify({ enabledPlugins: { 'room@room': false } })] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],

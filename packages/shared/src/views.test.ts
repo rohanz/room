@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Claim, Presence, Scope, WorkerView } from './types.js'
+import type { Claim, NoteMsg, Presence, Scope, WorkerView } from './types.js'
 import { lineDetail, areaMembershipSummary, claimLine, deriveParticipants, otherAreasLine, participantClaimLine, personLine, presentPeople, summarizeFiles, workerLine } from './views.js'
 
 describe('file summaries', () => {
@@ -187,6 +187,18 @@ it('uses consistent activity wording at the action and worker thresholds', async
 
 it.each([undefined, 'idle', 'synced'])('omits duplicate recency for status %s', status => {
   expect(personLine({ name: 'Ada', presences: [{ user: { name: 'Ada', kind: 'agent', color: '#000' }, status, lastActive: Date.now() }], changedPaths: [], messages: [], share: 'full' })).toBe('no task declared')
+})
+
+it("does not show an earlier session's done note as a new session's status", () => {
+  const user = { name: 'Ada', kind: 'agent' as const, color: '#000' }
+  const done: NoteMsg = { id: 'n1', type: 'note', priority: 'fyi', from: 'Ada', fromKind: 'agent', at: Date.UTC(2026, 8, 30, 15, 17), text: 'done: rc2 fix batch finished' }
+  const line = (joinedAt?: number) => personLine({ name: 'Ada', presences: [{ user, status: 'idle', joinedAt }], changedPaths: [], messages: [done], share: 'full' })
+  expect(line(Date.UTC(2026, 9, 1, 9))).toBe('no task declared')
+  // The same session's done note survives a later idle status; so does one from a client that predates joinedAt.
+  expect(line(Date.UTC(2026, 8, 30, 15))).toBe('done: rc2 fix batch finished (15:17)')
+  expect(line(undefined)).toBe('done: rc2 fix batch finished (15:17)')
+  // Offline, the last session's done note is still the participant's last word.
+  expect(personLine({ name: 'Ada', presences: [], changedPaths: [], messages: [done], share: 'full' })).toBe('done: rc2 fix batch finished (15:17)')
 })
 
 it('N6 describes projected running, stale and ended workers without calling them offline', () => {

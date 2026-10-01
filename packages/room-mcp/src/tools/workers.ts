@@ -313,7 +313,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const warning = watcherExclusionWarning(lead.dir)
           if (warning) out.push(warning)
         }
-        out.push(...deps.reply)
+        out.push(...deps.reply, ...launched.warnings)
         if (outside) out.push(`note: ${dir} is outside this repo, so no worktree was made and nothing is tracked for it beyond the pid; its work stays wherever that checkout puts it.`)
         if (!outside) for (const p of missingBriefPaths(task, lead.dir, dir)) out.push(`warning: ${p} named in the task is not in this worktree (untracked or ignored in the lead clone).`)
         return out.join('\n')
