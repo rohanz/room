@@ -54,12 +54,17 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
   if (!await isAncestor(w.dir, base, from)) return refuse(`${w.branch} no longer contains its recorded base ${short(base)}`)
   const carried = !!w.carriedBase && w.carriedBase === base
   const start = carried ? (await git(w.dir, ['rev-parse', `${base}^`])).trim() : base
+  // A rebase replays only non-merge commits: edits made in a merge commit would vanish.
+  const merges = lines(await git(w.dir, ['rev-list', '--merges', `${start}..${from}`]))
+  if (merges.length) return refuse(`${w.branch} has ${merges.length === 1 ? 'a merge commit' : `${merges.length} merge commits`} (${merges.slice(0, 3).map(short).join(', ')}), which a rebase would drop; merge your HEAD in the worker yourself, or respawn it`)
 
   // A checkout overwrites an ignored file without a word, and an abort cannot bring it back.
   const ignored = lines(await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z']), '\0')
   if (ignored.length) {
     // Overlap either way: a commit path at or under an ignored entry, or an ignored entry under a commit path.
-    const entries = ignored.map(p => p.replace(/\/+$/, ''))
+    // Compared case- and normalization-folded everywhere: on macOS and Windows build.log and BUILD.log are one file.
+    const fold = (p: string) => p.normalize('NFC').toLowerCase()
+    const entries = ignored.map(p => fold(p.replace(/\/+$/, '')))
     const covered = new Set(entries)
     const holdsIgnored = new Set(entries.flatMap(p => p.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
     // Every path the rebase can write: all your HEAD tracks (the worker may have untracked a file, staged, or
@@ -69,8 +74,10 @@ export async function refreshWorkerBase(leadDir: string, w: RefreshSource): Prom
       ...lines(await git(w.dir, ['ls-tree', '-r', '-z', '--name-only', target]), '\0'),
       ...lines(await git(w.dir, ['log', '--format=', '--name-only', '--no-renames', '-z', `${start}..${from}`]), '\0'), // NUL-terminated names, no framing: never trim a path
     ])
-    const clobbered = [...written].filter(p =>
-      covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/'))))
+    const clobbered = [...written].filter(name => {
+      const p = fold(name)
+      return covered.has(p) || holdsIgnored.has(p) || p.split('/').slice(0, -1).some((_, i, parts) => covered.has(parts.slice(0, i + 1).join('/')))
+    })
     if (clobbered.length) return refuse(`the rebase would write ${clobbered.slice(0, MAX_LISTED).join(', ')}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ''} (tracked in your HEAD or the worker's commits), where the worker has ignored files that it would overwrite`)
   }
 

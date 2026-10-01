@@ -59881,9 +59881,12 @@ async function refreshWorkerBase(leadDir, w) {
   if (!await isAncestor2(w.dir, base, from2)) return refuse(`${w.branch} no longer contains its recorded base ${short2(base)}`);
   const carried = !!w.carriedBase && w.carriedBase === base;
   const start2 = carried ? (await git(w.dir, ["rev-parse", `${base}^`])).trim() : base;
+  const merges = lines(await git(w.dir, ["rev-list", "--merges", `${start2}..${from2}`]));
+  if (merges.length) return refuse(`${w.branch} has ${merges.length === 1 ? "a merge commit" : `${merges.length} merge commits`} (${merges.slice(0, 3).map(short2).join(", ")}), which a rebase would drop; merge your HEAD in the worker yourself, or respawn it`);
   const ignored = lines(await git(w.dir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]), "\0");
   if (ignored.length) {
-    const entries = ignored.map((p) => p.replace(/\/+$/, ""));
+    const fold = (p) => p.normalize("NFC").toLowerCase();
+    const entries = ignored.map((p) => fold(p.replace(/\/+$/, "")));
     const covered = new Set(entries);
     const holdsIgnored = new Set(entries.flatMap((p) => p.split("/").slice(0, -1).map((_, i2, parts2) => parts2.slice(0, i2 + 1).join("/"))));
     const written = /* @__PURE__ */ new Set([
@@ -59891,7 +59894,10 @@ async function refreshWorkerBase(leadDir, w) {
       ...lines(await git(w.dir, ["log", "--format=", "--name-only", "--no-renames", "-z", `${start2}..${from2}`]), "\0")
       // NUL-terminated names, no framing: never trim a path
     ]);
-    const clobbered = [...written].filter((p) => covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/"))));
+    const clobbered = [...written].filter((name2) => {
+      const p = fold(name2);
+      return covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/")));
+    });
     if (clobbered.length) return refuse(`the rebase would write ${clobbered.slice(0, MAX_LISTED).join(", ")}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ""} (tracked in your HEAD or the worker's commits), where the worker has ignored files that it would overwrite`);
   }
   let savedIndex;

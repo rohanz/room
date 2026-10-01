@@ -259,6 +259,37 @@ describe('room_send refresh=true', () => {
     }
   })
 
+  it('treats a case-only alias of an ignored file as the same file (case-insensitive filesystems)', async () => {
+    put(repo, '.gitignore', '*.log\n'); commit(repo, 'ignore logs')
+    const t = world()
+    const w = await t.spawn('cased')
+    put(w.dir, 'build.log', 'unsaved output\n')
+    await t.finish('cased')
+    put(repo, 'BUILD.log', 'tracked\n'); git(repo, 'add', '-f', 'BUILD.log'); git(repo, 'commit', '-qm', 'track BUILD.log')
+    const before = git(w.dir, 'rev-parse', 'HEAD')
+    const reply = await t.call('room_send', { type: 'note', to: 'cased', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('BUILD.log')
+    expect(read(w.dir, 'build.log')).toBe('unsaved output\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
+  it('refuses a worker whose history has a merge commit, which a rebase would drop', async () => {
+    const t = world()
+    const w = await t.spawn('merger')
+    git(w.dir, 'switch', '-q', '-c', 'topic'); put(w.dir, 'topic.txt', 'topic\n'); commit(w.dir, 'topic work')
+    git(w.dir, 'switch', '-q', 'room/merger'); git(w.dir, 'merge', '-q', '--no-ff', '--no-commit', 'topic')
+    put(w.dir, 'integration.txt', 'fix made in the merge\n'); git(w.dir, 'add', 'integration.txt'); git(w.dir, 'commit', '-qm', 'merge topic')
+    await t.finish('merger')
+    put(repo, 'later.txt', 'x\n'); commit(repo, 'unrelated')
+    const before = git(w.dir, 'rev-parse', 'HEAD')
+    const reply = await t.call('room_send', { type: 'note', to: 'merger', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('merge')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+    expect(read(w.dir, 'integration.txt')).toBe('fix made in the merge\n')
+  })
+
   it('checks for dir= borrowers again under the operation lease', async () => {
     const t = world()
     const owner = await t.spawn('lender')
