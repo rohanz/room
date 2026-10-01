@@ -1,14 +1,15 @@
 // Soak test of a Room server: simulated participants in two synthetic repos against one server for hours.
 //
 // Usage (from the repo root):
-//   npx tsx scripts/soak.mts run [--minutes 180] [--restart-at 90] [--participants 8]   # the soak (orchestrator)
+//   npx tsx scripts/soak.mts run [--minutes 180] [--restart-at 90[,480]] [--participants 8]   # the soak (orchestrator)
 //   npx tsx scripts/soak.mts report                                                   # re-analyse a finished run
 //   npx tsx scripts/soak.mts cleanup                                                  # delete credentials
 //   npx tsx scripts/soak.mts metrics                                                  # one server memory/CPU sample
+//   npx tsx scripts/soak.mts structs                                                  # Yjs struct counts of both rooms (observer login)
 //
 // Env: SOAK_SERVER (default https://room-rohanz-staging.fly.dev), SOAK_DIR (default /tmp/room-soak),
 //      SOAK_FLY_APP / SOAK_FLY_MACHINE (metrics over `flyctl ssh console`, read-only; the single restart at
-//      --restart-at uses `flyctl machine restart`). --restart-at 0 skips the restart; SOAK_FLY_APP= skips Fly.
+//      --restart-at uses `flyctl machine restart`). --restart-at takes a comma list of minutes (0 skips restarts); SOAK_FLY_APP= skips Fly.
 //
 // The server must run the fake GitHub issuer (GITHUB_CLIENT_ID=fake): each participant logs in as soak-<x>
 // through POST /auth/device + /auth/poll {fakeLogin}. Only synthetic repos (github.com/soak/alpha, beta) are
@@ -114,7 +115,7 @@ async function openRoom(room: string, session: string): Promise<void> {
 
 // ---------------------------------------------------------------- participant (child process)
 
-async function participant(name: string, repo: RepoKey, restartAt: number, count: number): Promise<void> {
+async function participant(name: string, repo: RepoKey, restarts: number[], count: number, minutes: number): Promise<void> {
   const { joinSession, leaveSession } = await import('../packages/room-mcp/src/session.js')
   const { createTools } = await import('../packages/room-mcp/src/tools.js')
   const { configureCredentials, setCredential } = await import('../packages/room-mcp/src/credentials.js')
@@ -262,12 +263,12 @@ async function participant(name: string, repo: RepoKey, restartAt: number, count
     if (!s || leaving) return
     const ms = Math.round(jitter(5_000, 75_000))
     emit({ ev: 'disconnect', ms, epoch: s.lease?.epoch })
-    s.provider.disconnect(); await sleep(ms); s.provider.connect()
+    s.provider.disconnect(); await sleep(ms); s?.provider.connect() // a leave during the sleep replaced the session
     emit({ ev: 'reconnect-requested' })
   })
-  // One leave-and-rejoin under the same name, away from the hub restart.
-  let leaveAt = jitter(25, 150) * min
-  if (restartAt && Math.abs(leaveAt - restartAt * min) < 8 * min) leaveAt += 16 * min
+  // One leave-and-rejoin under the same name, anywhere in the run but away from the hub restarts.
+  let leaveAt = jitter(25, Math.max(60, Math.min(minutes - 20, 150 + (minutes - 180)))) * min
+  for (const r of restarts) if (Math.abs(leaveAt - r * min) < 8 * min) leaveAt += 16 * min
   setTimeout(async () => {
     if (stopping) return
     leaving = true
@@ -342,7 +343,7 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
   return { sample, stop: () => { provider.destroy(); doc.destroy() } }
 }
 
-async function orchestrate(minutes: number, restartAt: number, count: number, postIdle: number): Promise<void> {
+async function orchestrate(minutes: number, restarts: number[], count: number, postIdle: number): Promise<void> {
   fs.mkdirSync(EVENTS, { recursive: true }); fs.mkdirSync(LOGS, { recursive: true })
   const emit = emitter(path.join(EVENTS, 'orchestrator.jsonl'))
   const health = await fetch(`${HTTP}/health`).then(r => r.json()) as { hub?: number }
@@ -360,12 +361,12 @@ async function orchestrate(minutes: number, restartAt: number, count: number, po
   emit({ ev: 'metrics', phase: 'pre-soak idle', ...idle })
 
   const t0 = Date.now()
-  emit({ ev: 'start', minutes, restartAt, participants: roster.map(p => p.name), server: HTTP })
+  emit({ ev: 'start', minutes, restarts, participants: roster.map(p => p.name), server: HTTP })
   const children = new Map<string, ChildProcess>()
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ROOM_|CLAUDE_|CODEX_)/.test(k)))
   for (const p of roster) {
     const out = fs.openSync(path.join(LOGS, `${p.name}.log`), 'a')
-    const child = spawn(process.execPath, [...process.execArgv, new URL(import.meta.url).pathname, 'participant', p.name, p.repo, String(restartAt), String(count)],
+    const child = spawn(process.execPath, [...process.execArgv, new URL(import.meta.url).pathname, 'participant', p.name, p.repo, restarts.join(','), String(count), String(minutes)],
       { env: { ...env, GIT_TERMINAL_PROMPT: '0', SOAK_DIR: DIR, SOAK_SERVER: HTTP }, stdio: ['ignore', out, out] })
     child.on('exit', (code, signal) => emit({ ev: 'child-exit', name: p.name, code, signal }))
     children.set(p.name, child)
@@ -383,12 +384,12 @@ async function orchestrate(minutes: number, restartAt: number, count: number, po
   let pending = { lines: 0, errors: [] as string[] }
   const pollLogs = async () => { const l = await flyLogs(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
   const logTimer = setInterval(() => void pollLogs(), 60_000)
-  let restarted = !restartAt || !APP
+  const pendingRestarts = APP ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
   for (let tick = 1; Date.now() - t0 < minutes * 60_000; tick++) {
-    const next = t0 + tick * 10 * 60_000, restartTime = t0 + restartAt * 60_000
+    const next = t0 + tick * 10 * 60_000
     while (Date.now() < Math.min(next, t0 + minutes * 60_000)) {
-      if (!restarted && Date.now() >= restartTime) {
-        restarted = true
+      if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) {
+        pendingRestarts.shift()
         emit({ ev: 'metrics', phase: 'before restart', ...await flyMetrics() })
         const r0 = Date.now()
         emit({ ev: 'restart-begin' })
@@ -426,6 +427,27 @@ async function orchestrate(minutes: number, restartAt: number, count: number, po
   process.exit(0)
 }
 
+/** Sync each room read-only and count its Yjs structs: history (tombstones included) grows with every operation. */
+async function structs(): Promise<void> {
+  const { authorizedWebSocket } = await import('../packages/roomd/src/ws-auth.js')
+  const { session } = JSON.parse(fs.readFileSync(path.join(CREDS, 'soak-observer.json'), 'utf8'))
+  const emit = emitter(path.join(EVENTS, 'structs.jsonl'))
+  for (const room of Object.values(REPOS)) {
+    const doc = new Y.Doc()
+    const p = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, params: { schema: '2' } })
+    p.awareness.setLocalState(null)
+    await new Promise<void>(r => p.once('sync', () => r()))
+    await sleep(3_000)
+    let count = 0, items = 0, deleted = 0
+    for (const list of (doc.store as any).clients.values()) for (const st of list) { count++; if (st.constructor.name === 'Item') { items++; if (st.deleted) deleted++ } }
+    // A Y.Map's _map keeps one entry per key ever set, deleted ones included.
+    const keys = Object.fromEntries([...doc.share].map(([k, v]) => [k, (v as any)._map?.size ?? (v as any)._length ?? 0]))
+    const row = { room, clients: (doc.store as any).clients.size, structs: count, items, deleted, encodedKB: Math.round(Y.encodeStateAsUpdate(doc).length / 1024), keys }
+    emit(row); console.log(JSON.stringify(row))
+    p.destroy(); doc.destroy()
+  }
+}
+
 // ---------------------------------------------------------------- report
 
 function report(): void {
@@ -433,8 +455,12 @@ function report(): void {
   const people = Object.fromEntries(ROSTER.map(p => [p.name, readEvents(path.join(EVENTS, `${p.name}.jsonl`))]))
   const start = orch.find(e => e.ev === 'start'), t0 = start?.t ?? 0
   const min = (t: number) => Math.round((t - t0) / 60_000)
-  const restartBegin = orch.find(e => e.ev === 'restart-begin'), restartHealthy = orch.find(e => e.ev === 'restart-healthy')
+  // Every planned restart: when the command began and when /health answered again.
+  const restarts = orch.filter(e => e.ev === 'restart-begin').map(b => ({ begin: b, healthy: orch.find(e => e.ev === 'restart-healthy' && e.t >= b.t) }))
+    .filter((r): r is { begin: any; healthy: any } => !!r.healthy)
+  const inRestart = (t: number, afterMs = 15_000) => restarts.some(r => t >= r.begin.t - 5_000 && t <= r.healthy.t + afterMs)
   const out: string[] = []
+  const rows: { m: any; cpu?: number; steal?: number; bus?: number; live?: number }[] = []
 
   // Metrics table, every 10 minutes.
   const metrics = orch.filter(e => e.ev === 'metrics' && e.rssKb)
@@ -451,6 +477,7 @@ function report(): void {
     const a = near(REPOS.alpha), b = near(REPOS.beta)
     const errs = (m.errors ?? []) as string[]
     errorsAll.push(...errs)
+    rows.push({ m, cpu: cpu === '-' ? undefined : Number(cpu), steal: steal === '-' ? undefined : Number(steal), bus: a && b ? a.bus + b.bus : undefined, live: a && b ? a.live + b.live : undefined })
     out.push(`| ${m.t >= t0 ? min(m.t) : 'pre'} | ${m.phase} | ${(m.rssKb / 1024).toFixed(1)} | ${(m.hwmKb / 1024).toFixed(1)} | ${cpu} | ${steal} | ${m.dataKb ?? '-'} | ${a ? (a.docBytes / 1024).toFixed(0) : '-'} | ${b ? (b.docBytes / 1024).toFixed(0) : '-'} | ${a && b ? a.live + b.live : '-'} | ${a && b ? a.present.length + b.present.length : '-'} | ${a && b ? a.bus + b.bus : '-'} | ${a && b ? a.mail + b.mail : '-'} | ${m.logLines ?? '-'} | ${errs.length} |`)
     prev = m
   }
@@ -481,6 +508,19 @@ function report(): void {
   const firstHour = soak.filter(m => m.t - t0 <= 60 * 60_000), lastT = soak.at(-1)?.t ?? 0, lastHour = soak.filter(m => lastT - m.t < 60 * 60_000 && m.t - t0 > 60 * 60_000)
   const memFirst = avg(firstHour), memLast = avg(lastHour)
   const memPass = lastHour.length > 0 && memLast <= memFirst * 1.15
+  // Least-squares line over the soak samples after the first hour, leaving out the 10 minutes after each restart.
+  const fit = (pts: [number, number][]) => {
+    const n = pts.length, mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n
+    const sxx = pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0), sxy = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0)
+    return { slope: sxy / sxx, intercept: my - (sxy / sxx) * mx, n }
+  }
+  const settled = rows.filter(r => r.m.phase === 'soak' && r.m.t - t0 >= 60 * 60_000 && !inRestart(r.m.t, 10 * 60_000))
+  const rssFit = settled.length > 2 ? fit(settled.map(r => [(r.m.t - t0) / 3_600_000, r.m.rssKb / 1024])) : undefined
+  const cpuPts = settled.filter(r => r.cpu !== undefined)
+  const cpuFit = cpuPts.length > 2 ? fit(cpuPts.map(r => [(r.m.t - t0) / 3_600_000, r.cpu!])) : undefined
+  const maxRss = Math.max(0, ...metrics.map(m => m.rssKb)) / 1024, maxHwm = Math.max(0, ...metrics.map(m => m.hwmKb)) / 1024
+  const slopePass = !!rssFit && rssFit.slope < 2 && maxRss < 300
+  const cpuFlat = !!cpuFit && Math.abs(cpuFit.slope) < 0.1
 
   // Delivery: every accepted addressed message is committed at its recipient at least once.
   const sent = Object.values(people).flat().filter(e => e.ev === 'sent' && e.to)
@@ -492,7 +532,18 @@ function report(): void {
   const undelivered = sent.filter(e => !deliveries.get(`${e.to}\0${e.id}`))
   const lost = undelivered.filter(e => !onBus.has(e.id))
   const owedAtStop = undelivered.filter(e => onBus.has(e.id))
-  const dups = [...deliveries.entries()].filter(([, c]) => c > 1)
+  const dupsAll = [...deliveries.entries()].filter(([, c]) => c > 1)
+  // At-least-once by design: the first delivery's receipt (seen:<P>) was written to a replica that was offline
+  // then and was discarded by a leave before it reconnected, so the rejoined session was owed the message again.
+  const lostReceipt = ([k]: [string, number]) => {
+    const [n, id] = k.split('\0'), evs = people[n] ?? []
+    const ds = evs.filter(e => e.ev === 'delivered' && e.id === id)
+    const leave = evs.find(e => e.ev === 'leave' && e.t > ds[0].t && e.t < ds[1].t)
+    const offline = evs.filter(e => e.ev === 'status' && e.t <= ds[0].t + 5_000).at(-1)
+    const resynced = evs.some(e => e.ev === 'status' && e.conn && e.synced && e.t > ds[0].t && leave && e.t < leave.t)
+    return !!leave && (!offline?.conn || evs.some(e => e.ev === 'status' && !e.conn && Math.abs(e.t - ds[0].t) <= 5_000)) && !resynced
+  }
+  const dupsExplained = dupsAll.filter(lostReceipt), dups = dupsAll.filter(d => !lostReceipt(d))
   const resent = Object.values(people).flat().filter(e => e.ev === 'resent')
   const resentBad = resent.filter(e => !e.duplicate)
   const sentDup = sent.filter(e => e.duplicate)
@@ -512,10 +563,13 @@ function report(): void {
     if (hub && e.seq !== undefined && hub.seq !== e.seq) seqProblems.push(`${e.id}: post reply seq ${e.seq}, bus seq ${hub.seq}`)
   }
   const incOf = (v: number) => Math.floor(v / 2 ** 21)
-  const preSeqs = obs.filter(e => e.ev === 'bus' && restartBegin && e.t < restartBegin.t).map(e => e.seq)
-  const postSeqs = obs.filter(e => e.ev === 'bus' && restartHealthy && e.t > restartHealthy.t + 5_000).map(e => e.seq)
-  const preMaxSeq = Math.max(0, ...preSeqs), postMinSeq = postSeqs.length ? Math.min(...postSeqs.filter(s => s > preMaxSeq - 2 ** 21 * 0 && incOf(s) > incOf(preMaxSeq)), Infinity) : NaN
-  const postRestartBelow = restartHealthy ? sent.filter(e => e.t > restartHealthy.t + 5_000 && !e.duplicate && e.seq !== undefined && e.seq <= preMaxSeq) : []
+  const counterRows = restarts.map(r => {
+    const preMaxSeq = Math.max(0, ...obs.filter(e => e.ev === 'bus' && e.t < r.begin.t).map(e => e.seq))
+    const after = obs.filter(e => e.ev === 'bus' && e.t > r.healthy.t + 5_000 && incOf(e.seq) > incOf(preMaxSeq)).map(e => e.seq)
+    const below = sent.filter(e => e.t > r.healthy.t + 5_000 && !e.duplicate && e.seq !== undefined && e.seq <= preMaxSeq)
+    return { preMaxSeq, postMinSeq: after.length ? Math.min(...after) : NaN, below }
+  })
+  const postRestartBelow = counterRows.flatMap(c => c.below)
   const epochProblems: string[] = []
   const allGrants = new Map<number, string>()
   for (const [n, evs] of Object.entries(people)) {
@@ -538,7 +592,7 @@ function report(): void {
   for (const r of lastRooms.slice(-2)) for (const h of r.holders) if (!h.ended && ROSTER.some(p => p.name === h.name)) endChecks.push(`${h.name} still live ${Math.round((r.t - (orch.find(e => e.ev === 'stopping-children')?.t ?? 0)) / 1000)} s after stop`)
   // The window in which /health failed outside the planned restart (CPU throttling on staging).
   const healthAll = orch.filter(e => e.ev === 'health')
-  const outsideRestart = (t: number) => !(restartBegin && restartHealthy && t >= restartBegin.t - 5_000 && t <= restartHealthy.t + 15_000)
+  const outsideRestart = (t: number) => !inRestart(t)
   // Only clustered failures (3 or more within 5 minutes) make a stall window; isolated probe timeouts do not.
   const fails = healthAll.filter(e => e.status !== 200 && outsideRestart(e.t))
   const stallFails = fails.filter(e => fails.filter(f => Math.abs(f.t - e.t) <= 5 * 60_000).length >= 3)
@@ -546,8 +600,10 @@ function report(): void {
   const inStall = (t: number) => t >= stallFrom && t <= stallTo + 60_000
   // Leases of disconnected participants: disconnects longer than TTL + 15 s must show a new epoch after.
   const disc = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => e.ev === 'disconnect').map(e => {
-    const after = evs.find(x => x.ev === 'status' && x.t > e.t + e.ms && x.hub && !x.paused && typeof x.epoch === 'number')
-    return { n, t: e.t, ms: e.ms, before: e.epoch, after: after?.epoch, backMs: after ? after.t - e.t - e.ms : undefined }
+    // Back: the first unpaused status after reconnecting; kept: the epoch still held 60 s later (a lease can lapse after reconnecting).
+    const back = evs.find(x => x.ev === 'status' && x.t > e.t + e.ms && x.hub && !x.paused && typeof x.epoch === 'number')
+    const settledAt = evs.filter(x => x.ev === 'status' && x.t > e.t + e.ms && x.t <= e.t + e.ms + 60_000 && x.hub && !x.paused && typeof x.epoch === 'number').at(-1)
+    return { n, t: e.t, ms: e.ms, before: e.epoch, after: settledAt?.epoch ?? back?.epoch, backMs: back ? back.t - e.t - e.ms : undefined }
   }))
 
   // Hub-side expiry of a disconnected holder: `hub: lease <epoch> on <name> expired`, measured from the disconnect.
@@ -558,44 +614,89 @@ function report(): void {
     return { ...x, afterDisconnectS: d ? (x.t - d.t) / 1000 : undefined }
   })
   const lateExpiry = expiryRows.filter(x => x.afterDisconnectS !== undefined && x.afterDisconnectS > 47)
+  // A connected client losing its lease: a pause that begins while its socket and hub are up, outside a leave.
+  const connectedLoss = Object.entries(people).flatMap(([n, evs]) => {
+    const stop = evs.find(e => e.ev === 'stopping')?.t ?? Infinity
+    const away = evs.filter(e => e.ev === 'leave').map(l => [l.t, evs.find(e => e.ev === 'rejoined' && e.t > l.t)?.t ?? Infinity])
+    const statuses = evs.filter(e => e.ev === 'status' && e.t < stop)
+    return statuses.filter((e, i) => e.paused && !statuses[i - 1]?.paused && e.conn && e.hub && !away.some(([a, b]) => e.t >= a && e.t <= b + 5_000))
+      .map(e => {
+        const d = evs.filter(x => x.ev === 'disconnect' && x.t < e.t).at(-1), r = evs.filter(x => x.ev === 'reconnect-requested' && x.t < e.t).at(-1)
+        // TTL edge: found right after reconnecting from a disconnect of 30 s or more. The lease's age is that
+        // disconnect plus up to one renew interval (15 s), so it had usually run out while the client was away.
+        const edge = !!d && !!r && r.t > d.t && e.t - r.t <= 5_000 && e.t - d.t >= 30_000
+        return { n, t: e.t, edge, sinceDisconnectS: d ? Math.round((e.t - d.t) / 1000) : undefined, sinceReconnectS: r ? Math.round((e.t - r.t) / 1000) : undefined }
+      })
+  })
+  const connectedTrue = connectedLoss.filter(c => !c.edge)
+  // Hub expiries that no disconnect, leave or stop explains: a connected client's lease ran out.
+  const unexplained = expiryRows.filter(x => x.afterDisconnectS === undefined)
   // A graceful leave ends the hub record (released) before the next observer sample.
   const leaveEnds = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => e.ev === 'leave').map(e => {
-    const sample = rooms.find(r => r.t > e.t + 5_000 && r.holders.some((h: any) => h.name === n))
+    // A leave while disconnected cannot release: its lease must end by TTL instead (45 s, plus one 30 s sample).
+    const offline = evs.filter(x => x.ev === 'status' && x.t <= e.t).at(-1)?.conn === false
+    const sample = rooms.find(r => r.t > e.t + (offline ? 75_000 : 5_000) && r.holders.some((h: any) => h.name === n))
     const h = sample?.holders.find((h: any) => h.name === n)
-    return { n, t: e.t, ended: h?.ended ?? (h && h.epoch !== e.epoch ? 'rejoined' : null), epoch: h?.epoch, left: e.epoch }
+    return { n, t: e.t, offline, ended: h?.ended ?? (h && h.epoch !== e.epoch ? 'rejoined' : null), epoch: h?.epoch, left: e.epoch }
   }))
-  // Restart: per participant, time from the restart until hub reachable again with a lease (status events).
-  const restartRows: string[] = []
-  let maxBack = 0
-  if (restartBegin) for (const [n, evs] of Object.entries(people)) {
-    const pre = evs.filter(e => e.ev === 'status' && e.t < restartBegin.t).at(-1)
-    const down = evs.find(e => e.ev === 'status' && e.t >= restartBegin.t && e.t < restartBegin.t + 60_000 && !e.hub)
-    const back = evs.find(e => e.ev === 'status' && e.t >= restartBegin.t && e.inc !== pre?.inc && e.hub && e.conn && typeof e.epoch === 'number' && !e.paused)
-    const ms = back && restartHealthy ? back.t - restartHealthy.t : undefined
-    if (ms !== undefined) maxBack = Math.max(maxBack, ms)
-    restartRows.push(`| ${n} | ${pre?.epoch ?? '-'} (inc ${pre?.inc ?? '-'}) | ${back?.epoch ?? '-'} (inc ${back?.inc ?? '-'}) | ${back?.name ?? '-'} | ${down ? `${((down.t - restartBegin.t) / 1000).toFixed(0)} s` : 'already disconnected (planned)'} | ${ms !== undefined ? `${(ms / 1000).toFixed(1)} s` : '-'} |`)
-  }
+  // Each restart: per participant, time from /health 200 until hub reachable again with a lease (status events).
+  const restartSections = restarts.map(({ begin: restartBegin, healthy: restartHealthy }) => {
+    const restartRows: string[] = []
+    let maxBack = 0, sameEpoch = 0, sameName = 0
+    for (const [n, evs] of Object.entries(people)) {
+      // The incarnation comes from the room's hub mirror (meta.hubIncarnation): rc5's client no longer exposes it.
+      const room = REPOS[ROSTER.find(p => p.name === n)!.repo]
+      const incBefore = rooms.filter(r => r.room === room && r.t < restartBegin.t).at(-1)?.hubIncarnation
+      const incAfter = rooms.find(r => r.room === room && r.t > restartHealthy.t && r.hubIncarnation !== incBefore)?.hubIncarnation
+      const pre = { ...evs.filter(e => e.ev === 'status' && e.t < restartBegin.t).at(-1), inc: incBefore }
+      const down = evs.find(e => e.ev === 'status' && e.t >= restartBegin.t && e.t < restartBegin.t + 60_000 && !e.hub)
+      const backEv = evs.find(e => e.ev === 'status' && e.t >= (down?.t ?? restartBegin.t) && (down ? true : e.inc !== undefined && e.inc !== pre.inc) && e.hub && e.conn && typeof e.epoch === 'number' && !e.paused)
+      const back = backEv ? { ...backEv, inc: backEv.inc ?? incAfter } : undefined
+      const ms = back ? back.t - restartHealthy.t : undefined
+      if (ms !== undefined) maxBack = Math.max(maxBack, ms)
+      if (back && back.epoch === pre?.epoch) sameEpoch++
+      if (back && back.name === n) sameName++
+      restartRows.push(`| ${n} | ${pre?.epoch ?? '-'} (inc ${pre?.inc ?? '-'}) | ${back?.epoch ?? '-'} (inc ${back?.inc ?? '-'}) | ${back?.name ?? '-'} | ${down ? `${((down.t - restartBegin.t) / 1000).toFixed(0)} s` : 'already disconnected (planned)'} | ${ms !== undefined ? `${(ms / 1000).toFixed(1)} s` : '-'} |`)
+    }
+    return { restartBegin, restartHealthy, restartRows, maxBack, sameEpoch, sameName }
+  })
 
   // Health.
   const health = orch.filter(e => e.ev === 'health')
-  const badHealth = health.filter(e => e.status !== 200 && !(restartBegin && restartHealthy && e.t >= restartBegin.t - 5_000 && e.t <= restartHealthy.t + 15_000))
+  const badHealth = health.filter(e => e.status !== 200 && !inRestart(e.t, 60_000))
 
   const counts = (ev: string) => Object.values(people).flat().filter(e => e.ev === ev).length
   const pf = (b: boolean) => b ? '**PASS**' : '**FAIL**'
   const md: string[] = []
   md.push(`## Metrics every 10 minutes`, '', ...out, '')
   md.push(`Activity: ${counts('sent')} posts accepted (${sent.length} addressed, ${sentDup.length} answered as duplicates on a retry), ${unsent.length} given up after 5 min, ${counts('delivered')} ledger deliveries, ${Object.values(people).flat().filter(e => e.ev === 'claim' && e.ok).length} claims taken (${counts('claim')} attempted), ${Object.values(people).flat().filter(e => e.ev === 'release' && String(e.out).startsWith('released')).length} releases, ${counts('big-edit')} large edits, ${counts('disconnect')} disconnects, ${rejoins.filter(r => r.r).length} leave-and-rejoins, ${resent.length} same-id resends.`, '')
-  if (restartBegin) {
-    md.push(`## Hub restart at minute ${min(restartBegin.t)}`, '', `Machine restart command to /health 200: ${((restartHealthy.t - restartBegin.t) / 1000).toFixed(1)} s. Slowest participant back (hub hello + valid lease) after health returned: ${(maxBack / 1000).toFixed(1)} s.`, '',
+  restartSections.forEach(({ restartBegin, restartHealthy, restartRows, maxBack, sameEpoch, sameName }, i) => {
+    const c = counterRows[i]
+    md.push(`## Hub restart ${i + 1} at minute ${min(restartBegin.t)}`, '', `Machine restart command to /health 200: ${((restartHealthy.t - restartBegin.t) / 1000).toFixed(1)} s. Slowest participant back (hub hello + valid lease) after health returned: ${(maxBack / 1000).toFixed(1)} s. Same name ${sameName}/${restartRows.length}, same epoch ${sameEpoch}/${restartRows.length}.`, '',
       '| participant | epoch before (incarnation) | epoch after (incarnation) | name after | first drop seen | back after /health 200 |', '|---|---|---|---|---|---|', ...restartRows, '',
-      `Highest seq before the restart: ${preMaxSeq} (incarnation ${incOf(preMaxSeq)}); new posts after it at or below that: ${postRestartBelow.length}. Lowest post-restart seq in a new incarnation: ${Number.isFinite(postMinSeq) ? `${postMinSeq} (incarnation ${incOf(postMinSeq)})` : '-'}.`, '')
+      `Highest seq before the restart: ${c.preMaxSeq} (incarnation ${incOf(c.preMaxSeq)}); new posts after it at or below that: ${c.below.length}. Lowest post-restart seq in a new incarnation: ${Number.isFinite(c.postMinSeq) ? `${c.postMinSeq} (incarnation ${incOf(c.postMinSeq)})` : '-'}.`, '')
+  })
+  // Hourly summary of the 10-minute samples (soak phase), with health failures and error lines per hour.
+  const hours = Math.ceil(Math.max(0, ...rows.filter(r => r.m.phase === 'soak').map(r => r.m.t - t0)) / 3_600_000)
+  if (hours >= 2) {
+    const mean = (xs: (number | undefined)[]) => { const v = xs.filter((x): x is number => x !== undefined); return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : '-' }
+    md.push('## Hourly summary', '', '| hour | RSS MB avg | RSS MB max | HWM MB | CPU % avg | steal % avg | /data KB (end) | bus (end) | live leases (end) | health fails | restarts |', '|---|---|---|---|---|---|---|---|---|---|---|')
+    for (let h = 0; h < hours; h++) {
+      const inH = (t: number) => t - t0 > h * 3_600_000 && t - t0 <= (h + 1) * 3_600_000
+      const hr = rows.filter(r => r.m.phase === 'soak' && inH(r.m.t))
+      if (!hr.length) continue
+      const last = hr.at(-1)!
+      md.push(`| ${h + 1} | ${mean(hr.map(r => r.m.rssKb / 1024))} | ${(Math.max(...hr.map(r => r.m.rssKb)) / 1024).toFixed(1)} | ${(last.m.hwmKb / 1024).toFixed(1)} | ${mean(hr.map(r => r.cpu))} | ${mean(hr.map(r => r.steal))} | ${last.m.dataKb ?? '-'} | ${last.bus ?? '-'} | ${last.live ?? '-'} | ${health.filter(e => e.status !== 200 && inH(e.t)).length} | ${restarts.filter(r => inH(r.begin.t)).length || ''} |`)
+    }
+    md.push('')
   }
   md.push('## Pass criteria', '')
-  md.push(`- Memory: first-hour average ${memFirst.toFixed(1)} MB, last-hour average ${memLast.toFixed(1)} MB (pass: last within 15% of first). ${pf(memPass)}`)
-  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Graceful leaves ended on the hub by the next sample (released, or already replaced by the rejoin): ${leaveEnds.filter(l => l.ended).length}/${leaveEnds.length}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !lateExpiry.length && rejoins.every(r => !r.r || r.r.sameName) && leaveEnds.every(l => l.ended))}`)
-  md.push(`- Delivery: ${sent.length} addressed messages accepted; lost (accepted, never in the room, never delivered) ${lost.length}; still owed at the stop (in the room, recipient offline or stalled) ${owedAtStop.length}; duplicate deliveries ${dups.length}; same-id resends answered with the original (duplicate) ${resent.length - resentBad.length}/${resent.length}. ${pf(lost.length === 0 && dups.length === 0 && resentBad.length === 0)}${lost.length ? `\n  - lost: ${lost.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${owedAtStop.length ? `\n  - owed at the stop: ${owedAtStop.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${dups.length ? `\n  - duplicates: ${dups.slice(0, 10).map(([k, c]) => `${k.replace('\0', ':')}×${c}`).join(', ')}` : ''}`)
+  md.push(`- Memory: first-hour average ${memFirst.toFixed(1)} MB, last-hour average ${memLast.toFixed(1)} MB. Line fit over ${rssFit?.n ?? 0} samples from hour 1 on (10 min after each restart left out): ${rssFit ? `${rssFit.slope.toFixed(2)} MB/hour, intercept ${rssFit.intercept.toFixed(1)} MB` : '-'}; maximum RSS ${maxRss.toFixed(1)} MB, HWM ${maxHwm.toFixed(1)} MB (pass: slope < 2 MB/hour and RSS < 300 MB). ${pf(slopePass)}`)
+  md.push(`- CPU: line fit ${cpuFit ? `${cpuFit.slope.toFixed(3)} percentage points of a core per hour over ${cpuFit.n} samples` : '-'} (flat: |slope| < 0.1). ${pf(cpuFlat)}`)
+  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Leaves ended on the hub by the next sample (released, or already replaced by the rejoin; a leave while disconnected by TTL expiry): ${leaveEnds.filter(l => l.ended).length}/${leaveEnds.length}${leaveEnds.some(l => l.offline) ? ` (${leaveEnds.filter(l => l.offline).map(l => `${l.n} left while disconnected: ${l.ended}`).join('; ')})` : ''}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. Connected clients that lost their lease: ${connectedTrue.length}${connectedTrue.length ? ` (${connectedTrue.slice(0, 12).map(c => `${c.n} at min ${min(c.t)}, ${c.sinceReconnectS ?? '-'} s after reconnecting, ${c.sinceDisconnectS ?? '-'} s after its last disconnect`).join('; ')})` : ''}; leases found expired right after a 30 s+ disconnect (TTL edge, expected): ${connectedLoss.length - connectedTrue.length}; hub expiries with no disconnect to explain them: ${unexplained.length}${unexplained.length ? ` (${unexplained.slice(0, 10).map(x => `${x.name} at min ${min(x.t)}`).join(', ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !connectedTrue.length && rejoins.every(r => !r.r || r.r.sameName) && leaveEnds.every(l => l.ended))}`)
+  md.push(`- Delivery: ${sent.length} addressed messages accepted; lost (accepted, never in the room, never delivered) ${lost.length}; still owed at the stop (in the room, recipient offline or stalled) ${owedAtStop.length}; duplicate deliveries ${dupsAll.length} (${dupsExplained.length} at-least-once: the receipt was written offline and its replica discarded by a leave before reconnecting${dupsExplained.length ? `: ${dupsExplained.map(([k]) => k.replace('\0', ':')).join(', ')}` : ''}); same-id resends answered with the original (duplicate) ${resent.length - resentBad.length}/${resent.length}. ${pf(lost.length === 0 && dups.length === 0 && resentBad.length === 0)}${lost.length ? `\n  - lost: ${lost.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${owedAtStop.length ? `\n  - owed at the stop: ${owedAtStop.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${dups.length ? `\n  - duplicates: ${dups.slice(0, 10).map(([k, c]) => `${k.replace('\0', ':')}×${c}`).join(', ')}` : ''}`)
   md.push(`- Monotonic counters: seq problems ${seqProblems.length}, epoch problems ${epochProblems.length}, post-restart values at or below pre-restart ${postRestartBelow.length}. ${pf(!seqProblems.length && !epochProblems.length && !postRestartBelow.length)}${[...seqProblems, ...epochProblems].slice(0, 10).map(p => `\n  - ${p}`).join('')}`)
-  md.push(`- Health: ${health.length} probes, ${badHealth.length} non-200 (8 s timeouts) outside the restart window${badHealth.length ? ` at minutes ${badHealth.length > 8 ? `${min(badHealth[0].t)}–${min(badHealth.at(-1)!.t)}` : badHealth.map(h => min(h.t)).join(', ')}` : ''}; clustered (3+ within 5 min) ${stallFails.length}. ${pf(!badHealth.length)}`)
+  md.push(`- Health: ${health.length} probes, ${badHealth.length} non-200 outside the restart windows (restart command to 60 s after /health 200)${badHealth.length ? ` at minutes ${badHealth.length > 8 ? `${min(badHealth[0].t)}–${min(badHealth.at(-1)!.t)}` : badHealth.map(h => min(h.t)).join(', ')}` : ''}; clustered (3+ within 5 min) ${stallFails.length}. ${pf(!badHealth.length)}`)
   md.push(`- Fly log lines since the start: ${flyLines.length}; matching error words: ${flyErrors.length}.${flyErrors.slice(0, 15).map(l => `\n  - \`${l.slice(0, 220).replace(/`/g, "'")}\``).join('')}`)
   md.push(`  - known info lines: ${[...kinds].map(([k, c]) => `${c} × ${k}`).join('; ') || 'none'}`)
   md.push(`  - other lines (${other.length}):${other.slice(0, 25).map(l => `\n    - \`${l.slice(0, 200).replace(/`/g, "'")}\``).join('')}`)
@@ -609,9 +710,11 @@ function report(): void {
 
 const [mode, ...rest] = process.argv.slice(2)
 const flag = (n: string, d: number) => { const i = rest.indexOf(n); return i >= 0 ? Number(rest[i + 1]) : d }
-if (mode === 'participant') await participant(rest[0], rest[1] as RepoKey, Number(rest[2] ?? 0), Number(rest[3] ?? ROSTER.length))
-else if (mode === 'run') await orchestrate(flag('--minutes', 180), flag('--restart-at', 90), flag('--participants', 8), flag('--post-idle', 3))
+const restartList = (v: string | undefined) => (v ?? '').split(',').map(Number).filter(n => Number.isFinite(n) && n > 0)
+if (mode === 'participant') await participant(rest[0], rest[1] as RepoKey, restartList(rest[2]), Number(rest[3] ?? ROSTER.length), Number(rest[4] ?? 180))
+else if (mode === 'run') { const i = rest.indexOf('--restart-at'); await orchestrate(flag('--minutes', 180), i >= 0 ? restartList(rest[i + 1]) : [90], flag('--participants', 8), flag('--post-idle', 3)) }
 else if (mode === 'metrics') console.log(JSON.stringify(await flyMetrics()))
+else if (mode === 'structs') { await structs(); process.exit(0) }
 else if (mode === 'report') report()
 else if (mode === 'cleanup') { fs.rmSync(CREDS, { recursive: true, force: true }); console.log(`removed ${CREDS}`) }
 else { console.error('usage: npx tsx scripts/soak.mts run|report|cleanup [--minutes 180] [--restart-at 90] [--participants 8]'); process.exit(2) }
