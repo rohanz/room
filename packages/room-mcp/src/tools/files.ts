@@ -357,7 +357,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const appliedFromOthers = [...result.owners.values()].some(owners => owners.some(owner => owner !== caller.me.name))
         let ranOk = !run
         if (run && !hardCount && !result.isCurrent()) {
-          if (await settler.settle(result.settledWorkers)) continue
+          if (await settler.settle(result.settledWorkers())) continue
           return movedReply(result.moved())
         }
         if (run) {
@@ -388,7 +388,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
         }
         if (!result.isCurrent()) {
-          if (await settler.settle(result.settledWorkers)) continue
+          if (await settler.settle(result.settledWorkers())) continue
           return movedReply(result.moved())
         }
         recordPreview({ clean: hardCount === 0, complete, testsPassed: run ? complete && hardCount === 0 && ranOk && appliedFromOthers : false,

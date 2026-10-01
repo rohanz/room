@@ -2189,4 +2189,47 @@ describe('preview of a finished local worker', () => {
       vi.unstubAllEnvs()
     }
   })
+
+  it('a finished worker resumed during the preview is checked again, never certified from its old run', async () => {
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const { a, b } = pair()
+    a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
+    let ls: Session | null = fakeSession(a, lead)
+    const exits: ((code: number | null) => void)[] = []
+    const leadTools = createTools({
+      getSession: () => ls, setSession: s => { ls = s }, cwd: dir, maxWorkers: 2, probe: fixtureProbe, sleep: async () => {},
+      spawner: () => { const pid = 5400 + exits.length; spawnFixtureProcess(pid)
+        const callbacks: ((code: number | null) => void)[] = []
+        exits.push(code => { finishFixtureProcess(pid); for (const callback of callbacks) callback(code) })
+        return { pid, started: Promise.resolve(), onExit: cb => { callbacks.push(cb) }, kill: () => true } },
+      worktree: (repo, tag) => prepareWorktree(repo, tag, 'rohanz'),
+    })
+    const flagDir = mkdtempSync(join(tmpdir(), 'room-resumed-')), flag = join(flagDir, 'started')
+    let resumed: Promise<string> | undefined
+    const watch = setInterval(() => {
+      if (resumed || !existsSync(flag)) return
+      // While the preview's tests run, the lead sends the finished worker a follow-up and its new run edits.
+      resumed = leadTools.call('room_send', { type: 'note', to: 'resumer', text: 'one more change' })
+      void resumed.then(() => writeFileSync(join(workerByTag(dir, 'resumer')!.dir, 'app.py'), 'x = 8\n'))
+    }, 2)
+    try {
+      expect(await leadTools.call('room_spawn', { tag: 'resumer', task: 'x = 7' })).toContain('spawned resumer')
+      const worker = workerByTag(dir, 'resumer')!
+      writeFileSync(join(worker.dir, 'app.py'), 'x = 7\n')
+      publishFixture(b, 'rohanz+resumer', 'app.py', 'x = 7\n')
+      await reportDone('resumer', 'x = 7 done')
+      exits[0](0)
+      await vi.waitFor(() => expect(workerByTag(dir, 'resumer')?.status).not.toBe('running'))
+      const out = await leadTools.call('room_preview_merge', { person: 'rohanz+resumer', run: `touch '${flag}' && sleep 0.5 && cat app.py` })
+      expect(await resumed).toContain('resumed')
+      expect(out.includes('x = 8') || out.includes('moved during the preview')).toBe(true)
+    } finally {
+      clearInterval(watch)
+      rmSync(flagDir, { recursive: true, force: true })
+      exits.at(-1)?.(0)
+      await leadTools.call('room_collect', { discard: true, tag: 'resumer' })
+      await leadTools.shutdown()
+      vi.unstubAllEnvs()
+    }
+  })
 })

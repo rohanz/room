@@ -10,7 +10,8 @@ import { decidePreview, workerRealState } from '../worker-state.js'
 import { carriedPaths, carriesWork, MissingBaseBlob, pairBaseline, type Baseline } from '@room/roomd/baseline'
 import { REGENERABLE_BUILD_DIRS, acceptedGit, formatCount, isRegenerableBuildPath, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotStillCurrent, versionOf, type ParticipantGit, type ParticipantSnapshot, type Version } from '@room/shared'
 import { trustedWorker, type HandlerState } from './context.js'
-import { carriedFrom, localWorkerBaseline } from '../worker-registry.js'
+import { carriedFrom, localWorkerBaseline, localWorkers } from '../worker-registry.js'
+import type { LocalWorker } from '../worker-status.js'
 import { DISK_TEXT_LIMIT, HistoricalTextTooLarge, readBoundedCheckoutText, readBoundedDiskText } from './disk-text.js'
 
 interface PreviewGap { person: string; path?: string; why: string }
@@ -59,7 +60,7 @@ export async function buildCombinedTree(state: HandlerState, caller: Session, pa
   for (;;) {
     const result = await buildCombinedTreeOnce(state, caller, participants, options)
     if (result.current) return result
-    if (!await settler.settle(result.settledWorkers)) throw new PreviewMoved(result.moved())
+    if (!await settler.settle(result.settledWorkers())) throw new PreviewMoved(result.moved())
   }
 }
 
@@ -101,7 +102,13 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
   const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
   // A finished worker read from its worktree cannot move the preview: its exit (last publish, ended lease) only changes its overlay.
-  const settledWorkers = new Set<string>()
+  // The exemption holds only for the run captured here; a resumed or restarted worker is checked again.
+  const settledRuns = new Map<string, { dir: string; lead: string; run: string }>()
+  const runOf = (w: LocalWorker) => [w.status, w.pid, w.startedAt, w.finishedAt, w.exitCode].join(':')
+  const settledWorkers = () => new Set([...settledRuns].filter(([person, captured]) => {
+    const now = localWorkers(captured.dir, record => record.name === person && record.lead.participant === captured.lead)[0]
+    return !!now && now.status !== 'running' && runOf(now) === captured.run
+  }).map(([person]) => person))
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
@@ -109,7 +116,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     const candidate = (s.local || options.diskWorkers?.has(person)) ? await trustedWorker(s, person) : undefined
     const real = candidate && await workerRealState(s.dir, candidate)
     const worker = real && decidePreview(real, true) === 'disk' ? candidate : undefined
-    if (worker && real?.finished) settledWorkers.add(person)
+    if (worker && real?.finished) settledRuns.set(person, { dir: s.dir, lead: s.me.name, run: runOf(worker) })
     byPerson.set(person, worker)
   }
   const previewWorker = (s: Session, person: string) => previewWorkers.get(s)?.get(person)
@@ -464,7 +471,11 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
 
   out.unshift(`preview merge of your changes with ${people.map(p => `${p}'s`).join(', ')} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? 'fallback' : 'git'}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join('; ')}` : ''}):`)
-  const moved = () => movedSince(state, [...snapshots].filter(([person]) => !settledWorkers.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))
+  const moved = () => {
+    const settled = settledWorkers()
+    const resumed = [...settledRuns.keys()].filter(person => !settled.has(person))
+    return [...new Set([...resumed, ...movedSince(state, [...snapshots].filter(([person]) => !settledRuns.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))])]
+  }
   const isCurrent = () => moved().length === 0
   return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers }
 }

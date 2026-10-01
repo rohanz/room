@@ -157,6 +157,9 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
     const packages = await workspacePackages(leadDir, patterns, tick)
     names = [...packages.keys()].sort()
     if (!names.length) return result({ linked: false, names })
+    // A workspace only the lead's checkout has (uncommitted, or renamed since HEAD) would otherwise link back to the lead.
+    const absent = [...packages.values()].filter(rel => !isRealDir(path.join(workerDir, rel)))
+    if (absent.length) return result({ linked: false, names, reason: `${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not in the worktree` })
     if (!isRealDir(path.join(leadDir, 'node_modules'))) return result({ linked: false, names, reason: 'your clone has no node_modules' })
     if (!LOCKFILES.some(f => lstat(path.join(leadDir, f)))) return result({ linked: false, names, reason: `your clone has no lockfile (${LOCKFILES.join(', ')})` })
     const dirs = ['', ...[...packages.values()].filter(rel => isRealDir(path.join(leadDir, rel, 'node_modules')) && isRealDir(path.join(workerDir, rel)))]
@@ -230,8 +233,8 @@ export function workspaceDepsNotes(result: WorkspaceLinkResult): { reply: string
   if (result.names.length && result.linked) {
     reply.push(`node_modules: links to your install, with workspace packages ${list(result.names)} pointing at the worktree's own sources`)
     prompt.push(`node_modules here links the lead's installed packages, with workspace packages (${list(result.names)}) pointing at this worktree. To change dependencies, delete node_modules first (that removes only the links), then install.`)
-  } else if (result.names.length) {
-    const warning = `cross-package tests in this worktree would run the lead's code for ${list(result.names)}`
+  } else if (result.names.length || result.reason) {
+    const warning = `cross-package tests in this worktree would run the lead's code for ${result.names.length ? list(result.names) : 'its workspace packages'}`
     reply.push(`warning: ${warning} (${result.reason})`)
     prompt.push(`Warning: ${warning} (${result.reason}); install dependencies in this worktree before relying on them.`)
   }

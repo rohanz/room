@@ -32175,6 +32175,8 @@ async function linkWorkspaceDeps(leadDir, workerDir, options = {}) {
     const packages = await workspacePackages(leadDir, patterns, tick);
     names = [...packages.keys()].sort();
     if (!names.length) return result2({ linked: false, names });
+    const absent = [...packages.values()].filter((rel) => !isRealDir(path17.join(workerDir, rel)));
+    if (absent.length) return result2({ linked: false, names, reason: `${absent.join(", ")} ${absent.length === 1 ? "is" : "are"} not in the worktree` });
     if (!isRealDir(path17.join(leadDir, "node_modules"))) return result2({ linked: false, names, reason: "your clone has no node_modules" });
     if (!LOCKFILES.some((f) => lstat3(path17.join(leadDir, f)))) return result2({ linked: false, names, reason: `your clone has no lockfile (${LOCKFILES.join(", ")})` });
     const dirs = ["", ...[...packages.values()].filter((rel) => isRealDir(path17.join(leadDir, rel, "node_modules")) && isRealDir(path17.join(workerDir, rel)))];
@@ -32249,8 +32251,8 @@ function workspaceDepsNotes(result2) {
   if (result2.names.length && result2.linked) {
     reply.push(`node_modules: links to your install, with workspace packages ${list(result2.names)} pointing at the worktree's own sources`);
     prompt.push(`node_modules here links the lead's installed packages, with workspace packages (${list(result2.names)}) pointing at this worktree. To change dependencies, delete node_modules first (that removes only the links), then install.`);
-  } else if (result2.names.length) {
-    const warning = `cross-package tests in this worktree would run the lead's code for ${list(result2.names)}`;
+  } else if (result2.names.length || result2.reason) {
+    const warning = `cross-package tests in this worktree would run the lead's code for ${result2.names.length ? list(result2.names) : "its workspace packages"}`;
     reply.push(`warning: ${warning} (${result2.reason})`);
     prompt.push(`Warning: ${warning} (${result2.reason}); install dependencies in this worktree before relying on them.`);
   }
@@ -32905,7 +32907,7 @@ async function buildCombinedTree(state, caller, participants, options = {}) {
   for (; ; ) {
     const result2 = await buildCombinedTreeOnce(state, caller, participants, options);
     if (result2.current) return result2;
-    if (!await settler.settle(result2.settledWorkers)) throw new PreviewMoved(result2.moved());
+    if (!await settler.settle(result2.settledWorkers())) throw new PreviewMoved(result2.moved());
   }
 }
 function ignoredOutputNotes(byPerson) {
@@ -32938,7 +32940,12 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   }
   const gaps = [];
   const previewWorkers = /* @__PURE__ */ new WeakMap();
-  const settledWorkers = /* @__PURE__ */ new Set();
+  const settledRuns = /* @__PURE__ */ new Map();
+  const runOf = (w) => [w.status, w.pid, w.startedAt, w.finishedAt, w.exitCode].join(":");
+  const settledWorkers = () => new Set([...settledRuns].filter(([person, captured]) => {
+    const now = localWorkers(captured.dir, (record2) => record2.name === person && record2.lead.participant === captured.lead)[0];
+    return !!now && now.status !== "running" && runOf(now) === captured.run;
+  }).map(([person]) => person));
   for (const { session: s, person } of [{ session: caller, person: caller.me.name }, ...participants]) {
     let byPerson = previewWorkers.get(s);
     if (!byPerson) {
@@ -32949,7 +32956,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const candidate = s.local || options.diskWorkers?.has(person) ? await trustedWorker(s, person) : void 0;
     const real = candidate && await workerRealState(s.dir, candidate);
     const worker = real && decidePreview(real, true) === "disk" ? candidate : void 0;
-    if (worker && real?.finished) settledWorkers.add(person);
+    if (worker && real?.finished) settledRuns.set(person, { dir: s.dir, lead: s.me.name, run: runOf(worker) });
     byPerson.set(person, worker);
   }
   const previewWorker = (s, person) => previewWorkers.get(s)?.get(person);
@@ -33334,7 +33341,11 @@ ${conflicts.join("\n")}`);
     if (resolvable.length && options.resolve !== true) out2.push(`${resolvable.length} conflict(s) are resolvable because one side built on the other's change: call again with resolve=true to get the resolved file text, then write it to your own clone.`);
   }
   out2.unshift(`preview merge of your changes with ${people.map((p) => `${p}'s`).join(", ")} in order (common ancestor ${ancestor.slice(0, 10)}; merge algorithm: ${fallbacks.size ? "fallback" : "git"}${fallbacks.size ? `; fallback reason: ${[...fallbacks].join("; ")}` : ""}):`);
-  const moved = () => movedSince(state, [...snapshots].filter(([person]) => !settledWorkers.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })));
+  const moved = () => {
+    const settled = settledWorkers();
+    const resumed = [...settledRuns.keys()].filter((person) => !settled.has(person));
+    return [.../* @__PURE__ */ new Set([...resumed, ...movedSince(state, [...snapshots].filter(([person]) => !settledRuns.has(person)).map(([person, { session, snap }]) => ({ person, session, snap })))])];
+  };
   const isCurrent = () => moved().length === 0;
   return { ancestor, deltaBases, includedParticipants, callerBase: bases[0].base, paths, callerOnly, initial, merged, owners, conflictingPaths, hardCount, conflictCount, resolvedText, out: out2, ignoredNotes, roots, diskWorkers, gaps, complete: gaps.length === 0, current: isCurrent(), isCurrent, moved, settledWorkers };
 }
@@ -41827,7 +41838,7 @@ ${text}--- end ${p} ---`);
           const appliedFromOthers = [...result2.owners.values()].some((owners) => owners.some((owner) => owner !== caller.me.name));
           let ranOk = !run3;
           if (run3 && !hardCount && !result2.isCurrent()) {
-            if (await settler.settle(result2.settledWorkers)) continue;
+            if (await settler.settle(result2.settledWorkers())) continue;
             return movedReply(result2.moved());
           }
           if (run3) {
@@ -41862,7 +41873,7 @@ ${text}--- end ${p} ---`);
             }
           }
           if (!result2.isCurrent()) {
-            if (await settler.settle(result2.settledWorkers)) continue;
+            if (await settler.settle(result2.settledWorkers())) continue;
             return movedReply(result2.moved());
           }
           recordPreview({

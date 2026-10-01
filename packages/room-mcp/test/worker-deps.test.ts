@@ -114,6 +114,34 @@ describe('worker workspace links', () => {
     expect(requireB(repo)).toBe('lead-a:third')
   })
 
+  it('a workspace package missing from the worktree is never linked back to the lead\'s sources', async () => {
+    const { repo, worktree } = fixture()
+    const worker = worktree()
+    // The lead renamed a workspace directory without committing; the worktree starts from HEAD.
+    fs.renameSync(path.join(repo, 'packages/a'), path.join(repo, 'packages/a2'))
+    fs.rmSync(path.join(repo, 'node_modules/@fx/a')); fs.symlinkSync('../../packages/a2', path.join(repo, 'node_modules/@fx/a'))
+    const result = await linkWorkspaceDeps(repo, worker)
+    expect(result.linked).toBe(false)
+    expect(result.reason).toContain('packages/a2')
+    expect(fs.existsSync(path.join(worker, 'node_modules'))).toBe(false)
+    expect(workspaceDepsNotes(result).reply.join('\n')).toContain('would run the lead\'s code')
+  })
+
+  it.skipIf(process.getuid?.() === 0)('a discovery failure before any package is named still warns', async () => {
+    const { repo, worktree } = fixture()
+    const worker = worktree()
+    // Workspace discovery fails (as it does past its directory or time budget) before names are known.
+    fs.chmodSync(path.join(repo, 'packages'), 0o000)
+    try {
+      const result = await linkWorkspaceDeps(repo, worker)
+      expect(result).toMatchObject({ linked: false, names: [] })
+      expect(result.reason).toContain('linking failed')
+      const notes = workspaceDepsNotes(result)
+      expect(notes.reply.join('\n')).toContain('would run the lead\'s code for its workspace packages')
+      expect(notes.prompt).toContain('would run the lead\'s code for its workspace packages')
+    } finally { fs.chmodSync(path.join(repo, 'packages'), 0o755) }
+  })
+
   it.skipIf(process.getuid?.() === 0)('an unreadable lead install is an error that warns, never a throw', async () => {
     const { repo, worktree } = fixture()
     const worker = worktree()
