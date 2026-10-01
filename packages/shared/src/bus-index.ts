@@ -22,8 +22,8 @@ export class BusIndex {
     this.touched = new Set()
     try {
       Y.iterateDeletedStructs(tx, tx.deleteSet, struct => {
-        if (!(struct instanceof Y.Item)) throw new Error('unexpected deleted struct')
-        if (struct.parent !== this.bus) return
+        // GC/Skip cannot contain a live indexed value: deletion observers see its Item before GC.
+        if (!(struct instanceof Y.Item) || struct.parent !== this.bus || struct.parentSub !== null) return
         for (let i = 0; i < struct.length; i++) this.remove(`${struct.id.client}:${struct.id.clock + i}`)
       })
       for (const [client, end] of tx.afterState) {
@@ -34,9 +34,8 @@ export class BusIndex {
         for (let i = Y.findIndexSS(structs, start); i < structs.length; i++) {
           const struct = structs[i]
           if (struct.id.clock >= end) break
-          if (!(struct instanceof Y.Item)) throw new Error('unexpected new struct')
-          if (struct.parent !== this.bus || struct.deleted) continue
-          if (!(struct.content instanceof Y.ContentAny || struct.content instanceof Y.ContentJSON)) throw new Error('unexpected bus content')
+          if (!(struct instanceof Y.Item) || struct.parent !== this.bus || struct.parentSub !== null || struct.deleted) continue
+          // Nested Y types are ordinary content too; retain them as invalid until trim removes them.
           const values = struct.content.getContent()
           for (let offset = Math.max(0, start - struct.id.clock); offset < values.length; offset++) {
             this.add(`${client}:${struct.id.clock + offset}`, values[offset] as Msg)
@@ -45,7 +44,7 @@ export class BusIndex {
       }
       this.onChange(this.touched)
     } catch {
-      // A future Yjs representation or unexpected struct must never corrupt delivery counts.
+      // A genuine range inconsistency must never corrupt delivery counts.
       this.rebuild()
       this.onChange(this.touched, true)
     }
@@ -93,7 +92,7 @@ export class BusIndex {
     this.invalid = 0
     // Rebuild is intentionally a full store pass, used only at startup/debug/recovery.
     for (const structs of this.bus.doc!.store.clients.values()) for (const struct of structs) {
-      if (!(struct instanceof Y.Item) || struct.parent !== this.bus || struct.deleted) continue
+      if (!(struct instanceof Y.Item) || struct.parent !== this.bus || struct.parentSub !== null || struct.deleted) continue
       const values = struct.content.getContent()
       values.forEach((m, i) => this.add(`${struct.id.client}:${struct.id.clock + i}`, m as Msg))
     }

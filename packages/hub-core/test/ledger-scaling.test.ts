@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import * as Y from 'yjs'
 import { BUS_BYTES, RoomDoc, deliveryIndex, type Msg } from '@room/shared'
 import { startHub, serializedStore, SETTLE_MS } from '../src/index.js'
 import { fakeClock, holder } from './contract.js'
@@ -8,22 +9,30 @@ const message = (id: string): Msg => ({ id, type: 'note', text: 'x', from: 'ada'
 
 // Count values examined by full-array materialization and serialization, including trims.
 // The optimized index exposes its changed-entry visits as well; no timing thresholds.
-async function costs(n: number, batches = false) {
+async function costs(n: number, batches = false, memberCopies = false) {
   const doc = new RoomDoc(), clock = fakeClock()
   doc.bus.push(Array.from({ length: n }, (_, i) => message(`old-${i}`)))
   let durable: number | undefined
-  const hub = await startHub({ doc, busKeep: n, fresh: true, mono: clock.mono, wall: clock.wall, log() {},
+  const hub = await startHub({ doc, busKeep: n + (memberCopies ? 100 : 0), fresh: true, mono: clock.mono, wall: clock.wall, log() {},
     store: serializedStore({ read: async () => durable, write: async x => { durable = x } }) })
   clock.advance(SETTLE_MS); hub.tick()
   const conn = {}, p = { local: true } as const
   hub.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', sessionId: 's' }, p)
   const lease = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, p) as { epoch: number }
+  if (memberCopies) doc.doc.transact(() => {
+    const owed = { ...message('member'), to: 'pat' }
+    doc.mail.set('alias-first', owed)
+    doc.mail.set('alias-second', { ...owed, to: 'quinn' })
+    doc.bus.push([owed])
+  })
   let ops = 0
   const index = deliveryIndex(doc).bus
   let visits = index.visits
   const originalArray = doc.bus.toArray.bind(doc.bus)
   const originalStringify = JSON.stringify
   const array = vi.spyOn(doc.bus, 'toArray').mockImplementation(() => { ops += doc.bus.length; return originalArray() })
+  const originalMail = doc.mail.values.bind(doc.mail)
+  const mail = vi.spyOn(doc.mail, 'values').mockImplementation(function* () { for (const m of originalMail()) { ops++; yield m } })
   const json = vi.spyOn(JSON, 'stringify').mockImplementation((...args: Parameters<typeof JSON.stringify>) => { ops++; return originalStringify(...args) })
   const posts = batches ? Math.ceil(n / 2) : 20
   try {
@@ -41,7 +50,7 @@ async function costs(n: number, batches = false) {
     ops = 0; visits = index.visits
     for (let i = 0; i < 20; i++) { doc.metaMap.set('member-update', i); hub.tick() }
     return { post, tick: (ops + index.visits - visits) / 20 }
-  } finally { array.mockRestore(); json.mockRestore(); hub.stop(); doc.doc.destroy() }
+  } finally { array.mockRestore(); mail.mockRestore(); json.mockRestore(); hub.stop(); doc.doc.destroy() }
 }
 
 it('post and member-update ticks do not scan the retained bus', async () => {
@@ -101,4 +110,30 @@ it('keeps the serialized bus under its memory budget between byte-triggered trim
   }
   expect(doc.archive.size).toBeGreaterThan(0)
   hub.stop(); doc.doc.destroy()
+})
+
+
+it('keeps per-post work flat after a member writes aliased and overlapping mail copies', async () => {
+  const results = []
+  for (const n of sizes) results.push(await costs(n, false, true))
+  console.log('aliased/overlapping mail operation counts', sizes.map((n, i) => ({ n, ...results[i] })))
+  expect(results.map(x => x.post)).toEqual([7, 7, 7])
+})
+
+it('delivers a post whose id matches a keyed phantom bus item', async () => {
+  const doc = new RoomDoc(), clock = fakeClock(), member = new Y.Doc()
+  let durable: number | undefined
+  const hub = await startHub({ doc, fresh: true, mono: clock.mono, wall: clock.wall, log() {},
+    store: serializedStore({ read: async () => durable, write: async x => { durable = x } }) })
+  const conn = {}, p = { local: true } as const
+  hub.handle(conn, { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', sessionId: 's' }, p)
+  const lease = hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, p) as { epoch: number }
+  member.getMap<Msg>('bus').set('key', message('phantom'))
+  Y.applyUpdate(doc.doc, Y.encodeStateAsUpdate(member))
+  const reply = hub.handle(conn, { v: 1, id: 'p', op: 'post', lease: { name: 'ada', epoch: lease.epoch },
+    msg: { id: 'phantom', type: 'note', from: 'ada', to: 'pat', text: 'deliver this' } }, p)
+  expect(reply.ok).toBe(true)
+  expect(reply.duplicate).not.toBe(true)
+  expect(doc.messages().find(m => m.id === 'phantom')).toMatchObject({ text: 'deliver this' })
+  hub.stop(); doc.doc.destroy(); member.destroy()
 })

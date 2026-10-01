@@ -1,5 +1,5 @@
 // Frozen pre-index implementation: test-only semantic oracle for arbitrary replicated docs.
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
 import { admit as indexedAdmit, trim as indexedTrim, deliveryIndex } from './delivery.js'
 import { RoomDoc } from './doc.js'
@@ -250,7 +250,7 @@ function check(room: RoomDoc) {
   for (const id of counts.keys()) expect(room.message(id)).toEqual(bus.find(m => m.id === id))
   const pending = new Map<string, Msg>()
   for (const m of [...room.mail.values(), ...bus]) if (!pending.has(m.id) && isOwed(room, m)) pending.set(m.id, m)
-  expect(new Set(index.pending.keys())).toEqual(new Set(pending.keys()))
+  expect(index.pending).toEqual(pending)
   expect(index.owedBytes).toBe([...pending.values()].reduce((n, m) => n + bytes(m), 0))
   const recipients = new Map<string, { count: number; bytes: number }>()
   for (const m of pending.values()) {
@@ -311,15 +311,155 @@ it('uses the cap index without rescanning clean refusals and reacts to remote re
   room.doc.destroy(); before.doc.destroy(); replica.doc.destroy()
 })
 
-it('rebuilds safely on an unexpected replicated bus content type', () => {
+it('indexes nested bus types as invalid without rebuilding, then heals on trim', () => {
   const room = new RoomDoc(), index = deliveryIndex(room)
   room.bus.push([message('good', { to: 'pat' })])
+  const rebuild = vi.spyOn(index.bus, 'rebuild')
   room.bus.push([new Y.Map() as never])
+  expect(rebuild).not.toHaveBeenCalled()
   expect(index.bus.entries.size).toBe(2)
   expect(index.bus.invalid).toBe(1)
   expect(index.pending.get('good')).toEqual(room.bus.get(0))
-  room.bus.delete(1, 1)
-  check(room)
+  expect(index.certain(1000)).toBe(false)
+  indexedTrim(room, 1000)
   expect(index.bus.invalid).toBe(0)
+  expect(index.certain(1000)).toBe(true)
+  expect(rebuild).not.toHaveBeenCalled()
+  check(room)
   room.doc.destroy()
+})
+
+
+it('excludes keyed root-bus items incrementally and on rebuild', () => {
+  const room = new RoomDoc(), member = new Y.Doc(), index = deliveryIndex(room)
+  member.getMap<Msg>('bus').set('phantom', message('phantom', { to: 'pat' }))
+  Y.applyUpdate(room.doc, Y.encodeStateAsUpdate(member))
+  expect(room.messages()).toEqual([])
+  expect(index.bus.entries.size).toBe(0)
+  expect(room.message('phantom')).toBeUndefined()
+  index.rebuild()
+  expect(index.bus.entries.size).toBe(0)
+  expect(room.message('phantom')).toBeUndefined()
+  room.doc.destroy(); member.destroy()
+})
+
+it('skips normal remote GC structs in new and deleted ranges without rebuilding', () => {
+  const room = new RoomDoc(), member = new RoomDoc(), index = deliveryIndex(room)
+  // Deleting the containing map turns its nested items into actual GC structs.
+  const nested = new Y.Map<string>()
+  member.doc.getMap('other').set('nested', nested)
+  nested.set('gone', 'x')
+  member.doc.getMap('other').delete('nested')
+  expect([...member.doc.store.clients.values()].flat().some(s => s instanceof Y.GC)).toBe(true)
+  member.bus.push([message('remote', { to: 'pat' })])
+  const rebuild = vi.spyOn(index.bus, 'rebuild')
+  const update = Y.encodeStateAsUpdate(member.doc)
+  Y.applyUpdate(room.doc, update)
+  expect(rebuild).not.toHaveBeenCalled()
+  expect(room.message('remote')).toEqual(message('remote', { to: 'pat' }))
+  // A later deletion transaction also contains the already-collected ranges.
+  member.bus.push([message('later')])
+  member.bus.delete(0, 1)
+  Y.applyUpdate(room.doc, Y.encodeStateAsUpdate(member.doc))
+  expect(rebuild).not.toHaveBeenCalled()
+  expect(room.message('remote')).toBeUndefined()
+  expect(room.message('later')).toEqual(message('later'))
+  room.doc.destroy(); member.doc.destroy()
+})
+
+it('matches the legacy per-id oracle for aliased mail, mail+bus and multiple copies', () => {
+  let seed = 731
+  const rand = (max: number) => { seed = seed * 16807 % 2147483647; return seed % max }
+  for (let run = 0; run < 50; run++) {
+    const room = new RoomDoc(), index = deliveryIndex(room)
+    // Enough owed messages for a wrong duplicate winner to change admission at the cap.
+    room.bus.push(Array.from({ length: 198 }, (_, i) => message(`owed-${i}`, { to: 'pat' })))
+    room.doc.transact(() => {
+      for (let i = 0; i < 12; i++) {
+        const id = `copy-${i}`
+        room.bus.insert(rand(room.bus.length + 1), [message(id, { to: rand(2) ? 'pat' : 'quinn', text: `bus-first-${i}` })])
+        room.bus.push([message(id, { to: rand(2) ? 'pat' : 'quinn', text: `bus-last-${i}` })])
+        if (i % 3 !== 0) room.mail.set(`alias-first-${i}`, message(id, { to: rand(2) ? 'pat' : 'quinn', text: `mail-first-${i}` }))
+        if (i % 3 === 2) room.mail.set(`alias-last-${i}`, message(id, { to: rand(2) ? 'pat' : 'quinn', text: `mail-last-${i}` }))
+        if (rand(2)) room.markSeen('pat', [id], { s: 's', via: 'reply' })
+      }
+    })
+    expect(index.certain(1000)).toBe(true)
+    check(room)
+    const oracle = clone(room)
+    const post = { to: rand(2) ? 'pat' : 'quinn', type: 'note', text: 'x' }
+    expect(indexedAdmit(room, post, 1000)).toEqual(admit(oracle, post, 1000))
+    indexedTrim(room, 1000); trim(oracle, 1000)
+    expect(roots(room)).toEqual(roots(oracle))
+    check(room)
+    room.doc.destroy(); oracle.doc.destroy()
+  }
+})
+
+it('resolves a transaction of duplicate ids in one ordered pass', () => {
+  const costs: { n: number; ops: number; scans: number }[] = []
+  for (const n of [50, 500, 2000]) {
+    const room = new RoomDoc(), index = deliveryIndex(room)
+    room.bus.push(Array.from({ length: n }, (_, i) => message(`m-${i}`, { to: `p-${i}` })))
+    let ops = 0, scans = 0
+    const visits = index.bus.visits
+    const array = room.bus.toArray.bind(room.bus), values = room.mail.values.bind(room.mail), stringify = JSON.stringify
+    const a = vi.spyOn(room.bus, 'toArray').mockImplementation(() => { scans++; ops += room.bus.length; return array() })
+    const v = vi.spyOn(room.mail, 'values').mockImplementation(function* () { scans++; for (const m of values()) { ops++; yield m } })
+    const j = vi.spyOn(JSON, 'stringify').mockImplementation((...args: Parameters<typeof JSON.stringify>) => { ops++; return stringify(...args) })
+    try {
+      room.doc.transact(() => {
+        for (let i = n - 1; i >= 0; i--) {
+          room.bus.insert(0, [message(`m-${i}`, { to: `q-${i}`, text: 'earlier bus' })])
+          room.mail.set(`first-${i}`, message(`m-${i}`, { to: `r-${i}`, text: 'first mail' }))
+          room.mail.set(`last-${i}`, message(`m-${i}`, { to: `s-${i}`, text: 'last mail' }))
+        }
+      })
+      costs.push({ n, ops: ops + index.bus.visits - visits, scans })
+    } finally { a.mockRestore(); v.mockRestore(); j.mockRestore() }
+    expect(index.pending.get('m-0')).toMatchObject({ text: 'first mail' })
+    check(room)
+    room.doc.destroy()
+  }
+  console.log('duplicate transaction operation counts', costs)
+  for (const cost of costs) { expect(cost.scans).toBe(2); expect(cost.ops).toBeLessThanOrEqual(cost.n * 10) }
+})
+
+it('uses one receipt transaction handler across many recipients and unregisters on destroy', () => {
+  const room = new RoomDoc()
+  const on = vi.spyOn(room.doc, 'on'), off = vi.spyOn(room.doc, 'off')
+  const index = deliveryIndex(room)
+  for (let i = 0; i < 100; i++) {
+    const name = `p-${i}`, id = `m-${i}`
+    room.bus.push([message(id, { to: name })])
+    expect(room.seen(name)._eH.l).toHaveLength(0)
+    room.markSeen(name, [id], { s: 's', via: 'reply' })
+    expect(index.pending.has(id)).toBe(false)
+    room.seen(name).delete(id)
+    expect(index.pending.has(id)).toBe(true)
+  }
+  const handlers = on.mock.calls.filter(([event]) => event === 'afterTransaction')
+  expect(handlers).toHaveLength(1)
+  room.doc.destroy()
+  expect(off.mock.calls.some(([event, handler]) => event === 'afterTransaction' && handler === handlers[0][1])).toBe(true)
+})
+
+
+it('heals every uncertain malformed root once, then admits without scanning', () => {
+  const room = new RoomDoc(), index = deliveryIndex(room), now = 1000
+  room.doc.transact(() => {
+    room.bus.push([42 as never])
+    room.mail.set('bad-mail', null as never)
+    room.outcomes.set('bad-outcome', null as never)
+    room.outcomes.set('old-outcome', { to: 'pat', from: 'ada', outcome: 'expired', at: -OUTCOMES_TTL_MS })
+  })
+  expect(index.certain(now)).toBe(false)
+  expect(indexedAdmit(room, { to: 'pat', text: 'x' }, now)).toEqual({ ok: true })
+  expect(index.certain(now)).toBe(true)
+  expect(room.messages()).toEqual([])
+  expect(room.mail.size).toBe(0)
+  expect(room.outcomes.size).toBe(0)
+  const read = vi.spyOn(room.bus, 'toArray').mockImplementation(() => { throw new Error('healed state scanned bus') })
+  expect(indexedAdmit(room, { to: 'pat', text: 'x' }, now)).toEqual({ ok: true })
+  read.mockRestore(); room.doc.destroy()
 })

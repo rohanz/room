@@ -1,3 +1,4 @@
+import * as Y from 'yjs'
 import { BusIndex } from './bus-index.js'
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
@@ -213,10 +214,8 @@ export class DeliveryIndex {
   readonly pending = new Map<string, Msg>()
   owedBytes = 0
   private sizes = new Map<string, number>()
-  private ambiguous = new Set<string>()
   private badMail = new Set<string>()
   private badOutcomes = new Set<string>()
-  private watched = new Set<string>()
   private mailCopies = new Map<string, Map<string, Msg>>()
   private mailIds = new Map<string, string>()
   private clean = false
@@ -224,27 +223,51 @@ export class DeliveryIndex {
   private cleanBytes = BUS_BYTES
   private oldest = Infinity
   private oldestOutcome = Infinity
+  private changed = new Set<string>()
+  private rebuildPending = false
+  private rootNames = new Map<Y.AbstractType<any>, string>()
+  private readonly afterTransaction = (tx: Y.Transaction) => {
+    // Root names are immutable. Refresh the cache only when a previously unknown root appears.
+    let unknown = false
+    for (const type of tx.changed.keys()) if (type.parent === null && !this.rootNames.has(type)) { unknown = true; break }
+    if (unknown) this.cacheRoots()
+    for (const [type, keys] of tx.changed) {
+      if (!(type instanceof Y.Map) || !this.rootNames.get(type)?.startsWith('seen:')) continue
+      for (const key of keys) if (key !== null) this.changed.add(key)
+    }
+    const changed = this.changed
+    this.changed = new Set()
+    if (this.rebuildPending) { this.rebuildPending = false; this.rebuildAggregates() }
+    else this.refreshMany(changed)
+  }
+
+  private cacheRoots(): void {
+    for (const [name, type] of this.doc.doc.share) this.rootNames.set(type, name)
+  }
 
   constructor(readonly doc: RoomDoc) {
     this.bus = new BusIndex(doc.bus, (ids, rebuilt) => {
       this.clean = false
-      if (rebuilt) this.rebuild()
-      else for (const id of ids) this.refresh(id)
+      if (rebuilt) this.rebuildPending = true
+      else for (const id of ids) this.changed.add(id)
     })
     doc.mail.observe(e => {
       for (const key of e.keysChanged) {
         const oldId = this.mailIds.get(key)
         this.checkMail(key)
-        if (oldId) this.refresh(oldId)
+        if (oldId) this.changed.add(oldId)
         const id = this.mailIds.get(key)
-        if (id && id !== oldId) this.refresh(id)
+        if (id) this.changed.add(id)
       }
     })
     doc.outcomes.observe(e => {
-      for (const id of e.keysChanged) { this.checkOutcome(id); this.refresh(id) }
+      for (const id of e.keysChanged) { this.checkOutcome(id); this.changed.add(id) }
     })
     doc.archive.observe(e => { for (const id of e.keysChanged) if (this.bus.count(id)) this.bus.changed.add(id) })
-    this.rebuild()
+    this.rebuildAggregates()
+    this.cacheRoots()
+    doc.doc.on('afterTransaction', this.afterTransaction)
+    doc.doc.on('destroy', () => doc.doc.off('afterTransaction', this.afterTransaction))
   }
 
   private checkMail(key: string): void {
@@ -256,7 +279,7 @@ export class DeliveryIndex {
       this.mailIds.delete(key)
     }
     const m = this.doc.mail.get(key)
-    if (this.doc.mail.has(key) && (!validMessageShape(m) || m.id !== key)) this.badMail.add(key)
+    if (this.doc.mail.has(key) && !validMessageShape(m)) this.badMail.add(key)
     else this.badMail.delete(key)
     if (validMessageShape(m)) {
       let copies = this.mailCopies.get(m.id)
@@ -274,7 +297,18 @@ export class DeliveryIndex {
     if (this.bus.count(id)) this.bus.changed.add(id)
   }
 
-  private refresh(id: string): void {
+  private refreshMany(ids: ReadonlySet<string>): void {
+    const ordered = new Map<string, Msg[]>()
+    for (const id of ids) if (this.bus.count(id) + (this.mailCopies.get(id)?.size ?? 0) > 1) ordered.set(id, [])
+    if (ordered.size) {
+      // One pass per transaction, never per duplicate id. Legacy admission offers mail before bus.
+      for (const m of this.doc.mail.values()) if (validMessageShape(m)) ordered.get(m.id)?.push(m)
+      for (const m of this.doc.bus.toArray()) if (validMessageShape(m)) ordered.get(m.id)?.push(m)
+    }
+    for (const id of ids) this.refresh(id, ordered.get(id))
+  }
+
+  private refresh(id: string, ordered?: readonly Msg[]): void {
     const prior = this.pending.get(id)
     if (prior) {
       const size = this.sizes.get(id)!
@@ -285,18 +319,8 @@ export class DeliveryIndex {
     }
     const mail = this.mailCopies.get(id)
     const bus = this.bus.ids.get(id)
-    if ((bus?.size ?? 0) > 1 || (mail?.size ?? 0) > 1 || (mail?.size && bus?.size)) this.ambiguous.add(id)
-    else this.ambiguous.delete(id)
-    // Conflicting ids are rare; preserve full recompute's exact mail-first/array ordering there.
-    const mailValues = (mail?.size ?? 0) > 1 ? [...this.doc.mail.values()].filter(m => m?.id === id) : [...(mail?.values() ?? [])]
-    const busValues = (bus?.size ?? 0) > 1 ? this.doc.messages().filter(m => m?.id === id) : [...(bus?.values() ?? [])]
-    const candidates = [...mailValues, ...busValues]
-    const m = candidates.find(m => m && validMessageShape(m) && isOwed(this.doc, m))
-    for (const value of candidates) if (value && validMessageShape(value) && value.to && !this.watched.has(value.to)) {
-      const name = value.to
-      this.watched.add(name)
-      this.doc.seen(name).observe(e => { for (const changed of e.keysChanged) this.refresh(changed) })
-    }
+    const candidates = ordered ?? [...(mail?.values() ?? []), ...(bus?.values() ?? [])]
+    const m = candidates.find(m => validMessageShape(m) && isOwed(this.doc, m))
     if (m) {
       const size = sizeOf(m)
       const count = this.recipients.get(m.to!) ?? { count: 0, bytes: 0 }
@@ -305,18 +329,22 @@ export class DeliveryIndex {
       this.oldest = Math.min(this.oldest, m.at)
     }
     // Mail/receipt/outcome changes and answers can change a previous cap refusal.
-    if (prior || m || candidates.some(m => m?.to || (m && 'inReplyTo' in m && m.inReplyTo))) this.clean = false
+    if (prior || m || candidates.some(m => validMessageShape(m) && (m.to || ('inReplyTo' in m && m.inReplyTo)))) this.clean = false
   }
 
   /** Debug/recovery check: callers can snapshot aggregates, rebuild, then compare to full recompute. */
   rebuild(): void {
     this.bus.rebuild()
-    this.pending.clear(); this.recipients.clear(); this.sizes.clear(); this.ambiguous.clear()
+    this.rebuildAggregates()
+  }
+
+  private rebuildAggregates(): void {
+    this.pending.clear(); this.recipients.clear(); this.sizes.clear()
     this.badMail.clear(); this.badOutcomes.clear(); this.mailCopies.clear(); this.mailIds.clear(); this.owedBytes = 0
     this.oldest = this.oldestOutcome = Infinity; this.clean = false
     for (const id of this.doc.mail.keys()) this.checkMail(id)
     for (const id of this.doc.outcomes.keys()) this.checkOutcome(id)
-    for (const id of new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()])) this.refresh(id)
+    this.refreshMany(new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()]))
   }
 
   markTrimmed(now: number, opts: TrimOptions): void {
@@ -325,12 +353,13 @@ export class DeliveryIndex {
     // Recompute these minima once per full trim, not per post or tick.
     this.oldest = Math.min(Infinity, ...[...this.pending.values()].map(m => m.at))
     this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].map(o => o.at))
-    this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size
+    this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size
       && now - this.oldest <= OWED_TTL_MS
   }
 
   certain(now: number): boolean {
-    return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size
+    // Trim removes malformed/expired state. Aliases and duplicate ids are represented exactly.
+    return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size
       && now - this.oldestOutcome <= OUTCOMES_TTL_MS
   }
 
@@ -349,7 +378,7 @@ export function deliveryIndex(doc: RoomDoc): DeliveryIndex {
 }
 
 /**
- * Admission uses running caps when acceptance is certain. Ambiguous remote/expired/over-cap states
+ * Admission uses running caps when acceptance is certain. Malformed remote/expired/over-cap states
  * use the original trim first to preserve legacy outcomes; a clean refusal is cached until data changes.
  * Normal acceptance never trims. Automatic posts bypass admission and trim in batches/maintenance.
  */
@@ -369,17 +398,7 @@ export function admit(doc: RoomDoc, m: { to?: string; [field: string]: unknown }
   const answer = caps()
   if (index.certain(now) && (answer.ok || index.trimmed(now, opts))) return answer
   trim(doc, now, opts)
-  // Exact legacy check for conflicting/malformed member states after the recovery trim.
-  // The ordinary path above is O(1); this full scan is deliberately exceptional.
-  const pending = new Map<string, Msg>()
-  for (const x of [...doc.mail.values(), ...doc.messages()]) if (!pending.has(x.id) && isOwed(doc, x)) pending.set(x.id, x)
-  const theirs = [...pending.values()].filter(x => x.to === m.to)
-  const theirBytes = theirs.reduce((n, x) => n + sizeOf(x), 0)
-  if (theirs.length >= OWED_PER_RECIPIENT || theirBytes + size > OWED_BYTES_PER_RECIPIENT)
-    return { ok: false, reason: `${m.to} has ${theirs.length} undelivered messages; wait until it reads them` }
-  const owedBytes = [...pending.values()].reduce((n, x) => n + sizeOf(x), 0)
-  if (owedBytes + size > MAIL_BYTES) return { ok: false, reason: `the room's message store is full (${Math.round(owedBytes / KiB)} KiB owed to others)` }
-  return { ok: true }
+  return caps()
 }
 
 export interface ArchiveSummary {

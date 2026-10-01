@@ -15331,8 +15331,7 @@ var init_bus_index = __esm({
         this.touched = /* @__PURE__ */ new Set();
         try {
           iterateDeletedStructs(tx, tx.deleteSet, (struct) => {
-            if (!(struct instanceof Item)) throw new Error("unexpected deleted struct");
-            if (struct.parent !== this.bus) return;
+            if (!(struct instanceof Item) || struct.parent !== this.bus || struct.parentSub !== null) return;
             for (let i2 = 0; i2 < struct.length; i2++) this.remove(`${struct.id.client}:${struct.id.clock + i2}`);
           });
           for (const [client, end] of tx.afterState) {
@@ -15343,9 +15342,7 @@ var init_bus_index = __esm({
             for (let i2 = findIndexSS(structs, start2); i2 < structs.length; i2++) {
               const struct = structs[i2];
               if (struct.id.clock >= end) break;
-              if (!(struct instanceof Item)) throw new Error("unexpected new struct");
-              if (struct.parent !== this.bus || struct.deleted) continue;
-              if (!(struct.content instanceof ContentAny || struct.content instanceof ContentJSON)) throw new Error("unexpected bus content");
+              if (!(struct instanceof Item) || struct.parent !== this.bus || struct.parentSub !== null || struct.deleted) continue;
               const values = struct.content.getContent();
               for (let offset = Math.max(0, start2 - struct.id.clock); offset < values.length; offset++) {
                 this.add(`${client}:${struct.id.clock + offset}`, values[offset]);
@@ -15400,7 +15397,7 @@ var init_bus_index = __esm({
         this.bytes = 0;
         this.invalid = 0;
         for (const structs of this.bus.doc.store.clients.values()) for (const struct of structs) {
-          if (!(struct instanceof Item) || struct.parent !== this.bus || struct.deleted) continue;
+          if (!(struct instanceof Item) || struct.parent !== this.bus || struct.parentSub !== null || struct.deleted) continue;
           const values = struct.content.getContent();
           values.forEach((m, i2) => this.add(`${struct.id.client}:${struct.id.clock + i2}`, m));
         }
@@ -15645,9 +15642,9 @@ function admit(doc, m, now, opts = {}) {
   if (!m.to) return { ok: true };
   const index = deliveryIndex(doc);
   const caps = () => {
-    const theirs2 = index.recipients.get(m.to) ?? { count: 0, bytes: 0 };
-    if (theirs2.count >= OWED_PER_RECIPIENT || theirs2.bytes + size2 > OWED_BYTES_PER_RECIPIENT)
-      return { ok: false, reason: `${m.to} has ${theirs2.count} undelivered messages; wait until it reads them` };
+    const theirs = index.recipients.get(m.to) ?? { count: 0, bytes: 0 };
+    if (theirs.count >= OWED_PER_RECIPIENT || theirs.bytes + size2 > OWED_BYTES_PER_RECIPIENT)
+      return { ok: false, reason: `${m.to} has ${theirs.count} undelivered messages; wait until it reads them` };
     if (index.owedBytes + size2 > MAIL_BYTES)
       return { ok: false, reason: `the room's message store is full (${Math.round(index.owedBytes / KiB)} KiB owed to others)` };
     return { ok: true };
@@ -15655,15 +15652,7 @@ function admit(doc, m, now, opts = {}) {
   const answer = caps();
   if (index.certain(now) && (answer.ok || index.trimmed(now, opts))) return answer;
   trim(doc, now, opts);
-  const pending = /* @__PURE__ */ new Map();
-  for (const x of [...doc.mail.values(), ...doc.messages()]) if (!pending.has(x.id) && isOwed(doc, x)) pending.set(x.id, x);
-  const theirs = [...pending.values()].filter((x) => x.to === m.to);
-  const theirBytes = theirs.reduce((n, x) => n + sizeOf(x), 0);
-  if (theirs.length >= OWED_PER_RECIPIENT || theirBytes + size2 > OWED_BYTES_PER_RECIPIENT)
-    return { ok: false, reason: `${m.to} has ${theirs.length} undelivered messages; wait until it reads them` };
-  const owedBytes = [...pending.values()].reduce((n, x) => n + sizeOf(x), 0);
-  if (owedBytes + size2 > MAIL_BYTES) return { ok: false, reason: `the room's message store is full (${Math.round(owedBytes / KiB)} KiB owed to others)` };
-  return { ok: true };
+  return caps();
 }
 function archiveSummary(doc, area) {
   const out2 = { messages: 0, counts: {}, lastSeen: {}, lastAt: 0, unfulfilled: [] };
@@ -15682,6 +15671,7 @@ var KiB, MiB, DAY_MS, BUS_KEEP, BUS_BYTES, MAIL_MAX, MAIL_BYTES, OWED_PER_RECIPI
 var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
+    init_yjs();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -15717,28 +15707,31 @@ var init_delivery = __esm({
         this.doc = doc;
         this.bus = new BusIndex(doc.bus, (ids, rebuilt) => {
           this.clean = false;
-          if (rebuilt) this.rebuild();
-          else for (const id3 of ids) this.refresh(id3);
+          if (rebuilt) this.rebuildPending = true;
+          else for (const id3 of ids) this.changed.add(id3);
         });
         doc.mail.observe((e) => {
           for (const key2 of e.keysChanged) {
             const oldId = this.mailIds.get(key2);
             this.checkMail(key2);
-            if (oldId) this.refresh(oldId);
+            if (oldId) this.changed.add(oldId);
             const id3 = this.mailIds.get(key2);
-            if (id3 && id3 !== oldId) this.refresh(id3);
+            if (id3) this.changed.add(id3);
           }
         });
         doc.outcomes.observe((e) => {
           for (const id3 of e.keysChanged) {
             this.checkOutcome(id3);
-            this.refresh(id3);
+            this.changed.add(id3);
           }
         });
         doc.archive.observe((e) => {
           for (const id3 of e.keysChanged) if (this.bus.count(id3)) this.bus.changed.add(id3);
         });
-        this.rebuild();
+        this.rebuildAggregates();
+        this.cacheRoots();
+        doc.doc.on("afterTransaction", this.afterTransaction);
+        doc.doc.on("destroy", () => doc.doc.off("afterTransaction", this.afterTransaction));
       }
       doc;
       bus;
@@ -15746,10 +15739,8 @@ var init_delivery = __esm({
       pending = /* @__PURE__ */ new Map();
       owedBytes = 0;
       sizes = /* @__PURE__ */ new Map();
-      ambiguous = /* @__PURE__ */ new Set();
       badMail = /* @__PURE__ */ new Set();
       badOutcomes = /* @__PURE__ */ new Set();
-      watched = /* @__PURE__ */ new Set();
       mailCopies = /* @__PURE__ */ new Map();
       mailIds = /* @__PURE__ */ new Map();
       clean = false;
@@ -15757,6 +15748,30 @@ var init_delivery = __esm({
       cleanBytes = BUS_BYTES;
       oldest = Infinity;
       oldestOutcome = Infinity;
+      changed = /* @__PURE__ */ new Set();
+      rebuildPending = false;
+      rootNames = /* @__PURE__ */ new Map();
+      afterTransaction = (tx) => {
+        let unknown2 = false;
+        for (const type of tx.changed.keys()) if (type.parent === null && !this.rootNames.has(type)) {
+          unknown2 = true;
+          break;
+        }
+        if (unknown2) this.cacheRoots();
+        for (const [type, keys2] of tx.changed) {
+          if (!(type instanceof YMap) || !this.rootNames.get(type)?.startsWith("seen:")) continue;
+          for (const key2 of keys2) if (key2 !== null) this.changed.add(key2);
+        }
+        const changed = this.changed;
+        this.changed = /* @__PURE__ */ new Set();
+        if (this.rebuildPending) {
+          this.rebuildPending = false;
+          this.rebuildAggregates();
+        } else this.refreshMany(changed);
+      };
+      cacheRoots() {
+        for (const [name2, type] of this.doc.doc.share) this.rootNames.set(type, name2);
+      }
       checkMail(key2) {
         const old = this.mailIds.get(key2);
         if (old) {
@@ -15766,7 +15781,7 @@ var init_delivery = __esm({
           this.mailIds.delete(key2);
         }
         const m = this.doc.mail.get(key2);
-        if (this.doc.mail.has(key2) && (!validMessageShape(m) || m.id !== key2)) this.badMail.add(key2);
+        if (this.doc.mail.has(key2) && !validMessageShape(m)) this.badMail.add(key2);
         else this.badMail.delete(key2);
         if (validMessageShape(m)) {
           let copies = this.mailCopies.get(m.id);
@@ -15782,7 +15797,16 @@ var init_delivery = __esm({
         if (o && Number.isFinite(o.at)) this.oldestOutcome = Math.min(this.oldestOutcome, o.at);
         if (this.bus.count(id3)) this.bus.changed.add(id3);
       }
-      refresh(id3) {
+      refreshMany(ids) {
+        const ordered = /* @__PURE__ */ new Map();
+        for (const id3 of ids) if (this.bus.count(id3) + (this.mailCopies.get(id3)?.size ?? 0) > 1) ordered.set(id3, []);
+        if (ordered.size) {
+          for (const m of this.doc.mail.values()) if (validMessageShape(m)) ordered.get(m.id)?.push(m);
+          for (const m of this.doc.bus.toArray()) if (validMessageShape(m)) ordered.get(m.id)?.push(m);
+        }
+        for (const id3 of ids) this.refresh(id3, ordered.get(id3));
+      }
+      refresh(id3, ordered) {
         const prior = this.pending.get(id3);
         if (prior) {
           const size2 = this.sizes.get(id3);
@@ -15796,19 +15820,8 @@ var init_delivery = __esm({
         }
         const mail = this.mailCopies.get(id3);
         const bus = this.bus.ids.get(id3);
-        if ((bus?.size ?? 0) > 1 || (mail?.size ?? 0) > 1 || mail?.size && bus?.size) this.ambiguous.add(id3);
-        else this.ambiguous.delete(id3);
-        const mailValues = (mail?.size ?? 0) > 1 ? [...this.doc.mail.values()].filter((m2) => m2?.id === id3) : [...mail?.values() ?? []];
-        const busValues = (bus?.size ?? 0) > 1 ? this.doc.messages().filter((m2) => m2?.id === id3) : [...bus?.values() ?? []];
-        const candidates = [...mailValues, ...busValues];
-        const m = candidates.find((m2) => m2 && validMessageShape(m2) && isOwed(this.doc, m2));
-        for (const value2 of candidates) if (value2 && validMessageShape(value2) && value2.to && !this.watched.has(value2.to)) {
-          const name2 = value2.to;
-          this.watched.add(name2);
-          this.doc.seen(name2).observe((e) => {
-            for (const changed of e.keysChanged) this.refresh(changed);
-          });
-        }
+        const candidates = ordered ?? [...mail?.values() ?? [], ...bus?.values() ?? []];
+        const m = candidates.find((m2) => validMessageShape(m2) && isOwed(this.doc, m2));
         if (m) {
           const size2 = sizeOf(m);
           const count = this.recipients.get(m.to) ?? { count: 0, bytes: 0 };
@@ -15820,15 +15833,17 @@ var init_delivery = __esm({
           this.sizes.set(id3, size2);
           this.oldest = Math.min(this.oldest, m.at);
         }
-        if (prior || m || candidates.some((m2) => m2?.to || m2 && "inReplyTo" in m2 && m2.inReplyTo)) this.clean = false;
+        if (prior || m || candidates.some((m2) => validMessageShape(m2) && (m2.to || "inReplyTo" in m2 && m2.inReplyTo))) this.clean = false;
       }
       /** Debug/recovery check: callers can snapshot aggregates, rebuild, then compare to full recompute. */
       rebuild() {
         this.bus.rebuild();
+        this.rebuildAggregates();
+      }
+      rebuildAggregates() {
         this.pending.clear();
         this.recipients.clear();
         this.sizes.clear();
-        this.ambiguous.clear();
         this.badMail.clear();
         this.badOutcomes.clear();
         this.mailCopies.clear();
@@ -15838,17 +15853,17 @@ var init_delivery = __esm({
         this.clean = false;
         for (const id3 of this.doc.mail.keys()) this.checkMail(id3);
         for (const id3 of this.doc.outcomes.keys()) this.checkOutcome(id3);
-        for (const id3 of /* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()])) this.refresh(id3);
+        this.refreshMany(/* @__PURE__ */ new Set([...this.bus.ids.keys(), ...this.mailCopies.keys()]));
       }
       markTrimmed(now, opts) {
         this.cleanKeep = opts.busKeep ?? BUS_KEEP;
         this.cleanBytes = opts.busBytes ?? BUS_BYTES;
         this.oldest = Math.min(Infinity, ...[...this.pending.values()].map((m) => m.at));
         this.oldestOutcome = Math.min(Infinity, ...[...this.doc.outcomes.values()].map((o) => o.at));
-        this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size && now - this.oldest <= OWED_TTL_MS;
+        this.clean = this.bus.invalid === 0 && !this.badMail.size && !this.badOutcomes.size && now - this.oldest <= OWED_TTL_MS;
       }
       certain(now) {
-        return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && !this.ambiguous.size && now - this.oldestOutcome <= OUTCOMES_TTL_MS;
+        return !this.bus.invalid && !this.badMail.size && !this.badOutcomes.size && now - this.oldestOutcome <= OUTCOMES_TTL_MS;
       }
       trimmed(now, opts) {
         return this.clean && this.certain(now) && now - this.oldest <= OWED_TTL_MS && this.cleanKeep === (opts.busKeep ?? BUS_KEEP) && this.cleanBytes === (opts.busBytes ?? BUS_BYTES);
