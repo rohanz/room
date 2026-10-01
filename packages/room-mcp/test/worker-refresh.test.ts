@@ -206,6 +206,22 @@ describe('room_send refresh=true', () => {
     expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
   })
 
+  it('refuses when the worker untracked a file it still has as ignored output and your HEAD tracks it', async () => {
+    put(repo, '.gitignore', '*.log\n'); put(repo, 'artifact.log', 'old\n'); git(repo, 'add', '-f', 'artifact.log'); commit(repo, 'track a log')
+    const t = world()
+    const w = await t.spawn('untracker')
+    git(w.dir, 'rm', '--cached', '-q', 'artifact.log')
+    put(w.dir, 'artifact.log', 'newer output\n')
+    await t.finish('untracker')
+    put(repo, 'later.txt', 'x\n'); commit(repo, 'unrelated')
+    const before = git(w.dir, 'rev-parse', 'HEAD')
+    const reply = await t.call('room_send', { type: 'note', to: 'untracker', text: 'carry on', refresh: true })
+    expect(reply).toMatch(/^error: /m)
+    expect(reply).toContain('artifact.log')
+    expect(read(w.dir, 'artifact.log')).toBe('newer output\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(before)
+  })
+
   it('checks for dir= borrowers again under the operation lease', async () => {
     const t = world()
     const owner = await t.spawn('lender')

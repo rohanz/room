@@ -125,7 +125,7 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
   const unsaved = outcome.skipped.slice(0, SCRATCH_LISTED).map(({ tag, path: p, reason }) => `${p} (${tag}: ${reason})`).join(', ')
     + (outcome.skipped.length > SCRATCH_LISTED ? ` and ${outcome.skipped.length - SCRATCH_LISTED} more` : '')
   return `not collected: worker scratch (${scratchKind}): ${listScratch(byPath, people => people.map(tagOf).join(', '))}`
-    + (folders.length ? `; saved under ${andList(folders)}` : '') + (unsaved ? `; NOT saved, removed with the worktree: ${unsaved}` : '')
+    + (folders.length ? `; saved under ${andList(folders)}` : '') + (unsaved ? `; NOT saved (lost when the worktree is removed; copy with mode=copy first): ${unsaved}` : '')
 }
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */

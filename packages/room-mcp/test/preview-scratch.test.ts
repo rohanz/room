@@ -126,7 +126,7 @@ describe('saveWorkerScratch', () => {
     expect(fs.existsSync(path.join(lead, '.room/scratch/w1/old.log'))).toBe(false)
     expect(fs.existsSync(path.join(lead, '.room/scratch/w1/linked.log'))).toBe(false)
     expect(scratchCollectNote(new Map([['lead+w1', new Set(['build.log', 'huge.log', 'linked.log'])]]), () => 'w1', outcome))
-      .toBe('not collected: worker scratch (untracked logs or temp files, never committed): build.log (w1), huge.log (w1), linked.log (w1); saved under .room/scratch/w1/; NOT saved, removed with the worktree: huge.log (w1: over 5 MB), linked.log (w1: link)')
+      .toBe('not collected: worker scratch (untracked logs or temp files, never committed): build.log (w1), huge.log (w1), linked.log (w1); saved under .room/scratch/w1/; NOT saved (lost when the worktree is removed; copy with mode=copy first): huge.log (w1: over 5 MB), linked.log (w1: link)')
   })
 
   it('refuses to write through a linked .room or .room/scratch', () => {

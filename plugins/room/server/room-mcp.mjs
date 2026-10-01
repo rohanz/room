@@ -33166,7 +33166,7 @@ function scratchCollectNote(byPerson, tagOf, outcome) {
   if (!byPath.size) return void 0;
   const folders = [...outcome.saved.keys()].sort().map((tag) => `.room/scratch/${tag}/`);
   const unsaved = outcome.skipped.slice(0, SCRATCH_LISTED).map(({ tag, path: p, reason }) => `${p} (${tag}: ${reason})`).join(", ") + (outcome.skipped.length > SCRATCH_LISTED ? ` and ${outcome.skipped.length - SCRATCH_LISTED} more` : "");
-  return `not collected: worker scratch (${scratchKind}): ${listScratch(byPath, (people) => people.map(tagOf).join(", "))}` + (folders.length ? `; saved under ${andList(folders)}` : "") + (unsaved ? `; NOT saved, removed with the worktree: ${unsaved}` : "");
+  return `not collected: worker scratch (${scratchKind}): ${listScratch(byPath, (people) => people.map(tagOf).join(", "))}` + (folders.length ? `; saved under ${andList(folders)}` : "") + (unsaved ? `; NOT saved (lost when the worktree is removed; copy with mode=copy first): ${unsaved}` : "");
 }
 async function buildCombinedTreeOnce(state, caller, participants, options = {}) {
   const { rooms, baseFor } = state;
@@ -59886,8 +59886,10 @@ async function refreshWorkerBase(leadDir, w) {
     const entries = ignored.map((p) => p.replace(/\/+$/, ""));
     const covered = new Set(entries);
     const holdsIgnored = new Set(entries.flatMap((p) => p.split("/").slice(0, -1).map((_, i2, parts2) => parts2.slice(0, i2 + 1).join("/"))));
-    const clobbered = lines(await git(w.dir, ["diff", "--name-only", "-z", from2, target]), "\0").filter((p) => covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/"))));
-    if (clobbered.length) return refuse(`your commits add ${clobbered.slice(0, MAX_LISTED).join(", ")}, which ${clobbered.length === 1 ? "is an ignored file" : "are ignored files"} in the worker's tree`);
+    const indexed = new Set(lines(await git(w.dir, ["ls-files", "-z"]), "\0"));
+    const incoming = lines(await git(w.dir, ["ls-tree", "-r", "-z", "--name-only", target]), "\0").filter((p) => !indexed.has(p));
+    const clobbered = incoming.filter((p) => covered.has(p) || holdsIgnored.has(p) || p.split("/").slice(0, -1).some((_, i2, parts2) => covered.has(parts2.slice(0, i2 + 1).join("/"))));
+    if (clobbered.length) return refuse(`your HEAD tracks ${clobbered.slice(0, MAX_LISTED).join(", ")}${clobbered.length > MAX_LISTED ? ` and ${clobbered.length - MAX_LISTED} more` : ""}, where the worker has ignored files that a checkout would overwrite`);
   }
   let savedIndex;
   try {

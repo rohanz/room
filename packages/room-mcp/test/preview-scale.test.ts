@@ -11,7 +11,7 @@ afterEach(async () => {
   setGitObserver(undefined)
   vi.restoreAllMocks()
   for (const repo of repos.splice(0)) { await closeRegistryForDir(repo.lead); fs.rmSync(repo.root, { recursive: true, force: true }) }
-})
+}, 60_000) // removing two JUCE-sized fixtures took over 10 s under a full suite
 
 /** One preview of the same handful of edits over a JUCE-shaped clone; counts Git processes and file opens. */
 async function preview(shape: { ignored: number; untracked: number }, args: Record<string, unknown> = {}) {
