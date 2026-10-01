@@ -31240,7 +31240,14 @@ function workerShellEnvScript(inherited) {
 function writeWorkerShellEnv(leadDir, tag, inherited = process.env.CLAUDE_ENV_FILE) {
   const file = path14.join(leadDir, ".room", "workers", `${tag}.env.sh`);
   try {
-    fs16.mkdirSync(path14.dirname(file), { recursive: true });
+    for (const dir of [path14.join(leadDir, ".room"), path14.dirname(file)]) {
+      try {
+        fs16.mkdirSync(dir);
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+      }
+      if (!fs16.lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`);
+    }
     fs16.rmSync(file, { force: true });
     fs16.writeFileSync(file, workerShellEnvScript(inherited), { mode: 384, flag: "wx" });
     return { file };
@@ -43341,6 +43348,7 @@ var worker_registry_exports = {};
 __export(worker_registry_exports, {
   WorkerRegistry: () => WorkerRegistry,
   admitWorkerEnvironment: () => admitWorkerEnvironment,
+  backgroundAtExit: () => backgroundAtExit,
   carriedFrom: () => carriedFrom,
   closeRegistryForDir: () => closeRegistryForDir,
   discoverLegacyWorktrees: () => discoverLegacyWorktrees,
@@ -43481,13 +43489,16 @@ function workerCarried(dir, env = process.env) {
     return void 0;
   }
 }
+function backgroundAtExit(record2, run3) {
+  const killed = unawaitedBackgroundTasks(path35.join(path35.dirname(record2.dir), `${record2.tag}.log`), run3.logStart, record2.host);
+  return killed ? ` \u2014 background work was still running (${killed} background task(s) killed at exit)` : "";
+}
 function unreportedExit(record2, status) {
   const run3 = status.run;
   const resumedWithoutDone = status.status === "failed" && status.exitCode === 0 && run3?.mode === "resume";
   if (!run3 || !status.noReport && !resumedWithoutDone) return status;
   const logFile = path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
-  const killed = unawaitedBackgroundTasks(logFile, run3.logStart, record2.host);
-  const background = killed ? ` \u2014 background work was still running (${killed} background task(s) killed at exit)` : "";
+  const background = backgroundAtExit(record2, run3);
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run3.logStart)}` };
   return background ? { ...status, note: `${status.note ?? "exited without room_done"}${background}` } : status;
 }
@@ -43989,7 +44000,12 @@ var init_worker_registry = __esm({
         if (status.noReport) return status;
         if (status.status !== "done" || run3?.mode !== "resume" || reports.some((report) => report.run === run3.n && report.done) || !exits.some((exit) => exit.run === run3.n && exit.witnessed && exit.code === 0)) return status;
         const logFile = path35.join(path35.dirname(record2.dir), `${record2.tag}.log`);
-        return { ...status, followUp: followUpAnswer(logFile, record2.host, run3.logStart) };
+        const background = backgroundAtExit(record2, run3);
+        return {
+          ...status,
+          followUp: followUpAnswer(logFile, record2.host, run3.logStart),
+          ...background ? { note: `follow-up ended without room_done${background}` } : {}
+        };
       }
       /** No room view or remote presence can turn into a local worktree capability. */
       async trusted(lead, tagOrName, allowVanished = false) {
@@ -44908,7 +44924,12 @@ async function projectWorkers(s, registry2, lead, role, origin) {
       });
       else if (terminal.status === "done" && run3.mode === "resume" && exit?.witnessed && exit.code === 0 && registry2.reports(record2.id).some((value2) => value2.run < run3.n && value2.done) && !run3.posted) {
         const answer = followUpAnswer(logFile, record2.host, run3.logStart);
-        const message2 = completionMessage(record2, run3, { ...terminal, summary: answer || terminal.summary });
+        const background = backgroundAtExit(record2, run3);
+        const summary = answer || terminal.summary;
+        const message2 = completionMessage(record2, run3, {
+          ...terminal,
+          summary: background ? `follow-up ended without room_done${background}${summary ? `; ${summary}` : ""}` : summary
+        });
         if (message2) {
           await postWorkerMessage(s.post, record2, message2);
           await registry2.update(record2.id, (old) => ({ ...old, runs: old.runs.map((value2) => value2.n === run3.n ? { ...value2, posted: message2.id } : value2), seq: old.seq + 1 }));

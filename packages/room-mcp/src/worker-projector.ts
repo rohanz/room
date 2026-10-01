@@ -7,7 +7,7 @@
 import type { Session } from './session.js'
 import path from 'node:path'
 import { completionMessage, type WorkerView } from '@room/shared'
-import { registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
+import { backgroundAtExit, registrySnapshotForDir, type WorkerRegistry } from './worker-registry.js'
 import { statusOf, workerView, type WorkerRecord } from './worker-status.js'
 import { releasePoster } from './post.js'
 import { postWorkerMessage } from './post.js'
@@ -88,7 +88,10 @@ export async function projectWorkers(s: Session, registry: WorkerRegistry, lead:
       else if (terminal.status === 'done' && run.mode === 'resume' && exit?.witnessed && exit.code === 0
         && registry.reports(record.id).some(value => value.run < run.n && value.done) && !run.posted) {
         const answer = followUpAnswer(logFile, record.host, run.logStart)
-        const message = completionMessage(record, run, { ...terminal, summary: answer || terminal.summary })
+        const background = backgroundAtExit(record, run)
+        const summary = answer || terminal.summary
+        const message = completionMessage(record, run, { ...terminal,
+          summary: background ? `follow-up ended without room_done${background}${summary ? `; ${summary}` : ''}` : summary })
         if (message) {
           await postWorkerMessage(s.post, record, message)
           await registry.update(record.id, old => ({ ...old, runs: old.runs.map(value => value.n === run.n ? { ...value, posted: message.id } : value), seq: old.seq + 1 }))

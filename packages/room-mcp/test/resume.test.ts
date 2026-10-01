@@ -366,6 +366,20 @@ describe('resumed worker boundaries', () => {
     await vi.waitFor(() => expect(t.room.messages().filter(m => m.priority === 'interrupt' && m.type === 'note' && m.text.includes(said))).toHaveLength(1))
   })
 
+  it('names killed background work when a follow-up to a reported worker exits without room_done', async () => {
+    const t = setup()
+    await t.seed('bgdone')
+    expect(await t.tools.call('room_send', { type: 'note', to: 'bgdone', text: 'run the tests' })).toContain('resumed bgdone')
+    const record = (await t.record('bgdone'))!, run = record.runs.at(-1)!
+    writeFileSync(join(t.dir, '.room', 'workers', 'bgdone.log'), 'x'.repeat(run.logStart) + '\n' + unawaited(record.hostSessionId))
+    t.exits[0](0)
+    const said = 'follow-up ended without room_done — background work was still running (1 background task(s) killed at exit)'
+    await vi.waitFor(() => expect(workerByTag(t.dir, 'bgdone')).toMatchObject({ status: 'done' }))
+    const registry = await registryForDir(t.dir)
+    expect(registry.status(record.id)?.note).toBe(said)
+    await vi.waitFor(() => expect(t.room.messages().filter(m => m.type === 'done' && m.summary.startsWith(said))).toHaveLength(1))
+  })
+
   it('fails a resumed nonzero exit with the death note', async () => {
     const t = setup()
     await t.seed('broken', { host: 'codex', summary: 'initial work done' })

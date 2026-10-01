@@ -37,7 +37,11 @@ export function workerShellEnvScript(inherited?: string): string {
 export function writeWorkerShellEnv(leadDir: string, tag: string, inherited = process.env.CLAUDE_ENV_FILE): { file?: string; warning?: string } {
   const file = path.join(leadDir, '.room', 'workers', `${tag}.env.sh`)
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
+    // `wx` guards only the last component: a linked `.room` or `workers` would move the write elsewhere.
+    for (const dir of [path.join(leadDir, '.room'), path.dirname(file)]) {
+      try { fs.mkdirSync(dir) } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
+      if (!fs.lstatSync(dir).isDirectory()) throw new Error(`${dir} is not a directory`)
+    }
     fs.rmSync(file, { force: true })
     fs.writeFileSync(file, workerShellEnvScript(inherited), { mode: 0o600, flag: 'wx' })
     return { file }

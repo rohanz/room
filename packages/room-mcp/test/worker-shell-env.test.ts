@@ -63,6 +63,19 @@ it('writes the env file 0600 next to the worker log, replacing rather than follo
   expect(fs.readFileSync(written.file!, 'utf8')).toBe(workerShellEnvScript())
 })
 
+it('refuses a linked .room or workers directory instead of writing through it', () => {
+  for (const linked of ['.room', 'workers']) {
+    const lead = tmp(), outside = tmp()
+    fs.writeFileSync(path.join(outside, 'w.env.sh'), 'untouched')
+    if (linked === '.room') fs.symlinkSync(outside, path.join(lead, '.room'))
+    else { fs.mkdirSync(path.join(lead, '.room')); fs.symlinkSync(outside, path.join(lead, '.room', 'workers')) }
+    const written = writeWorkerShellEnv(lead, 'w', undefined)
+    expect(written.file).toBeUndefined()
+    expect(written.warning).toContain('still see Room')
+    expect(fs.readFileSync(path.join(outside, 'w.env.sh'), 'utf8')).toBe('untouched')
+  }
+})
+
 it('reports an env file it could not write instead of launching silently unscrubbed', () => {
   const lead = tmp()
   fs.writeFileSync(path.join(lead, '.room'), 'not a directory')

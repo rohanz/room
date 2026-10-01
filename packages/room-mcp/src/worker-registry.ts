@@ -10,7 +10,7 @@ import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
 import { followUpAnswer, missingClaudeSession, probeProcess, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
-import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
+import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
@@ -160,13 +160,18 @@ export function workerCarried(dir: string, env: NodeJS.ProcessEnv = process.env)
  * A run that exited cleanly without room_done gets the evidence from its log: the no-report summary
  * carries the log tail, and either form names background shell tasks its exit killed (count only).
  */
+/** " — background work was still running (…)" when the run's exit killed background shell tasks, else ''. */
+export function backgroundAtExit(record: Pick<WorkerRecord, 'dir' | 'tag' | 'host'>, run: Pick<Run, 'logStart'>): string {
+  const killed = unawaitedBackgroundTasks(path.join(path.dirname(record.dir), `${record.tag}.log`), run.logStart, record.host)
+  return killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
+}
+
 function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
   const run = status.run
   const resumedWithoutDone = status.status === 'failed' && status.exitCode === 0 && run?.mode === 'resume'
   if (!run || !status.noReport && !resumedWithoutDone) return status
   const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
-  const killed = unawaitedBackgroundTasks(logFile, run.logStart, record.host)
-  const background = killed ? ` — background work was still running (${killed} background task(s) killed at exit)` : ''
+  const background = backgroundAtExit(record, run)
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
 }
@@ -535,8 +540,11 @@ export class WorkerRegistry {
     if (status.noReport) return status
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
       || !exits.some(exit => exit.run === run.n && exit.witnessed && exit.code === 0)) return status
+    // A follow-up that ended without its own room_done is "done" by the earlier report; its exit may still have killed work.
     const logFile = path.join(path.dirname(record.dir), `${record.tag}.log`)
-    return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart) }
+    const background = backgroundAtExit(record, run)
+    return { ...status, followUp: followUpAnswer(logFile, record.host, run.logStart),
+      ...(background ? { note: `follow-up ended without room_done${background}` } : {}) }
   }
   /** No room view or remote presence can turn into a local worktree capability. */
   async trusted(lead: { participant: string; room: string; dir: string }, tagOrName: string, allowVanished = false): Promise<{ record: WorkerRecord; status: WorkerStatusResult } | undefined> {
