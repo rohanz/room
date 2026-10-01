@@ -178,6 +178,96 @@ describe('HubClient renewal recovery against the hub harness', () => {
     expect(client.paused()).toBeUndefined()
   })
 
+  it.each(['in flight', 'backoff'] as const)('close settles coalesced renews and clears every timer: %s', async phase => {
+    const { client, transport, advance } = await fixture()
+    transport.holdRenew = true
+    const settled = Promise.allSettled([client.renew('alice'), client.renew('alice')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(transport.held).toHaveLength(1)
+    if (phase === 'backoff') {
+      const reply = transport.held.shift()!
+      transport.emit({ v: 1, re: reply.re, ok: false, reason: 'unavailable', text: 'busy', retryMs: 4_000 })
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    // One periodic timer plus either the request timeout or the retry delay.
+    expect(vi.getTimerCount()).toBe(2)
+    client.close()
+    expect(await settled).toEqual([
+      { status: 'rejected', reason: new Error('hub client closed') },
+      { status: 'rejected', reason: new Error('hub client closed') },
+    ])
+    expect(vi.getTimerCount()).toBe(0)
+    const sends = transport.sent.length
+    for (const reply of transport.held.splice(0)) transport.emit(reply)
+    transport.reconnect()
+    await advance(2 * LEASE_TTL_MS)
+    expect(transport.sent).toHaveLength(sends)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(client.lease('alice')).toBeUndefined()
+  })
+
+  it.each(['release', 'lease-lost'] as const)('%s during renewal fences late replies from a reacquired lease', async removal => {
+    // Success must not extend the replacement's TTL; stale must not remove it;
+    // retryable refusal must not replay the old epoch.
+    for (const outcome of ['success', 'stale', 'retry'] as const) {
+      const { client, transport, epoch, advance } = await fixture()
+      transport.holdRenew = true
+      const settled = Promise.allSettled([client.renew('alice')])
+      await vi.advanceTimersByTimeAsync(0)
+      const reply = transport.held.shift()!
+      expect(reply).toMatchObject({ ok: true })
+      if (removal === 'release') await client.release('alice')
+      else transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch, reason: 'superseded' })
+      expect(client.lease('alice')).toBeUndefined()
+      const replacement = await client.acquire('alice', holder('s1'))
+      expect(replacement).toBeGreaterThan(epoch)
+      await advance(1_000)
+      if (outcome === 'success') transport.emit({ ...reply, ttlMs: 2 * LEASE_TTL_MS })
+      else transport.emit({ v: 1, re: reply.re, ok: false, reason: outcome === 'stale' ? 'stale' : 'unavailable', text: 'late refusal', retryMs: 1_000 })
+      await advance(1_000)
+      expect(await settled).toMatchObject([{ status: outcome === 'success' ? 'fulfilled' : 'rejected' }])
+      expect(transport.renews()).toHaveLength(1)
+      expect(client.lease('alice')).toBe(replacement)
+      expect(client.paused()).toBeUndefined()
+      expect(vi.getTimerCount()).toBe(1)
+      // Disconnect to isolate the replacement's original validity from future renews.
+      transport.disconnect()
+      await advance(LEASE_TTL_MS - 2_000 - 1)
+      expect(client.lease('alice')).toBe(replacement)
+      await advance(1)
+      expect(client.lease('alice')).toBeUndefined()
+      expect(transport.renews()).toHaveLength(1)
+      client.close()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  })
+
+  it.each(['release', 'lease-lost'] as const)('%s cancels renewal backoff without retrying a reacquired lease with the old epoch', async removal => {
+    const { client, transport, epoch, advance } = await fixture()
+    transport.holdRenew = true
+    const settled = Promise.allSettled([client.renew('alice')])
+    await vi.advanceTimersByTimeAsync(0)
+    const reply = transport.held.shift()!
+    transport.emit({ v: 1, re: reply.re, ok: false, reason: 'unavailable', text: 'busy', retryMs: 4_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(2)
+    if (removal === 'release') await client.release('alice')
+    else transport.emit({ v: 1, push: 'lease-lost', name: 'alice', epoch, reason: 'superseded' })
+    expect(client.lease('alice')).toBeUndefined()
+    const replacement = await client.acquire('alice', holder('s1'))
+    expect(replacement).toBeGreaterThan(epoch)
+    expect(await settled).toMatchObject([{ status: 'rejected' }])
+    expect(vi.getTimerCount()).toBe(1)
+    // Even a duplicate acknowledgement after cancellation cannot resurrect the old lease.
+    transport.emit(reply)
+    transport.holdRenew = false
+    await advance(15_000)
+    expect(transport.renews().map(req => req.epoch)).toEqual([epoch, replacement])
+    expect(client.lease('alice')).toBe(replacement)
+    expect(client.paused()).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
   it.each(['timeout', 'starting', 'wall sleep'] as const)('stops renewing and pauses at validity expiry: %s', async failure => {
     const { client, transport, jumpWall, epoch, advance } = await fixture()
     if (failure === 'starting') {
