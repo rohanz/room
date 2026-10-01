@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { colorFor, type Claim, type Msg } from '@room/shared'
 import { collapseConflictTimeline } from './timeline.ts'
 import { classifyThreeWay } from './merged.ts'
-import { renderCodeLines } from './panels.ts'
+import { conflictCard, renderCodeLines } from './panels.ts'
 
 const claims: Claim[] = ['money', 'tiers'].map((by, i) => ({ id: `c${i}`, by, byKind: 'agent', path: 'a.ts', from: 2, to: 7, intent: `update ${by}`, at: 1 }))
 const conflict: Msg = { id: 'conflict', type: 'conflict', priority: 'interrupt', from: 'room', fromKind: 'bot', at: 10, claimId: 'c0', otherClaimId: 'c1', path: 'a.ts', text: 'overlap' }
@@ -353,4 +353,31 @@ it('uses the specified theme tints and 60% owner borders with at least 4.5:1 cod
       expect((Math.max(ink, background) + .05) / (Math.min(ink, background) + .05)).toBeGreaterThanOrEqual(4.5)
     }
   }
+})
+
+it('draws an overlap that merges cleanly as an overlap, and a later non-merging notice as a conflict', () => {
+  vi.stubGlobal('document', { createElement: () => new Element() })
+  const overlap: Msg = { ...conflict, id: 'overlap', claimId: 'c1', otherClaimId: '', to: 'money', text: "you edited a.ts:2-7 inside tiers's claim; merges cleanly", merges: 'clean' }
+  const lines = Array.from({ length: 8 }, (_, i) => ({ text: 'code', side: 'common' as const, changedBy: null, conflict: false, aLine: i + 1 }))
+  const render = (messages: Msg[]) => {
+    const spans = deriveConflictSpans(messages, [claims[1]])
+    const host = new Element()
+    renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, spans)
+    return { span: spans[0], tags: host.find('conflict-tag'), host, card: conflictCard(spans[0]) as unknown as Element }
+  }
+  const clean = render([overlap])
+  expect(clean.span.merges).toBe('clean')
+  expect(clean.tags.map(tag => tag.children[0])).toEqual(['overlap'])
+  expect(clean.tags[0].ariaLabel).toContain('Overlap: merges cleanly')
+  expect(clean.tags[0].ariaLabel).not.toContain('conflict')
+  expect(clean.host.find('conflict-line')).toHaveLength(0)
+  expect(clean.card.textContent).toContain('overlap · money ↔ tiers')
+  expect(clean.card.textContent).not.toContain('conflict ·')
+  expect(clean.card.textContent).toContain("overlap a.ts · you edited a.ts:2-7 inside tiers's claim; merges cleanly")
+  expect(clean.card.textContent).not.toContain('conflict a.ts')
+  const stopped = render([overlap, { ...overlap, id: 'stopped', at: 12, text: "you edited a.ts:2-7 inside tiers's claim", merges: undefined }])
+  expect(stopped.span.merges).toBeUndefined()
+  expect(stopped.tags.map(tag => tag.children[0])).toEqual(['conflict'])
+  expect(stopped.tags[0].ariaLabel).toContain('Unresolved conflict')
+  expect(stopped.card.textContent).toContain('conflict · money ↔ tiers')
 })

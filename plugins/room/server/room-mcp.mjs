@@ -57798,6 +57798,7 @@ function handlers4(state) {
       const live = new Set(runningWorkers(s).map((x) => x.w.tag));
       const kept = mine(s).filter((c) => c.mirrorOf && live.has(c.mirrorOf)).length;
       let released = 0;
+      let notTold;
       const release = () => {
         released = releaseClaimsOnDone(s, (c) => !!c.mirrorOf && live.has(c.mirrorOf));
       };
@@ -57809,15 +57810,17 @@ function handlers4(state) {
         const changed = manifestPaths(s.room, s.me.name);
         let saved = false;
         const report = reporting.then(async () => {
-          await registry2.reportDone(myId, ownRun.n, summary, changed);
+          const done = (await registry2.reportDone(myId, ownRun.n, summary, changed)).done;
           saved = true;
           release();
-          await registry2.postCompletion(myId, ownRun.n, async (id3, record2, report2) => {
+          await registry2.postCompletion(myId, ownRun.n, async (id4, record2, report2) => {
             const message2 = completionMessage(record2, ownRun, registry2.status(myId), report2);
-            if (!message2 || message2.id !== id3 || message2.body.type !== "done") throw new Error("worker completion message unavailable");
-            const posted = await s.post(s.me, message2.body, { id: id3, auto: true });
+            if (!message2 || message2.id !== id4 || message2.body.type !== "done") throw new Error("worker completion message unavailable");
+            const posted = await s.post(s.me, message2.body, { id: id4, auto: true });
             if (!posted.ok) throw new Error(posted.text);
           });
+          const id3 = completionId(myId, ownRun.n, done.k);
+          if (registry2.reports(myId).find((value2) => value2.run === ownRun.n)?.posted !== id3) notTold = registry2.read(myId)?.runs.find((value2) => value2.n === ownRun.n)?.posted ?? id3;
         });
         reporting = report.catch(() => {
         });
@@ -57825,7 +57828,7 @@ function handlers4(state) {
           await report;
         } catch (error2) {
           const detail = error2 instanceof Error ? error2.message : String(error2);
-          return saved ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again.` : `error: could not record worker report: ${detail}`;
+          return saved ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again; when you exit, your lead's session posts it.` : `error: could not record worker report: ${detail}`;
         }
       } else {
         release();
@@ -57834,7 +57837,7 @@ function handlers4(state) {
       await s.policyStore.declare([]);
       setPresence(s, { cursor: void 0, status: `done: ${summary.slice(0, 60)}` });
       s.daemon.touch();
-      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${ownRecord ? `Your lead ${ownRecord.lead.participant} has been told (worker ${ownRecord.tag}); your work is on branch ${ownRecord.branch} in ${ownRecord.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
+      const out2 = [`marked done${sc ? ` (${sc.area})` : ""}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ""}, scope cleared. ${ownRecord ? `${notTold ? `Your report is saved, but your lead was not sent this report: Room already posted this run's outcome (${notTold}). Your lead reads your summary with room_state (worker ${ownRecord.tag})` : `Your lead ${ownRecord.lead.participant} has been told (worker ${ownRecord.tag})`}; your work is on branch ${ownRecord.branch} in ${ownRecord.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : "You remain in the room."}`];
       const secondary = publisherLine(s);
       if (secondary) out2.push(secondary);
       else {

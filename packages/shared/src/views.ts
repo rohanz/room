@@ -410,7 +410,13 @@ export interface ConflictSpan {
   claims: Claim[]
   resolvedBy?: ConflictResolution
   hidden: boolean
+  /** The latest notice's `merges` (ConflictMsg): an overlap that merges cleanly, not a conflict. */
+  merges?: 'clean'
 }
+
+/** An unresolved span's status, in the notices' words: "overlap" when it merges cleanly, "conflict" otherwise. */
+export const conflictSpanStatus = (span: Pick<ConflictSpan, 'merges'>): string =>
+  span.merges === 'clean' ? 'Overlap: merges cleanly' : 'Unresolved conflict'
 
 /** Reconstruct conflict history from existing bus facts; never manufacture a timestamp.
  * Missing claims alone are not proof of release (the rolling bus may be incomplete).
@@ -450,6 +456,7 @@ export function deriveConflictSpans(messages: readonly import('./types.js').Msg[
     if (!span) { span = { id, path, people, claimIds: ids, from, to, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
     if (ids.length === 2 && span.claimIds.length < 2) { span.claimIds = ids; span.claims = cs }
     span.events.push(m)
+    if (m.type === 'conflict') span.merges = m.merges
   }
   // Claims can overlap before a conflict notification is delivered.
   for (let i = 0; i < claims.length; i++) for (const b of claims.slice(i + 1)) {

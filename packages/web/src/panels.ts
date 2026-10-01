@@ -3,6 +3,7 @@ import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-windo
 import { inlineDetails } from './inline-detail.ts'
 import {
   RoomDoc,
+  conflictSpanStatus,
   deriveConflictSpans,
   activityLabel,
   type ConflictSpan,
@@ -444,7 +445,7 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
 
 function resolutionLabel(span: ConflictSpan): string {
   const r = span.resolvedBy
-  return r ? `resolved · ${r.who ? `${r.who} ` : ''}${r.how} · ${clockTime(r.at)}` : `conflict · ${span.people.join(' ↔ ')}`
+  return r ? `resolved · ${r.who ? `${r.who} ` : ''}${r.how} · ${clockTime(r.at)}` : `${span.merges === 'clean' ? 'overlap' : 'conflict'} · ${span.people.join(' ↔ ')}`
 }
 
 export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLElement {
@@ -525,7 +526,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
 
 function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc, offset = 0, expandedLines?: Map<number, string>): void {
   const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? offset + i + 1 : undefined, room, expandedLines, offset + i))
-  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; textConflict?: boolean }[] = []
+  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; overlap?: boolean; textConflict?: boolean }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
@@ -551,7 +552,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
     const claimOnly = merged && s.claims.some(a => s.claims.some(b => a.by !== b.by && a.path === b.path && a.from <= b.to && b.from <= a.to))
     const people = [...new Set([...s.people, ...[...regionClaims.values()].map(c => c.by)])]
     const detail = people.join(' ↔ ') + '\n' + s.path + ':' + s.from + '-' + s.to + '\n' +
-      (s.resolvedBy ? resolutionLabel(s) : claimOnly ? 'Unresolved: both claimed' : 'Unresolved conflict') + '\n' +
+      (s.resolvedBy ? resolutionLabel(s) : claimOnly ? 'Unresolved: both claimed' : conflictSpanStatus(s)) + '\n' +
       people.map(person => {
         const cs = [...regionClaims.values()].filter(c => c.by === person)
         return cs.length ? cs.map(c => person + ': ' + c.intent + (c.plans?.length ? ' (plans: ' + formatPlans(c.plans) + ')' : '')).join('\n') : person + ': intent unavailable'
@@ -567,7 +568,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
         if (uncovered && run < 0) run = i
         if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly }); run = -1 }
       }
-    } else spans.push({ start, end, people, detail, resolution: s.resolvedBy ? resolutionLabel(s) : undefined, resolved: !!s.resolvedBy, claimOnly })
+    } else spans.push({ start, end, people, detail, resolution: s.resolvedBy ? resolutionLabel(s) : undefined, resolved: !!s.resolvedBy, claimOnly, overlap: s.merges === 'clean' })
   }
   // Prefer the recorded region's richer tooltip over its duplicate merge preview.
   const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
@@ -601,7 +602,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
       conflicts: regions.filter(s => s.start <= i && s.end >= i).map(s => ({
         people: s.people, resolved: s.resolved, resolution: s.resolution,
         range: `Merged lines ${offset + s.start + 1}-${offset + s.end + 1}`,
-        status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : 'Unresolved conflict',
+        status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : conflictSpanStatus({ merges: s.overlap ? 'clean' : undefined }),
       })),
     }))
   const laneEnds: number[] = []
@@ -614,7 +615,7 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
     for (const s of group) {
       if (collapse && s.resolved && s !== resolved[0]) continue
       tagOffsets.set(s, {
-        text: collapse && s.resolved ? resolved.length + ' resolved' : s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : 'conflict',
+        text: collapse && s.resolved ? resolved.length + ' resolved' : s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : s.overlap ? 'overlap' : 'conflict',
         detail: collapse && s.resolved ? resolved.map(r => r.detail).join('\n\n') : s.detail,
       })
     }
@@ -623,17 +624,17 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
     let lane = laneEnds.findIndex(end => end < s.start)
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
-    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') })
+    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly || s.overlap ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') })
     const tag = tagOffsets.get(s)
     if (tag) {
-      const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : s.claimOnly ? ' claim-overlap' : ''), ariaLabel: tag.detail }, tag.text)
+      const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : s.claimOnly || s.overlap ? ' claim-overlap' : ''), ariaLabel: tag.detail }, tag.text)
       bindRows[s.start](label)
       tagSlots[s.start].append(label)
     }
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) {
-      rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : s.claimOnly ? 'claim-overlap-line' : 'conflict-line')
+      rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : s.claimOnly || s.overlap ? 'claim-overlap-line' : 'conflict-line')
       if (s.claimOnly) rows[i].classList.add('claim-overlap-line')
     }
     bars.push({ bar, start: s.start, end: s.end })
@@ -886,7 +887,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'release': return [h('strong', {}, 'released '), h('span', { class: 'mono' }, message.path), message.summary ? ` · ${message.summary}` : '', message.unfulfilled?.length ? h('span', { class: 'unfulfilled' }, ` not done: ${formatPlans(message.unfulfilled)}`) : null]
     case 'changed': return [h('strong', {}, 'changed '), h('span', { class: 'mono' }, message.paths.join(', ')), ` · ${message.summary}`, message.symbols?.length ? h('span', { class: 'symbol-list' }, message.symbols.join(', ')) : null]
     case 'merge-conflict':
-    case 'conflict': return [h('strong', {}, 'conflict '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
+    case 'conflict': return [h('strong', {}, message.type === 'conflict' && message.merges === 'clean' ? 'overlap ' : 'conflict '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'contract': return [h('strong', {}, 'contract change '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'note': return [message.text]
     case 'question': return [h('strong', {}, 'asked '), message.text]

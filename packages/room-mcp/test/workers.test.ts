@@ -897,6 +897,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
     const reply = await t.workerTools.call('room_done', { summary: 'finished' })
     expect(reply).toContain('worker report saved; your lead has not been told yet')
     expect(reply).toContain('Call room_done again')
+    expect(reply).toContain('when you exit, your lead\'s session posts it')
     const registry = await registryForDir(dir)
     const record = registry.reserved('money')!
     expect(registry.reports(record.id)[0]?.done?.summary).toBe('finished')
@@ -904,6 +905,20 @@ describe('room_spawn / room_done / room_collect discard', () => {
     t.exits[0](0)
     await vi.waitFor(() => expect(registry.read(record.id)?.runs[0].posted).toBe(`wk:${record.id}:1`), { timeout: 15_000 })
     expect(t.a.messages().filter(message => message.type === 'done' && message.id === `wk:${record.id}:1`)).toHaveLength(1)
+  })
+
+  it('does not say the lead was told when the run already posted its outcome', async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'money', task: 'finish' })
+    const registry = await registryForDir(dir)
+    const record = registry.reserved('money')!
+    await registry.update(record.id, old => ({ ...old, runs: old.runs.map(run => ({ ...run, posted: `wk:${record.id}:1` })), seq: old.seq + 1 }))
+    const reply = await t.workerTools.call('room_done', { summary: 'finished late' })
+    expect(reply).not.toContain('has been told')
+    expect(reply).toContain(`your lead was not sent this report: Room already posted this run's outcome (wk:${record.id}:1)`)
+    expect(reply).toContain('Your lead reads your summary with room_state (worker money)')
+    expect(t.a.messages().some(m => m.type === 'done')).toBe(false)
+    expect(registry.reports(record.id)[0]?.done?.summary).toBe('finished late')
   })
 
   it('does not promise a wake-up when a non-worker finishes', async () => {

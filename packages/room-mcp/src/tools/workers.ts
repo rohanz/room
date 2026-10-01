@@ -11,7 +11,7 @@ import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import { completionMessage, highestSeq, manifestPaths, participantRecord, type DoneMsg, type NoteMsg } from '@room/shared'
+import { completionId, completionMessage, highestSeq, manifestPaths, participantRecord, type DoneMsg, type NoteMsg } from '@room/shared'
 import { reconcileProjectedConflicts } from '../conflict-set.js'
 import { parseShare, realGitCommonDir } from '@room/roomd'
 import { git } from '@room/roomd/git'
@@ -76,6 +76,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const live = new Set(runningWorkers(s).map(x => x.w.tag))
       const kept = mine(s).filter(c => c.mirrorOf && live.has(c.mirrorOf)).length
       let released = 0
+      /** The run's posted outcome when it is not this report: the lead was not sent this one. */
+      let notTold: string | undefined
       const release = () => { released = releaseClaimsOnDone(s, c => !!c.mirrorOf && live.has(c.mirrorOf)) }
       if (myId) {
         if (!ownRecord || !ownRun) return 'error: this worker run was collected, discarded or superseded'
@@ -86,7 +88,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const changed = manifestPaths(s.room, s.me.name)
         let saved = false
         const report = reporting.then(async () => {
-          await registry!.reportDone(myId, ownRun.n, summary, changed)
+          const done = (await registry!.reportDone(myId, ownRun.n, summary, changed)).done!
           saved = true
           release()
           await registry!.postCompletion(myId, ownRun.n, async (id, record, report) => {
@@ -95,6 +97,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             const posted = await s.post<DoneMsg>(s.me, message.body, { id, auto: true })
             if (!posted.ok) throw new Error(posted.text)
           })
+          // postCompletion posts nothing once the run's outcome is out; only this report's own id means the lead has it.
+          const id = completionId(myId, ownRun.n, done.k)
+          if (registry!.reports(myId).find(value => value.run === ownRun.n)?.posted !== id) notTold = registry!.read(myId)?.runs.find(value => value.n === ownRun.n)?.posted ?? id
         })
         reporting = report.catch(() => {})
         try {
@@ -102,7 +107,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error)
           return saved
-            ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again.`
+            ? `error: worker report saved; your lead has not been told yet: ${detail}. Call room_done again; when you exit, your lead's session posts it.`
             : `error: could not record worker report: ${detail}`
         }
       } else {
@@ -112,7 +117,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await s.policyStore.declare([])
       setPresence(s, { cursor: undefined, status: `done: ${summary.slice(0, 60)}` })
       s.daemon.touch()
-      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${ownRecord ? `Your lead ${ownRecord.lead.participant} has been told (worker ${ownRecord.tag}); your work is on branch ${ownRecord.branch} in ${ownRecord.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
+      const out = [`marked done${sc ? ` (${sc.area})` : ''}; released ${released} claim(s)${kept ? ` (kept ${kept} mirroring running workers)` : ''}, scope cleared. ${ownRecord ? `${notTold ? `Your report is saved, but your lead was not sent this report: Room already posted this run's outcome (${notTold}). Your lead reads your summary with room_state (worker ${ownRecord.tag})` : `Your lead ${ownRecord.lead.participant} has been told (worker ${ownRecord.tag})`}; your work is on branch ${ownRecord.branch} in ${ownRecord.dir}. Finish now; your lead can resume this session for follow-up work while its worktree remains.` : 'You remain in the room.'}`]
       const secondary = publisherLine(s)
       if (secondary) out.push(secondary)
       else {
