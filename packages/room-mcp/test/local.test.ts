@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import http from 'node:http'
 import { deterministicPort } from '../../relay/src/index.js'
-import { joinSession, leaveSession, resolveServer, DEFAULT_SERVER, type Session } from '../src/session.js'
+import { joinSession, leaveSession, resolveServer, DEFAULT_SERVER, captureCapClose, watchClosed, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 
 let dir: string
@@ -92,6 +92,27 @@ describe('local mode (no server)', () => {
     await vi.waitFor(() => expect(s.rejected).toBeUndefined(), { timeout: 15_000 })
     expect(p.wsconnected && p.synced).toBe(true)
   }, 30_000)
+
+  it('a size-cap close during startup, before the session handler exists, is applied when it is installed', () => {
+    // Startup publishes before watchClosed runs; y-websocket will not reconnect after a 44xx on its own.
+    const listeners = new Map<string, Set<(e: unknown) => void>>()
+    const p = { on: (ev: string, fn: (e: unknown) => void) => { if (!listeners.has(ev)) listeners.set(ev, new Set()); listeners.get(ev)!.add(fn) },
+      off: (ev: string, fn: (e: unknown) => void) => { listeners.get(ev)?.delete(fn) }, disconnect: vi.fn(), connect: vi.fn() }
+    const take = captureCapClose(p)
+    for (const fn of listeners.get('connection-close') ?? []) fn({ code: 4413, reason: 'room is over its size cap (64 MB)' })
+    const setPublicationRejected = vi.fn()
+    const s = { provider: p, roomName: 'local/x', roomUrl: 'ws://127.0.0.1:1/local%2Fx', daemon: { setPublicationRejected } } as unknown as Session
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      watchClosed(s, () => {}, take())
+      expect(s.rejected?.reason).toBe('room is over its size cap (64 MB)')
+      expect(setPublicationRejected).toHaveBeenCalledWith(true)
+      vi.advanceTimersByTime(60_000)
+      expect(p.connect).toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+    // The capture stops listening once taken; only the session handler remains.
+    expect(listeners.get('connection-close')?.size).toBe(1)
+  })
 
   it('preserves an explicit local room for a worker', async () => {
     const name = `local/${basename(dir)}`

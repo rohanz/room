@@ -39968,6 +39968,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
     WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
     params: { schema: "2" }
   }));
+  const startupCapClose = captureCapClose(probe);
   const closeProbe = () => {
     probe.destroy();
     probe.awareness.destroy();
@@ -40199,7 +40200,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   }, onRebind: (listener) => {
     rebindListener = listener;
     watchRecords();
-  } };
+  }, startupCapClose };
 }
 function claimLegacyIdentity(room, dir, name2) {
   return reclaimLegacyIdentity(room, readRoomFile(dir)?.legacy, name2);
@@ -40306,7 +40307,7 @@ async function joinSession(opts) {
   const shareMax = await timed("preflight", () => serverShareMax(server, shareRequested));
   const share = clampShare(shareRequested, shareMax);
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`);
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config2.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config2.tag);
   const view = await timed("view token", () => viewToken(server, roomName, creds));
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ""}`;
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log);
@@ -40353,7 +40354,7 @@ async function joinSession(opts) {
       refreshing = false;
     });
   });
-  watchClosed(session, opts.log);
+  watchClosed(session, opts.log, startupCapClose());
   return session;
 }
 function normalizeLocalRoomName(room) {
@@ -40379,10 +40380,10 @@ async function joinLocal(dir, opts) {
   }));
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`;
   const share = requestedShare(opts.share);
-  let daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind;
+  let daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose;
   try {
     ;
-    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
+    ({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name: name2, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag));
   } catch (e) {
     await local.stop();
     throw e;
@@ -40415,10 +40416,25 @@ async function joinLocal(dir, opts) {
     post
   };
   trackConnection(session);
-  watchClosed(session, opts.log);
+  watchClosed(session, opts.log, startupCapClose());
   return session;
 }
-function watchClosed(s, log2) {
+function captureCapClose(provider) {
+  const p = provider;
+  let seen;
+  const onClose = (e) => {
+    const close = e && typeof e === "object" ? e : void 0;
+    if (close?.code === ROOM_SIZE_CAP_CODE) seen = { code: close.code, reason: close.reason };
+  };
+  p.on?.("connection-close", onClose);
+  return () => {
+    p.off?.("connection-close", onClose);
+    const taken = seen;
+    seen = void 0;
+    return taken;
+  };
+}
+function watchClosed(s, log2, startupClose) {
   const p = s.provider;
   let retry;
   let verify;
@@ -40435,7 +40451,7 @@ function watchClosed(s, log2) {
     }, SIZE_CAP_RETRY_MS);
     retry.unref?.();
   };
-  p.on?.("connection-close", (e) => {
+  const onClose = (e) => {
     const close = e && typeof e === "object" ? e : void 0;
     if (close?.code === ROOM_SIZE_CAP_CODE) {
       s.rejected = { reason: close.reason || "room is over its size cap", at: Date.now() };
@@ -40455,7 +40471,9 @@ function watchClosed(s, log2) {
     } catch {
     }
     log2?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`);
-  });
+  };
+  p.on?.("connection-close", onClose);
+  if (startupClose) onClose(startupClose);
   p.on?.("sync", (e) => {
     if (!e || !s.rejected) return;
     const rejected = s.rejected;

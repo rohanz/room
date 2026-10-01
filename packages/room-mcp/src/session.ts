@@ -517,7 +517,7 @@ export function encodeRoom(roomName: string): string { return encodeURIComponent
 export function decodeRoom(encoded: string): string { try { return decodeURIComponent(encoded) } catch { return encoded } }
 
 /** What a join resolved: the daemon under a leased name, its store, and the lease and hub that keep the name. */
-export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void }
+export interface NamedRoomd { daemon: Roomd; me: Identity; policyStore: PolicyStore; lease: ParticipantLease; hub: HubClient; post: Post; autoTagNote?: string; refreshRuntime: () => void; onHookActivity: (listener: () => void) => void; onRebind: (listener: (sessionId: string) => void) => void; startupCapClose: () => CapClose | undefined }
 
 /** Keep a live daemon in sync when a sharing grant changes or settles. */
 export function applySessionPolicy(daemon: Roomd, policy: PolicyStore['policy']): void {
@@ -547,6 +547,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
         WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
         params: { schema: '2' },
       }))
+  const startupCapClose = captureCapClose(probe)
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
   const binding = createSessionBinding(options.dir)
   const sessionId = options.sessionId ?? binding.id()
@@ -686,7 +687,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   publishRuntime()
   const stop = started.stop.bind(started)
   started.stop = async (reason?: string) => { clearInterval(watcher); await stop(reason) }
-  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: publishRuntime, onHookActivity: listener => { hookActivity = listener }, onRebind: listener => { rebindListener = listener; watchRecords() } }
+  return { daemon: started, me: { name, kind: options.kind ?? 'agent', owner, ...(label ? { label } : {}) }, policyStore, lease, hub, post, autoTagNote, refreshRuntime: publishRuntime, onHookActivity: listener => { hookActivity = listener }, onRebind: listener => { rebindListener = listener; watchRecords() }, startupCapClose }
 }
 
 /** Resolve an ambiguous 0.16 branch-room identity using this worktree's old room.json. */
@@ -799,7 +800,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
   const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
@@ -835,7 +836,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
       .catch(error => opts.log?.(`warn: could not refresh sharing ceiling: ${String(error)}`))
       .finally(() => { refreshing = false })
   })
-  watchClosed(session, opts.log)
+  watchClosed(session, opts.log, startupCapClose())
   return session
 }
 
@@ -867,9 +868,9 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   }))
   const roomUrl = `${local.url}/${encodeRoom(roomName)}`
   const share = requestedShare(opts.share)
-  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void
+  let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined
   try {
-    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
   // This room-scoped view capability cannot authorize a write or reveal the clone key.
@@ -896,7 +897,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   }
   trackConnection(session)
   // The relay closes a writer into a room over its size cap with 4413, as the server does.
-  watchClosed(session, opts.log)
+  watchClosed(session, opts.log, startupCapClose())
   return session
 }
 
@@ -905,7 +906,23 @@ const ROOM_CLOSED_CODE = 4001
 const ROOM_SIZE_CAP_CODE = 4413
 const SIZE_CAP_RETRY_MS = 60_000
 const SIZE_CAP_VERIFY_MS = 2_000
-export function watchClosed(s: Session, log?: (line: string) => void): void {
+type CapClose = { code: number; reason?: string }
+/**
+ * Remembers a size-cap close from the moment the provider exists: startup connects and publishes
+ * before the session (and watchClosed) does, and y-websocket never reconnects after a 44xx itself.
+ * The returned function stops listening and hands over what was seen.
+ */
+export function captureCapClose(provider: unknown): () => CapClose | undefined {
+  const p = provider as { on?: (ev: string, fn: (e: unknown) => void) => void; off?: (ev: string, fn: (e: unknown) => void) => void }
+  let seen: CapClose | undefined
+  const onClose = (e: unknown) => {
+    const close = e && typeof e === 'object' ? e as { code?: number; reason?: string } : undefined
+    if (close?.code === ROOM_SIZE_CAP_CODE) seen = { code: close.code, reason: close.reason }
+  }
+  p.on?.('connection-close', onClose)
+  return () => { p.off?.('connection-close', onClose); const taken = seen; seen = undefined; return taken }
+}
+export function watchClosed(s: Session, log?: (line: string) => void, startupClose?: CapClose): void {
   const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | boolean | null) => void) => void; disconnect?: () => void; connect?: () => void; wsconnected?: boolean; synced?: boolean }
   let retry: ReturnType<typeof setTimeout> | undefined
   let verify: ReturnType<typeof setTimeout> | undefined
@@ -916,7 +933,7 @@ export function watchClosed(s: Session, log?: (line: string) => void): void {
     retry = setTimeout(() => { retry = undefined; if (!s.closed && s.rejected) p.connect?.() }, SIZE_CAP_RETRY_MS)
     retry.unref?.()
   }
-  p.on?.('connection-close', e => {
+  const onClose = (e: { code?: number; reason?: string } | boolean | null) => {
     const close = e && typeof e === 'object' ? e : undefined
     if (close?.code === ROOM_SIZE_CAP_CODE) {
       s.rejected = { reason: close.reason || 'room is over its size cap', at: Date.now() }
@@ -935,7 +952,9 @@ export function watchClosed(s: Session, log?: (line: string) => void): void {
     s.closed = { reason }
     try { p.disconnect?.() } catch { /* already gone */ }
     log?.(`${s.roomName}: ${s.closed.reason}; not reconnecting`)
-  })
+  }
+  p.on?.('connection-close', onClose)
+  if (startupClose) onClose(startupClose)
   p.on?.('sync', e => {
     if (!e || !s.rejected) return
     const rejected = s.rejected
