@@ -230,7 +230,9 @@ async function orchestrate(): Promise<void> {
     // can outlive the lead, so its pid comes from the run's registry; one that exited may have a reused pid, so a
     // recorded pid is signalled only while its command still names this run's scratch folder.
     const ours = (pid: number) => { try { return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).includes(out) } catch { return false } }
-    const pids = processTrees([...children.map(c => c.pid ?? 0), ...workerPids(lead).filter(ours)]).filter(pid => pid !== process.pid)
+    // A child that already exited is no root: its pid may belong to another process by now.
+    const running = children.filter(c => c.exitCode === null && c.signalCode === null).map(c => c.pid ?? 0)
+    const pids = processTrees([...running, ...workerPids(lead).filter(ours)]).filter(pid => pid !== process.pid)
     for (const pid of pids.reverse()) try { process.kill(pid) } catch { /* gone */ }
   }
 }

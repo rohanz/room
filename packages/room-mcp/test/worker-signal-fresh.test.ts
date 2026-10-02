@@ -20,3 +20,13 @@ it('verifies a worker afresh before signalling it, never from a cached identity'
   expect(child.exitCode).toBeNull()
   expect(child.signalCode).toBeNull()
 })
+
+it('confirms "not ours" from the cached probe with a fresh read', async () => {
+  const { workerProcessOwnership } = await import('../src/worker-process.js')
+  child = spawn('sleep', ['30'], { stdio: 'ignore' })
+  await new Promise(resolve => child!.once('spawn', resolve))
+  const { probeProcessNow } = await import('@room/relay/process')
+  const live = probeProcessNow(child.pid!)!
+  // The cached reader still says darwin:1:100; the live process is the recorded one.
+  expect(workerProcessOwnership(child.pid!, { processStartTime: live.startTime, host: 'sleep' as never })).toBe('ours')
+})

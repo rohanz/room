@@ -25721,6 +25721,10 @@ import fs11 from "node:fs";
 import path8 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
+  const verdict = livenessBy(identity3, probe);
+  return verdict === "dead" && probe === probeProcess ? livenessBy(identity3, probeProcessNow) : verdict;
+}
+function livenessBy(identity3, probe) {
   const observed = probe(identity3.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity3.startTime && !sameStartTime(observed.startTime, identity3.startTime)) return "dead";
@@ -31994,6 +31998,10 @@ function pidPresent(pid, probe = probeProcess) {
   return pid > 0 && probe(pid) !== void 0;
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
+  const verdict = ownershipBy(pid, w, probe);
+  return verdict === "not-ours" && probe === probeProcess ? ownershipBy(pid, w, probeProcessNow) : verdict;
+}
+function ownershipBy(pid, w, probe) {
   if (!pid || pid <= 0) return "not-ours";
   const info2 = probe(pid);
   if (!info2) return "not-ours";

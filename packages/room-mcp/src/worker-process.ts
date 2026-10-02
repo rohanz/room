@@ -313,7 +313,13 @@ export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boo
 type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
 
+/** "Not ours" from the shared probe is confirmed afresh: it may hold a predecessor's identity for a reused pid. */
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {
+  const verdict = ownershipBy(pid, w, probe)
+  return verdict === 'not-ours' && probe === probeProcess ? ownershipBy(pid, w, probeProcessNow) : verdict
+}
+
+function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): ProcessOwnership {
   if (!pid || pid <= 0) return 'not-ours'
   const info = probe(pid)
   if (!info) return 'not-ours'
