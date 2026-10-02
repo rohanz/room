@@ -17,14 +17,18 @@ const provider = (doc: Y.Doc): WebsocketProvider => {
     getStates: () => states, getLocalState: () => local }, on() {}, off() {}, destroy() {} } as unknown as WebsocketProvider
 }
 
-it('rejoins an 8,375-file tree without synchronous scan stalls', async () => {
+// The probe budget is independent of tree size, so a modest tree proves it (the rehearsal's tree was 8,375
+// files, where the old path did 463,891 probes); a large one only made the test slow under suite load.
+const FILES = 1500
+
+it('rejoins a large tree without per-file synchronous scan probes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-large-rejoin-'))
   const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe', encoding: 'utf8' }).trim()
   const daemons: Awaited<ReturnType<typeof startRoomd>>[] = []
   try {
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't'); git('config', 'gc.auto', '0')
     const files: string[] = []
-    for (let i = 0; i < 8375; i++) {
+    for (let i = 0; i < FILES; i++) {
       const folder = path.join(dir, 'workspace', `crate${i % 25}`, 'src', 'nested', 'module')
       fs.mkdirSync(folder, { recursive: true }); fs.writeFileSync(path.join(folder, `file${i}.txt`), `file ${i}\n`)
       files.push(path.join(folder, `file${i}.txt`))
@@ -57,14 +61,13 @@ it('rejoins an 8,375-file tree without synchronous scan stalls', async () => {
       daemons.push(daemon)
       const scanCalls = stats.mock.calls.length + realpaths.mock.calls.length + countStats.mock.calls.length - watcherStats
       measurements.push({ join, syncScanCalls: scanCalls })
-      // A small root-probe budget, independent of runner load and the 8,375-file tree.
-      // Before the fix this did 463,891 probes; the fixed path does about five.
-      expect(watcherStats).toBe(8375)
+      // A small root-probe budget, independent of runner load and tree size; the fixed path does about five.
+      expect(watcherStats).toBe(FILES)
       expect(scanCalls).toBeLessThan(100)
-      expect(logs).toContain('watching 8375 files')
+      expect(logs).toContain(`watching ${FILES} files`)
       await daemon.stop(); daemons.pop()
     }
-    console.log(JSON.stringify({ files: 8375, measurements }))
+    console.log(JSON.stringify({ files: FILES, measurements }))
     stats.mockRestore(); realpaths.mockRestore(); countStats.mockRestore()
   } finally {
     vi.restoreAllMocks(); vi.unstubAllEnvs()
