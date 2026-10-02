@@ -2,6 +2,8 @@
 
 ## 0.17.1 (unreleased)
 
+- Rejoining a large checkout no longer synchronously re-stats and resolves every watched path and its ancestors. The watcher uses Chokidar’s existing stats and asynchronous scan, retaining symlink refusal and containment checks when handling changes and publishing disk text.
+
 - Conflict reconciliation coalesces relevant changes and caches unaffected participant pairs. Disjoint edits, status updates and graph publication clocks no longer cause full pair checks; continuing input changes get at most two checks before one deferred pass, while authorization withdrawal and unknown-evidence retries remain intact.
 
 - Graph parsing runs in a worker thread, with a bounded refresh queue and yielding graph publication, so large Rust indexes leave Room tools responsive. `room_impact` and claim impact report indexing progress immediately. Parser shutdown cancels pending work.
