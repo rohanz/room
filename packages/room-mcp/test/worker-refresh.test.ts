@@ -20,6 +20,8 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 vi.setConfig({ testTimeout: 30_000 })
+// These sessions have synthetic publication; real daemon completion is covered in done-publication.test.ts.
+vi.mock('../src/worker-publication.js', () => ({ settleWorkerPublication: async () => {} }))
 
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 let root: string, repo: string, head: string

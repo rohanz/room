@@ -36,6 +36,8 @@ vi.mock('../src/leases.js', async importOriginal => {
 
 // Worker lifecycle tests exercise real worktrees and process-stop waits under concurrent suites.
 vi.setConfig({ testTimeout: 30_000 })
+// These sessions have synthetic publication; real daemon completion is covered in done-publication.test.ts.
+vi.mock('../src/worker-publication.js', () => ({ settleWorkerPublication: async () => {} }))
 
 /** No release notices to send here. */
 const ignore = () => {}
