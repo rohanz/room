@@ -6,7 +6,7 @@
 //   node --expose-gc --import tsx scripts/doc-history.mts [--posts 20000] [--every 2000]
 import * as Y from 'yjs'
 import { RoomDoc, trim } from '@room/shared'
-import { compactDoc, structCount } from '../packages/shared/src/compact.js'
+import { compactDoc, historyOf } from '../packages/shared/src/compact.js'
 import { SETTLE_MS, serializedStore, startHub } from '@room/hub-core'
 
 const arg = (name: string, fallback: number) => {
@@ -91,7 +91,7 @@ for (let n = 1; n <= POSTS; n++) {
   for (const [name, c] of conns) hub.handle(c.conn, { v: 1, id: 'r', op: 'renew', name, epoch: c.epoch }, { local: true })
   hub.tick()
   if (n % 500 === 0) for (const p of PEOPLE) member.doc.transact(() => member.pruneSeen(p, () => true), 'member')
-  if (COMPACT && structCount(room.doc) > COMPACT) {
+  if (COMPACT && historyOf(room.doc).structs > COMPACT) {
     // Prototype of design (a): the hub's document replaced by its compact copy; the member resyncs from scratch.
     const t = performance.now()
     const fresh = compactDoc(room.doc, `g${n}`)

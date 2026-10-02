@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { compactDoc, docGeneration, structCount } from './compact.js'
+import { FRESH_GENERATION, compactDoc, docGeneration, generationGate, generationParams, historyOf, replicaGeneration } from './compact.js'
+const structCount = (doc: Y.Doc) => historyOf(doc).structs
 
 const roots = (doc: Y.Doc) => Object.fromEntries([...doc.share.keys()].sort().map(name => {
   const type = doc.share.get(name)!
@@ -62,5 +63,74 @@ describe('compactDoc', () => {
   it('refuses XML types, leaving the decision to the caller', () => {
     const doc = new Y.Doc(); doc.getXmlFragment('x').insert(0, [new Y.XmlText('t')])
     expect(() => compactDoc(doc, 'g')).toThrow(/XML/)
+  })
+})
+
+describe('historyOf', () => {
+  it('counts every struct and the deleted ones among them', () => {
+    const doc = new Y.Doc()
+    expect(historyOf(doc)).toEqual({ structs: 0, deleted: 0 })
+    const map = doc.getMap('m'), list = doc.getArray('l')
+    for (let i = 0; i < 10; i++) doc.transact(() => { map.set('k', i); list.push([i]) })
+    const before = historyOf(doc)
+    expect(before.deleted).toBeGreaterThanOrEqual(9)
+    expect(historyOf(compactDoc(doc, 'g'))).toMatchObject({ deleted: 0 })
+    expect(historyOf(compactDoc(doc, 'g')).structs).toBeLessThan(before.structs)
+  })
+})
+
+describe('the generation a replica states', () => {
+  it('is fresh until the replica holds server data, whatever it wrote itself', () => {
+    const doc = new Y.Doc()
+    expect(replicaGeneration(doc)).toBe(FRESH_GENERATION)
+    doc.getMap('participants').set('ada', { name: 'ada' })
+    doc.getArray('l').push([1])
+    expect(replicaGeneration(doc)).toBe(FRESH_GENERATION)
+  })
+
+  it('pins an uncompacted room as 0 and a compacted one as its generation', () => {
+    const server = new Y.Doc(); server.getMap('meta').set('schemaVersion', 2)
+    const a = new Y.Doc()
+    Y.applyUpdate(a, Y.encodeStateAsUpdate(server))
+    expect(replicaGeneration(a)).toBe('0')
+    const b = new Y.Doc()
+    Y.applyUpdate(b, Y.encodeStateAsUpdate(compactDoc(server, 'g1')))
+    expect(replicaGeneration(b)).toBe('g1')
+  })
+
+  it('is pinned by any server update, even one that cannot integrate yet (no full sync)', () => {
+    const server = new Y.Doc(); server.getMap('meta').set('generation', 'g1'); server.getArray('bus').push([1])
+    const vector = Y.encodeStateVector(server)
+    server.getArray('bus').push([2])
+    const replica = new Y.Doc()
+    Y.applyUpdate(replica, Y.encodeStateAsUpdate(server, vector)) // the broadcast, before sync step 2
+    expect(replica.getArray('bus').length).toBe(0)
+    expect(replicaGeneration(replica)).toBe('0') // not fresh: a stale or needless rejoin, never a merge
+    const deletion = new Y.Doc(); const items = server.getArray('bus'); const sv = Y.encodeStateVector(server)
+    items.delete(0, 1)
+    Y.applyUpdate(deletion, Y.encodeStateAsUpdate(server, sv)) // a deletion alone
+    expect(replicaGeneration(deletion)).not.toBe(FRESH_GENERATION)
+  })
+
+  it('reaches every reconnect through the provider params, as an enumerable getter', () => {
+    const doc = new Y.Doc()
+    const params = generationParams(doc, { schema: '2' })
+    expect(new URLSearchParams(Object.entries(params)).toString()).toBe('schema=2&gen=fresh')
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(compactDoc(new Y.Doc(), 'g2')))
+    expect(Object.keys(params)).toEqual(['schema', 'gen'])
+    expect(params.gen).toBe('g2')
+    params.ticket = 't'
+    expect({ ...params }).toEqual({ schema: '2', gen: 'g2', ticket: 't' })
+  })
+})
+
+describe('generationGate', () => {
+  it.each([
+    ['fresh', undefined, 'accept'], ['fresh', 'g1', 'accept'],
+    ['0', undefined, 'accept'], ['g1', 'g1', 'accept'],
+    ['0', 'g1', 'stale'], ['g1', 'g2', 'stale'], ['g1', undefined, 'stale'],
+    [null, undefined, 'accept'], [null, 'g1', 'update'],
+  ] as const)('a replica stating %s in a room at %s: %s', (stated, current, verdict) => {
+    expect(generationGate(stated, current)).toBe(verdict)
   })
 })

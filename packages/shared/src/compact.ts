@@ -5,11 +5,46 @@ import type { Claim, ClaimAnchor } from './types.js'
 // into a fresh Y.Doc, so the deleted history every earlier operation left behind is gone.
 
 /** The `meta` key naming the document's generation: a new random value at every compaction. */
-export const GENERATION_KEY = 'generation'
+const GENERATION_KEY = 'generation'
 
 export const docGeneration = (doc: Y.Doc): string | undefined => {
   const value = doc.getMap('meta').get(GENERATION_KEY)
   return typeof value === 'string' && value ? value : undefined
+}
+
+/** The websocket URL parameter in which a client states the generation of its replica. */
+export const GENERATION_PARAM = 'gen'
+/** A replica that holds no server data yet: it merges into any generation. */
+export const FRESH_GENERATION = 'fresh'
+/** The generation of a document never compacted (every rc and migrated document). */
+const UNCOMPACTED = '0'
+/** The server's close for a replica of an earlier generation. In the 44xx range, so no provider reconnects by itself. */
+export const STALE_REPLICA_CODE = 4409
+export const STALE_REPLICA_REASON = "this room's document was compacted when the server restarted; rejoin with a fresh copy"
+/** The close (4403, final for every rc client) for a client that states no generation once the room has one. */
+export const COMPACTED_UPDATE_REASON = "update Room to 0.17.0 or later (browser: reload the page): this room's document was compacted"
+
+/** The generation a replica states before syncing: fresh until it holds any server data, then the one that data came from. */
+export function replicaGeneration(doc: Y.Doc): string {
+  const store = doc.store as unknown as { clients: Map<number, unknown>; pendingStructs: unknown; pendingDs: unknown }
+  // Data that cannot integrate yet (a broadcast before sync step 2) is server data too: it names server items.
+  const received = store.pendingStructs !== null || store.pendingDs !== null || [...store.clients.keys()].some(id => id !== doc.clientID)
+  return received ? docGeneration(doc) ?? UNCOMPACTED : FRESH_GENERATION
+}
+
+/** Provider params whose `gen` is read again at every (re)connect: y-websocket encodes `params` into each URL. */
+export function generationParams(doc: Y.Doc, base: Record<string, string>): Record<string, string> {
+  return Object.defineProperty({ ...base }, GENERATION_PARAM, { enumerable: true, get: () => replicaGeneration(doc) })
+}
+
+/**
+ * The server's decision for a connection that states `stated` (null: an rc client, which states none) in a room
+ * at `current`: merge it, refuse its replica (a later generation exists), or ask an rc client to update.
+ */
+export function generationGate(stated: string | null, current: string | undefined): 'accept' | 'stale' | 'update' {
+  const room = current ?? UNCOMPACTED
+  if (stated === null) return room === UNCOMPACTED ? 'accept' : 'update'
+  return stated === FRESH_GENERATION || stated === room ? 'accept' : 'stale'
 }
 
 type Kind = 'map' | 'array' | 'text'
@@ -92,9 +127,12 @@ export function compactDoc(source: Y.Doc, generation: string): Y.Doc {
   return copy
 }
 
-/** Every struct in the document's store, tombstones included: what compaction removes. */
-export function structCount(doc: Y.Doc): number {
-  let n = 0
-  for (const list of (doc.store as unknown as { clients: Map<number, unknown[]> }).clients.values()) n += list.length
-  return n
+/** Every struct in the document's store, and the deleted ones (tombstones) among them: what compaction removes. */
+export function historyOf(doc: Y.Doc): { structs: number; deleted: number } {
+  let structs = 0, deleted = 0
+  for (const list of (doc.store as unknown as { clients: Map<number, { deleted: boolean }[]> }).clients.values()) {
+    structs += list.length
+    for (const struct of list) if (struct.deleted) deleted++
+  }
+  return { structs, deleted }
 }
