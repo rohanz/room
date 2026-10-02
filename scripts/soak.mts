@@ -40,7 +40,7 @@ const WS = HTTP.replace(/^http/, 'ws')
 const DIR = process.env.SOAK_DIR ?? '/tmp/room-soak'
 const APP = LOCAL ? '' : process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
 const SAMPLE_MIN = Number(process.env.SOAK_SAMPLE_MIN ?? 10)
-const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2863604c406678'
+const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2879590f442648'
 if (APP === 'room-rohanz') throw new Error('refusing to run against the production app room-rohanz')
 if (!/^\/tmp\/|room-soak/.test(DIR)) throw new Error(`refusing SOAK_DIR ${DIR}: must be under /tmp or contain room-soak`)
 const EVENTS = path.join(DIR, 'events'), CREDS = path.join(DIR, 'creds'), WORK = path.join(DIR, 'work'), LOGS = path.join(DIR, 'logs')
@@ -148,6 +148,9 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
       catch (e) { emit({ ev: 'join-failed', why, attempt, error: String(e).slice(0, 300) }); if (stopping) return; await sleep(10_000) }
     }
     tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: dir, log })
+    // As room-mcp does for every joined session: the hooks bridge and the conflict watcher (claims and merge
+    // conflicts, the room's `conflicts` slots). Without it the load has no conflict detection at all.
+    tools.attachHooks(s)
     watchStale()
     // Every committed reply batch is a handoff to the host: record each id it carried (the delivery log).
     const commit = tools.ledger.commit.bind(tools.ledger)
@@ -378,6 +381,7 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
     })
   }
   connect()
+  let last = { structs: 0, deleted: 0 }
   const sample = () => {
     const names = new Set<string>()
     for (const k of rd.participants.keys()) names.add(String(k).split('\u0000')[0])
@@ -386,12 +390,13 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
     const present = [...provider.awareness.getStates().values()].map((st: any) => st?.user?.name).filter(Boolean)
     const meta = doc.getMap('meta')
     const history = historyOf(doc)
+    last = history
     emit({ ev: 'room', room, connected: provider.wsconnected, synced: provider.synced, holders, present,
       live: holders.filter(h => !h.ended).length, bus: rd.bus.length, mail: rd.mail.size, docBytes: Y.encodeStateAsUpdate(doc).length,
       structs: history.structs, deleted: history.deleted, generation: docGeneration(doc) ?? '0',
       hubSeq: meta.get('hubSeq'), hubEpoch: meta.get('hubEpoch'), hubIncarnation: meta.get('hubIncarnation') })
   }
-  return { sample, stop: () => { provider.destroy(); doc.destroy() } }
+  return { sample, history: () => last, stop: () => { provider.destroy(); doc.destroy() } }
 }
 
 // ---------------------------------------------------------------- local server (SOAK_LOCAL=1): run, restart, sample
@@ -497,15 +502,31 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
   const pollLogs = async () => { const l = await logsSince(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
   const logTimer = setInterval(() => void pollLogs(), 60_000)
   const pendingRestarts = APP || LOCAL ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
+  // SOAK_RESTART_WHEN_DELETED=N: also restart once either room's observed deleted structs reach N, so restarts
+  // compact at the server's real threshold whatever the rate. At most SOAK_RESTART_MAX (default 3) such
+  // restarts, at least SOAK_RESTART_GAP_MIN (default 30) apart, none in the last 15 minutes.
+  const whenDeleted = Number(process.env.SOAK_RESTART_WHEN_DELETED ?? 0)
+  const restartMax = Number(process.env.SOAK_RESTART_MAX ?? 3), restartGap = Number(process.env.SOAK_RESTART_GAP_MIN ?? 30) * 60_000
+  let lastRestart = t0, adaptive = 0
+  const restartDue = () => {
+    if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) { pendingRestarts.shift(); return 'scheduled' }
+    if (!whenDeleted || adaptive >= restartMax || Date.now() - lastRestart < restartGap || Date.now() > t0 + (minutes - 15) * 60_000) return undefined
+    observers.forEach(o => o.sample())
+    const max = Math.max(...observers.map(o => o.history().deleted))
+    if (max < whenDeleted) return undefined
+    adaptive++
+    return `deleted ${max} >= ${whenDeleted}`
+  }
   for (let tick = 1; Date.now() - t0 < minutes * 60_000; tick++) {
     const next = t0 + tick * SAMPLE_MIN * 60_000
     while (Date.now() < Math.min(next, t0 + minutes * 60_000)) {
-      if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) {
-        pendingRestarts.shift()
+      const why = (APP || LOCAL) ? restartDue() : undefined
+      if (why) {
+        lastRestart = Date.now()
         observers.forEach(o => o.sample())
         emit({ ev: 'metrics', phase: 'before restart', ...await metricsNow() })
         const r0 = Date.now()
-        emit({ ev: 'restart-begin' })
+        emit({ ev: 'restart-begin', why })
         try {
           if (LOCAL) { await stopLocalServer(); await startLocalServer() }
           else await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 })
