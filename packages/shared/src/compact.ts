@@ -107,7 +107,8 @@ export function compactDoc(source: Y.Doc, generation: string): Y.Doc {
       const kind = kindOf(type)
       if (kind === 'map') {
         const from = source.getMap<unknown>(name), to = copy.getMap<unknown>(name)
-        for (const [key, value] of from.entries()) to.set(key, copyValue(value))
+        // The old generation is not copied: overwriting it below would leave the copy's first tombstone.
+        for (const [key, value] of from.entries()) if (name !== 'meta' || key !== GENERATION_KEY) to.set(key, copyValue(value))
       } else if (kind === 'array') copy.getArray<unknown>(name).push(source.getArray<unknown>(name).toArray().map(copyValue))
       else if (kind === 'text') copy.getText(name).applyDelta(source.getText(name).toDelta())
     }

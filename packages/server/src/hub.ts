@@ -8,7 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
 import { HUB_ORIGIN, MSG_HUB, MAX_HUB_FRAME_BYTES, HubRequestBudget, RoomStateError, STARTING_RETRY_MS, decodeFrame, encodeFrame, hubReplyId, serializedStore, startHub, type Hub, type IncarnationStore, type LeaseStore, type StoredLease, type Principal, type Reply } from '@room/hub-core'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, compactDoc, docGeneration, historyOf } from '@room/shared'
 import { ownsName, toBytes } from './readonly.js'
 
 // The relay's durable-file procedure (relay/src/leases.ts), async; the server does not depend on the relay.
@@ -111,6 +111,8 @@ export interface ServerHubsOptions {
   hubBytes?(room: string, bytes: number): void
   mono?: () => number
   wall?: () => number
+  /** Compaction at a room's first load in this process (doc-history spec §5): only past `minDeleted` tombstones. */
+  compaction?: { minDeleted: number; generation(): string; beforeReplace?(): Promise<void> }
 }
 
 const owns = (p: Principal, name: string) => !('login' in p) || !p.login || ownsName(name, p.login)
@@ -121,6 +123,8 @@ export class ServerHubs {
   private readonly freshRooms = new Set<string>()
   private readonly loads = new WeakMap<Y.Doc, Loading>()
   private readonly writes = new Map<string, WriteState>()
+  /** Rooms whose first load in this process has decided on compaction: it runs at most once per room per process. */
+  private readonly compactionDecided = new Set<string>()
   private readonly maxDirtyRooms = 16
   constructor(private readonly opts: ServerHubsOptions) {}
 
@@ -216,7 +220,7 @@ export class ServerHubs {
         }
         const loaded = (async () => {
           await this.waitForRecoveredWrite(docName)
-          const persisted = await provider.getYDoc(docName)
+          const persisted = await this.compactAtLoad(docName, await provider.getYDoc(docName), provider)
           this.writes.set(docName, state)
           doc.once('destroy', () => { if (this.writes.get(docName) === state && !state.dirty && !state.pending && !state.error) this.writes.delete(docName) })
           Y.applyUpdate(doc, Y.encodeStateAsUpdate(persisted))
@@ -229,6 +233,37 @@ export class ServerHubs {
       },
       writeState: async docName => { await this.waitForRecoveredWrite(docName) },
     }
+  }
+
+  /**
+   * A room's first load in this process: past the threshold, its values in a fresh document under a new generation,
+   * stored by one atomic `replace` before any client syncs. Anything short of a stored copy (no `replace`, a copy
+   * that fails, a failed or interrupted write) leaves the stored document and its generation as they were.
+   */
+  private async compactAtLoad(name: string, stored: Y.Doc, provider: PersistenceProvider): Promise<Y.Doc> {
+    const options = this.opts.compaction
+    if (!options || this.compactionDecided.has(name)) return stored
+    const before = historyOf(stored)
+    if (before.deleted < Math.max(1, options.minDeleted)) { this.compactionDecided.add(name); return stored }
+    const log = (line: string) => this.opts.log(`room ${name}: ${line}`)
+    if (!provider.replace) { this.compactionDecided.add(name); log('not compacted: this storage cannot replace a document'); return stored }
+    let copy: Y.Doc | undefined
+    try {
+      copy = compactDoc(stored, options.generation())
+      log(`compacting at load: ${before.structs} structs (${before.deleted} deleted)`)
+      await options.beforeReplace?.()
+      await provider.replace(name, Y.encodeStateAsUpdate(copy))
+    } catch (error) {
+      copy?.destroy()
+      // A failed copy is final for this process; a failed write is retried at the room's next load.
+      if (!copy) this.compactionDecided.add(name)
+      log(`not compacted: ${error instanceof Error ? error.message : String(error)}; serving the document as it was`)
+      return stored
+    }
+    this.compactionDecided.add(name)
+    log(`compacted at load: ${before.structs} structs (${before.deleted} deleted) -> ${historyOf(copy).structs} structs, generation ${docGeneration(copy)}`)
+    stored.destroy()
+    return copy
   }
 
   /** After a connection is set up: start the room's hub for this doc, once, after it has loaded. */

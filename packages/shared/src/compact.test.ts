@@ -66,6 +66,14 @@ describe('compactDoc', () => {
   })
 })
 
+it('compacting a compacted document leaves no tombstone of the old generation', () => {
+  const once = compactDoc(new RoomDoc().doc, 'g1')
+  once.getMap('meta').set('hubSeq', 1); once.getMap('meta').set('hubSeq', 2)
+  const twice = compactDoc(once, 'g2')
+  expect(docGeneration(twice)).toBe('g2')
+  expect(historyOf(twice).deleted).toBe(0)
+})
+
 describe('historyOf', () => {
   it('counts every struct and the deleted ones among them', () => {
     const doc = new Y.Doc()

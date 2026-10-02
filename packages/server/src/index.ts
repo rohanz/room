@@ -49,6 +49,7 @@ import { MigrationReadFailure, migrateRepo, migrationSources, closeDocumentNames
 import { levelDbOf, levelStoredTables, levelStoredSize, levelInventorySize, levelStoredUpdates, levelCopyRaw, levelReplace, levelLoad, isLevelProvider, type StoredSize } from './stored.js'
 import { takeInventory, classifyDoc } from './inventory.js'
 import { DOC_SIZE_CAP_CODE, HUB_ORIGIN } from '@room/hub-core'
+import { COMPACTED_UPDATE_REASON, GENERATION_PARAM, STALE_REPLICA_CODE, STALE_REPLICA_REASON, docGeneration, generationGate } from '@room/shared'
 import { bodyReader, ResponseWork, scanRooms, archiveListing, WorkSlots, workPrincipal, requestCancellation, waitForResult, waitForDrain, waitForResponse, HttpFailure, isAdminIdentity, RateLimit, safeUrl, staticFile } from './http.js'
 
 import {
@@ -963,8 +964,20 @@ const droppedWrite = (room: string) => () => {
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
 /** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
+/** Tombstones a stored room needs before its first load in a process compacts it (ROOM_COMPACT_MIN_DELETED,
+ *  default 10,000, about 3 MB of heap; 0 or "off" disables). A compaction only adds, to the reconnect a restart
+ *  already costs every client, a fresh replica; the threshold keeps it from running for negligible history. */
+const COMPACT_MIN_DELETED = (() => {
+  const raw = process.env.ROOM_COMPACT_MIN_DELETED
+  if (raw === undefined || raw === '') return 10_000
+  const n = Number(raw)
+  return raw === 'off' || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 10_000
+})()
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
-  hubBytes: (room, bytes) => { docMeter(room).size(bytes) } })
+  hubBytes: (room, bytes) => { docMeter(room).size(bytes) },
+  compaction: { minDeleted: COMPACT_MIN_DELETED, generation: () => crypto.randomBytes(16).toString('hex'),
+    // Test-only: a window in which the process can be killed mid-compaction.
+    ...(process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_COMPACT_DELAY_MS ? { beforeReplace: () => new Promise<void>(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_COMPACT_DELAY_MS))) } : {}) } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 if (stockPersistence && isLevelProvider(stockPersistence.provider)) {
   const level = stockPersistence.provider
@@ -1072,10 +1085,18 @@ server.on('upgrade', (req, socket, head) => {
       if (opts.credential?.kind === 'session' && !auth.peek(opts.credential.value)) return refuse(socket, 401, 'session expired or unknown', roomName)
       if (opts.credential?.kind === 'view') { const view = viewTokens.get(opts.credential.value); if (!view || view.exp <= Date.now() || view.room !== docKey) return refuse(socket, 403, 'view key expired or revoked', roomName) }
       if (opts.credential?.kind === 'token' && opts.credential.value !== TOKEN) return refuse(socket, 403, 'token revoked', roomName)
+      // The generation gate (doc-history spec §5.2), with the room loaded: a replica of an earlier generation is
+      // closed before the server sends or reads any document data, so its history and values never come back.
+      const verdict = generationGate(url.searchParams.get(GENERATION_PARAM), docGeneration(docs.get(docKey)!))
       wss.handleUpgrade(req, socket, head, ws => {
         catchSocketErrors(ws, message => console.log(message))
         upgraded = true
         ws.once('close', release)
+        if (verdict !== 'accept') {
+          console.log(`refused a ${verdict === 'stale' ? 'replica of an earlier generation' : 'client that states no generation'} (room ${docKey})`)
+          ws.close(verdict === 'stale' ? STALE_REPLICA_CODE : 4403, verdict === 'stale' ? STALE_REPLICA_REASON : COMPACTED_UPDATE_REASON)
+          return
+        }
         if (opts.credential) credentialSockets.track(opts.credential, ws, docKey)
         if (opts.credential?.kind === 'session' && githubRepoOf(repo)) ws.once('close', revalidator.track(opts.credential.value, repo))
         outbound.track(ws as unknown as import('./sockets.js').BufferedSocket)
