@@ -56319,6 +56319,7 @@ var ConflictSet = class _ConflictSet {
   tick;
   running;
   rerun = false;
+  started = false;
   stopped = false;
   inputCheck;
   scheduledInputs = "";
@@ -56327,6 +56328,7 @@ var ConflictSet = class _ConflictSet {
   contractCache = /* @__PURE__ */ new Map();
   guard;
   start() {
+    this.started = true;
     this.scheduledInputs = this.inputsKey();
     const schedule = () => {
       this.withdrawUnauthorizedContracts();
@@ -56370,8 +56372,7 @@ var ConflictSet = class _ConflictSet {
     const onSync = () => this.schedule(0);
     this.team.provider.on?.("sync", onSync);
     this.stops.push(() => this.team.provider.off?.("sync", onSync));
-    this.tick = setInterval(() => this.schedule(0), 6e4);
-    this.tick.unref?.();
+    this.schedulePeriodic();
     if (this.team.provider.synced) this.schedule(0);
   }
   /** Pair facts, excluding publication clocks, unrelated edits, and display-only graph edges. */
@@ -56482,7 +56483,15 @@ var ConflictSet = class _ConflictSet {
     for (const stop2 of this.stops) stop2();
     this.stops.length = 0;
     if (this.timer) clearTimeout(this.timer);
-    if (this.tick) clearInterval(this.tick);
+    if (this.tick) clearTimeout(this.tick);
+  }
+  schedulePeriodic() {
+    if (!this.started || this.stopped) return;
+    this.tick = setTimeout(() => {
+      this.tick = void 0;
+      this.schedule(0);
+    }, 6e4);
+    this.tick.unref?.();
   }
   schedule(ms2 = this.debounceMs) {
     if (this.stopped || this.timer) return;
@@ -56502,9 +56511,12 @@ var ConflictSet = class _ConflictSet {
   async reconcile(reason) {
     if (this.stopped) return;
     if (this.running) {
-      this.rerun = true;
       await this.running;
       return;
+    }
+    if (this.tick) {
+      clearTimeout(this.tick);
+      this.tick = void 0;
     }
     this.running = (async () => {
       for (let attempt = 0; attempt < 2 && !this.stopped; attempt++) {
@@ -56526,6 +56538,7 @@ var ConflictSet = class _ConflictSet {
       await this.running;
     } finally {
       this.running = void 0;
+      this.schedulePeriodic();
     }
     if (this.rerun && !this.stopped) {
       this.rerun = false;
@@ -56738,6 +56751,8 @@ var ConflictSet = class _ConflictSet {
             sideInput(theirs, path54),
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path54)] : void 0
           ]));
+          const prior = this.slots.get(key2);
+          if (prior?.status === "unknown" && prior.inputs === inputs && prior.fence === leaseFence && (prior.retryAt ?? 0) > Date.now()) continue;
           if (unchangedCarried.has(path54)) {
             await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "clean", inputs, factId: "" });
             continue;
