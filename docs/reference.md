@@ -101,6 +101,7 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 | `ROOM_IDLE_DAYS`, `ROOM_LEGACY_DAYS` | Server cleanup thresholds; both default to 30 days. |
 | `ROOM_REVALIDATE_MINUTES` | Server GitHub push-permission recheck interval; default 10 minutes, `0` disables. |
 | `ROOM_DOC_MAX_MB`, `ROOM_MAX_MESSAGE_MB`, `ROOM_IDENTITY_GUARD` | Server size caps and experimental identity enforcement. |
+| `ROOM_COMPACT_MIN_DELETED` | Server: deleted structs before a room is compacted at its first load after a start; default 10,000, `0` or `off` disables. |
 | `ROOM_TRUST_PROXY`, `ROOM_MAX_BODY_READS`, `ROOM_MAX_ROOMS`, `ROOM_MAX_CONNECTIONS` (and `_PER_ROOM`, `_PER_PRINCIPAL`), `ROOM_MAX_PENDING_LOGINS` | Server request, room and connection budgets; defaults and meanings in [self-hosting](../deploy/self-hosting.md). |
 | `YPERSISTENCE` | Server state directory. |
 

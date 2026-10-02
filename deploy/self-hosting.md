@@ -64,6 +64,7 @@ server is open (fine on a laptop, not on the internet).
 | `ROOM_IDLE_DAYS` | Repos nobody connected to for this many days are closed and their shared work deleted. `0` disables. | `30` |
 | `ROOM_LEGACY_DAYS` | Days after a repository's 0.17 migration before its archived 0.16 branch rooms are removed. | `30` |
 | `ROOM_DOC_MAX_MB` | Live room document cap: once a room is over it, writers are closed with 4413 and reads continue. | `64` |
+| `ROOM_COMPACT_MIN_DELETED` | Deleted Yjs structs a stored room needs before its first load after a server start rebuilds it from its values (a new document generation; clients rejoin with a fresh copy). `0` or `off` disables. | `10000` |
 | `ROOM_MAX_MESSAGE_MB` | Largest websocket message accepted. | `16` |
 | `ROOM_STATIC` | Directory with the built browser view. | `./public` |
 

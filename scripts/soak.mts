@@ -10,6 +10,10 @@
 // Env: SOAK_SERVER (default https://room-rohanz-staging.fly.dev), SOAK_DIR (default /tmp/room-soak),
 //      SOAK_FLY_APP / SOAK_FLY_MACHINE (metrics over `flyctl ssh console`, read-only; the single restart at
 //      --restart-at uses `flyctl machine restart`). --restart-at takes a comma list of minutes (0 skips restarts); SOAK_FLY_APP= skips Fly.
+//      SOAK_LOCAL=1: no Fly at all. The orchestrator runs the server itself from source on 127.0.0.1:SOAK_LOCAL_PORT
+//      (default 1251) over SOAK_DIR/data, restarts it (SIGTERM, respawn) at --restart-at, samples it with `ps`, and
+//      passes SOAK_COMPACT_MIN_DELETED to it as ROOM_COMPACT_MIN_DELETED. SOAK_SAMPLE_MIN sets the sample interval
+//      (default 10 minutes; the observer's samples also count each room's structs).
 //
 // The server must run the fake GitHub issuer (GITHUB_CLIENT_ID=fake): each participant logs in as soak-<x>
 // through POST /auth/device + /auth/poll {fakeLogin}. Only synthetic repos (github.com/soak/alpha, beta) are
@@ -29,10 +33,13 @@ import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 
 const run = promisify(execFile)
-const HTTP = (process.env.SOAK_SERVER ?? 'https://room-rohanz-staging.fly.dev').replace(/\/+$/, '')
+const LOCAL = process.env.SOAK_LOCAL === '1'
+const LOCAL_PORT = Number(process.env.SOAK_LOCAL_PORT ?? 1251)
+const HTTP = (LOCAL ? `http://127.0.0.1:${LOCAL_PORT}` : process.env.SOAK_SERVER ?? 'https://room-rohanz-staging.fly.dev').replace(/\/+$/, '')
 const WS = HTTP.replace(/^http/, 'ws')
 const DIR = process.env.SOAK_DIR ?? '/tmp/room-soak'
-const APP = process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
+const APP = LOCAL ? '' : process.env.SOAK_FLY_APP ?? 'room-rohanz-staging'
+const SAMPLE_MIN = Number(process.env.SOAK_SAMPLE_MIN ?? 10)
 const MACHINE = process.env.SOAK_FLY_MACHINE ?? '2863604c406678'
 if (APP === 'room-rohanz') throw new Error('refusing to run against the production app room-rohanz')
 if (!/^\/tmp\/|room-soak/.test(DIR)) throw new Error(`refusing SOAK_DIR ${DIR}: must be under /tmp or contain room-soak`)
@@ -116,7 +123,8 @@ async function openRoom(room: string, session: string): Promise<void> {
 // ---------------------------------------------------------------- participant (child process)
 
 async function participant(name: string, repo: RepoKey, restarts: number[], count: number, minutes: number): Promise<void> {
-  const { joinSession, leaveSession } = await import('../packages/room-mcp/src/session.js')
+  const { joinSession, leaveSession, whenStale } = await import('../packages/room-mcp/src/session.js')
+  const { StaleReplacement } = await import('../packages/room-mcp/src/compacted.js')
   const { createTools } = await import('../packages/room-mcp/src/tools.js')
   const { configureCredentials, setCredential } = await import('../packages/room-mcp/src/credentials.js')
   const emit = emitter(path.join(EVENTS, `${name}.jsonl`))
@@ -140,6 +148,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
       catch (e) { emit({ ev: 'join-failed', why, attempt, error: String(e).slice(0, 300) }); if (stopping) return; await sleep(10_000) }
     }
     tools = createTools({ getSession: () => s, setSession: x => { s = x }, cwd: dir, log })
+    watchStale()
     // Every committed reply batch is a handoff to the host: record each id it carried (the delivery log).
     const commit = tools.ledger.commit.bind(tools.ledger)
     tools.ledger.commit = (batch: any) => {
@@ -155,12 +164,40 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
     emit({ ev: 'tool', tool: 'room_scope', out: (await tools.call('room_scope', { area, summary: `soak work for ${name}`, paths })).slice(0, 160) })
   }
 
+  // --- a replica the server refused after a compacting restart (4409): replaced as room-mcp's auto-join replaces it.
+  const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (x, why) => tools.drop(x, why),
+    attachWorkersRoom: (x, lead) => tools.attachWorkersRoom(x, lead), credentialsPath, log })
+  let replacing = false
+  function watchStale(): void {
+    const current = s
+    whenStale(current, () => {
+      if (s !== current || replacing || stopping) return
+      replacing = true
+      const before = { name: s.me.name, epoch: s.lease?.epoch }
+      emit({ ev: 'stale', ...before })
+      void (async () => {
+        const t0 = Date.now()
+        await replacement.begin(current)
+        for (let attempt = 1; !stopping; attempt++) {
+          try {
+            const fresh = await replacement.join()
+            await replacement.finish(fresh, async x => { s = x; tools.attachHooks(x) })
+            emit({ ev: 'replaced', sameName: s.me.name === before.name, name: s.me.name, epoch: s.lease?.epoch, prevEpoch: before.epoch, ms: Date.now() - t0, attempts: attempt })
+            break
+          } catch (e) { emit({ ev: 'replace-failed', attempt, error: String(e).slice(0, 300) }); await sleep(Math.min(20_000, 1_000 * 2 ** attempt)) }
+        }
+        replacing = false
+        if (s !== current) watchStale()
+      })()
+    })
+  }
+
   // --- messages: deterministic ids; a failed post retries the same id until accepted (or 5 min).
   let n = 0
   const post = async (body: any, id: string) => {
     const t0 = Date.now()
     for (let attempt = 1; ; attempt++) {
-      if (!s || leaving) { await sleep(2_000); continue }
+      if (!s || leaving || replacing) { await sleep(2_000); continue }
       const r = await s.post(s.me, body, { id })
       if (r.ok) { emit({ ev: 'sent', id, to: body.to, type: body.type, seq: r.seq, duplicate: !!r.duplicate, attempts: attempt, ms: Date.now() - t0 }); return }
       if (Date.now() - t0 > 300_000 || stopping) { emit({ ev: 'unsent', id, to: body.to, type: body.type, reason: r.reason, text: r.text, attempts: attempt }); return }
@@ -186,7 +223,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
     }
   }
   const drain = () => {
-    if (!s || !tools || leaving) return
+    if (!s || !tools || leaving || replacing) return
     const batch = tools.ledger.open('reply')
     const chosen = tools.ledger.select(s, batch)
     if (chosen.length) tools.ledger.commit(batch); else tools.ledger.release(batch)
@@ -194,7 +231,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
 
   // --- claims and edits
   const claimCycle = async () => {
-    if (!s || leaving) return
+    if (!s || leaving || replacing) return
     const file = pick(myFiles()), from = 1 + Math.floor(Math.random() * 150), to = from + 5 + Math.floor(Math.random() * 20)
     const out: string = await tools.call('room_claim', { path: file, from, to, intent: `soak edit ${from}-${to}` })
     // The id comes from this call's own reply ("claimed c_…"); an older open claim on the file is not this one.
@@ -260,7 +297,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
   every(20_000, 60_000, edit)
   // A disconnect every 10-20 min for 5-75 s: some stay inside the 45 s TTL, some outlive it.
   every(10 * min, 20 * min, async () => {
-    if (!s || leaving) return
+    if (!s || leaving || replacing) return
     const ms = Math.round(jitter(5_000, 75_000))
     emit({ ev: 'disconnect', ms, epoch: s.lease?.epoch })
     s.provider.disconnect(); await sleep(ms); s?.provider.connect() // a leave during the sleep replaced the session
@@ -270,6 +307,7 @@ async function participant(name: string, repo: RepoKey, restarts: number[], coun
   let leaveAt = jitter(25, Math.max(60, Math.min(minutes - 20, 150 + (minutes - 180)))) * min
   for (const r of restarts) if (Math.abs(leaveAt - r * min) < 8 * min) leaveAt += 16 * min
   setTimeout(async () => {
+    while (replacing && !stopping) await sleep(1_000)
     if (stopping) return
     leaving = true
     const before = { name: s.me.name, epoch: s.lease?.epoch }
@@ -321,14 +359,25 @@ async function flyLogs(file: string, since: number): Promise<{ lines: number; er
 
 async function observer(room: string, session: string, emit: (e: Record<string, unknown>) => void) {
   const { authorizedWebSocket } = await import('../packages/roomd/src/ws-auth.js')
-  const { RoomDoc, participantRecord } = await import('@room/shared')
-  const doc = new Y.Doc(), rd = new RoomDoc(doc)
-  const provider = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, params: { schema: '2' } })
-  provider.awareness.setLocalState(null)
+  const { RoomDoc, participantRecord, roomConnection, historyOf, docGeneration, STALE_REPLICA_CODE } = await import('@room/shared')
   // Every (id, seq) the hub appends, as it syncs in: a seq must never name two ids.
   const seen = new Map<string, number>()
-  const onBus = () => { for (const m of rd.messages()) if (typeof m.seq === 'number' && seen.get(m.id) !== m.seq) { seen.set(m.id, m.seq); emit({ ev: 'bus', room, id: m.id, seq: m.seq, from: m.from, type: m.type }) } }
-  rd.bus.observe(onBus)
+  let doc: Y.Doc, rd: InstanceType<typeof RoomDoc>, provider: WebsocketProvider
+  const connect = () => {
+    doc = new Y.Doc(); rd = new RoomDoc(doc)
+    provider = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, ...roomConnection(doc) })
+    provider.awareness.setLocalState(null)
+    const current = rd
+    rd.bus.observe(() => { for (const m of current.messages()) if (typeof m.seq === 'number' && seen.get(m.id) !== m.seq) { seen.set(m.id, m.seq); emit({ ev: 'bus', room, id: m.id, seq: m.seq, from: m.from, type: m.type }) } })
+    // The room was compacted at a server restart: this replica is refused, so take a fresh one, as a client restart does.
+    provider.on('connection-close', (event: { code?: number } | null) => {
+      if (event?.code !== STALE_REPLICA_CODE) return
+      emit({ ev: 'observer-replaced', room })
+      provider.destroy(); doc.destroy()
+      connect()
+    })
+  }
+  connect()
   const sample = () => {
     const names = new Set<string>()
     for (const k of rd.participants.keys()) names.add(String(k).split('\u0000')[0])
@@ -336,16 +385,79 @@ async function observer(room: string, session: string, emit: (e: Record<string, 
       .map(({ n, h }) => ({ name: n, epoch: h.epoch, ended: h.ended ?? null, at: h.at }))
     const present = [...provider.awareness.getStates().values()].map((st: any) => st?.user?.name).filter(Boolean)
     const meta = doc.getMap('meta')
+    const history = historyOf(doc)
     emit({ ev: 'room', room, connected: provider.wsconnected, synced: provider.synced, holders, present,
       live: holders.filter(h => !h.ended).length, bus: rd.bus.length, mail: rd.mail.size, docBytes: Y.encodeStateAsUpdate(doc).length,
+      structs: history.structs, deleted: history.deleted, generation: docGeneration(doc) ?? '0',
       hubSeq: meta.get('hubSeq'), hubEpoch: meta.get('hubEpoch'), hubIncarnation: meta.get('hubIncarnation') })
   }
   return { sample, stop: () => { provider.destroy(); doc.destroy() } }
 }
 
+// ---------------------------------------------------------------- local server (SOAK_LOCAL=1): run, restart, sample
+
+let localServer: { child: ChildProcess; started: number; maxRssKb: number } | undefined
+const LOCAL_LOG = path.join(DIR, 'server-logs.txt')
+async function startLocalServer(): Promise<void> {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ROOM_|CLAUDE_|CODEX_|YPERSISTENCE)/.test(k)))
+  const out = fs.openSync(LOCAL_LOG, 'a')
+  const child = spawn(process.execPath, ['--import', 'tsx', path.join(path.dirname(new URL(import.meta.url).pathname), '../packages/server/src/index.ts')], {
+    env: { ...env, HOST: '127.0.0.1', PORT: String(LOCAL_PORT), GITHUB_CLIENT_ID: 'fake', YPERSISTENCE: path.join(DIR, 'data'),
+      ...(process.env.SOAK_COMPACT_MIN_DELETED ? { ROOM_COMPACT_MIN_DELETED: process.env.SOAK_COMPACT_MIN_DELETED } : {}) },
+    stdio: ['ignore', 'pipe', 'pipe'] })
+  // Each line timestamped, as Fly's log lines are, for the report's log classification.
+  const stamp = (b: Buffer) => { for (const l of b.toString().split('\n')) if (l.trim()) fs.writeSync(out, `${new Date().toISOString()} ${l}\n`) }
+  child.stdout!.on('data', stamp); child.stderr!.on('data', stamp)
+  child.once('exit', () => fs.closeSync(out))
+  localServer = { child, started: Date.now(), maxRssKb: 0 }
+  for (let i = 0; i < 600; i++) {
+    try { if ((await fetch(`${HTTP}/health`, { signal: AbortSignal.timeout(2_000) })).ok) return } catch { /* starting */ }
+    if (child.exitCode !== null) throw new Error(`the local server exited (${child.exitCode}); see ${LOCAL_LOG}`)
+    await sleep(200)
+  }
+  throw new Error('the local server did not answer /health')
+}
+async function stopLocalServer(): Promise<void> {
+  const child = localServer?.child
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  await new Promise<void>(resolve => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000)
+    child.once('exit', () => { clearTimeout(timer); resolve() })
+    child.kill('SIGTERM')
+  })
+}
+/** The server process with `ps`: RSS, CPU time (as 1/100 s ticks), its peak RSS seen, and the data volume. */
+async function localMetrics(): Promise<Record<string, number> | { error: string }> {
+  const server = localServer
+  if (!server?.child.pid || server.child.exitCode !== null) return { error: 'local server not running' }
+  try {
+    const { stdout } = await run('ps', ['-o', 'rss=,time=', '-p', String(server.child.pid)])
+    const [rss, time] = stdout.trim().split(/\s+/)
+    const parts = time!.split(/[:.]/).map(Number) // [[dd-]hh:]mm:ss.cc
+    const [mm, ss, cc] = parts.slice(-3), hh = parts.length > 3 ? parts.at(-4)! : 0
+    const rssKb = Number(rss)
+    server.maxRssKb = Math.max(server.maxRssKb, rssKb)
+    const { stdout: du } = await run('du', ['-sk', path.join(DIR, 'data')])
+    return { pid: server.child.pid, rssKb, hwmKb: server.maxRssKb, cpuTicks: ((hh * 60 + mm!) * 60 + ss!) * 100 + cc!, uptimeS: (Date.now() - server.started) / 1000, dataKb: Number(du.split(/\s+/)[0]) }
+  } catch (e) { return { error: String(e).slice(0, 300) } }
+}
+let localLogLines = 0
+/** New server log lines since the last call, as flyLogs reports them. */
+function localLogs(file: string): { lines: number; errors: string[] } {
+  let all: string[] = []
+  try { all = fs.readFileSync(LOCAL_LOG, 'utf8').split('\n').filter(Boolean) } catch { /* not yet */ }
+  const fresh = all.slice(localLogLines)
+  localLogLines = all.length
+  fs.appendFileSync(file, fresh.join('\n') + (fresh.length ? '\n' : ''))
+  return { lines: fresh.length, errors: fresh.filter(l => /\b(error|exception|uncaught|fatal|out of memory|oom|killed|refused|failed|warn(ing)?)\b/i.test(l)) }
+}
+const metricsNow = () => LOCAL ? localMetrics() : flyMetrics()
+const logsSince = (file: string, since: number) => LOCAL ? Promise.resolve(localLogs(file)) : flyLogs(file, since)
+
 async function orchestrate(minutes: number, restarts: number[], count: number, postIdle: number): Promise<void> {
   fs.mkdirSync(EVENTS, { recursive: true }); fs.mkdirSync(LOGS, { recursive: true })
   const emit = emitter(path.join(EVENTS, 'orchestrator.jsonl'))
+  if (LOCAL) await startLocalServer()
   const health = await fetch(`${HTTP}/health`).then(r => r.json()) as { hub?: number }
   const cfg = await fetch(`${HTTP}/auth/config`).then(r => r.json()) as { fake?: boolean }
   if (health.hub !== 1 || !cfg.fake) throw new Error(`${HTTP} must run a 0.17 hub with the fake issuer (health ${JSON.stringify(health)})`)
@@ -357,7 +469,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
   // The inventory needs ROOM_ADMINS; record whether this server lets the observer read it.
   const inv = await fetch(`${HTTP}/admin/inventory`, { headers: { authorization: `Bearer ${sessions['soak-observer']}` } })
   emit({ ev: 'inventory-probe', status: inv.status, body: (await inv.text()).slice(0, 200) })
-  const idle = await flyMetrics()
+  const idle = await metricsNow()
   emit({ ev: 'metrics', phase: 'pre-soak idle', ...idle })
 
   const t0 = Date.now()
@@ -373,7 +485,7 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
     await sleep(jitter(1_000, 4_000))
   }
   const observers = await Promise.all(Object.values(REPOS).map(room => observer(room, sessions['soak-observer'], emitter(path.join(EVENTS, 'observer.jsonl')))))
-  const obsTimer = setInterval(() => observers.forEach(o => o.sample()), 30_000)
+  const obsTimer = setInterval(() => observers.forEach(o => o.sample()), Math.min(30_000, SAMPLE_MIN * 60_000))
   const healthTimer = setInterval(async () => {
     const t = Date.now()
     try { const r = await fetch(`${HTTP}/health`, { signal: AbortSignal.timeout(8_000) }); emit({ ev: 'health', status: r.status, ms: Date.now() - t }) }
@@ -382,30 +494,35 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
   const logFile = path.join(DIR, 'fly-logs.txt')
   // One `flyctl logs --no-tail` returns only the last ~100 lines, so poll every minute and report per sample.
   let pending = { lines: 0, errors: [] as string[] }
-  const pollLogs = async () => { const l = await flyLogs(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
+  const pollLogs = async () => { const l = await logsSince(logFile, t0); pending = { lines: pending.lines + l.lines, errors: [...pending.errors, ...l.errors] } }
   const logTimer = setInterval(() => void pollLogs(), 60_000)
-  const pendingRestarts = APP ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
+  const pendingRestarts = APP || LOCAL ? restarts.filter(r => r > 0).sort((a, b) => a - b) : []
   for (let tick = 1; Date.now() - t0 < minutes * 60_000; tick++) {
-    const next = t0 + tick * 10 * 60_000
+    const next = t0 + tick * SAMPLE_MIN * 60_000
     while (Date.now() < Math.min(next, t0 + minutes * 60_000)) {
       if (pendingRestarts.length && Date.now() >= t0 + pendingRestarts[0] * 60_000) {
         pendingRestarts.shift()
-        emit({ ev: 'metrics', phase: 'before restart', ...await flyMetrics() })
+        observers.forEach(o => o.sample())
+        emit({ ev: 'metrics', phase: 'before restart', ...await metricsNow() })
         const r0 = Date.now()
         emit({ ev: 'restart-begin' })
-        try { await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 }); emit({ ev: 'restart-command-done', ms: Date.now() - r0 }) }
+        try {
+          if (LOCAL) { await stopLocalServer(); await startLocalServer() }
+          else await run('flyctl', ['machine', 'restart', MACHINE, '-a', APP], { timeout: 300_000 })
+          emit({ ev: 'restart-command-done', ms: Date.now() - r0 })
+        }
         catch (e) { emit({ ev: 'restart-command-failed', error: String(e).slice(0, 300) }) }
         while (Date.now() - r0 < 300_000) {
           try { if ((await fetch(`${HTTP}/health`, { signal: AbortSignal.timeout(3_000) })).ok) break } catch { /* down */ }
           await sleep(500)
         }
         emit({ ev: 'restart-healthy', ms: Date.now() - r0 })
-        emit({ ev: 'metrics', phase: 'after restart', ...await flyMetrics() })
+        emit({ ev: 'metrics', phase: 'after restart', ...await metricsNow() })
       }
       await sleep(5_000)
     }
     observers.forEach(o => o.sample())
-    const m = await flyMetrics()
+    const m = await metricsNow()
     await pollLogs()
     const logs = pending; pending = { lines: 0, errors: [] }
     emit({ ev: 'metrics', phase: 'soak', minute: Math.round((Date.now() - t0) / 60_000), ...m, logLines: logs.lines, errors: logs.errors })
@@ -418,10 +535,11 @@ async function orchestrate(minutes: number, restarts: number[], count: number, p
   observers.forEach(o => o.sample())
   clearInterval(obsTimer); clearInterval(healthTimer); clearInterval(logTimer)
   // Idle after the soak: does the server's RSS come back down with the participants gone?
-  for (let i = 0; i < postIdle; i++) { emit({ ev: 'metrics', phase: 'post-soak idle', ...await flyMetrics() }); await sleep(120_000) }
-  const logs = await flyLogs(logFile, t0)
+  for (let i = 0; i < postIdle; i++) { emit({ ev: 'metrics', phase: 'post-soak idle', ...await metricsNow() }); await sleep(120_000) }
+  const logs = await logsSince(logFile, t0)
   emit({ ev: 'metrics', phase: 'final', logLines: logs.lines, errors: logs.errors })
   observers.forEach(o => o.stop())
+  if (LOCAL) await stopLocalServer()
   emit({ ev: 'end' })
   report()
   process.exit(0)
@@ -434,7 +552,8 @@ async function structs(): Promise<void> {
   const emit = emitter(path.join(EVENTS, 'structs.jsonl'))
   for (const room of Object.values(REPOS)) {
     const doc = new Y.Doc()
-    const p = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, params: { schema: '2' } })
+    const { roomConnection } = await import('@room/shared')
+    const p = new WebsocketProvider(WS, encodeURIComponent(room), doc, { WebSocketPolyfill: authorizedWebSocket({ session }) as any, ...roomConnection(doc) })
     p.awareness.setLocalState(null)
     await new Promise<void>(r => p.once('sync', () => r()))
     await sleep(3_000)
@@ -475,19 +594,20 @@ function report(): void {
   const metrics = orch.filter(e => e.ev === 'metrics' && e.rssKb)
   const rooms = obs.filter(e => e.ev === 'room')
   const errorsAll: string[] = []
-  out.push('| min | phase | server RSS MB | HWM MB | CPU % | steal % | /data KB | alpha doc KB | beta doc KB | live leases | present | bus | mail | Fly log lines | error lines |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+  out.push('| min | phase | server RSS MB | HWM MB | CPU % | steal % | /data KB | alpha doc KB | beta doc KB | alpha structs (deleted) | beta structs (deleted) | live leases | present | bus | mail | log lines | error lines |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   let prev: any
   for (const m of metrics) {
     // A restarted machine can reuse the pid; its uptime going down marks a new process.
     const same = prev && prev.pid === m.pid && !(m.uptimeS < prev.uptimeS)
     const cpu = same && prev.cpuTicks !== undefined ? (100 * (m.cpuTicks - prev.cpuTicks) / 100 / ((m.t - prev.t) / 1000)).toFixed(1) : '-'
     const steal = same && prev.totalTicks !== undefined && m.totalTicks > prev.totalTicks ? (100 * (m.stealTicks - prev.stealTicks) / (m.totalTicks - prev.totalTicks)).toFixed(1) : '-'
-    const near = (room: string) => rooms.filter(r => r.room === room && Math.abs(r.t - m.t) < 120_000).at(-1)
+    const near = (room: string) => rooms.filter(r => r.room === room && Math.abs(r.t - m.t) < 120_000 && (m.phase !== 'before restart' || r.t <= m.t)).at(-1)
+    const history = (r: any) => r?.structs !== undefined ? `${r.structs} (${r.deleted})` : '-'
     const a = near(REPOS.alpha), b = near(REPOS.beta)
     const errs = (m.errors ?? []) as string[]
     errorsAll.push(...errs)
     rows.push({ m, cpu: cpu === '-' ? undefined : Number(cpu), steal: steal === '-' ? undefined : Number(steal), bus: a && b ? a.bus + b.bus : undefined, live: a && b ? a.live + b.live : undefined })
-    out.push(`| ${m.t >= t0 ? min(m.t) : 'pre'} | ${m.phase} | ${(m.rssKb / 1024).toFixed(1)} | ${(m.hwmKb / 1024).toFixed(1)} | ${cpu} | ${steal} | ${m.dataKb ?? '-'} | ${a ? (a.docBytes / 1024).toFixed(0) : '-'} | ${b ? (b.docBytes / 1024).toFixed(0) : '-'} | ${a && b ? a.live + b.live : '-'} | ${a && b ? a.present.length + b.present.length : '-'} | ${a && b ? a.bus + b.bus : '-'} | ${a && b ? a.mail + b.mail : '-'} | ${m.logLines ?? '-'} | ${errs.length} |`)
+    out.push(`| ${m.t >= t0 ? min(m.t) : 'pre'} | ${m.phase} | ${(m.rssKb / 1024).toFixed(1)} | ${(m.hwmKb / 1024).toFixed(1)} | ${cpu} | ${steal} | ${m.dataKb ?? '-'} | ${a ? (a.docBytes / 1024).toFixed(0) : '-'} | ${b ? (b.docBytes / 1024).toFixed(0) : '-'} | ${history(a)} | ${history(b)} | ${a && b ? a.live + b.live : '-'} | ${a && b ? a.present.length + b.present.length : '-'} | ${a && b ? a.bus + b.bus : '-'} | ${a && b ? a.mail + b.mail : '-'} | ${m.logLines ?? '-'} | ${errs.length} |`)
     prev = m
   }
   const final = orch.filter(e => e.ev === 'metrics' && e.phase === 'final').at(-1)
@@ -523,7 +643,8 @@ function report(): void {
     const sxx = pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0), sxy = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0)
     return { slope: sxy / sxx, intercept: my - (sxy / sxx) * mx, n }
   }
-  const settled = rows.filter(r => r.m.phase === 'soak' && r.m.t - t0 >= 60 * 60_000 && !inRestart(r.m.t, 10 * 60_000))
+  const fitFrom = Number(process.env.SOAK_FIT_FROM_MIN ?? 60) * 60_000
+  const settled = rows.filter(r => r.m.phase === 'soak' && r.m.t - t0 >= fitFrom && !inRestart(r.m.t, 10 * 60_000))
   const rssFit = settled.length > 2 ? fit(settled.map(r => [(r.m.t - t0) / 3_600_000, r.m.rssKb / 1024])) : undefined
   const cpuPts = settled.filter(r => r.cpu !== undefined)
   const cpuFit = cpuPts.length > 2 ? fit(cpuPts.map(r => [(r.m.t - t0) / 3_600_000, r.cpu!])) : undefined
@@ -547,7 +668,8 @@ function report(): void {
   const lostReceipt = ([k]: [string, number]) => {
     const [n, id] = k.split('\0'), evs = people[n] ?? []
     const ds = evs.filter(e => e.ev === 'delivered' && e.id === id)
-    const leave = evs.find(e => e.ev === 'leave' && e.t > ds[0].t && e.t < ds[1].t)
+    // A replica refused after a compacting restart is discarded as a leave discards it.
+    const leave = evs.find(e => (e.ev === 'leave' || e.ev === 'stale') && e.t > ds[0].t && e.t < ds[1].t)
     const offline = evs.filter(e => e.ev === 'status' && e.t <= ds[0].t + 5_000).at(-1)
     const resynced = evs.some(e => e.ev === 'status' && e.conn && e.synced && e.t > ds[0].t && leave && e.t < leave.t)
     return !!leave && (!offline?.conn || evs.some(e => e.ev === 'status' && !e.conn && Math.abs(e.t - ds[0].t) <= 5_000)) && !resynced
@@ -594,7 +716,9 @@ function report(): void {
   }
 
   // Names and leases: every participant keeps its name; departed leases end within TTL (45 s) + one sample.
-  const nameDrift = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => (e.ev === 'joined' || e.ev === 'status') && e.name && e.name !== n).map(e => `${n} ran as ${e.name} at min ${min(e.t)}`))
+  const nameDrift = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => (e.ev === 'joined' || e.ev === 'status' || e.ev === 'replaced') && e.name && e.name !== n).map(e => `${n} ran as ${e.name} at min ${min(e.t)}`))
+  // Replicas refused after a compacting restart, and their replacements under the same name.
+  const replacements = Object.entries(people).flatMap(([n, evs]) => evs.filter(e => e.ev === 'stale').map(e => ({ n, t: e.t, r: evs.find(x => x.ev === 'replaced' && x.t > e.t) })))
   const rejoins = Object.entries(people).map(([n, evs]) => ({ n, r: evs.find(e => e.ev === 'rejoined') }))
   const endChecks: string[] = []
   const lastRooms = rooms.filter(r => r.t > (orch.find(e => e.ev === 'stopping-children')?.t ?? Infinity) + 50_000)
@@ -626,7 +750,8 @@ function report(): void {
   // A connected client losing its lease: a pause that begins while its socket and hub are up, outside a leave.
   const connectedLoss = Object.entries(people).flatMap(([n, evs]) => {
     const stop = evs.find(e => e.ev === 'stopping')?.t ?? Infinity
-    const away = evs.filter(e => e.ev === 'leave').map(l => [l.t, evs.find(e => e.ev === 'rejoined' && e.t > l.t)?.t ?? Infinity])
+    const away = [...evs.filter(e => e.ev === 'leave').map(l => [l.t, evs.find(e => e.ev === 'rejoined' && e.t > l.t)?.t ?? Infinity]),
+      ...evs.filter(e => e.ev === 'stale').map(l => [l.t, evs.find(e => e.ev === 'replaced' && e.t > l.t)?.t ?? Infinity])]
     const statuses = evs.filter(e => e.ev === 'status' && e.t < stop)
     return statuses.filter((e, i) => e.paused && !statuses[i - 1]?.paused && e.conn && e.hub && !away.some(([a, b]) => e.t >= a && e.t <= b + 5_000))
       .map(e => {
@@ -685,6 +810,19 @@ function report(): void {
       '| participant | epoch before (incarnation) | epoch after (incarnation) | name after | first drop seen | back after /health 200 |', '|---|---|---|---|---|---|', ...restartRows, '',
       `Highest seq before the restart: ${c.preMaxSeq} (incarnation ${incOf(c.preMaxSeq)}); new posts after it at or below that: ${c.below.length}. Lowest post-restart seq in a new incarnation: ${Number.isFinite(c.postMinSeq) ? `${c.postMinSeq} (incarnation ${incOf(c.postMinSeq)})` : '-'}.`, '')
   })
+  // Compaction at each restart: each room's history and the server's RSS just before, and after it.
+  if (restarts.length && rooms.some(r => r.structs !== undefined)) {
+    md.push('## Document history and memory around each restart', '', '| restart | room | structs (deleted) before | generation before | structs (deleted) after | generation after | RSS MB before | RSS MB after restart | RSS MB next sample |', '|---|---|---|---|---|---|---|---|---|')
+    restarts.forEach((r, i) => {
+      const rssBefore = metrics.filter(m => m.t <= r.begin.t).at(-1), rssAfter = metrics.find(m => m.t >= r.healthy.t && m.phase === 'after restart'), rssNext = metrics.find(m => m.t > r.healthy.t + 60_000 && m.phase === 'soak')
+      for (const room of Object.values(REPOS)) {
+        const before = rooms.filter(x => x.room === room && x.t <= r.begin.t && x.structs !== undefined).at(-1)
+        const after = rooms.find(x => x.room === room && x.t > r.healthy.t + 20_000 && x.synced && x.structs !== undefined)
+        md.push(`| ${i + 1} (min ${min(r.begin.t)}) | ${room} | ${before ? `${before.structs} (${before.deleted})` : '-'} | ${before?.generation ?? '-'} | ${after ? `${after.structs} (${after.deleted})` : '-'} | ${after?.generation ?? '-'} | ${rssBefore ? (rssBefore.rssKb / 1024).toFixed(1) : '-'} | ${rssAfter ? (rssAfter.rssKb / 1024).toFixed(1) : '-'} | ${rssNext ? (rssNext.rssKb / 1024).toFixed(1) : '-'} |`)
+      }
+    })
+    md.push('', `Replicas refused after a compacting restart: ${replacements.length}; replaced under the same name ${replacements.filter(x => x.r?.sameName).length}/${replacements.length}; slowest replacement ${(Math.max(0, ...replacements.map(x => x.r?.ms ?? 0)) / 1000).toFixed(1)} s.`, '')
+  }
   // Hourly summary of the 10-minute samples (soak phase), with health failures and error lines per hour.
   const hours = Math.ceil(Math.max(0, ...rows.filter(r => r.m.phase === 'soak').map(r => r.m.t - t0)) / 3_600_000)
   if (hours >= 2) {
@@ -702,8 +840,8 @@ function report(): void {
   md.push('## Pass criteria', '')
   md.push(`- Memory: first-hour average ${memFirst.toFixed(1)} MB, last-hour average ${memLast.toFixed(1)} MB. Line fit over ${rssFit?.n ?? 0} samples from hour 1 on (10 min after each restart left out): ${rssFit ? `${rssFit.slope.toFixed(2)} MB/hour, intercept ${rssFit.intercept.toFixed(1)} MB` : '-'}; maximum RSS ${maxRss.toFixed(1)} MB, HWM ${maxHwm.toFixed(1)} MB (pass: slope < 2 MB/hour and RSS < 300 MB). ${pf(slopePass)}`)
   md.push(`- CPU: line fit ${cpuFit ? `${cpuFit.slope.toFixed(3)} percentage points of a core per hour over ${cpuFit.n} samples` : '-'} (flat: |slope| < 0.1). ${pf(cpuFlat)}`)
-  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Leaves ended on the hub by the next sample (released, or already replaced by the rejoin; a leave while disconnected by TTL expiry): ${leaveEnds.filter(l => l.ended).length}/${leaveEnds.length}${leaveEnds.some(l => l.offline) ? ` (${leaveEnds.filter(l => l.offline).map(l => `${l.n} left while disconnected: ${l.ended}`).join('; ')})` : ''}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. Connected clients that lost their lease: ${connectedTrue.length}${connectedTrue.length ? ` (${connectedTrue.slice(0, 12).map(c => `${c.n} at min ${min(c.t)}, ${c.sinceReconnectS ?? '-'} s after reconnecting, ${c.sinceDisconnectS ?? '-'} s after its last disconnect`).join('; ')})` : ''}; leases found expired right after a 30 s+ disconnect (TTL edge, expected): ${connectedLoss.length - connectedTrue.length}; hub expiries with no disconnect to explain them: ${unexplained.length}${unexplained.length ? ` (${unexplained.slice(0, 10).map(x => `${x.name} at min ${min(x.t)}`).join(', ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !connectedTrue.length && rejoins.every(r => !r.r || r.r.sameName) && leaveEnds.every(l => l.ended))}`)
-  md.push(`- Delivery: ${sent.length} addressed messages accepted; lost (accepted, never in the room, never delivered) ${lost.length}; still owed at the stop (in the room, recipient offline or stalled) ${owedAtStop.length}; duplicate deliveries ${dupsAll.length} (${dupsExplained.length} at-least-once: the receipt was written offline and its replica discarded by a leave before reconnecting${dupsExplained.length ? `: ${dupsExplained.map(([k]) => k.replace('\0', ':')).join(', ')}` : ''}); same-id resends answered with the original (duplicate) ${resent.length - resentBad.length}/${resent.length}. ${pf(lost.length === 0 && dups.length === 0 && resentBad.length === 0)}${lost.length ? `\n  - lost: ${lost.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${owedAtStop.length ? `\n  - owed at the stop: ${owedAtStop.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${dups.length ? `\n  - duplicates: ${dups.slice(0, 10).map(([k, c]) => `${k.replace('\0', ':')}×${c}`).join(', ')}` : ''}`)
+  md.push(`- Leases: name drift ${nameDrift.length ? nameDrift.join('; ') : 'none'}; rejoins under the same name ${rejoins.filter(r => r.r?.sameName).length}/${rejoins.filter(r => r.r).length}; replacements under the same name ${replacements.filter(x => x.r?.sameName).length}/${replacements.length}; leases still live 50+ s after stop: ${endChecks.length ? endChecks.join('; ') : 'none'}. Disconnects: ${disc.length}; shorter than 30 s (inside the 45 s TTL even 15 s after a renew) kept their epoch ${disc.filter(d => d.ms < 30_000 && d.after === d.before).length}/${disc.filter(d => d.ms < 30_000).length}, or ${disc.filter(d => d.ms < 30_000 && d.after === d.before && !inStall(d.t)).length}/${disc.filter(d => d.ms < 30_000 && !inStall(d.t)).length} outside the CPU-throttled window; past it (over 50 s) re-acquired a new, higher epoch ${disc.filter(d => d.ms > 50_000 && d.after !== undefined && d.after > d.before).length}/${disc.filter(d => d.ms > 50_000).length}; slowest back to an unpaused lease after reconnecting ${(Math.max(0, ...disc.filter(d => !inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s outside that window, ${(Math.max(0, ...disc.filter(d => inStall(d.t)).map(d => d.backMs ?? 0)) / 1000).toFixed(1)} s inside it. Hub expiries of disconnected holders: ${expiryRows.length}, seconds after the disconnect began ${expiryRows.map(x => x.afterDisconnectS?.toFixed(0) ?? '?').join(', ') || '-'} (TTL 45 s from the last renew); later than 47 s: ${lateExpiry.length} (${lateExpiry.filter(x => inStall(x.t)).length} of them in the CPU-throttled window). Leaves ended on the hub by the next sample (released, or already replaced by the rejoin; a leave while disconnected by TTL expiry): ${leaveEnds.filter(l => l.ended).length}/${leaveEnds.length}${leaveEnds.some(l => l.offline) ? ` (${leaveEnds.filter(l => l.offline).map(l => `${l.n} left while disconnected: ${l.ended}`).join('; ')})` : ''}${leaveEnds.some(l => !l.ended) ? ` (not yet: ${leaveEnds.filter(l => !l.ended).map(l => `${l.n} at min ${min(l.t)}${inStall(l.t) ? ', throttled window' : ''}`).join('; ')})` : ''}. Connected clients that lost their lease: ${connectedTrue.length}${connectedTrue.length ? ` (${connectedTrue.slice(0, 12).map(c => `${c.n} at min ${min(c.t)}, ${c.sinceReconnectS ?? '-'} s after reconnecting, ${c.sinceDisconnectS ?? '-'} s after its last disconnect`).join('; ')})` : ''}; leases found expired right after a 30 s+ disconnect (TTL edge, expected): ${connectedLoss.length - connectedTrue.length}; hub expiries with no disconnect to explain them: ${unexplained.length}${unexplained.length ? ` (${unexplained.slice(0, 10).map(x => `${x.name} at min ${min(x.t)}`).join(', ')})` : ''}. ${pf(!nameDrift.length && !endChecks.length && !connectedTrue.length && rejoins.every(r => !r.r || r.r.sameName) && replacements.every(x => x.r?.sameName) && leaveEnds.every(l => l.ended))}`)
+  md.push(`- Delivery: ${sent.length} addressed messages accepted; lost (accepted, never in the room, never delivered) ${lost.length}; still owed at the stop (in the room, recipient offline or stalled) ${owedAtStop.length}; duplicate deliveries ${dupsAll.length} (${dupsExplained.length} at-least-once: the receipt was written offline and its replica discarded by a leave or a compacting restart before reconnecting${dupsExplained.length ? `: ${dupsExplained.map(([k]) => k.replace('\0', ':')).join(', ')}` : ''}); same-id resends answered with the original (duplicate) ${resent.length - resentBad.length}/${resent.length}. ${pf(lost.length === 0 && dups.length === 0 && resentBad.length === 0)}${lost.length ? `\n  - lost: ${lost.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${owedAtStop.length ? `\n  - owed at the stop: ${owedAtStop.slice(0, 10).map(e => `${e.id}→${e.to} (min ${min(e.t)})`).join(', ')}` : ''}${dups.length ? `\n  - duplicates: ${dups.slice(0, 10).map(([k, c]) => `${k.replace('\0', ':')}×${c}`).join(', ')}` : ''}`)
   md.push(`- Monotonic counters: seq problems ${seqProblems.length}, epoch problems ${epochProblems.length}, post-restart values at or below pre-restart ${postRestartBelow.length}. ${pf(!seqProblems.length && !epochProblems.length && !postRestartBelow.length)}${[...seqProblems, ...epochProblems].slice(0, 10).map(p => `\n  - ${p}`).join('')}`)
   md.push(`- Health: ${health.length} probes, ${badHealth.length} non-200 outside the restart windows (restart command to 60 s after /health 200)${badHealth.length ? ` at minutes ${badHealth.length > 8 ? `${min(badHealth[0].t)}–${min(badHealth.at(-1)!.t)}` : badHealth.map(h => min(h.t)).join(', ')}` : ''}; clustered (3+ within 5 min) ${stallFails.length}. ${pf(!badHealth.length)}`)
   md.push(`- Fly log lines since the start: ${flyLines.length}; matching error words: ${flyErrors.length}.${flyErrors.slice(0, 15).map(l => `\n  - \`${l.slice(0, 220).replace(/`/g, "'")}\``).join('')}`)
