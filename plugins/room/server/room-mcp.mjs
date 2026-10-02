@@ -38129,6 +38129,8 @@ var init_graph_index = __esm({
       completedFiles = /* @__PURE__ */ new Set();
       totalFiles = 0;
       get indexingStatus() {
+        if (this.phase === "error") return "graph unavailable (index discovery failed)";
+        if (this.degradedPaths.size) return `graph coverage degraded (${this.degradedPaths.size} file(s) unavailable)`;
         if (this.isReady) return "graph has no pending files";
         const unfinished = [...this.pending.keys()].filter((path54) => !this.completedFiles.has(path54)).length;
         const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size);
@@ -38183,9 +38185,9 @@ var init_graph_index = __esm({
       endJitter;
       unobserve = [];
       currentBuild = Promise.resolve();
-      /** Discovery may not have queued any files yet; readiness also requires it to finish. */
+      /** Quiescence alone does not mean discovery or individual reads succeeded. */
       get isReady() {
-        return !this.discovering && this.pending.size === 0;
+        return this.phase !== "error" && !this.degradedPaths.size && !this.discovering && this.pending.size === 0;
       }
       /** Resolves when the current build is done, even if a captured waiter is superseded. */
       get ready() {
@@ -56321,9 +56323,6 @@ var ConflictSet = class _ConflictSet {
   inputCheck;
   scheduledInputs = "";
   carriedInput;
-  checkedPairs = /* @__PURE__ */ new Map();
-  /** Retain the complete evaluation guard, including projected/publisher provenance, for replay. */
-  pairGuards = /* @__PURE__ */ new Map();
   starts = [];
   contractCache = /* @__PURE__ */ new Map();
   guard;
@@ -56515,6 +56514,8 @@ var ConflictSet = class _ConflictSet {
         } catch (e) {
           if (!(e instanceof StaleConflictInputs)) throw e;
           this.rerun = true;
+        } finally {
+          this.guard = void 0;
         }
         if (!this.rerun) return;
         if (attempt === 0) await new Promise((resolve5) => setImmediate(resolve5));
@@ -56617,9 +56618,7 @@ var ConflictSet = class _ConflictSet {
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other);
       if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs();
-      const retryDue = this.slots.owned(this.owner).some(([, slot]) => slot.other === other && slot.status === "unknown" && (slot.retryAt ?? 0) <= Date.now());
-      if (this.checkedPairs.get(other) === pairInputs && !retryDue) continue;
-      let failed = false;
+      let replayable = true;
       try {
         const theirs = snapshot(room, other, views);
         const theirGit = acceptedGit(participantRecord(room, other), views);
@@ -56636,7 +56635,7 @@ var ConflictSet = class _ConflictSet {
         if (ownNonPublisher) {
           const pair2 = !theirs || theirGit === "updating" ? void 0 : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
           if (pair2 && !("cannotCompare" in pair2)) {
-            const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
+            const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]);
             await this.claims(
               ownPublisher,
               theirs,
@@ -56644,7 +56643,7 @@ var ConflictSet = class _ConflictSet {
               pair2.mergeBase,
               /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\n").filter(Boolean)])
             );
-          }
+          } else replayable = false;
           continue;
         }
         if (theirs?.head.coverage.kind === "none" && theirs.head.coverage.reason === "not-publisher" && theirs.head.publisher) {
@@ -56655,10 +56654,10 @@ var ConflictSet = class _ConflictSet {
             this.guard = () => !!priorGuard?.() && snapshotStillCurrent(room, published, participantsView(room, this.team.awareness, Date.now()));
             const pair2 = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit);
             if (!("cannotCompare" in pair2)) {
-              const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
+              const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]);
               await this.claims(mine, published, other, pair2.mergeBase, /* @__PURE__ */ new Set([...mine.entries.keys(), ...committed.split("\n").filter(Boolean)]));
-            }
-          }
+            } else replayable = false;
+          } else replayable = false;
           continue;
         }
         if (!theirs || theirGit === "updating") {
@@ -56739,12 +56738,10 @@ var ConflictSet = class _ConflictSet {
             sideInput(theirs, path54),
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path54)] : void 0
           ]));
-          const previous = this.slots.get(key2);
           if (unchangedCarried.has(path54)) {
             await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "clean", inputs, factId: "" });
             continue;
           }
-          if (previous?.inputs === inputs && (previous.status !== "unknown" || (previous.retryAt ?? 0) > Date.now())) continue;
           const read3 = (snap) => this.read(snap, path54);
           const [a, b] = await Promise.all([read3(mine), read3(theirs)]);
           if (!bothChanged) {
@@ -56805,26 +56802,21 @@ var ConflictSet = class _ConflictSet {
         }
         await this.claims(mine, theirs, other, mergeBase2, ownMergePaths);
       } catch (error2) {
-        failed = true;
-        this.checkedPairs.delete(other);
+        replayable = false;
         throw error2;
       } finally {
-        if (!failed && this.guard?.()) {
-          this.checkedPairs.set(other, pairInputs);
-          this.pairGuards.set(other, this.guard);
+        if (replayable) {
+          await this.slots.replay(this.owner, (slot) => {
+            if (slot.other !== other) return false;
+            if (!this.guard?.()) {
+              this.rerun = true;
+              return false;
+            }
+            return true;
+          });
         }
       }
     }
-    await this.slots.replay(this.owner, (slot) => {
-      this.guard = this.pairGuards.get(slot.other);
-      if (!this.guard?.()) {
-        this.checkedPairs.delete(slot.other);
-        this.pairGuards.delete(slot.other);
-        this.rerun = true;
-        return false;
-      }
-      return true;
-    });
     this.log(`conflicts ${this.owner}: reconciled ${reason}`);
   }
   /** Retain resumable workers, but end their stale claims once all claimed files reached the lead. */
@@ -57263,10 +57255,11 @@ function handlers2(state) {
       for (const { claim: o, range: range2 } of overlaps)
         out2.push(range2.approximate ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} \xB7 ${o.intent}); their lines may have shifted relative to yours` : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
+        if (!s.graph.isReady) out2.push(`partial: ${s.graph.indexingStatus}`);
         for (const pl2 of plans) {
           const users = s.graph.graph.usersOf(pl2.symbol);
           if (!s.graph.isReady && !users.length) {
-            out2.push(`${s.graph.indexingStatus}; run room_impact after indexing completes`);
+            out2.push("run room_impact after indexing completes");
             continue;
           }
           out2.push(users.length ? `impact: ${pl2.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl2.symbol} has no other users in the indexed graph`);
