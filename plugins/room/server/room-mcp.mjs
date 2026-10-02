@@ -25490,7 +25490,7 @@ var init_hub = __esm({
           const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN });
           if (!admission.ok) return fail("over-cap", admission.reason);
         }
-        if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
+        if (!isRoomNotice(msg) && this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${"login" in p ? p.login ?? "an anonymous connection" : "a local connection"}; accepted`);
         let priority2;
         try {
           priority2 = msg.priority ?? defaultPriority(msg);
@@ -58090,6 +58090,42 @@ function watcherExclusionWarning(repoRoot) {
 
 // packages/room-mcp/src/tools/workers.ts
 init_timing();
+
+// packages/room-mcp/src/worker-publication.ts
+init_src();
+init_git();
+async function settleWorkerPublication(s, log2) {
+  let timer;
+  try {
+    if (s.rejected) throw new Error(`session rejected: ${s.rejected.reason}`);
+    if (!s.daemon) throw new Error("no daemon");
+    if (s.policyStore.policy.level === "intent") throw new Error("intent sharing has no disk publication");
+    if (!s.daemon.fence) throw new Error("no daemon fence");
+    await Promise.race([
+      (async () => {
+        await s.daemon.reconcileGitChanges();
+        await s.daemon.settle();
+        const head = (await git(s.dir, ["rev-parse", "HEAD"])).trim();
+        const publisher = checkoutPublisher(s) ?? s.me.name;
+        const published = participantRecord(s.room, publisher)?.git;
+        const manifest = s.room.manifestHead.get(publisher);
+        if (!s.daemon.fence || published?.head !== head || publisher === s.me.name && published.fence !== s.daemon.fence || !manifest?.complete || manifest.fence !== published.fence || manifest.base !== published.base) {
+          throw new Error("current HEAD and overlay are not published yet");
+        }
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("publication did not settle within 5 s")), 5e3);
+      })
+    ]);
+  } catch (error2) {
+    const reason = error2 instanceof Error ? error2.message : String(error2);
+    log2(`room_done: publication unverified for ${s.me.name}; ${reason}`.replace(/[\r\n]+/g, " "));
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// packages/room-mcp/src/tools/workers.ts
 function missingBriefPaths(task, leadDir, workerDir) {
   const paths = /* @__PURE__ */ new Set();
   for (const match of task.matchAll(/(?<![\w.~/:@-])(?:\.\/)?[\w.-]+(?:\/[\w.-]+)+/g)) {
@@ -58142,9 +58178,10 @@ function handlers4(state) {
         if (process.env.ROOM_WORKER_RUN && Number(process.env.ROOM_WORKER_RUN) !== ownRun.n || process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== ownRun.nonce) {
           return "error: this worker run was collected, discarded or superseded";
         }
-        const changed = manifestPaths(s.room, s.me.name);
         let saved = false;
         const report = reporting.then(async () => {
+          await settleWorkerPublication(s, state.log);
+          const changed = manifestPaths(s.room, s.me.name);
           const done = (await registry2.reportDone(myId, ownRun.n, summary, changed)).done;
           saved = true;
           release();
