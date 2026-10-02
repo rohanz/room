@@ -63,6 +63,8 @@ export class GraphIndex {
   private completedFiles = new Set<string>()
   private totalFiles = 0
   get indexingStatus(): string {
+    if (this.phase === 'error') return 'graph unavailable (index discovery failed)'
+    if (this.degradedPaths.size) return `graph coverage degraded (${this.degradedPaths.size} file(s) unavailable)`
     if (this.isReady) return 'graph has no pending files'
     const unfinished = [...this.pending.keys()].filter(path => !this.completedFiles.has(path)).length
     const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size)
@@ -113,8 +115,8 @@ export class GraphIndex {
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
   private currentBuild: Promise<void> = Promise.resolve()
-  /** Discovery may not have queued any files yet; readiness also requires it to finish. */
-  get isReady(): boolean { return !this.discovering && this.pending.size === 0 }
+  /** Quiescence alone does not mean discovery or individual reads succeeded. */
+  get isReady(): boolean { return this.phase !== 'error' && !this.degradedPaths.size && !this.discovering && this.pending.size === 0 }
   /** Resolves when the current build is done, even if a captured waiter is superseded. */
   get ready(): Promise<void> { return this.waitForCurrentBuild() }
 
