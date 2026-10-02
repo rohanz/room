@@ -1,12 +1,13 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { performance } from 'node:perf_hooks'
 import { RoomDoc } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
+import { ParseWorker } from '../src/parse/client.js'
+import * as engine from '../src/parse/engine.js'
 import { handlers as fileHandlers } from '../src/tools/files.js'
 import { handlers as claimHandlers } from '../src/tools/claims.js'
 import type { HandlerState } from '../src/tools/context.js'
@@ -17,7 +18,17 @@ it('keeps tools responsive through a 3,000-file Rust graph build', async () => {
   const texts = new Map<string, string>()
   const room = new RoomDoc()
   let index: GraphIndex | undefined
-  let timer: NodeJS.Timeout | undefined
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let parsingStarted!: () => void
+  const started = new Promise<void>(resolve => { parsingStarted = resolve })
+  const mainThreadParse = vi.spyOn(engine, 'parseFile')
+  const realParse = ParseWorker.prototype.parse
+  const parse = vi.spyOn(ParseWorker.prototype, 'parse').mockImplementation(async function (p, texts) {
+    parsingStarted()
+    await gate
+    return realParse.call(this, p, texts)
+  })
   try {
     git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
     for (let i = 0; i < 3000; i++) {
@@ -33,32 +44,29 @@ it('keeps tools responsive through a 3,000-file Rust graph build', async () => {
       describeUsers: (_s: unknown, users: string[]) => users.join(', ') } as unknown as HandlerState
     const claim = claimHandlers(state).room_claim!
     const impact = fileHandlers(state).room_impact!
-    let maxLag = 0, last = performance.now(), maxClaim = 0, claims = 0
-    const inFlight: Promise<void>[] = []
-    timer = setInterval(() => {
-      const now = performance.now(); maxLag = Math.max(maxLag, now - last - 10); last = now
-      const start = now
-      inFlight.push(claim({ path: 'file0.rs', from: 1, to: 1, intent: 'probe' }).then(() => {
-        maxClaim = Math.max(maxClaim, performance.now() - start); claims++
-      }))
-    }, 10)
-    const start = performance.now()
     index.start()
-    while (index.graph.size < 8) await new Promise(resolve => setTimeout(resolve, 10))
-    const impactStart = performance.now()
+    await started
+    // Hold every parse response: tools must finish before the index can complete,
+    // and only the bounded refresh batch may reach the parser.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(parse.mock.calls.length).toBeGreaterThan(0)
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(8)
+    expect(index.graph.size).toBe(0)
+    for (let i = 0; i < 10; i++) {
+      expect(await claim({ path: 'file0.rs', from: 1, to: 1, intent: 'probe' })).toContain('no claim needed')
+    }
     const response = await impact({ symbol: 'function_0_0' })
-    const impactMs = performance.now() - impactStart
+    expect(response).toBe('graph still indexing (0 of 3000 files)')
+    expect(index.graph.size).toBe(0)
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(8)
+    release()
     await index.ready
-    const duration = performance.now() - start
-    clearInterval(timer); await Promise.all(inFlight)
-    console.log(JSON.stringify({ files: index.graph.size, indexingMs: Math.round(duration), maxLagMs: Math.round(maxLag), maxClaimMs: Math.round(maxClaim), impactMs: Math.round(impactMs), claims }))
     expect(index.graph.size).toBe(3000)
-    expect(claims).toBeGreaterThan(5)
-    expect(maxClaim).toBeLessThan(500)
-    expect(maxLag).toBeLessThan(100)
-    expect(impactMs).toBeLessThan(500)
-    expect(response).toMatch(/graph still indexing \(\d+ of 3000 files\)/)
+    expect(parse).toHaveBeenCalledTimes(3000)
+    expect(new Set(parse.mock.calls.map(([p]) => p)).size).toBe(3000)
+    expect(mainThreadParse).not.toHaveBeenCalled()
   } finally {
-    clearInterval(timer); index?.stop(); room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true })
+    release(); index?.stop(); parse.mockRestore(); mainThreadParse.mockRestore()
+    room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true })
   }
 }, 180_000)
