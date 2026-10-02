@@ -24453,10 +24453,11 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
 function createProcessProbe(readers, options = {}) {
   if (readers.platform !== "darwin") {
     const read3 = (pid) => probeUncached(pid, readers);
-    return Object.assign(read3, { readSince: read3, fresh: read3 });
+    return Object.assign(read3, { confirm: read3, fresh: read3 });
   }
-  const now = options.now ?? Date.now, alive = readers.alive ?? pidAlive;
+  const now = options.now ?? (() => performance.now()), wall = options.wall ?? Date.now, alive = readers.alive ?? pidAlive;
   const cache = /* @__PURE__ */ new Map();
+  const confirmed = /* @__PURE__ */ new Map();
   let boot;
   const boottime = () => {
     if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec("sysctl", ["-n", "kern.boottime"]), at: now() };
@@ -24467,7 +24468,7 @@ function createProcessProbe(readers, options = {}) {
     const started = startSeconds(info2?.startTime);
     if (info2?.executable && Number.isFinite(started)) {
       if (cache.size >= 1024) cache.clear();
-      cache.set(pid, { info: info2, readAt: now(), until: now() + (now() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
+      cache.set(pid, { info: info2, until: now() + (wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
     } else cache.delete(pid);
     return info2;
   };
@@ -24479,23 +24480,27 @@ function createProcessProbe(readers, options = {}) {
     }
     return hit && now() < hit.until ? hit.info : fresh(pid);
   };
-  const readSince = (pid, startTime) => {
-    const hit = cache.get(pid), started = startSeconds(startTime);
-    if (!pid || pid <= 0 || !alive(pid)) {
-      cache.delete(pid);
-      return void 0;
-    }
-    return hit && now() < hit.until && Number.isFinite(started) && hit.readAt / 1e3 > started + 1 ? hit.info : fresh(pid);
+  const confirm = (pid, recorded) => {
+    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    const key2 = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
+    const hit = confirmed.get(key2);
+    if (hit && now() < hit.until) return hit.info;
+    const info2 = fresh(pid);
+    if (info2 && !agrees(info2, recorded) && wall() / 1e3 - startSeconds(info2.startTime) >= SETTLED_AFTER_S) {
+      if (confirmed.size >= 1024) confirmed.clear();
+      confirmed.set(key2, { info: info2, until: now() + CONFIRMED_TTL_MS });
+    } else confirmed.delete(key2);
+    return info2;
   };
-  return Object.assign(probe, { readSince, fresh });
+  return Object.assign(probe, { confirm, fresh });
 }
 function probeProcessNow(pid) {
   return systemProbe.fresh(pid);
 }
-function probeProcessSince(pid, startTime) {
-  return systemProbe.readSince(pid, startTime);
+function probeProcessConfirm(pid, recorded) {
+  return systemProbe.confirm(pid, recorded);
 }
-var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, startSeconds, systemProbe;
+var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, CONFIRMED_TTL_MS, startSeconds, agrees, systemProbe;
 var init_process = __esm({
   "packages/relay/src/process.ts"() {
     "use strict";
@@ -24514,7 +24519,9 @@ var init_process = __esm({
     YOUNG_TTL_MS = 250;
     SETTLED_AFTER_S = 5;
     BOOTTIME_TTL_MS = 6e4;
+    CONFIRMED_TTL_MS = 6e4;
     startSeconds = (startTime) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
+    agrees = (info2, recorded) => (!info2.startTime || !recorded.startTime || sameStartTime(info2.startTime, recorded.startTime)) && (!info2.executable || !recorded.executable || info2.executable === recorded.executable);
     systemProbe = createProcessProbe(systemProcessReaders);
   }
 });
@@ -25740,7 +25747,7 @@ import path8 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
   const verdict = livenessBy(identity3, probe);
-  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, (pid) => probeProcessSince(pid, identity3.startTime)) : verdict;
+  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, (pid) => probeProcessConfirm(pid, identity3)) : verdict;
 }
 function livenessBy(identity3, probe) {
   const observed = probe(identity3.pid);
@@ -32017,7 +32024,7 @@ function pidPresent(pid, probe = probeProcess) {
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
   const verdict = ownershipBy(pid, w, probe);
-  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, (p) => probeProcessSince(p, w.processStartTime)) : verdict;
+  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, (p) => probeProcessConfirm(p, { startTime: w.processStartTime })) : verdict;
 }
 function ownershipBy(pid, w, probe) {
   if (!pid || pid <= 0) return "not-ours";

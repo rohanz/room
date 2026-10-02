@@ -9,7 +9,7 @@ vi.mock('../src/process.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/process.js')>()
   return { ...actual,
     probeProcess: (pid: number) => actual.pidAlive(pid) ? { startTime: 'darwin:1:100', executable: 'node' } : undefined,
-    probeProcessSince: () => { calls.now++; return fresh } }
+    probeProcessConfirm: () => { calls.now++; return fresh } }
 })
 import { liveness } from '../src/leases.js'
 import { probeProcess } from '../src/process.js'
