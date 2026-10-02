@@ -27,11 +27,12 @@ describe('hub in process', () => {
     try {
       hub.handle(conn, hello, principal)
       const epoch = (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, principal) as { epoch: number }).epoch
-      for (const from of ['room', 'ben']) {
-        expect(hub.handle(conn, { v: 1, id: from, op: 'post', auto: true, lease: { name: 'ada', epoch },
-          msg: { id: from, type: 'note', from, text: 'notice' } }, principal)).toMatchObject({ ok: true })
+      for (const [id, from, fromKind] of [['notice', 'room', 'bot'], ['participant', 'room', 'agent'], ['human', 'room', 'human'], ['unspecified', 'room', undefined], ['ben', 'ben', 'agent']] as const) {
+        expect(hub.handle(conn, { v: 1, id, op: 'post', auto: true, lease: { name: 'ada', epoch },
+          msg: { id, type: 'note', from, fromKind, text: 'notice' } }, principal)).toMatchObject({ ok: true })
       }
       expect(h.logs.filter(line => line.includes('observed a post'))).toEqual([
+        ...Array(3).fill('hub: observed a post from "room" by ada; accepted'),
         'hub: observed a post from "ben" by ada; accepted',
       ])
     } finally { hub.stop() }
