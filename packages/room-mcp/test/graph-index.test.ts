@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RoomDoc } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
+import * as gitModule from '@room/roomd/git'
 import { GraphIndex } from '../src/graph-index.js'
 import { handlers as fileHandlers } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
@@ -44,6 +45,32 @@ describe('GraphIndex', () => {
       expect(gi.indexingStatus).not.toContain('still indexing')
       expect(await impact({ symbol: 'missing' })).toContain('defined in nowhere indexed')
     } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it.each(['initial', 'rebuild'] as const)('stays unready during %s discovery before files are queued', async mode => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })
+    const impact = fileHandlers({ S: () => ({ room, graph: gi }) } as unknown as HandlerState).room_impact!
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const discovering = new Promise<void>(resolve => { entered = resolve })
+    const realGit = gitModule.git
+    let listing: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      if (mode === 'rebuild') { gi.start(); await gi.whenIdle() }
+      listing = vi.spyOn(gitModule, 'git').mockImplementation(async (dir, args) => {
+        if (args[0] === 'ls-tree') { entered(); await gate }
+        return realGit(dir, args)
+      })
+      if (mode === 'initial') gi.start()
+      else setParticipantBase(room, 'Rohan', base + '~0')
+      expect(gi.isReady).toBe(false)
+      await discovering
+      expect(gi.isReady).toBe(false)
+      expect(await impact({ symbol: 'missing' })).toContain('still indexing')
+      release(); await gi.whenIdle()
+      expect(gi.isReady).toBe(true)
+    } finally { release(); listing?.mockRestore(); gi.stop(); room.doc.destroy() }
   })
 
   it('reports pending overlay work but answers from available base facts', async () => {

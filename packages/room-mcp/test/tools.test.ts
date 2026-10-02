@@ -999,6 +999,31 @@ describe('scope, claims, plans, ledger', () => {
     } finally { await t.tools.shutdown(); s.graph.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
+  it('defers planned claim impact while startup discovery has not queued files', async () => {
+    const t = setup(), s = t.session!
+    s.graph!.stop()
+    s.graph = new GraphIndex(t.room, 'Rohan', dir, () => {}, { random: () => 1 })
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'auth', summary: 'sessions', paths: ['session.py'] })
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'near', summary: 'nearby', paths: ['app.py'] })
+    let notified!: () => void
+    const notice = new Promise<void>(resolve => { notified = resolve })
+    const post = s.post
+    s.post = ((...args: Parameters<Session['post']>) => {
+      const result = post(...args)
+      if (args[1].type === 'claim' && args[1].to === 'Kieran' && args[1].priority === 'notify') void result.then(() => notified())
+      return result
+    }) as Session['post']
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      s.graph.start()
+      const reply = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate' }] })
+      expect(reply).toContain('still indexing')
+      await vi.advanceTimersByTimeAsync(4_001)
+      await s.graph.whenIdle(); await notice
+      expect(t.room.messages().find(m => m.type === 'claim' && m.to === 'Kieran')).toMatchObject({ priority: 'notify' })
+    } finally { vi.useRealTimers(); await t.tools.shutdown(); s.graph.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  })
+
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
     await t.session!.graph!.ready

@@ -108,12 +108,13 @@ export class GraphIndex {
   private ownPublicationKey: string | undefined = ''
   private stopped = false
   private initialStarted = false
+  private discovering = false
   private jitterTimer?: ReturnType<typeof setTimeout>
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
   private currentBuild: Promise<void> = Promise.resolve()
-  /** Tools can use available facts whenever no file refresh is queued or in flight. */
-  get isReady(): boolean { return this.pending.size === 0 }
+  /** Discovery may not have queued any files yet; readiness also requires it to finish. */
+  get isReady(): boolean { return !this.discovering && this.pending.size === 0 }
   /** Resolves when the current build is done, even if a captured waiter is superseded. */
   get ready(): Promise<void> { return this.waitForCurrentBuild() }
 
@@ -162,6 +163,7 @@ export class GraphIndex {
   }
 
   start(): void {
+    this.discovering = true
     this.currentBuild = this.initialBuild()
     const touchedInTransaction = new WeakMap<Y.Transaction, Set<string>>()
     const peerRefreshInTransaction = new WeakMap<Y.Transaction, Set<string>>()
@@ -290,57 +292,65 @@ export class GraphIndex {
 
   private async rebuild(): Promise<void> {
     const generation = ++this.generation
-    for (const entry of this.pending.values()) entry.resolve() // release any superseded build
-    this.phase = 'indexing'
-    this.completedFiles.clear()
-    this.totalFiles = 0
-    this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
-    this.observedByPath.clear()
-    this.observedRevision++
-    this.degradedPaths.clear()
-    let removed = 0, lastRemovalYield = Date.now()
-    for (const p of this.cache.keys()) {
-      this.removeGraph(p)
-      if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
-        await yieldToEventLoop()
-        if (generation !== this.generation || this.stopped) return
-        lastRemovalYield = Date.now()
+    this.discovering = true
+    try {
+      for (const entry of this.pending.values()) entry.resolve() // release any superseded build
+      this.phase = 'indexing'
+      this.completedFiles.clear()
+      this.totalFiles = 0
+      this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
+      this.observedByPath.clear()
+      this.observedRevision++
+      this.degradedPaths.clear()
+      let removed = 0, lastRemovalYield = Date.now()
+      for (const p of this.cache.keys()) {
+        this.removeGraph(p)
+        if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
+          await yieldToEventLoop()
+          if (generation !== this.generation || this.stopped) return
+          lastRemovalYield = Date.now()
+        }
+      }
+      this.cache.clear()
+      for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p)
+      this.publishedCache.clear()
+      this.publishedSource.clear()
+      if (!this.base) return
+      await this.publish('indexing')
+      if (generation !== this.generation || this.stopped) return
+      let paths: string[] = []
+      try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
+      catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
+      if (generation !== this.generation || this.stopped) return
+      this.truncated = paths.length > MAX_FILES
+      if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
+      const all = new Set(paths)
+      for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
+      const t0 = Date.now()
+      const pathsToRefresh = Array.from(all)
+      this.totalFiles = pathsToRefresh.length
+      if (generation !== this.generation || this.stopped) return
+      const refreshes: Promise<void>[] = []
+      let lastYield = Date.now()
+      for (let i = 0; i < pathsToRefresh.length; i++) {
+        if (i > 0 && (i % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
+          await yieldToEventLoop()
+          if (generation !== this.generation || this.stopped) return
+          lastYield = Date.now()
+        }
+        refreshes.push(this.refresh(pathsToRefresh[i]))
+      }
+      await Promise.all(refreshes)
+      if (generation !== this.generation || this.stopped) return
+      this.phase = 'ready'
+      await this.publish('ready')
+      this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
+    } finally {
+      if (generation === this.generation) {
+        this.discovering = false
+        this.changedResolution()
       }
     }
-    this.cache.clear()
-    for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p)
-    this.publishedCache.clear()
-    this.publishedSource.clear()
-    if (!this.base) return
-    await this.publish('indexing')
-    if (generation !== this.generation || this.stopped) return
-    let paths: string[] = []
-    try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
-    catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
-    if (generation !== this.generation || this.stopped) return
-    this.truncated = paths.length > MAX_FILES
-    if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
-    const all = new Set(paths)
-    for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
-    const t0 = Date.now()
-    const pathsToRefresh = Array.from(all)
-    this.totalFiles = pathsToRefresh.length
-    if (generation !== this.generation || this.stopped) return
-    const refreshes: Promise<void>[] = []
-    let lastYield = Date.now()
-    for (let i = 0; i < pathsToRefresh.length; i++) {
-      if (i > 0 && (i % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
-        await yieldToEventLoop()
-        if (generation !== this.generation || this.stopped) return
-        lastYield = Date.now()
-      }
-      refreshes.push(this.refresh(pathsToRefresh[i]))
-    }
-    await Promise.all(refreshes)
-    if (generation !== this.generation || this.stopped) return
-    this.phase = 'ready'
-    await this.publish('ready')
-    this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`)
   }
 
   private ownText(pathname: string): string | undefined {
