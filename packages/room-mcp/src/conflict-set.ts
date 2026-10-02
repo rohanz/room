@@ -282,6 +282,7 @@ export class ConflictSet {
   private tick: NodeJS.Timeout | undefined
   private running: Promise<void> | undefined
   private rerun = false
+  private started = false
   private stopped = false
   private inputCheck?: NodeJS.Immediate
   private scheduledInputs = ''
@@ -310,6 +311,7 @@ export class ConflictSet {
   }
 
   start(): void {
+    this.started = true
     this.scheduledInputs = this.inputsKey()
     const schedule = () => {
       // Revocation stays synchronous; expensive scheduling is once per event-loop turn.
@@ -343,8 +345,7 @@ export class ConflictSet {
     const onSync = () => this.schedule(0)
     this.team.provider.on?.('sync', onSync)
     this.stops.push(() => this.team.provider.off?.('sync', onSync))
-    this.tick = setInterval(() => this.schedule(0), 60_000)
-    this.tick.unref?.()
+    this.schedulePeriodic()
     if (this.team.provider.synced) this.schedule(0)
   }
 
@@ -438,7 +439,12 @@ export class ConflictSet {
     for (const stop of this.stops) stop()
     this.stops.length = 0
     if (this.timer) clearTimeout(this.timer)
-    if (this.tick) clearInterval(this.tick)
+    if (this.tick) clearTimeout(this.tick)
+  }
+  private schedulePeriodic(): void {
+    if (!this.started || this.stopped) return
+    this.tick = setTimeout(() => { this.tick = undefined; this.schedule(0) }, 60_000)
+    this.tick.unref?.()
   }
   private schedule(ms = this.debounceMs): void {
     if (this.stopped || this.timer) return
@@ -451,7 +457,8 @@ export class ConflictSet {
   }
   async reconcile(reason: string): Promise<void> {
     if (this.stopped) return
-    if (this.running) { this.rerun = true; await this.running; return }
+    if (this.running) { await this.running; return }
+    if (this.tick) { clearTimeout(this.tick); this.tick = undefined }
     this.running = (async () => {
       // At most two checks per turn. A continuing stream gets one coalesced future pass,
       // never a recursive chain that keeps flush/tools alive indefinitely.
@@ -465,7 +472,7 @@ export class ConflictSet {
       }
       if (!this.stopped) this.log(`conflicts ${this.owner}: inputs moved twice; coalesced next check`)
     })()
-    try { await this.running } finally { this.running = undefined }
+    try { await this.running } finally { this.running = undefined; this.schedulePeriodic() }
     if (this.rerun && !this.stopped) { this.rerun = false; this.schedule() }
   }
 

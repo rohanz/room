@@ -418,17 +418,57 @@ describe('derived pair slots', () => {
     } finally { mkdir?.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
+  it('does not add reruns to a stable slow pass over ten simulated minutes', async () => {
+    const f = fixture(), set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0)
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const starts: number[] = []
+    const run = vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run').mockImplementation(async () => {
+      starts.push(Date.now())
+      // Thirty overlapping files take about seventy seconds under the merge budget.
+      await new Promise<void>(resolve => setTimeout(resolve, 70_000))
+    })
+    try {
+      set.start()
+      await vi.advanceTimersByTimeAsync(600_000)
+      // Each completed pass gets a full minute before the next periodic check.
+      expect(starts[0]).toBe(0)
+      for (let i = 1; i < starts.length; i++) expect(starts[i]! - starts[i - 1]!).toBeGreaterThanOrEqual(130_000)
+      expect(run).toHaveBeenCalledTimes(5)
+      expect((set as unknown as { running?: Promise<void> }).running).toBeUndefined()
+    } finally { set.stop(); vi.useRealTimers(); run.mockRestore(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('waits for a stable active pass without requesting another pass', async () => {
+    const f = fixture(), set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0)
+    let finish!: () => void
+    const run = vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run')
+      .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve })).mockResolvedValue(undefined)
+    try {
+      const first = set.reconcile('first')
+      const second = set.flush()
+      finish()
+      await first
+      await second
+      expect(run).toHaveBeenCalledTimes(1)
+    } finally { set.stop(); run.mockRestore(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('bounds a flush when triggers arrive throughout the check', async () => {
     const f = fixture(), set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0)
     let calls = 0
     vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run').mockImplementation(async () => {
       await new Promise<void>(resolve => setImmediate(resolve))
-      if (++calls < 9) void set.reconcile('inputs changed')
+      if (++calls < 9) {
+        f.room.addClaim({ by: 'A', byKind: 'agent', path: `file-${calls}`, from: 1, to: 1, intent: 'changing inputs' })
+        await new Promise<void>(resolve => setImmediate(resolve))
+      }
     })
     try {
+      set.start()
       await set.flush()
       console.log(JSON.stringify({ checksBeforeFlushReturns: calls }))
-      expect(calls).toBeLessThanOrEqual(2)
+      expect(calls).toBe(2)
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
