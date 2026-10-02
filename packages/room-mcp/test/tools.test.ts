@@ -1040,6 +1040,33 @@ describe('scope, claims, plans, ledger', () => {
     expect(t.room.messages().find(m => m.type === 'release')).toMatchObject({ type: 'release', unfulfilled: [{ symbol: 'validate' }] })
   })
 
+  it('labels nonempty planned claim impact as partial while a graph refresh is pending', async () => {
+    const t = setup(), s = t.session!
+    await s.graph!.whenIdle()
+    t.other.setScope({ by: 'Nearby', byKind: 'agent', area: 'app', summary: 'nearby', paths: ['app.py'] })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const internal = s.graph as unknown as { historicalText(base: string, path: string): Promise<string | undefined> }
+    const historicalText = internal.historicalText.bind(s.graph)
+    const read = vi.spyOn(internal, 'historicalText').mockImplementation(async (base, path) => {
+      if (path === 'pending.py') await gate
+      return historicalText(base, path)
+    })
+    let refresh: Promise<void> | undefined
+    try {
+      refresh = s.graph!.refresh('pending.py')
+      expect(s.graph!.isReady).toBe(false)
+      const result = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate' }] })
+      expect(result).toContain('impact: validate is used in')
+      expect(result).toContain('session.py')
+      expect(result).toContain(`partial: ${s.graph!.indexingStatus}`)
+      release(); await refresh; await s.graph!.whenIdle()
+      const complete = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 2, intent: 'change signature', plans: [{ kind: 'signature', symbol: 'validate' }] })
+      expect(complete).toContain('impact: validate is used in')
+      expect(complete).not.toContain('partial:')
+    } finally { release(); await refresh; read.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  })
+
   it('overlapping claims across a comparable pair produce a deterministic ConflictSet notice', async () => {
     const t = setup()
     comparableClaimPair(t.room)
