@@ -1083,6 +1083,45 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it('backs off unreadable file versions before reading and retries changed inputs immediately', async () => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(0)
+    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {})
+    const target = set as unknown as { read(...args: unknown[]): Promise<unknown> }
+    const original = target.read.bind(set)
+    const read = vi.spyOn(target, 'read').mockResolvedValue({ kind: 'unknown', why: 'temporarily unavailable' })
+    const key = slotKey('A', 'merge', 'B', 'x')
+    const slots = f.room.doc.getMap<{ status: string; retryAt?: number }>('conflicts')
+    try {
+      await set.reconcile('first unreadable version')
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(slots.get(key)).toMatchObject({ status: 'unknown', retryAt: 60_000 })
+      vi.setSystemTime(60_000)
+      await set.reconcile('first deadline')
+      expect(read).toHaveBeenCalledTimes(4)
+      expect(slots.get(key)?.retryAt).toBe(180_000)
+      vi.setSystemTime(120_000)
+      await set.reconcile('before second deadline')
+      expect(read).toHaveBeenCalledTimes(4)
+      vi.setSystemTime(180_000)
+      await set.reconcile('second deadline')
+      expect(read).toHaveBeenCalledTimes(6)
+      expect(slots.get(key)?.retryAt).toBe(420_000)
+      vi.setSystemTime(240_000)
+      await set.reconcile('before third deadline')
+      expect(read).toHaveBeenCalledTimes(6)
+      read.mockImplementation(original)
+      f.entry('B', 'B changed\n')
+      await set.reconcile('changed version before deadline')
+      expect(read).toHaveBeenCalledTimes(8)
+      expect(slots.get(key)?.status).toBe('conflict')
+      await set.reconcile('known results are reevaluated')
+      expect(read).toHaveBeenCalledTimes(10)
+    } finally { set.stop(); vi.useRealTimers(); read.mockRestore(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('maps two claims through different file texts before testing overlap', async () => {
     const f = fixture()
     try {

@@ -670,6 +670,9 @@ export class ConflictSet {
           const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
             mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path),
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path)] : undefined]))
+          const prior = this.slots.get(key)
+          // Unknown slots retain retry state, never completed merge evidence.
+          if (prior?.status === 'unknown' && prior.inputs === inputs && prior.fence === leaseFence && (prior.retryAt ?? 0) > Date.now()) continue
           if (unchangedCarried.has(path)) {
             await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '' })
             continue
