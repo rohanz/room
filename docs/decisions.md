@@ -373,3 +373,13 @@ worker lifecycle, local graph revision and failed-evaluation recovery. A real pr
 source-room regression fails with the old cache and passes with fresh reads; cache-only
 assertions were removed, while candidate-yield behavior remains tested.
 **Built when:** 3 Oct, post-hackathon, during review round 2. Plugin rebuild deferred by request.
+
+## 2026-10-03 — 0.17.1 round 3: retry pacing and relocated parser coverage
+**Decision:** Rearm periodic conflict checks after completion; only changed inputs request
+reruns. Honor unchanged per-file unknown deadlines before version reads, using replicated
+slots without restoring evaluation caching. Test the committed parser worker and all 15
+grammars after copying the server assets outside the repo, from another working directory
+without dependencies; skip explicitly when the committed JavaScript bundles are missing.
+**Validation:** Scheduler and retry regressions failed before their fixes. Removing the
+runtime from the temporary packaging copy made the smoke fail; the intact copy passes.
+**Built when:** 3 Oct, post-hackathon, during review round 3. No plugin rebuild or push.
