@@ -87,10 +87,16 @@ describe('claims across bases', () => {
     const map = prepareClaimLineMap(owner, local)
     expect(map({ from: 10, to: 10 })).toEqual({ from: 10, to: 10, approximate: false })
     expect(map({ from: 2080, to: 2080 })).toEqual({ from: 2081, to: 2081, approximate: false })
-    const middle = map({ from: 1000, to: 1001 })
-    expect(middle.approximate).toBe(true)
-    expect(middle.to - middle.from).toBeLessThan(10)
-    expect(middle.from).toBeGreaterThan(51)
+    // Lines in the undiffed middle keep the holder's own numbers, unclamped and marked approximate.
+    expect(map({ from: 1000, to: 1001 })).toEqual({ from: 1000, to: 1001, approximate: true })
+    expect(map({ from: 40, to: 1000 })).toEqual({ from: 40, to: 1000, approximate: true })
+  })
+
+  it('never moves an unmappable claim to my end of file', () => {
+    // rc12 review: two unrelated copies; the owner's line 4,000 is past my 2,000 lines and must not become my line 2,000.
+    const owner = Array.from({ length: 5000 }, (_, i) => `owner ${i}`).join('\n') + '\n'
+    const local = Array.from({ length: 2000 }, (_, i) => `local ${i}`).join('\n') + '\n'
+    expect(prepareClaimLineMap(owner, local)({ from: 4000, to: 4001 })).toEqual({ from: 4000, to: 4001, approximate: true })
   })
 
   it('reuses a prepared map across different ranges with the same results', () => {

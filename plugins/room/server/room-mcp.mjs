@@ -17884,7 +17884,7 @@ function prepareClaimLineMap(ownerVersion, myText) {
     if (a.oldAt + a.length < b.oldAt || a.newAt + a.length < b.newAt) hunks.push({ oldAt: a.oldAt + a.length, oldEnd: b.oldAt, newAt: a.newAt + a.length, newEnd: b.newAt });
   }
   return (range) => {
-    let start2 = Number.POSITIVE_INFINITY, end = 0, approximate = false;
+    let start2 = Number.POSITIVE_INFINITY, end = 0;
     const take = (from2, to2) => {
       start2 = Math.min(start2, from2);
       end = Math.max(end, to2);
@@ -17902,12 +17902,10 @@ function prepareClaimLineMap(ownerVersion, myText) {
         take(h.newAt + 1, last2);
         continue;
       }
-      approximate = true;
-      const lo = Math.max(range.from, h.oldAt + 1) - h.oldAt, hi = Math.min(range.to, h.oldEnd) - h.oldAt;
-      take(Math.min(h.newAt + lo, last2), Math.min(h.newAt + hi, last2));
+      return { from: range.from, to: range.to, approximate: true };
     }
     if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, nextLines.length));
-    return { ...clampRange(start2, Math.max(start2, end), nextLines.length), approximate };
+    return { ...clampRange(start2, Math.max(start2, end), nextLines.length), approximate: false };
   };
 }
 function claimInMyLines(claim2, ownerVersion, myText) {
@@ -29846,29 +29844,25 @@ async function anchor2(dir, head, refs) {
   const chosen = found.find((c) => c.ref.name === refs.upstream?.name) ?? found[0];
   return { base: chosen.base, anchored: true, upstream: chosen.ref.name };
 }
-async function onRemote(dir, remote, sha) {
-  if (!remote) return false;
+async function recentRemoteRefs(dir, remote) {
+  if (!remote) return [];
+  let out2 = "";
   try {
-    return (await git(dir, ["for-each-ref", "--count=1", "--contains", sha, "--format=%(refname)", `refs/remotes/${remote}/`])).trim() !== "";
+    out2 = await git(dir, ["for-each-ref", "--sort=-committerdate", `--count=${WORKER_ANCHOR_REFS + 1}`, "--format=%(objectname) %(refname)", `refs/remotes/${remote}/`]);
   } catch (error2) {
     if (isGitTimeout(error2)) throw error2;
-    return false;
+    return [];
   }
-}
-async function remoteBelow(dir, remote, sha) {
-  if (!remote) return void 0;
-  try {
-    return (await git(dir, ["for-each-ref", "--merged", sha, "--sort=-committerdate", "--count=1", "--format=%(objectname)", `refs/remotes/${remote}/`])).trim() || void 0;
-  } catch (error2) {
-    if (isGitTimeout(error2)) throw error2;
-    return void 0;
-  }
+  return out2.split("\n").flatMap((line) => {
+    const split2 = line.indexOf(" ");
+    return split2 > 0 && line.slice(split2 + 1) !== `refs/remotes/${remote}/HEAD` ? [{ sha: line.slice(0, split2), name: short(line.slice(split2 + 1)) }] : [];
+  }).slice(0, WORKER_ANCHOR_REFS);
 }
 async function workerAnchor(dir, head, refs, found, pinned) {
   if (found.anchored && pinned === found.base) return found;
   if (!await isAncestor(dir, pinned, head)) return found;
-  const shared = await onRemote(dir, refs.remote, pinned) ? pinned : await remoteBelow(dir, refs.remote, pinned);
-  if (shared && (!found.anchored || shared !== found.base && await isAncestor(dir, found.base, shared))) return { base: shared, anchored: true };
+  const shared = await anchor2(dir, pinned, { candidates: await recentRemoteRefs(dir, refs.remote) });
+  if (shared.anchored && (!found.anchored || shared.base !== found.base && await isAncestor(dir, found.base, shared.base))) return { base: shared.base, anchored: true };
   return found.anchored ? found : { base: pinned, anchored: true };
 }
 async function resolveBase(dir, inputs, options = {}) {
@@ -29956,7 +29950,7 @@ async function comparePair(dir, remote, a, b) {
   const base = await mergeBase(dir, a.base, b.base);
   return base ? { mergeBase: base } : { cannotCompare: "unknown: unrelated histories" };
 }
-var short, refsKey, FETCH_TIMEOUT_MS, FETCH_RETRY_MS, fetchAttempts, hasCommit;
+var short, refsKey, WORKER_ANCHOR_REFS, FETCH_TIMEOUT_MS, FETCH_RETRY_MS, fetchAttempts, hasCommit;
 var init_base2 = __esm({
   "packages/roomd/src/base.ts"() {
     "use strict";
@@ -29964,6 +29958,7 @@ var init_base2 = __esm({
     init_git();
     short = (ref) => ref.replace(/^refs\/remotes\//, "");
     refsKey = (inputs) => JSON.stringify([inputs.head, inputs.branch, inputs.refs]);
+    WORKER_ANCHOR_REFS = 16;
     FETCH_TIMEOUT_MS = 2e4;
     FETCH_RETRY_MS = 5 * 6e4;
     fetchAttempts = /* @__PURE__ */ new Map();

@@ -97,7 +97,8 @@ function lcsRuns(old: Int32Array, next: Int32Array, lo: number, oldHi: number, n
 
 /** Prepare one owner-to-local diff, then map any number of the owner's claim ranges.
  *  Unknown owner text keeps the claim's own numbers, marked approximate: their lines may have shifted relative to mine.
- *  A changed middle too large to diff degrades alone, the same way; the common prefix and suffix always map exactly. */
+ *  A claim touching a changed middle too large to diff degrades the same way; ranges in the common prefix and suffix
+ *  always map exactly. */
 export function prepareClaimLineMap(ownerVersion: string | undefined, myText: string): (range: { from: number; to: number }) => { from: number; to: number; approximate: boolean } {
   const nextLines = linesOf(myText)
   // Unclamped: past my end of file their numbers say nothing about my last line.
@@ -122,7 +123,7 @@ export function prepareClaimLineMap(ownerVersion: string | undefined, myText: st
     if (a.oldAt + a.length < b.oldAt || a.newAt + a.length < b.newAt) hunks.push({ oldAt: a.oldAt + a.length, oldEnd: b.oldAt, newAt: a.newAt + a.length, newEnd: b.newAt })
   }
   return range => {
-    let start = Number.POSITIVE_INFINITY, end = 0, approximate = false
+    let start = Number.POSITIVE_INFINITY, end = 0
     const take = (from: number, to: number) => { start = Math.min(start, from); end = Math.max(end, to) }
     for (const run of runs) {
       const lo = Math.max(range.from - 1, run.oldAt), hi = Math.min(range.to - 1, run.oldAt + run.length - 1)
@@ -135,13 +136,11 @@ export function prepareClaimLineMap(ownerVersion: string | undefined, myText: st
       if (!changed && !inserted) continue
       const last = Math.max(h.newAt + 1, h.newEnd)
       if (middle !== undefined) { take(h.newAt + 1, last); continue }
-      // Too large to diff: keep the claim's offset into the middle, clamped to my middle.
-      approximate = true
-      const lo = Math.max(range.from, h.oldAt + 1) - h.oldAt, hi = Math.min(range.to, h.oldEnd) - h.oldAt
-      take(Math.min(h.newAt + lo, last), Math.min(h.newAt + hi, last))
+      // Too large to diff: the holder's own numbers, unclamped, as for unknown text.
+      return { from: range.from, to: range.to, approximate: true }
     }
     if (!Number.isFinite(start)) start = Math.min(Math.max(1, range.from), Math.max(1, nextLines.length))
-    return { ...clampRange(start, Math.max(start, end), nextLines.length), approximate }
+    return { ...clampRange(start, Math.max(start, end), nextLines.length), approximate: false }
   }
 }
 

@@ -91,6 +91,18 @@ it('a worker spawned on an unpushed carry commit anchors to the newest remote co
   expect(participantRecord(d.roomDoc, 'ana+w')?.git).toMatchObject({ base, anchored: true })
 })
 
+it('a worker spawned on an unpushed commit after the remote moved on anchors to their shared ancestor', async () => {
+  const { lead, worker, base } = singleBranchClone()
+  // origin/r17 gained a commit the lead fetched but did not merge; the lead committed locally and spawned.
+  git(lead, 'commit', '-q', '--allow-empty', '-m', 'pushed by someone else')
+  git(lead, 'update-ref', 'refs/remotes/origin/r17', 'HEAD')
+  git(lead, 'reset', '-q', '--hard', base)
+  git(worker, 'commit', '-q', '--allow-empty', '-m', 'unpushed lead commit')
+  const spawnBase = git(worker, 'rev-parse', 'HEAD')
+  const d = await startWorker(worker, spawnBase)
+  expect(head(d)).toMatchObject({ base, complete: true })
+})
+
 it('a worker whose remote anchor is older than its spawn base uses the spawn base', async () => {
   const { lead, worker } = singleBranchClone(true)
   // The lead moved on (pushed to origin/r17 only) before spawning: the default branch is behind the spawn base.

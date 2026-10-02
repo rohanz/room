@@ -157,7 +157,9 @@ async function orchestrate(): Promise<void> {
   const http = `http://127.0.0.1:${port}`, ws = `ws://127.0.0.1:${port}`
   const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ROOM_|CLAUDE_CODE_|CODEX_)/.test(k)))
   const server: ChildProcess = spawn(process.execPath, [TSX, path.join(ROOT, 'packages/server/src/index.ts')], {
-    env: { ...clean, HOST: '127.0.0.1', PORT: String(port), GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'development' }, stdio: 'ignore',
+    // Only what it needs: never this shell's DATABASE_URL, YPERSISTENCE or other server settings. In memory.
+    env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', TMPDIR: process.env.TMPDIR ?? '/tmp',
+      HOST: '127.0.0.1', PORT: String(port), GITHUB_CLIENT_ID: 'fake', NODE_ENV: 'development' }, stdio: 'ignore',
   })
   const children: ChildProcess[] = [server]
   try {
