@@ -695,7 +695,7 @@ class RoomHub implements Hub {
       const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN })
       if (!admission.ok) return fail('over-cap', admission.reason)
     }
-    if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
+    if (msg.from !== 'room' && this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
     let priority: Msg['priority']
     try { priority = (msg.priority as Msg['priority'] | undefined) ?? defaultPriority(msg) }
     catch { return fail('invalid', `cannot prioritise a ${msg.type} message`) }

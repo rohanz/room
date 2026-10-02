@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.1 (unreleased)
+
+- The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants still produce the diagnostic.
+
 ## 0.17.0
 
 Room now has **one room per repository across branches**. Each participant reports their own branch and base, and conflicts are compared at each pair's merge base. The hub grants participant names and orders messages. At-least-once delivery applies to messages retained in a surviving replica's ledger; an acknowledged post can be lost if every replica holding it disappears before persistence. Expiry and caps can remove retained messages. Idle-session wakes contain a pointer, not the message text.
