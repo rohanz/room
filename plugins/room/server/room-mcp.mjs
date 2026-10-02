@@ -57714,7 +57714,7 @@ var Rooms = class _Rooms {
     const deadline = Date.now() + timeoutMs2;
     const signal = toolSignal.getStore();
     while (Date.now() < deadline && !signal?.aborted) {
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
+      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.o.probe });
       if (state.process === "not-ours") return "exited";
       if (state.process === "unknown") return "unknown";
       const key2 = w.id;
@@ -57754,7 +57754,7 @@ var Rooms = class _Rooms {
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`;
     const record2 = trusted.record;
     const local = realStateInput(record2, trusted.status);
-    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.probe.bind(this) });
+    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.o.probe });
     const initial = decideResume(processState);
     if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
     if (initial === "no-session") return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
@@ -57840,7 +57840,7 @@ var Rooms = class _Rooms {
             claudeChannel,
             preferredPort: record2.port,
             spawner,
-            probe: this.probe.bind(this),
+            probe: this.o.probe,
             log: log2,
             at
           },
