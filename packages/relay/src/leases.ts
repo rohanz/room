@@ -10,12 +10,13 @@ export interface InstanceToken extends ProcessIdentity { sessionId: string; nonc
 export type Liveness = 'alive' | 'dead' | 'unknown'
 
 /**
- * Whether the recorded process still runs. A "dead" verdict from the shared probe is confirmed with a fresh read:
- * it may hold a predecessor's identity for a reused pid, and callers reclaim guards and leases from the dead.
+ * Whether the recorded process still runs. A "dead" verdict from the shared probe on a pid that is still alive is
+ * confirmed with a fresh read: the cache may hold a predecessor's identity for a reused pid, and callers reclaim
+ * guards and leases from the dead. A vanished pid needs no confirmation (and no `ps`).
  */
 export function liveness(identity: ProcessIdentity, probe: ProcessProbe = probeProcess): Liveness {
   const verdict = livenessBy(identity, probe)
-  return verdict === 'dead' && probe === probeProcess ? livenessBy(identity, probeProcessNow) : verdict
+  return verdict === 'dead' && probe === probeProcess && pidAlive(identity.pid) ? livenessBy(identity, probeProcessNow) : verdict
 }
 
 function livenessBy(identity: ProcessIdentity, probe: ProcessProbe): Liveness {

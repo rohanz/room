@@ -4,7 +4,7 @@ import type { Session } from './session.js'
 import { processToken } from './names.js'
 import { toolCallAborted } from './registry.js'
 import { bindWorkerPortReservation, reserveWorkerPort } from './port-reservations.js'
-import { defaultSpawner, probeProcess, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
+import { defaultSpawner, probeProcessNow, stopWorkerWithEscalation, type ProcessInfo, type SpawnedProcess, type Spawner } from './worker-process.js'
 import { leadClaudePluginDir, workerCommand, workerMaxBudget, workerPriority, workerProcessEnv, workerPrompt, type WorkerHost } from './worker-config.js'
 import { workerShellEnvWarnings, writeWorkerShellEnv } from './worker-shell-env.js'
 import { realGitCommonDir } from '@room/roomd'
@@ -37,6 +37,8 @@ export interface WorkerLaunchResult {
   /** The worker's shell commands will still see Room's ROOM_ variables, and why. */
   warnings: string[]
   processStartTime?: string
+  /** Read in the same probe as processStartTime: the registry records both from one snapshot. */
+  processExecutable?: string
 }
 
 /**
@@ -110,8 +112,10 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
     passed = true
+    // One fresh read: the shared probe may still hold an exited predecessor's identity for this pid.
+    const identity = (policy.probe ?? probeProcessNow)(proc.pid)
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
-      startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
+      startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
     return result

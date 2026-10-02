@@ -3,10 +3,12 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 
+const fresh = vi.hoisted(() => ({ reads: 0 }))
 vi.mock('@room/relay/process', async importOriginal => {
   const actual = await importOriginal<typeof import('@room/relay/process')>()
   // The cached reader still holds the exited worker's identity for this pid.
-  return { ...actual, probeProcess: () => ({ startTime: 'darwin:1:100', executable: 'claude' }) }
+  return { ...actual, probeProcess: () => ({ startTime: 'darwin:1:100', executable: 'claude' }),
+    probeProcessNow: (pid: number) => { fresh.reads++; return actual.probeProcessNow(pid) } }
 })
 import { signalWorker } from '../src/worker-process.js'
 
@@ -29,4 +31,11 @@ it('confirms "not ours" from the cached probe with a fresh read', async () => {
   const live = probeProcessNow(child.pid!)!
   // The cached reader still says darwin:1:100; the live process is the recorded one.
   expect(workerProcessOwnership(child.pid!, { processStartTime: live.startTime, host: 'sleep' as never })).toBe('ours')
+})
+
+it('answers a vanished pid not ours without a fresh read (R4: status reads of exited workers)', async () => {
+  const { workerProcessOwnership } = await import('../src/worker-process.js')
+  fresh.reads = 0
+  for (let i = 0; i < 50; i++) expect(workerProcessOwnership(2 ** 30, { processStartTime: 'darwin:1:200', host: 'claude' })).toBe('not-ours')
+  expect(fresh.reads).toBe(0)
 })

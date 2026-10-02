@@ -303,7 +303,7 @@ export async function stopWorkerWithEscalation(options: {
   return wait()
 }
 
-export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+export { pidAlive, parsePsLstartUtc, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 import { pidAlive, probeProcess, probeProcessNow, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
@@ -313,10 +313,13 @@ export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boo
 type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
 
-/** "Not ours" from the shared probe is confirmed afresh: it may hold a predecessor's identity for a reused pid. */
+/**
+ * "Not ours" from the shared probe on a live pid is confirmed afresh: the cache may hold a predecessor's identity for
+ * a reused pid. A vanished pid needs no confirmation (and no `ps`).
+ */
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {
   const verdict = ownershipBy(pid, w, probe)
-  return verdict === 'not-ours' && probe === probeProcess ? ownershipBy(pid, w, probeProcessNow) : verdict
+  return verdict === 'not-ours' && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, probeProcessNow) : verdict
 }
 
 function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): ProcessOwnership {

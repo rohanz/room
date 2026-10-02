@@ -316,7 +316,7 @@ export class Rooms {
         await registry.update(record.id, old => ({ ...old, phase: 'active', port: result.port,
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
             ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
-              executable: this.probe(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+              executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
       }, async code => {
         await registry.writeExit(record.id, { run: run.n, code, witnessed: true, at: at() })
         this.dropHandle(s, record.id)

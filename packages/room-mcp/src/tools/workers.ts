@@ -1,6 +1,6 @@
 import { claudeWakeNote } from '../prompt.js'
 import { Bridge } from '../bridge.js'
-import { pidPresent, pidIsOurWorker, probeProcess, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
+import { pidPresent, pidIsOurWorker, signalWorker, terminateWorktreeProcesses } from '../worker-process.js'
 import { WORKER_EFFORTS } from '../worker-config.js'
 import { prepareWorkerLinks, resolveWorkerLinks } from '../worker-git.js'
 import { linkWorkspaceDeps, workspaceDepsNotes } from '../worker-deps.js'
@@ -265,7 +265,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             await registry.update(id, old => ({ ...old, phase: 'active', port: result.port,
               budget: { ...old.budget, nice: result.nice }, link,
               runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: result.proc.pid,
-                ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: (ctx.probe ?? probeProcess)(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+                ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime, executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
           }, async code => {
             await registry.writeExit(id, { run: 1, code, witnessed: true, at: now() })
             rooms.dropHandle(s, id)

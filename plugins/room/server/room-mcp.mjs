@@ -25722,7 +25722,7 @@ import path8 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
   const verdict = livenessBy(identity3, probe);
-  return verdict === "dead" && probe === probeProcess ? livenessBy(identity3, probeProcessNow) : verdict;
+  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, probeProcessNow) : verdict;
 }
 function livenessBy(identity3, probe) {
   const observed = probe(identity3.pid);
@@ -31999,7 +31999,7 @@ function pidPresent(pid, probe = probeProcess) {
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
   const verdict = ownershipBy(pid, w, probe);
-  return verdict === "not-ours" && probe === probeProcess ? ownershipBy(pid, w, probeProcessNow) : verdict;
+  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, probeProcessNow) : verdict;
 }
 function ownershipBy(pid, w, probe) {
   if (!pid || pid <= 0) return "not-ours";
@@ -57352,6 +57352,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     }
     delivered = true;
     passed = true;
+    const identity3 = (policy.probe ?? probeProcessNow)(proc.pid);
     const result2 = {
       proc,
       port,
@@ -57361,7 +57362,8 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       portChanged,
       warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(),
-      processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime
+      processStartTime: identity3?.startTime,
+      processExecutable: identity3?.executable
     };
     await onSpawn(result2);
     if (host.aborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled", true);
@@ -57866,7 +57868,7 @@ var Rooms = class _Rooms {
                 ...result2.processStartTime ? { process: {
                   pid: result2.proc.pid,
                   startTime: result2.processStartTime,
-                  executable: this.probe(result2.proc.pid)?.executable ?? ""
+                  executable: result2.processExecutable ?? ""
                 } } : {}
               } }],
               seq: old.seq + 1
@@ -58397,7 +58399,7 @@ function handlers4(state) {
                 runs: [{ ...old.runs[0], launch: {
                   outcome: "launched",
                   pid: result2.proc.pid,
-                  ...result2.processStartTime ? { process: { pid: result2.proc.pid, startTime: result2.processStartTime, executable: (ctx.probe ?? probeProcess)(result2.proc.pid)?.executable ?? "" } } : {}
+                  ...result2.processStartTime ? { process: { pid: result2.proc.pid, startTime: result2.processStartTime, executable: result2.processExecutable ?? "" } } : {}
                 } }],
                 seq: old.seq + 1
               }));
