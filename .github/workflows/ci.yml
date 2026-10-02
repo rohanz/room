@@ -59,7 +59,7 @@ jobs:
         # Locked dependencies, fixed esbuild target and content-hashed Vite assets;
         # neither build config injects timestamps or absolute build paths.
         run: |
-          if ! git diff --exit-code -- plugins/room/server plugins/room/web; then
-            echo '::error::Plugin assets are out of date. Run npm run build:plugin and commit plugins/room/server and plugins/room/web.'
+          if [ -n "$(git status --porcelain --untracked-files=all -- plugins/room)" ]; then
+            echo '::error::Plugin assets are out of date. Run npm run build:plugin and commit all generated files under plugins/room.'
             exit 1
           fi
