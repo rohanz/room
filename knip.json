@@ -48,6 +48,7 @@
     },
     "packages/room-mcp": {
       "entry": [
+        "src/parse/worker.ts",
         "test/**/*.test.ts"
       ],
       "project": [

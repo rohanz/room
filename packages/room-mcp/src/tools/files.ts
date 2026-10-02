@@ -208,7 +208,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_impact(a) {
       const s = S()
       if (!s.graph) return 'error: no symbol graph in this session'
-      await s.graph.ready
+      if (!s.graph.isReady) return s.graph.indexingStatus
       const g = s.graph.graph
       const out: string[] = []
       if (typeof a.symbol === 'string' && a.symbol) {

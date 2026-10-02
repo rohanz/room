@@ -2,6 +2,8 @@
 
 ## 0.17.1 (unreleased)
 
+- Graph parsing runs in a worker thread, with a bounded refresh queue and yielding graph publication, so large Rust indexes leave Room tools responsive. `room_impact` and claim impact report indexing progress immediately. Parser shutdown cancels pending work.
+
 - The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants, including participants named `room` without bot kind, still produce the diagnostic.
 - The preview crash test waits for completed file writes and lock release, keeps its orphan alive until explicitly released, and reaps it on failure. File creation and the checker's 30-second self-expiry could race the assertions under load; preview-cache behavior is unchanged.
 - A worker's `room_done` reconciles HEAD and settles disk publication before releasing claims or recording its report, so an immediately preceding commit and the current overlay are included. Publication is best-effort with a five-second bound: failures log a diagnostic and still record completion and release claims. Rejected sessions, intent sharing and missing daemon fences skip the wait.

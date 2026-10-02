@@ -8,6 +8,7 @@ import path from 'node:path'
 import { git, gitShow } from '@room/roomd/git'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
 import { parseFile, ensureLanguages } from './parse/engine.js'
+import { ParseWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import type { BaselineRead } from '@room/roomd/baseline'
 import { carriedFrom } from './worker-registry.js'
@@ -24,7 +25,7 @@ const MAX_OBSERVED = 200
 const MAX_SNAPSHOT_BYTES = 200 * 1024
 const MIN_PUBLISH_MS = 20_000
 const YIELD_EVERY = 100
-const YIELD_AFTER_MS = 50
+const YIELD_AFTER_MS = 20
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
 type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string } |
   { kind: 'deletion'; person: string; fence: string; base: string; baseline: string }
@@ -58,6 +59,10 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
 }
 
 export class GraphIndex {
+  private readonly parser = new ParseWorker()
+  private completedFiles = new Set<string>()
+  private totalFiles = 0
+  get indexingStatus(): string { return `graph still indexing (${this.completedFiles.size} of ${this.totalFiles} files)` }
   readonly graph: SymbolGraph
   private readonly publishedGraph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
@@ -246,6 +251,7 @@ export class GraphIndex {
 
   stop(): void {
     this.stopped = true
+    this.parser.stop()
     clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing)
     for (const entry of this.pending.values()) { entry.resolve(); entry.resolveIdle() }
     this.pending.clear()
@@ -267,6 +273,8 @@ export class GraphIndex {
     const generation = ++this.generation
     for (const entry of this.pending.values()) entry.resolve() // release any superseded build
     this.phase = 'indexing'
+    this.completedFiles.clear()
+    this.totalFiles = 0
     this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
     this.observedByPath.clear()
     this.observedRevision++
@@ -297,7 +305,7 @@ export class GraphIndex {
     for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
     const t0 = Date.now()
     const pathsToRefresh = Array.from(all)
-    await ensureLanguages(pathsToRefresh)
+    this.totalFiles = pathsToRefresh.length
     if (generation !== this.generation || this.stopped) return
     const refreshes: Promise<void>[] = []
     let lastYield = Date.now()
@@ -511,7 +519,15 @@ export class GraphIndex {
       const path = this.refreshQueue.shift()!
       this.activeRefreshes++
       const generation = this.generation
-      void this.runRefresh(path).catch(e => { this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`); return generation === this.generation }).then(done => {
+      void this.runRefresh(path).catch(e => {
+        if (!this.stopped && generation === this.generation) {
+          this.log(`graph: ${path}: ${e instanceof Error ? e.message : e}`)
+          this.degradedPaths.add(path)
+          this.cache.delete(path); this.publishedCache.delete(path); this.publishedSource.delete(path)
+          this.observedByPath.delete(path); this.observedRevision++; this.removeGraph(path)
+        }
+        return generation === this.generation
+      }).then(done => {
         this.activeRefreshes--
         // The first completed read satisfies initial/rebuild readiness. A path
         // edited during that read still refreshes again in the background.
@@ -531,7 +547,6 @@ export class GraphIndex {
   private async runRefresh(path: string): Promise<boolean> {
     if (!this.stopped) {
       const revision = this.revisions.get(path), generation = this.generation
-      await ensureLanguages([path])
       const text = await this.textFor(path)
       const publicationSource = snapshotPath(this.room, this.me, [], path)
       const publication = await this.publicationTextFor(path)
@@ -543,12 +558,6 @@ export class GraphIndex {
         const entry = this.room.manifest.get(manifestKey(person, fence))?.get(path)
         return entry?.state === 'held' && entry.fence === fence && this.peerTextAuthorized(person, path)
       }) : []
-      const parsed = text === undefined || text.length > MAX_BYTES ? undefined : parseFile(path, text)
-      const symbols: FileSymbols | undefined = parsed ? {
-        defs: parsed.defs.map(definition => definition.name),
-        refs: parsed.refs,
-        imports: parsed.imports,
-      } as FileSymbols & { imports?: string[] } : undefined
       const myFence = this.room.manifestHead.get(this.me)?.fence
       const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path) : undefined
       const mine = myEntry && myEntry.change !== 'D' ? this.ownText(path) : undefined
@@ -567,6 +576,12 @@ export class GraphIndex {
           text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined
+      const baseText = baseRead?.kind === 'available' ? baseRead.text : ''
+      const [parsed, publicParsed, baseParsed, emptyParsed] = await this.parser.parse(path,
+        [text, publicText, baseText, ''].map(value => value !== undefined && value.length <= MAX_BYTES ? value : undefined))
+      const symbols: FileSymbols | undefined = parsed ? {
+        defs: parsed.defs.map(definition => definition.name), refs: parsed.refs, imports: parsed.imports,
+      } : undefined
       // The base read can yield after a valid shared version was selected. A holder-only
       // epoch change leaves the manifest head unchanged, but revokes that version.
       if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
@@ -579,7 +594,6 @@ export class GraphIndex {
       else { this.cache.set(path, symbols); this.setGraph(path, text) }
       if (publicText === undefined || publicText.length > MAX_BYTES) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
       else {
-        const publicParsed = parseFile(path, publicText)
         if (!publicParsed) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
         else {
           this.publishedCache.set(path, { defs: publicParsed.defs.map(d => d.name), refs: publicParsed.refs, imports: publicParsed.imports })
@@ -598,7 +612,8 @@ export class GraphIndex {
           return revision === this.revisions.get(path)
         }
         this.degradedPaths.delete(path)
-        const changes = observedContractChanges(baseRead?.kind === 'available' ? baseRead.text : '', mineDeleted ? '' : publicText ?? '', path, parseFile).map(change => ({ path, ...change }))
+        const changes = observedContractChanges(baseText, mineDeleted ? '' : publicText ?? '', path, (_path, value) =>
+          value === '' ? emptyParsed : value === baseText ? baseParsed : publicParsed).map(change => ({ path, ...change }))
         if (changes.length && mineDeleted && baseRead?.kind === 'available' &&
             this.entryAuthorized(this.me, path, myEntry) && publicationSource?.fenceValid &&
             snapshotStillCurrent(this.room, publicationSource, []))
@@ -614,6 +629,7 @@ export class GraphIndex {
         } else this.degradedPaths.delete(path)
       }
       this.observedRevision++
+      this.completedFiles.add(path)
       await this.yieldAfterIndex()
       return revision === this.revisions.get(path)
     }
