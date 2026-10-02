@@ -73,7 +73,11 @@ export function linuxProcessName(files: LinuxNameFiles): string | undefined {
 /** Read the kernel's process birth marker and executable name, without inspecting environment.
  * macOS gives Node one-second start-time resolution. Reuse of the same pid in that same second is
  * not a practical risk: pids increment and wrap only after about 99,999, and the executable must also match. */
-export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
+export function probeProcess(pid: number, readers?: ProcessReaders): ProcessInfo | undefined {
+  return readers ? probeUncached(pid, readers) : systemProbe(pid)
+}
+
+function probeUncached(pid: number, readers: ProcessReaders, boottime = () => readers.exec('sysctl', ['-n', 'kern.boottime'])): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   const unreadable = () => pidAlive(pid) ? {} : undefined
   try {
@@ -93,7 +97,7 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
       const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
       const startSeconds = parsePsLstartUtc(lstart)
       if (startSeconds === undefined) return unreadable()
-      const boot = readers.exec('sysctl', ['-n', 'kern.boottime']).match(/sec\s*=\s*(\d+)/)?.[1]
+      const boot = boottime().match(/sec\s*=\s*(\d+)/)?.[1]
       if (!boot) return unreadable()
       let executable: string | undefined
       try { executable = path.basename(readers.exec('ps', ['-o', 'comm=', '-p', String(pid)]).trim()) } catch { /* start time is still useful to record */ }
@@ -102,3 +106,37 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
   } catch { /* process exited or the OS did not allow the read */ }
   return unreadable()
 }
+
+/** How long a live process's identity is reused: briefly while young enough to still `exec` (nice, sh), longer once settled. */
+const PROBE_TTL_MS = 2_000, YOUNG_TTL_MS = 250, SETTLED_AFTER_S = 5, BOOTTIME_TTL_MS = 60_000
+
+/**
+ * A probe bounded to one identity read per live pid per PROBE_TTL_MS (YOUNG_TTL_MS for a process younger than
+ * SETTLED_AFTER_S, which may not have exec'd into its host yet), however many callers ask: on macOS a read is three
+ * synchronous processes (`ps`, `sysctl`, `ps`), and status reads probe every worker on each room change. A dead pid
+ * is answered at once by `kill(pid, 0)`. Linux reads /proc and is not cached.
+ */
+export function createProcessProbe(readers: ProcessReaders & { alive?(pid: number): boolean }, options: { now?: () => number } = {}): ProcessProbe {
+  if (readers.platform !== 'darwin') return pid => probeUncached(pid, readers)
+  const now = options.now ?? Date.now, alive = readers.alive ?? pidAlive
+  const cache = new Map<number, { info: ProcessInfo; until: number }>()
+  let boot: { text: string; at: number } | undefined
+  const boottime = () => {
+    if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec('sysctl', ['-n', 'kern.boottime']), at: now() }
+    return boot.text
+  }
+  return pid => {
+    const hit = cache.get(pid)
+    if (!pid || pid <= 0 || !alive(pid)) { cache.delete(pid); return undefined }
+    if (hit && now() < hit.until) return hit.info
+    const info = probeUncached(pid, readers, boottime)
+    const started = Number(/^darwin:\d+:(\d+)$/.exec(info?.startTime ?? '')?.[1])
+    if (info?.executable && Number.isFinite(started)) {
+      if (cache.size >= 1024) cache.clear()
+      cache.set(pid, { info, until: now() + (now() / 1000 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) })
+    } else cache.delete(pid)
+    return info
+  }
+}
+
+const systemProbe = createProcessProbe(systemProcessReaders)

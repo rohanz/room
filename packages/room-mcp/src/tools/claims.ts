@@ -101,8 +101,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           if (claimsOverlap({ path: c.path, ...range }, { path: p, ...r })) overlaps.push({ claim: c, range })
         }
       }
+      // An overlap on lines Room could not map is not a conflict: say so plainly, in the owner's numbers.
       for (const { claim: o, range } of overlaps)
-        out.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range.approximate ? '; approximate lines' : ''}). Ask ${o.by}'s agent or wait for release.`)
+        out.push(range.approximate
+          ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} · ${o.intent}); their lines may have shifted relative to yours`
+          : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
         if (s.graph.isReady) for (const pl of plans) {
           const users = s.graph.graph.usersOf(pl.symbol)

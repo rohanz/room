@@ -55,7 +55,7 @@ export function previewSettler(state: HandlerState, participants: readonly Parti
   }
 }
 
-export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; settler?: ReturnType<typeof previewSettler> } = {}) {
+export async function buildCombinedTree(state: HandlerState, caller: Session, participants: Participant[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string>; settler?: ReturnType<typeof previewSettler> } = {}) {
   const settler = options.settler ?? previewSettler(state, participants)
   for (;;) {
     const result = await buildCombinedTreeOnce(state, caller, participants, options)
@@ -129,7 +129,7 @@ export function scratchCollectNote(byPerson: ReadonlyMap<string, ReadonlySet<str
 }
 
 /** The ordered combined-tree engine shared by preview and collection. Never writes a clone. */
-async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; diskWorkers?: ReadonlySet<string>; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
+async function buildCombinedTreeOnce(state: HandlerState, caller: Session, participants: { person: string; session: Session }[], options: { resolve?: boolean; diskOnly?: boolean; encoding?: BufferEncoding; skipCallerOnly?: boolean; roots?: ReadonlyMap<string, string> } = {}) {
   const { rooms, baseFor } = state
   const people = participants.map(p => p.person)
   const snapshots = new Map<string, { session: Session; snap: ParticipantSnapshot | undefined }>()
@@ -142,7 +142,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     if (record !== 'updating') acceptedRecords.set(person, { ...record })
   }
   const gaps: PreviewGap[] = []
-  // Local worktrees, plus collection's already-verified workers, are authoritative before daemon publication.
+  // The caller's own workers' worktrees on this machine are authoritative in any room: their commits and uncommitted
+  // edits count before (or without) daemon publication, and after the worker exits and withdraws its overlay.
   const previewWorkers = new WeakMap<Session, Map<string, Awaited<ReturnType<typeof trustedWorker>>>>()
   // A finished worker read from its worktree cannot move the preview: its exit (last publish, ended lease) only changes its overlay.
   // The exemption holds only for the run captured here; a resumed or restarted worker is checked again.
@@ -156,7 +157,7 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     let byPerson = previewWorkers.get(s)
     if (!byPerson) { byPerson = new Map(); previewWorkers.set(s, byPerson) }
     if (byPerson.has(person)) continue
-    const candidate = (s.local || options.diskWorkers?.has(person)) ? await trustedWorker(s, person) : undefined
+    const candidate = await trustedWorker(s, person)
     const real = candidate && await workerRealState(s.dir, candidate)
     const worker = real && decidePreview(real, true) === 'disk' ? candidate : undefined
     if (worker && real?.finished) settledRuns.set(person, { dir: s.dir, lead: s.me.name, run: runOf(worker) })
@@ -175,7 +176,9 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
     coverageLines.push(`  changed, text not shared: ${held.length ? held.join(', ') : 'none'}`)
     if (snap.head.excluded.length) coverageLines.push(`  ${snap.head.excluded.length} changed path(s) excluded by ${person}'s rules (names not shared)`)
     if (snap.head.coverage.kind === 'none') coverageLines.push(`  coverage: ${snap.head.coverage.reason}`)
-    if (!snap.head.complete) coverageLines.push('  updating after a commit; re-run')
+    if (!snap.head.complete) coverageLines.push(snap.record?.git?.anchored === false
+      ? `  no anchor on the room's remote: ${person}'s changes cannot be compared until its branch shares history with a remote branch`
+      : '  updating after a commit; re-run')
     if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: 'manifest updating or holder changed' })
     if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) gaps.push({ person, why: 'room salt missing or invalid; exclusion coverage cannot be certified' })
     if (snap.head.coverage.kind === 'none') gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` })
@@ -204,13 +207,22 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
   }
   for (const dir of previewDirs) rootOf(dir)
   const remoteVersions = new Map<string, Map<string, Version>>()
+  // Participants who left a path alone share its base text: read each commit's file once per preview (UTF-8;
+  // a run's Latin-1 merge reads its own copy).
+  const committedTexts = new Map<string, Promise<string | undefined>>()
+  const gitAt = (sha: string, relpath: string, size?: number) => {
+    const key = `${sha}:${relpath}`
+    let text = committedTexts.get(key)
+    if (!text) { text = readBoundedCheckoutText(caller.dir, key, relpath, 'utf8', true, size); committedTexts.set(key, text) }
+    return text
+  }
   const remoteVersion = async (s: Session, person: string, p: string): Promise<Version> => {
     let versions = remoteVersions.get(person)
     if (!versions) { versions = new Map(); remoteVersions.set(person, versions) }
     const cached = versions.get(p)
     if (cached) return cached
     const version = await versionOf(snapshots.get(person)?.snap, p, {
-      gitAt: (sha, relpath) => readBoundedCheckoutText(caller.dir, `${sha}:${relpath}`, relpath),
+      gitAt,
       known: hash => readBoundedCheckoutText(caller.dir, hash, p, 'utf8', false).catch(() => undefined),
     })
     versions.set(p, version)
@@ -387,7 +399,8 @@ async function buildCombinedTreeOnce(state: HandlerState, caller: Session, parti
       if (!historicalInfo.has(sha)) historicalInfo.set(sha, gitBlobInfoMany(caller.dir, sha, pathSet))
       const blob = (await historicalInfo.get(sha)!).get(p)
       if (blob && blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(p)
-      baseTexts.set(key, blob ? (await readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size)) ?? null : null)
+      baseTexts.set(key, blob ? (await (!options.encoding || options.encoding === 'utf8' ? gitAt(sha, p, blob.size)
+        : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size))) ?? null : null)
     }
     return baseTexts.get(key)!
   }

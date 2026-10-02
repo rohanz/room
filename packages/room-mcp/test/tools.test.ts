@@ -29,6 +29,23 @@ import { AutoJoin } from '../src/auto-join.js'
 import { createHandlerState } from '../src/tools/state.js'
 import { PREVIEW_SETTLE_MS } from '../src/tools/combined-tree.js'
 
+/** A CHANGES.rst-shaped file: version headings, blank lines and many alike entry lines. */
+function changelog(lines: number): string {
+  const out: string[] = []
+  for (let v = 0; out.length < lines; v++) {
+    out.push(`Version 3.${99 - v}.0`, '-------------', '', 'Released 2026-01-01', '')
+    for (let i = 0; i < 20 && out.length < lines; i++) out.push(`-   Fix item ${v}.${i}. :issue:\`${v * 20 + i}\``)
+    out.push('')
+  }
+  return out.slice(0, lines).join('\n') + '\n'
+}
+/** Insert lines after 1-based line `after`. */
+function insertAt(text: string, after: number, add: string[]): string {
+  const lines = text.slice(0, -1).split('\n')
+  lines.splice(after, 0, ...add)
+  return lines.join('\n') + '\n'
+}
+
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = 'def validate(x):\n    return x\n\ndef b():\n    return 22\n'
 const me: Identity = { name: 'Rohan', kind: 'agent' }
@@ -682,7 +699,8 @@ describe('reading', () => {
     const original = Y.Text.prototype.toString
     let conversions = 0
     const reconcile = vi.spyOn(ConflictSet.prototype, 'reconcile').mockResolvedValue()
-    const preparations = vi.spyOn(Array, 'from')
+    // Each prepared map interns the owner's 100 lines once.
+    const preparations = vi.spyOn(Int32Array, 'from')
     const hashInputs = vi.spyOn(Buffer, 'from')
     const spy = vi.spyOn(Y.Text.prototype as { toString(): string }, 'toString').mockImplementation(function (this: Y.Text) {
       if (this === ownerOverlay) conversions++
@@ -695,8 +713,7 @@ describe('reading', () => {
       expect(conversions).toBe(1)
       expect(hashInputs.mock.calls.filter(([text]) => text === ownerText)).toHaveLength(1)
       expect(preparations.mock.calls.filter(([source, mapper]) =>
-        !Array.isArray(source) && typeof source === 'object' && source !== null && 'length' in source &&
-        source.length === 101 && typeof mapper === 'function')).toHaveLength(1)
+        Array.isArray(source) && source.length === 100 && source[0] === ownerText.split('\n')[0] && typeof mapper === 'function')).toHaveLength(1)
     } finally { spy.mockRestore(); hashInputs.mockRestore(); preparations.mockRestore(); reconcile.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   }, 30_000)
 
@@ -743,8 +760,10 @@ describe('reading', () => {
     process.env.GIT_TRACE = trace
     try {
       const out = await t.tools.call('room_claim', { path: 'huge.py', from: 1, to: 1, intent: 'local lines' })
-      expect(out).toContain('CONFLICT: overlaps')
-      expect(out).toContain('approximate lines')
+      // The owner's text is too large to read: their claim is a plain note in their numbers, not a CONFLICT.
+      expect(out).not.toContain('CONFLICT')
+      expect(out).toContain("Kieran's agent also holds huge.py:1-1 in their copy")
+      expect(out).toContain('their lines may have shifted relative to yours')
       const commands = readFileSync(trace, 'utf8')
       expect(commands).toContain('cat-file --batch-check')
       expect(commands).not.toContain(`cat-file -p ${blob}`)
@@ -756,6 +775,69 @@ describe('reading', () => {
       rmSync(repo, { recursive: true, force: true })
     }
   }, 30_000)
+  describe('claims on separate lines of a 3,000-line changelog (rehearsal R3)', () => {
+    const base = changelog(3000)
+    const texts = {
+      Bob: insertAt(base, 6, ['-   Bob at the top. :issue:`6`', '']),
+      Kieran: insertAt(base, 1500, ['-   Kieran in the middle.']),
+      Quinn: insertAt(base, 2995, ['-   Quinn near the end.']),
+      Rohan: insertAt(base, 9, ['-   Rohan at the top. :issue:`9`']),
+    }
+    const claimAll = (t: ReturnType<typeof setup>) => {
+      for (const [name, text] of Object.entries(texts)) publishFixture(t.room, name, 'CHANGES.rst', text)
+      t.room.addClaim({ by: 'Bob', byKind: 'agent', path: 'CHANGES.rst', from: 7, to: 8, intent: 'top entry' })
+      t.room.addClaim({ by: 'Kieran', byKind: 'agent', path: 'CHANGES.rst', from: 1501, to: 1501, intent: 'middle entry' })
+      t.room.addClaim({ by: 'Quinn', byKind: 'agent', path: 'CHANGES.rst', from: 2996, to: 2996, intent: 'end entry' })
+    }
+    const done = async (t: ReturnType<typeof setup>) => {
+      const s = t.session!
+      await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy()
+      rmSync(join(dir, 'CHANGES.rst'), { force: true })
+    }
+
+    it('reports no conflict and no whole-file range for disjoint claims', async () => {
+      const t = setup()
+      claimAll(t)
+      try {
+        const out = await t.tools.call('room_claim', { path: 'CHANGES.rst', from: 10, to: 10, intent: 'my entry' })
+        expect(out).toContain('claimed ')
+        expect(out).not.toContain('CONFLICT')
+        expect(out).not.toContain('approximate')
+        expect(out).not.toMatch(/CHANGES\.rst:1-\d{4}/)
+        expect(out).not.toContain('may have shifted')
+      } finally { await done(t) }
+    }, 30_000)
+
+    it('still reports CONFLICT for a claim on the same mapped lines', async () => {
+      const t = setup()
+      claimAll(t)
+      try {
+        // Kieran's new line 1501 sits after base line 1500, which is my line 1501: it maps to my line 1502.
+        const out = await t.tools.call('room_claim', { path: 'CHANGES.rst', from: 1499, to: 1503, intent: 'rewrite the middle' })
+        expect(out).toMatch(/CONFLICT: overlaps c_\w+ \(Kieran's agent · CHANGES\.rst:1501-1501 · middle entry\)\. Ask Kieran's agent or wait for release\./)
+        expect(out).not.toContain('approximate')
+        expect(out.match(/CONFLICT/g)).toHaveLength(1)
+      } finally { await done(t) }
+    }, 30_000)
+
+    it('says plainly when the lines are uncertain, only near the claimed range', async () => {
+      const t = setup()
+      claimAll(t)
+      const head = t.room.manifestHead.get('Bob')!
+      t.room.manifestHead.set('Bob', { ...head, coverage: { kind: 'none', reason: 'intent' }, complete: false, semRev: head.semRev + 1 })
+      try {
+        const far = await t.tools.call('room_claim', { path: 'CHANGES.rst', from: 2000, to: 2000, intent: 'far away' })
+        expect(far).not.toContain('Bob')
+        expect(far).not.toContain('CONFLICT')
+        const near = await t.tools.call('room_claim', { path: 'CHANGES.rst', from: 8, to: 8, intent: 'near the top' })
+        expect(near).not.toContain('CONFLICT')
+        expect(near).toContain("Bob's agent also holds CHANGES.rst:7-8 in their copy")
+        expect(near).toContain('their lines may have shifted relative to yours')
+        expect(near).not.toMatch(/CHANGES\.rst:1-\d{4}/)
+      } finally { await done(t) }
+    }, 30_000)
+  })
+
   it('treats another session watching this checkout as one local session, never peer WIP', async () => {
     const t = setup()
     const s = t.session!

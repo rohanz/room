@@ -47,7 +47,7 @@ export interface ConflictSlot {
   consumers?: string[]
   /**
    * A possible edit-in-claim's episode (1, 2, …), shared by every claim of the same holder on the same path: an
-   * approximate mapping covers the whole file, so it is one fact with one notice and one "cleared". Kept after it clears.
+   * approximate mapping cannot tell the holder's claims apart, so it is one fact with one notice and one "cleared". Kept after it clears.
    */
   possibleEpisode?: number
   /** This slot joined an episode another slot opened: that slot's notice covers it. */
@@ -828,7 +828,7 @@ export class ConflictSet {
       }
       const [av, bv] = await Promise.all([read(mine, a.path), read(theirs, b.path)])
       const at = asText(av), bt = asText(bv)
-      const mapped = at === undefined ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(b, bt, at)
+      const mapped = at === undefined ? { from: b.from, to: b.to, approximate: true } : claimInMyLines(b, bt, at)
       const subject = `${a.id}\0${b.id}`, key = slotKey(this.owner, 'claims', other, a.path, subject)
       seen.add(key)
       const hit = claimsOverlap(a, { path: b.path, ...mapped })

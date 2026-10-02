@@ -602,7 +602,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Latin-1 transports bytes losslessly through the text engine, including binary additions.
       const result = await buildCombinedTree({ ...state, baseFor: (_s, person) => heads.get(person)!, shareOf: () => 'full' }, lead,
         selected.map(({ s, w }) => ({ session: s, person: w.name })), {
-          diskOnly: true, diskWorkers: new Set(selected.map(({ w }) => w.name)), encoding: 'latin1', skipCallerOnly: true,
+          diskOnly: true, encoding: 'latin1', skipCallerOnly: true,
           roots: new Map([[path.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path.resolve(w.dir), workerRoots.get(w)!] as const)]),
         })
       const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))

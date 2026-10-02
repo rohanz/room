@@ -81,15 +81,31 @@ it('credits identical edits to both participants', async () => {
   expect(result).not.toContain('only lead+test changed this file')
 })
 
-it('runs a team preview from a shared worker overlay even when its local directory exists', async () => {
+it('runs a team preview from a teammate\'s shared overlay, with no local directory', async () => {
   const t = await setup()
   const s = t.state.S()
   s.local = undefined
-  publishFixture(s.room, 'lead+test', 'new.txt', 'shared change\n')
+  publishFixture(s.room, 'ben', 'new.txt', 'shared change\n')
   t.state.liveText = async (_session, file, person) => s.room.text(file, person)
-  const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
+  const result = await fileHandlers(t.state).room_preview_merge({ person: 'ben', run: 'cat new.txt' })
   expect(result).toContain('shared change')
   expect(result).toContain('exit 0')
+})
+
+// rc11 rehearsal R1: in a team room the lead's own worker is read from its worktree, as collect does, so its
+// commits and uncommitted edits count even when its shared overlay is stale or withdrawn.
+it('runs a team preview of the lead\'s own worker from its worktree, not its stale overlay', async () => {
+  put(worker, 'new.txt', 'worktree change\n')
+  git(worker, 'add', 'new.txt'); git(worker, 'commit', '-qm', 'worker commit')
+  const t = await setup()
+  const s = t.state.S()
+  s.local = undefined
+  publishFixture(s.room, 'lead+test', 'new.txt', 'stale overlay\n')
+  t.state.liveText = async (_session, file, person) => s.room.text(file, person)
+  const result = await fileHandlers(t.state).room_preview_merge({ person: 'lead+test', run: 'cat new.txt' })
+  expect(result).toContain('lead+test: trusted local worktree')
+  expect(result).toContain('worktree change')
+  expect(result).not.toContain('stale overlay')
 })
 
 it('room_collect does not read files only the lead changed and leaves them untouched', async () => {

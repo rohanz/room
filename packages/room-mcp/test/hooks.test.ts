@@ -110,15 +110,88 @@ it('maps a foreign claim into the caller checkout and labels unavailable mapping
     const head = room.manifestHead.get('Kieran')!
     room.manifestHead.set('Kieran', { ...head, coverage: { kind: 'none', reason: 'intent' }, semRev: 2 })
     await bridge(s).write()
-    expect(readSession('state.json').claims[0]).toMatchObject({ from: 1, to: 2, approximate: true })
+    // Unknown owner text: the claim keeps its own numbers, never the whole file.
+    expect(readSession('state.json').claims[0]).toMatchObject({ from: 1, to: 1, approximate: true })
     const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: '*** Begin Patch\n*** Update File: app.py\n@@\n-old\n+changed\n*** End Patch\n' } }))
-    expect(out).toContain('approximate whole-file warning')
+    expect(out).toContain("Kieran's agent holds app.py:1-1 in their copy; their lines may have shifted relative to yours — old line")
   } finally {
     writeFileSync(join(dir, 'app.py'), 'x = 1\n')
     peer.destroy()
     s.awareness.destroy()
     room.doc.destroy()
   }
+})
+
+describe('claims on separate lines of a 3,000-line changelog (rehearsal R3)', () => {
+  /** A CHANGES.rst-shaped file: version headings, blank lines and many alike entry lines. */
+  const changelog = (lines: number) => {
+    const out: string[] = []
+    for (let v = 0; out.length < lines; v++) {
+      out.push(`Version 3.${99 - v}.0`, '-------------', '', 'Released 2026-01-01', '')
+      for (let i = 0; i < 20 && out.length < lines; i++) out.push(`-   Fix item ${v}.${i}. :issue:\`${v * 20 + i}\``)
+      out.push('')
+    }
+    return out.slice(0, lines).join('\n') + '\n'
+  }
+  const insertAt = (text: string, after: number, add: string[]) => {
+    const lines = text.slice(0, -1).split('\n')
+    lines.splice(after, 0, ...add)
+    return lines.join('\n') + '\n'
+  }
+  const base = changelog(3000)
+  const owners = {
+    Bob: { text: insertAt(base, 6, ['-   Bob at the top. :issue:`6`', '']), from: 7, to: 8 },
+    Kieran: { text: insertAt(base, 1500, ['-   Kieran in the middle.']), from: 1501, to: 1501 },
+    Quinn: { text: insertAt(base, 2995, ['-   Quinn near the end.']), from: 2996, to: 2996 },
+  }
+  const mine = insertAt(base, 9, ['-   Rohan at the top. :issue:`9`'])
+  const patch = '*** Begin Patch\n*** Update File: CHANGES.rst\n@@\n-x\n+y\n*** End Patch\n'
+
+  it('writes and shows each claim on its own mapped lines, and the claimed lines when uncertain', async () => {
+    const room = new RoomDoc(), s = session(room)
+    const peers = Object.keys(owners).map(name => addPresence(s, name))
+    try {
+      writeFileSync(join(dir, 'CHANGES.rst'), mine)
+      for (const [name, { text, from, to }] of Object.entries(owners)) {
+        room.participants.set(`${name}\0git`, { branch: 'main', head: 'base', base: 'base', anchored: true, rev: 1, fence: '1' })
+        room.manifestHead.set(name, { base: 'base', fence: '1', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+        const entries = new Y.Map<any>()
+        entries.set('CHANGES.rst', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        room.manifest.set(manifestKey(name, '1'), entries)
+        room.setOverlay(manifestKey(name, '1'), 'CHANGES.rst', text)
+        room.addClaim({ by: name, byKind: 'agent', path: 'CHANGES.rst', from, to, intent: `${name} entry` })
+      }
+      await bridge(s).write()
+      const ranges = (readSession('state.json').claims as { by: string; from: number; to: number; approximate: boolean }[])
+        .map(({ by, from, to, approximate }) => ({ by, from, to, approximate }))
+      // Each owner's own new lines, in my lines; none covers my line 10.
+      expect(ranges).toEqual([
+        { by: 'Bob', from: 7, to: 7, approximate: false },
+        { by: 'Kieran', from: 1502, to: 1502, approximate: false },
+        { by: 'Quinn', from: 2997, to: 2997, approximate: false },
+      ])
+      const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: patch } }))
+      expect(out).toContain("Bob's agent holds CHANGES.rst:7-7 — Bob entry")
+      expect(out).toContain("Kieran's agent holds CHANGES.rst:1502-1502 — Kieran entry")
+      expect(out).toContain("Quinn's agent holds CHANGES.rst:2997-2997 — Quinn entry")
+      expect(out).not.toMatch(/CHANGES\.rst:1-\d{4}/)
+      expect(out).not.toContain('approximate')
+
+      // Bob's text becomes unknown: his claim keeps its own numbers, said plainly.
+      const head = room.manifestHead.get('Bob')!
+      room.manifestHead.set('Bob', { ...head, coverage: { kind: 'none', reason: 'intent' }, complete: false, semRev: 2 })
+      await bridge(s).write()
+      expect(readSession('state.json').claims[0]).toMatchObject({ by: 'Bob', from: 7, to: 8, approximate: true })
+      const again = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: patch } }))
+      expect(again).toContain("Bob's agent holds CHANGES.rst:7-8 in their copy; their lines may have shifted relative to yours — Bob entry")
+      expect(again).not.toMatch(/CHANGES\.rst:1-\d{4}/)
+    } finally {
+      rmSync(join(dir, 'CHANGES.rst'), { force: true })
+      for (const peer of peers) peer.destroy()
+      s.awareness.destroy()
+      room.doc.destroy()
+    }
+  })
 })
 
 /** Wakes for a bound Codex session, attached to `s`. */
@@ -556,7 +629,7 @@ describe('hooks bridge state file', () => {
     expect(text).not.toContain('touching app.py?')
     expect(JSON.parse(text)).toMatchObject({ owedCount: 1, company: true, claims: [{ path: 'app.py', by: 'Kieran', plans: 'rename x → y' }] })
     const out = context(await runHook('before-edit.mjs', { tool_name: 'apply_patch', cwd: dir, tool_input: { input: '*** Begin Patch\n*** Update File: app.py\n@@\n-x = 1\n+x = 2\n*** End Patch\n' } }))
-    expect(out).toContain("Kieran's agent holds app.py:1-1 (approximate whole-file warning) — bump x (plans: rename x → y)")
+    expect(out).toContain("Kieran's agent holds app.py:1-1 in their copy; their lines may have shifted relative to yours — bump x (plans: rename x → y)")
     expect(out).toContain('[room] 1 message pending; Room is reconnecting.')
     rmSync(join(sdir(), 'state.json'))
     fenced = false

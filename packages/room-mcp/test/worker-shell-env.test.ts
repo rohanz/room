@@ -113,16 +113,27 @@ it('gives a Claude worker the env file and keeps PORT and thread caps; Codex fil
   expect(workerCommand('claude', undefined, 'task').args.join(' ')).not.toContain('shell_environment_policy')
 })
 
-it('warns when a host cannot apply the scrub', () => {
+it('warns when a host cannot apply the scrub', async () => {
   expect(codexShellFilterWarning('codex-cli 0.145.3')).toMatch(/^warning: codex-cli 0\.145\.3 predates shell_environment_policy\.filters \(0\.146\.0\)/)
   expect(codexShellFilterWarning('codex-cli 0.146.0')).toBeUndefined()
   expect(codexShellFilterWarning('codex-cli 0.159.2')).toBeUndefined()
   expect(codexShellFilterWarning('codex-cli 1.0.0-alpha.1')).toBeUndefined()
   // Unreadable versions are not a scrub failure: a codex that cannot print its version will not start the worker either.
   expect(codexShellFilterWarning(undefined)).toBeUndefined()
-  expect(workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'win32', () => undefined).join('\n')).toMatch(/PowerShell/)
-  expect(workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'darwin', () => undefined)).toEqual([])
-  expect(workerShellEnvWarnings('w', 'claude', { warning: 'warning: x' }, 'darwin', () => undefined)).toEqual(['warning: x'])
-  expect(workerShellEnvWarnings('w', 'codex', {}, 'darwin', () => 'codex-cli 0.140.0')).toHaveLength(1)
-  expect(workerShellEnvWarnings('w', 'codex', {}, 'darwin', () => 'codex-cli 0.159.2')).toEqual([])
+  expect((await workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'win32', async () => undefined)).join('\n')).toMatch(/PowerShell/)
+  expect(await workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'darwin', async () => undefined)).toEqual([])
+  expect(await workerShellEnvWarnings('w', 'claude', { warning: 'warning: x' }, 'darwin', async () => undefined)).toEqual(['warning: x'])
+  expect(await workerShellEnvWarnings('w', 'codex', {}, 'darwin', async () => 'codex-cli 0.140.0')).toHaveLength(1)
+  expect(await workerShellEnvWarnings('w', 'codex', {}, 'darwin', async () => 'codex-cli 0.159.2')).toEqual([])
+})
+
+// rc11 rehearsal R4: the first spawn ran `codex --version` synchronously, stalling the lead's MCP (4.8 s in the
+// load reproduction) while every other tool call waited.
+it('reads the Codex version without blocking the event loop', async () => {
+  let ticked = false
+  const tick = new Promise<void>(resolve => setImmediate(() => { ticked = true; resolve() }))
+  const warnings = workerShellEnvWarnings('w', 'codex', {}, 'darwin', () => new Promise(resolve => setTimeout(() => resolve('codex-cli 0.140.0'), 20)))
+  await tick
+  expect(ticked).toBe(true)
+  expect(await warnings).toHaveLength(1)
 })

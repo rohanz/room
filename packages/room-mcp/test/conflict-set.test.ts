@@ -732,12 +732,13 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
-  it('keeps large-file claim mapping possible rather than certified', async () => {
+  it('keeps a claim in a middle too large to diff possible rather than certified', async () => {
     const f = fixture()
     try {
       f.holder('A'); f.holder('B')
-      const old = Array.from({ length: 1001 }, (_, i) => `line ${i}`).join('\n') + '\n'
-      f.entry('A', `inserted\n${old}`); f.entry('B', old)
+      // Two 2,000-line rewrites between a shared head and tail: the middle cannot be diffed, so it maps approximately.
+      const text = (tag: string, n: number) => ['head', ...Array.from({ length: n }, (_, i) => `${tag} ${i}`), 'tail'].join('\n') + '\n'
+      f.entry('A', text('a', 2001)); f.entry('B', text('b', 2000))
       f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 500, to: 500, intent: 'middle' })
       await new ConflictSet(f.session('A')).reconcile('large claim')
       const slot = [...f.room.doc.getMap<any>('conflicts').values()].find(s => s.kind === 'edit-in-claim')

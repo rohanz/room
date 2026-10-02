@@ -1,6 +1,7 @@
 /**
  * Each participant's base (reporooms §B3): in a team room, the newest ancestor of HEAD on a
- * remote-tracking ref of the room's remote; in a local room, HEAD (a worker: its carried commit).
+ * remote-tracking ref of the room's remote (a worker: its spawn base when that is better, see workerAnchor);
+ * in a local room, HEAD (a worker: its carried commit).
  * Nothing here throws for a missing anchor or commit: those read "cannot compare".
  */
 import { execFile } from 'node:child_process'
@@ -104,12 +105,32 @@ async function anchor(dir: string, head: string, refs: BaseRefs): Promise<{ base
   return { base: chosen.base, anchored: true, upstream: chosen.ref.name }
 }
 
-/** `options.carried`: a local-room worker's registry-pinned base for its worktree lifetime. */
+/** A remote-tracking ref of the room's remote holds `sha`: teammates can fetch it. */
+async function onRemote(dir: string, remote: string | undefined, sha: string): Promise<boolean> {
+  if (!remote) return false
+  try { return (await git(dir, ['for-each-ref', '--count=1', '--contains', sha, '--format=%(refname)', `refs/remotes/${remote}/`])).trim() !== '' }
+  catch (error) { if (isGitTimeout(error)) throw error; return false }
+}
+
+/**
+ * A team-room worker's base: its branch (room/<tag>) has no remote ref, so the remote anchor is <remote>/HEAD's
+ * merge-base or, in a single-branch clone, nothing. Its registry-pinned spawn base is the better base while HEAD
+ * descends from it: with no remote anchor at all, or when it is newer than the remote anchor and on the remote.
+ */
+async function workerAnchor(dir: string, head: string, refs: BaseRefs, found: { base: string; anchored: boolean; upstream?: string }, pinned: string): Promise<{ base: string; anchored: boolean; upstream?: string }> {
+  if (pinned === found.base) return { ...found, anchored: true }
+  if (!await isAncestor(dir, pinned, head)) return found
+  if (!found.anchored) return { base: pinned, anchored: true }
+  return await isAncestor(dir, found.base, pinned) && await onRemote(dir, refs.remote, pinned) ? { base: pinned, anchored: true } : found
+}
+
+/** `options.carried`: a worker's registry-pinned base for its worktree lifetime (its base in a local room). */
 export async function resolveBase(dir: string, inputs: BaseInputs, options: { local?: boolean; carried?: string; knownUpstream?: { name: string; sha: string; by: string } } = {}): Promise<ResolvedBase> {
   const { head, branch, refs } = inputs
-  const found = options.local
+  const remoteAnchor = options.local ? undefined : await anchor(dir, head, refs)
+  const found = !remoteAnchor
     ? { base: options.carried ?? head, anchored: true }
-    : await anchor(dir, head, refs)
+    : options.carried ? await workerAnchor(dir, head, refs, remoteAnchor, options.carried) : remoteAnchor
   let ahead: number | undefined, behind: number | undefined
   if (refs.upstream) {
     const counts = (await git(dir, ['rev-list', '--left-right', '--count', `${head}...${refs.upstream.sha}`])).trim().split(/\s+/).map(Number)

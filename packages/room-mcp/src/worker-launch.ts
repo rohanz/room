@@ -110,7 +110,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
     passed = true
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: workerShellEnvWarnings(tag, policy.host, shellEnv),
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(), processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
