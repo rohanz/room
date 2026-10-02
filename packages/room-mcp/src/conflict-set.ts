@@ -558,6 +558,7 @@ export class ConflictSet {
       if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs()
       const retryDue = this.slots.owned(this.owner).some(([, slot]) => slot.other === other && slot.status === 'unknown' && (slot.retryAt ?? 0) <= Date.now())
       if (this.checkedPairs.get(other) === pairInputs && !retryDue) continue
+      let failed = false
       try {
         const theirs = snapshot(room, other, views)
         const theirGit = acceptedGit(participantRecord(room, other), views)
@@ -696,8 +697,12 @@ export class ConflictSet {
             factId: lines.length ? hash(JSON.stringify([mergeBase, ...merged.conflicts.map(c => c.o)])) : '', lines })
         }
         await this.claims(mine, theirs, other, mergeBase, ownMergePaths)
+      } catch (error) {
+        failed = true
+        this.checkedPairs.delete(other)
+        throw error
       } finally {
-        if (this.guard?.()) this.checkedPairs.set(other, pairInputs)
+        if (!failed && this.guard?.()) this.checkedPairs.set(other, pairInputs)
       }
     }
     this.guard = () => !this.stopped && authority()

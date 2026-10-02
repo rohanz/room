@@ -299,6 +299,42 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it('retries unchanged pair inputs after merge file creation throws', async () => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
+    const mkdir = vi.spyOn(fs, 'mkdtempSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('temporary ENOSPC'), { code: 'ENOSPC' })
+    })
+    try {
+      await expect(set.reconcile('failed evaluation')).rejects.toThrow('temporary ENOSPC')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'x'))).toBeUndefined()
+      mkdir.mockRestore()
+      await set.reconcile('retry unchanged inputs')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'x'))).toMatchObject({ status: 'conflict' })
+    } finally { mkdir.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('forgets prior completion when a due retry throws after withdrawing its unknown slot', async () => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
+    const slots = f.room.doc.getMap<import('../src/conflict-set.js').ConflictSlot>('conflicts')
+    const key = slotKey('A', 'merge', 'B', 'x'), unknown = slotKey('A', 'merge', 'B', '*')
+    let mkdir: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      await set.reconcile('prior completed evaluation')
+      slots.set(unknown, { ...slots.get(key)!, path: '*', status: 'unknown', settled: 'none', inputs: 'retry', retryAt: 0 })
+      slots.delete(key)
+      mkdir = vi.spyOn(fs, 'mkdtempSync').mockImplementationOnce(() => { throw new Error('temporary ENOSPC') })
+      await expect(set.reconcile('due retry')).rejects.toThrow('temporary ENOSPC')
+      expect(slots.get(unknown)).toBeUndefined()
+      mkdir.mockRestore()
+      await set.reconcile('retry unchanged inputs again')
+      expect(slots.get(key)).toMatchObject({ status: 'conflict' })
+    } finally { mkdir?.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('bounds a flush when triggers arrive throughout the check', async () => {
     const f = fixture(), set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0)
     let calls = 0
