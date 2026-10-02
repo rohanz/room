@@ -354,6 +354,30 @@ describe('derived pair slots', () => {
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
+  it('invalidates claim pairs when a worker finishes or changes runs', async () => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', undefined)
+    f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
+    let status = 'running'
+    const view = (run: number) => f.room.workerViews.set('w', { id: 'w', tag: 'w', name: 'B', lead: 'A',
+      mode: 'here', host: 'codex', task: 'edit', branch: 'b', status: status as 'running' | 'done', run, startedAt: 1, fence: '1' })
+    view(1)
+    const session = f.session('A')
+    const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined,
+      async name => name === 'B' ? { id: 'w', status, dir: f.dir, run: '1:nonce', seq: 1 } : undefined, () => undefined)
+    const claims = vi.spyOn(set as unknown as { claims(...args: unknown[]): Promise<void> }, 'claims')
+    const overlaps = () => [...f.room.doc.getMap<{ kind: string }>('conflicts').values()].filter(slot => slot.kind === 'edit-in-claim')
+    try {
+      await set.reconcile('running'); expect(overlaps()).toHaveLength(1)
+      status = 'done'; view(1)
+      await set.reconcile('finished'); expect(overlaps()).toHaveLength(0)
+      status = 'running'; view(2)
+      await set.reconcile('resumed'); expect(overlaps()).toHaveLength(1)
+      view(3); await set.reconcile('new run')
+      expect(claims).toHaveBeenCalledTimes(4)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('retries unchanged pair inputs after merge file creation throws', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')

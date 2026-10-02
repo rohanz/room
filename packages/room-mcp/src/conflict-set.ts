@@ -357,6 +357,7 @@ export class ConflictSet {
     const mine = snapshotMetadata(room, this.owner, views), theirs = snapshotMetadata(room, other, views)
     const claims = room.openClaims().filter(c => c.by === this.owner || c.by === other)
     const graph = room.graphs.get(other)
+    const worker = room.workerViewOf(other)
     const contracts = !!graph?.observed?.length
     // Different bases can hide committed overlaps; carried providers also need full consumer facts.
     const carried = this.carriedInput?.lead === other ? this.carriedInput.baseline : undefined
@@ -382,6 +383,7 @@ export class ConflictSet {
     const graphFacts = contracts ? [graph?.base, graph?.status, graph?.sourceFence,
       graph?.sourceRev === theirs?.head.rev, graph?.truncated, graph?.observedTruncated, graph?.observed] : undefined
     return hash(JSON.stringify([metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
+      worker ? [worker.id, worker.lead, worker.status, worker.run] : undefined,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : undefined,
       carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : undefined]))
   }
