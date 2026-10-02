@@ -154,8 +154,9 @@ export class ConflictSlots {
   }
 
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
-  async replay(owner: string): Promise<void> {
+  async replay(owner: string, validSlot: (slot: ConflictSlot) => boolean = () => true): Promise<void> {
     for (const [key, slot] of this.owned(owner)) {
+      if (!validSlot(slot)) continue
       if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot, true)
     }
   }
@@ -286,6 +287,8 @@ export class ConflictSet {
   private scheduledInputs = ''
   private carriedInput?: { baseline: Baseline; lead: string }
   private readonly checkedPairs = new Map<string, string>()
+  /** Retain the complete evaluation guard, including projected/publisher provenance, for replay. */
+  private readonly pairGuards = new Map<string, () => boolean>()
   private starts: number[] = []
   private readonly contractCache = new Map<string, ReturnType<typeof observedContractChanges>>()
   private guard: (() => boolean) | undefined
@@ -704,11 +707,22 @@ export class ConflictSet {
         this.checkedPairs.delete(other)
         throw error
       } finally {
-        if (!failed && this.guard?.()) this.checkedPairs.set(other, pairInputs)
+        if (!failed && this.guard?.()) {
+          this.checkedPairs.set(other, pairInputs)
+          this.pairGuards.set(other, this.guard)
+        }
       }
     }
-    this.guard = () => !this.stopped && authority()
-    await this.slots.replay(this.owner)
+    await this.slots.replay(this.owner, slot => {
+      this.guard = this.pairGuards.get(slot.other)
+      if (!this.guard?.()) {
+        this.checkedPairs.delete(slot.other)
+        this.pairGuards.delete(slot.other)
+        this.rerun = true
+        return false
+      }
+      return true
+    })
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
   }
 

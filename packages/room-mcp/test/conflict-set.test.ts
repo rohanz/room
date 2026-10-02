@@ -299,6 +299,61 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it('defers stale replay slots after an awaited post changes another conflict input', async () => {
+    const f = fixture({ y: 'old\n' })
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+    const publishY = (name: string, text: string) => {
+      f.room.manifest.get(manifestKey(name, '1'))!.set('y', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), 'y', text)
+    }
+    publishY('A', 'A\n'); publishY('B', 'B\n')
+    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
+    try {
+      await set.reconcile('initial conflicts')
+      f.post.mockClear()
+      let edited = false
+      f.post.mockImplementation(async (_from, body) => {
+        if (!edited) { edited = true; publishY('B', 'A\n') }
+        return { ok: true, msg: body }
+      })
+      await set.reconcile('replay cached pairs')
+      expect(f.post.mock.calls.some(([, body]) => body.path === 'y' && body.type === 'merge-conflict' && !body.clearedFrom)).toBe(false)
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'y'))).toMatchObject({ status: 'clean' })
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('retains additional evaluation provenance guards when replaying cached pairs', async () => {
+    const f = fixture({ y: 'old\n' })
+    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
+    for (const name of ['A', 'B']) {
+      const text = name + '\n'
+      f.room.manifest.get(manifestKey(name, '1'))!.set('y', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), 'y', text)
+    }
+    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
+    const internal = set as unknown as { guard: () => boolean; claims(...args: unknown[]): Promise<void> }
+    const claims = internal.claims.bind(set)
+    let provenance = 1, evaluations = 0
+    vi.spyOn(internal, 'claims').mockImplementation(async (...args) => {
+      await claims(...args); evaluations++
+      const captured = provenance, prior = internal.guard
+      internal.guard = () => prior() && captured === provenance
+    })
+    const posts: { path: string; evaluation: number }[] = []
+    try {
+      await set.reconcile('evaluate with additional provenance')
+      f.post.mockImplementation(async (_from, body) => {
+        posts.push({ path: body.path, evaluation: evaluations })
+        provenance = 2
+        return { ok: true, msg: body }
+      })
+      await set.reconcile('replay')
+      expect(posts).not.toContainEqual({ path: 'y', evaluation: 1 })
+      expect(evaluations).toBe(2)
+      expect(posts).toContainEqual({ path: 'y', evaluation: 2 })
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('retries unchanged pair inputs after merge file creation throws', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
