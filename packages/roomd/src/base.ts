@@ -112,16 +112,26 @@ async function onRemote(dir: string, remote: string | undefined, sha: string): P
   catch (error) { if (isGitTimeout(error)) throw error; return false }
 }
 
+/** The newest tip of a remote-tracking ref of the room's remote that `sha` contains, if any. */
+async function remoteBelow(dir: string, remote: string | undefined, sha: string): Promise<string | undefined> {
+  if (!remote) return undefined
+  try { return (await git(dir, ['for-each-ref', '--merged', sha, '--sort=-committerdate', '--count=1', '--format=%(objectname)', `refs/remotes/${remote}/`])).trim() || undefined }
+  catch (error) { if (isGitTimeout(error)) throw error; return undefined }
+}
+
 /**
  * A team-room worker's base: its branch (room/<tag>) has no remote ref, so the remote anchor is <remote>/HEAD's
- * merge-base or, in a single-branch clone, nothing. Its registry-pinned spawn base is the better base while HEAD
- * descends from it: with no remote anchor at all, or when it is newer than the remote anchor and on the remote.
+ * merge-base or, in a single-branch clone, nothing. While HEAD descends from its registry-pinned spawn base, a
+ * better base is the spawn base itself when teammates can fetch it, else the newest remote commit under it (an
+ * unpushed lead commit or Room's carry commit is on no remote), whichever is newer than the remote anchor. With
+ * neither, the spawn base: only this machine can compare, but its manifest completes.
  */
 async function workerAnchor(dir: string, head: string, refs: BaseRefs, found: { base: string; anchored: boolean; upstream?: string }, pinned: string): Promise<{ base: string; anchored: boolean; upstream?: string }> {
-  if (pinned === found.base) return { ...found, anchored: true }
+  if (found.anchored && pinned === found.base) return found
   if (!await isAncestor(dir, pinned, head)) return found
-  if (!found.anchored) return { base: pinned, anchored: true }
-  return await isAncestor(dir, found.base, pinned) && await onRemote(dir, refs.remote, pinned) ? { base: pinned, anchored: true } : found
+  const shared = await onRemote(dir, refs.remote, pinned) ? pinned : await remoteBelow(dir, refs.remote, pinned)
+  if (shared && (!found.anchored || (shared !== found.base && await isAncestor(dir, found.base, shared)))) return { base: shared, anchored: true }
+  return found.anchored ? found : { base: pinned, anchored: true }
 }
 
 /** `options.carried`: a worker's registry-pinned base for its worktree lifetime (its base in a local room). */

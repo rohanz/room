@@ -140,3 +140,6 @@ export function createProcessProbe(readers: ProcessReaders & { alive?(pid: numbe
 }
 
 const systemProbe = createProcessProbe(systemProcessReaders)
+
+/** An uncached identity read, for decisions a reused pid must never pass: signalling a process. */
+export function probeProcessNow(pid: number): ProcessInfo | undefined { return probeUncached(pid, systemProcessReaders) }

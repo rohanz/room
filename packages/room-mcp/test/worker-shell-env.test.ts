@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { workerCommand, workerProcessEnv } from '../src/worker-config.js'
 import { cleanupWorkerLogs } from '../src/worker-git.js'
 import { CODEX_SHELL_FILTER, codexShellFilterWarning, workerShellEnvScript, workerShellEnvWarnings, writeWorkerShellEnv } from '../src/worker-shell-env.js'
@@ -128,12 +128,19 @@ it('warns when a host cannot apply the scrub', async () => {
 })
 
 // rc11 rehearsal R4: the first spawn ran `codex --version` synchronously, stalling the lead's MCP (4.8 s in the
-// load reproduction) while every other tool call waited.
-it('reads the Codex version without blocking the event loop', async () => {
-  let ticked = false
-  const tick = new Promise<void>(resolve => setImmediate(() => { ticked = true; resolve() }))
-  const warnings = workerShellEnvWarnings('w', 'codex', {}, 'darwin', () => new Promise(resolve => setTimeout(() => resolve('codex-cli 0.140.0'), 20)))
-  await tick
-  expect(ticked).toBe(true)
-  expect(await warnings).toHaveLength(1)
+// load reproduction) while every other tool call waited. This runs the real reader against a slow `codex`.
+it('reads the installed Codex version without blocking the event loop', async () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'room-codex-version-'))
+  try {
+    fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nsleep 0.5\necho codex-cli 0.140.0\n', { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`)
+    const started = performance.now()
+    const pending = workerShellEnvWarnings('w', 'codex', {}, 'darwin')
+    expect(performance.now() - started).toBeLessThan(250)
+    let timerRan = false
+    setTimeout(() => { timerRan = true }, 10)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(timerRan).toBe(true)
+    expect(await pending).toEqual([expect.stringMatching(/^warning: codex-cli 0\.140\.0 predates/)])
+  } finally { vi.unstubAllEnvs(); fs.rmSync(bin, { recursive: true, force: true }) }
 })

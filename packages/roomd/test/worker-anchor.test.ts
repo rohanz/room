@@ -80,6 +80,17 @@ it('a worker commit keeps its committed change in its overlay and the manifest c
   expect(d.roomDoc.overlayText(manifestKey('ana+w', head(d).fence), 'app.txt')?.toString()).toBe('one\nTWO\nthree\n')
 })
 
+it('a worker spawned on an unpushed carry commit anchors to the newest remote commit under it', async () => {
+  const { lead, worker, base } = singleBranchClone()
+  // Room's carry commit holds the lead's uncommitted edits: it is on no remote, so teammates elsewhere cannot fetch it.
+  git(worker, 'commit', '-q', '--allow-empty', '-m', 'room: carried-in uncommitted work from ana')
+  const carry = git(worker, 'rev-parse', 'HEAD')
+  expect(git(lead, 'branch', '-r', '--contains', carry)).toBe('')
+  const d = await startWorker(worker, carry)
+  expect(head(d)).toMatchObject({ base, complete: true })
+  expect(participantRecord(d.roomDoc, 'ana+w')?.git).toMatchObject({ base, anchored: true })
+})
+
 it('a worker whose remote anchor is older than its spawn base uses the spawn base', async () => {
   const { lead, worker } = singleBranchClone(true)
   // The lead moved on (pushed to origin/r17 only) before spawning: the default branch is behind the spawn base.

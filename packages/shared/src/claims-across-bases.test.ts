@@ -31,7 +31,9 @@ describe('claims across bases', () => {
   it('keeps the claimed lines, marked approximate, when the owner text is unavailable', () => {
     const local = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n')
     expect(claimInMyLines({ from: 4, to: 6 }, undefined, local)).toEqual({ from: 4, to: 6, approximate: true })
-    expect(claimInMyLines({ from: 4, to: 6 }, undefined, 'a\nb\nc\n')).toEqual({ from: 3, to: 3, approximate: true })
+    // Past my end of file the holder's numbers stay theirs: clamping them would invent an overlap at my last line.
+    expect(claimInMyLines({ from: 4, to: 6 }, undefined, 'a\nb\nc\n')).toEqual({ from: 4, to: 6, approximate: true })
+    expect(claimInMyLines({ from: 1000, to: 1010 }, undefined, 'a\n'.repeat(100))).toEqual({ from: 1000, to: 1010, approximate: true })
   })
 
   it('maps a long file exactly when it differs by a line', () => {

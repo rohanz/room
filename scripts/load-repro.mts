@@ -94,23 +94,64 @@ async function host(): Promise<void> {
   await new Promise(r => m.child.once('exit', r))
 }
 
+const MARKER = '.room-load-repro'
+const real = (p: string) => { try { return fs.realpathSync(p) } catch { return path.resolve(p) } }
+const inside = (child: string, parent: string) => child === parent || child.startsWith(parent + path.sep)
+
+/**
+ * This run's scratch folder under /tmp: a new one, or one an earlier run of this script made (it holds MARKER). It
+ * may not hold, or be held by, the source clone or this checkout, so clearing it cannot delete either.
+ */
+function scratchDir(requested: string | undefined, keep: string[]): string {
+  if (!requested) {
+    const dir = fs.mkdtempSync('/tmp/room-load-')
+    fs.writeFileSync(path.join(dir, MARKER), '')
+    return dir
+  }
+  const out = path.join(real(path.dirname(path.resolve(requested))), path.basename(requested))
+  if (!/^\/(private\/)?tmp\/[^/]+/.test(out)) throw new Error('--out must be a folder under /tmp')
+  for (const k of keep.map(real)) if (inside(out, k) || inside(k, out)) throw new Error(`--out ${out} overlaps ${k}`)
+  if (fs.existsSync(out)) {
+    if (!fs.existsSync(path.join(out, MARKER))) throw new Error(`--out ${out} exists and was not made by this script; choose a new folder`)
+    fs.rmSync(out, { recursive: true, force: true })
+  }
+  fs.mkdirSync(out)
+  fs.writeFileSync(path.join(out, MARKER), '')
+  return out
+}
+
+/** Every process descending from `roots` (themselves included), from one `ps` listing. */
+function processTrees(roots: number[]): number[] {
+  const rows = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n').map(r => r.trim().split(/\s+/).map(Number))
+  const tree = new Set(roots.filter(pid => pid > 0))
+  for (let grew = true; grew;) { grew = false; for (const [pid, ppid] of rows) if (tree.has(ppid) && !tree.has(pid)) { tree.add(pid); grew = true } }
+  return [...tree]
+}
+
+/** The host pids this run's registry recorded for its workers (fake `codex` processes, reparented once the lead exits). */
+function workerPids(lead: string): number[] {
+  const dir = path.join(lead, '.git', 'room', 'registry', 'workers')
+  const pids: number[] = []
+  for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    try { for (const run of JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).runs ?? []) if (run.launch?.pid > 0) pids.push(run.launch.pid) } catch { /* partial write */ }
+  }
+  return pids
+}
+
 async function orchestrate(): Promise<void> {
   const source = path.resolve(args[0] ?? '')
   const branch = flag('--branch') ?? execFileSync('git', ['-C', source, 'branch', '--show-current'], { encoding: 'utf8' }).trim()
   const workers = Number(flag('--workers') ?? 8)
   const bundle = path.resolve(flag('--bundle') ?? path.join(ROOT, 'plugins/room/server/room-mcp.mjs'))
   const profile = flag('--profile')
-  const out = path.resolve(flag('--out') ?? `/tmp/room-load-${process.pid}`)
-  if (!/^\/(private\/)?tmp\//.test(out)) throw new Error('--out must be under /tmp')
-  fs.rmSync(out, { recursive: true, force: true })
-  fs.mkdirSync(out, { recursive: true })
+  const out = scratchDir(flag('--out'), [source, ROOT])
   const lead = path.join(out, 'lead')
   execFileSync('git', ['clone', '-q', '--single-branch', '-b', branch, source, lead])
   execFileSync('git', ['-C', lead, 'remote', 'set-url', 'origin', 'https://github.com/acme/werk.git'])
   execFileSync('git', ['-C', lead, 'config', 'user.name', 'Ana']); execFileSync('git', ['-C', lead, 'config', 'user.email', 'ana@example.test'])
   // Fake `codex`: this script's host mode under the worker's environment.
   const bin = path.join(out, 'bin'); fs.mkdirSync(bin); fs.mkdirSync(path.join(out, 'codex-home'))
-  fs.writeFileSync(path.join(bin, 'codex'), `#!/bin/sh\nexec "${process.execPath}" "${TSX}" "${fileURLToPath(import.meta.url)}" host "$@"\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(bin, 'codex'), `#!/bin/sh\nexec "${process.execPath}" "${TSX}" "${fileURLToPath(import.meta.url)}" host --run "${out}" "$@"\n`, { mode: 0o755 })
 
   const port = await new Promise<number>((resolve, reject) => { const s = net.createServer(); s.on('error', reject); s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)) }) })
   const http = `http://127.0.0.1:${port}`, ws = `ws://127.0.0.1:${port}`
@@ -183,12 +224,12 @@ async function orchestrate(): Promise<void> {
     for (const l of log.filter(l => /slow tool|event loop lag/.test(l))) fs.appendFileSync(path.join(out, 'slow.log'), l + '\n')
     console.log(`log: ${path.join(lead, '.git', 'room-mcp.log')}; slow lines: ${path.join(out, 'slow.log')}`)
   } finally {
-    for (const c of children.reverse()) c.kill()
-    // Fake hosts and their MCPs are this run's processes; nothing else runs under the scratch dir.
-    for (const row of execFileSync('ps', ['-A', '-o', 'pid=,command='], { encoding: 'utf8' }).split('\n')) {
-      const [pid, ...command] = row.trim().split(/\s+/)
-      if (command.join(' ').includes(out) && Number(pid) !== process.pid) try { process.kill(Number(pid)) } catch { /* gone */ }
-    }
+    // Only this run's processes: its children and the worker hosts it launched, with their descendants. A fake host
+    // can outlive the lead, so its pid comes from the run's registry; one that exited may have a reused pid, so a
+    // recorded pid is signalled only while its command still names this run's scratch folder.
+    const ours = (pid: number) => { try { return execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).includes(out) } catch { return false } }
+    const pids = processTrees([...children.map(c => c.pid ?? 0), ...workerPids(lead).filter(ours)]).filter(pid => pid !== process.pid)
+    for (const pid of pids.reverse()) try { process.kill(pid) } catch { /* gone */ }
   }
 }
 

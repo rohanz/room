@@ -17861,7 +17861,7 @@ function lcsRuns(old, next, lo, oldHi, newHi) {
 }
 function prepareClaimLineMap(ownerVersion, myText) {
   const nextLines = linesOf(myText);
-  if (ownerVersion === void 0) return (range) => ({ ...clampRange(range.from, range.to, nextLines.length), approximate: true });
+  if (ownerVersion === void 0) return (range) => ({ from: range.from, to: range.to, approximate: true });
   if (ownerVersion === myText) return (range) => ({ from: range.from, to: range.to, approximate: false });
   const oldLines = linesOf(ownerVersion);
   const ids = /* @__PURE__ */ new Map();
@@ -24477,6 +24477,9 @@ function createProcessProbe(readers, options = {}) {
     return info2;
   };
 }
+function probeProcessNow(pid) {
+  return probeUncached(pid, systemProcessReaders);
+}
 var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, systemProbe;
 var init_process = __esm({
   "packages/relay/src/process.ts"() {
@@ -29852,11 +29855,21 @@ async function onRemote(dir, remote, sha) {
     return false;
   }
 }
+async function remoteBelow(dir, remote, sha) {
+  if (!remote) return void 0;
+  try {
+    return (await git(dir, ["for-each-ref", "--merged", sha, "--sort=-committerdate", "--count=1", "--format=%(objectname)", `refs/remotes/${remote}/`])).trim() || void 0;
+  } catch (error2) {
+    if (isGitTimeout(error2)) throw error2;
+    return void 0;
+  }
+}
 async function workerAnchor(dir, head, refs, found, pinned) {
-  if (pinned === found.base) return { ...found, anchored: true };
+  if (found.anchored && pinned === found.base) return found;
   if (!await isAncestor(dir, pinned, head)) return found;
-  if (!found.anchored) return { base: pinned, anchored: true };
-  return await isAncestor(dir, found.base, pinned) && await onRemote(dir, refs.remote, pinned) ? { base: pinned, anchored: true } : found;
+  const shared = await onRemote(dir, refs.remote, pinned) ? pinned : await remoteBelow(dir, refs.remote, pinned);
+  if (shared && (!found.anchored || shared !== found.base && await isAncestor(dir, found.base, shared))) return { base: shared, anchored: true };
+  return found.anchored ? found : { base: pinned, anchored: true };
 }
 async function resolveBase(dir, inputs, options = {}) {
   const { head, branch, refs } = inputs;
@@ -31960,7 +31973,7 @@ function unawaitedBackgroundTasks(logFile, logStart, host) {
 }
 function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
-  if (worker && !pidIsOurWorker(pid, worker, probe)) return false;
+  if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false;
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
   try {
     process.kill(pid, signal);

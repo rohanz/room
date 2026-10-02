@@ -100,7 +100,8 @@ function lcsRuns(old: Int32Array, next: Int32Array, lo: number, oldHi: number, n
  *  A changed middle too large to diff degrades alone, the same way; the common prefix and suffix always map exactly. */
 export function prepareClaimLineMap(ownerVersion: string | undefined, myText: string): (range: { from: number; to: number }) => { from: number; to: number; approximate: boolean } {
   const nextLines = linesOf(myText)
-  if (ownerVersion === undefined) return range => ({ ...clampRange(range.from, range.to, nextLines.length), approximate: true })
+  // Unclamped: past my end of file their numbers say nothing about my last line.
+  if (ownerVersion === undefined) return range => ({ from: range.from, to: range.to, approximate: true })
   if (ownerVersion === myText) return range => ({ from: range.from, to: range.to, approximate: false })
   const oldLines = linesOf(ownerVersion)
   const ids = new Map<string, number>()

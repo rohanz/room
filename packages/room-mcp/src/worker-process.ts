@@ -237,10 +237,13 @@ export function unawaitedBackgroundTasks(logFile: string, logStart: number, host
   return [...killed].filter(id => backgrounded.has(id) && kinds.get(id) === 'local_bash').length
 }
 
-/** Signal only the worker host pid. Its group may also contain processes outside the worktree. */
+/**
+ * Signal only the worker host pid. Its group may also contain processes outside the worktree. Ownership is read
+ * afresh: the shared probe may hold an exited worker's identity for a pid already reused.
+ */
 export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: CwdProcessLister = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
-  if (worker && !pidIsOurWorker(pid, worker, probe)) return false
+  if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
 }
@@ -301,7 +304,7 @@ export async function stopWorkerWithEscalation(options: {
 }
 
 export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+import { pidAlive, probeProcess, probeProcessNow, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
   return pid > 0 && probe(pid) !== undefined
