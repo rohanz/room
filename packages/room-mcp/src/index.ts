@@ -6,7 +6,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
+import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, whenStale, type Session } from './session.js'
+import { StaleReplacement } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
@@ -104,7 +105,10 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
       const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() })
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) joined(s) }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
+      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
+      // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
+      const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
+        attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
       // The hooks take message content only from this endpoint, never from a file.
       const arbitration = await startArbitration({ binding: sessionBinding, ledger: tools.ledger, select: () => tools.hookSelect(),
         canSelect: () => !rebinding && !!session?.lease?.fence() && session.lease.sessionId === sessionBinding.bound()?.id,
@@ -171,7 +175,11 @@ async function main() {
         return (rejoined ? rejoined + '\n\n' : '') + (updateNotice ? updateNotice + '\n\n' : '') + body
       }
 
-      const joined = (s: Session) => { s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) }); log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`) }
+      const joined = (s: Session) => {
+        s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
+        whenStale(s, () => { if (session !== s) return; autoJoin.retarget(s); void autoJoin.ensure() })
+        log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
+      }
 
       // Auto-join when the repo already has a room: the runner's ROOM_URL, a prior .room.json, or
       // simply a clone with a git origin. A repo nobody has opened waits for room_create.
@@ -184,6 +192,7 @@ async function main() {
           const root = await joinableRoot(dir)
           // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
           if (session?.local?.lost) await tools.drop(session, session.local.lost)
+          if (await replacement.begin(session)) return replacement.join()
           // After room_join/room_create, keep the repository room the human chose.
           if (target) {
             const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log })
@@ -196,9 +205,9 @@ async function main() {
           log(`ready; ${dir} has no git origin — call room_join with a room name`)
           return undefined
         },
-        async adopt(s) { await adopt(s); log('ready') },
+        async adopt(s) { if (replacement.active) await replacement.finish(s, adopt); else await adopt(s); log('ready') },
         discard: s => leaveSession(s),
-        joined: () => !!session && !session.local?.lost,
+        joined: () => !!session && !session.local?.lost && !session.stale,
         report(line) {
           tools.startupNotice(line)
           log(line)

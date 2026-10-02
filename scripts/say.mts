@@ -3,7 +3,7 @@
 import * as Y from 'yjs'
 import { authorizedWebSocket } from '../packages/roomd/src/ws-auth.js'
 import { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, formatMsg } from '@room/shared'
+import { RoomDoc, formatMsg, roomConnection } from '@room/shared'
 import { roomConnectionParams, waitForRoomSync } from '../packages/agent/src/connection.js'
 const [name, text, waitSec = '150'] = process.argv.slice(2)
 const ROOM_URL = process.env.ROOM_URL?.trim()
@@ -12,7 +12,7 @@ if (!name) throw new Error('Usage: scripts/say.mts <Name> ["message"] [seconds-t
 const u = new URL(ROOM_URL); const serverUrl = `${u.protocol}//${u.host}`; const roomName = u.pathname.replace(/^\//, '')
 const doc = new Y.Doc(); const room = new RoomDoc(doc)
 const params = roomConnectionParams(u, { token: process.env.ROOM_TOKEN, session: process.env.ROOM_SESSION, key: process.env.ROOM_LOCAL_KEY })
-const p = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof WebSocket, params: { schema: '2' } })
+const p = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof WebSocket, ...roomConnection(doc) })
 try { await waitForRoomSync(p, Number(process.env.ROOM_CONNECT_TIMEOUT_MS ?? 15_000), `${serverUrl}/${roomName}`) }
 catch (error) { p.destroy(); throw error }
 if (text) room.say(name, { role: 'human', text })

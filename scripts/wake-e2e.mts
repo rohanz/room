@@ -52,7 +52,7 @@ import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { authorizedWebSocket } from '../packages/roomd/src/ws-auth.js'
 import { WebsocketProvider } from 'y-websocket'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, roomConnection } from '@room/shared'
 import type { Identity } from '@room/shared'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -206,7 +206,7 @@ async function prompt(s: Session, text: string, waitEnd = true): Promise<number>
 async function connect(s: Session): Promise<{ room: RoomDoc; lead: string; close: () => void }> {
   const info = JSON.parse(fs.readFileSync(path.join(s.dir, '.git', 'room-local.json'), 'utf8')) as { port: number; room: string; key: string }
   const doc = new Y.Doc()
-  const p = new WebsocketProvider(`ws://127.0.0.1:${info.port}`, encodeURIComponent(info.room), doc, { WebSocketPolyfill: authorizedWebSocket({ key: info.key }) as any, params: { schema: '2' } })
+  const p = new WebsocketProvider(`ws://127.0.0.1:${info.port}`, encodeURIComponent(info.room), doc, { WebSocketPolyfill: authorizedWebSocket({ key: info.key }) as any, ...roomConnection(doc) })
   await waitFor('relay sync', 15_000, () => p.synced)
   const lead = await waitFor(`${s.name} identity in the room`, 15_000, () => {
     for (const [id, st] of p.awareness.getStates()) {

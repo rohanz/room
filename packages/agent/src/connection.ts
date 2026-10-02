@@ -1,3 +1,5 @@
+import { STALE_REPLICA_CODE, STALE_REPLICA_REASON } from '@room/shared'
+
 export interface SyncProvider {
   synced: boolean
   on(event: 'sync', listener: (synced: boolean) => void): unknown
@@ -35,4 +37,12 @@ export async function waitForRoomSync(provider: SyncProvider, timeoutMs = 15_000
     if (provider.synced) done()
     if (!settled) timer = setTimeout(() => done(new Error(`could not sync with ${destination} within ${deadlineMs}ms`)), deadlineMs)
   })
+}
+
+/** A close no reconnect can fix: the room's compacted copy needs a fresh replica (4409, a restart takes one), or
+ *  access ended (4401, 4403). The process exits with the reason; any other close reconnects. */
+export function finalClose(event: { code?: number; reason?: string } | null): { exitCode: number; line: string } | undefined {
+  if (event?.code === STALE_REPLICA_CODE) return { exitCode: 75, line: `${event.reason || STALE_REPLICA_REASON}; restart roomagent to rejoin with a fresh copy` }
+  if (event?.code === 4401 || event?.code === 4403) return { exitCode: 1, line: `${event.reason || 'access ended'}; not reconnecting` }
+  return undefined
 }

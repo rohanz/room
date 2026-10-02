@@ -31,7 +31,7 @@ import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease, type Cl
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
 import chokidar, { type FSWatcher } from 'chokidar'
-import { RoomDoc, assertValidParticipantName, claimReleaseText, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
+import { RoomDoc, assertValidParticipantName, roomConnection, claimReleaseText, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
 import { carriesWork, workerBaseline, type Baseline, type BaselineSource } from './baseline.js'
@@ -416,7 +416,7 @@ class Daemon implements Roomd {
       ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc)
       : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
-          params: { schema: '2' },
+          ...roomConnection(this.roomDoc.doc),
         })
     options.onProvider?.(this.provider)
     this.publisher = new Publisher(this)

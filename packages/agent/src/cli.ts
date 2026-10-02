@@ -8,10 +8,10 @@ import { fileURLToPath } from 'node:url'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { createPost, HubClient, hubTransport } from '@room/room-mcp'
-import { RoomDoc, colorFor } from '@room/shared'
+import { RoomDoc, colorFor, roomConnection } from '@room/shared'
 import { configureCredentials, deriveRoomName, encodeRoom, getCredential, parseServer } from '@room/room-mcp'
 import { CodexBackend } from './backend.js'
-import { roomConnectionParams, waitForRoomSync } from './connection.js'
+import { finalClose, roomConnectionParams, waitForRoomSync } from './connection.js'
 import { Runner } from './runner.js'
 
 function parseArgs(argv: string[]): Record<string, string> {
@@ -65,7 +65,7 @@ const mcpEntry = resolve(here, '../../room-mcp/src/index.ts')
 
 const doc = new Y.Doc()
 const room = new RoomDoc(doc)
-const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof globalThis.WebSocket, params: { schema: '2' } })
+const provider = new WebsocketProvider(serverUrl, roomName, doc, { WebSocketPolyfill: authorizedWebSocket(params) as unknown as typeof globalThis.WebSocket, ...roomConnection(doc) })
 const sessionId = `roomagent:${process.pid}`
 provider.awareness.setLocalState({ user: { name, kind: 'agent', color: colorFor(name) }, sessionId, status: 'idle' })
 
@@ -113,6 +113,13 @@ room.chat(name).observe(ev => {
   for (const d of ev.changes.delta) for (const it of d.insert ?? []) if (it.role !== 'human') console.log(`[${it.role}] ${it.text}`)
 })
 provider.on('status', (e: { status: string }) => console.error(`[roomagent] ws ${e.status}`))
+// A refused replica or revoked access: settle and exit with the reason; a restart joins with a fresh replica.
+provider.on('connection-close', (event: { code?: number; reason?: string } | null) => {
+  const final = finalClose(event)
+  if (!final) return
+  console.error(`[roomagent] ${final.line}`)
+  void shutdown(final.exitCode)
+})
 try {
   await waitForRoomSync(provider, args['connect-timeout-ms'] ? Number(args['connect-timeout-ms']) : 15_000, `${serverUrl}/${roomName}`)
 } catch (error) {
@@ -124,7 +131,7 @@ runner.start()
 console.error(`[roomagent] ${name}'s agent online in ${roomName} @ ${serverUrl}, cwd ${workDir}`)
 
 let shuttingDown = false
-async function shutdown() {
+async function shutdown(exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
   console.error('[roomagent] shutting down')
@@ -132,7 +139,7 @@ async function shutdown() {
   provider.awareness.setLocalState(null)
   provider.destroy()
   cleanupCredentials()
-  process.exit(0)
+  process.exit(exitCode)
 }
 process.on('SIGINT', () => { void shutdown() })
 process.on('SIGTERM', () => { void shutdown() })

@@ -37,6 +37,12 @@ export function generationParams(doc: Y.Doc, base: Record<string, string>): Reco
   return Object.defineProperty({ ...base }, GENERATION_PARAM, { enumerable: true, get: () => replicaGeneration(doc) })
 }
 
+/** Every Room provider's options: schema 2, the replica's generation at each connect, and no BroadcastChannel,
+ *  which would exchange state between providers of one room in a process or browser regardless of generation. */
+export function roomConnection(doc: Y.Doc): { params: Record<string, string>; disableBc: true } {
+  return { params: generationParams(doc, { schema: '2' }), disableBc: true }
+}
+
 /**
  * The server's decision for a connection that states `stated` (null: an rc client, which states none) in a room
  * at `current`: merge it, refuse its replica (a later generation exists), or ask an rc client to update.

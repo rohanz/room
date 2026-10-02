@@ -19,7 +19,7 @@ import { ensureLocalRelay, localViewKey, NoLocalRelay, type LocalRelay } from '@
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
-import { RoomDoc, assertValidParticipantName, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
+import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipantName, roomConnection, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
 import { GraphIndex } from './graph-index.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
@@ -81,6 +81,9 @@ export interface Session {
   closed?: { reason: string }
   /** A size-cap refusal: publication stays paused until the next successful sync. */
   rejected?: { reason: string; at: number }
+  /** Set when the server refused this replica (ws close 4409): the room's document was compacted at a server
+   *  restart. The provider stops reconnecting; the session is replaced as a restart replaces it (compacted.ts). */
+  stale?: { reason: string }
   /** The server's ceiling on sharing levels (ROOM_SHARE_MAX); the daemon's level never exceeds it. */
   shareMax: ShareLevel
   /** Set in local mode (no server): the relay this session found or runs. */
@@ -548,7 +551,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
     ? options.providerFactory(url.toString().replace(/\/$/, ''), encodedRoom, doc)
     : new WebsocketProvider(url.toString().replace(/\/$/, ''), encodedRoom, doc, {
         WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }) as any,
-        params: { schema: '2' },
+        ...roomConnection(doc),
       }))
   const closeProbe = () => { probe.destroy(); probe.awareness.destroy(); doc.destroy() }
   const binding = createSessionBinding(options.dir)
@@ -926,10 +929,16 @@ export function captureCapClose(provider: unknown): () => CapClose | undefined {
   let seen: CapClose | undefined
   const onClose = (e: unknown) => {
     const close = e && typeof e === 'object' ? e as { code?: number; reason?: string } : undefined
-    if (close?.code === ROOM_SIZE_CAP_CODE) seen = { code: close.code, reason: close.reason }
+    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE) seen = { code: close.code, reason: close.reason }
   }
   p.on?.('connection-close', onClose)
   return () => { p.off?.('connection-close', onClose); const taken = seen; seen = undefined; return taken }
+}
+const staleListeners = new WeakMap<Session, (() => void)[]>()
+/** Call `listener` once the server refuses this session's replica (4409), or now if it already has. */
+export function whenStale(s: Session, listener: () => void): void {
+  if (s.stale) { listener(); return }
+  staleListeners.set(s, [...staleListeners.get(s) ?? [], listener])
 }
 export function watchClosed(s: Session, log?: (line: string) => void, startupClose?: CapClose): void {
   const p = s.provider as unknown as { on?: (ev: string, fn: (e: { code?: number; reason?: string } | boolean | null) => void) => void; disconnect?: () => void; connect?: () => void; wsconnected?: boolean; synced?: boolean }
@@ -944,6 +953,16 @@ export function watchClosed(s: Session, log?: (line: string) => void, startupClo
   }
   const onClose = (e: { code?: number; reason?: string } | boolean | null) => {
     const close = e && typeof e === 'object' ? e : undefined
+    if (close?.code === STALE_REPLICA_CODE) {
+      if (s.stale || s.closed) return
+      if (retry) clearTimeout(retry)
+      if (verify) clearTimeout(verify)
+      s.stale = { reason: close.reason || STALE_REPLICA_REASON }
+      try { p.disconnect?.() } catch { /* already gone */ }
+      log?.(`${s.roomName}: ${s.stale.reason}`)
+      for (const listener of staleListeners.get(s) ?? []) listener()
+      return
+    }
     if (close?.code === ROOM_SIZE_CAP_CODE) {
       s.rejected = { reason: close.reason || 'room is over its size cap', at: Date.now() }
       if (verify) clearTimeout(verify)

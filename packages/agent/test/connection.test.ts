@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { roomConnectionParams, waitForRoomSync } from '../src/connection.js'
+import { finalClose, roomConnectionParams, waitForRoomSync } from '../src/connection.js'
 
 class Provider extends EventEmitter { synced = false }
 
@@ -28,5 +28,14 @@ describe('Room client connections', () => {
     provider.synced = true; provider.emit('sync', true)
     await waiting
     expect(provider.listenerCount('sync')).toBe(0)
+  })
+
+  it('a refused replica (4409) exits for a restart with a fresh copy; 4401/4403 exit; other closes reconnect', () => {
+    expect(finalClose({ code: 4409, reason: "this room's document was compacted when the server restarted; rejoin with a fresh copy" }))
+      .toEqual({ exitCode: 75, line: "this room's document was compacted when the server restarted; rejoin with a fresh copy; restart roomagent to rejoin with a fresh copy" })
+    expect(finalClose({ code: 4403, reason: 'update Room to 0.17.0 or later' })).toEqual({ exitCode: 1, line: 'update Room to 0.17.0 or later; not reconnecting' })
+    expect(finalClose({ code: 4401, reason: '' })).toMatchObject({ exitCode: 1 })
+    expect(finalClose({ code: 1006, reason: '' })).toBeUndefined()
+    expect(finalClose(null)).toBeUndefined()
   })
 })

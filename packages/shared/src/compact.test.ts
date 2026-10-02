@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
-import { FRESH_GENERATION, compactDoc, docGeneration, generationGate, generationParams, historyOf, replicaGeneration } from './compact.js'
+import { FRESH_GENERATION, compactDoc, docGeneration, generationGate, generationParams, historyOf, replicaGeneration, roomConnection } from './compact.js'
 const structCount = (doc: Y.Doc) => historyOf(doc).structs
 
 const roots = (doc: Y.Doc) => Object.fromEntries([...doc.share.keys()].sort().map(name => {
@@ -129,6 +129,12 @@ describe('the generation a replica states', () => {
     expect(params.gen).toBe('g2')
     params.ticket = 't'
     expect({ ...params }).toEqual({ schema: '2', gen: 'g2', ticket: 't' })
+  })
+
+  it('every Room provider states it, with BroadcastChannel off', () => {
+    const options = roomConnection(new Y.Doc())
+    expect(options.disableBc).toBe(true)
+    expect({ ...options.params }).toEqual({ schema: '2', gen: 'fresh' })
   })
 })
 

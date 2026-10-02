@@ -1,6 +1,6 @@
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
-import { RoomDoc, colorFor, type Presence } from '@room/shared'
+import { RoomDoc, STALE_REPLICA_CODE, colorFor, roomConnection, type Presence } from '@room/shared'
 import { secureWebSocket } from './secure-websocket.js'
 
 export interface RoomLocation {
@@ -96,7 +96,7 @@ export function connect(search = location.search): Conn {
   const room = new RoomDoc(doc)
   const storage = (() => { try { return sessionStorage } catch { return { getItem: () => null, setItem: () => {} } } })()
   const auth = takeLinkCredentials(search, storage, url => history.replaceState(history.state, '', url))
-  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { connect: false, params: { schema: '2' }, ...(auth.relay && auth.view ? { WebSocketPolyfill: secureWebSocket(auth.view) } : {}) })
+  const provider = new WebsocketProvider(roomLocation.serverUrl, roomLocation.encodedRoomName, doc, { connect: false, ...roomConnection(doc), ...(auth.relay && auth.view ? { WebSocketPolyfill: secureWebSocket(auth.view) } : {}) })
   let stopped = false
   const showError = (why: string) => {
     const el = document.getElementById('access-error') ?? document.body.appendChild(Object.assign(document.createElement('div'), { id: 'access-error' }))
@@ -114,6 +114,8 @@ export function connect(search = location.search): Conn {
   provider.on('connection-close', (event: CloseEvent | null) => {
     provider.shouldConnect = false
     provider.awareness.setLocalState(null)
+    // The room was compacted at a server restart: a view has no writes to keep, so a reload takes a fresh copy.
+    if (event?.code === STALE_REPLICA_CODE) { stopped = true; location.reload(); return }
     if (event?.code === 4401 || event?.code === 4403) { stopped = true; showError(event.reason || 'access revoked'); return }
     setTimeout(() => { if (!stopped) void reconnect() }, 1000)
   })
