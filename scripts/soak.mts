@@ -601,7 +601,8 @@ function report(): void {
     const same = prev && prev.pid === m.pid && !(m.uptimeS < prev.uptimeS)
     const cpu = same && prev.cpuTicks !== undefined ? (100 * (m.cpuTicks - prev.cpuTicks) / 100 / ((m.t - prev.t) / 1000)).toFixed(1) : '-'
     const steal = same && prev.totalTicks !== undefined && m.totalTicks > prev.totalTicks ? (100 * (m.stealTicks - prev.stealTicks) / (m.totalTicks - prev.totalTicks)).toFixed(1) : '-'
-    const near = (room: string) => rooms.filter(r => r.room === room && Math.abs(r.t - m.t) < 120_000 && (m.phase !== 'before restart' || r.t <= m.t)).at(-1)
+    // The room as sampled just before this metric (observers sample first at each tick).
+    const near = (room: string) => rooms.filter(r => r.room === room && r.t <= m.t + 5_000 && m.t - r.t < 120_000).at(-1)
     const history = (r: any) => r?.structs !== undefined ? `${r.structs} (${r.deleted})` : '-'
     const a = near(REPOS.alpha), b = near(REPOS.beta)
     const errs = (m.errors ?? []) as string[]
