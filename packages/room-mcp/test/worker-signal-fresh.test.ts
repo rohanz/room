@@ -8,7 +8,8 @@ vi.mock('@room/relay/process', async importOriginal => {
   const actual = await importOriginal<typeof import('@room/relay/process')>()
   // The cached reader still holds the exited worker's identity for this pid.
   return { ...actual, probeProcess: () => ({ startTime: 'darwin:1:100', executable: 'claude' }),
-    probeProcessNow: (pid: number) => { fresh.reads++; return actual.probeProcessNow(pid) } }
+    probeProcessNow: (pid: number) => { fresh.reads++; return actual.probeProcessNow(pid) },
+    probeProcessSince: (pid: number, start: string | undefined) => { fresh.reads++; return actual.probeProcessSince(pid, start) } }
 })
 import { signalWorker } from '../src/worker-process.js'
 

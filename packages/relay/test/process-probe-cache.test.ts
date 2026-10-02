@@ -58,3 +58,34 @@ describe('the cached process probe', () => {
     expect(calls.filter(c => c.startsWith('ps '))).toHaveLength(4)
   })
 })
+
+describe('reading a process no earlier than its recorded start', () => {
+  it('rereads when the cached read predates the recorded process, then trusts the newer read', () => {
+    let now = (START_S + 60) * 1000
+    const { readers, calls } = darwin(new Set([42]), new Map())
+    const probe = createProcessProbe(readers, { now: () => now })
+    probe(42)
+    const ps = () => calls.filter(c => c.startsWith('ps ')).length
+    expect(ps()).toBe(2)
+    // A process recorded as starting after that read (a reused pid) cannot be described by it.
+    now = (START_S + 61.5) * 1000
+    probe.readSince(42, `darwin:1789781721:${START_S + 61}`)
+    expect(ps()).toBe(4)
+    // Within a second of its start a read may still be of the predecessor: read again once later.
+    now = (START_S + 62.5) * 1000
+    probe.readSince(42, `darwin:1789781721:${START_S + 61}`)
+    expect(ps()).toBe(6)
+    now += 500
+    for (let i = 0; i < 100; i++) probe.readSince(42, `darwin:1789781721:${START_S + 61}`)
+    expect(ps()).toBe(6)
+  })
+
+  it('trusts a cached read made after the recorded start, however often a mismatch is confirmed', () => {
+    const { readers, calls } = darwin(new Set([42]), new Map([[42, 'node']]))
+    const probe = createProcessProbe(readers, { now: () => (START_S + 60) * 1000 })
+    probe(42)
+    // A record taken before its shell exec'd (executable "sh") mismatches every read; that alone costs no ps.
+    for (let i = 0; i < 100; i++) expect(probe.readSince(42, `darwin:1789781721:${START_S}`)?.executable).toBe('node')
+    expect(calls.filter(c => c.startsWith('ps '))).toHaveLength(2)
+  })
+})

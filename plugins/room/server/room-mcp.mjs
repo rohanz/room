@@ -24435,8 +24435,8 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
     }
     if (readers.platform === "darwin") {
       const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
-      const startSeconds = parsePsLstartUtc(lstart);
-      if (startSeconds === void 0) return unreadable();
+      const startSeconds2 = parsePsLstartUtc(lstart);
+      if (startSeconds2 === void 0) return unreadable();
       const boot = boottime().match(/sec\s*=\s*(\d+)/)?.[1];
       if (!boot) return unreadable();
       let executable;
@@ -24444,14 +24444,17 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
         executable = path6.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
       } catch {
       }
-      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
+      return { startTime: `darwin:${boot}:${startSeconds2}`, executable };
     }
   } catch {
   }
   return unreadable();
 }
 function createProcessProbe(readers, options = {}) {
-  if (readers.platform !== "darwin") return (pid) => probeUncached(pid, readers);
+  if (readers.platform !== "darwin") {
+    const read3 = (pid) => probeUncached(pid, readers);
+    return Object.assign(read3, { readSince: read3, fresh: read3 });
+  }
   const now = options.now ?? Date.now, alive = readers.alive ?? pidAlive;
   const cache = /* @__PURE__ */ new Map();
   let boot;
@@ -24459,26 +24462,40 @@ function createProcessProbe(readers, options = {}) {
     if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec("sysctl", ["-n", "kern.boottime"]), at: now() };
     return boot.text;
   };
-  return (pid) => {
+  const fresh = (pid) => {
+    const info2 = probeUncached(pid, readers, boottime);
+    const started = startSeconds(info2?.startTime);
+    if (info2?.executable && Number.isFinite(started)) {
+      if (cache.size >= 1024) cache.clear();
+      cache.set(pid, { info: info2, readAt: now(), until: now() + (now() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
+    } else cache.delete(pid);
+    return info2;
+  };
+  const probe = (pid) => {
     const hit = cache.get(pid);
     if (!pid || pid <= 0 || !alive(pid)) {
       cache.delete(pid);
       return void 0;
     }
-    if (hit && now() < hit.until) return hit.info;
-    const info2 = probeUncached(pid, readers, boottime);
-    const started = Number(/^darwin:\d+:(\d+)$/.exec(info2?.startTime ?? "")?.[1]);
-    if (info2?.executable && Number.isFinite(started)) {
-      if (cache.size >= 1024) cache.clear();
-      cache.set(pid, { info: info2, until: now() + (now() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
-    } else cache.delete(pid);
-    return info2;
+    return hit && now() < hit.until ? hit.info : fresh(pid);
   };
+  const readSince = (pid, startTime) => {
+    const hit = cache.get(pid), started = startSeconds(startTime);
+    if (!pid || pid <= 0 || !alive(pid)) {
+      cache.delete(pid);
+      return void 0;
+    }
+    return hit && now() < hit.until && Number.isFinite(started) && hit.readAt / 1e3 > started + 1 ? hit.info : fresh(pid);
+  };
+  return Object.assign(probe, { readSince, fresh });
 }
 function probeProcessNow(pid) {
-  return probeUncached(pid, systemProcessReaders);
+  return systemProbe.fresh(pid);
 }
-var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, systemProbe;
+function probeProcessSince(pid, startTime) {
+  return systemProbe.readSince(pid, startTime);
+}
+var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, startSeconds, systemProbe;
 var init_process = __esm({
   "packages/relay/src/process.ts"() {
     "use strict";
@@ -24497,6 +24514,7 @@ var init_process = __esm({
     YOUNG_TTL_MS = 250;
     SETTLED_AFTER_S = 5;
     BOOTTIME_TTL_MS = 6e4;
+    startSeconds = (startTime) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
     systemProbe = createProcessProbe(systemProcessReaders);
   }
 });
@@ -25722,7 +25740,7 @@ import path8 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
   const verdict = livenessBy(identity3, probe);
-  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, probeProcessNow) : verdict;
+  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, (pid) => probeProcessSince(pid, identity3.startTime)) : verdict;
 }
 function livenessBy(identity3, probe) {
   const observed = probe(identity3.pid);
@@ -31999,7 +32017,7 @@ function pidPresent(pid, probe = probeProcess) {
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
   const verdict = ownershipBy(pid, w, probe);
-  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, probeProcessNow) : verdict;
+  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, (p) => probeProcessSince(p, w.processStartTime)) : verdict;
 }
 function ownershipBy(pid, w, probe) {
   if (!pid || pid <= 0) return "not-ours";
