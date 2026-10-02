@@ -31144,13 +31144,15 @@ var init_src4 = __esm({
           ignoreInitial: true,
           followSymlinks: false,
           persistent: true,
-          ignored: (absolute) => {
+          ignored: (absolute, stat4) => {
             const relpath = path11.relative(this.dir, absolute).split(path11.sep).join("/");
             if (relpath === "") return false;
+            if (relpath === ".." || relpath.startsWith("../") || path11.isAbsolute(relpath)) return true;
             if (this.inIgnoredDir(relpath)) return true;
             if (isRegenerableBuildPath(relpath.slice(relpath.lastIndexOf("/") + 1)) && !this.holdsTracked(relpath)) return true;
             if (defaultIgnoredPath(relpath)) return this.isIgnoredPath(relpath);
-            return !this.isSafeRoomPath(relpath, false);
+            if (stat4?.isFile()) countFile(absolute, true);
+            return false;
           }
         });
         this.watcher = watcher;
@@ -31191,13 +31193,6 @@ var init_src4 = __esm({
           watcher.on("error", fatal);
           watcher.once("ready", ready);
         });
-        for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name2 of names) {
-          const absolute = path11.join(dir, name2);
-          try {
-            if (fs14.statSync(absolute).isFile()) countFile(absolute, true);
-          } catch {
-          }
-        }
         this.log(`watching ${watchedFiles.size} files`);
       }
       /** .roomignore changed: newly ignored files leave the room, newly allowed ones are published. */
@@ -37985,6 +37980,62 @@ var init_engine = __esm({
   }
 });
 
+// packages/room-mcp/src/parse/client.ts
+import { Worker } from "node:worker_threads";
+var ParseWorker;
+var init_client = __esm({
+  "packages/room-mcp/src/parse/client.ts"() {
+    "use strict";
+    ParseWorker = class {
+      worker;
+      failure;
+      stopped = false;
+      nextId = 0;
+      pending = /* @__PURE__ */ new Map();
+      start() {
+        if (this.worker) return this.worker;
+        const source = import.meta.url.endsWith(".ts");
+        const entry = new URL(import.meta.url.endsWith(".mjs") ? "./parse-worker.mjs" : source ? "./worker.ts" : "./worker.js", import.meta.url);
+        const worker = source ? new Worker(`import { register } from 'tsx/esm/api'; register(); await import(${JSON.stringify(entry.href)})`, { eval: true }) : new Worker(entry);
+        this.worker = worker;
+        worker.on("message", ({ id: id3, parsed, error: error2 }) => {
+          const request = this.pending.get(id3);
+          if (!request) return;
+          this.pending.delete(id3);
+          if (error2) request.reject(new Error(error2));
+          else request.resolve(parsed);
+          if (!this.pending.size) worker.unref();
+        });
+        worker.on("error", (error2) => this.fail(error2));
+        worker.on("exit", (code) => {
+          if (!this.stopped) this.fail(new Error(`parser worker exited (${code})`));
+        });
+        worker.unref();
+        return worker;
+      }
+      fail(error2) {
+        this.failure = error2;
+        for (const request of this.pending.values()) request.reject(error2);
+        this.pending.clear();
+      }
+      parse(path54, texts) {
+        if (this.stopped || this.failure) return Promise.reject(this.failure ?? new Error("parser worker is closed"));
+        return new Promise((resolve5, reject) => {
+          const worker = this.start(), id3 = ++this.nextId;
+          this.pending.set(id3, { resolve: resolve5, reject });
+          worker.ref();
+          worker.postMessage({ id: id3, path: path54, texts });
+        });
+      }
+      stop() {
+        this.stopped = true;
+        this.fail(new Error("parser worker is closed"));
+        void this.worker?.terminate();
+      }
+    };
+  }
+});
+
 // packages/room-mcp/src/graph-index.ts
 import fs25 from "node:fs";
 import path22 from "node:path";
@@ -38042,6 +38093,7 @@ var init_graph_index = __esm({
     init_git();
     init_src4();
     init_engine();
+    init_client();
     init_parse();
     init_worker_registry();
     init_src();
@@ -38055,7 +38107,7 @@ var init_graph_index = __esm({
     MAX_SNAPSHOT_BYTES = 200 * 1024;
     MIN_PUBLISH_MS = 2e4;
     YIELD_EVERY = 100;
-    YIELD_AFTER_MS = 50;
+    YIELD_AFTER_MS = 20;
     yieldToEventLoop = () => new Promise((resolve5) => setImmediate(resolve5));
     GraphIndex = class {
       constructor(room, me, dir, log2 = () => {
@@ -38073,6 +38125,16 @@ var init_graph_index = __esm({
       dir;
       log;
       opts;
+      parser = new ParseWorker();
+      completedFiles = /* @__PURE__ */ new Set();
+      totalFiles = 0;
+      get indexingStatus() {
+        if (this.isReady) return "graph has no pending files";
+        const unfinished = [...this.pending.keys()].filter((path54) => !this.completedFiles.has(path54)).length;
+        const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size);
+        const completed = [...this.completedFiles].filter((path54) => !this.pending.has(path54)).length;
+        return `graph still indexing (${completed} of ${total} files)`;
+      }
       graph;
       publishedGraph;
       cache = /* @__PURE__ */ new Map();
@@ -38087,6 +38149,22 @@ var init_graph_index = __esm({
       degradedPaths = /* @__PURE__ */ new Set();
       generation = 0;
       graphRevision = 0;
+      localRevision = 0;
+      changeListeners = /* @__PURE__ */ new Set();
+      /** Local symbol/import facts used by contract resolution, independent of snapshot publication. */
+      get resolutionRevision() {
+        return this.localRevision;
+      }
+      onChange(listener) {
+        this.changeListeners.add(listener);
+        return () => {
+          this.changeListeners.delete(listener);
+        };
+      }
+      changedResolution() {
+        this.localRevision++;
+        for (const listener of this.changeListeners) listener();
+      }
       observedRevision = 0;
       indexedSinceYield = 0;
       lastIndexYield = Date.now();
@@ -38100,13 +38178,14 @@ var init_graph_index = __esm({
       ownPublicationKey = "";
       stopped = false;
       initialStarted = false;
+      discovering = false;
       jitterTimer;
       endJitter;
       unobserve = [];
       currentBuild = Promise.resolve();
-      /** A claim can use the graph without waiting for the repository-wide initial build. */
+      /** Discovery may not have queued any files yet; readiness also requires it to finish. */
       get isReady() {
-        return this.phase === "ready";
+        return !this.discovering && this.pending.size === 0;
       }
       /** Resolves when the current build is done, even if a captured waiter is superseded. */
       get ready() {
@@ -38159,6 +38238,7 @@ var init_graph_index = __esm({
         return paths;
       }
       start() {
+        this.discovering = true;
         this.currentBuild = this.initialBuild();
         const touchedInTransaction = /* @__PURE__ */ new WeakMap();
         const peerRefreshInTransaction = /* @__PURE__ */ new WeakMap();
@@ -38277,6 +38357,8 @@ var init_graph_index = __esm({
       }
       stop() {
         this.stopped = true;
+        this.parser.stop();
+        this.changeListeners.clear();
         clearTimeout(this.jitterTimer);
         this.endJitter?.();
         clearTimeout(this.publishing);
@@ -38299,67 +38381,77 @@ var init_graph_index = __esm({
       }
       async rebuild() {
         const generation = ++this.generation;
-        for (const entry of this.pending.values()) entry.resolve();
-        this.phase = "indexing";
-        this.base = participantRecord(this.room, this.me)?.git?.base ?? "";
-        this.observedByPath.clear();
-        this.observedRevision++;
-        this.degradedPaths.clear();
-        let removed = 0, lastRemovalYield = Date.now();
-        for (const p of this.cache.keys()) {
-          this.removeGraph(p);
-          if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
-            await yieldToEventLoop();
-            if (generation !== this.generation || this.stopped) return;
-            lastRemovalYield = Date.now();
-          }
-        }
-        this.cache.clear();
-        for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p);
-        this.publishedCache.clear();
-        this.publishedSource.clear();
-        if (!this.base) return;
-        await this.publish("indexing");
-        if (generation !== this.generation || this.stopped) return;
-        let paths = [];
+        this.discovering = true;
         try {
-          paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", "-z", this.base])).split("\0").filter(isSourcePath);
-        } catch (e) {
+          for (const entry of this.pending.values()) entry.resolve();
+          this.phase = "indexing";
+          this.completedFiles.clear();
+          this.totalFiles = 0;
+          this.base = participantRecord(this.room, this.me)?.git?.base ?? "";
+          this.observedByPath.clear();
+          this.observedRevision++;
+          this.degradedPaths.clear();
+          let removed = 0, lastRemovalYield = Date.now();
+          for (const p of this.cache.keys()) {
+            this.removeGraph(p);
+            if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
+              await yieldToEventLoop();
+              if (generation !== this.generation || this.stopped) return;
+              lastRemovalYield = Date.now();
+            }
+          }
+          this.cache.clear();
+          for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p);
+          this.publishedCache.clear();
+          this.publishedSource.clear();
+          if (!this.base) return;
+          await this.publish("indexing");
+          if (generation !== this.generation || this.stopped) return;
+          let paths = [];
+          try {
+            paths = (await git(this.dir, ["ls-tree", "-r", "--name-only", "-z", this.base])).split("\0").filter(isSourcePath);
+          } catch (e) {
+            if (generation === this.generation) {
+              this.phase = "error";
+              this.publish("error");
+            }
+            ;
+            this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`);
+            return;
+          }
+          if (generation !== this.generation || this.stopped) return;
+          this.truncated = paths.length > MAX_FILES;
+          if (paths.length > MAX_FILES) {
+            this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`);
+            paths = paths.slice(0, MAX_FILES);
+          }
+          const all2 = new Set(paths);
+          for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all2.add(p);
+          const t0 = Date.now();
+          const pathsToRefresh = Array.from(all2);
+          this.totalFiles = pathsToRefresh.length;
+          if (generation !== this.generation || this.stopped) return;
+          const refreshes = [];
+          let lastYield = Date.now();
+          for (let i2 = 0; i2 < pathsToRefresh.length; i2++) {
+            if (i2 > 0 && (i2 % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
+              await yieldToEventLoop();
+              if (generation !== this.generation || this.stopped) return;
+              lastYield = Date.now();
+            }
+            refreshes.push(this.refresh(pathsToRefresh[i2]));
+          }
+          await Promise.all(refreshes);
+          if (generation !== this.generation || this.stopped) return;
+          this.phase = "ready";
+          await this.publish("ready");
+          this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
+        } finally {
           if (generation === this.generation) {
-            this.phase = "error";
-            this.publish("error");
+            this.discovering = false;
+            this.changedResolution();
           }
-          ;
-          this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`);
-          return;
         }
-        if (generation !== this.generation || this.stopped) return;
-        this.truncated = paths.length > MAX_FILES;
-        if (paths.length > MAX_FILES) {
-          this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`);
-          paths = paths.slice(0, MAX_FILES);
-        }
-        const all2 = new Set(paths);
-        for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all2.add(p);
-        const t0 = Date.now();
-        const pathsToRefresh = Array.from(all2);
-        await ensureLanguages(pathsToRefresh);
-        if (generation !== this.generation || this.stopped) return;
-        const refreshes = [];
-        let lastYield = Date.now();
-        for (let i2 = 0; i2 < pathsToRefresh.length; i2++) {
-          if (i2 > 0 && (i2 % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
-            await yieldToEventLoop();
-            if (generation !== this.generation || this.stopped) return;
-            lastYield = Date.now();
-          }
-          refreshes.push(this.refresh(pathsToRefresh[i2]));
-        }
-        await Promise.all(refreshes);
-        if (generation !== this.generation || this.stopped) return;
-        this.phase = "ready";
-        await this.publish("ready");
-        this.log(`graph: indexed ${this.graph.size} files in ${Date.now() - t0}ms`);
       }
       ownText(pathname) {
         if (!validRepoPath(pathname, DISK_READ_PATH)) return void 0;
@@ -38530,13 +38622,17 @@ var init_graph_index = __esm({
         return promise;
       }
       removeGraph(path54) {
+        const existed = this.graph.has(path54);
         this.graph.remove(path54);
         this.publishedGraph.remove(path54);
         this.graphRevision++;
+        if (existed) this.changedResolution();
       }
       setGraph(path54, text) {
+        const before = JSON.stringify(this.graph.symbolsOf(path54));
         this.graph.set(path54, text);
         this.graphRevision++;
+        if (JSON.stringify(this.graph.symbolsOf(path54)) !== before) this.changedResolution();
       }
       async yieldAfterIndex() {
         if (++this.indexedSinceYield < YIELD_EVERY && Date.now() - this.lastIndexYield < YIELD_AFTER_MS) return;
@@ -38550,7 +38646,16 @@ var init_graph_index = __esm({
           this.activeRefreshes++;
           const generation = this.generation;
           void this.runRefresh(path54).catch((e) => {
-            this.log(`graph: ${path54}: ${e instanceof Error ? e.message : e}`);
+            if (!this.stopped && generation === this.generation) {
+              this.log(`graph: ${path54}: ${e instanceof Error ? e.message : e}`);
+              this.degradedPaths.add(path54);
+              this.cache.delete(path54);
+              this.publishedCache.delete(path54);
+              this.publishedSource.delete(path54);
+              this.observedByPath.delete(path54);
+              this.observedRevision++;
+              this.removeGraph(path54);
+            }
             return generation === this.generation;
           }).then((done) => {
             this.activeRefreshes--;
@@ -38574,7 +38679,6 @@ var init_graph_index = __esm({
       async runRefresh(path54) {
         if (!this.stopped) {
           const revision = this.revisions.get(path54), generation = this.generation;
-          await ensureLanguages([path54]);
           const text = await this.textFor(path54);
           const publicationSource = snapshotPath(this.room, this.me, [], path54);
           const publication = await this.publicationTextFor(path54);
@@ -38586,12 +38690,6 @@ var init_graph_index = __esm({
             const entry = this.room.manifest.get(manifestKey(person, fence))?.get(path54);
             return entry?.state === "held" && entry.fence === fence && this.peerTextAuthorized(person, path54);
           }) : [];
-          const parsed = text === void 0 || text.length > MAX_BYTES2 ? void 0 : parseFile(path54, text);
-          const symbols = parsed ? {
-            defs: parsed.defs.map((definition) => definition.name),
-            refs: parsed.refs,
-            imports: parsed.imports
-          } : void 0;
           const myFence = this.room.manifestHead.get(this.me)?.fence;
           const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path54) : void 0;
           const mine = myEntry && myEntry.change !== "D" ? this.ownText(path54) : void 0;
@@ -38605,6 +38703,16 @@ var init_graph_index = __esm({
             (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
             (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
           ) : void 0;
+          const baseText = baseRead?.kind === "available" ? baseRead.text : "";
+          const [parsed, publicParsed, baseParsed, emptyParsed] = await this.parser.parse(
+            path54,
+            [text, publicText, baseText, ""].map((value2) => value2 !== void 0 && value2.length <= MAX_BYTES2 ? value2 : void 0)
+          );
+          const symbols = parsed ? {
+            defs: parsed.defs.map((definition) => definition.name),
+            refs: parsed.refs,
+            imports: parsed.imports
+          } : void 0;
           if (publicationSource?.fenceValid && !snapshotStillCurrent(this.room, publicationSource, [])) {
             await this.yieldAfterIndex();
             return false;
@@ -38623,7 +38731,6 @@ var init_graph_index = __esm({
             this.publishedSource.delete(path54);
             this.publishedGraph.remove(path54);
           } else {
-            const publicParsed = parseFile(path54, publicText);
             if (!publicParsed) {
               this.publishedCache.delete(path54);
               this.publishedSource.delete(path54);
@@ -38645,7 +38752,7 @@ var init_graph_index = __esm({
               return revision === this.revisions.get(path54);
             }
             this.degradedPaths.delete(path54);
-            const changes = observedContractChanges(baseRead?.kind === "available" ? baseRead.text : "", mineDeleted ? "" : publicText ?? "", path54, parseFile).map((change) => ({ path: path54, ...change }));
+            const changes = observedContractChanges(baseText, mineDeleted ? "" : publicText ?? "", path54, (_path, value2) => value2 === "" ? emptyParsed : value2 === baseText ? baseParsed : publicParsed).map((change) => ({ path: path54, ...change }));
             if (changes.length && mineDeleted && baseRead?.kind === "available" && this.entryAuthorized(this.me, path54, myEntry) && publicationSource?.fenceValid && snapshotStillCurrent(this.room, publicationSource, []))
               this.publishedSource.set(path54, {
                 kind: "deletion",
@@ -38664,6 +38771,7 @@ var init_graph_index = __esm({
             } else this.degradedPaths.delete(path54);
           }
           this.observedRevision++;
+          this.completedFiles.add(path54);
           await this.yieldAfterIndex();
           return revision === this.revisions.get(path54);
         }
@@ -42320,9 +42428,10 @@ function handlers(state) {
     async room_impact(a) {
       const s = S();
       if (!s.graph) return "error: no symbol graph in this session";
-      await s.graph.ready;
       const g = s.graph.graph;
-      const out2 = [];
+      const available = typeof a.symbol === "string" && a.symbol ? g.definersOf(a.symbol).length > 0 || g.usersOf(a.symbol).length > 0 : typeof a.path === "string" && g.has(a.path);
+      if (!s.graph.isReady && !available) return `partial: ${s.graph.indexingStatus}`;
+      const out2 = s.graph.isReady ? [] : [`partial: ${s.graph.indexingStatus}`];
       if (typeof a.symbol === "string" && a.symbol) {
         const i2 = g.impact(a.symbol);
         out2.push(`${a.symbol}: defined in ${i2.definedIn.length ? describeUsers(s, i2.definedIn) : "nowhere indexed"}`);
@@ -56067,8 +56176,9 @@ var ConflictSlots = class {
     return { possibleEpisode: 1 + Math.max(prev?.possibleEpisode ?? 0, ...group.map(([, s]) => s.possibleEpisode ?? 0)), possibleJoined: false };
   }
   /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
-  async replay(owner) {
+  async replay(owner, validSlot = () => true) {
     for (const [key2, slot] of this.owned(owner)) {
+      if (!validSlot(slot)) continue;
       if (slot.settled === "conflict" || slot.settled === "possible" || slot.settled === "clean" && slot.epoch > 0) await this.postNotice(key2, slot, true);
     }
   }
@@ -56207,18 +56317,57 @@ var ConflictSet = class _ConflictSet {
   tick;
   running;
   rerun = false;
+  stopped = false;
+  inputCheck;
+  scheduledInputs = "";
+  carriedInput;
+  checkedPairs = /* @__PURE__ */ new Map();
+  /** Retain the complete evaluation guard, including projected/publisher provenance, for replay. */
+  pairGuards = /* @__PURE__ */ new Map();
   starts = [];
   contractCache = /* @__PURE__ */ new Map();
   guard;
   start() {
+    this.scheduledInputs = this.inputsKey();
     const schedule = () => {
       this.withdrawUnauthorizedContracts();
-      this.schedule();
+      if (this.inputCheck || this.stopped) return;
+      this.inputCheck = setImmediate(() => {
+        this.inputCheck = void 0;
+        if (this.stopped) return;
+        const inputs = this.inputsKey();
+        if (inputs === this.scheduledInputs) return;
+        this.scheduledInputs = inputs;
+        if (this.running) this.rerun = true;
+        else this.schedule();
+      });
     };
-    for (const map2 of [this.team.room.manifest, this.team.room.manifestHead, this.team.room.participants, this.team.room.claims, this.team.room.graphs]) {
-      map2.observe(schedule);
-      this.stops.push(() => map2.unobserve(schedule));
+    if (this.team.graph) this.stops.push(this.team.graph.onChange(schedule));
+    for (const map2 of [
+      this.team.room.manifest,
+      this.team.room.manifestHead,
+      this.team.room.claims,
+      this.team.room.graphs,
+      this.team.room.workerViews,
+      this.team.room.expiry
+    ]) {
+      map2.observeDeep(schedule);
+      this.stops.push(() => map2.unobserveDeep(schedule));
     }
+    const onParticipant = (event) => {
+      if ([...event.keysChanged].some((key2) => ["id", "holder", "git", "proj"].includes(key2.slice(key2.lastIndexOf("\0") + 1)))) schedule();
+    };
+    const onMeta = (event) => {
+      if (event.keysChanged.has("roomSalt")) schedule();
+    };
+    this.team.room.participants.observe(onParticipant);
+    this.team.room.metaMap.observe(onMeta);
+    this.team.awareness.on?.("change", schedule);
+    this.stops.push(
+      () => this.team.room.participants.unobserve(onParticipant),
+      () => this.team.room.metaMap.unobserve(onMeta),
+      () => this.team.awareness.off?.("change", schedule)
+    );
     const onSync = () => this.schedule(0);
     this.team.provider.on?.("sync", onSync);
     this.stops.push(() => this.team.provider.off?.("sync", onSync));
@@ -56226,17 +56375,87 @@ var ConflictSet = class _ConflictSet {
     this.tick.unref?.();
     if (this.team.provider.synced) this.schedule(0);
   }
+  /** Pair facts, excluding publication clocks, unrelated edits, and display-only graph edges. */
+  pairInputs(other, views) {
+    const room = this.team.room;
+    const mine = snapshotMetadata(room, this.owner, views), theirs = snapshotMetadata(room, other, views);
+    const claims = room.openClaims().filter((c) => c.by === this.owner || c.by === other);
+    const graph = room.graphs.get(other);
+    const worker = room.workerViewOf(other);
+    const contracts = !!graph?.observed?.length;
+    const carried = this.carriedInput?.lead === other ? this.carriedInput.baseline : void 0;
+    const all2 = mine?.head.base !== theirs?.head.base || !!carried && carriesWork(carried) || contracts;
+    const paths = /* @__PURE__ */ new Set();
+    for (const path54 of mine?.entries.keys() ?? []) if (all2 || theirs?.entries.has(path54) || claims.some((c) => coversPath(c.path, path54))) paths.add(path54);
+    for (const path54 of theirs?.entries.keys() ?? []) if (all2 || mine?.entries.has(path54) || claims.some((c) => coversPath(c.path, path54))) paths.add(path54);
+    for (const claim2 of claims) if (!claim2.path.endsWith("/")) paths.add(claim2.path);
+    const metadata2 = (snap) => {
+      if (!snap) return void 0;
+      const { rev: _rev, semRev: _semRev, scannedAt: _scannedAt, ...head } = snap.head;
+      const record2 = snap.record;
+      const publisher = head.publisher ? snapshotMetadata(room, head.publisher, views) : void 0;
+      const publisherFacts = publisher ? [
+        metadata2({ ...publisher, head: { ...publisher.head, publisher: void 0 } }),
+        [...publisher.entries].sort(([a], [b]) => a.localeCompare(b))
+      ] : void 0;
+      return [head, record2?.id, record2?.holder, record2?.git, record2?.proj, snap.fenceValid, publisherFacts];
+    };
+    const entries = (snap) => [...paths].sort().map((path54) => {
+      const entry = snap?.entries.get(path54);
+      return [path54, entry ? [
+        entry.change,
+        entry.state,
+        entry.hash,
+        entry.held,
+        entry.fence,
+        claims.some((c) => coversPath(c.path, path54)) ? entry.at : void 0
+      ] : void 0];
+    });
+    const graphFacts = contracts ? [
+      graph?.base,
+      graph?.status,
+      graph?.sourceFence,
+      graph?.sourceRev === theirs?.head.rev,
+      graph?.truncated,
+      graph?.observedTruncated,
+      graph?.observed
+    ] : void 0;
+    return hash(JSON.stringify([
+      metadata2(mine),
+      metadata2(theirs),
+      room.roomSalt,
+      claims,
+      entries(mine),
+      entries(theirs),
+      graphFacts,
+      worker ? [worker.id, worker.lead, worker.status, worker.run] : void 0,
+      contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : void 0,
+      carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : void 0
+    ]));
+  }
+  inputsKey() {
+    this.carriedInput = this.carriedFrom?.(this.owner);
+    const room = this.team.room, views = participantsView(room, this.team.awareness, Date.now());
+    const names = neighbours(views, this.owner).names().filter((name2) => this.owner === this.team.me.name || name2 !== this.team.me.name);
+    return JSON.stringify([
+      this.team.lease?.fence(),
+      names.map((name2) => [name2, this.pairInputs(name2, views)]),
+      room.openClaims().filter((c) => c.by === this.owner),
+      [...room.workerViews.values()].filter((w) => w.lead === this.owner).map((w) => [w.id, w.status, w.run])
+    ]);
+  }
   /** Remove every contract whose provider or consumer has left its text grant. */
   withdrawUnauthorizedContracts() {
     if (!this.team.lease?.fence()) return;
     const room = this.team.room;
+    const owned = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === "contract");
+    if (!owned.length) return;
     const views = participantsView(room, this.team.awareness, Date.now());
-    const mine = snapshot(room, this.owner, views);
+    const mine = snapshotMetadata(room, this.owner, views);
     const stale = /* @__PURE__ */ new Set();
     const peers = /* @__PURE__ */ new Map();
-    for (const [key2, slot] of this.slots.owned(this.owner)) {
-      if (slot.kind !== "contract") continue;
-      if (!peers.has(slot.other)) peers.set(slot.other, snapshot(room, slot.other, views));
+    for (const [key2, slot] of owned) {
+      if (!peers.has(slot.other)) peers.set(slot.other, snapshotMetadata(room, slot.other, views));
       const theirs = peers.get(slot.other);
       if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.length || slot.consumers.some((path54) => !this.contractPathAuthorized(mine, path54))) this.slots.drop(key2);
       else {
@@ -56259,13 +56478,15 @@ var ConflictSet = class _ConflictSet {
     this.slots.markContractsUnknown(this.owner, other, why);
   }
   stop() {
+    this.stopped = true;
+    clearImmediate(this.inputCheck);
     for (const stop2 of this.stops) stop2();
     this.stops.length = 0;
     if (this.timer) clearTimeout(this.timer);
     if (this.tick) clearInterval(this.tick);
   }
   schedule(ms2 = this.debounceMs) {
-    if (this.timer) clearTimeout(this.timer);
+    if (this.stopped || this.timer) return;
     this.timer = setTimeout(() => {
       this.timer = void 0;
       void this.reconcile("change").catch((e) => this.log(`conflict reconcile: ${String(e)}`));
@@ -56280,30 +56501,34 @@ var ConflictSet = class _ConflictSet {
     await this.reconcile("flush");
   }
   async reconcile(reason) {
+    if (this.stopped) return;
     if (this.running) {
       this.rerun = true;
       await this.running;
       return;
     }
     this.running = (async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 2 && !this.stopped; attempt++) {
+        this.rerun = false;
         try {
           await this.run(reason);
-          return;
         } catch (e) {
           if (!(e instanceof StaleConflictInputs)) throw e;
+          this.rerun = true;
         }
+        if (!this.rerun) return;
+        if (attempt === 0) await new Promise((resolve5) => setImmediate(resolve5));
       }
-      this.log(`conflicts ${this.owner}: inputs moved twice; retry on next change`);
+      if (!this.stopped) this.log(`conflicts ${this.owner}: inputs moved twice; coalesced next check`);
     })();
     try {
       await this.running;
     } finally {
       this.running = void 0;
     }
-    if (this.rerun) {
+    if (this.rerun && !this.stopped) {
       this.rerun = false;
-      await this.reconcile("changed during check");
+      this.schedule();
     }
   }
   async settle(key2, result2) {
@@ -56366,6 +56591,7 @@ var ConflictSet = class _ConflictSet {
     await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${key2}\0${why}`), why });
   }
   async run(reason) {
+    this.carriedInput = this.carriedFrom?.(this.owner);
     this.fileWork = 0;
     const room = this.team.room;
     const leaseFence = this.team.lease?.fence();
@@ -56379,201 +56605,226 @@ var ConflictSet = class _ConflictSet {
     const ownPublisher = ownNonPublisher ? snapshot(room, mine.head.publisher, views) : void 0;
     const ownGit = acceptedGit(participantRecord(room, ownNonPublisher ? mine.head.publisher : this.owner), views);
     if (ownGit === "updating" || ownNonPublisher && !ownPublisher) return;
-    const authority = () => this.team.lease?.fence() === leaseFence;
-    const claimInputs = JSON.stringify(room.openClaims());
-    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims()) === claimInputs;
+    const authority = () => !this.stopped && this.team.lease?.fence() === leaseFence;
+    const claimInputs = JSON.stringify(room.openClaims().filter((c) => c.by === this.owner));
+    this.guard = () => authority() && snapshotStillCurrent(room, mine, participantsView(room, this.team.awareness, Date.now())) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, participantsView(room, this.team.awareness, Date.now()))) && JSON.stringify(room.openClaims().filter((c) => c.by === this.owner)) === claimInputs;
     const nb = neighbours(views, this.owner);
     const names = new Set(nb.names());
     for (const [key2, slot] of this.slots.owned(this.owner)) if (!nb.has(slot.other)) this.drop(key2);
     names.delete(this.owner);
     if (this.owner !== this.team.me.name) names.delete(this.team.me.name);
+    const capturedPairs = new Map([...names].map((name2) => [name2, this.pairInputs(name2, views)]));
     for (const other of [...names].sort()) {
-      const theirs = snapshot(room, other, views);
-      const theirGit = acceptedGit(participantRecord(room, other), views);
-      const graphInput = JSON.stringify(room.graphs.get(other));
-      this.guard = () => {
-        const current = participantsView(room, this.team.awareness, Date.now());
-        return authority() && snapshotStillCurrent(room, mine, current) && (!theirs || snapshotStillCurrent(room, theirs, current)) && (!ownPublisher || snapshotStillCurrent(room, ownPublisher, current)) && JSON.stringify(room.openClaims()) === claimInputs && JSON.stringify(room.graphs.get(other)) === graphInput;
-      };
-      const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other);
-      if (!theirs && !participantRecord(room, other)) {
-        for (const [key2] of existing) this.drop(key2);
-        continue;
-      }
-      if (ownNonPublisher) {
-        const pair2 = !theirs || theirGit === "updating" ? void 0 : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
-        if (pair2 && !("cannotCompare" in pair2)) {
-          const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
-          await this.claims(
-            ownPublisher,
-            theirs,
-            other,
-            pair2.mergeBase,
-            /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\n").filter(Boolean)])
-          );
-        }
-        continue;
-      }
-      if (theirs?.head.coverage.kind === "none" && theirs.head.coverage.reason === "not-publisher" && theirs.head.publisher) {
-        const published = snapshot(room, theirs.head.publisher, views);
-        const publishedGit = acceptedGit(participantRecord(room, theirs.head.publisher), views);
-        if (published && publishedGit !== "updating") {
-          const priorGuard = this.guard;
-          this.guard = () => !!priorGuard?.() && snapshotStillCurrent(room, published, participantsView(room, this.team.awareness, Date.now()));
-          const pair2 = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit);
-          if (!("cannotCompare" in pair2)) {
-            const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
-            await this.claims(mine, published, other, pair2.mergeBase, /* @__PURE__ */ new Set([...mine.entries.keys(), ...committed.split("\n").filter(Boolean)]));
-          }
-        }
-        continue;
-      }
-      if (!theirs || theirGit === "updating") {
-        const why = `${other}'s manifest or base is updating`;
-        await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
-        for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.unknownContracts(other, why);
-        continue;
-      }
-      const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
-      if (existing.some(([, slot]) => slot.kind === "merge" && slot.path === "*" && slot.status === "unknown" && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue;
-      const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
-      if ("cannotCompare" in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== "all" || theirs.head.coverage.kind !== "all" || !mine.fenceValid || !theirs.fenceValid || !mine.roomSalt || !theirs.roomSalt) {
-        const why = "cannotCompare" in pair ? pair.cannotCompare : "manifest is incomplete or fenced out";
-        const key2 = slotKey(this.owner, "merge", other, "*");
-        await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
-        for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        this.unknownContracts(other, why);
-        continue;
-      }
-      await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs);
-      this.drop(slotKey(this.owner, "merge", other, "*"));
-      const mergeBase2 = pair.mergeBase;
-      const changed = async (snap, base) => {
-        try {
-          const committed = await git(this.team.dir, ["diff", "--name-only", `${mergeBase2}..${base}`]);
-          return /* @__PURE__ */ new Set([...snap.entries.keys(), ...committed.split("\n").filter(Boolean)]);
-        } catch {
-          return void 0;
-        }
-      };
-      const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)]);
-      if (!aPaths || !bPaths) {
-        await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: retrySource, retrySource, factId: "", why: "cannot enumerate changed paths" });
-        for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
-        continue;
-      }
-      if (aPaths.size + bPaths.size > _ConflictSet.MAX_PAIR_FILES) {
-        const why = "too many changed paths to compare";
-        await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(`${retrySource}\0${why}`), retrySource, factId: "", why });
-        for (const [key2, slot] of existing) {
-          await this.fileTurn();
-          if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
-        }
-        await this.claims(mine, theirs, other, pair.mergeBase, aPaths);
-        continue;
-      }
-      const ownMergePaths = new Set(aPaths);
-      const unchangedCarried = /* @__PURE__ */ new Set();
-      const carried = this.carriedFrom?.(this.owner);
-      if (carried?.lead === other && carriesWork(carried.baseline)) {
-        for (const path54 of aPaths) {
-          await this.fileTurn();
-          const baseline = await boundedBaseline(this.team.dir, carried.baseline, path54);
-          if (baseline.kind === "unavailable") continue;
-          const ownText = asText(await this.read(mine, path54));
-          if (ownText !== void 0 && ownText === (baseline.kind === "absent" ? "" : baseline.text)) {
-            ownMergePaths.delete(path54);
-            unchangedCarried.add(path54);
-          }
-        }
-      }
-      const candidates = new Set([...ownMergePaths].filter((p) => bPaths.has(p)));
-      for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
-      for (const path54 of [...candidates].sort()) {
-        await this.fileTurn();
-        const key2 = slotKey(this.owner, "merge", other, path54);
-        const bothChanged = ownMergePaths.has(path54) && bPaths.has(path54);
-        const inputs = hash(JSON.stringify([
-          ownGit.base,
-          theirGit.base,
-          mergeBase2,
-          ownGit.anchored,
-          theirGit.anchored,
-          mine.head.semRev,
-          theirs.head.semRev,
-          sideInput(mine, path54),
-          sideInput(theirs, path54),
-          carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path54)] : void 0
-        ]));
-        const previous = this.slots.get(key2);
-        if (unchangedCarried.has(path54)) {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "clean", inputs, factId: "" });
-          continue;
-        }
-        if (previous?.inputs === inputs && (previous.status !== "unknown" || (previous.retryAt ?? 0) > Date.now())) continue;
-        const read3 = (snap) => this.read(snap, path54);
-        const [a, b] = await Promise.all([read3(mine), read3(theirs)]);
-        if (!bothChanged) {
-          const unreadable = [a, b].find((v) => v.kind === "excluded" || v.kind === "unknown" || v.kind === "held");
-          await this.settle(key2, {
-            owner: this.owner,
-            other,
-            kind: "merge",
-            path: path54,
-            status: unreadable ? "unknown" : "clean",
-            inputs,
-            factId: "",
-            ...unreadable ? { why: "cannot certify unchanged path" } : {}
-          });
-          continue;
-        }
-        const held = [a, b].some((v) => v.kind === "held" && !v.entry.hash);
-        if (held) {
-          const aChange = mine.entries.get(path54)?.change ?? "committed", bChange = theirs.entries.get(path54)?.change ?? "committed";
-          const heldBy = [a.kind === "held" && !a.entry.hash ? this.owner : "", b.kind === "held" && !b.entry.hash ? other : ""].filter(Boolean).join(" and ");
-          await this.settle(key2, {
-            owner: this.owner,
-            other,
-            kind: "merge",
-            path: path54,
-            status: "possible",
-            inputs,
-            factId: hash(["possible", path54, mergeBase2, aChange, bChange].join("\0")),
-            why: heldBy
-          });
-          continue;
-        }
-        const at = asText(a), bt = asText(b);
-        if (at === void 0 || bt === void 0) {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
-          continue;
-        }
-        let ancestor;
-        try {
-          ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path54) ?? "";
-        } catch {
-          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "unknown", inputs, factId: "", why: "missing merge base" });
-          continue;
-        }
-        await this.budget();
-        const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: "base", theirs: other });
-        const lines2 = merged.conflicts.map((c) => c.from);
-        await this.settle(key2, {
-          owner: this.owner,
+      const pairInputs = capturedPairs.get(other);
+      if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs();
+      const retryDue = this.slots.owned(this.owner).some(([, slot]) => slot.other === other && slot.status === "unknown" && (slot.retryAt ?? 0) <= Date.now());
+      if (this.checkedPairs.get(other) === pairInputs && !retryDue) continue;
+      let failed = false;
+      try {
+        const theirs = snapshot(room, other, views);
+        const theirGit = acceptedGit(participantRecord(room, other), views);
+        const graphInput = room.graphs.get(other)?.observed;
+        this.guard = () => !this.stopped && authority() && this.pairInputs(
           other,
-          kind: "merge",
-          path: path54,
-          status: lines2.length ? "conflict" : "clean",
-          inputs,
-          factId: lines2.length ? hash(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
-          lines: lines2
-        });
+          participantsView(room, this.team.awareness, Date.now())
+        ) === pairInputs;
+        const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other);
+        if (!theirs && !participantRecord(room, other)) {
+          for (const [key2] of existing) this.drop(key2);
+          continue;
+        }
+        if (ownNonPublisher) {
+          const pair2 = !theirs || theirGit === "updating" ? void 0 : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
+          if (pair2 && !("cannotCompare" in pair2)) {
+            const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
+            await this.claims(
+              ownPublisher,
+              theirs,
+              other,
+              pair2.mergeBase,
+              /* @__PURE__ */ new Set([...ownPublisher.entries.keys(), ...committed.split("\n").filter(Boolean)])
+            );
+          }
+          continue;
+        }
+        if (theirs?.head.coverage.kind === "none" && theirs.head.coverage.reason === "not-publisher" && theirs.head.publisher) {
+          const published = snapshot(room, theirs.head.publisher, views);
+          const publishedGit = acceptedGit(participantRecord(room, theirs.head.publisher), views);
+          if (published && publishedGit !== "updating") {
+            const priorGuard = this.guard;
+            this.guard = () => !!priorGuard?.() && snapshotStillCurrent(room, published, participantsView(room, this.team.awareness, Date.now()));
+            const pair2 = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit);
+            if (!("cannotCompare" in pair2)) {
+              const committed = await git(this.team.dir, ["diff", "--name-only", `${pair2.mergeBase}..${ownGit.base}`]).catch(() => "");
+              await this.claims(mine, published, other, pair2.mergeBase, /* @__PURE__ */ new Set([...mine.entries.keys(), ...committed.split("\n").filter(Boolean)]));
+            }
+          }
+          continue;
+        }
+        if (!theirs || theirGit === "updating") {
+          const why = `${other}'s manifest or base is updating`;
+          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(why), factId: "", why });
+          for (const [key2, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+          this.unknownContracts(other, why);
+          continue;
+        }
+        const retrySource = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mine.head.fence, theirs.head.fence, ownGit, theirGit, graphInput, claimInputs]));
+        if (existing.some(([, slot]) => slot.kind === "merge" && slot.path === "*" && slot.status === "unknown" && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue;
+        const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit);
+        if ("cannotCompare" in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== "all" || theirs.head.coverage.kind !== "all" || !mine.fenceValid || !theirs.fenceValid || !mine.roomSalt || !theirs.roomSalt) {
+          const why = "cannotCompare" in pair ? pair.cannotCompare : "manifest is incomplete or fenced out";
+          const key2 = slotKey(this.owner, "merge", other, "*");
+          await this.settle(key2, { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(JSON.stringify([ownGit, theirGit, mine.head.semRev, theirs.head.semRev, why])), retrySource, factId: "", why });
+          for (const [existingKey, slot] of existing) if (slot.path !== "*" && slot.kind !== "contract") await this.settle(existingKey, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+          this.unknownContracts(other, why);
+          continue;
+        }
+        await this.contracts(other, /* @__PURE__ */ new Set([...mine.entries.keys(), ...room.openClaims().filter((c) => c.by === this.owner).map((c) => c.path)]), mine, theirs);
+        this.drop(slotKey(this.owner, "merge", other, "*"));
+        const mergeBase2 = pair.mergeBase;
+        const changed = async (snap, base) => {
+          try {
+            const committed = await git(this.team.dir, ["diff", "--name-only", `${mergeBase2}..${base}`]);
+            return /* @__PURE__ */ new Set([...snap.entries.keys(), ...committed.split("\n").filter(Boolean)]);
+          } catch {
+            return void 0;
+          }
+        };
+        const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)]);
+        if (!aPaths || !bPaths) {
+          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: retrySource, retrySource, factId: "", why: "cannot enumerate changed paths" });
+          for (const [key2, slot] of existing) if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0failed enumeration`), why: "cannot enumerate changed paths" });
+          continue;
+        }
+        if (aPaths.size + bPaths.size > _ConflictSet.MAX_PAIR_FILES) {
+          const why = "too many changed paths to compare";
+          await this.settle(slotKey(this.owner, "merge", other, "*"), { owner: this.owner, other, kind: "merge", path: "*", status: "unknown", inputs: hash(`${retrySource}\0${why}`), retrySource, factId: "", why });
+          for (const [key2, slot] of existing) {
+            await this.fileTurn();
+            if (slot.kind === "merge") await this.settle(key2, { ...slot, status: "unknown", inputs: hash(`${slot.inputs}\0${why}`), why });
+          }
+          await this.claims(mine, theirs, other, pair.mergeBase, aPaths);
+          continue;
+        }
+        const ownMergePaths = new Set(aPaths);
+        const unchangedCarried = /* @__PURE__ */ new Set();
+        const carried = this.carriedFrom?.(this.owner);
+        if (carried?.lead === other && carriesWork(carried.baseline)) {
+          for (const path54 of aPaths) {
+            await this.fileTurn();
+            const baseline = await boundedBaseline(this.team.dir, carried.baseline, path54);
+            if (baseline.kind === "unavailable") continue;
+            const ownText = asText(await this.read(mine, path54));
+            if (ownText !== void 0 && ownText === (baseline.kind === "absent" ? "" : baseline.text)) {
+              ownMergePaths.delete(path54);
+              unchangedCarried.add(path54);
+            }
+          }
+        }
+        const candidates = new Set([...ownMergePaths].filter((p) => bPaths.has(p)));
+        for (const [, slot] of existing) if (slot.kind === "merge" && slot.path !== "*") candidates.add(slot.path);
+        for (const path54 of [...candidates].sort()) {
+          await this.fileTurn();
+          const key2 = slotKey(this.owner, "merge", other, path54);
+          const bothChanged = ownMergePaths.has(path54) && bPaths.has(path54);
+          const inputs = hash(JSON.stringify([
+            ownGit.base,
+            theirGit.base,
+            mergeBase2,
+            ownGit.anchored,
+            theirGit.anchored,
+            mine.head.semRev,
+            theirs.head.semRev,
+            sideInput(mine, path54),
+            sideInput(theirs, path54),
+            carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path54)] : void 0
+          ]));
+          const previous = this.slots.get(key2);
+          if (unchangedCarried.has(path54)) {
+            await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "clean", inputs, factId: "" });
+            continue;
+          }
+          if (previous?.inputs === inputs && (previous.status !== "unknown" || (previous.retryAt ?? 0) > Date.now())) continue;
+          const read3 = (snap) => this.read(snap, path54);
+          const [a, b] = await Promise.all([read3(mine), read3(theirs)]);
+          if (!bothChanged) {
+            const unreadable = [a, b].find((v) => v.kind === "excluded" || v.kind === "unknown" || v.kind === "held");
+            await this.settle(key2, {
+              owner: this.owner,
+              other,
+              kind: "merge",
+              path: path54,
+              status: unreadable ? "unknown" : "clean",
+              inputs,
+              factId: "",
+              ...unreadable ? { why: "cannot certify unchanged path" } : {}
+            });
+            continue;
+          }
+          const held = [a, b].some((v) => v.kind === "held" && !v.entry.hash);
+          if (held) {
+            const aChange = mine.entries.get(path54)?.change ?? "committed", bChange = theirs.entries.get(path54)?.change ?? "committed";
+            const heldBy = [a.kind === "held" && !a.entry.hash ? this.owner : "", b.kind === "held" && !b.entry.hash ? other : ""].filter(Boolean).join(" and ");
+            await this.settle(key2, {
+              owner: this.owner,
+              other,
+              kind: "merge",
+              path: path54,
+              status: "possible",
+              inputs,
+              factId: hash(["possible", path54, mergeBase2, aChange, bChange].join("\0")),
+              why: heldBy
+            });
+            continue;
+          }
+          const at = asText(a), bt = asText(b);
+          if (at === void 0 || bt === void 0) {
+            await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "unknown", inputs, factId: "", why: `cannot read ${at === void 0 ? this.owner : other}'s version` });
+            continue;
+          }
+          let ancestor;
+          try {
+            ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase2, path54) ?? "";
+          } catch {
+            await this.settle(key2, { owner: this.owner, other, kind: "merge", path: path54, status: "unknown", inputs, factId: "", why: "missing merge base" });
+            continue;
+          }
+          await this.budget();
+          const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: "base", theirs: other });
+          const lines2 = merged.conflicts.map((c) => c.from);
+          await this.settle(key2, {
+            owner: this.owner,
+            other,
+            kind: "merge",
+            path: path54,
+            status: lines2.length ? "conflict" : "clean",
+            inputs,
+            factId: lines2.length ? hash(JSON.stringify([mergeBase2, ...merged.conflicts.map((c) => c.o)])) : "",
+            lines: lines2
+          });
+        }
+        await this.claims(mine, theirs, other, mergeBase2, ownMergePaths);
+      } catch (error2) {
+        failed = true;
+        this.checkedPairs.delete(other);
+        throw error2;
+      } finally {
+        if (!failed && this.guard?.()) {
+          this.checkedPairs.set(other, pairInputs);
+          this.pairGuards.set(other, this.guard);
+        }
       }
-      await this.claims(mine, theirs, other, mergeBase2, ownMergePaths);
     }
-    if (this.guard && !this.guard()) throw new StaleConflictInputs();
-    await this.slots.replay(this.owner);
+    await this.slots.replay(this.owner, (slot) => {
+      this.guard = this.pairGuards.get(slot.other);
+      if (!this.guard?.()) {
+        this.checkedPairs.delete(slot.other);
+        this.pairGuards.delete(slot.other);
+        this.rerun = true;
+        return false;
+      }
+      return true;
+    });
     this.log(`conflicts ${this.owner}: reconciled ${reason}`);
   }
   /** Retain resumable workers, but end their stale claims once all claimed files reached the lead. */
@@ -57012,18 +57263,21 @@ function handlers2(state) {
       for (const { claim: o, range: range2 } of overlaps)
         out2.push(range2.approximate ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} \xB7 ${o.intent}); their lines may have shifted relative to yours` : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
-        if (s.graph.isReady) for (const pl2 of plans) {
+        for (const pl2 of plans) {
           const users = s.graph.graph.usersOf(pl2.symbol);
+          if (!s.graph.isReady && !users.length) {
+            out2.push(`${s.graph.indexingStatus}; run room_impact after indexing completes`);
+            continue;
+          }
           out2.push(users.length ? `impact: ${pl2.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl2.symbol} has no other users in the indexed graph`);
         }
-        else out2.push("impact not yet indexed; run room_impact after indexing completes");
       }
       const scopesHit = s.room.allScopes().filter((sc) => sc.by !== s.me.name && nearby.some((n2) => n2.by === sc.by && n2.reason === "scope") && scopeCovers(sc, p));
       for (const sc of scopesHit) out2.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`);
       await loadAreas(s);
       out2.push(...ownerHints(s, [areasOf(s).areaOf(p)]));
       if (posted.ok && plans.length && s.graph && !s.graph.isReady) {
-        void s.graph.ready.then(async () => {
+        void s.graph.whenIdle().then(async () => {
           if (s.room.claims.get(claim2.id) && s.lease?.fence()) await upgrade(s, posted.msg, [p], plans.map((x) => x.symbol));
         }).catch((e) => state.log(`deferred claim impact: ${String(e)}`));
       } else if (posted.ok) out2.push(...await upgrade(s, posted.msg, [p], plans.map((x) => x.symbol)));
