@@ -325,6 +325,7 @@ export class ConflictSet {
         else this.schedule()
       })
     }
+    if (this.team.graph) this.stops.push(this.team.graph.onChange(schedule))
     for (const map of [this.team.room.manifest, this.team.room.manifestHead,
       this.team.room.claims, this.team.room.graphs, this.team.room.workerViews, this.team.room.expiry]) {
       map.observeDeep(schedule)
@@ -378,6 +379,7 @@ export class ConflictSet {
     const graphFacts = contracts ? [graph?.base, graph?.status, graph?.sourceFence,
       graph?.sourceRev === theirs?.head.rev, graph?.truncated, graph?.observedTruncated, graph?.observed] : undefined
     return hash(JSON.stringify([metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
+      contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : undefined,
       carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : undefined]))
   }
 

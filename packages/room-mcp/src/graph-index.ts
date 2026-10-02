@@ -83,6 +83,18 @@ export class GraphIndex {
   private degradedPaths = new Set<string>()
   private generation = 0
   private graphRevision = 0
+  private localRevision = 0
+  private readonly changeListeners = new Set<() => void>()
+  /** Local symbol/import facts used by contract resolution, independent of snapshot publication. */
+  get resolutionRevision(): number { return this.localRevision }
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener)
+    return () => { this.changeListeners.delete(listener) }
+  }
+  private changedResolution(): void {
+    this.localRevision++
+    for (const listener of this.changeListeners) listener()
+  }
   private observedRevision = 0
   private indexedSinceYield = 0
   private lastIndexYield = Date.now()
@@ -258,6 +270,7 @@ export class GraphIndex {
   stop(): void {
     this.stopped = true
     this.parser.stop()
+    this.changeListeners.clear()
     clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing)
     for (const entry of this.pending.values()) { entry.resolve(); entry.resolveIdle() }
     this.pending.clear()
@@ -510,8 +523,16 @@ export class GraphIndex {
     return promise
   }
 
-  private removeGraph(path: string): void { this.graph.remove(path); this.publishedGraph.remove(path); this.graphRevision++ }
-  private setGraph(path: string, text: string): void { this.graph.set(path, text); this.graphRevision++ }
+  private removeGraph(path: string): void {
+    const existed = this.graph.has(path)
+    this.graph.remove(path); this.publishedGraph.remove(path); this.graphRevision++
+    if (existed) this.changedResolution()
+  }
+  private setGraph(path: string, text: string): void {
+    const before = JSON.stringify(this.graph.symbolsOf(path))
+    this.graph.set(path, text); this.graphRevision++
+    if (JSON.stringify(this.graph.symbolsOf(path)) !== before) this.changedResolution()
+  }
 
   private async yieldAfterIndex(): Promise<void> {
     if (++this.indexedSinceYield < YIELD_EVERY && Date.now() - this.lastIndexYield < YIELD_AFTER_MS) return

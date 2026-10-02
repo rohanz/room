@@ -942,6 +942,45 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it('invalidates contracts when initial local indexing resolves an import to another provider', async () => {
+    const files = { 'api.py': 'def call(a): pass\n', 'other_api.py': 'def call(a): pass\n',
+      'use.py': 'from other_api import call\ncall(1)\n' }
+    const f = fixture(files)
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    for (const [name, path, text] of [['A', 'use.py', files['use.py']], ['B', 'api.py', 'def call(a, b): pass\n']]) {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+    }
+    f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready',
+      paths: ['api.py'], edges: [], observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'call(a) → call(a, b)' }], truncated: false })
+    let release!: () => void, entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    const graph = new GraphIndex(f.room, 'A', f.dir, () => {}, { random: () => 0, minPublishMs: 0,
+      read: async (_dir, _base, path) => {
+        if (path === 'other_api.py') { entered(); await gate }
+        return files[path as keyof typeof files]
+      } })
+    const session = f.session('A'); session.graph = graph
+    const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
+    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    try {
+      graph.start(); await reading; await graph.refresh('api.py')
+      await set.reconcile('partial local graph')
+      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+      set.start(); await set.flush()
+      const scheduled = vi.spyOn(set as unknown as { schedule(ms?: number): void }, 'schedule')
+      release(); await graph.whenIdle()
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(scheduled).toHaveBeenCalled()
+      await set.flush()
+      const revision = graph.resolutionRevision
+      await graph.refresh('other_api.py')
+      expect(graph.resolutionRevision).toBe(revision)
+      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'clean' })
+    } finally { release(); set.stop(); graph.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('notifies again when a conflicting contract changes signature a second time', async () => {
     const f = fixture()
     try {
