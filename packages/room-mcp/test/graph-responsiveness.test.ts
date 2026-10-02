@@ -56,7 +56,7 @@ it('keeps tools responsive through a 3,000-file Rust graph build', async () => {
       expect(await claim({ path: 'file0.rs', from: 1, to: 1, intent: 'probe' })).toContain('no claim needed')
     }
     const response = await impact({ symbol: 'function_0_0' })
-    expect(response).toBe('graph still indexing (0 of 3000 files)')
+    expect(response).toBe('partial: graph still indexing (0 of 3000 files)')
     expect(index.graph.size).toBe(0)
     expect(parse.mock.calls.length).toBeLessThanOrEqual(8)
     release()

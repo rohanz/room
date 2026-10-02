@@ -90,8 +90,12 @@ describe('GraphIndex', () => {
       expect(gi.indexingStatus).toBe('graph still indexing (2 of 3 files)')
       expect(await impact({ symbol: 'missing' })).toContain('still indexing')
       expect(await impact({ symbol: 'validate_token' })).toContain('defined in utils.py')
+      expect(await impact({ symbol: 'validate_token' })).toContain('partial')
+      expect(await impact({ path: 'utils.py' })).toContain('partial')
       release(); await refresh; await gi.whenIdle()
       expect(gi.isReady).toBe(true)
+      expect(await impact({ symbol: 'validate_token' })).not.toContain('partial')
+      expect(await impact({ path: 'utils.py' })).not.toContain('partial')
     } finally { release?.(); gi.stop(); room.doc.destroy() }
   })
 

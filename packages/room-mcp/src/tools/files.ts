@@ -212,8 +212,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const available = typeof a.symbol === 'string' && a.symbol
         ? g.definersOf(a.symbol).length > 0 || g.usersOf(a.symbol).length > 0
         : typeof a.path === 'string' && g.has(a.path)
-      if (!s.graph.isReady && !available) return s.graph.indexingStatus
-      const out: string[] = []
+      if (!s.graph.isReady && !available) return `partial: ${s.graph.indexingStatus}`
+      const out: string[] = s.graph.isReady ? [] : [`partial: ${s.graph.indexingStatus}`]
       if (typeof a.symbol === 'string' && a.symbol) {
         const i = g.impact(a.symbol)
         out.push(`${a.symbol}: defined in ${i.definedIn.length ? describeUsers(s, i.definedIn) : 'nowhere indexed'}`)
