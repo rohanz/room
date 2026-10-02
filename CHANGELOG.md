@@ -2,6 +2,8 @@
 
 ## 0.17.1 (unreleased)
 
+- Conflict reconciliation coalesces relevant changes and caches unaffected participant pairs. Disjoint edits, status updates and graph publication clocks no longer cause full pair checks; continuing input changes get at most two checks before one deferred pass, while authorization withdrawal and unknown-evidence retries remain intact.
+
 - Graph parsing runs in a worker thread, with a bounded refresh queue and yielding graph publication, so large Rust indexes leave Room tools responsive. `room_impact` and claim impact report indexing progress immediately. Parser shutdown cancels pending work.
 
 - The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants, including participants named `room` without bot kind, still produce the diagnostic.

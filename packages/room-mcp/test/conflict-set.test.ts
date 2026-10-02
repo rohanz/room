@@ -299,6 +299,71 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it('bounds a flush when triggers arrive throughout the check', async () => {
+    const f = fixture(), set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0)
+    let calls = 0
+    vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run').mockImplementation(async () => {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (++calls < 9) void set.reconcile('inputs changed')
+    })
+    try {
+      await set.flush()
+      console.log(JSON.stringify({ checksBeforeFlushReturns: calls }))
+      expect(calls).toBeLessThanOrEqual(2)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('does no pair work for six participants publishing disjoint files or refreshing metadata', async () => {
+    const f = fixture(), sets: ConflictSet[] = []
+    const names = ['A', 'B', 'C', 'D', 'E', 'F']
+    const runs: ReturnType<typeof vi.spyOn>[] = []
+    try {
+      for (const name of names) {
+        f.holder(name); f.entry(name, undefined)
+        f.room.manifest.get(manifestKey(name, '1'))!.set(name, { change: 'A', state: 'shared', hash: gitBlobHash(name), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey(name, '1'), name, name)
+      }
+      for (const name of names) {
+        const set = new ConflictSet(f.session(name), name, f.session(name), () => {}, 0, () => undefined)
+        sets.push(set)
+        runs.push(vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run'))
+        set.start(); await set.flush()
+      }
+      await new Promise(resolve => setTimeout(resolve, 30))
+      for (const run of runs) run.mockClear()
+      for (let round = 0; round < 10; round++) {
+        f.room.doc.transact(() => {
+          for (const name of names) {
+            const text = name + round
+            f.room.setOverlay(manifestKey(name, '1'), name, text)
+            f.room.manifest.get(manifestKey(name, '1'))!.set(name, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: round + 2, fence: '1' })
+            const head = f.room.manifestHead.get(name)!
+            f.room.manifestHead.set(name, { ...head, rev: head.rev + 1, semRev: head.semRev + 1, scannedAt: round + 2 })
+            f.room.participants.set(name + '\0status', 'still editing ' + round)
+            f.room.graphs.set(name, { version: 1, base: f.base, sourceFence: '1', sourceRev: head.rev + 1,
+              at: round + 2, status: 'ready', paths: [name], edges: [], observed: [], truncated: false })
+          }
+        })
+        // Let every scheduled reconcile finish; no sleeping to throttle the implementation.
+        await new Promise(resolve => setTimeout(resolve, 30))
+      }
+      const counts = runs.map(run => run.mock.calls.length)
+      console.log(JSON.stringify({ disjointPublishRounds: 10, participants: 6, reconcileRuns: counts }))
+      expect(counts).toEqual([0, 0, 0, 0, 0, 0])
+      f.room.manifest.get(manifestKey('B', '1'))!.set('A', { change: 'A', state: 'shared', hash: gitBlobHash('overlap'), at: 99, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'A', 'overlap')
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(runs[0]!.mock.calls.length).toBeGreaterThan(0)
+      expect(runs[0]!.mock.calls.length).toBeLessThanOrEqual(2)
+      expect(runs.slice(2).every(run => run.mock.calls.length === 0)).toBe(true)
+      const idle = runs.map(run => run.mock.calls.length)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(runs.map(run => run.mock.calls.length)).toEqual(idle)
+    } finally { for (const set of sets) set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('withdraws 1,000 contracts without per-slot full-text snapshots', () => {
     const f = fixture()
     try {
@@ -320,7 +385,7 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
-  it('yields within a run of cached and held merge candidates', async () => {
+  it('skips unchanged pairs and yields among cached candidates when one held input changes', async () => {
     const f = fixture()
     try {
       f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', undefined, true)
@@ -342,7 +407,10 @@ describe('derived pair slots', () => {
         if (key === slotKey('A', 'merge', 'B', 'file-095')) sawLast = turnRan
         return original(key)
       })
-      await set.reconcile('cached')
+      await set.reconcile('unchanged')
+      expect(spy).not.toHaveBeenCalled()
+      b.set('file-094', { change: 'M', state: 'held', held: 'binary', at: 1, fence: '1' })
+      await set.reconcile('one changed input')
       expect(spy).toHaveBeenCalled()
       expect(sawLast).toBe(true)
     } finally { f.cleanup() }
