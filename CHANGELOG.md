@@ -4,7 +4,7 @@
 
 - The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants still produce the diagnostic.
 - The preview crash test waits for completed file writes and lock release, keeps its orphan alive until explicitly released, and reaps it on failure. File creation and the checker's 30-second self-expiry could race the assertions under load; preview-cache behavior is unchanged.
-- A worker's `room_done` reconciles HEAD and settles disk publication before releasing claims or recording its report, so an immediately preceding commit and the current overlay are included. The wait is bounded at 15 seconds; a timeout or incomplete publication keeps claims and records no completion, with guidance to retry.
+- A worker's `room_done` reconciles HEAD and settles disk publication before releasing claims or recording its report, so an immediately preceding commit and the current overlay are included. Publication is best-effort with a five-second bound: failures log a diagnostic and still record completion and release claims. Rejected sessions, intent sharing and missing daemon fences skip the wait.
 
 ## 0.17.0
 

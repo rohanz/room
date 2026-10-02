@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { setTimeout as delay } from 'node:timers/promises'
+import { settleWorkerPublication } from '../src/worker-publication.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Awareness } from 'y-protocols/awareness'
 import { manifestKey, manifestPaths, participantRecord } from '@room/shared'
@@ -83,34 +85,68 @@ it('publishes a commit and overlay before room_done releases claims and reports'
   expect(room.openClaims().filter(c => c.by === name)).toEqual([])
 })
 
-it('keeps claims and records no report when publication exceeds its bound', async () => {
+it('records a report and releases claims within 5 s when publication never settles', async () => {
   const { room, name, registry, record } = await worker()
-  expect(room.openClaims().some(c => c.by === name)).toBe(true)
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
   let entered!: () => void, reject!: (error: Error) => void
   const started = new Promise<void>(resolve => { entered = resolve })
   const held = new Promise<void>((_, fail) => { reject = fail })
   vi.spyOn(daemon!, 'reconcileGitChanges').mockImplementation(() => { entered(); return held })
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  let finished = false
+  const done = tools!.call('room_done', { summary: 'finished' }).then(reply => { finished = true; return reply })
   try {
-    const done = tools!.call('room_done', { summary: 'finished' })
     await started
-    expect(room.openClaims().some(c => c.by === name)).toBe(true)
-    expect(registry.reports(record.id).some(report => report.done)).toBe(false)
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(await done).toContain('publication did not settle within 15 s')
-    expect(room.openClaims().some(c => c.by === name)).toBe(true)
-    expect(registry.reports(record.id).some(report => report.done)).toBe(false)
-    expect(room.messages().some(message => message.type === 'done')).toBe(false)
-  } finally { reject(new Error('test publication stopped')); vi.useRealTimers() }
+    await vi.advanceTimersByTimeAsync(5_000)
+    // Let report persistence finish using real I/O while keeping the publication timer frozen.
+    await Promise.race([done, delay(1_000)])
+    expect(finished).toBe(true)
+    expect(await done).toContain('marked done')
+    expect(room.openClaims().filter(c => c.by === name)).toEqual([])
+    expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
+    expect(room.messages().some(message => message.type === 'done')).toBe(true)
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log.mock.calls[0][0]).toContain('publication did not settle within 5 s')
+  } finally {
+    reject(new Error('test publication stopped'))
+    await done
+    vi.useRealTimers()
+  }
 })
 
-it('refuses an incomplete publication even when daemon reconciliation resolves', async () => {
+it('records a report and releases claims for an incomplete publication', async () => {
   const { room, name, registry, record } = await worker()
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(daemon!, 'reconcileGitChanges').mockResolvedValue()
   room.manifestHead.set(name, { ...room.manifestHead.get(name)!, complete: false })
-  expect(await tools!.call('room_done', { summary: 'finished' })).toContain('current HEAD and overlay are not published yet')
-  expect(room.openClaims().some(c => c.by === name)).toBe(true)
-  expect(registry.reports(record.id).some(report => report.done)).toBe(false)
+  expect(await tools!.call('room_done', { summary: 'finished' })).toContain('marked done')
+  expect(room.openClaims().filter(c => c.by === name)).toEqual([])
+  expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
+  expect(log).toHaveBeenCalledTimes(1)
+  expect(log.mock.calls[0][0]).toContain('current HEAD and overlay are not published yet')
+})
+
+it.each(['rejected', 'intent', 'no fence'] as const)('does not wait for publication with %s', async reason => {
+  const { room, name, registry, record, session } = await worker()
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const reconcile = vi.spyOn(daemon!, 'reconcileGitChanges').mockRejectedValue(new Error('must not reconcile'))
+  if (reason === 'rejected') session.rejected = { reason: 'size cap', at: Date.now() }
+  if (reason === 'intent') session.policyStore = testPolicyStore('intent')
+  if (reason === 'no fence') vi.spyOn(daemon!, 'fence', 'get').mockReturnValue(undefined)
+  const started = Date.now()
+  expect(await tools!.call('room_done', { summary: 'finished' })).toContain('marked done')
+  expect(Date.now() - started).toBeLessThan(1_000)
+  expect(reconcile).not.toHaveBeenCalled()
+  expect(room.openClaims().filter(c => c.by === name)).toEqual([])
+  expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
+  expect(log).toHaveBeenCalledTimes(1)
+})
+
+it('skips publication when there is no daemon', async () => {
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  await expect(settleWorkerPublication({ me: { name: 'worker' } } as Session)).resolves.toBeUndefined()
+  expect(log).toHaveBeenCalledTimes(1)
+  expect(log.mock.calls[0][0]).toContain('no daemon')
 })
 
 it('uses the checkout publisher when the worker is a secondary session', async () => {
