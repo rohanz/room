@@ -113,7 +113,9 @@ room.chat(name).observe(ev => {
   for (const d of ev.changes.delta) for (const it of d.insert ?? []) if (it.role !== 'human') console.log(`[${it.role}] ${it.text}`)
 })
 provider.on('status', (e: { status: string }) => console.error(`[roomagent] ws ${e.status}`))
-// A refused replica or revoked access: settle and exit with the reason; a restart joins with a fresh replica.
+// A refused replica or revoked access: settle and exit with the reason; a restart joins with a fresh replica. It can
+// arrive during the first sync, so shutdown's guard is set up before it.
+let shuttingDown = false
 provider.on('connection-close', (event: { code?: number; reason?: string } | null) => {
   const final = finalClose(event)
   if (!final) return
@@ -130,7 +132,6 @@ try {
 runner.start()
 console.error(`[roomagent] ${name}'s agent online in ${roomName} @ ${serverUrl}, cwd ${workDir}`)
 
-let shuttingDown = false
 async function shutdown(exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
