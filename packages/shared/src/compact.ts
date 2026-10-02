@@ -24,16 +24,41 @@ export const STALE_REPLICA_REASON = "this room's document was compacted when the
 /** The close (4403, final for every rc client) for a client that states no generation once the room has one. */
 export const COMPACTED_UPDATE_REASON = "update Room to 0.17.0 or later (browser: reload the page): this room's document was compacted"
 
-/** The generation a replica states before syncing: fresh until it holds any server data, then the one that data came from. */
-export function replicaGeneration(doc: Y.Doc): string {
-  const store = doc.store as unknown as { clients: Map<number, unknown>; pendingStructs: unknown; pendingDs: unknown }
-  // Data that cannot integrate yet (a broadcast before sync step 2) is server data too: it names server items.
-  const received = store.pendingStructs !== null || store.pendingDs !== null || [...store.clients.keys()].some(id => id !== doc.clientID)
-  return received ? docGeneration(doc) ?? UNCOMPACTED : FRESH_GENERATION
+/** Replicas that have received server data, and the watch that records it. */
+const received = new WeakMap<Y.Doc, boolean>()
+function watchReplica(doc: Y.Doc): void {
+  if (received.has(doc)) return
+  // Data already integrated names another client in the state vector.
+  received.set(doc, [...Y.decodeStateVector(Y.encodeStateVector(doc)).keys()].some(id => id !== doc.clientID))
+  if (received.get(doc)) return
+  // Every remote update is applied in a transaction that is not local, including one whose structs Yjs can only keep
+  // pending (a broadcast before sync step 2, a deletion alone): those emit no 'update' and leave no public trace in
+  // the state vector, so the transaction is the signal.
+  const onTransaction = (transaction: Y.Transaction) => {
+    if (transaction.local) return
+    received.set(doc, true)
+    doc.off('afterTransaction', onTransaction)
+  }
+  doc.on('afterTransaction', onTransaction)
 }
 
-/** Provider params whose `gen` is read again at every (re)connect: y-websocket encodes `params` into each URL. */
+/**
+ * The generation a replica states before syncing: fresh until it holds any server data, then the one that data came
+ * from. Watching starts at the first call (roomConnection makes it before the provider connects).
+ */
+export function replicaGeneration(doc: Y.Doc): string {
+  watchReplica(doc)
+  return received.get(doc) ? docGeneration(doc) ?? UNCOMPACTED : FRESH_GENERATION
+}
+
+/**
+ * Provider params whose `gen` is read again at every (re)connect. y-websocket builds each socket's URL from its
+ * `url` getter (`get url ()` in y-websocket/src/y-websocket.js), which encodes `this.params` every time; it has no
+ * hook before its own reconnects, so `gen` is an enumerable getter rather than a value set before each connect.
+ * room-mcp's generation-params test fails if a y-websocket upgrade stops re-reading `params`.
+ */
 export function generationParams(doc: Y.Doc, base: Record<string, string>): Record<string, string> {
+  watchReplica(doc)
   return Object.defineProperty({ ...base }, GENERATION_PARAM, { enumerable: true, get: () => replicaGeneration(doc) })
 }
 

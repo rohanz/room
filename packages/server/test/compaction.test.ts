@@ -2,10 +2,12 @@
  *  process rebuilds it from its values under a new generation, and the gate refuses replicas of an earlier one.
  *  The child-server tests listen on loopback. */
 import { afterAll, describe, expect, it } from 'vitest'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import * as Y from 'yjs'
 import * as decoding from 'lib0/decoding'
@@ -355,15 +357,15 @@ describe('a compacting restart on a real server', () => {
     await db.destroy()
     const migratedAt = Date.now()
     fs.writeFileSync(path.join(dir, 'rooms.json'), JSON.stringify({ [ROOM]: { at: migratedAt, lastSeen: migratedAt, branches: [], mode: 'repo', migratedAt } }))
-    const port = await freePort()
-    let s = teamServer(dir, port, { ROOM_TEST_COMPACT_DELAY_MS: '30000' })
-    await healthy(s.http)
-    const session = await login(s.http, 'ada')
-    const client = syncClient(s.ws, new Y.Doc(), { session })
-    for (let i = 0; i < 200 && !s.lines.some(l => /compacting/.test(l)); i++) await new Promise(r => setTimeout(r, 50))
-    expect(s.lines.join('\n')).toMatch(/compacting/)
-    await servers.stop(s.child, 'SIGKILL') // mid-compaction
-    await client.closed
+    // The load path, killed inside its compaction's write window (between the copy and the atomic replace).
+    const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('./helpers/compact-crash-child.ts', import.meta.url)), dir, ROOM], { stdio: ['ignore', 'pipe', 'inherit'] })
+    let out = ''
+    child.stdout!.on('data', (b: Buffer) => { out += b.toString() })
+    for (let i = 0; i < 400 && !/inside the compaction window/.test(out); i++) await new Promise(r => setTimeout(r, 50))
+    expect(out).toMatch(/compacting at load: \d+ structs/)
+    expect(child.exitCode).toBeNull() // still inside the window
+    await new Promise<void>(resolve => { child.once('exit', () => resolve()); child.kill('SIGKILL') })
+    expect(child.signalCode).toBe('SIGKILL')
 
     const check = new LeveldbPersistence(dir)
     const kept = await check.getYDoc(ROOM)
@@ -371,7 +373,7 @@ describe('a compacting restart on a real server', () => {
     expect(new RoomDoc(kept).archive.toJSON()).toEqual(new RoomDoc(seed).archive.toJSON())
     await check.destroy()
 
-    s = teamServer(dir, port)
+    const s = teamServer(dir, await freePort())
     await healthy(s.http)
     const again = await login(s.http, 'ada')
     const b = new Y.Doc()

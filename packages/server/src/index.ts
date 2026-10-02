@@ -963,7 +963,6 @@ const droppedWrite = (room: string) => () => {
   dropLog.set(room, now)
   console.log(`dropped write from a view-key connection (room ${room})`)
 }
-/** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
 /** Tombstones a stored room needs before its first load in a process compacts it (ROOM_COMPACT_MIN_DELETED,
  *  default 10,000, about 3 MB of heap; 0 or "off" disables). A compaction only adds, to the reconnect a restart
  *  already costs every client, a fresh replica; the threshold keeps it from running for negligible history. */
@@ -973,11 +972,10 @@ const COMPACT_MIN_DELETED = (() => {
   const n = Number(raw)
   return raw === 'off' || n === 0 ? Infinity : Number.isFinite(n) && n > 0 ? n : 10_000
 })()
+/** One hub per loaded room: one process per YPERSISTENCE volume, so one authority per room (hub spec §6). */
 const hubs = new ServerHubs({ store: incarnationFile(process.env.YPERSISTENCE, PORT), leaseFile: room => serverLeaseFile(process.env.YPERSISTENCE, PORT, room), log: l => console.log(l), full: room => docMeter(room).size() > DOC_MAX_BYTES,
   hubBytes: (room, bytes) => { docMeter(room).size(bytes) },
-  compaction: { minDeleted: COMPACT_MIN_DELETED, generation: () => crypto.randomBytes(16).toString('hex'),
-    // Test-only: a window in which the process can be killed mid-compaction.
-    ...(process.env.NODE_ENV === 'test' && process.env.ROOM_TEST_COMPACT_DELAY_MS ? { beforeReplace: () => new Promise<void>(resolve => setTimeout(resolve, Number(process.env.ROOM_TEST_COMPACT_DELAY_MS))) } : {}) } })
+  compaction: { minDeleted: COMPACT_MIN_DELETED, generation: () => crypto.randomBytes(16).toString('hex') } })
 const stockPersistence = getPersistence() as { provider: PersistenceProvider } | null
 if (stockPersistence && isLevelProvider(stockPersistence.provider)) {
   const level = stockPersistence.provider

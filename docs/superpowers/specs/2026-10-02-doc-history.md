@@ -182,8 +182,8 @@ replica instead of resyncing the old one.
      uncompacted for this process, logged. A failed or interrupted write leaves the stored document **and its
      generation** intact, and the room's next load retries.
 - **A crash during compaction** happens before the batch (nothing written) or after it (the copy stored); a
-  LevelDB batch is never half applied. The old document is kept either way. Test-only
-  `ROOM_TEST_COMPACT_DELAY_MS` holds the window open so a test can kill the process inside it.
+  LevelDB batch is never half applied. The old document is kept either way. `ServerHubs` takes a
+  `beforeReplace` hook, which the crash test uses to hold the window open and kill the process inside it.
 - **Logged:** `room <name>: compacting at load: N structs (D deleted)`, then `compacted at load: N structs (D
   deleted) -> M structs, generation G`.
 

@@ -111,13 +111,21 @@ describe('the generation a replica states', () => {
     const vector = Y.encodeStateVector(server)
     server.getArray('bus').push([2])
     const replica = new Y.Doc()
+    expect(replicaGeneration(replica)).toBe(FRESH_GENERATION) // watched from before it connects, as roomConnection does
     Y.applyUpdate(replica, Y.encodeStateAsUpdate(server, vector)) // the broadcast, before sync step 2
     expect(replica.getArray('bus').length).toBe(0)
     expect(replicaGeneration(replica)).toBe('0') // not fresh: a stale or needless rejoin, never a merge
     const deletion = new Y.Doc(); const items = server.getArray('bus'); const sv = Y.encodeStateVector(server)
+    expect(replicaGeneration(deletion)).toBe(FRESH_GENERATION)
     items.delete(0, 1)
     Y.applyUpdate(deletion, Y.encodeStateAsUpdate(server, sv)) // a deletion alone
     expect(replicaGeneration(deletion)).not.toBe(FRESH_GENERATION)
+  })
+
+  it('counts data a replica already held when the watch starts', () => {
+    const doc = new Y.Doc()
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(compactDoc(new Y.Doc(), 'g3')))
+    expect(replicaGeneration(doc)).toBe('g3')
   })
 
   it('reaches every reconnect through the provider params, as an enumerable getter', () => {

@@ -18658,6 +18658,48 @@ var init_build_output = __esm({
   }
 });
 
+// packages/shared/src/compact.ts
+function watchReplica(doc) {
+  if (received.has(doc)) return;
+  received.set(doc, [...decodeStateVector(encodeStateVector(doc)).keys()].some((id3) => id3 !== doc.clientID));
+  if (received.get(doc)) return;
+  const onTransaction = (transaction) => {
+    if (transaction.local) return;
+    received.set(doc, true);
+    doc.off("afterTransaction", onTransaction);
+  };
+  doc.on("afterTransaction", onTransaction);
+}
+function replicaGeneration(doc) {
+  watchReplica(doc);
+  return received.get(doc) ? docGeneration(doc) ?? UNCOMPACTED : FRESH_GENERATION;
+}
+function generationParams(doc, base) {
+  watchReplica(doc);
+  return Object.defineProperty({ ...base }, GENERATION_PARAM, { enumerable: true, get: () => replicaGeneration(doc) });
+}
+function roomConnection(doc) {
+  return { params: generationParams(doc, { schema: "2" }), disableBc: true };
+}
+var GENERATION_KEY, docGeneration, GENERATION_PARAM, FRESH_GENERATION, UNCOMPACTED, STALE_REPLICA_CODE, STALE_REPLICA_REASON, received;
+var init_compact = __esm({
+  "packages/shared/src/compact.ts"() {
+    "use strict";
+    init_yjs();
+    GENERATION_KEY = "generation";
+    docGeneration = (doc) => {
+      const value2 = doc.getMap("meta").get(GENERATION_KEY);
+      return typeof value2 === "string" && value2 ? value2 : void 0;
+    };
+    GENERATION_PARAM = "gen";
+    FRESH_GENERATION = "fresh";
+    UNCOMPACTED = "0";
+    STALE_REPLICA_CODE = 4409;
+    STALE_REPLICA_REASON = "this room's document was compacted when the server restarted; rejoin with a fresh copy";
+    received = /* @__PURE__ */ new WeakMap();
+  }
+});
+
 // packages/shared/src/index.ts
 var init_src = __esm({
   "packages/shared/src/index.ts"() {
@@ -18683,6 +18725,7 @@ var init_src = __esm({
     init_expiry();
     init_parsed();
     init_build_output();
+    init_compact();
   }
 });
 
@@ -30105,7 +30148,7 @@ var init_src4 = __esm({
         this.roomName = decodedRoomName;
         this.provider = options.providerFactory ? options.providerFactory(serverUrl, roomName, this.roomDoc.doc) : new WebsocketProvider(serverUrl, roomName, this.roomDoc.doc, {
           WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
-          params: { schema: "2" }
+          ...roomConnection(this.roomDoc.doc)
         });
         options.onProvider?.(this.provider);
         this.publisher = new Publisher(this);
@@ -40660,7 +40703,7 @@ async function startAutoTaggedRoomd(options, explicitTag) {
   url.pathname = url.pathname.slice(0, url.pathname.lastIndexOf("/"));
   const probe = await timed("connect", () => options.providerFactory ? options.providerFactory(url.toString().replace(/\/$/, ""), encodedRoom, doc) : new WebsocketProvider(url.toString().replace(/\/$/, ""), encodedRoom, doc, {
     WebSocketPolyfill: authorizedWebSocket({ token: options.token ?? process.env.ROOM_TOKEN, key: options.localKey, session: options.session }),
-    params: { schema: "2" }
+    ...roomConnection(doc)
   }));
   const closeProbe = () => {
     probe.destroy();
@@ -41132,7 +41175,7 @@ function captureCapClose(provider) {
   let seen;
   const onClose = (e) => {
     const close = e && typeof e === "object" ? e : void 0;
-    if (close?.code === ROOM_SIZE_CAP_CODE) seen = { code: close.code, reason: close.reason };
+    if (close?.code === ROOM_SIZE_CAP_CODE || close?.code === STALE_REPLICA_CODE) seen = { code: close.code, reason: close.reason };
   };
   p.on?.("connection-close", onClose);
   return () => {
@@ -41141,6 +41184,13 @@ function captureCapClose(provider) {
     seen = void 0;
     return taken;
   };
+}
+function whenStale(s, listener) {
+  if (s.stale) {
+    listener();
+    return;
+  }
+  staleListeners.set(s, [...staleListeners.get(s) ?? [], listener]);
 }
 function watchClosed(s, log2, startupClose) {
   const p = s.provider;
@@ -41161,6 +41211,19 @@ function watchClosed(s, log2, startupClose) {
   };
   const onClose = (e) => {
     const close = e && typeof e === "object" ? e : void 0;
+    if (close?.code === STALE_REPLICA_CODE) {
+      if (s.stale || s.closed) return;
+      if (retry) clearTimeout(retry);
+      if (verify) clearTimeout(verify);
+      s.stale = { reason: close.reason || STALE_REPLICA_REASON };
+      try {
+        p.disconnect?.();
+      } catch {
+      }
+      log2?.(`${s.roomName}: ${s.stale.reason}`);
+      for (const listener of staleListeners.get(s) ?? []) listener();
+      return;
+    }
     if (close?.code === ROOM_SIZE_CAP_CODE) {
       s.rejected = { reason: close.reason || "room is over its size cap", at: Date.now() };
       if (verify) clearTimeout(verify);
@@ -41294,7 +41357,7 @@ async function leaveSession(s) {
   await s.daemon.stop();
   await s.local?.stop();
 }
-var timed, DEFAULT_WEB, VIEWER_MISSING, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, httpOf;
+var timed, DEFAULT_WEB, VIEWER_MISSING, NoRoom, NotLoggedIn, configCache, branchRoomHint, ceilings, serverLog, SERVER_RETRY_MS, ROOM_CLOSED_CODE, ROOM_SIZE_CAP_CODE, SIZE_CAP_RETRY_MS, SIZE_CAP_VERIFY_MS, staleListeners, httpOf;
 var init_session = __esm({
   "packages/room-mcp/src/session.ts"() {
     "use strict";
@@ -41355,6 +41418,7 @@ var init_session = __esm({
     ROOM_SIZE_CAP_CODE = 4413;
     SIZE_CAP_RETRY_MS = 6e4;
     SIZE_CAP_VERIFY_MS = 2e3;
+    staleListeners = /* @__PURE__ */ new WeakMap();
     httpOf = (server) => server.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
   }
 });
@@ -48172,13 +48236,13 @@ var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
     if (typeof input === "number" && !Number.isNaN(input) && Number.isFinite(input)) {
       return payload;
     }
-    const received = typeof input === "number" ? Number.isNaN(input) ? "NaN" : !Number.isFinite(input) ? String(input) : void 0 : void 0;
+    const received2 = typeof input === "number" ? Number.isNaN(input) ? "NaN" : !Number.isFinite(input) ? String(input) : void 0 : void 0;
     payload.issues.push({
       expected: "number",
       code: "invalid_type",
       input,
       inst,
-      ...received ? { received } : {}
+      ...received2 ? { received: received2 } : {}
     });
     return payload;
   };
@@ -49575,8 +49639,8 @@ var error = () => {
       case "invalid_type": {
         const expected = getTypeName(issue2.expected);
         const receivedType = parsedType(issue2.input);
-        const received = getTypeName(receivedType, issue2.input);
-        return `Invalid input: expected ${expected}, received ${received}`;
+        const received2 = getTypeName(receivedType, issue2.input);
+        return `Invalid input: expected ${expected}, received ${received2}`;
       }
       case "invalid_value":
         if (issue2.values.length === 1)
@@ -62825,6 +62889,64 @@ ${result2}` : result2;
 
 // packages/room-mcp/src/index.ts
 init_session();
+
+// packages/room-mcp/src/compacted.ts
+init_session();
+var StaleReplacement = class {
+  constructor(o) {
+    this.o = o;
+  }
+  o;
+  pending;
+  /** A replacement is owed: its join has not been adopted yet. */
+  get active() {
+    return !!this.pending;
+  }
+  /** Before a join attempt: a stale current session and its secondaries are dropped, once. True while a replacement is owed. */
+  async begin(current) {
+    if (!this.pending && current?.stale) {
+      const joined = this.o.joinedSessions();
+      const all2 = joined.includes(current) ? joined : [current, ...joined];
+      this.pending = { primary: all2[0], secondaries: all2.slice(1) };
+      this.o.log(`${current.roomName}: rejoining with a fresh copy of the room under the same name`);
+      for (const old of [...all2].reverse()) await this.o.drop(old, current.stale.reason);
+    }
+    return !!this.pending;
+  }
+  /** The replacement's join: the stale primary's room and name, under its session id. */
+  join() {
+    const { primary } = this.pending;
+    return (this.o.join ?? joinSession)({ ...rejoinOptions(primary, this.o.credentialsPath), sessionId: primary.lease?.sessionId, log: this.o.log });
+  }
+  /** Adopt the fresh session without clearing its own claims, as a host rebind does, then rejoin the secondaries. */
+  async finish(fresh, adopt) {
+    const { primary, secondaries } = this.pending;
+    this.pending = void 0;
+    const removed = removeOwnMirrors(fresh);
+    if (removed) this.o.log(`${fresh.roomName}: removed ${removed} mirrored worker claim(s); the workers bridge mirrors them again`);
+    await adopt(fresh, false);
+    for (const old of secondaries) {
+      try {
+        this.o.attachWorkersRoom(await (this.o.join ?? joinSession)({ ...rejoinOptions(old, this.o.credentialsPath), sessionId: primary.lease?.sessionId, log: this.o.log }), fresh);
+      } catch (error2) {
+        this.o.log(`could not rejoin ${old.roomName} after the replacement: ${error2 instanceof Error ? error2.message : String(error2)}; it is joined again when a worker needs it`);
+      }
+    }
+  }
+  /** A human chose a room (room_join, room_create): no replacement is owed any more. */
+  forget() {
+    this.pending = void 0;
+  }
+};
+function removeOwnMirrors(s) {
+  const mirrors = s.room.openClaims().filter((c) => c.by === s.me.name && !!c.mirrorOf);
+  if (mirrors.length) s.room.doc.transact(() => {
+    for (const c of mirrors) s.room.removeClaim(c.id, s.me);
+  }, s.me);
+  return mirrors.length;
+}
+
+// packages/room-mcp/src/index.ts
 init_repository();
 
 // packages/room-mcp/src/auto-join.ts
@@ -63693,8 +63815,18 @@ async function main() {
       const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() });
       const tools = createTools({ getSession: () => session, setSession: (s) => {
         session = s;
-        if (s) joined(s);
+        if (s) {
+          replacement.forget();
+          joined(s);
+        }
       }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log });
+      const replacement = new StaleReplacement({
+        joinedSessions: () => tools.joinedSessions(),
+        drop: (s, why) => tools.drop(s, why),
+        attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead),
+        credentialsPath: startup.credentialsPath,
+        log
+      });
       const arbitration = await startArbitration({
         binding: sessionBinding,
         ledger: tools.ledger,
@@ -63781,6 +63913,11 @@ async function main() {
         s.onRebind?.((id3) => {
           void rebindHost(id3).catch((error2) => log(`host rebind failed: ${String(error2)}`));
         });
+        whenStale(s, () => {
+          if (session !== s) return;
+          autoJoin.retarget(s);
+          void autoJoin.ensure();
+        });
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
       };
       const chosen = startup.server;
@@ -63791,6 +63928,7 @@ async function main() {
         async attempt(target) {
           const root = await joinableRoot(dir);
           if (session?.local?.lost) await tools.drop(session, session.local.lost);
+          if (await replacement.begin(session)) return replacement.join();
           if (target) {
             const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log });
             return s;
@@ -63801,11 +63939,12 @@ async function main() {
           return void 0;
         },
         async adopt(s) {
-          await adopt(s);
+          if (replacement.active) await replacement.finish(s, adopt);
+          else await adopt(s);
           log("ready");
         },
         discard: (s) => leaveSession(s),
-        joined: () => !!session && !session.local?.lost,
+        joined: () => !!session && !session.local?.lost && !session.stale,
         report(line) {
           tools.startupNotice(line);
           log(line);
