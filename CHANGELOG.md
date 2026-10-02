@@ -3,6 +3,7 @@
 ## 0.17.1 (unreleased)
 
 - The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants still produce the diagnostic.
+- The preview crash test waits for completed file writes and lock release, keeps its orphan alive until explicitly released, and reaps it on failure. File creation and the checker's 30-second self-expiry could race the assertions under load; preview-cache behavior is unchanged.
 
 ## 0.17.0
 
