@@ -62945,6 +62945,15 @@ function removeOwnMirrors(s) {
   }, s.me);
   return mirrors.length;
 }
+function rejoinWhenStale(s, current, autoJoin) {
+  whenStale(s, () => {
+    void autoJoin.settle().then(() => {
+      if (current() !== s || !s.stale) return;
+      autoJoin.retarget(s);
+      void autoJoin.ensure();
+    });
+  });
+}
 
 // packages/room-mcp/src/index.ts
 init_repository();
@@ -63913,11 +63922,7 @@ async function main() {
         s.onRebind?.((id3) => {
           void rebindHost(id3).catch((error2) => log(`host rebind failed: ${String(error2)}`));
         });
-        whenStale(s, () => {
-          if (session !== s) return;
-          autoJoin.retarget(s);
-          void autoJoin.ensure();
-        });
+        rejoinWhenStale(s, () => session, autoJoin);
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`);
       };
       const chosen = startup.server;

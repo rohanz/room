@@ -5,7 +5,7 @@
  * is joined afresh under the same name and session id, the participant's claims and scope stay (they are in the
  * compacted room), and the workers room is re-attached.
  */
-import { joinSession, type JoinOptions, type Session } from './session.js'
+import { joinSession, whenStale, type JoinOptions, type Session } from './session.js'
 import { rejoinOptions } from './tools/join.js'
 
 export interface StaleReplacementOptions {
@@ -68,4 +68,19 @@ export function removeOwnMirrors(s: Session): number {
   const mirrors = s.room.openClaims().filter(c => c.by === s.me.name && !!c.mirrorOf)
   if (mirrors.length) s.room.doc.transact(() => { for (const c of mirrors) s.room.removeClaim(c.id, s.me) }, s.me)
   return mirrors.length
+}
+
+/**
+ * Once `s` is refused, run the auto-join that replaces it. A session can already be stale when it is adopted (the
+ * server compacted between its sync and the join's return): the join in flight is its own, so the replacement is
+ * started after that join settles, if `s` is still the current session.
+ */
+export function rejoinWhenStale(s: Session, current: () => Session | null, autoJoin: { settle(): Promise<void>; retarget(s: Session): void; ensure(): Promise<void> }): void {
+  whenStale(s, () => {
+    void autoJoin.settle().then(() => {
+      if (current() !== s || !s.stale) return
+      autoJoin.retarget(s)
+      void autoJoin.ensure()
+    })
+  })
 }

@@ -6,8 +6,8 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, whenStale, type Session } from './session.js'
-import { StaleReplacement } from './compacted.js'
+import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
+import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
@@ -177,7 +177,7 @@ async function main() {
 
       const joined = (s: Session) => {
         s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
-        whenStale(s, () => { if (session !== s) return; autoJoin.retarget(s); void autoJoin.ensure() })
+        rejoinWhenStale(s, () => session, autoJoin)
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
       }
 
