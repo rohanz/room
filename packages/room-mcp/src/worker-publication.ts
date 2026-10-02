@@ -5,7 +5,7 @@ import { checkoutPublisher } from './tools/share.js'
 
 // Publication helps other participants' views; the lead reads its workers' worktrees directly.
 /** Best-effort refresh before completion; publication must never prevent a report or claim release. */
-export async function settleWorkerPublication(s: Session): Promise<void> {
+export async function settleWorkerPublication(s: Session, log: (line: string) => void): Promise<void> {
   let timer: NodeJS.Timeout | undefined
   try {
     if (s.rejected) throw new Error(`session rejected: ${s.rejected.reason}`)
@@ -33,6 +33,6 @@ export async function settleWorkerPublication(s: Session): Promise<void> {
     ])
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    console.error(`room_done: publication unverified for ${s.me.name}; ${reason}`.replace(/[\r\n]+/g, ' '))
+    log(`room_done: publication unverified for ${s.me.name}; ${reason}`.replace(/[\r\n]+/g, ' '))
   } finally { if (timer) clearTimeout(timer) }
 }

@@ -19,6 +19,8 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 
 let dir: string, daemon: Roomd | undefined, tools: ReturnType<typeof createTools> | undefined
+const log = vi.fn<(line: string) => void>()
+const unverified = () => log.mock.calls.map(([line]) => line).filter(line => line.startsWith('room_done: publication unverified'))
 const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
 const incarnationText = (room: Session['room'], name: string, file: string) =>
   room.overlayText(manifestKey(name, room.manifestHead.get(name)!.fence), file)
@@ -55,7 +57,8 @@ async function worker() {
     ...hubSeam(room), roomName: 'local/test', roomUrl: 'ws://memory/local/test', browserUrl: 'http://memory',
     shareMax: 'full', shareRequested: 'full',
   } as Session
-  tools = createTools({ cwd: dir, getSession: () => session, setSession() {}, listCwdProcesses: () => [],
+  log.mockClear()
+  tools = createTools({ cwd: dir, getSession: () => session, setSession() {}, listCwdProcesses: () => [], log,
     config: { ...await resolveConfig({ dir }), workerId: record.id } })
   room.addClaim({ path: 'app.txt', from: 1, to: 1, by: name, byKind: 'agent', intent: 'edit app' })
   return { room, name, registry, record, session }
@@ -87,7 +90,6 @@ it('publishes a commit and overlay before room_done releases claims and reports'
 
 it('records a report and releases claims within 5 s when publication never settles', async () => {
   const { room, name, registry, record } = await worker()
-  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
   let entered!: () => void, reject!: (error: Error) => void
   const started = new Promise<void>(resolve => { entered = resolve })
   const held = new Promise<void>((_, fail) => { reject = fail })
@@ -105,8 +107,8 @@ it('records a report and releases claims within 5 s when publication never settl
     expect(room.openClaims().filter(c => c.by === name)).toEqual([])
     expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
     expect(room.messages().some(message => message.type === 'done')).toBe(true)
-    expect(log).toHaveBeenCalledTimes(1)
-    expect(log.mock.calls[0][0]).toContain('publication did not settle within 5 s')
+    expect(unverified()).toHaveLength(1)
+    expect(unverified()[0]).toContain('publication did not settle within 5 s')
   } finally {
     reject(new Error('test publication stopped'))
     await done
@@ -116,19 +118,17 @@ it('records a report and releases claims within 5 s when publication never settl
 
 it('records a report and releases claims for an incomplete publication', async () => {
   const { room, name, registry, record } = await worker()
-  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(daemon!, 'reconcileGitChanges').mockResolvedValue()
   room.manifestHead.set(name, { ...room.manifestHead.get(name)!, complete: false })
   expect(await tools!.call('room_done', { summary: 'finished' })).toContain('marked done')
   expect(room.openClaims().filter(c => c.by === name)).toEqual([])
   expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
-  expect(log).toHaveBeenCalledTimes(1)
-  expect(log.mock.calls[0][0]).toContain('current HEAD and overlay are not published yet')
+  expect(unverified()).toHaveLength(1)
+  expect(unverified()[0]).toContain('current HEAD and overlay are not published yet')
 })
 
 it.each(['rejected', 'intent', 'no fence'] as const)('does not wait for publication with %s', async reason => {
   const { room, name, registry, record, session } = await worker()
-  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
   const reconcile = vi.spyOn(daemon!, 'reconcileGitChanges').mockRejectedValue(new Error('must not reconcile'))
   if (reason === 'rejected') session.rejected = { reason: 'size cap', at: Date.now() }
   if (reason === 'intent') session.policyStore = testPolicyStore('intent')
@@ -139,14 +139,14 @@ it.each(['rejected', 'intent', 'no fence'] as const)('does not wait for publicat
   expect(reconcile).not.toHaveBeenCalled()
   expect(room.openClaims().filter(c => c.by === name)).toEqual([])
   expect(registry.reports(record.id)[0].done?.summary).toBe('finished')
-  expect(log).toHaveBeenCalledTimes(1)
+  expect(unverified()).toHaveLength(1)
 })
 
 it('skips publication when there is no daemon', async () => {
-  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
-  await expect(settleWorkerPublication({ me: { name: 'worker' } } as Session)).resolves.toBeUndefined()
-  expect(log).toHaveBeenCalledTimes(1)
-  expect(log.mock.calls[0][0]).toContain('no daemon')
+  log.mockClear()
+  await expect(settleWorkerPublication({ me: { name: 'worker' } } as Session, log)).resolves.toBeUndefined()
+  expect(unverified()).toHaveLength(1)
+  expect(unverified()[0]).toContain('no daemon')
 })
 
 it('uses the checkout publisher when the worker is a secondary session', async () => {

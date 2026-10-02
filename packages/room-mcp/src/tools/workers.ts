@@ -88,7 +88,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         let saved = false
         const report = reporting.then(async () => {
-          await settleWorkerPublication(s)
+          await settleWorkerPublication(s, state.log)
           const changed = manifestPaths(s.room, s.me.name)
           const done = (await registry!.reportDone(myId, ownRun.n, summary, changed)).done!
           saved = true
