@@ -195,8 +195,10 @@ replica instead of resyncing the old one.
   providers get `roomConnection(doc)` (`packages/shared/src/compact.ts`), whose `params` has an enumerable
   getter (y-websocket encodes `params` into each URL).
 - **The value is derived from the replica, not pinned by a frame:**
-  - `fresh` while the replica holds no server data: its store has no struct of another client and no pending
-    structs or deletions. Whatever it wrote itself names no server item, so it merges into any generation.
+  - `fresh` while the replica holds no server data: no non-local transaction has run on it since it was
+    watched (every remote `applyUpdate` runs one, even when its structs can only be kept pending), and its state
+    vector names no other client. Whatever it wrote itself names no server item, so it merges into any
+    generation. `roomConnection` starts the watch before the provider connects.
   - otherwise the generation its data came from: `meta.generation`, or `0` when absent.
   - Data received before the full sync (a broadcast whose structs cannot integrate yet, a deletion alone)
     counts as server data. If it arrived without `meta.generation`, the replica states `0`: at worst a
@@ -366,7 +368,21 @@ The relay is unchanged, and ignores `gen`:
 `scripts/soak.mts` in local mode (`SOAK_LOCAL=1`) against a local server for ≥60 minutes at the 12 h soak's
 rate, with restarts partway through, sampling each room's structs on the observer's replica.
 
-<!-- SOAK -->
+[Local soak, 2026-10-02](../rehearsals/2026-10-02-soak-compaction-local.md): 65 minutes, 8 participants,
+restarts at minutes 20 and 40, `ROOM_COMPACT_MIN_DELETED=500` (the default would not trigger within an hour at
+this rate).
+- **Both rooms compacted at both restarts**, before any client synced: alpha 3,182 → 356 and 5,920 → 798
+  structs, beta 1,329 → 194 and 2,394 → 338, in 25–81 ms each.
+- **RSS fell back** at each restart: 163.7 → 118.6 MB and 170.9 → 119.2 MB. A rejoin burst follows: eight fresh
+  replicas republishing overlays bring it to 180–192 MB within 2 minutes.
+- **16/16 refused replicas replaced under the same name**, in 0.7–1.3 s each, at higher epochs.
+- **Leases, delivery and counters pass:** no connected client lost its lease; 660 addressed messages, 0 lost,
+  2 duplicates, both at-least-once; no seq reused across either restart.
+- **Where the history comes from** (alpha, 25 minutes after restart 2): `conflicts` 30% of structs, then
+  `seen:*`, `basetextFlat`, `meta`, `bus`, `manifestHead` and `graphs`; mostly member-written, as §3 predicted.
+
+The soak's RSS line fit does not apply to one hour with restarts every 20 minutes (the buses were still
+filling). A multi-hour run on staging remains the check of the server's long-term slope.
 
 ## 9. Future, if usage grows: online compaction
 
@@ -435,4 +451,16 @@ anchor, the frame, hub-only connections, `writable()` and the settle step belong
 
 ### The implementation (start-only)
 
-<!-- REVIEW -->
+- **Round 1** (Astra, 1 must-fix): a session refused during its own join (4409 captured at startup) asked the
+  auto-join for a replacement while that join was still in flight, and got it back instead: nothing replaced
+  it. `rejoinWhenStale` now waits for the in-flight join to settle, then replaces the session if it is still
+  current and stale; a regression test fails without it.
+- **Round 2** (Astra, 1 must-fix): roomagent's shutdown guard was declared after the awaited first sync, so a
+  4409 during that sync hit the temporal dead zone and rejected instead of exiting 75. Fixed, with a test that
+  closes the socket during the first sync.
+- **Round 3** (Astra): no must-fix.
+
+Before the rounds, a cleanliness review (Rohan) moved the crash test's compaction window out of the server
+(a test child process injects it through `beforeReplace`), put comments back on their declarations, replaced the
+Yjs store internals in `replicaGeneration` with public signals (a non-local `afterTransaction`, the state
+vector), and kept `params`' getter with a comment and a test against `WebsocketProvider.url`.
