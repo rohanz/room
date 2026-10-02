@@ -14,6 +14,9 @@ import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
 import { registrySnapshotForDir } from '../src/worker-registry.js'
+import * as roomd from '@room/roomd'
+import * as gitModule from '@room/roomd/git'
+import * as mergeModule from '../src/merge.js'
 
 async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
   const deadline = Date.now() + 3000
@@ -316,45 +319,46 @@ describe('derived pair slots', () => {
         if (!edited) { edited = true; publishY('B', 'A\n') }
         return { ok: true, msg: body }
       })
-      await set.reconcile('replay cached pairs')
+      await set.reconcile('replay freshly evaluated pairs')
       expect(f.post.mock.calls.some(([, body]) => body.path === 'y' && body.type === 'merge-conflict' && !body.clearedFrom)).toBe(false)
       expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'y'))).toMatchObject({ status: 'clean' })
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('retains additional evaluation provenance guards when replaying cached pairs', async () => {
-    const f = fixture({ y: 'old\n' })
-    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
-    for (const name of ['A', 'B']) {
-      const text = name + '\n'
-      f.room.manifest.get(manifestKey(name, '1'))!.set('y', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey(name, '1'), 'y', text)
-    }
-    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
-    const internal = set as unknown as { guard: () => boolean; claims(...args: unknown[]): Promise<void> }
-    const claims = internal.claims.bind(set)
-    let provenance = 1, evaluations = 0
-    vi.spyOn(internal, 'claims').mockImplementation(async (...args) => {
-      await claims(...args); evaluations++
-      const captured = provenance, prior = internal.guard
-      internal.guard = () => prior() && captured === provenance
-    })
-    const posts: { path: string; evaluation: number }[] = []
+  it('rereads projected source provenance before replaying an unchanged merge', async () => {
+    const f = fixture(), source = new RoomDoc()
+    f.holder('L'); f.holder('W', 'L'); f.holder('B')
+    f.entry('L', undefined); f.entry('W', undefined, false, 'L'); f.entry('B', 'peer\n')
+    const projected = f.room.manifest.get(manifestKey('W', '1'))!
+    projected.set('x', { change: 'M', state: 'held', hash: gitBlobHash('worker\n'), held: 'worker', at: 1, fence: '1' })
+    source.participants.set('W\0holder', { sessionId: 'session-W', epoch: 2, workerId: 'w' })
+    source.participants.set('W\0git', { branch: 'main', head: f.base, base: f.base, anchored: true, rev: 1, fence: '2' })
+    source.manifestHead.set('W', { base: f.base, fence: '2', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    const entries = new Y.Map<any>()
+    entries.set('x', { change: 'M', state: 'shared', hash: gitBlobHash('worker\n'), at: 1, fence: '2' })
+    source.manifest.set(manifestKey('W', '2'), entries)
+    source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
+    const post = vi.fn().mockResolvedValue({ ok: true })
+    const workers = { ...f.session('L', post), room: source } as Session
+    const set = new ConflictSet(f.session('L'), 'W', workers, () => {}, 0, () => undefined)
+    const read = vi.spyOn(set as unknown as { read(...args: unknown[]): Promise<unknown> }, 'read')
     try {
-      await set.reconcile('evaluate with additional provenance')
-      f.post.mockImplementation(async (_from, body) => {
-        posts.push({ path: body.path, evaluation: evaluations })
-        provenance = 2
-        return { ok: true, msg: body }
+      await set.reconcile('initial source')
+      expect(post).toHaveBeenCalled()
+      post.mockClear(); read.mockClear()
+      // Only the source-room snapshot changes; team inputs and file hashes stay fixed.
+      source.manifestHead.set('W', { ...source.manifestHead.get('W')!, rev: 2, semRev: 2 })
+      post.mockImplementation(async () => {
+        expect(read.mock.calls.some(([snap]) => (snap as { name: string }).name === 'W')).toBe(true)
+        return { ok: true }
       })
-      await set.reconcile('replay')
-      expect(posts).not.toContainEqual({ path: 'y', evaluation: 1 })
-      expect(evaluations).toBe(2)
-      expect(posts).toContainEqual({ path: 'y', evaluation: 2 })
-    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+      await set.reconcile('source invalidated')
+      expect(read.mock.calls.some(([snap]) => (snap as { name: string }).name === 'W')).toBe(true)
+      expect(post).toHaveBeenCalled()
+    } finally { set.stop(); source.doc.destroy(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('invalidates claim pairs when a worker finishes or changes runs', async () => {
+  it('reevaluates claims when a worker finishes or changes runs', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', undefined)
     f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'worker edit' })
@@ -394,7 +398,7 @@ describe('derived pair slots', () => {
     } finally { mkdir.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('forgets prior completion when a due retry throws after withdrawing its unknown slot', async () => {
+  it('retries after a due check throws while withdrawing its unknown slot', async () => {
     const f = fixture()
     f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
     const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
@@ -428,10 +432,14 @@ describe('derived pair slots', () => {
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('does no pair work for six participants publishing disjoint files or refreshing metadata', async () => {
+  it('bounds X2 work for six participants publishing disjoint files or refreshing metadata', async () => {
     const f = fixture(), sets: ConflictSet[] = []
     const names = ['A', 'B', 'C', 'D', 'E', 'F']
     const runs: ReturnType<typeof vi.spyOn>[] = []
+    const reads: ReturnType<typeof vi.spyOn>[] = []
+    const comparisons = vi.spyOn(roomd, 'comparePair')
+    const git = vi.spyOn(gitModule, 'git')
+    const merges = vi.spyOn(mergeModule, 'gitMergeFile')
     try {
       for (const name of names) {
         f.holder(name); f.entry(name, undefined)
@@ -442,10 +450,13 @@ describe('derived pair slots', () => {
         const set = new ConflictSet(f.session(name), name, f.session(name), () => {}, 0, () => undefined)
         sets.push(set)
         runs.push(vi.spyOn(set as unknown as { run(reason: string): Promise<void> }, 'run'))
+        reads.push(vi.spyOn(set as unknown as { read(...args: unknown[]): Promise<unknown> }, 'read'))
         set.start(); await set.flush()
       }
       await new Promise(resolve => setTimeout(resolve, 30))
       for (const run of runs) run.mockClear()
+      comparisons.mockClear(); git.mockClear(); merges.mockClear()
+      for (const read of reads) read.mockClear()
       for (let round = 0; round < 10; round++) {
         f.room.doc.transact(() => {
           for (const name of names) {
@@ -463,20 +474,42 @@ describe('derived pair slots', () => {
         await new Promise(resolve => setTimeout(resolve, 30))
       }
       const counts = runs.map(run => run.mock.calls.length)
-      console.log(JSON.stringify({ disjointPublishRounds: 10, participants: 6, reconcileRuns: counts }))
+      const work = () => ({ comparisons: comparisons.mock.calls.length,
+        gitDiffs: git.mock.calls.filter(([, args]) => args[0] === 'diff').length,
+        reads: reads.reduce((n, read) => n + read.mock.calls.length, 0), merges: merges.mock.calls.length })
+      console.log(JSON.stringify({ disjointPublishRounds: 10, participants: 6, reconcileRuns: counts, work: work() }))
       expect(counts).toEqual([0, 0, 0, 0, 0, 0])
+      expect(work()).toEqual({ comparisons: 0, gitDiffs: 0, reads: 0, merges: 0 })
+      // Periodic checks must do finite work even without an evaluation cache.
+      for (const set of sets) await set.reconcile('periodic')
+      console.log(JSON.stringify({ periodicRuns: runs.map(run => run.mock.calls.length), work: work() }))
+      expect(runs.map(run => run.mock.calls.length)).toEqual([1, 1, 1, 1, 1, 1])
+      expect(work()).toEqual({ comparisons: 30, gitDiffs: 60, reads: 0, merges: 0 })
+      for (const run of runs) run.mockClear()
       f.room.manifest.get(manifestKey('B', '1'))!.set('A', { change: 'A', state: 'shared', hash: gitBlobHash('overlap'), at: 99, fence: '1' })
       f.room.setOverlay(manifestKey('B', '1'), 'A', 'overlap')
       const head = f.room.manifestHead.get('B')!
       f.room.manifestHead.set('B', { ...head, rev: head.rev + 1, semRev: head.semRev + 1 })
-      await new Promise(resolve => setTimeout(resolve, 100))
+      const deadline = Date.now() + 5_000
+      while (sets.some(set => {
+        const pending = set as unknown as { running?: Promise<void>; timer?: unknown; inputCheck?: unknown }
+        return pending.running || pending.timer || pending.inputCheck
+      })) {
+        if (Date.now() > deadline) throw new Error('X2 reconciliation did not quiesce')
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
       expect(runs[0]!.mock.calls.length).toBeGreaterThan(0)
       expect(runs[0]!.mock.calls.length).toBeLessThanOrEqual(2)
       expect(runs.slice(2).every(run => run.mock.calls.length === 0)).toBe(true)
       const idle = runs.map(run => run.mock.calls.length)
+      const idleWork = work()
+      console.log(JSON.stringify({ overlapRuns: idle, work: idleWork }))
+      expect(idle).toEqual([1, 1, 0, 0, 0, 0])
+      expect(idleWork).toEqual({ comparisons: 40, gitDiffs: 80, reads: 4, merges: 2 })
       await new Promise(resolve => setTimeout(resolve, 100))
       expect(runs.map(run => run.mock.calls.length)).toEqual(idle)
-    } finally { for (const set of sets) set.stop(); f.room.doc.destroy(); f.cleanup() }
+      expect(work()).toEqual(idleWork)
+    } finally { comparisons.mockRestore(); git.mockRestore(); merges.mockRestore(); for (const set of sets) set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   it('withdraws 1,000 contracts without per-slot full-text snapshots', () => {
@@ -500,7 +533,7 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
-  it('skips unchanged pairs and yields among cached candidates when one held input changes', async () => {
+  it('yields among merge candidates during unchanged and changed checks', async () => {
     const f = fixture()
     try {
       f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', undefined, true)
@@ -516,14 +549,15 @@ describe('derived pair slots', () => {
       await set.reconcile('populate')
       let turnRan = false, sawLast = false
       const slots = (set as unknown as { slots: ConflictSlots }).slots
-      const original = slots.get.bind(slots)
-      const spy = vi.spyOn(slots, 'get').mockImplementation(key => {
+      const original = slots.settle.bind(slots)
+      const spy = vi.spyOn(slots, 'settle').mockImplementation((key, result) => {
         if (key === slotKey('A', 'merge', 'B', 'file-000')) setImmediate(() => { turnRan = true })
         if (key === slotKey('A', 'merge', 'B', 'file-095')) sawLast = turnRan
-        return original(key)
+        return original(key, result)
       })
       await set.reconcile('unchanged')
-      expect(spy).not.toHaveBeenCalled()
+      expect(spy).toHaveBeenCalled()
+      expect(sawLast).toBe(true)
       b.set('file-094', { change: 'M', state: 'held', held: 'binary', at: 1, fence: '1' })
       await set.reconcile('one changed input')
       expect(spy).toHaveBeenCalled()

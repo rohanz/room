@@ -286,9 +286,6 @@ export class ConflictSet {
   private inputCheck?: NodeJS.Immediate
   private scheduledInputs = ''
   private carriedInput?: { baseline: Baseline; lead: string }
-  private readonly checkedPairs = new Map<string, string>()
-  /** Retain the complete evaluation guard, including projected/publisher provenance, for replay. */
-  private readonly pairGuards = new Map<string, () => boolean>()
   private starts: number[] = []
   private readonly contractCache = new Map<string, ReturnType<typeof observedContractChanges>>()
   private guard: (() => boolean) | undefined
@@ -462,6 +459,7 @@ export class ConflictSet {
         this.rerun = false
         try { await this.run(reason) }
         catch (e) { if (!(e instanceof StaleConflictInputs)) throw e; this.rerun = true }
+        finally { this.guard = undefined }
         if (!this.rerun) return
         if (attempt === 0) await new Promise<void>(resolve => setImmediate(resolve))
       }
@@ -563,8 +561,6 @@ export class ConflictSet {
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other)!
       if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs()
-      const retryDue = this.slots.owned(this.owner).some(([, slot]) => slot.other === other && slot.status === 'unknown' && (slot.retryAt ?? 0) <= Date.now())
-      if (this.checkedPairs.get(other) === pairInputs && !retryDue) continue
       let failed = false
       try {
         const theirs = snapshot(room, other, views)
@@ -667,12 +663,10 @@ export class ConflictSet {
           const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
             mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path),
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path)] : undefined]))
-          const previous = this.slots.get(key)
           if (unchangedCarried.has(path)) {
             await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '' })
             continue
           }
-          if (previous?.inputs === inputs && (previous.status !== 'unknown' || (previous.retryAt ?? 0) > Date.now())) continue
           const read = (snap: ParticipantSnapshot) => this.read(snap, path)
           const [a, b] = await Promise.all([read(mine), read(theirs)])
           if (!bothChanged) {
@@ -706,25 +700,19 @@ export class ConflictSet {
         await this.claims(mine, theirs, other, mergeBase, ownMergePaths)
       } catch (error) {
         failed = true
-        this.checkedPairs.delete(other)
         throw error
       } finally {
-        if (!failed && this.guard?.()) {
-          this.checkedPairs.set(other, pairInputs)
-          this.pairGuards.set(other, this.guard)
+        if (!failed) {
+          // Replay immediately under this evaluation's complete guard. Never keep
+          // snapshots or reuse completed merge evidence across reconciliations.
+          await this.slots.replay(this.owner, slot => {
+            if (slot.other !== other) return false
+            if (!this.guard?.()) { this.rerun = true; return false }
+            return true
+          })
         }
       }
     }
-    await this.slots.replay(this.owner, slot => {
-      this.guard = this.pairGuards.get(slot.other)
-      if (!this.guard?.()) {
-        this.checkedPairs.delete(slot.other)
-        this.pairGuards.delete(slot.other)
-        this.rerun = true
-        return false
-      }
-      return true
-    })
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
   }
 
