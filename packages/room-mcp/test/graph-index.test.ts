@@ -8,6 +8,8 @@ import { join } from 'node:path'
 import { RoomDoc } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import { GraphIndex } from '../src/graph-index.js'
+import { handlers as fileHandlers } from '../src/tools/files.js'
+import type { HandlerState } from '../src/tools/context.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 
@@ -31,6 +33,41 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('answers an empty index without claiming that zero files are still indexing', async () => {
+    const room = new RoomDoc()
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })
+    const impact = fileHandlers({ S: () => ({ room, graph: gi }) } as unknown as HandlerState).room_impact!
+    try {
+      expect(gi.isReady).toBe(true)
+      gi.start(); await gi.whenIdle()
+      expect(gi.isReady).toBe(true)
+      expect(gi.indexingStatus).not.toContain('still indexing')
+      expect(await impact({ symbol: 'missing' })).toContain('defined in nowhere indexed')
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('reports pending overlay work but answers from available base facts', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const read = async (_dir: string, _base: string, path: string) => {
+      if (path === 'pending.py') await gate
+      return path === 'utils.py' ? 'def validate_token(t): return t\n' : undefined
+    }
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, read })
+    const impact = fileHandlers({ S: () => ({ room, graph: gi }), describeUsers: (_s: unknown, users: string[]) => users.join(', ') } as unknown as HandlerState).room_impact!
+    try {
+      gi.start(); await gi.whenIdle()
+      const refresh = gi.refresh('pending.py')
+      expect(gi.isReady).toBe(false)
+      expect(gi.indexingStatus).toBe('graph still indexing (2 of 3 files)')
+      expect(await impact({ symbol: 'missing' })).toContain('still indexing')
+      expect(await impact({ symbol: 'validate_token' })).toContain('defined in utils.py')
+      release(); await refresh; await gi.whenIdle()
+      expect(gi.isReady).toBe(true)
+    } finally { release?.(); gi.stop(); room.doc.destroy() }
+  })
+
   it('treats an oversized historical baseline as a coverage gap for a small new edit', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'room-graph-old-large-'))
     const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' }).toString().trim()

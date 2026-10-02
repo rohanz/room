@@ -116,6 +116,8 @@ describe('PR mirror in the doc', () => {
     const alice = session(a, { name: 'alice', kind: 'agent', owner: 'alice' })
     const graph = new GraphIndex(a, alice.me.name, dir); graph.start(); alice.graph = graph
     const tools = createTools({ getSession: () => alice, setSession: () => {}, cwd: dir })
+    // Attribution needs the base definition to have reached the asynchronous index.
+    await graph.whenIdle()
     const out = await tools.call('room_impact', { symbol: 'base_symbol' })
     expect(out).toContain('defined in app.py (base, also touched by PR #7)')
     expect(out).not.toContain('(pr#7)')

@@ -62,7 +62,13 @@ export class GraphIndex {
   private readonly parser = new ParseWorker()
   private completedFiles = new Set<string>()
   private totalFiles = 0
-  get indexingStatus(): string { return `graph still indexing (${this.completedFiles.size} of ${this.totalFiles} files)` }
+  get indexingStatus(): string {
+    if (this.isReady) return 'graph has no pending files'
+    const unfinished = [...this.pending.keys()].filter(path => !this.completedFiles.has(path)).length
+    const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size)
+    const completed = [...this.completedFiles].filter(path => !this.pending.has(path)).length
+    return `graph still indexing (${completed} of ${total} files)`
+  }
   readonly graph: SymbolGraph
   private readonly publishedGraph: SymbolGraph
   private cache = new Map<string, FileSymbols | undefined>()
@@ -94,8 +100,8 @@ export class GraphIndex {
   private endJitter?: () => void
   private unobserve: (() => void)[] = []
   private currentBuild: Promise<void> = Promise.resolve()
-  /** A claim can use the graph without waiting for the repository-wide initial build. */
-  get isReady(): boolean { return this.phase === 'ready' }
+  /** Tools can use available facts whenever no file refresh is queued or in flight. */
+  get isReady(): boolean { return this.pending.size === 0 }
   /** Resolves when the current build is done, even if a captured waiter is superseded. */
   get ready(): Promise<void> { return this.waitForCurrentBuild() }
 

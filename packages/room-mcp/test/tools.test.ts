@@ -985,6 +985,20 @@ describe('scope, claims, plans, ledger', () => {
     } finally { await t.tools.shutdown(); await dropRegistry() }
   })
 
+  it('answers claims and impact from an empty index without reporting still indexing', async () => {
+    const t = setup(), s = t.session!
+    s.graph!.stop()
+    s.graph = new GraphIndex(t.room, 'Rohan', dir)
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'app', summary: 'app', paths: ['app.py'] })
+    try {
+      const claim = await t.tools.call('room_claim', { path: 'app.py', from: 1, to: 1, intent: 'rename', plans: [{ kind: 'rename', symbol: 'validate' }] })
+      expect(claim).toContain('claimed')
+      expect(claim).toContain('validate has no other users in the indexed graph')
+      expect(claim).not.toContain('still indexing')
+      expect(await t.tools.call('room_impact', { symbol: 'validate' })).toContain('defined in nowhere indexed')
+    } finally { await t.tools.shutdown(); s.graph.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
+  })
+
   it('a claim with plans notifies whoever uses the symbol; release reports unfulfilled plans', async () => {
     const t = setup()
     await t.session!.graph!.ready
