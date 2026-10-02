@@ -31,6 +31,10 @@ use broke and proposes the order of work.
 - **One disk pass per batch.** roomd runs `onDiskChange` once per changed path in a watcher batch (rc9 dogfood, low).
 - **Gate roomagent's wake path.** `packages/agent` keeps its own wake path, which the solo gate does not cover (rc9 dogfood, low).
 - **Say when room_claim clamps.** `room_claim to=561` on a 560-line file becomes 560 with no word (rc9 dogfood, low).
+- **Restart a worker that died before its first turn under its own tag.** It has no host session to resume, so the lead respawns into its worktree with `dir=` and two participants and registry entries share one worktree (2026-10-02 all-Codex rehearsal R5, low).
+- **Preview worktrees left locked after the lead quits** under `.git/room-preview/*/shared-*` (2026-10-02 all-Codex rehearsal R6, low).
+- **Codex workers join twice** when the host session id arrives about 30 s after start and the MCP rebinds its leases (2026-10-02 all-Codex rehearsal R7, low).
+- **An idle lead with no company logs every minute** (`conflicts …: reconciled change`, and `pull requests: … no GitHub token` every two minutes) (2026-10-02 all-Codex rehearsal R8, low).
 - **Codex wake through MCP Events.** OpenAI announced support for the proposed MCP Events extension (the Triggers and Events working group) at DevDay on 2026-09-30, for ChatGPT plugin automations. Codex CLI 0.159.2 does not consume them yet. When a Codex release lists the feature (`codex features list`), have the MCP server push room events over its open connection (the push mode, `events/stream`), with the same wake rules as Claude, and retire the Codex wake workarounds and the daemon caveat above. Room's side is about a day; the webhook mode needs a public HTTPS endpoint and does not fit local rooms.
 
 ## Fixed in 0.16.3

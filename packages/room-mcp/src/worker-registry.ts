@@ -9,7 +9,7 @@ import { completionId, completionMessage, participantRecord, RoomDoc, ROOM_DOC_M
 import { commonGitDirFromDotGit, gitCommonDir } from '@room/roomd'
 import { workerBaseline, type Baseline, type BaselineSource } from '@room/roomd/baseline'
 import { compareAndRelease, createExclusive, liveness, recover, replace, withGuard, writeAtomic, type InstanceToken } from './leases.js'
-import { followUpAnswer, missingClaudeSession, probeProcess, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
+import { followUpAnswer, hostFailure, hostFailureLine, missingClaudeSession, probeProcess, unawaitedBackgroundTasks, workerLogTail } from './worker-process.js'
 import { idleClaimsDue, statusOf, type ExitObservation, type LivenessProbe, type Run, type RunReport, type WorkerRecord, type WorkerStatusResult } from './worker-status.js'
 import type { RetiredWorker } from '@room/shared'
 import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from './worker-state.js'
@@ -180,6 +180,17 @@ function unreportedExit(record: WorkerRecord, status: WorkerStatusResult): Worke
   const background = backgroundAtExit(record, run)
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run.logStart)}` }
   return background ? { ...status, note: `${status.note ?? 'exited without room_done'}${background}` } : status
+}
+
+/** A message resumes the retained host session; without one, only a respawn retries. */
+const resumable = (record: WorkerRecord): boolean => record.capabilities.resume && !!record.hostSessionId
+
+/** A failed run is summarized by its host's own error (room_state, collect), not by whatever stderr printed. */
+function failedByHost(record: WorkerRecord, status: WorkerStatusResult): WorkerStatusResult {
+  const run = status.run
+  if (status.status !== 'failed' || status.summary || run?.launch?.outcome !== 'launched') return status
+  const failure = hostFailure(workerLogFile(record), record.host, run.logStart)
+  return failure ? { ...status, summary: hostFailureLine(failure, record.host, resumable(record)) } : status
 }
 
 const missing = (file: string): boolean => !fs.existsSync(file)
@@ -544,7 +555,7 @@ export class WorkerRegistry {
     const record = this.read(id)
     if (!record) return undefined
     const reports = this.reports(id), exits = this.exits(id)
-    const status = unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now()))
+    const status = failedByHost(record, unreportedExit(record, statusOf(record, record.runs, reports, exits, this.alive, this.now())))
     const run = status.run
     if (status.noReport) return status
     if (status.status !== 'done' || run?.mode !== 'resume' || reports.some(report => report.run === run.n && report.done)
@@ -821,10 +832,13 @@ export class WorkerRegistry {
     const logFile = workerLogFile(record)
     const missing = record.host === 'claude' && run.mode === 'resume' && !!record.hostSessionId
       && missingClaudeSession(logFile, record.hostSessionId, run.logStart)
-    const tail = workerLogTail(logFile, run.logStart)
-    const answer = run.mode === 'resume' ? followUpAnswer(logFile, record.host, run.logStart) : ''
+    // The host's error event names the cause; the log tail may lead with a stderr banner (R2, 2026-10-02).
+    const failure = missing ? undefined : hostFailure(logFile, record.host, run.logStart)
+    const tail = failure ? '' : workerLogTail(logFile, run.logStart)
+    const answer = run.mode === 'resume' && !failure ? followUpAnswer(logFile, record.host, run.logStart) : ''
     const detail = missing
       ? `its retained conversation ${record.hostSessionId} no longer exists; the message stays owed`
+      : failure ? `${status.note ?? 'exited before reporting done'}; ${hostFailureLine(failure, record.host, resumable(record))}`
       : (answer || tail !== '(log unavailable)') ? `${status.note ?? 'exited before reporting done'}; ${answer || tail}` : status.note
     const message = completionMessage(record, run, { ...status, note: detail }, report)
     if (!message) return false

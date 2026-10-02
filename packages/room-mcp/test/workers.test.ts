@@ -928,6 +928,21 @@ describe('room_spawn / room_done / room_collect discard', () => {
     expect(out).not.toContain('will be woken')
   })
 
+  it("reports a dead worker by its host's error, not the stderr banner, and says model capacity is transient", async () => {
+    const t = setup()
+    await t.leadTools.call('room_spawn', { tag: 'cap', task: 'x', host: 'codex' })
+    // Trimmed from a real `codex exec --json` log whose first line is the stderr banner.
+    fs.appendFileSync(t.specs[0].logFile, readFileSync(join(import.meta.dirname, 'fixtures', 'codex-exec', 'model-capacity.jsonl')))
+    t.exits[0](1)
+    await vi.waitFor(() => expect(workerByTag(dir, 'cap')).toMatchObject({ status: 'failed', exitCode: 1 }), { timeout: 15_000 })
+    const capacity = 'codex: Selected model is at capacity. Please try a different model. (transient model capacity: respawn it with dir= its worktree to retry and keep its edits)'
+    await vi.waitFor(() => expect(t.a.messages().filter(m => m.type === 'note' && m.to === 'rohanz' && m.priority === 'interrupt').map(m => m.type === 'note' && m.text))
+      .toEqual([`worker cap failed: exit 1; ${capacity}`]), { timeout: 15_000 })
+    expect(workerByTag(dir, 'cap')?.summary).toBe(capacity)
+    expect(await t.leadTools.call('room_state', {})).toContain('· codex: Selected model is at capacity. Please try a different model. (transient model capacity')
+    await t.leadTools.shutdown()
+  })
+
   it('credits only an actual passing preview test command, never a text-only preview or an inferred cause', async () => {
     const t = setup()
     const leadSession = fakeSession(t.a, lead)

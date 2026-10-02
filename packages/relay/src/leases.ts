@@ -3,13 +3,24 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { pidAlive, probeProcess, sameStartTime, type ProcessProbe } from './process.js'
+import { pidAlive, probeProcess, probeProcessConfirm, sameStartTime, type ProcessProbe } from './process.js'
 
 export interface ProcessIdentity { pid: number; startTime: string; executable: string }
 export interface InstanceToken extends ProcessIdentity { sessionId: string; nonce: string }
 export type Liveness = 'alive' | 'dead' | 'unknown'
 
+/**
+ * Whether the recorded process still runs. A "dead" verdict from the shared probe on a pid that is still alive is
+ * confirmed afresh (once per record, see CachedProcessProbe.confirm): the cache may hold a predecessor's identity
+ * for a reused pid, and callers reclaim guards and leases from the dead. A vanished pid needs no confirmation.
+ */
 export function liveness(identity: ProcessIdentity, probe: ProcessProbe = probeProcess): Liveness {
+  const verdict = livenessBy(identity, probe)
+  return verdict === 'dead' && probe === probeProcess && pidAlive(identity.pid)
+    ? livenessBy(identity, pid => probeProcessConfirm(pid, identity)) : verdict
+}
+
+function livenessBy(identity: ProcessIdentity, probe: ProcessProbe): Liveness {
   const observed = probe(identity.pid)
   if (!observed) return 'dead'
   if (observed.startTime && identity.startTime && !sameStartTime(observed.startTime, identity.startTime)) return 'dead'

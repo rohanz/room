@@ -32,7 +32,9 @@ export type Spawner = (spec: SpawnSpec) => SpawnedProcess
 interface HostEvent {
   type?: string; subtype?: string; session_id?: string; thread_id?: string
   result?: unknown; message?: { content?: unknown } | string; item?: { type?: string; text?: unknown }
-  error?: { message?: unknown }; is_error?: boolean
+  /** Codex: `{ message }` on turn.failed (null on tool items). Claude: an assistant message's API error category. */
+  error?: { message?: unknown } | string | null; is_error?: boolean
+  is_api_error_message?: boolean; api_error_status?: unknown; errors?: unknown
   num_turns?: number
   task_id?: unknown; task_type?: unknown; is_backgrounded?: unknown; patch?: { status?: unknown }
   tool_use_result?: { backgroundTaskId?: unknown }
@@ -108,16 +110,24 @@ export function followUpAnswer(file: string, host: 'claude' | 'codex', logStart:
   return result || assistant
 }
 
-/** Read a bounded suffix even for multi-GB logs, then take five non-empty, ANSI-free lines. */
-export function workerLogTail(logFile: string, logStart = 0): string {
-  let fd: number | undefined
+/** The run's last 64 KB at most, ANSI-free, even for multi-GB logs; throws when the log is unreadable. */
+function runLogSuffix(logFile: string, logStart: number): string[] {
+  const fd = fs.openSync(logFile, 'r')
   try {
-    fd = fs.openSync(logFile, 'r')
     const size = fs.fstatSync(fd).size, start = Math.max(Math.min(size, logStart), size - 64 * 1024, 0)
     const buffer = Buffer.alloc(size - start)
     fs.readSync(fd, buffer, 0, buffer.length, start)
-    const text = stripVTControlCharacters(buffer.toString('utf8'))
-    return text.split(/\r?\n|\r/).map(l => {
+    return stripVTControlCharacters(buffer.toString('utf8')).split(/\r?\n|\r/)
+  } finally { fs.closeSync(fd) }
+}
+
+const errorMessage = (event: HostEvent): string | undefined =>
+  event.error && typeof event.error === 'object' && typeof event.error.message === 'string' ? event.error.message : undefined
+
+/** Five non-empty lines of the run's log suffix, host events reduced to their text. */
+export function workerLogTail(logFile: string, logStart = 0): string {
+  try {
+    return runLogSuffix(logFile, logStart).map(l => {
       const line = l.trim()
       if (!line.startsWith('{')) return line
       try {
@@ -125,12 +135,71 @@ export function workerLogTail(logFile: string, logStart = 0): string {
         if (event.type === 'assistant') return assistantText(event)
         if (event.type === 'result') return typeof event.result === 'string' ? event.result.trim() : ''
         if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') return event.item.text.trim()
-        if (typeof event.error?.message === 'string') return event.error.message.trim()
+        if (errorMessage(event)) return errorMessage(event)!.trim()
         return typeof event.message === 'string' ? event.message.trim() : ''
       } catch { return '' }
     }).filter(Boolean).slice(-5).join('\n').slice(-600)
   } catch { return '(log unavailable)' }
-  finally { if (fd !== undefined) fs.closeSync(fd) }
+}
+
+/** The host's own account of why a run failed; `transient` when a retry later can succeed. */
+export interface HostFailure { text: string; transient?: 'model capacity' | 'rate limit' }
+
+// Codex: "Selected model is at capacity"; Claude: 529 overloaded, "experiencing high load" (errors.md).
+const CAPACITY = /at capacity|overloaded|\b529\b|high load/i
+const RATE_LIMIT = /rate.?limit|\b429\b|too many requests|temporarily limiting/i
+// A spend or plan limit also arrives as a 429 but does not clear on a retry.
+const LIMIT_REACHED = /spend limit|usage limit|credit balance|hit your .*limit|insufficient.?quota/i
+
+function transience(text: string, status: unknown, category: unknown): HostFailure['transient'] {
+  if (LIMIT_REACHED.test(text)) return undefined
+  if (category === 'overloaded' || status === 529 || CAPACITY.test(text)) return 'model capacity'
+  if (category === 'rate_limit' || status === 429 || RATE_LIMIT.test(text)) return 'rate limit'
+  return undefined
+}
+
+/**
+ * The run's last host error: Codex `turn.failed` (else its last `error` event), Claude's `is_error` result
+ * (else its last API error message). Undefined when the host reported none; stderr lines are never read as one.
+ */
+export function hostFailure(logFile: string, host: 'claude' | 'codex', logStart = 0): HostFailure | undefined {
+  let lines: string[]
+  try { lines = runLogSuffix(logFile, logStart) } catch { return undefined }
+  let failed: string | undefined, error: string | undefined, status: unknown, category: unknown
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line.startsWith('{')) continue
+    let event: HostEvent
+    try { event = JSON.parse(line) as HostEvent } catch { continue }
+    if (host === 'codex') {
+      if (event.type === 'turn.failed' && errorMessage(event)) failed = errorMessage(event)
+      else if (event.type === 'error' && typeof event.message === 'string') error = event.message
+      else if (event.type === 'turn.completed') failed = error = undefined
+    } else if (event.type === 'assistant' && (event.is_api_error_message === true || typeof event.error === 'string')) {
+      error = assistantText(event) || (typeof event.error === 'string' ? event.error : undefined)
+      category = event.error
+    } else if (event.type === 'result') {
+      if (event.is_error !== true) { failed = error = undefined; continue }
+      const errors = Array.isArray(event.errors) ? event.errors.filter((e): e is string => typeof e === 'string' && !!e.trim()) : []
+      failed = (typeof event.result === 'string' && event.result.trim()) || errors.join('; ') || event.subtype || 'error result'
+      status = event.api_error_status
+    }
+  }
+  const text = (failed ?? error)?.replace(/\s+/g, ' ').trim()
+  if (!text) return undefined
+  const transient = transience(text, status, category)
+  return transient ? { text, transient } : { text }
+}
+
+const FAILURE_TEXT_MAX = 300
+
+/** One line for the lead: the host's error and, when transient, how to retry it. */
+export function hostFailureLine(failure: HostFailure, host: 'claude' | 'codex', resumable: boolean): string {
+  const text = failure.text.replace(/\s+/g, ' ').trim()
+  const clipped = text.length > FAILURE_TEXT_MAX ? `${text.slice(0, FAILURE_TEXT_MAX - 1)}…` : text
+  if (!failure.transient) return `${host}: ${clipped}`
+  const retry = resumable ? 'room_send it to resume, or respawn it, to retry' : 'respawn it with dir= its worktree to retry and keep its edits'
+  return `${host}: ${clipped} (transient ${failure.transient}: ${retry})`
 }
 
 const UNFINISHED_TASK_STATUSES = new Set(['running', 'pending'])
@@ -168,10 +237,13 @@ export function unawaitedBackgroundTasks(logFile: string, logStart: number, host
   return [...killed].filter(id => backgrounded.has(id) && kinds.get(id) === 'local_bash').length
 }
 
-/** Signal only the worker host pid. Its group may also contain processes outside the worktree. */
+/**
+ * Signal only the worker host pid. Its group may also contain processes outside the worktree. Ownership is read
+ * afresh: the shared probe may hold an exited worker's identity for a pid already reused.
+ */
 export function signalWorker(pid: number, signal: NodeJS.Signals = 'SIGTERM', worktreeDir?: string, list: CwdProcessLister = listCwdProcesses, worker?: Parameters<typeof pidIsOurWorker>[1], probe?: (pid: number) => ProcessInfo | undefined): boolean {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false
-  if (worker && !pidIsOurWorker(pid, worker, probe)) return false
+  if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false
   try { process.kill(pid, signal); return true } catch { return false }
 }
@@ -231,8 +303,8 @@ export async function stopWorkerWithEscalation(options: {
   return wait()
 }
 
-export { pidAlive, parsePsLstartUtc, probeProcess, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+export { pidAlive, parsePsLstartUtc, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
   return pid > 0 && probe(pid) !== undefined
@@ -241,7 +313,18 @@ export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boo
 type WorkerIdentity = Pick<LocalWorker, 'processStartTime' | 'host'>
 export type ProcessOwnership = 'ours' | 'not-ours' | 'unknown'
 
+/**
+ * "Not ours" from the shared probe on a live pid is confirmed afresh (once per worker start, see
+ * CachedProcessProbe.confirm): the cache may hold a predecessor's identity for a reused pid. A vanished pid needs no
+ * confirmation.
+ */
 export function workerProcessOwnership(pid: number, w: WorkerIdentity, probe: ProcessProbe = probeProcess): ProcessOwnership {
+  const verdict = ownershipBy(pid, w, probe)
+  return verdict === 'not-ours' && probe === probeProcess && pidAlive(pid)
+    ? ownershipBy(pid, w, p => probeProcessConfirm(p, { startTime: w.processStartTime })) : verdict
+}
+
+function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): ProcessOwnership {
   if (!pid || pid <= 0) return 'not-ours'
   const info = probe(pid)
   if (!info) return 'not-ours'

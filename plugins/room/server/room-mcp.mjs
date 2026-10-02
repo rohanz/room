@@ -17803,41 +17803,109 @@ function clampRange(from2, to2, lineCount) {
   const t = Math.min(Math.max(f, Math.floor(to2)), max2);
   return { from: f, to: t };
 }
-function prepareClaimLineMap(ownerVersion, myText) {
-  const next = linesOf(myText);
-  const whole = () => ({ from: 1, to: Math.max(1, next.length), approximate: true });
-  if (ownerVersion === void 0) return whole;
-  if (ownerVersion === myText) return (range) => ({ from: range.from, to: range.to, approximate: false });
-  const old = linesOf(ownerVersion);
-  if (old.length * next.length > 1e6) return whole;
-  const dp = Array.from({ length: old.length + 1 }, () => new Uint32Array(next.length + 1));
-  for (let i2 = old.length - 1; i2 >= 0; i2--) for (let j = next.length - 1; j >= 0; j--)
-    dp[i2][j] = old[i2] === next[j] ? dp[i2 + 1][j + 1] + 1 : Math.max(dp[i2 + 1][j], dp[i2][j + 1]);
-  return (range) => {
-    let i2 = 0, j = 0, start2 = Number.POSITIVE_INFINITY, end = 0;
-    while (i2 < old.length || j < next.length) {
-      if (i2 < old.length && j < next.length && old[i2] === next[j]) {
-        if (i2 + 1 >= range.from && i2 + 1 <= range.to) {
-          start2 = Math.min(start2, j + 1);
-          end = Math.max(end, j + 1);
+function myersRuns(old, next, lo, oldHi, newHi) {
+  const n = oldHi - lo, m = newHi - lo;
+  const trace = [];
+  let steps = 0;
+  for (let d = 0; d <= n + m; d++) {
+    const v = new Int32Array(2 * d + 1), prev = trace[d - 1];
+    for (let k = -d; k <= d; k += 2) {
+      let x = d === 0 ? 0 : k === -d || k !== d && prev[k - 1 + d - 1] < prev[k + 1 + d - 1] ? prev[k + 1 + d - 1] : prev[k - 1 + d - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && old[lo + x] === next[lo + y]) {
+        x++;
+        y++;
+        steps++;
+      }
+      v[k + d] = x;
+      if (x >= n && y >= m) {
+        trace.push(v);
+        const runs = [];
+        for (let e = d; e >= 0; e--) {
+          const kk = x - y, before = trace[e - 1];
+          const down = e > 0 && (kk === -e || kk !== e && before[kk - 1 + e - 1] < before[kk + 1 + e - 1]);
+          const startX = e === 0 ? 0 : down ? before[kk + 1 + e - 1] : before[kk - 1 + e - 1] + 1;
+          if (x > startX) runs.push({ oldAt: lo + startX, newAt: lo + startX - kk, length: x - startX });
+          if (e > 0) {
+            x = down ? startX : startX - 1;
+            y = x - (down ? kk + 1 : kk - 1);
+          }
         }
-        i2++;
-        j++;
-        continue;
-      }
-      const oldStart = i2, newStart = j;
-      while (i2 < old.length || j < next.length) {
-        if (i2 < old.length && j < next.length && old[i2] === next[j]) break;
-        if (j < next.length && (i2 === old.length || dp[i2][j + 1] >= dp[i2 + 1][j])) j++;
-        else i2++;
-      }
-      if (i2 > oldStart && oldStart + 1 <= range.to && i2 >= range.from || i2 === oldStart && oldStart >= range.from && oldStart < range.to) {
-        start2 = Math.min(start2, newStart + 1);
-        end = Math.max(end, Math.max(newStart + 1, j));
+        return runs.reverse();
       }
     }
-    if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, next.length));
-    return { ...clampRange(start2, Math.max(start2, end), next.length), approximate: false };
+    trace.push(v);
+    steps += 2 * d + 1;
+    if (steps > MYERS_STEPS) return void 0;
+  }
+  return void 0;
+}
+function lcsRuns(old, next, lo, oldHi, newHi) {
+  const n = oldHi - lo, m = newHi - lo;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i3 = n - 1; i3 >= 0; i3--) for (let j2 = m - 1; j2 >= 0; j2--)
+    dp[i3][j2] = old[lo + i3] === next[lo + j2] ? dp[i3 + 1][j2 + 1] + 1 : Math.max(dp[i3 + 1][j2], dp[i3][j2 + 1]);
+  const runs = [];
+  let i2 = 0, j = 0;
+  while (i2 < n && j < m) {
+    if (old[lo + i2] === next[lo + j]) {
+      const last2 = runs[runs.length - 1];
+      if (last2 && last2.oldAt + last2.length === lo + i2 && last2.newAt + last2.length === lo + j) last2.length++;
+      else runs.push({ oldAt: lo + i2, newAt: lo + j, length: 1 });
+      i2++;
+      j++;
+    } else if (dp[i2][j + 1] >= dp[i2 + 1][j]) j++;
+    else i2++;
+  }
+  return runs;
+}
+function prepareClaimLineMap(ownerVersion, myText) {
+  const nextLines = linesOf(myText);
+  if (ownerVersion === void 0) return (range) => ({ from: range.from, to: range.to, approximate: true });
+  if (ownerVersion === myText) return (range) => ({ from: range.from, to: range.to, approximate: false });
+  const oldLines = linesOf(ownerVersion);
+  const ids = /* @__PURE__ */ new Map();
+  const intern = (lines2) => Int32Array.from(lines2, (line) => {
+    let id3 = ids.get(line);
+    if (id3 === void 0) ids.set(line, id3 = ids.size);
+    return id3;
+  });
+  const old = intern(oldLines), next = intern(nextLines);
+  let prefix2 = 0;
+  while (prefix2 < old.length && prefix2 < next.length && old[prefix2] === next[prefix2]) prefix2++;
+  let suffix = 0;
+  while (suffix < old.length - prefix2 && suffix < next.length - prefix2 && old[old.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix++;
+  const oldHi = old.length - suffix, newHi = next.length - suffix;
+  const middle = oldHi === prefix2 || newHi === prefix2 ? [] : myersRuns(old, next, prefix2, oldHi, newHi) ?? ((oldHi - prefix2) * (newHi - prefix2) <= LCS_CELLS ? lcsRuns(old, next, prefix2, oldHi, newHi) : void 0);
+  const runs = [{ oldAt: 0, newAt: 0, length: prefix2 }, ...middle ?? [], { oldAt: oldHi, newAt: newHi, length: suffix }];
+  const hunks = [];
+  for (let r = 0; r + 1 < runs.length; r++) {
+    const a = runs[r], b = runs[r + 1];
+    if (a.oldAt + a.length < b.oldAt || a.newAt + a.length < b.newAt) hunks.push({ oldAt: a.oldAt + a.length, oldEnd: b.oldAt, newAt: a.newAt + a.length, newEnd: b.newAt });
+  }
+  return (range) => {
+    let start2 = Number.POSITIVE_INFINITY, end = 0;
+    const take = (from2, to2) => {
+      start2 = Math.min(start2, from2);
+      end = Math.max(end, to2);
+    };
+    for (const run3 of runs) {
+      const lo = Math.max(range.from - 1, run3.oldAt), hi = Math.min(range.to - 1, run3.oldAt + run3.length - 1);
+      if (lo <= hi) take(lo - run3.oldAt + run3.newAt + 1, hi - run3.oldAt + run3.newAt + 1);
+    }
+    for (const h of hunks) {
+      const changed = h.oldEnd > h.oldAt && h.oldAt + 1 <= range.to && h.oldEnd >= range.from;
+      const inserted = h.oldEnd === h.oldAt && h.oldAt >= range.from && h.oldAt < range.to;
+      if (!changed && !inserted) continue;
+      const last2 = Math.max(h.newAt + 1, h.newEnd);
+      if (middle !== void 0) {
+        take(h.newAt + 1, last2);
+        continue;
+      }
+      return { from: range.from, to: range.to, approximate: true };
+    }
+    if (!Number.isFinite(start2)) start2 = Math.min(Math.max(1, range.from), Math.max(1, nextLines.length));
+    return { ...clampRange(start2, Math.max(start2, end), nextLines.length), approximate: false };
   };
 }
 function claimInMyLines(claim2, ownerVersion, myText) {
@@ -17847,7 +17915,7 @@ function describeClaim(c) {
   const who2 = displayName({ name: c.by, kind: c.byKind });
   return `${who2} \xB7 ${c.path}${c.path.endsWith("/") ? "" : `:${c.from}-${c.to}`} \xB7 ${c.intent}${c.plans?.length ? ` \xB7 plans: ${formatPlans(c.plans)}` : ""}`;
 }
-var linesOf;
+var linesOf, MYERS_STEPS, LCS_CELLS;
 var init_claims = __esm({
   "packages/shared/src/claims.ts"() {
     "use strict";
@@ -17855,6 +17923,8 @@ var init_claims = __esm({
     init_format();
     init_near();
     linesOf = (text) => text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+    MYERS_STEPS = 2e6;
+    LCS_CELLS = 1e6;
   }
 });
 
@@ -24341,7 +24411,10 @@ function linuxProcessName(files2) {
   if (exe && /[\\/]claude[\\/]versions[\\/][^\\/]+$/.test(exe)) return "claude";
   return name2 ?? (exe ? path6.basename(exe) : void 0);
 }
-function probeProcess(pid, readers = systemProcessReaders) {
+function probeProcess(pid, readers) {
+  return readers ? probeUncached(pid, readers) : systemProbe(pid);
+}
+function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-n", "kern.boottime"])) {
   if (!pid || pid <= 0) return void 0;
   const unreadable = () => pidAlive(pid) ? {} : void 0;
   try {
@@ -24362,22 +24435,72 @@ function probeProcess(pid, readers = systemProcessReaders) {
     }
     if (readers.platform === "darwin") {
       const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
-      const startSeconds = parsePsLstartUtc(lstart);
-      if (startSeconds === void 0) return unreadable();
-      const boot = readers.exec("sysctl", ["-n", "kern.boottime"]).match(/sec\s*=\s*(\d+)/)?.[1];
+      const startSeconds2 = parsePsLstartUtc(lstart);
+      if (startSeconds2 === void 0) return unreadable();
+      const boot = boottime().match(/sec\s*=\s*(\d+)/)?.[1];
       if (!boot) return unreadable();
       let executable;
       try {
         executable = path6.basename(readers.exec("ps", ["-o", "comm=", "-p", String(pid)]).trim());
       } catch {
       }
-      return { startTime: `darwin:${boot}:${startSeconds}`, executable };
+      return { startTime: `darwin:${boot}:${startSeconds2}`, executable };
     }
   } catch {
   }
   return unreadable();
 }
-var systemProcessReaders;
+function createProcessProbe(readers, options = {}) {
+  if (readers.platform !== "darwin") {
+    const read3 = (pid) => probeUncached(pid, readers);
+    return Object.assign(read3, { confirm: read3, fresh: read3 });
+  }
+  const now = options.now ?? (() => performance.now()), wall = options.wall ?? Date.now, alive = readers.alive ?? pidAlive;
+  const cache = /* @__PURE__ */ new Map();
+  const confirmed = /* @__PURE__ */ new Map();
+  let boot;
+  const boottime = () => {
+    if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec("sysctl", ["-n", "kern.boottime"]), at: now() };
+    return boot.text;
+  };
+  const fresh = (pid) => {
+    const info2 = probeUncached(pid, readers, boottime);
+    const started = startSeconds(info2?.startTime);
+    if (info2?.executable && Number.isFinite(started)) {
+      if (cache.size >= 1024) cache.clear();
+      cache.set(pid, { info: info2, until: now() + (wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
+    } else cache.delete(pid);
+    return info2;
+  };
+  const probe = (pid) => {
+    const hit = cache.get(pid);
+    if (!pid || pid <= 0 || !alive(pid)) {
+      cache.delete(pid);
+      return void 0;
+    }
+    return hit && now() < hit.until ? hit.info : fresh(pid);
+  };
+  const confirm = (pid, recorded) => {
+    if (!pid || pid <= 0 || !alive(pid)) return void 0;
+    const key2 = `${pid}\0${recorded.startTime ?? ""}\0${recorded.executable ?? ""}`;
+    const hit = confirmed.get(key2);
+    if (hit && now() < hit.until) return hit.info;
+    const info2 = fresh(pid);
+    if (info2 && !agrees(info2, recorded) && wall() / 1e3 - startSeconds(info2.startTime) >= SETTLED_AFTER_S) {
+      if (confirmed.size >= 1024) confirmed.clear();
+      confirmed.set(key2, { info: info2, until: now() + CONFIRMED_TTL_MS });
+    } else confirmed.delete(key2);
+    return info2;
+  };
+  return Object.assign(probe, { confirm, fresh });
+}
+function probeProcessNow(pid) {
+  return systemProbe.fresh(pid);
+}
+function probeProcessConfirm(pid, recorded) {
+  return systemProbe.confirm(pid, recorded);
+}
+var systemProcessReaders, PROBE_TTL_MS, YOUNG_TTL_MS, SETTLED_AFTER_S, BOOTTIME_TTL_MS, CONFIRMED_TTL_MS, startSeconds, agrees, systemProbe;
 var init_process = __esm({
   "packages/relay/src/process.ts"() {
     "use strict";
@@ -24392,6 +24515,14 @@ var init_process = __esm({
         ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
       })
     };
+    PROBE_TTL_MS = 2e3;
+    YOUNG_TTL_MS = 250;
+    SETTLED_AFTER_S = 5;
+    BOOTTIME_TTL_MS = 6e4;
+    CONFIRMED_TTL_MS = 6e4;
+    startSeconds = (startTime) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
+    agrees = (info2, recorded) => (!info2.startTime || !recorded.startTime || sameStartTime(info2.startTime, recorded.startTime)) && (!info2.executable || !recorded.executable || info2.executable === recorded.executable);
+    systemProbe = createProcessProbe(systemProcessReaders);
   }
 });
 
@@ -25615,6 +25746,10 @@ import fs11 from "node:fs";
 import path8 from "node:path";
 import { createHash as createHash4, randomUUID } from "node:crypto";
 function liveness(identity3, probe = probeProcess) {
+  const verdict = livenessBy(identity3, probe);
+  return verdict === "dead" && probe === probeProcess && pidAlive(identity3.pid) ? livenessBy(identity3, (pid) => probeProcessConfirm(pid, identity3)) : verdict;
+}
+function livenessBy(identity3, probe) {
   const observed = probe(identity3.pid);
   if (!observed) return "dead";
   if (observed.startTime && identity3.startTime && !sameStartTime(observed.startTime, identity3.startTime)) return "dead";
@@ -29738,9 +29873,31 @@ async function anchor2(dir, head, refs) {
   const chosen = found.find((c) => c.ref.name === refs.upstream?.name) ?? found[0];
   return { base: chosen.base, anchored: true, upstream: chosen.ref.name };
 }
+async function recentRemoteRefs(dir, remote) {
+  if (!remote) return [];
+  let out2 = "";
+  try {
+    out2 = await git(dir, ["for-each-ref", "--sort=-committerdate", `--count=${WORKER_ANCHOR_REFS + 1}`, "--format=%(objectname) %(refname)", `refs/remotes/${remote}/`]);
+  } catch (error2) {
+    if (isGitTimeout(error2)) throw error2;
+    return [];
+  }
+  return out2.split("\n").flatMap((line) => {
+    const split2 = line.indexOf(" ");
+    return split2 > 0 && line.slice(split2 + 1) !== `refs/remotes/${remote}/HEAD` ? [{ sha: line.slice(0, split2), name: short(line.slice(split2 + 1)) }] : [];
+  }).slice(0, WORKER_ANCHOR_REFS);
+}
+async function workerAnchor(dir, head, refs, found, pinned) {
+  if (found.anchored && pinned === found.base) return found;
+  if (!await isAncestor(dir, pinned, head)) return found;
+  const shared = await anchor2(dir, pinned, { candidates: await recentRemoteRefs(dir, refs.remote) });
+  if (shared.anchored && (!found.anchored || shared.base !== found.base && await isAncestor(dir, found.base, shared.base))) return { base: shared.base, anchored: true };
+  return found.anchored ? found : { base: pinned, anchored: true };
+}
 async function resolveBase(dir, inputs, options = {}) {
   const { head, branch, refs } = inputs;
-  const found = options.local ? { base: options.carried ?? head, anchored: true } : await anchor2(dir, head, refs);
+  const remoteAnchor = options.local ? void 0 : await anchor2(dir, head, refs);
+  const found = !remoteAnchor ? { base: options.carried ?? head, anchored: true } : options.carried ? await workerAnchor(dir, head, refs, remoteAnchor, options.carried) : remoteAnchor;
   let ahead, behind;
   if (refs.upstream) {
     const counts = (await git(dir, ["rev-list", "--left-right", "--count", `${head}...${refs.upstream.sha}`])).trim().split(/\s+/).map(Number);
@@ -29822,7 +29979,7 @@ async function comparePair(dir, remote, a, b) {
   const base = await mergeBase(dir, a.base, b.base);
   return base ? { mergeBase: base } : { cannotCompare: "unknown: unrelated histories" };
 }
-var short, refsKey, FETCH_TIMEOUT_MS, FETCH_RETRY_MS, fetchAttempts, hasCommit;
+var short, refsKey, WORKER_ANCHOR_REFS, FETCH_TIMEOUT_MS, FETCH_RETRY_MS, fetchAttempts, hasCommit;
 var init_base2 = __esm({
   "packages/roomd/src/base.ts"() {
     "use strict";
@@ -29830,6 +29987,7 @@ var init_base2 = __esm({
     init_git();
     short = (ref) => ref.replace(/^refs\/remotes\//, "");
     refsKey = (inputs) => JSON.stringify([inputs.head, inputs.branch, inputs.refs]);
+    WORKER_ANCHOR_REFS = 16;
     FETCH_TIMEOUT_MS = 2e4;
     FETCH_RETRY_MS = 5 * 6e4;
     fetchAttempts = /* @__PURE__ */ new Map();
@@ -30183,7 +30341,7 @@ var init_src4 = __esm({
         this.roomDoc.assignColor(this.name, this);
         this.setStatus(this.currentStatus());
         this.appliedHead = participantRecord(this.roomDoc, this.name)?.git?.head || base;
-        const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {});
+        const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.workerBase() } : { carried: this.workerBase() });
         this.anchor = { base: anchorBase, anchored };
         this.inputs = { ...this.inputs, head: anchorBase };
         this.roomDoc.reconcileBaseTexts(this.name, this, anchorBase);
@@ -30535,7 +30693,8 @@ var init_src4 = __esm({
           this.tracked = (await gitTracked(this.dir)).paths;
           if (this.fence !== fence) throw new Error("the name lease changed during the HEAD transition");
         }
-        const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {
+        const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.workerBase() } : {
+          carried: this.workerBase(),
           ...latestPush ? { knownUpstream: { name: latestPush.upstream, sha: latestPush.toSha, by: latestPush.from } } : {}
         });
         const claims = await this.reanchorOwnClaims(head, claimSnapshot, true, pendingIds);
@@ -30683,8 +30842,8 @@ var init_src4 = __esm({
         const baseline = workerBaseline(this.carriedFrom);
         return carriesWork(baseline) ? baseline : void 0;
       }
-      /** A local-room worker's base is the commit its lead carried it from (registry pins it). */
-      localCarriedBase() {
+      /** A worker's base is the commit its lead carried it from (registry pins it); base.ts decides when a team room uses it. */
+      workerBase() {
         return workerBaseline(this.carriedFrom)?.sha;
       }
       /** Capture the claimed code before a commit can clear its overlay. */
@@ -31393,7 +31552,7 @@ var init_plugin = __esm({
 });
 
 // packages/room-mcp/src/worker-shell-env.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFile as execFile5 } from "node:child_process";
 import fs16 from "node:fs";
 import path14 from "node:path";
 function workerShellEnvScript(inherited) {
@@ -31431,17 +31590,16 @@ function codexShellFilterWarning(version3) {
   return void 0;
 }
 function installedCodexVersion() {
-  if (codexVersion === void 0) {
-    try {
-      codexVersion = execFileSync5("codex", ["--version"], { encoding: "utf8", timeout: 5e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    } catch {
-      codexVersion = null;
-    }
-  }
-  return codexVersion ?? void 0;
+  codexVersion ??= new Promise((resolve5) => execFile5(
+    "codex",
+    ["--version"],
+    { encoding: "utf8", timeout: 5e3 },
+    (error2, stdout) => resolve5(error2 ? void 0 : stdout.trim())
+  ));
+  return codexVersion;
 }
-function workerShellEnvWarnings(tag, host, written, platform = process.platform, codex = installedCodexVersion) {
-  if (host === "codex") return [codexShellFilterWarning(codex())].filter((w) => !!w);
+async function workerShellEnvWarnings(tag, host, written, platform = process.platform, codex = installedCodexVersion) {
+  if (host === "codex") return [codexShellFilterWarning(await codex())].filter((w) => !!w);
   return [
     ...written.warning ? [written.warning] : [],
     ...platform === "win32" ? [`note: Claude's PowerShell tool does not run CLAUDE_ENV_FILE, so ${tag}'s PowerShell commands still see Room's ROOM_* variables; its Bash commands do not.`] : []
@@ -31657,7 +31815,7 @@ var init_worker_config = __esm({
 });
 
 // packages/room-mcp/src/worker-process.ts
-import { execFileSync as execFileSync6, spawn as spawn3 } from "node:child_process";
+import { execFileSync as execFileSync5, spawn as spawn3 } from "node:child_process";
 import fs18 from "node:fs";
 import path16 from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -31726,15 +31884,20 @@ function followUpAnswer(file, host, logStart) {
   }
   return result2 || assistant;
 }
-function workerLogTail(logFile, logStart = 0) {
-  let fd;
+function runLogSuffix(logFile, logStart) {
+  const fd = fs18.openSync(logFile, "r");
   try {
-    fd = fs18.openSync(logFile, "r");
     const size2 = fs18.fstatSync(fd).size, start2 = Math.max(Math.min(size2, logStart), size2 - 64 * 1024, 0);
     const buffer = Buffer.alloc(size2 - start2);
     fs18.readSync(fd, buffer, 0, buffer.length, start2);
-    const text = stripVTControlCharacters(buffer.toString("utf8"));
-    return text.split(/\r?\n|\r/).map((l) => {
+    return stripVTControlCharacters(buffer.toString("utf8")).split(/\r?\n|\r/);
+  } finally {
+    fs18.closeSync(fd);
+  }
+}
+function workerLogTail(logFile, logStart = 0) {
+  try {
+    return runLogSuffix(logFile, logStart).map((l) => {
       const line = l.trim();
       if (!line.startsWith("{")) return line;
       try {
@@ -31742,7 +31905,7 @@ function workerLogTail(logFile, logStart = 0) {
         if (event.type === "assistant") return assistantText(event);
         if (event.type === "result") return typeof event.result === "string" ? event.result.trim() : "";
         if (event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string") return event.item.text.trim();
-        if (typeof event.error?.message === "string") return event.error.message.trim();
+        if (errorMessage(event)) return errorMessage(event).trim();
         return typeof event.message === "string" ? event.message.trim() : "";
       } catch {
         return "";
@@ -31750,9 +31913,59 @@ function workerLogTail(logFile, logStart = 0) {
     }).filter(Boolean).slice(-5).join("\n").slice(-600);
   } catch {
     return "(log unavailable)";
-  } finally {
-    if (fd !== void 0) fs18.closeSync(fd);
   }
+}
+function transience(text, status, category) {
+  if (LIMIT_REACHED.test(text)) return void 0;
+  if (category === "overloaded" || status === 529 || CAPACITY.test(text)) return "model capacity";
+  if (category === "rate_limit" || status === 429 || RATE_LIMIT.test(text)) return "rate limit";
+  return void 0;
+}
+function hostFailure(logFile, host, logStart = 0) {
+  let lines2;
+  try {
+    lines2 = runLogSuffix(logFile, logStart);
+  } catch {
+    return void 0;
+  }
+  let failed, error2, status, category;
+  for (const raw of lines2) {
+    const line = raw.trim();
+    if (!line.startsWith("{")) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (host === "codex") {
+      if (event.type === "turn.failed" && errorMessage(event)) failed = errorMessage(event);
+      else if (event.type === "error" && typeof event.message === "string") error2 = event.message;
+      else if (event.type === "turn.completed") failed = error2 = void 0;
+    } else if (event.type === "assistant" && (event.is_api_error_message === true || typeof event.error === "string")) {
+      error2 = assistantText(event) || (typeof event.error === "string" ? event.error : void 0);
+      category = event.error;
+    } else if (event.type === "result") {
+      if (event.is_error !== true) {
+        failed = error2 = void 0;
+        continue;
+      }
+      const errors = Array.isArray(event.errors) ? event.errors.filter((e) => typeof e === "string" && !!e.trim()) : [];
+      failed = typeof event.result === "string" && event.result.trim() || errors.join("; ") || event.subtype || "error result";
+      status = event.api_error_status;
+    }
+  }
+  const text = (failed ?? error2)?.replace(/\s+/g, " ").trim();
+  if (!text) return void 0;
+  const transient = transience(text, status, category);
+  return transient ? { text, transient } : { text };
+}
+function hostFailureLine(failure, host, resumable2) {
+  const text = failure.text.replace(/\s+/g, " ").trim();
+  const clipped = text.length > FAILURE_TEXT_MAX ? `${text.slice(0, FAILURE_TEXT_MAX - 1)}\u2026` : text;
+  if (!failure.transient) return `${host}: ${clipped}`;
+  const retry = resumable2 ? "room_send it to resume, or respawn it, to retry" : "respawn it with dir= its worktree to retry and keep its edits";
+  return `${host}: ${clipped} (transient ${failure.transient}: ${retry})`;
 }
 function unawaitedBackgroundTasks(logFile, logStart, host) {
   if (host !== "claude") return 0;
@@ -31784,7 +31997,7 @@ function unawaitedBackgroundTasks(logFile, logStart, host) {
 }
 function signalWorker(pid, signal = "SIGTERM", worktreeDir, list = listCwdProcesses, worker, probe) {
   if (!pid || pid <= 0 || pid === process.pid || pid === process.ppid) return false;
-  if (worker && !pidIsOurWorker(pid, worker, probe)) return false;
+  if (worker && !pidIsOurWorker(pid, worker, probe && probe !== probeProcess ? probe : probeProcessNow)) return false;
   if (worktreeDir && !pidHasWorkerCwd(pid, worktreeDir, list)) return false;
   try {
     process.kill(pid, signal);
@@ -31810,6 +32023,10 @@ function pidPresent(pid, probe = probeProcess) {
   return pid > 0 && probe(pid) !== void 0;
 }
 function workerProcessOwnership(pid, w, probe = probeProcess) {
+  const verdict = ownershipBy(pid, w, probe);
+  return verdict === "not-ours" && probe === probeProcess && pidAlive(pid) ? ownershipBy(pid, w, (p) => probeProcessConfirm(p, { startTime: w.processStartTime })) : verdict;
+}
+function ownershipBy(pid, w, probe) {
   if (!pid || pid <= 0) return "not-ours";
   const info2 = probe(pid);
   if (!info2) return "not-ours";
@@ -31835,7 +32052,7 @@ function pidHasWorkerCwd(pid, dir, list = listCwdProcesses) {
 }
 function processName(pid) {
   try {
-    return path16.basename(execFileSync6("ps", ["-o", "comm=", "-p", String(pid)], {
+    return path16.basename(execFileSync5("ps", ["-o", "comm=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 3e3,
       env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" }
@@ -31857,7 +32074,7 @@ function listCwdProcesses(platform = process.platform) {
       }
     }
   } else if (platform === "darwin") {
-    const output = execFileSync6("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
+    const output = execFileSync5("lsof", ["-a", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 5e3, maxBuffer: 8 * 1024 * 1024 });
     let pid = 0;
     for (const line of output.split("\n")) {
       if (line.startsWith("p")) pid = Number(line.slice(1));
@@ -31936,13 +32153,18 @@ async function quiesceWorktreeProcesses(dir) {
     return false;
   }
 }
-var UNFINISHED_TASK_STATUSES, defaultSpawner;
+var errorMessage, CAPACITY, RATE_LIMIT, LIMIT_REACHED, FAILURE_TEXT_MAX, UNFINISHED_TASK_STATUSES, defaultSpawner;
 var init_worker_process = __esm({
   "packages/room-mcp/src/worker-process.ts"() {
     "use strict";
     init_worker_config();
     init_process();
     init_process();
+    errorMessage = (event) => event.error && typeof event.error === "object" && typeof event.error.message === "string" ? event.error.message : void 0;
+    CAPACITY = /at capacity|overloaded|\b529\b|high load/i;
+    RATE_LIMIT = /rate.?limit|\b429\b|too many requests|temporarily limiting/i;
+    LIMIT_REACHED = /spend limit|usage limit|credit balance|hit your .*limit|insufficient.?quota/i;
+    FAILURE_TEXT_MAX = 300;
     UNFINISHED_TASK_STATUSES = /* @__PURE__ */ new Set(["running", "pending"]);
     defaultSpawner = (spec16) => {
       fs18.mkdirSync(path16.dirname(spec16.logFile), { recursive: true });
@@ -32831,7 +33053,7 @@ var init_diff3 = __esm({
 });
 
 // packages/room-mcp/src/merge.ts
-import { execFile as execFile5 } from "node:child_process";
+import { execFile as execFile6 } from "node:child_process";
 import fs21 from "node:fs";
 import os5 from "node:os";
 import path19 from "node:path";
@@ -32860,7 +33082,7 @@ async function gitMergeFile(base, ours, theirs, labels) {
     fs21.writeFileSync(basePath, base);
     fs21.writeFileSync(theirsPath, theirs);
     const result2 = await new Promise((resolve5) => {
-      execFile5(
+      execFile6(
         "git",
         ["merge-file", "-p", "--diff3", "-L", labels.ours, "-L", labels.base, "-L", labels.theirs, oursPath, basePath, theirsPath],
         { maxBuffer: 16 * 1024 * 1024, timeout: 1e4 },
@@ -32967,7 +33189,7 @@ var init_merge = __esm({
 
 // packages/room-mcp/src/tools/disk-text.ts
 import fs22 from "node:fs";
-import { execFile as execFile6 } from "node:child_process";
+import { execFile as execFile7 } from "node:child_process";
 function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
   const fd = fs22.openSync(file, fs22.constants.O_RDONLY | (fs22.constants.O_NOFOLLOW ?? 0));
   try {
@@ -32985,7 +33207,32 @@ function readBoundedDiskTextSync(file, limit = DISK_TEXT_LIMIT) {
     fs22.closeSync(fd);
   }
 }
-async function readBoundedHistoricalText(dir, base, rel) {
+function readBoundedHistoricalText(dir, base, rel) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(base)) return readHistoricalFromGit(dir, base, rel);
+  const key2 = `${dir}\0${base}\0${rel}`;
+  const hit = historical.get(key2);
+  if (hit) {
+    historical.delete(key2);
+    historical.set(key2, hit);
+    return hit.text;
+  }
+  const entry = { text: readHistoricalFromGit(dir, base, rel), bytes: 0 };
+  historical.set(key2, entry);
+  entry.text.then((text) => {
+    if (historical.get(key2) !== entry) return;
+    entry.bytes = text === void 0 ? 0 : Buffer.byteLength(text);
+    historicalBytes += entry.bytes;
+    for (const [old, value2] of historical) {
+      if (historical.size <= HISTORICAL_ENTRIES && historicalBytes <= HISTORICAL_BYTES) break;
+      historical.delete(old);
+      historicalBytes -= value2.bytes;
+    }
+  }, () => {
+    if (historical.get(key2) === entry) historical.delete(key2);
+  });
+  return entry.text;
+}
+async function readHistoricalFromGit(dir, base, rel) {
   const info2 = await gitBlobInfoMany(dir, base, [rel]);
   const blob = info2.get(rel);
   if (!blob) {
@@ -32998,7 +33245,7 @@ async function readBoundedHistoricalText(dir, base, rel) {
 async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", filtered = true, knownSize) {
   const size2 = knownSize ?? await new Promise((resolve5, reject) => {
     const args3 = ["cat-file", "-s", object4], done = observeGit(args3);
-    execFile6("git", args3, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
+    execFile7("git", args3, { cwd: dir, timeout: 3e4, maxBuffer: 4096 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         if (/does not exist|not a valid object|could not get object info|path .* not in/i.test(String(stderr2))) resolve5(void 0);
@@ -33013,7 +33260,7 @@ async function readBoundedCheckoutText(dir, object4, rel, encoding = "utf8", fil
   return new Promise((resolve5, reject) => {
     const args3 = filtered ? ["cat-file", "--filters", `--path=${rel}`, object4] : ["cat-file", "-p", object4];
     const done = observeGit(args3);
-    execFile6("git", args3, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
+    execFile7("git", args3, { cwd: dir, encoding: "buffer", timeout: 3e4, maxBuffer: DISK_TEXT_LIMIT + 1 }, (error2, stdout, stderr2) => {
       done();
       if (error2) {
         if (error2.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") reject(new HistoricalTextTooLarge(rel));
@@ -33058,7 +33305,7 @@ async function readBoundedDiskText(file, encoding = "utf8", boundary) {
     await handle2.close();
   }
 }
-var DISK_TEXT_LIMIT, HistoricalTextTooLarge;
+var DISK_TEXT_LIMIT, HistoricalTextTooLarge, HISTORICAL_ENTRIES, HISTORICAL_BYTES, historical, historicalBytes;
 var init_disk_text = __esm({
   "packages/room-mcp/src/tools/disk-text.ts"() {
     "use strict";
@@ -33073,6 +33320,10 @@ var init_disk_text = __esm({
       path;
       code = "ROOM_TEXT_TOO_LARGE";
     };
+    HISTORICAL_ENTRIES = 512;
+    HISTORICAL_BYTES = 32 * 1024 * 1024;
+    historical = /* @__PURE__ */ new Map();
+    historicalBytes = 0;
   }
 });
 
@@ -33240,7 +33491,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       previewWorkers.set(s, byPerson);
     }
     if (byPerson.has(person)) continue;
-    const candidate = s.local || options.diskWorkers?.has(person) ? await trustedWorker(s, person) : void 0;
+    const candidate = await trustedWorker(s, person);
     const real = candidate && await workerRealState(s.dir, candidate);
     const worker = real && decidePreview(real, true) === "disk" ? candidate : void 0;
     if (worker && real?.finished) settledRuns.set(person, { dir: s.dir, lead: s.me.name, run: runOf(worker) });
@@ -33266,7 +33517,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     coverageLines.push(`  changed, text not shared: ${held.length ? held.join(", ") : "none"}`);
     if (snap.head.excluded.length) coverageLines.push(`  ${snap.head.excluded.length} changed path(s) excluded by ${person}'s rules (names not shared)`);
     if (snap.head.coverage.kind === "none") coverageLines.push(`  coverage: ${snap.head.coverage.reason}`);
-    if (!snap.head.complete) coverageLines.push("  updating after a commit; re-run");
+    if (!snap.head.complete) coverageLines.push(snap.record?.git?.anchored === false ? `  no anchor on the room's remote: ${person}'s changes cannot be compared until its branch shares history with a remote branch` : "  updating after a commit; re-run");
     if (!snap.head.complete || !snap.fenceValid || snap.head.base !== snap.record?.git?.base) gaps.push({ person, why: "manifest updating or holder changed" });
     if (!snap.roomSalt || !/^[a-f0-9]{64}$/i.test(snap.roomSalt)) gaps.push({ person, why: "room salt missing or invalid; exclusion coverage cannot be certified" });
     if (snap.head.coverage.kind === "none") gaps.push({ person, why: `coverage ${snap.head.coverage.reason}` });
@@ -33293,6 +33544,16 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
   };
   for (const dir of previewDirs) rootOf(dir);
   const remoteVersions = /* @__PURE__ */ new Map();
+  const committedTexts = /* @__PURE__ */ new Map();
+  const gitAt = (sha, relpath, size2) => {
+    const key2 = `${sha}:${relpath}`;
+    let text = committedTexts.get(key2);
+    if (!text) {
+      text = readBoundedCheckoutText(caller.dir, key2, relpath, "utf8", true, size2);
+      committedTexts.set(key2, text);
+    }
+    return text;
+  };
   const remoteVersion = async (s, person, p) => {
     let versions = remoteVersions.get(person);
     if (!versions) {
@@ -33302,7 +33563,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
     const cached2 = versions.get(p);
     if (cached2) return cached2;
     const version3 = await versionOf(snapshots.get(person)?.snap, p, {
-      gitAt: (sha, relpath) => readBoundedCheckoutText(caller.dir, `${sha}:${relpath}`, relpath),
+      gitAt,
       known: (hash2) => readBoundedCheckoutText(caller.dir, hash2, p, "utf8", false).catch(() => void 0)
     });
     versions.set(p, version3);
@@ -33497,7 +33758,7 @@ async function buildCombinedTreeOnce(state, caller, participants, options = {}) 
       if (!historicalInfo.has(sha)) historicalInfo.set(sha, gitBlobInfoMany(caller.dir, sha, pathSet));
       const blob = (await historicalInfo.get(sha)).get(p);
       if (blob && blob.size > DISK_TEXT_LIMIT) throw new HistoricalTextTooLarge(p);
-      baseTexts.set(key2, blob ? await readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size) ?? null : null);
+      baseTexts.set(key2, blob ? await (!options.encoding || options.encoding === "utf8" ? gitAt(sha, p, blob.size) : readBoundedCheckoutText(caller.dir, `${sha}:${p}`, p, options.encoding, true, blob.size)) ?? null : null);
     }
     return baseTexts.get(key2);
   };
@@ -38617,7 +38878,7 @@ var init_local_migration = __esm({
 });
 
 // packages/room-mcp/src/binding.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import path25 from "node:path";
 function createSessionBinding(cwd, env = process.env, now = Date.now) {
   let commonDir2;
@@ -38629,7 +38890,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
   const common = () => {
     if (commonDir2 === void 0) {
       try {
-        commonDir2 = path25.resolve(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+        commonDir2 = path25.resolve(cwd, execFileSync6("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
       } catch {
         commonDir2 = null;
       }
@@ -38642,7 +38903,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
     if (parent === void 0) {
       parent = identity(process.ppid) ?? null;
       try {
-        parentArgs = execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+        parentArgs = execFileSync6("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
         parentArgs = "";
       }
@@ -38661,7 +38922,7 @@ function createSessionBinding(cwd, env = process.env, now = Date.now) {
       const target = sessionDirectory(dir, b.id);
       if (!migrated.has(b.id)) {
         try {
-          ownGitDir ??= execFileSync7(
+          ownGitDir ??= execFileSync6(
             "git",
             ["-C", cwd, "rev-parse", "--absolute-git-dir"],
             { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }
@@ -40053,7 +40314,7 @@ var init_names = __esm({
 });
 
 // packages/room-mcp/src/repository.ts
-import { execFile as execFile7 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 import fs33 from "node:fs";
 async function repositoryRoot(dir, git4 = run2) {
   const where = await git4(dir, ["rev-parse", "--is-bare-repository", "--is-inside-work-tree"]);
@@ -40105,7 +40366,7 @@ var init_repository = __esm({
     noWorkTree = (dir, bare) => `Room works in a repository's working tree (the folder with your files), and ${dir} is ${bare ? "a bare repository" : "inside a repository's .git folder"}, which has none. Open the checkout folder, then say 'join the room' again.`;
     noCommit = (root) => `Room needs a first commit: ${root} is a git repository with no commits yet. Make a first commit (git add -A && git commit -m "first commit"), then say 'join the room' again.`;
     run2 = (dir, args3) => new Promise((resolve5) => {
-      execFile7("git", args3, { cwd: dir, timeout: timeoutMs() }, (err2, stdout, stderr2) => {
+      execFile8("git", args3, { cwd: dir, timeout: timeoutMs() }, (err2, stdout, stderr2) => {
         const e = err2;
         resolve5({ status: !e ? 0 : e.killed ? "timeout" : e.code ?? null, stdout: String(stdout), stderr: String(stderr2) });
       });
@@ -40370,7 +40631,7 @@ var init_timing = __esm({
 // packages/room-mcp/src/session.ts
 import { existsSync as existsSync3, readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash as createHash11 } from "node:crypto";
-import { execFileSync as execFileSync8 } from "node:child_process";
+import { execFileSync as execFileSync7 } from "node:child_process";
 import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve3 } from "node:path";
 import { fileURLToPath as fileURLToPath4, pathToFileURL } from "node:url";
 function findLocalViewer() {
@@ -40432,14 +40693,14 @@ function sameProcess(a, b) {
 }
 function defaultCommonDir(cwd) {
   try {
-    return resolve3(cwd, execFileSync8("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
+    return resolve3(cwd, execFileSync7("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] }).trim());
   } catch {
     return void 0;
   }
 }
 function parentCommandLine() {
   try {
-    return execFileSync8("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync7("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return "";
   }
@@ -41756,7 +42017,7 @@ var init_names2 = __esm({
 });
 
 // packages/room-mcp/src/preview-cache.ts
-import { execFile as execFile8, spawn as spawn4 } from "node:child_process";
+import { execFile as execFile9, spawn as spawn4 } from "node:child_process";
 import fs36 from "node:fs";
 import path32 from "node:path";
 function previewCapBytes() {
@@ -41800,7 +42061,7 @@ async function tryPreviewLock(entry) {
 }
 async function measurePreview(entry, cap) {
   const du = await new Promise((resolve5) => {
-    execFile8("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
+    execFile9("du", ["-sk", entry], { timeout: 1e4, maxBuffer: 1024 * 1024 }, (error2, stdout) => {
       const kb = Number(/^\s*(\d+)\s/.exec(stdout)?.[1]);
       resolve5(error2 || !Number.isSafeInteger(kb) ? void 0 : kb * 1024);
     });
@@ -41881,7 +42142,7 @@ __export(files_exports, {
   testVerdict: () => testVerdict,
   waitForPreviewSweepForTests: () => waitForPreviewSweepForTests
 });
-import { execFile as execFile9, spawn as spawn5 } from "node:child_process";
+import { execFile as execFile10, spawn as spawn5 } from "node:child_process";
 import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { createHash as createHash12, randomUUID as randomUUID5 } from "node:crypto";
 import fs37 from "node:fs";
@@ -42169,7 +42430,7 @@ function handlers(state) {
       }))).flat();
       const missingNotes = [];
       for (const { person, session } of participants) {
-        const ownLocalWorker = session.local && localWorkers(session.dir, (record2) => record2.name === person)[0];
+        const ownLocalWorker = localWorkers(session.dir, (record2) => record2.name === person)[0];
         const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker);
         const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name);
         const missing2 = !!ownLocalWorker && facts?.worktree === "vanished" && ownLocalWorker.lead === caller.me.name;
@@ -42536,7 +42797,7 @@ async function boundedProbe(operation) {
 }
 async function processCommand(file, args3) {
   return boundedProbe(new Promise((resolve5, reject) => {
-    execFile9(
+    execFile10(
       file,
       args3,
       { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } },
@@ -42928,7 +43189,7 @@ async function runInMergedTreeAttempt(s, ancestor, merged, cmd, modes, observe) 
       const command2 = bash ?? "sh";
       const args3 = bash ? ["-o", "pipefail", "-c", cmd] : ["-c", cmd];
       if (process.platform === "win32") return new Promise((resolve5) => {
-        execFile9(command2, args3, { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
+        execFile10(command2, args3, { cwd: dir, timeout: 5 * 6e4, maxBuffer: 4 * 1024 * 1024, env }, (err2, stdout, stderr2) => {
           const raw = err2 ? err2.code : 0;
           resolve5({ code: typeof raw === "number" ? raw : err2 ? 1 : 0, out: `${stdout}${stderr2}`, stopped: false });
         });
@@ -43003,7 +43264,7 @@ async function materializeGitTree(cloneDir, ref, destination) {
   const deadline = performance4.now() + SETUP_TIMEOUT_MS;
   const run3 = (args3) => new Promise((resolve5, reject) => {
     const remaining = Math.max(1, Math.ceil(deadline - performance4.now()));
-    execFile9("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args3], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr2) => {
+    execFile10("git", ["-C", cloneDir, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", ...args3], { env, timeout: remaining, maxBuffer: 4 * 1024 * 1024 }, (error2, _stdout, stderr2) => {
       if (error2) reject(new Error(`could not materialize ${ref.slice(0, 10)} (git ${args3[0]}: ${String(stderr2 || error2.message).trim()})`));
       else resolve5();
     });
@@ -43718,7 +43979,7 @@ __export(worker_registry_exports, {
 import fs39 from "node:fs";
 import path35 from "node:path";
 import { createHash as createHash13, randomBytes as randomBytes4 } from "node:crypto";
-import { execFileSync as execFileSync9 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 import { performance as performance5 } from "node:perf_hooks";
 function base32(value2, length2) {
   let out2 = "";
@@ -43861,6 +44122,12 @@ function unreportedExit(record2, status) {
   if (status.noReport) return { ...status, summary: `ended without a report${background}; last lines of its log: ${workerLogTail(logFile, run3.logStart)}` };
   return background ? { ...status, note: `${status.note ?? "exited without room_done"}${background}` } : status;
 }
+function failedByHost(record2, status) {
+  const run3 = status.run;
+  if (status.status !== "failed" || status.summary || run3?.launch?.outcome !== "launched") return status;
+  const failure = hostFailure(workerLogFile(record2), record2.host, run3.logStart);
+  return failure ? { ...status, summary: hostFailureLine(failure, record2.host, resumable(record2)) } : status;
+}
 async function guarded3(file, fn, deadline = performance5.now() + GUARD_WAIT_MS3) {
   for (; ; ) {
     let entered = false;
@@ -43887,7 +44154,7 @@ async function leaseRetry(fn, deadline = performance5.now() + GUARD_WAIT_MS3) {
 function commitExists(commonDir2, oid) {
   if (typeof oid !== "string" || !/^[0-9a-f]{40,64}$/.test(oid)) return false;
   try {
-    execFileSync9("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
+    execFileSync8("git", ["--git-dir", commonDir2, "cat-file", "-e", `${oid}^{commit}`], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -43896,7 +44163,7 @@ function commitExists(commonDir2, oid) {
 function legacySession(dir, oldId, host) {
   if (!oldId) return void 0;
   try {
-    const gitDir = execFileSync9("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    const gitDir = execFileSync8("git", ["-C", dir, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     const local = readJson2(path35.join(gitDir, "room-session.json"));
     return local?.worker_id === oldId && local.host === host && typeof local.session_id === "string" ? local.session_id : void 0;
   } catch {
@@ -43953,7 +44220,7 @@ function legacyDisplay(commonDir2) {
 function discoverLegacyWorktrees(commonDir2) {
   let output;
   try {
-    output = execFileSync9("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    output = execFileSync8("git", ["--git-dir", commonDir2, "worktree", "list", "--porcelain"], { encoding: "utf8" });
   } catch {
     return [];
   }
@@ -43992,7 +44259,7 @@ function discoverLegacyWorktrees(commonDir2) {
   }
   return out2;
 }
-var readJson2, files, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, missing, safeId, safeTag, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, object3, tokenShape, processShape, runShape, recordShape, reportShape, admittedHost, laterDone, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
+var readJson2, files, crockford, id2, synthetic, registries, MAX_PROCESS_REGISTRIES, resumable, missing, safeId, safeTag, GUARD_WAIT_MS3, GUARD_POLL_MS, guardBusy, pauseForGuard, object3, tokenShape, processShape, runShape, recordShape, reportShape, admittedHost, laterDone, exitShape, LegacySnapshotUnavailable, WorkerRegistry;
 var init_worker_registry = __esm({
   "packages/room-mcp/src/worker-registry.ts"() {
     "use strict";
@@ -44029,6 +44296,7 @@ var init_worker_registry = __esm({
     synthetic = () => ({ pid: process.pid, startTime: "", executable: "", sessionId: `mcp:${process.pid}`, nonce: randomBytes4(16).toString("hex") });
     registries = /* @__PURE__ */ new Map();
     MAX_PROCESS_REGISTRIES = 24;
+    resumable = (record2) => record2.capabilities.resume && !!record2.hostSessionId;
     missing = (file) => !fs39.existsSync(file);
     safeId = (value2) => /^w_[A-Za-z0-9_-]{1,64}$/.test(value2);
     safeTag = (value2) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value2) && value2 !== "..";
@@ -44356,7 +44624,7 @@ var init_worker_registry = __esm({
         const record2 = this.read(id3);
         if (!record2) return void 0;
         const reports = this.reports(id3), exits = this.exits(id3);
-        const status = unreportedExit(record2, statusOf(record2, record2.runs, reports, exits, this.alive, this.now()));
+        const status = failedByHost(record2, unreportedExit(record2, statusOf(record2, record2.runs, reports, exits, this.alive, this.now())));
         const run3 = status.run;
         if (status.noReport) return status;
         if (status.status !== "done" || run3?.mode !== "resume" || reports.some((report) => report.run === run3.n && report.done) || !exits.some((exit) => exit.run === run3.n && exit.witnessed && exit.code === 0)) return status;
@@ -44689,9 +44957,10 @@ var init_worker_registry = __esm({
         if (!record2 || !run3 || !status || !exit?.witnessed || run3.posted || report?.posted || status.status !== "failed" && !status.noReport && !(record2.phase === "retiring" && !record2.stop) && !report?.done) return false;
         const logFile = workerLogFile(record2);
         const missing2 = record2.host === "claude" && run3.mode === "resume" && !!record2.hostSessionId && missingClaudeSession(logFile, record2.hostSessionId, run3.logStart);
-        const tail = workerLogTail(logFile, run3.logStart);
-        const answer = run3.mode === "resume" ? followUpAnswer(logFile, record2.host, run3.logStart) : "";
-        const detail = missing2 ? `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` : answer || tail !== "(log unavailable)" ? `${status.note ?? "exited before reporting done"}; ${answer || tail}` : status.note;
+        const failure = missing2 ? void 0 : hostFailure(logFile, record2.host, run3.logStart);
+        const tail = failure ? "" : workerLogTail(logFile, run3.logStart);
+        const answer = run3.mode === "resume" && !failure ? followUpAnswer(logFile, record2.host, run3.logStart) : "";
+        const detail = missing2 ? `its retained conversation ${record2.hostSessionId} no longer exists; the message stays owed` : failure ? `${status.note ?? "exited before reporting done"}; ${hostFailureLine(failure, record2.host, resumable(record2))}` : answer || tail !== "(log unavailable)" ? `${status.note ?? "exited before reporting done"}; ${answer || tail}` : status.note;
         const message2 = completionMessage(record2, run3, { ...status, note: detail }, report);
         if (!message2) return false;
         const posted = status.noReport ? { ...message2, id: `${message2.id}:no-report` } : message2;
@@ -45005,7 +45274,7 @@ var init_worker_registry = __esm({
         if (prep.created !== true && prep.branchCreated !== true && !Object.keys(prep.previousCarryRefs ?? {}).length) return;
         const leadDir = path35.dirname(path35.dirname(path35.dirname(record2.dir)));
         if (!roomWorkerPathMatchesBranch(leadDir, record2.dir, record2.branch, false)) throw new Error(`unsafe preparation path for ${record2.id}`);
-        const run3 = (...args3) => execFileSync9("git", ["--git-dir", this.commonDir, ...args3], { encoding: "utf8" }).trim();
+        const run3 = (...args3) => execFileSync8("git", ["--git-dir", this.commonDir, ...args3], { encoding: "utf8" }).trim();
         if (prep.created === true && fs39.existsSync(record2.dir)) {
           const listing = run3("worktree", "list", "--porcelain");
           const canonical = fs39.realpathSync(record2.dir);
@@ -53922,8 +54191,8 @@ var Protocol = class {
                   if (queuedMessage.type === "response") {
                     resolver(message2);
                   } else {
-                    const errorMessage = message2;
-                    const error2 = new McpError(errorMessage.error.code, errorMessage.error.message, errorMessage.error.data);
+                    const errorMessage2 = message2;
+                    const error2 = new McpError(errorMessage2.error.code, errorMessage2.error.message, errorMessage2.error.data);
                     resolver(error2);
                   }
                 } else {
@@ -55214,23 +55483,23 @@ var Server = class extends Protocol {
       const wrappedHandler = async (request, extra) => {
         const validatedRequest = safeParse2(CallToolRequestSchema, request);
         if (!validatedRequest.success) {
-          const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
+          const errorMessage2 = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage2}`);
         }
         const { params: params2 } = validatedRequest.data;
         const result2 = await Promise.resolve(handler(request, extra));
         if (params2.task) {
           const taskValidationResult = safeParse2(CreateTaskResultSchema, result2);
           if (!taskValidationResult.success) {
-            const errorMessage = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
-            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage}`);
+            const errorMessage2 = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
+            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage2}`);
           }
           return taskValidationResult.data;
         }
         const validationResult = safeParse2(CallToolResultSchema, result2);
         if (!validationResult.success) {
-          const errorMessage = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage}`);
+          const errorMessage2 = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage2}`);
         }
         return validationResult.data;
       };
@@ -56579,7 +56848,7 @@ var ConflictSet = class _ConflictSet {
       }
       const [av, bv] = await Promise.all([read3(mine, a.path), read3(theirs, b.path)]);
       const at = asText(av), bt = asText(bv);
-      const mapped = at === void 0 ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(b, bt, at);
+      const mapped = at === void 0 ? { from: b.from, to: b.to, approximate: true } : claimInMyLines(b, bt, at);
       const subject = `${a.id}\0${b.id}`, key2 = slotKey(this.owner, "claims", other, a.path, subject);
       seen.add(key2);
       const hit = claimsOverlap(a, { path: b.path, ...mapped });
@@ -56741,7 +57010,7 @@ function handlers2(state) {
         }
       }
       for (const { claim: o, range: range2 } of overlaps)
-        out2.push(`CONFLICT: overlaps ${o.id} (${describeClaim(o)}${range2.approximate ? "; approximate lines" : ""}). Ask ${o.by}'s agent or wait for release.`);
+        out2.push(range2.approximate ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} \xB7 ${o.intent}); their lines may have shifted relative to yours` : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`);
       if (s.graph && plans.length) {
         if (s.graph.isReady) for (const pl2 of plans) {
           const users = s.graph.graph.usersOf(pl2.symbol);
@@ -57108,6 +57377,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     }
     delivered = true;
     passed = true;
+    const identity3 = (policy.probe ?? probeProcessNow)(proc.pid);
     const result2 = {
       proc,
       port,
@@ -57115,9 +57385,10 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       nice: priority2.nice,
       logFile,
       portChanged,
-      warnings: workerShellEnvWarnings(tag, policy.host, shellEnv),
+      warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(),
-      processStartTime: (policy.probe ?? probeProcess)(proc.pid)?.startTime
+      processStartTime: identity3?.startTime,
+      processExecutable: identity3?.executable
     };
     await onSpawn(result2);
     if (host.aborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled", true);
@@ -57468,7 +57739,7 @@ var Rooms = class _Rooms {
     const deadline = Date.now() + timeoutMs2;
     const signal = toolSignal.getStore();
     while (Date.now() < deadline && !signal?.aborted) {
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) });
+      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.o.probe });
       if (state.process === "not-ours") return "exited";
       if (state.process === "unknown") return "unknown";
       const key2 = w.id;
@@ -57508,7 +57779,7 @@ var Rooms = class _Rooms {
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`;
     const record2 = trusted.record;
     const local = realStateInput(record2, trusted.status);
-    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.probe.bind(this) });
+    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.o.probe });
     const initial = decideResume(processState);
     if (initial === "missing") return `error: cannot resume ${w.tag}: its worktree no longer exists`;
     if (initial === "no-session") return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`;
@@ -57594,7 +57865,7 @@ var Rooms = class _Rooms {
             claudeChannel,
             preferredPort: record2.port,
             spawner,
-            probe: this.probe.bind(this),
+            probe: this.o.probe,
             log: log2,
             at
           },
@@ -57622,7 +57893,7 @@ var Rooms = class _Rooms {
                 ...result2.processStartTime ? { process: {
                   pid: result2.proc.pid,
                   startTime: result2.processStartTime,
-                  executable: this.probe(result2.proc.pid)?.executable ?? ""
+                  executable: result2.processExecutable ?? ""
                 } } : {}
               } }],
               seq: old.seq + 1
@@ -58153,7 +58424,7 @@ function handlers4(state) {
                 runs: [{ ...old.runs[0], launch: {
                   outcome: "launched",
                   pid: result2.proc.pid,
-                  ...result2.processStartTime ? { process: { pid: result2.proc.pid, startTime: result2.processStartTime, executable: (ctx.probe ?? probeProcess)(result2.proc.pid)?.executable ?? "" } } : {}
+                  ...result2.processStartTime ? { process: { pid: result2.proc.pid, startTime: result2.processStartTime, executable: result2.processExecutable ?? "" } } : {}
                 } }],
                 seq: old.seq + 1
               }));
@@ -58361,7 +58632,7 @@ init_credentials();
 import fs46 from "node:fs";
 import os11 from "node:os";
 import path43 from "node:path";
-import { execFile as execFile10 } from "node:child_process";
+import { execFile as execFile11 } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
 
@@ -58431,7 +58702,7 @@ function createStaleVersionWarning(modulePath = fileURLToPath5(import.meta.url),
 init_src3();
 init_src4();
 init_plugin();
-var exec = promisify(execFile10);
+var exec = promisify(execFile11);
 var minimumGit = [2, 31, 0];
 var CODEX_ROOM_HOOK_HASHES = {
   "pre_tool_use:0:0": "sha256:e95920bb03a10f4f08fc98f3a10872e2c7b350d9fe54f05442bb2c8557bd11fb",
@@ -60112,8 +60383,8 @@ function handlers8(state) {
       const ago2 = finished === void 0 ? "" : ` ${Math.max(0, Math.floor((now() - finished) / 6e4))}m ago`;
       const summary = record2.summary?.replace(/\s+/g, " ").trim() || "no summary recorded";
       const verb = retired || exited ? "finished" : `reported ${worker.status}`;
-      const resumable = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs49.existsSync(own2.dir) && !retired;
-      return { text: resumable ? `${name2} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name2} ${verb}${ago2} and will not answer; its summary: ${summary}`, terminal: true };
+      const resumable2 = !!own2 && own2.status === "done" && !!own2.hostSessionId && fs49.existsSync(own2.dir) && !retired;
+      return { text: resumable2 ? `${name2} ${verb}${ago2}; message a finished worker to resume it in its worktree. Its summary: ${summary}` : `${name2} ${verb}${ago2} and will not answer; its summary: ${summary}`, terminal: true };
     }
     if (presences(s).some((p) => p.user.name === name2 && p.wakeUnavailable === true)) return { text: `${name2} cannot be woken in this session; it will see this at its next turn`, terminal: false };
     if (present || worker) return void 0;
@@ -60634,9 +60905,7 @@ var HooksBridge = class {
           }
         } else if (!entry && !(owner.roomSalt && owner.head.excluded.includes(digestPath(owner.roomSalt, c.path)))) {
           try {
-            const info2 = await gitBlobInfoMany(this.s.dir, owner.head.base, [c.path]);
-            if ((info2.get(c.path)?.size ?? Infinity) > DISK_TEXT_LIMIT) return void 0;
-            return (await gitShowManyCapped(this.s.dir, owner.head.base, [c.path], DISK_TEXT_LIMIT, info2)).get(c.path);
+            return await readBoundedHistoricalText(this.s.dir, owner.head.base, c.path);
           } catch {
           }
         }
@@ -60645,7 +60914,7 @@ var HooksBridge = class {
       if (!myTexts.has(c.path)) myTexts.set(c.path, workerText(this.s.dir, c.path).catch(() => null));
       const ownerText = await ownerTexts.get(key2);
       const myText = await myTexts.get(c.path);
-      const mapped = c.path.endsWith("/") || myText == null ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(c, ownerText, myText);
+      const mapped = c.path.endsWith("/") ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: false } : myText == null ? { from: c.from, to: c.to, approximate: true } : claimInMyLines(c, ownerText, myText);
       claims.push({ id: c.id, path: c.path, ...mapped, by: c.by, intent: c.intent, ...c.plans?.length ? { plans: formatPlans(c.plans) } : {} });
     }
     const freshViews = participantsView(this.s.room, this.s.awareness, this.now());
@@ -61493,7 +61762,7 @@ function spawnFrontier(s, id3, name2) {
 
 // packages/room-mcp/src/relevance.ts
 init_src();
-import { execFileSync as execFileSync10 } from "node:child_process";
+import { execFileSync as execFileSync9 } from "node:child_process";
 var RECHECK_MS2 = 5e3;
 function createRelevance(now = Date.now) {
   const integrated = /* @__PURE__ */ new Map();
@@ -61504,7 +61773,7 @@ function createRelevance(now = Date.now) {
     if (!sha) return true;
     let head;
     try {
-      head = execFileSync10("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
+      head = execFileSync9("git", ["rev-parse", "--verify", "HEAD"], { cwd: s.dir, encoding: "utf8", timeout: 2e3 }).trim();
     } catch {
       return true;
     }
@@ -61513,7 +61782,7 @@ function createRelevance(now = Date.now) {
     if (known === true) return false;
     if (known !== void 0 && now() - known < RECHECK_MS2) return true;
     try {
-      execFileSync10("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
+      execFileSync9("git", ["merge-base", "--is-ancestor", sha, head], { cwd: s.dir, stdio: "ignore", timeout: 2e3 });
       integrated.set(key2, true);
       return false;
     } catch {
@@ -62477,7 +62746,6 @@ repeat with force=true to delete them`;
         selected.map(({ s, w }) => ({ session: s, person: w.name })),
         {
           diskOnly: true,
-          diskWorkers: new Set(selected.map(({ w }) => w.name)),
           encoding: "latin1",
           skipCallerOnly: true,
           roots: new Map([[path50.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path50.resolve(w.dir), workerRoots.get(w)])])
@@ -63393,7 +63661,7 @@ function removeOwn(file, key2) {
 // packages/room-mcp/src/workspace.ts
 init_src4();
 import fs56 from "node:fs";
-import { execFileSync as execFileSync11 } from "node:child_process";
+import { execFileSync as execFileSync10 } from "node:child_process";
 var samePlace = (a, b) => {
   try {
     return fs56.realpathSync(a) === fs56.realpathSync(b);
@@ -63409,7 +63677,7 @@ function fallbackWorkspace(env, processDir) {
   const pwd = value2("PWD");
   return pwd && samePlace(pwd, processDir) ? pwd : processDir;
 }
-var parentCommand = () => execFileSync11("ps", ["-o", "command=", "-p", String(process.ppid)], {
+var parentCommand = () => execFileSync10("ps", ["-o", "command=", "-p", String(process.ppid)], {
   encoding: "utf8",
   timeout: 1e3,
   stdio: ["ignore", "pipe", "ignore"]
@@ -63426,7 +63694,7 @@ function deferForSharedCodex(env, readParent = parentCommand, platform = process
 }
 var worktreeRoot = (dir) => {
   try {
-    return execFileSync11("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
+    return execFileSync10("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim() || void 0;
   } catch {
     return void 0;
   }

@@ -73,7 +73,11 @@ export function linuxProcessName(files: LinuxNameFiles): string | undefined {
 /** Read the kernel's process birth marker and executable name, without inspecting environment.
  * macOS gives Node one-second start-time resolution. Reuse of the same pid in that same second is
  * not a practical risk: pids increment and wrap only after about 99,999, and the executable must also match. */
-export function probeProcess(pid: number, readers: ProcessReaders = systemProcessReaders): ProcessInfo | undefined {
+export function probeProcess(pid: number, readers?: ProcessReaders): ProcessInfo | undefined {
+  return readers ? probeUncached(pid, readers) : systemProbe(pid)
+}
+
+function probeUncached(pid: number, readers: ProcessReaders, boottime = () => readers.exec('sysctl', ['-n', 'kern.boottime'])): ProcessInfo | undefined {
   if (!pid || pid <= 0) return undefined
   const unreadable = () => pidAlive(pid) ? {} : undefined
   try {
@@ -93,7 +97,7 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
       const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
       const startSeconds = parsePsLstartUtc(lstart)
       if (startSeconds === undefined) return unreadable()
-      const boot = readers.exec('sysctl', ['-n', 'kern.boottime']).match(/sec\s*=\s*(\d+)/)?.[1]
+      const boot = boottime().match(/sec\s*=\s*(\d+)/)?.[1]
       if (!boot) return unreadable()
       let executable: string | undefined
       try { executable = path.basename(readers.exec('ps', ['-o', 'comm=', '-p', String(pid)]).trim()) } catch { /* start time is still useful to record */ }
@@ -102,3 +106,80 @@ export function probeProcess(pid: number, readers: ProcessReaders = systemProces
   } catch { /* process exited or the OS did not allow the read */ }
   return unreadable()
 }
+
+/** How long a live process's identity is reused: briefly while young enough to still `exec` (nice, sh), longer once settled. */
+const PROBE_TTL_MS = 2_000, YOUNG_TTL_MS = 250, SETTLED_AFTER_S = 5, BOOTTIME_TTL_MS = 60_000, CONFIRMED_TTL_MS = 60_000
+
+/** A probe that can also confirm a negative verdict about a recorded process. */
+export interface CachedProcessProbe extends ProcessProbe {
+  /**
+   * Reads afresh for a recorded process the cache disagrees with: the cache may describe a predecessor on a reused
+   * pid, or an executable from before an `exec`. A fresh read that still disagrees is kept for that record alone
+   * (a recorded process that was gone stays gone); one that agrees is never reused.
+   */
+  confirm(pid: number, recorded: { startTime?: string; executable?: string }): ProcessInfo | undefined
+  /** Always reads afresh (the boot time stays cached), and refreshes the cache. */
+  fresh(pid: number): ProcessInfo | undefined
+}
+
+const startSeconds = (startTime: string | undefined) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? '')?.[1])
+const agrees = (info: ProcessInfo, recorded: { startTime?: string; executable?: string }) =>
+  (!info.startTime || !recorded.startTime || sameStartTime(info.startTime, recorded.startTime))
+  && (!info.executable || !recorded.executable || info.executable === recorded.executable)
+
+/**
+ * A probe bounded to one identity read per live pid per PROBE_TTL_MS (YOUNG_TTL_MS for a process younger than
+ * SETTLED_AFTER_S, which may not have exec'd into its host yet), however many callers ask: on macOS a read is three
+ * synchronous processes (`ps`, `sysctl`, `ps`), and status reads probe every worker on each room change. A dead pid
+ * is answered at once by `kill(pid, 0)`. Lifetimes run on the monotonic clock. Linux reads /proc and is not cached.
+ */
+export function createProcessProbe(readers: ProcessReaders & { alive?(pid: number): boolean }, options: { now?: () => number; wall?: () => number } = {}): CachedProcessProbe {
+  if (readers.platform !== 'darwin') {
+    const read = (pid: number) => probeUncached(pid, readers)
+    return Object.assign(read, { confirm: read, fresh: read })
+  }
+  const now = options.now ?? (() => performance.now()), wall = options.wall ?? Date.now, alive = readers.alive ?? pidAlive
+  const cache = new Map<number, { info: ProcessInfo; until: number }>()
+  const confirmed = new Map<string, { info: ProcessInfo; until: number }>()
+  let boot: { text: string; at: number } | undefined
+  const boottime = () => {
+    if (!boot || now() - boot.at >= BOOTTIME_TTL_MS) boot = { text: readers.exec('sysctl', ['-n', 'kern.boottime']), at: now() }
+    return boot.text
+  }
+  const fresh = (pid: number) => {
+    const info = probeUncached(pid, readers, boottime)
+    const started = startSeconds(info?.startTime)
+    if (info?.executable && Number.isFinite(started)) {
+      if (cache.size >= 1024) cache.clear()
+      cache.set(pid, { info, until: now() + (wall() / 1000 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) })
+    } else cache.delete(pid)
+    return info
+  }
+  const probe = (pid: number) => {
+    const hit = cache.get(pid)
+    if (!pid || pid <= 0 || !alive(pid)) { cache.delete(pid); return undefined }
+    return hit && now() < hit.until ? hit.info : fresh(pid)
+  }
+  const confirm = (pid: number, recorded: { startTime?: string; executable?: string }) => {
+    if (!pid || pid <= 0 || !alive(pid)) return undefined
+    const key = `${pid}\0${recorded.startTime ?? ''}\0${recorded.executable ?? ''}`
+    const hit = confirmed.get(key)
+    if (hit && now() < hit.until) return hit.info
+    const info = fresh(pid)
+    // A young process may not have exec'd into its host yet: its mismatch is not kept.
+    if (info && !agrees(info, recorded) && wall() / 1000 - startSeconds(info.startTime) >= SETTLED_AFTER_S) {
+      if (confirmed.size >= 1024) confirmed.clear()
+      confirmed.set(key, { info, until: now() + CONFIRMED_TTL_MS })
+    } else confirmed.delete(key)
+    return info
+  }
+  return Object.assign(probe, { confirm, fresh })
+}
+
+const systemProbe = createProcessProbe(systemProcessReaders)
+
+/** An uncached identity read, for decisions a reused pid must never pass: signalling or recording a process. */
+export function probeProcessNow(pid: number): ProcessInfo | undefined { return systemProbe.fresh(pid) }
+
+/** The shared probe's confirmation of a negative verdict about a recorded process (see CachedProcessProbe.confirm). */
+export function probeProcessConfirm(pid: number, recorded: { startTime?: string; executable?: string }): ProcessInfo | undefined { return systemProbe.confirm(pid, recorded) }

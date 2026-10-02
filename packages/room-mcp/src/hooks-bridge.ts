@@ -14,8 +14,8 @@ import { resolveSessionHost } from './config.js'
 import { writeAtomic } from './leases.js'
 import { ownWorkerNames } from './worker-registry.js'
 import { workerText } from './tools/context.js'
-import { DISK_TEXT_LIMIT } from './tools/disk-text.js'
-import { git, gitBlobInfoMany, gitShowManyCapped } from '@room/roomd/git'
+import { DISK_TEXT_LIMIT, readBoundedHistoricalText } from './tools/disk-text.js'
+import { git } from '@room/roomd/git'
 
 /** The bound session's write intents (recorded by before-edit.mjs): did this session write `p` in the last two minutes? */
 export function createWriteIntentReader(dir: string, sessionDir: () => string | undefined, now: () => number = Date.now): (p: string) => boolean | undefined {
@@ -136,20 +136,20 @@ export class HooksBridge {
               text = await git(this.s.dir, ['cat-file', '-p', entry.hash])
             }
             if (text !== undefined && Buffer.byteLength(text) <= DISK_TEXT_LIMIT && gitBlobHash(text, entry.hash.length === 64 ? 'sha256' : 'sha1') === entry.hash) return text
-          } catch { /* whole-file approximate warning below */ }
+          } catch { /* unknown: the claim's own lines, marked approximate, below */ }
         } else if (!entry && !(owner.roomSalt && owner.head.excluded.includes(digestPath(owner.roomSalt, c.path)))) {
-          try {
-            const info = await gitBlobInfoMany(this.s.dir, owner.head.base, [c.path])
-            if ((info.get(c.path)?.size ?? Infinity) > DISK_TEXT_LIMIT) return undefined
-            return (await gitShowManyCapped(this.s.dir, owner.head.base, [c.path], DISK_TEXT_LIMIT, info)).get(c.path)
-          } catch { /* whole-file approximate warning below */ }
+          try { return await readBoundedHistoricalText(this.s.dir, owner.head.base, c.path) }
+          catch { /* unknown: the claim's own lines, marked approximate, below */ }
         }
         return undefined
       })())
       if (!myTexts.has(c.path)) myTexts.set(c.path, workerText(this.s.dir, c.path).catch(() => null))
       const ownerText = await ownerTexts.get(key)
       const myText = await myTexts.get(c.path)
-      const mapped = c.path.endsWith('/') || myText == null ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: true } : claimInMyLines(c, ownerText, myText)
+      // A directory claim holds all of it. Without either text the claim keeps its own numbers, marked approximate:
+      // a whole-file range is shown only for a whole-file claim.
+      const mapped = c.path.endsWith('/') ? { from: 1, to: Number.MAX_SAFE_INTEGER, approximate: false }
+        : myText == null ? { from: c.from, to: c.to, approximate: true } : claimInMyLines(c, ownerText, myText)
       claims.push({ id: c.id, path: c.path, ...mapped, by: c.by, intent: c.intent, ...(c.plans?.length ? { plans: formatPlans(c.plans) } : {}) })
     }
     const freshViews = participantsView(this.s.room, this.s.awareness, this.now())

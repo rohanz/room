@@ -1,6 +1,7 @@
 /**
  * Each participant's base (reporooms §B3): in a team room, the newest ancestor of HEAD on a
- * remote-tracking ref of the room's remote; in a local room, HEAD (a worker: its carried commit).
+ * remote-tracking ref of the room's remote (a worker: its spawn base when that is better, see workerAnchor);
+ * in a local room, HEAD (a worker: its carried commit).
  * Nothing here throws for a missing anchor or commit: those read "cannot compare".
  */
 import { execFile } from 'node:child_process'
@@ -104,12 +105,45 @@ async function anchor(dir: string, head: string, refs: BaseRefs): Promise<{ base
   return { base: chosen.base, anchored: true, upstream: chosen.ref.name }
 }
 
-/** `options.carried`: a local-room worker's registry-pinned base for its worktree lifetime. */
+/** How many of the room remote's most recently updated refs a worker's spawn base is compared with. */
+const WORKER_ANCHOR_REFS = 16
+
+/** The room remote's most recently committed-to remote-tracking refs, as anchor candidates. */
+async function recentRemoteRefs(dir: string, remote: string | undefined): Promise<BaseRef[]> {
+  if (!remote) return []
+  let out = ''
+  try { out = await git(dir, ['for-each-ref', '--sort=-committerdate', `--count=${WORKER_ANCHOR_REFS + 1}`, '--format=%(objectname) %(refname)', `refs/remotes/${remote}/`]) }
+  catch (error) { if (isGitTimeout(error)) throw error; return [] }
+  return out.split('\n').flatMap(line => {
+    const split = line.indexOf(' ')
+    // <remote>/HEAD is a symbolic copy of another ref.
+    return split > 0 && line.slice(split + 1) !== `refs/remotes/${remote}/HEAD` ? [{ sha: line.slice(0, split), name: short(line.slice(split + 1)) }] : []
+  }).slice(0, WORKER_ANCHOR_REFS)
+}
+
+/**
+ * A team-room worker's base: its branch (room/<tag>) has no remote ref, so the remote anchor is <remote>/HEAD's
+ * merge-base or, in a single-branch clone, nothing. While HEAD descends from its registry-pinned spawn base, a better
+ * base is the newest commit under the spawn base that teammates can fetch: the spawn base itself when a remote ref
+ * holds it, else its merge-base with the remote's recent refs (an unpushed lead commit or Room's carry commit is on no
+ * remote), when that is newer than the remote anchor. With neither, the spawn base: only this machine can compare,
+ * but its manifest completes.
+ */
+async function workerAnchor(dir: string, head: string, refs: BaseRefs, found: { base: string; anchored: boolean; upstream?: string }, pinned: string): Promise<{ base: string; anchored: boolean; upstream?: string }> {
+  if (found.anchored && pinned === found.base) return found
+  if (!await isAncestor(dir, pinned, head)) return found
+  const shared = await anchor(dir, pinned, { candidates: await recentRemoteRefs(dir, refs.remote) })
+  if (shared.anchored && (!found.anchored || (shared.base !== found.base && await isAncestor(dir, found.base, shared.base)))) return { base: shared.base, anchored: true }
+  return found.anchored ? found : { base: pinned, anchored: true }
+}
+
+/** `options.carried`: a worker's registry-pinned base for its worktree lifetime (its base in a local room). */
 export async function resolveBase(dir: string, inputs: BaseInputs, options: { local?: boolean; carried?: string; knownUpstream?: { name: string; sha: string; by: string } } = {}): Promise<ResolvedBase> {
   const { head, branch, refs } = inputs
-  const found = options.local
+  const remoteAnchor = options.local ? undefined : await anchor(dir, head, refs)
+  const found = !remoteAnchor
     ? { base: options.carried ?? head, anchored: true }
-    : await anchor(dir, head, refs)
+    : options.carried ? await workerAnchor(dir, head, refs, remoteAnchor, options.carried) : remoteAnchor
   let ahead: number | undefined, behind: number | undefined
   if (refs.upstream) {
     const counts = (await git(dir, ['rev-list', '--left-right', '--count', `${head}...${refs.upstream.sha}`])).trim().split(/\s+/).map(Number)

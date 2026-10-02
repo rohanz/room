@@ -456,7 +456,7 @@ class Daemon implements Roomd {
     // The start transition resumes from the recorded head, so claims re-anchor over what changed while down (§B2).
     this.appliedHead = participantRecord(this.roomDoc, this.name)?.git?.head || base
     // Publication during the seed already needs the anchor; the start transition records it.
-    const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {})
+    const { base: anchorBase, anchored } = await resolveBase(this.dir, { head: base, branch: this.branch, refs: await readBaseRefs(this.dir, this.remote, this.branch) }, this.localRoom ? { local: true, carried: this.workerBase() } : { carried: this.workerBase() })
     this.anchor = { base: anchorBase, anchored }
     this.inputs = { ...this.inputs, head: anchorBase }
     this.roomDoc.reconcileBaseTexts(this.name, this, anchorBase)
@@ -829,7 +829,8 @@ class Daemon implements Roomd {
       this.tracked = (await gitTracked(this.dir)).paths
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
-    const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.localCarriedBase() } : {
+    const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.workerBase() } : {
+      carried: this.workerBase(),
       ...(latestPush ? { knownUpstream: { name: latestPush.upstream, sha: latestPush.toSha, by: latestPush.from } } : {}),
     })
     const claims = await this.reanchorOwnClaims(head, claimSnapshot, true, pendingIds)
@@ -971,8 +972,8 @@ class Daemon implements Roomd {
     return carriesWork(baseline) ? baseline : undefined
   }
 
-  /** A local-room worker's base is the commit its lead carried it from (registry pins it). */
-  private localCarriedBase(): string | undefined {
+  /** A worker's base is the commit its lead carried it from (registry pins it); base.ts decides when a team room uses it. */
+  private workerBase(): string | undefined {
     return workerBaseline(this.carriedFrom)?.sha
   }
 

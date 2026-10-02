@@ -28,8 +28,36 @@ export class HistoricalTextTooLarge extends Error {
   constructor(readonly path: string) { super(`historical text exceeds Room's ${DISK_TEXT_LIMIT}-byte read limit: ${path}`) }
 }
 
-/** Check blob size before asking Git for any historical text. */
-export async function readBoundedHistoricalText(dir: string, base: string, rel: string): Promise<string | undefined> {
+/** A commit's file never changes: reads by full commit id are kept, bounded by entries and bytes, in-flight ones shared. */
+const HISTORICAL_ENTRIES = 512, HISTORICAL_BYTES = 32 * 1024 * 1024
+const historical = new Map<string, { text: Promise<string | undefined>; bytes: number }>()
+let historicalBytes = 0
+
+/**
+ * Check blob size before asking Git for any historical text. A full commit id is read from Git once while cached:
+ * a lead's claim and conflict reconciles ask for the same base files on every room change (R4, 2026-10-02).
+ */
+export function readBoundedHistoricalText(dir: string, base: string, rel: string): Promise<string | undefined> {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(base)) return readHistoricalFromGit(dir, base, rel)
+  const key = `${dir}\0${base}\0${rel}`
+  const hit = historical.get(key)
+  if (hit) { historical.delete(key); historical.set(key, hit); return hit.text }
+  const entry = { text: readHistoricalFromGit(dir, base, rel), bytes: 0 }
+  historical.set(key, entry)
+  entry.text.then(text => {
+    if (historical.get(key) !== entry) return
+    entry.bytes = text === undefined ? 0 : Buffer.byteLength(text)
+    historicalBytes += entry.bytes
+    for (const [old, value] of historical) {
+      if (historical.size <= HISTORICAL_ENTRIES && historicalBytes <= HISTORICAL_BYTES) break
+      historical.delete(old)
+      historicalBytes -= value.bytes
+    }
+  }, () => { if (historical.get(key) === entry) historical.delete(key) })
+  return entry.text
+}
+
+async function readHistoricalFromGit(dir: string, base: string, rel: string): Promise<string | undefined> {
   const info = await gitBlobInfoMany(dir, base, [rel])
   const blob = info.get(rel)
   if (!blob) {

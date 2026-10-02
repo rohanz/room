@@ -217,7 +217,7 @@ export class Rooms {
     const deadline = Date.now() + timeoutMs
     const signal = toolSignal.getStore()
     while (Date.now() < deadline && !signal?.aborted) {
-      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.probe.bind(this) })
+      const state = await workerRealState(s.dir, w, { process: true, hasHandle: this.hasHandle(s, w), probe: this.o.probe })
       if (state.process === 'not-ours') return 'exited'
       if (state.process === 'unknown') return 'unknown'
       const key = w.id
@@ -257,7 +257,7 @@ export class Rooms {
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`
     const record = trusted.record
     const local = realStateInput(record, trusted.status)
-    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.probe.bind(this) })
+    const processState = await workerRealState(s.dir, local, { process: true, hasHandle: this.hasHandle(s, local), probe: this.o.probe })
     const initial = decideResume(processState)
     if (initial === 'missing') return `error: cannot resume ${w.tag}: its worktree no longer exists`
     if (initial === 'no-session') return `error: ${w.tag} has no recorded ${w.host} session id; it cannot be resumed`
@@ -306,7 +306,7 @@ export class Rooms {
         lead: record.lead.participant, owner: s.me.owner ?? s.me.name, host: record.host, model: record.model,
         effort: record.effort, share: record.share, run: run.n, nonce: run.nonce, registry: registry.root,
         budget: record.budget, server, isWorker, token: s.local ? undefined : s.token, claudeChannel,
-        preferredPort: record.port, spawner, probe: this.probe.bind(this), log, at },
+        preferredPort: record.port, spawner, probe: this.o.probe, log, at },
       { mode: 'resume', sessionId: record.hostSessionId!, followUp: typeof posting === 'object' ? posting.prompt : followUp, oldPort: record.port },
       { setHandle: (id, proc) => this.setHandle(s, id, proc),
         watch: (_id, proc, onExit) => proc.onExit(onExit), aborted: toolCallAborted },
@@ -316,7 +316,7 @@ export class Rooms {
         await registry.update(record.id, old => ({ ...old, phase: 'active', port: result.port,
           runs: [...old.runs.slice(0, -1), { ...old.runs.at(-1)!, launch: { outcome: 'launched', pid: result.proc.pid,
             ...(result.processStartTime ? { process: { pid: result.proc.pid, startTime: result.processStartTime,
-              executable: this.probe(result.proc.pid)?.executable ?? '' } } : {}) } }], seq: old.seq + 1 }))
+              executable: result.processExecutable ?? '' } } : {}) } }], seq: old.seq + 1 }))
       }, async code => {
         await registry.writeExit(record.id, { run: run.n, code, witnessed: true, at: at() })
         this.dropHandle(s, record.id)

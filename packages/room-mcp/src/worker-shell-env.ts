@@ -11,7 +11,7 @@
  *   ignore the key) and passes its MCP servers the env_vars allow-list in plugins/room/codex-mcp.json. Filters merge
  *   with the user's own policy across config layers; the legacy `exclude` array would replace it.
  */
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { WorkerHost } from './worker-config.js'
@@ -60,19 +60,18 @@ export function codexShellFilterWarning(version: string | undefined): string | u
   return undefined
 }
 
-let codexVersion: string | null | undefined
-function installedCodexVersion(): string | undefined {
-  if (codexVersion === undefined) {
-    try { codexVersion = execFileSync('codex', ['--version'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() }
-    catch { codexVersion = null }
-  }
-  return codexVersion ?? undefined
+let codexVersion: Promise<string | undefined> | undefined
+/** Read once per process, off the event loop: a synchronous read stalled every other tool call (R4, 2026-10-02). */
+function installedCodexVersion(): Promise<string | undefined> {
+  codexVersion ??= new Promise(resolve => execFile('codex', ['--version'], { encoding: 'utf8', timeout: 5000 },
+    (error, stdout) => resolve(error ? undefined : stdout.trim())))
+  return codexVersion
 }
 
 /** What the spawn or resume reply says when the worker's shell commands will still see ROOM_ variables. */
-export function workerShellEnvWarnings(tag: string, host: WorkerHost, written: { file?: string; warning?: string },
-  platform: NodeJS.Platform = process.platform, codex: () => string | undefined = installedCodexVersion): string[] {
-  if (host === 'codex') return [codexShellFilterWarning(codex())].filter((w): w is string => !!w)
+export async function workerShellEnvWarnings(tag: string, host: WorkerHost, written: { file?: string; warning?: string },
+  platform: NodeJS.Platform = process.platform, codex: () => Promise<string | undefined> = installedCodexVersion): Promise<string[]> {
+  if (host === 'codex') return [codexShellFilterWarning(await codex())].filter((w): w is string => !!w)
   return [
     ...(written.warning ? [written.warning] : []),
     ...(platform === 'win32' ? [`note: Claude's PowerShell tool does not run CLAUDE_ENV_FILE, so ${tag}'s PowerShell commands still see Room's ROOM_* variables; its Bash commands do not.`] : []),

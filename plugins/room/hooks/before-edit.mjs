@@ -131,7 +131,8 @@ if (company) {
   hook.claims = Object.fromEntries(Object.entries(previousClaims).slice(-200))
   if (untold.length) {
     addCoordination(`[room claims on ${paths.join(', ')}]`)
-    for (const { claim: c, key, signature } of untold) addCoordination(`  ${c.by}'s agent holds ${c.path}:${c.from}-${c.to}${c.approximate ? ' (approximate whole-file warning)' : ''} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`, () => {
+    // Approximate lines are the holder's own numbers: Room could not map them into this checkout.
+    for (const { claim: c, key, signature } of untold) addCoordination(`  ${c.by}'s agent holds ${/[\\/]$/.test(c.path) ? c.path : `${c.path}:${c.from}-${c.to}`}${c.approximate ? ' in their copy; their lines may have shifted relative to yours' : ''} — ${c.intent}${c.plans ? ` (plans: ${c.plans})` : ''}. Do not edit inside that range; room_wait or ask.`, () => {
       for (const p of paths) previousClaims[p][key] = signature
       changed = true
     })

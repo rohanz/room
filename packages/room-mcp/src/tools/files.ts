@@ -321,7 +321,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }))).flat()
       const missingNotes: string[] = []
       for (const { person, session } of participants) {
-        const ownLocalWorker = session.local && localWorkers(session.dir, record => record.name === person)[0]
+        const ownLocalWorker = localWorkers(session.dir, record => record.name === person)[0]
         const facts = ownLocalWorker && await workerRealState(session.dir, ownLocalWorker)
         const preview = facts && decidePreview(facts, ownLocalWorker.lead === caller.me.name)
         const missing = !!ownLocalWorker && facts?.worktree === 'vanished' && ownLocalWorker.lead === caller.me.name
