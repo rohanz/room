@@ -949,6 +949,53 @@ describe('derived pair slots', () => {
     } finally { f.cleanup() }
   })
 
+  it.each(['owner', 'peer'] as const)('retries an unchanged %s non-publisher pair after comparison failure', async secondary => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'changed\n'); f.entry('B', undefined)
+    f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'A' })
+    f.room.participants.delete('B\0git')
+    for (const by of ['A', 'B']) f.room.addClaim({ by, byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+    const owner = secondary === 'owner' ? 'B' : 'A', other = owner === 'A' ? 'B' : 'A'
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0, () => undefined)
+    const compare = vi.spyOn(roomd, 'comparePair').mockResolvedValueOnce({ cannotCompare: 'temporary fetch failure' })
+    try {
+      await set.reconcile('missing object')
+      expect(f.room.doc.getMap('conflicts').size).toBe(0)
+      await set.reconcile('object available, unchanged inputs')
+      expect(compare).toHaveBeenCalledTimes(2)
+      expect([...f.room.doc.getMap<any>('conflicts').values()]).toContainEqual(expect.objectContaining({ owner, other, kind: 'claims', status: 'conflict' }))
+      // Incomplete checks must also avoid replaying evidence from a prior success.
+      f.post.mockClear(); compare.mockResolvedValueOnce({ cannotCompare: 'temporary fetch failure' })
+      await set.reconcile('object temporarily unavailable again')
+      expect(f.post).not.toHaveBeenCalled()
+      await set.reconcile('recovered again')
+      expect(f.post).toHaveBeenCalled()
+    } finally { compare.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['owner', 'peer'] as const)('retries an unchanged %s non-publisher pair after git diff failure', async secondary => {
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', 'changed\n'); f.entry('B', undefined)
+    f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'A' })
+    f.room.participants.delete('B\0git')
+    for (const by of ['A', 'B']) f.room.addClaim({ by, byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' })
+    const owner = secondary === 'owner' ? 'B' : 'A', other = owner === 'A' ? 'B' : 'A'
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0, () => undefined)
+    const realGit = gitModule.git
+    let failed = false
+    const git = vi.spyOn(gitModule, 'git').mockImplementation(async (dir, args) => {
+      if (args[0] === 'diff' && !failed) { failed = true; throw new Error('temporary diff failure') }
+      return realGit(dir, args)
+    })
+    try {
+      await expect(set.reconcile('diff unavailable')).rejects.toThrow('temporary diff failure')
+      expect(f.room.doc.getMap('conflicts').size).toBe(0)
+      expect(f.post).not.toHaveBeenCalled()
+      await set.reconcile('diff available, unchanged inputs')
+      expect([...f.room.doc.getMap<any>('conflicts').values()]).toContainEqual(expect.objectContaining({ owner, other, kind: 'claims', status: 'conflict' }))
+    } finally { git.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('keeps a claim in a middle too large to diff possible rather than certified', async () => {
     const f = fixture()
     try {

@@ -561,7 +561,7 @@ export class ConflictSet {
     for (const other of [...names].sort()) {
       const pairInputs = capturedPairs.get(other)!
       if (this.pairInputs(other, participantsView(room, this.team.awareness, Date.now())) !== pairInputs) throw new StaleConflictInputs()
-      let failed = false
+      let replayable = true
       try {
         const theirs = snapshot(room, other, views)
         const theirGit = acceptedGit(participantRecord(room, other), views)
@@ -576,10 +576,10 @@ export class ConflictSet {
         if (ownNonPublisher) {
           const pair = !theirs || theirGit === 'updating' ? undefined : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
           if (pair && !('cannotCompare' in pair)) {
-            const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`]).catch(() => '')
+            const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`])
             await this.claims(ownPublisher!, theirs!, other, pair.mergeBase,
               new Set([...ownPublisher!.entries.keys(), ...committed.split('\n').filter(Boolean)]))
-          }
+          } else replayable = false // no completed evaluation; the periodic pass retries
           continue // only the checkout publisher owns the merge pair
         }
         if (theirs?.head.coverage.kind === 'none' && theirs.head.coverage.reason === 'not-publisher' && theirs.head.publisher) {
@@ -590,10 +590,10 @@ export class ConflictSet {
             this.guard = () => !!priorGuard?.() && snapshotStillCurrent(room, published, participantsView(room, this.team.awareness, Date.now()))
             const pair = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit)
             if (!('cannotCompare' in pair)) {
-              const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`]).catch(() => '')
+              const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`])
               await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\n').filter(Boolean)]))
-            }
-          }
+            } else replayable = false
+          } else replayable = false
           continue // a non-publisher contributes claims, never a merge pair
         }
         if (!theirs || theirGit === 'updating') {
@@ -699,10 +699,10 @@ export class ConflictSet {
         }
         await this.claims(mine, theirs, other, mergeBase, ownMergePaths)
       } catch (error) {
-        failed = true
+        replayable = false
         throw error
       } finally {
-        if (!failed) {
+        if (replayable) {
           // Replay immediately under this evaluation's complete guard. Never keep
           // snapshots or reuse completed merge evidence across reconciliations.
           await this.slots.replay(this.owner, slot => {
