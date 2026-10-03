@@ -354,3 +354,32 @@ skills, failure notices and documentation, split across five Room workers.
 **Why:** Teammates on feature branches need to coordinate in one room; the old branch room name divided their shared context.
 **Migration:** The server archives the old branch documents. The local relay keeps the old snapshots and copies new messages, claims and scopes by ID while the old relay remains live; it saves the new snapshot before its temp-and-rename catch-up ledger, then makes a final copy after the old relay exits. Closing the local room removes those archived snapshots.
 **Built when:** 29 Sep, after the hackathon, in the schema-2 redesign branch. The one-time sharing notice now states that teammates on any branch see what is shared; declared sharing says “paths of every changed file; text only in your declared area.”
+
+## 2026-10-03 — 0.17.1 round 2: remove conflict evaluation caching
+**Measurement:** With `checkedPairs`, `pairGuards` and per-file merge-result reuse removed,
+six participants making ten bursts of disjoint publications caused 0 reconciles each,
+0 Git comparisons, 0 diffs, 0 version reads and 0 merges. One periodic reconciliation
+per participant performed 30 comparisons and 60 diffs total, with no reads or merges.
+Adding one overlap caused one reconciliation for each of the two affected participants
+(10 additional comparisons, 20 diffs, 4 reads, 2 merges), then no further idle work.
+The reproduction asserts these counts, quiescence and the two-check limit for moving inputs.
+**Decision:** Keep trigger coalescing and bounded retries; remove the evaluation cache.
+Its invalidation and retained provenance closures are unnecessary for preventing X2's
+idle loop. Reevaluate merges and replay each pair immediately with that evaluation's
+guard, releasing the guard after the pass. Keep retry/backoff state in replicated
+unknown slots, semantic graph revisions, and worker lifecycle triggers.
+**Validation:** All 82 conflict-set behavior tests pass, including round-1 replay,
+worker lifecycle, local graph revision and failed-evaluation recovery. A real projected
+source-room regression fails with the old cache and passes with fresh reads; cache-only
+assertions were removed, while candidate-yield behavior remains tested.
+**Built when:** 3 Oct, post-hackathon, during review round 2. Plugin rebuild deferred by request.
+
+## 2026-10-03 — 0.17.1 round 3: retry pacing and relocated parser coverage
+**Decision:** Rearm periodic conflict checks after completion; only changed inputs request
+reruns. Honor unchanged per-file unknown deadlines before version reads, using replicated
+slots without restoring evaluation caching. Test the committed parser worker and all 15
+grammars after copying the server assets outside the repo, from another working directory
+without dependencies; skip explicitly when the committed JavaScript bundles are missing.
+**Validation:** Scheduler and retry regressions failed before their fixes. Removing the
+runtime from the temporary packaging copy made the smoke fail; the intact copy passes.
+**Built when:** 3 Oct, post-hackathon, during review round 3. No plugin rebuild or push.

@@ -1245,15 +1245,21 @@ class Daemon implements Roomd {
       ignoreInitial: true,
       followSymlinks: false,
       persistent: true,
-      ignored: (absolute: string) => {
+      ignored: (absolute: string, stat?: fs.Stats) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
         if (relpath === '') return false
+        if (relpath === '..' || relpath.startsWith('../') || path.isAbsolute(relpath)) return true
         // A wholly gitignored folder (a vendored SDK, generated output) is pruned here, so it is never listed or stat'ed.
         if (this.inIgnoredDir(relpath)) return true
         // Build and test output (test-results/, .astro/, ...) can hold thousands of files per run; watch it only when git tracks or offers something in it.
         if (isRegenerableBuildPath(relpath.slice(relpath.lastIndexOf('/') + 1)) && !this.holdsTracked(relpath)) return true
         if (defaultIgnoredPath(relpath)) return this.isIgnoredPath(relpath)
-        return !this.isSafeRoomPath(relpath, false)
+        // Chokidar already has this stat. followSymlinks=false prevents descending
+        // links; publication and change handling still validate disk containment.
+        // Calling isSafeRoomPath here re-stats/re-resolves every ancestor several
+        // times per file in the initial scan, starving the MCP event loop on rejoin.
+        if (stat?.isFile()) countFile(absolute, true)
+        return false
       },
     })
     this.watcher = watcher
@@ -1284,10 +1290,6 @@ class Daemon implements Roomd {
       watcher.on('error', fatal)
       watcher.once('ready', ready)
     })
-    for (const [dir, names] of Object.entries(watcher.getWatched())) for (const name of names) {
-      const absolute = path.join(dir, name)
-      try { if (fs.statSync(absolute).isFile()) countFile(absolute, true) } catch { /* raced with unlink */ }
-    }
     this.log(`watching ${watchedFiles.size} files`)
   }
 

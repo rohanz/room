@@ -107,18 +107,22 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ? `note: ${displayName({ name: o.by, kind: o.byKind })} also holds ${o.path}:${o.from}-${o.to} in their copy (${o.id} · ${o.intent}); their lines may have shifted relative to yours`
           : `CONFLICT: overlaps ${o.id} (${describeClaim(o)}). Ask ${o.by}'s agent or wait for release.`)
       if (s.graph && plans.length) {
-        if (s.graph.isReady) for (const pl of plans) {
+        if (!s.graph.isReady) out.push(`partial: ${s.graph.indexingStatus}`)
+        for (const pl of plans) {
           const users = s.graph.graph.usersOf(pl.symbol)
+          if (!s.graph.isReady && !users.length) {
+            out.push('run room_impact after indexing completes')
+            continue
+          }
           out.push(users.length ? `impact: ${pl.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl.symbol} has no other users in the indexed graph`)
         }
-        else out.push('impact not yet indexed; run room_impact after indexing completes')
       }
       const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && nearby.some(n => n.by === sc.by && n.reason === 'scope') && scopeCovers(sc, p))
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)
       await loadAreas(s)
       out.push(...ownerHints(s, [areasOf(s).areaOf(p)]))
       if (posted.ok && plans.length && s.graph && !s.graph.isReady) {
-        void s.graph.ready.then(async () => {
+        void s.graph.whenIdle().then(async () => {
           if (s.room.claims.get(claim.id) && s.lease?.fence()) await upgrade(s, posted.msg, [p], plans.map(x => x.symbol))
         }).catch(e => state.log(`deferred claim impact: ${String(e)}`))
       } else if (posted.ok) out.push(...await upgrade(s, posted.msg, [p], plans.map(x => x.symbol)))

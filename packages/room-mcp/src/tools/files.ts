@@ -208,9 +208,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_impact(a) {
       const s = S()
       if (!s.graph) return 'error: no symbol graph in this session'
-      await s.graph.ready
       const g = s.graph.graph
-      const out: string[] = []
+      const available = typeof a.symbol === 'string' && a.symbol
+        ? g.definersOf(a.symbol).length > 0 || g.usersOf(a.symbol).length > 0
+        : typeof a.path === 'string' && g.has(a.path)
+      if (!s.graph.isReady && !available) return `partial: ${s.graph.indexingStatus}`
+      const out: string[] = s.graph.isReady ? [] : [`partial: ${s.graph.indexingStatus}`]
       if (typeof a.symbol === 'string' && a.symbol) {
         const i = g.impact(a.symbol)
         out.push(`${a.symbol}: defined in ${i.definedIn.length ? describeUsers(s, i.definedIn) : 'nowhere indexed'}`)

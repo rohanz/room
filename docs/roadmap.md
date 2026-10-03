@@ -17,6 +17,8 @@ use broke and proposes the order of work.
 
 ## Post-0.17
 
+- **Session identity and visibility.** After installing 0.17, verify that several sessions of one person show the correct host, fresh names without inherited completion status, and clearly visible active participants in the default `room_state`; fix any remaining confusion observed during the 0.16 handoff.
+
 - **One local database.** Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
 - **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.
 - **Trim the large modules.** `worker-registry.ts` (about 1.28k lines) and `conflict-set.ts` (about 0.8k) after the database move.

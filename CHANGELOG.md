@@ -10,6 +10,18 @@ The sharing manifest now describes `declared` as paths of eligible changed files
 
 **Known limits:** Codex `/quit` can leave a participant name reserved until its lease expires. Everyone admitted to a team room is trusted; finer server permissions remain [future work](docs/roadmap.md). Claims are advisory and inferred contract impact still needs tests.
 
+**0.17.0-rc13** includes the post-rc12 reliability fixes and a fresh migration rehearsal with real GitHub authentication.
+
+- Rejoining a large checkout no longer synchronously re-stats and resolves every watched path and its ancestors. The watcher uses Chokidar’s existing stats and asynchronous scan, retaining symlink refusal and containment checks when handling changes and publishing disk text.
+
+- Conflict reconciliation no longer pins idle sessions at full CPU. Only changes that can affect a pair trigger a pass, triggers are coalesced, a pass whose inputs keep changing runs at most twice before one deferred pass, and the periodic check rearms only after a pass completes. Every pass evaluates afresh (no cached results); unknown evidence keeps its retry deadline, and authorization withdrawal is still handled at once.
+
+- Graph parsing runs in a worker thread, with a bounded refresh queue and yielding graph publication, so large Rust indexes leave Room tools responsive. `room_impact` and claim impact report indexing progress immediately. Parser shutdown cancels pending work.
+
+- The hub no longer logs an ownership diagnostic for Room's own `room` system notices. Posts on behalf of other participants, including participants named `room` without bot kind, still produce the diagnostic.
+- The preview crash test waits for completed file writes and lock release, keeps its orphan alive until explicitly released, and reaps it on failure. File creation and the checker's 30-second self-expiry could race the assertions under load; preview-cache behavior is unchanged.
+- A worker's `room_done` reconciles HEAD and settles disk publication before releasing claims or recording its report, so an immediately preceding commit and the current overlay are included. Publication is best-effort with a five-second bound: failures log a diagnostic and still record completion and release claims. Rejected sessions, intent sharing and missing daemon fences skip the wait.
+
 **0.17.0-rc12** fixes the four medium and high findings of the [all-Codex Werkzeug rehearsal](docs/superpowers/rehearsals/2026-10-02-codex-all.md) (eight Codex workers in a team room; [rc12 dogfood notes](docs/superpowers/rehearsals/2026-10-02-dogfood-rc12.md)).
 
 - **Previews and collect include a worker's commits.** Workers that committed before `room_done` stayed at "updating after a commit; re-run" until they exited, so the lead's eight-way preview applied nothing and ran the tests on the lead's own tree. A worker's branch (`room/<tag>`) has no remote ref, and in a `--single-branch` clone there is no `<remote>/HEAD` either: the worker had no anchor, its base fell back to its HEAD, its manifest never completed, and each commit emptied its published changes. A team-room worker now anchors to its registry-pinned spawn base when teammates can fetch it, else to the newest remote commit under it (an unpushed lead commit or Room's carry commit is on no remote), whenever that is newer than the remote anchor; with neither, to the spawn base, comparable on this machine only. The lead's preview reads its own workers from their worktrees in any room (collect already did), so a worker's committed and uncommitted work is previewed, tested and collected while it is still running or after it exits. When a participant really has no anchor, the preview says so instead of "updating after a commit".

@@ -9,14 +9,14 @@ import path from 'node:path'
 const require = createRequire(import.meta.url)
 const grammars = ['rust', 'go', 'c', 'cpp', 'java', 'kotlin', 'c_sharp', 'swift', 'scala', 'python', 'javascript', 'typescript', 'tsx', 'ruby', 'php']
 
-await build({
-  entryPoints: ['packages/room-mcp/src/index.ts'],
+const bundleOptions = {
   tsconfig: 'tsconfig.base.json',
   bundle: true, platform: 'node', format: 'esm', target: 'node20',
-  outfile: 'plugins/room/server/room-mcp.mjs',
   banner: { js: "import { createRequire as __roomCreateRequire } from 'node:module'; import { fileURLToPath as __roomFileURLToPath } from 'node:url'; import { dirname as __roomDirname } from 'node:path'; const require = __roomCreateRequire(import.meta.url); const __filename = __roomFileURLToPath(import.meta.url); const __dirname = __roomDirname(__filename);" },
   logLevel: 'info',
-})
+}
+await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/index.ts'], outfile: 'plugins/room/server/room-mcp.mjs' })
+await build({ ...bundleOptions, entryPoints: ['packages/room-mcp/src/parse/worker.ts'], outfile: 'plugins/room/server/parse-worker.mjs' })
 
 const grammarDir = 'plugins/room/server/grammars'
 fs.rmSync(grammarDir, { recursive: true, force: true })

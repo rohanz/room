@@ -21,6 +21,23 @@ const hello = { v: 1, id: 'h', op: 'hello', proto: 1, schema: 2, client: 't', se
 const local = { local: true } as const
 
 describe('hub in process', () => {
+  it('keeps ownership diagnostics for participants but not the room system sender', async () => {
+    const h = host({ fresh: true, owns: (p, name) => 'login' in p && p.login === name })
+    const hub = await startHub(h), conn = {}, principal = { login: 'ada', id: 'github:ada', readOnly: false }
+    try {
+      hub.handle(conn, hello, principal)
+      const epoch = (hub.handle(conn, { v: 1, id: 'a', op: 'acquire', name: 'ada', holder: holder('s') }, principal) as { epoch: number }).epoch
+      for (const [id, from, fromKind] of [['notice', 'room', 'bot'], ['participant', 'room', 'agent'], ['human', 'room', 'human'], ['unspecified', 'room', undefined], ['ben', 'ben', 'agent']] as const) {
+        expect(hub.handle(conn, { v: 1, id, op: 'post', auto: true, lease: { name: 'ada', epoch },
+          msg: { id, type: 'note', from, fromKind, text: 'notice' } }, principal)).toMatchObject({ ok: true })
+      }
+      expect(h.logs.filter(line => line.includes('observed a post'))).toEqual([
+        ...Array(3).fill('hub: observed a post from "room" by ada; accepted'),
+        'hub: observed a post from "ben" by ada; accepted',
+      ])
+    } finally { hub.stop() }
+  })
+
   it('rejects a rewritten replicated owner after restart and restores the stored holder', async () => {
     const h = host({ fresh: true, owns: (p, name) => 'login' in p && p.login === name })
     const victim = { login: 'ada', id: 'oidc:issuer:victim', readOnly: false }

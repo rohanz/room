@@ -22,8 +22,9 @@ it('ends a synchronous command that outlives its timeout, and names the test and
   const report = reportFile()
   stops.push(startWatchdog({ stallMs: 600, pollMs: 100, killSelf: false, reportFile: report, describe: () => 'example.test.ts > blocks' }).stop)
   const started = Date.now(), marker = 30 + process.pid / 1e7
-  // The shell ignores the SIGTERM that `timeout` sends, so without the watchdog this call returns after 30 s.
-  expect(() => execFileSync('sh', ['-c', `trap "" TERM; sleep ${marker} & wait`], { timeout: 50, stdio: 'ignore' })).toThrow()
+  // SIGCONT cannot terminate the child, even if load delays its startup past the timeout.
+  // SIGTERM races the shell installing its trap and can return before the watchdog fires.
+  expect(() => execFileSync('sh', ['-c', `trap "" TERM; sleep ${marker} & wait`], { timeout: 50, killSignal: 'SIGCONT', stdio: 'ignore' })).toThrow()
   expect(Date.now() - started).toBeLessThan(15_000)
   // The grandchild went too: left behind, it would hold the worker's output pipe open after the worker exits.
   expect(execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' })).not.toContain(`sleep ${marker}`)

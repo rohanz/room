@@ -28,6 +28,7 @@ import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-s
 import { postWorkerMessage } from '../post.js'
 import { watcherExclusionWarning } from '../watcher-exclusions.js'
 import { currentToolTiming } from '../timing.js'
+import { settleWorkerPublication } from '../worker-publication.js'
 
 /** Repo paths a brief names that exist in the lead clone but not in the worker's worktree. */
 function missingBriefPaths(task: string, leadDir: string, workerDir: string): string[] {
@@ -85,9 +86,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           || process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== ownRun.nonce) {
           return 'error: this worker run was collected, discarded or superseded'
         }
-        const changed = manifestPaths(s.room, s.me.name)
         let saved = false
         const report = reporting.then(async () => {
+          await settleWorkerPublication(s, state.log)
+          const changed = manifestPaths(s.room, s.me.name)
           const done = (await registry!.reportDone(myId, ownRun.n, summary, changed)).done!
           saved = true
           release()

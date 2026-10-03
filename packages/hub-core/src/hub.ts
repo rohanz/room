@@ -4,7 +4,7 @@
  * and a durable incarnation record, and call `tick` every second.
  */
 import {
-  BUS_BYTES, BUS_KEEP, deliveryIndex, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, newId, trim, validMessageShape, validParticipantName,
+  BUS_BYTES, BUS_KEEP, deliveryIndex, ExpiryTenure, MAX_MESSAGE_BYTES, MessageKinds, admit, defaultPriority, isRoomNotice, newId, trim, validMessageShape, validParticipantName,
   type Msg, type MsgType, type ParticipantView, type ReleasePoster, type RoomDoc,
 } from '@room/shared'
 import {
@@ -695,7 +695,7 @@ class RoomHub implements Hub {
       const admission = admit(this.doc, msg, wall, { origin: HUB_ORIGIN })
       if (!admission.ok) return fail('over-cap', admission.reason)
     }
-    if (this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
+    if (!isRoomNotice(msg) && this.host.owns && !this.host.owns(p, msg.from)) this.host.log(`hub: observed a post from ${JSON.stringify(msg.from)} by ${'login' in p ? p.login ?? 'an anonymous connection' : 'a local connection'}; accepted`)
     let priority: Msg['priority']
     try { priority = (msg.priority as Msg['priority'] | undefined) ?? defaultPriority(msg) }
     catch { return fail('invalid', `cannot prioritise a ${msg.type} message`) }
