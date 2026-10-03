@@ -7,4 +7,4 @@ timeout_seconds: 400
 allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]
 ---
 
-Hand the tiers and shipping-zones tickets from the README to a couple of agents and don't wait for them. I want to keep talking to you.
+Use Room workers for this. Hand the tiers and shipping-zones tickets from the README to a couple of agents and don't wait for them. I want to keep talking to you.

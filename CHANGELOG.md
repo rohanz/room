@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.3
+
+- Room worker delegation now requires an explicit request to use Room, or continuation of an existing Room worker workflow. Generic agent, parallel and background requests stay with the host’s normal delegation.
+
+Routing evaluation: 32/32 observed tool choices across 16 prompts run twice on Claude Fable 5.1, plus 2/2 final-skill spot checks. This measures routing, not task completion or a general success rate; see [method and limitations](docs/superpowers/rehearsals/2026-10-03-0173-routing.md). Plugin-only update: reinstall on both hosts and restart sessions; no server deploy or migration.
+
 ## 0.17.2
 
 - Separate connected participants in one checkout now count as company for announcements, hooks and eligible message wakes. Join output and participant counts include them. Shared file reports remain deduplicated, while explicit scopes and claims still coordinate independent agents.

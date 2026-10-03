@@ -31674,7 +31674,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.2",
+      version: "0.17.3",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -56238,7 +56238,7 @@ var AGENT_INSTRUCTIONS = (name2) => `You are ${name2 ? `${name2}'s` : "one perso
 3. With company, answer addressed questions promptly; ask the relevant agent and wait when unsure.
    Workers report progress in room_done. Send a note only when the lead must know before finishing; ask a question when blocked.
 4. With company, preview current overlapping work before finishing, then room_done releases claims. No release or changed-message ritual.
-5. Asked for another agent, agents in parallel, work in the background, a background lead, or for codex/claude to do part of it: use room_spawn (load room-workers), not a built-in subagent. Split by task, even when tasks share files; brief each worker on functions or areas to change and have them claim their regions. Sequence only work that changes the same lines or needs another result first; run independent parts in parallel. For a few lines, just do it yourself. For a follow-up or interruption, room_send the worker; a finished worker resumes in its worktree.
+5. Use room_spawn (load room-workers) only when the human explicitly requests Room for delegation, or is continuing an already requested Room worker workflow. Generic requests for another agent, parallel work, background work, or codex/claude help use the host\u2019s normal delegation; Room being installed or joined is not consent to Room workers. For explicit Room work: Split by task, even when tasks share files; brief each worker on functions or areas to change and have them claim their regions. Sequence only work that changes the same lines or needs another result first; run independent parts in parallel. For a few lines, just do it yourself. For a follow-up or interruption, room_send the worker; a finished worker resumes in its worktree.
    Before handing a multi-task plan to one other agent, say what Room adds: workers in their own worktrees, claims and questions for overlap, collisions surfaced before they land, changed definitions announced to the files that use them, and a combined preview of the uncommitted result before collection.
 6. Ask your human only when blocked on their decision. Never commit or push unless asked. In a room on a shared branch, when your human asks you to push, push to the room branch; Room tells the others to catch up. ${BASE_CATCH_UP}
 
@@ -58612,7 +58612,7 @@ var defs4 = [
   {
     name: "room_spawn",
     annotations: RW,
-    description: "Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together; message a finished worker to resume it in its worktree.",
+    description: "Only for explicitly requested Room workers or continued Room worker workflows; generic agent, parallel or background requests use host delegation; split by task, brief tasks, claim regions and preview; message a finished worker to resume it in its worktree.",
     inputSchema: { type: "object", properties: { tag: str("worker tag"), task: str("task"), host: { type: "string", enum: ["claude", "codex"], description: "default: caller host" }, model: str("host model override"), effort: { type: "string", enum: [...WORKER_EFFORTS], description: "reasoning effort" }, link: strs("input paths; default .roomlinks; [] disables"), carry: { type: "boolean", description: "false: start from HEAD" }, threads: { type: "integer", minimum: 1, description: "worker thread budget" }, share: SHARE, allowOutside: { type: "boolean", description: "allow a team worker outside this repo" }, dir: str("existing directory; no new worktree"), where: { type: "string", enum: ["here", "local"], description: "here (default) or local workers room" } }, required: ["tag", "task"] }
   }
 ];

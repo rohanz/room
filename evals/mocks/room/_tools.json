@@ -630,7 +630,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together; message a finished worker to resume it in its worktree.",
+      "description": "Only for explicitly requested Room workers or continued Room worker workflows; generic agent, parallel or background requests use host delegation; split by task, brief tasks, claim regions and preview; message a finished worker to resume it in its worktree.",
       "inputSchema": {
         "type": "object",
         "properties": {

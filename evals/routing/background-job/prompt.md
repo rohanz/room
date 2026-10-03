@@ -7,4 +7,4 @@ timeout_seconds: 400
 allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]
 ---
 
-Run this big job in the background: the money ticket from the README, across pricing, tax, shipping, models and reports.
+Use Room workers for this. Run this big job in the background: the money ticket from the README, across pricing, tax, shipping, models and reports.

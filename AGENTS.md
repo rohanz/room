@@ -133,12 +133,10 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall
   `room@room` on both hosts after a rebuild. `node scripts/build-plugin.mjs --skip-web` rebuilds
   only the server bundle (for sandboxes that cannot build the web view); never commit from it.
-- Tool descriptions are how a human's plain words reach the right tool. Keep the routing words
-  ("another agent", "in parallel", "in the background", "codex/claude to do part of it") when
-  trimming, stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, regenerate the eval
-  mocks (`evals/mocks/room/_tools.json`) with `npm run eval:mocks` (`eval-mocks.test.ts` fails until you do), and rerun the
-  `claude plugin eval` suite in `evals/` after routing changes: a trim once sent "get codex to do half" to
-  a built-in subagent. From the repo root, run `claude plugin eval . --scaffold --allow-tools Edit Write`
+- Tool descriptions route explicit Room delegation to Room workers. Generic agent, parallel
+  or background requests use the host’s normal delegation; being installed or joined is not consent.
+  Stay under the budget in `packages/room-mcp/test/tool-budget.test.ts`, regenerate eval mocks
+  with `npm run eval:mocks`, and rerun the `claude plugin eval` suite after routing changes. From the repo root, run `claude plugin eval . --scaffold --allow-tools Edit Write`
   (Claude Code 2.1.269+; [eval docs](https://code.claude.com/docs/en/plugin-evals)). Add
   `--trust-plugin` for noninteractive runs. It clones a pinned demo repo and makes model calls.
 - A message to a finished worker resumes its retained session in its worktree. A collected or

@@ -7,4 +7,4 @@ timeout_seconds: 600
 allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]
 ---
 
-The README lists three tickets. Get codex to do half of this while you do the rest.
+Use Room workers for this. The README lists three tickets. Get codex to do half of this while you do the rest.

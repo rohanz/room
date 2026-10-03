@@ -1,13 +1,15 @@
 ---
 name: room-workers
-description: Use for another agent, agents in parallel, work in the background, or codex/claude to do part of it. Also use to follow up with, interrupt, collect, or discard a worker; load before room_spawn.
+description: Use only when the user explicitly requests Room workers or Room for delegation, or follows up with, interrupts, collects, or discards an existing Room worker. Generic requests for agents, parallel work or background work use the host’s normal delegation.
 ---
+
+Use this workflow only for explicit Room delegation or its continuation. Installing or joining Room does not authorize Room workers. Otherwise use the host’s normal delegation.
 
 1. Split substantial work by task. Parts may share files: give each worker a function
    or area to change, and let Room surface overlap. Keep parts in one agent when they
    must edit the same lines or one needs another's result first. Run independent parts
    in parallel as a wave, then do dependent work.
-   For a few lines, do it yourself. Use built-in subagents for read-only research.
+   For a few lines, do it yourself unless the human explicitly requested a Room worker.
    For one or two workers, lead them yourself. Before three or more workers or a long
    batch, especially when this session cannot be woken, offer once: "I can hand this to a background lead that stays on it until it's done; you can keep talking to me."
    If your human already said to go ahead, or chose how to run it, skip the offer and dispatch.

@@ -13,8 +13,7 @@ it('keeps all advertised tool names, descriptions and schemas within 9,500 chara
   expect(collect.inputSchema.required ?? []).not.toContain('tag')
   expect(collect.inputSchema).toHaveProperty('additionalProperties', false)
   const spawn = DEFS.find(d => d.name === 'room_spawn')!.description
-  for (const phrase of ['another agent', 'in parallel', 'in the background', 'codex', 'claude']) expect(spawn).toContain(phrase)
-  expect(spawn).toContain('even in one file')
+  for (const phrase of ['explicitly requested Room workers', 'continued Room worker workflows', 'requests use host delegation']) expect(spawn).toContain(phrase)
   expect(spawn).toContain('split by task')
   const share = DEFS.find(d => d.name === 'room_share')!.description
   expect(share).toContain('share plans only')

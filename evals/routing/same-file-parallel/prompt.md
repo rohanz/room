@@ -7,4 +7,4 @@ timeout_seconds: 480
 allowed_tools: [Read, Glob, Grep, Skill, Agent, TodoWrite]
 ---
 
-The three same-file handler tickets in the README all touch api/handlers.py. Do them in parallel with agents; I want to keep talking to you while they run.
+Use Room workers for this. The three same-file handler tickets in the README all touch api/handlers.py. Do them in parallel with agents; I want to keep talking to you while they run.

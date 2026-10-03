@@ -40,7 +40,7 @@ Room never changes your files unless you ask it to bring in a worker's output; e
 exports write the ledger. `room_close` removes the repository room for everyone on every branch
 and requires your human's explicit request. `room_leave` ends participation when asked.
 
-For substantial parallel edits, load [room-workers](../room-workers/SKILL.md).
+Only when the human explicitly asks to delegate through Room, or continues an existing Room worker workflow, load [room-workers](../room-workers/SKILL.md). Generic requests for agents, parallel work or background work use the host’s normal delegation, even while joined to Room.
 Split by task, even when tasks touch the same file. Claim the functions or line ranges
 you edit, ask about overlapping work, and preview combined changes. Sequence parts
 that must change the same lines or depend on another part's result.
