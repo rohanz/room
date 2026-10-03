@@ -58,6 +58,9 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
   return graph.dependenciesOf(consumer).some(dep => dep.symbol === name && dep.definedIn.includes(provider))
 }
 
+/** Immutable base facts only; no room, leases, overlays or sharing grants cross a reconnect. */
+export interface GraphSeed { dir: string; base: string; files: ReadonlyMap<string, FileSymbols> }
+
 export class GraphIndex {
   private readonly parser = new ParseWorker()
   private completedFiles = new Set<string>()
@@ -131,7 +134,7 @@ export class GraphIndex {
     }
   }
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow } = {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow; seed?: GraphSeed } = {}) {
     this.graph = new SymbolGraph(path => this.cache.get(path))
     this.publishedGraph = new SymbolGraph(path => this.publishedCache.get(path))
   }
@@ -222,7 +225,7 @@ export class GraphIndex {
       if (next === this.ownPublicationKey) {
         // A revision can move without changing parsed symbols. Wait for all events in
         // this transaction and their refreshes before stamping the new provenance.
-        setImmediate(() => { if (!this.stopped) void this.whenIdle().then(() => this.publish(this.phase)).catch(e => this.log(`graph: provenance refresh failed: ${String(e)}`)) })
+        setImmediate(() => { if (!this.stopped) void this.whenIdle().then(() => this.publish(this.phase)).catch(e => { if (!this.stopped) this.log(`graph: provenance refresh failed: ${String(e)}`) }) })
         return
       }
       const firstHead = this.ownPublicationKey === undefined
@@ -269,6 +272,36 @@ export class GraphIndex {
     }
     this.room.metaMap.observe(onMeta)
     this.unobserve.push(() => this.room.metaMap.unobserve(onMeta))
+  }
+
+  baseSeed(): GraphSeed {
+    const files = new Map<string, FileSymbols>()
+    for (const [path, source] of this.publishedSource) {
+      const local = this.cache.get(path), published = this.publishedCache.get(path)
+      if (source.kind === 'base' && source.base === this.base && local && published && !this.pending.has(path) &&
+          JSON.stringify(local) === JSON.stringify(published)) files.set(path, local)
+    }
+    return { dir: this.dir, base: this.base, files }
+  }
+
+  /** Re-evaluate current authority even when the parsed immutable base is reusable. */
+  private reuseBase(path: string): boolean {
+    const seed = this.opts.seed
+    if (!seed || seed.dir !== this.dir || seed.base !== this.base) return false
+    const symbols = seed.files.get(path)
+    if (!symbols) return false
+    for (const [person, head] of this.room.manifestHead) {
+      if (this.room.manifest.get(manifestKey(person, head.fence))?.has(path)) return false
+      if (this.room.roomSalt && head.excluded.includes(digestPath(this.room.roomSalt, path))) return false
+    }
+    this.cache.set(path, symbols); this.setGraph(path, '')
+    const source: PublicationSource = { kind: 'base', base: this.base }
+    if (this.publicationAllowed(path, source)) {
+      this.publishedCache.set(path, symbols); this.publishedSource.set(path, source)
+      this.publishedGraph.set(path, '')
+    }
+    this.completedFiles.add(path)
+    return true
   }
 
   stop(): void {
@@ -333,6 +366,7 @@ export class GraphIndex {
       this.totalFiles = pathsToRefresh.length
       if (generation !== this.generation || this.stopped) return
       const refreshes: Promise<void>[] = []
+      let reused = 0
       let lastYield = Date.now()
       for (let i = 0; i < pathsToRefresh.length; i++) {
         if (i > 0 && (i % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS)) {
@@ -340,8 +374,10 @@ export class GraphIndex {
           if (generation !== this.generation || this.stopped) return
           lastYield = Date.now()
         }
-        refreshes.push(this.refresh(pathsToRefresh[i]))
+        if (this.reuseBase(pathsToRefresh[i])) reused++
+        else refreshes.push(this.refresh(pathsToRefresh[i]))
       }
+      if (reused) this.log(`graph: reused ${reused} unchanged base files after reconnect`)
       await Promise.all(refreshes)
       if (generation !== this.generation || this.stopped) return
       this.phase = 'ready'

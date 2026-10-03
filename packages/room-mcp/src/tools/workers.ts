@@ -20,7 +20,7 @@ import { LOCAL, refreshBrowserUrl, type Session } from '../session.js'
 import { workerBudget, hostWorkerEffort, hostDefaultRuntime, workerRuntime, validTag, codexRoomVersionMismatch, type WorkerHost } from '../worker-config.js'
 import { prepareWorktree, uncommittedCount, type PreparedWorktree } from '../worker-git.js'
 import { launchWorkerProcess, WorkerLaunchError } from '../worker-launch.js'
-import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
+import { SHARE, RW, str, strs, type Handler, type HandlerState, type ToolCtx, type ToolDef } from './context.js'
 import { resolveConfig } from '../config.js'
 import { releaseWorkerProcessPort } from '../port-reservations.js'
 import { localWorkers, registryForDir, registrySnapshotForDir, type WorkerRegistry } from '../worker-registry.js'
@@ -52,6 +52,21 @@ export const defs: ToolDef[] = [
   { name: 'room_spawn', annotations: RW, description: 'Use for another agent (claude/codex), tasks in parallel even in one file, work in the background, or codex/claude to do part of it; split by task, brief functions/areas, claim regions and preview together; message a finished worker to resume it in its worktree.',
     inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'default: caller host' }, model: str('host model override'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false: start from HEAD' }, threads: { type: 'integer', minimum: 1, description: 'worker thread budget' }, share: SHARE, allowOutside: { type: 'boolean', description: 'allow a team worker outside this repo' }, dir: str('existing directory; no new worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default) or local workers room' } }, required: ['tag', 'task'] } },
 ]
+
+/** Save only local worker state when reconnect exceeded its bound; no room writes or claim release. */
+export async function deferWorkerCompletion(ctx: ToolCtx, dir: string, summary: string): Promise<string | undefined> {
+  const id = ctx.config?.workerId ?? process.env.ROOM_WORKER_ID
+  if (!id || !summary.trim()) return undefined
+  const registry = await registryForDir(dir), record = registry.read(id), run = record?.runs.at(-1)
+  if (!record || !run || process.env.ROOM_WORKER_RUN && Number(process.env.ROOM_WORKER_RUN) !== run.n ||
+      process.env.ROOM_LAUNCH_NONCE && process.env.ROOM_LAUNCH_NONCE !== run.nonce)
+    return 'error: this worker run was collected, discarded or superseded'
+  try {
+    // Changed paths are intentionally unknown here. The lead reads the retained worktree.
+    await registry.reportDone(id, run.n, summary.trim(), [])
+    return 'completion report saved locally; Room is still reconnecting, so no claims were released and your lead has not been told yet. Your lead can recover this report from the worker registry when you exit.'
+  } catch (error) { return `error: could not save completion report locally: ${error instanceof Error ? error.message : String(error)}` }
+}
 
 export function handlers(state: HandlerState): Record<string, Handler> {
   const spawnExplained = new WeakSet<Session>()

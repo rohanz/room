@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { displayName } from '@room/shared'
 import { createTools, DEFS } from './tools.js'
 import { AGENT_INSTRUCTIONS } from './prompt.js'
-import { LOCAL, decodeRoom, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
+import { LOCAL, decodeRoom, detachCheckout, joinSession, leaveSession, startupJoinOptions, type Session } from './session.js'
 import { StaleReplacement, rejoinWhenStale } from './compacted.js'
 import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
@@ -105,7 +105,11 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
       const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() })
-      const tools = createTools({ getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
+      const tools = createTools({ completionReady: async () => {
+        const bound = sessionBinding.bound()
+        if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
+        else if (rebinding) await rebinding
+      }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
       // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
       const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
         attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
@@ -151,18 +155,24 @@ async function main() {
         if (!primary || primary.lease?.sessionId === nextId) return
         rebinding = (async () => {
           log(`host session changed from ${primary.lease?.sessionId ?? '?'} to ${nextId}; rebinding room leases`)
-          for (const old of [...joined].reverse()) await tools.drop(old, 'host session rebound')
-          const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), sessionId: nextId, log })
-          await adopt(fresh, false)
-          for (const old of joined.slice(1)) {
-            const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), sessionId: nextId, log })
-            tools.attachWorkersRoom(secondary, fresh)
-          }
+          const reuse = new Map(joined.map(old => [old, detachCheckout(old)]))
+          try {
+            for (const old of [...joined].reverse()) await tools.drop(old, 'host session rebound')
+            const fresh = await joinSession({ ...rejoinOptions(primary, startup.credentialsPath), reuse: reuse.get(primary), sessionId: nextId, log })
+            await adopt(fresh, false)
+            for (const old of joined.slice(1)) {
+              const secondary = await joinSession({ ...rejoinOptions(old, startup.credentialsPath), reuse: reuse.get(old), sessionId: nextId, log })
+              tools.attachWorkersRoom(secondary, fresh)
+            }
+          } finally { await Promise.all([...reuse.values()].map(value => value.watcher?.dispose())) }
         })().finally(() => { rebinding = undefined })
         return rebinding
       }
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
-        if (req.params.name === 'room_state' && req.params.arguments?.check === true) return tools.call(req.params.name, req.params.arguments, signal, handoff)
+        if (req.params.name === 'room_done' || req.params.name === 'room_state' && req.params.arguments?.check === true) {
+          if (req.params.name === 'room_done') presence!.activity()
+          return tools.call(req.params.name, req.params.arguments ?? {}, signal, handoff)
+        }
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
         else if (rebinding) await rebinding

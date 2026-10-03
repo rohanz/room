@@ -92,4 +92,30 @@ describe('SymbolGraph noise controls', () => {
       { symbol: 'Config', definedIn: ['src/a.ts'], usedIn: ['consumer.ts'] },
     ])
   })
+
+  it('updates import lookup facts when a provider or consumer changes', () => {
+    const files: NoiseFixtureFile[] = [
+      { path: 'src/a.ts', symbols: { defs: ['Config'], refs: [], imports: [] } },
+      { path: 'src/b.ts', symbols: { defs: ['Config'], refs: [], imports: [] } },
+      { path: 'src/app.ts', symbols: { defs: [], refs: ['Config'], imports: ['./a'] } },
+    ]
+    const graph = buildGraph(files)
+    expect(graph.dependenciesOf('src/app.ts')[0].definedIn).toEqual(['src/a.ts'])
+    files[2].symbols.imports = ['./b']
+    graph.set('src/app.ts', '')
+    expect(graph.dependenciesOf('src/app.ts')[0].definedIn).toEqual(['src/b.ts'])
+    graph.remove('src/b.ts')
+    expect(graph.dependenciesOf('src/app.ts')[0].definedIn).toEqual(['src/a.ts'])
+    graph.set('src/b.ts', '')
+    expect(graph.dependenciesOf('src/app.ts')[0].definedIn).toEqual(['src/b.ts'])
+  })
+
+  it('preserves root Go package matching even when an import is empty', () => {
+    const files: NoiseFixtureFile[] = [
+      { path: 'config.go', symbols: { defs: ['Config'], refs: [], imports: [] } },
+      ...Array.from({ length: 6 }, (_, i) => ({ path: `pkg${i}/config.go`, symbols: { defs: ['Config'], refs: [], imports: [] } })),
+      { path: 'app.ts', symbols: { defs: [], refs: ['Config'], imports: [''] } },
+    ]
+    expect(buildGraph(files).dependenciesOf('app.ts')[0].definedIn).toEqual(['config.go'])
+  })
 })

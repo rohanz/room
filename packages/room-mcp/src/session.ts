@@ -14,13 +14,13 @@ import * as Y from 'yjs'
 import type { Awareness } from 'y-protocols/awareness'
 import { normalizeExplicitRoomName } from './room-name.js'
 export { normalizeExplicitRoomName } from './room-name.js'
-import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
+import { startRoomd, RoomdError, clampShare, inPhase, readRoomFile, authorizedWebSocket, type WatcherHandoff, type Roomd, type RoomFile, type ShareLevel } from '@room/roomd'
 import { ensureLocalRelay, localViewKey, NoLocalRelay, type LocalRelay } from '@room/relay'
 import { localRoomName } from '@room/roomd/local'
 import { gitCommonDir, realGitCommonDir, worktreeGitDirSync } from '@room/roomd'
 import { git, gitBranch, gitOrigin } from '@room/roomd/git'
 import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipantName, roomConnection, canonicalRepo, roomKey, type Claim, type Identity, type Kind, type Msg, type Scope } from '@room/shared'
-import { GraphIndex } from './graph-index.js'
+import { GraphIndex, type GraphSeed } from './graph-index.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
 import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
@@ -279,7 +279,18 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
 /** Used by the name lease while a Codex app-server request has no bound thread. */
 export function syntheticSessionId(identity: ProcessIdentity): string { return `mcp:${identity.pid}:${identity.startTime}` }
 
+export interface CheckoutReuse {
+  watcher?: WatcherHandoff
+  graph?: GraphSeed
+}
+
+/** Retire room resources normally, but keep this checkout's watch and immutable base facts. */
+export function detachCheckout(s: Session): CheckoutReuse {
+  return { watcher: s.daemon?.takeWatcher?.(), graph: s.graph?.baseSeed?.() }
+}
+
 export interface JoinOptions {
+  reuse?: CheckoutReuse
   credentialsPath?: string
   dir: string
   name?: string
@@ -812,10 +823,10 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const shareMax = await timed('preflight', () => serverShareMax(server, shareRequested))
   const share = clampShare(shareRequested, shareMax)
   if (share !== shareRequested) opts.log?.(`sharing ${share}, not ${shareRequested}: the server caps sharing at ${shareMax} (ROOM_SHARE_MAX)`)
-  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
+  const { daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, token, session: creds.session, watcher: opts.reuse?.watcher, requested: shareRequested, requestedExplicit: config.shareExplicit, ceiling: shareMax, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, config.tag)
   const view = await timed('view token', () => viewToken(server, roomName, creds))
   const browserUrl = `${web}/#room=${encodeURIComponent(roomUrl)}&participant=${encodeURIComponent(me.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`
-  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log)
+  const graph = new GraphIndex(daemon.roomDoc, me.name, dir, opts.log, { seed: opts.reuse?.graph })
   graph.start()
   const session: Session = {
     graph,
@@ -882,7 +893,7 @@ async function joinLocal(dir: string, opts: JoinOptions): Promise<Session> {
   const share = requestedShare(opts.share)
   let daemon: Roomd, me: Identity, policyStore: PolicyStore, lease: ParticipantLease, hub: HubClient, post: Post, autoTagNote: string | undefined, refreshRuntime: () => void, onHookActivity: (listener: () => void) => void, onRebind: (listener: (sessionId: string) => void) => void, startupCapClose: () => CapClose | undefined
   try {
-    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
+    ;({ daemon, me, policyStore, lease, hub, post, autoTagNote, refreshRuntime, onHookActivity, onRebind, startupCapClose } = await startAutoTaggedRoomd({ room: roomUrl, dir, name, kind, owner, label, watcher: opts.reuse?.watcher, requested: share, requestedExplicit: opts.shareExplicit, localKey: local.key, sessionId: opts.sessionId, connectTimeoutMs: opts.connectTimeoutMs, takeover: opts.takeover, log: opts.log }, opts.tag))
   } catch (e) { await local.stop(); throw e }
   replica = daemon.roomDoc.doc
   // This room-scoped view capability cannot authorize a write or reveal the clone key.

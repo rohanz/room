@@ -57,8 +57,8 @@ it('publishes an edit with no watcher event on the periodic reconcile and cancel
     periodicReconcileSchedule: (run, ms) => { expect(ms).toBe(60_000); tick = run; return () => { cancelled = true } },
   })
   daemon = await startRoomd(config)
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void }; enqueue(work: () => Promise<void>): Promise<void> }
-  internal.watcher.removeAllListeners('all')
+  const internal = daemon as Roomd & { watcher: { suspend(): void }; enqueue(work: () => Promise<void>): Promise<void> }
+  internal.watcher.suspend()
   fs.writeFileSync(path.join(config.dir, 'app.txt'), 'missed edit\n')
   expect(incarnationText(daemon.roomDoc, 'Alice', 'app.txt')).toBeUndefined()
   tick!()
@@ -72,8 +72,8 @@ it('coalesces a periodic tick into one follow-up while reconciliation is in flig
   let tick: (() => void) | undefined
   const config = options({ periodicReconcileSchedule: run => { tick = run; return () => {} } })
   daemon = await startRoomd(config)
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void }; enqueue(work: () => Promise<void>): Promise<void>; beforePublishWrite: () => Promise<void> }
-  internal.watcher.removeAllListeners('all')
+  const internal = daemon as Roomd & { watcher: { suspend(): void }; enqueue(work: () => Promise<void>): Promise<void>; beforePublishWrite: () => Promise<void> }
+  internal.watcher.suspend()
   fs.writeFileSync(path.join(config.dir, 'app.txt'), 'missed edit\n')
   let started!: () => void, release!: () => void
   const publishing = new Promise<void>(resolve => { started = resolve })
@@ -122,8 +122,8 @@ it('yields to an event-loop turn while preparing a many-file atomic publication'
   for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'base\n')
   git(config.dir, 'add', '-A'); git(config.dir, 'commit', '-qm', 'many files')
   daemon = await startRoomd(config)
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void } }
-  internal.watcher.removeAllListeners('all')
+  const internal = daemon as Roomd & { watcher: { suspend(): void } }
+  internal.watcher.suspend()
   for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'changed\n')
   const events: string[] = []
   const original = RoomDoc.prototype.prepareOverlayDiff
@@ -150,8 +150,8 @@ it('yields to an event-loop turn while preparing a many-file atomic publication'
 it('publishes exact large rewrites with a bounded diff work budget', async () => {
   const config = options()
   daemon = await startRoomd(config)
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void } }
-  internal.watcher.removeAllListeners('all')
+  const internal = daemon as Roomd & { watcher: { suspend(): void } }
+  internal.watcher.suspend()
   const oldJson = JSON.stringify({ rows: 'a'.repeat(60_000) })
   const newJson = JSON.stringify({ rows: 'b'.repeat(60_000) })
   const oldLines = Array.from({ length: 800 }, (_, i) => `line ${i}: ${'x'.repeat(45)}`).join('\n') + '\n'
@@ -257,10 +257,10 @@ it('rejects a first validated path changed at a later validation boundary', asyn
 it('refuses the HEAD-transition transaction when an early validated path changes', async () => {
   const config = options()
   daemon = await startRoomd(config)
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(name: string): void }; publisher: {
+  const internal = daemon as Roomd & { watcher: { suspend(): void }; publisher: {
     prepare(): Promise<any>; validatePrepared(prepared: any): Promise<boolean>
   }; commitTransition(...args: any[]): boolean }
-  internal.watcher.removeAllListeners('all')
+  internal.watcher.suspend()
   const paths = Array.from({ length: 96 }, (_, i) => `gate-${String(i).padStart(3, '0')}.txt`)
   for (const p of paths) fs.writeFileSync(path.join(config.dir, p), 'before\n')
   const prepared = await internal.publisher.prepare()

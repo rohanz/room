@@ -34,6 +34,58 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('reuses immutable base facts in a fresh replica without rereading unchanged files', async () => {
+    const old = new RoomDoc(); setParticipantBase(old, 'Rohan', base)
+    const first = new GraphIndex(old, 'Rohan', dir, undefined, { random: () => 0 })
+    const fresh = new RoomDoc(); setParticipantBase(fresh, 'Rohan', base)
+    let next: GraphIndex | undefined
+    try {
+      first.start(); await first.whenIdle()
+      const seed = first.baseSeed()
+      expect(seed.files.size).toBe(2)
+      first.stop(); old.doc.destroy()
+      const read = vi.fn(async () => { throw new Error('unchanged base must not be reread') })
+      next = new GraphIndex(fresh, 'Rohan', dir, undefined, { random: () => 0, seed, read })
+      next.start(); await next.whenIdle()
+      expect(read).not.toHaveBeenCalled()
+      expect(next.graph.impact('validate_token').usedIn).toEqual(['session.py'])
+      expect(next.isReady).toBe(true)
+    } finally { first.stop(); next?.stop(); fresh.doc.destroy() }
+  })
+
+  it('rechecks changed paths and sharing after carrying base facts to another replica', async () => {
+    const old = new RoomDoc(); setParticipantBase(old, 'Rohan', base)
+    const first = new GraphIndex(old, 'Rohan', dir, undefined, { random: () => 0 })
+    const fresh = new RoomDoc(); setParticipantBase(fresh, 'Rohan', base)
+    let next: GraphIndex | undefined
+    try {
+      first.start(); await first.whenIdle()
+      const seed = first.baseSeed()
+      first.stop()
+      publishFixture(fresh, 'Peer', 'utils.py', 'def replacement(t): return t\n', { base })
+      // Establish an intent-only own head without changing either source file.
+      publishFixture(fresh, 'Rohan', 'README.md', 'private\n', { base, level: 'intent' })
+      next = new GraphIndex(fresh, 'Rohan', dir, undefined, { random: () => 0, seed })
+      next.start(); await next.whenIdle()
+      expect(next.graph.definersOf('validate_token')).toEqual([])
+      expect(next.graph.definersOf('replacement')).toEqual(['utils.py'])
+      expect(fresh.graphs.get('Rohan')?.paths ?? []).toEqual([])
+    } finally { first.stop(); next?.stop(); old.doc.destroy(); fresh.doc.destroy() }
+  })
+
+  it('does not reuse base facts under a different base identity', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    const read = vi.fn(gitModule.gitShow)
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, read,
+      seed: { dir, base: 'another-commit', files: new Map([['utils.py', { defs: ['stale'], refs: [] }]]) } })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect(read).toHaveBeenCalled()
+      expect(gi.graph.definersOf('stale')).toEqual([])
+      expect(gi.graph.definersOf('validate_token')).toEqual(['utils.py'])
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
   it('answers an empty index without claiming that zero files are still indexing', async () => {
     const room = new RoomDoc()
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0 })

@@ -66,7 +66,7 @@ async function movedHead() {
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-retry', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
-  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  ;(daemon as Roomd & { watcher: { suspend(): void } }).watcher.suspend()
   const oldHead = daemon.base
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 2, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(original, 2, 2) })
   fs.writeFileSync(path.join(dir, 'app.txt'), 'added\n' + original)
@@ -87,7 +87,7 @@ it.each([
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-identity', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
-  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  ;(daemon as Roomd & { watcher: { suspend(): void } }).watcher.suspend()
   const claim = daemon.roomDoc.addClaim({ path: 'app.txt', from: 2, to: 3, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(before, 2, 3) })
   fs.writeFileSync(path.join(dir, 'app.txt'), after)
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'change claimed block')
@@ -157,7 +157,7 @@ it('finishes budget-limited claim validation on later ticks after a real HEAD tr
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-many', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
-  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  ;(daemon as Roomd & { watcher: { suspend(): void } }).watcher.suspend()
   const claims = Array.from({ length: 20 }, () => daemon!.roomDoc.addClaim({ path: 'app.txt', from: 1, to: 1, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(before, 1, 1) }))
   fs.writeFileSync(path.join(dir, 'app.txt'), before.replace(/^old/, 'new'))
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'replace claimed block')
@@ -179,7 +179,7 @@ async function pendingWideClaim(count = 1) {
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'base')
   daemon = await startRoomd({ policy: policyFromLevel('full'), dir, room: 'ws://memory/head-wide', name: 'Alice', providerFactory: (_s, _n, doc) => provider(doc),
     basePollMs: 60_000, trackedRefreshMs: 60_000, log: () => {} })
-  ;(daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }).watcher.removeAllListeners('all')
+  ;(daemon as Roomd & { watcher: { suspend(): void } }).watcher.suspend()
   const claims = Array.from({ length: count }, () => daemon!.roomDoc.addClaim({ path: 'app.txt', from: 1, to: count === 1 ? 2000 : 1, by: 'Alice', byKind: 'agent', intent: 'edit', claimedHash: claimDigest(before, 1, count === 1 ? 2000 : 1) }))
   fs.writeFileSync(path.join(dir, 'app.txt'), before.replace(/^old/, 'new'))
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'replace claimed line')

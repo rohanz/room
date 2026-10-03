@@ -57,10 +57,10 @@ it('retries publication after a fence resumes and its first Git scan fails', asy
     policy: policyFromLevel('full'), lease: () => fence,
     basePollMs: 60_000, trackedRefreshMs: 60_000, reconcileIntervalMs: 0, log: line => logs.push(line) })
   const internal = daemon as Roomd & {
-    watcher: { removeAllListeners(event: string): void }
+    watcher: { suspend(): void }
     queuedHeadPoll(): Promise<void>
   }
-  internal.watcher.removeAllListeners('all')
+  internal.watcher.suspend()
   fence = undefined
   fs.writeFileSync(path.join(dir, 'app.txt'), 'changed\n')
   fence = '2'

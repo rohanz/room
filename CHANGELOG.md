@@ -10,6 +10,13 @@ The sharing manifest now describes `declared` as paths of eligible changed files
 
 **Known limits:** Codex `/quit` can leave a participant name reserved until its lease expires. Everyone admitted to a team room is trusted; finer server permissions remain [future work](docs/roadmap.md). Claims are advisory and inferred contract impact still needs tests.
 
+**0.17.0-rc14** addresses the remaining large-checkout findings from the rc13 live rehearsal.
+
+- Host rebind and compacted-replica replacement transfer the checkout's existing filesystem watch to the new daemon, avoiding the macOS close/reopen stall. The replacement reconciles gap edits and changed watch exclusions. A different or replaced checkout gets a fresh watch; abandoned transfers expire.
+- Graph resolution indexes provider module paths and prepares imports when facts change, removing repeated normalization from the candidate/import loop. On a synthetic 400-file repeated-symbol fixture, indexing plus dependency resolution fell from 13.6 seconds to 16 milliseconds with identical results. This is a targeted benchmark, not an end-to-end rejoin measurement.
+- A rejoin at the same checkout and base commit reuses completed base symbol facts. Fresh room state and sharing rules still decide which facts can be published; changed and excluded paths are checked again.
+- `room_done` waits up to 30 seconds for reconnect or replacement and supports cancellation. If a worker cannot reconnect, its summary is saved in the local worker registry for recovery after exit. The response says the lead has not yet been notified; it does not release room claims while disconnected.
+
 **0.17.0-rc13** includes the post-rc12 reliability fixes and a fresh migration rehearsal with real GitHub authentication.
 
 - Rejoining a large checkout no longer synchronously re-stats and resolves every watched path and its ancestors. The watcher uses Chokidar’s existing stats and asynchronous scan, retaining symlink refusal and containment checks when handling changes and publishing disk text.

@@ -5,6 +5,7 @@ import type { Batch, Ledger, Notice } from '../ledger.js'
 import { INBOX_BUDGET, selectWithin, type Chosen } from '../inbox-budget.js'
 import { greeted } from '../post.js'
 import { hasCompany } from '../company.js'
+import { waitForCompletionReconnect } from '../completion-reconnect.js'
 import { connectedBefore, trackConnection } from '../connection.js'
 import { toolCallAborted, withToolSignal } from '../registry.js'
 import { repositoryProblem } from '../repository.js'
@@ -18,7 +19,7 @@ import { defs as claimDefs, handlers as claimHandlers } from './claims.js'
 import { defs as messagingDefs, handlers as messagingHandlers, WAIT_SIGNAL } from './messaging.js'
 import { defs as collectDefs, handlers as collectHandlers } from './collect.js'
 import { defs as fileDefs, handlers as fileHandlers } from './files.js'
-import { defs as workerDefs, handlers as workerHandlers } from './workers.js'
+import { deferWorkerCompletion, defs as workerDefs, handlers as workerHandlers } from './workers.js'
 import { defs as shareDefs, handlers as shareHandlers } from './share.js'
 import { defs as prDefs, handlers as prHandlers } from './prs.js'
 
@@ -111,6 +112,19 @@ export function createTools(ctx: ToolCtx): Tools {
       if (toolCallAborted()) return 'error: tool call cancelled'
       const h = handlers[name]
       if (!h) return `error: unknown tool ${name}`
+      if (name === 'room_done') {
+        const completionDir = ctx.getSession()?.dir ?? ctx.cwd
+        let joined = !autoJoin && !ctx.completionReady
+        // Do not let an in-flight or failed replacement swallow the completion deadline.
+        if (!joined) void (async () => { await ctx.completionReady?.(); await autoJoin?.ensure(); joined = true })()
+          .catch(error => ctx.log?.(`completion reconnect failed: ${String(error)}`))
+        const waited = await waitForCompletionReconnect(() => { const s = ctx.getSession(); return joined || s?.closed || s?.rejected ? s : null }, signal)
+        if (waited === 'cancelled') return 'error: tool call cancelled'
+        if (waited === 'timeout') {
+          const saved = await deferWorkerCompletion(ctx, completionDir, String(args?.summary ?? ''))
+          return saved ?? 'error: completion could not reconnect within 30 seconds; retry room_done'
+        }
+      }
       const joinDir = CHOOSES_ROOM.has(name) && typeof args?.dir === 'string' && args.dir ? args.dir : undefined
       // An existing session has already passed the join preflight. Recheck only when
       // choosing another checkout or before the first join.
@@ -122,7 +136,7 @@ export function createTools(ctx: ToolCtx): Tools {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.settle()) ?? joining.settle())
         joining.cancel()
-      } else if (autoJoin) {
+      } else if (autoJoin && name !== 'room_done') {
         const joining = autoJoin
         await (currentToolTiming()?.phase('settle', () => joining.ensure()) ?? joining.ensure())
       }

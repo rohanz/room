@@ -190,6 +190,11 @@ export class SymbolGraph {
   private files = new Map<string, FileSymbols>()
   private definers = new Map<string, Set<string>>()
   private users = new Map<string, Set<string>>()
+  private modules = new Map<string, Set<string>>()
+  private basenames = new Map<string, Set<string>>()
+  private goPackages = new Map<string, Set<string>>()
+  private providers = new Map<string, { modules: string[]; goPackage?: string }>()
+  private imports = new Map<string, PreparedImport[]>()
   constructor(private extract: Extractor = regexExtractor) {}
 
   get size(): number { return this.files.size }
@@ -201,6 +206,11 @@ export class SymbolGraph {
     const syms = this.extract(path, text)
     if (!syms) return false
     this.files.set(path, syms)
+    const provider = providerPaths(path)
+    this.providers.set(path, provider)
+    for (const module of provider.modules) { add(this.modules, module, path); add(this.basenames, basenameOf(module), path) }
+    if (provider.goPackage !== undefined) add(this.goPackages, provider.goPackage, path)
+    if (syms.imports !== undefined) this.imports.set(path, syms.imports.map(value => prepareImport(value, path)))
     for (const d of syms.defs) add(this.definers, d, path)
     for (const r of syms.refs) add(this.users, r, path)
     return true
@@ -212,6 +222,11 @@ export class SymbolGraph {
     for (const d of prev.defs) del(this.definers, d, path)
     for (const r of prev.refs) del(this.users, r, path)
     this.files.delete(path)
+    const provider = this.providers.get(path)
+    for (const module of provider?.modules ?? []) { del(this.modules, module, path); del(this.basenames, basenameOf(module), path) }
+    if (provider?.goPackage !== undefined) del(this.goPackages, provider.goPackage, path)
+    this.providers.delete(path)
+    this.imports.delete(path)
   }
 
   symbolsOf(path: string): FileSymbols | undefined { return this.files.get(path) }
@@ -251,20 +266,35 @@ export class SymbolGraph {
   impact(symbol: string): Impact { return { symbol, definedIn: this.definersOf(symbol), usedIn: this.usersOf(symbol) } }
 
   private resolvedDefiners(symbol: string, consumer: string): string[] {
-    const candidates = this.definersOf(symbol).filter(path => path !== consumer)
-    const imports = importsOf(this.files.get(consumer))
-    // Regex-extracted inputs have no import facts, so retain the legacy name-only graph.
-    if (imports === undefined) return candidates
-
-    const scored = candidates.map(path => ({ path, score: Math.max(0, ...imports.map(value => importMatchScore(value, path, consumer, symbol))) }))
-    const best = Math.max(0, ...scored.map(candidate => candidate.score))
-    if (best) return scored.filter(candidate => candidate.score === best).map(candidate => candidate.path)
-    return (this.definers.get(symbol)?.size ?? 0) > COMMON_SYMBOL_FILE_THRESHOLD ? [] : candidates
+    const candidates = this.definers.get(symbol)
+    if (!candidates?.size) return []
+    const imports = this.imports.get(consumer)
+    // Regex inputs have no import facts. Preserve their name-only graph.
+    if (imports === undefined) return [...candidates].filter(path => path !== consumer).sort()
+    const scores = new Map<string, number>()
+    let best = 0
+    const consider = (paths: Set<string> | undefined, score: number) => {
+      for (const path of paths ?? []) if (path !== consumer && candidates.has(path)) {
+        if (score > (scores.get(path) ?? 0)) scores.set(path, score)
+        if (score > best) best = score
+      }
+    }
+    const lower = symbol.toLowerCase()
+    for (const imported of imports) {
+      const value = imported.symbol === lower ? imported.withoutSymbol! : imported.path
+      if (value.relative) { consider(this.modules.get(value.direct), 3); continue }
+      consider(this.modules.get(value.direct), value.pathSpecific ? 3 : 1)
+      // A qualified import can end with a provider's module path. Index lookups
+      // replace the old candidate × import cross-product and repeated normalization.
+      for (let slash = value.direct.indexOf('/'); slash >= 0; slash = value.direct.indexOf('/', slash + 1))
+        consider(this.modules.get(value.direct.slice(slash + 1)), 2)
+      consider(this.goPackages.get(basenameOf(value.direct)), 1)
+      if (!value.direct.includes('/')) consider(this.basenames.get(value.direct), 1)
+    }
+    if (best) return [...scores].filter(([, score]) => score === best).map(([path]) => path).sort()
+    return candidates.size > COMMON_SYMBOL_FILE_THRESHOLD ? [] : [...candidates].filter(path => path !== consumer).sort()
   }
 }
-
-const importsOf = (symbols: FileSymbols | undefined): string[] | undefined =>
-  (symbols as (FileSymbols & { imports?: string[] }) | undefined)?.imports
 
 function normalizedPath(value: string): string {
   const parts: string[] = []
@@ -280,37 +310,30 @@ const withoutExtension = (value: string): string => value.replace(/\.[a-z0-9]+$/
 const directoryOf = (value: string): string => value.includes('/') ? value.slice(0, value.lastIndexOf('/')) : ''
 const basenameOf = (value: string): string => value.slice(value.lastIndexOf('/') + 1)
 
-function importMatchScore(value: string, definingPath: string, consumerPath: string, symbol: string): number {
-  const provider = normalizedPath(definingPath)
-  const providerModule = withoutExtension(provider)
-  const providerDir = directoryOf(provider)
-  const providerStem = basenameOf(providerModule)
-  const modulePaths = new Set([providerModule, providerDir].filter(Boolean))
-  if (providerStem === 'mod' || providerStem === 'index') modulePaths.delete(providerModule)
+function providerPaths(path: string): { modules: string[]; goPackage?: string } {
+  const provider = normalizedPath(path), module = withoutExtension(provider), dir = directoryOf(provider)
+  const stem = basenameOf(module)
+  const modules = [...new Set([...(stem === 'mod' || stem === 'index' ? [] : [module]), dir].filter(Boolean))]
+  return { modules, ...(provider.endsWith('.go') ? { goPackage: basenameOf(dir) } : {}) }
+}
 
+interface ImportPath { direct: string; relative: boolean; pathSpecific: boolean }
+interface PreparedImport { path: ImportPath; symbol?: string; withoutSymbol?: ImportPath }
+function prepareImport(value: string, consumer: string): PreparedImport {
   const raw = value.trim().replace(/^['"]|['"]$/g, '').toLowerCase()
   const python = raw.match(/\bfrom\s+([.a-z0-9_$\-/]+)\s+import\b/)?.[1]
-  let imported = python ?? raw.replace(/^use\s+/, '').replace(/;$/, '').replace(/::/g, '/')
-  const symbolSuffix = `/${symbol.toLowerCase()}`
-  if (imported.endsWith(symbolSuffix)) imported = imported.slice(0, -symbolSuffix.length)
-  imported = imported.replace(/^(?:crate|self)\//, '')
-
-  if (imported.startsWith('.')) {
-    const relative = imported.startsWith('./') || imported.startsWith('../')
-      ? imported
-      : imported.replace(/^(\.+)/, dots => `${'../'.repeat(Math.max(0, dots.length - 1))}./`)
-    const resolved = withoutExtension(normalizedPath(`${directoryOf(normalizedPath(consumerPath))}/${relative}`))
-    return modulePaths.has(resolved) ? 3 : 0
+  const imported = python ?? raw.replace(/^use\s+/, '').replace(/;$/, '').replace(/::/g, '/')
+  const compile = (input: string): ImportPath => {
+    input = input.replace(/^(?:crate|self)\//, '')
+    if (input.startsWith('.')) {
+      const relative = input.startsWith('./') || input.startsWith('../') ? input
+        : input.replace(/^(\.+)/, dots => '../'.repeat(Math.max(0, dots.length - 1)) + './')
+      return { direct: withoutExtension(normalizedPath(directoryOf(normalizedPath(consumer)) + '/' + relative)), relative: true, pathSpecific: true }
+    }
+    return { direct: withoutExtension(normalizedPath(input)), relative: false, pathSpecific: /[\\/]/.test(input) || /\.[a-z0-9]+$/i.test(input) }
   }
-
-  const direct = withoutExtension(normalizedPath(imported))
-  // Source paths are stronger evidence than separately captured imported names.
-  const pathSpecific = /[\\/]/.test(imported) || /\.[a-z0-9]+$/i.test(imported)
-  if (modulePaths.has(direct)) return pathSpecific ? 3 : 1
-  if ([...modulePaths].some(modulePath => direct.endsWith(`/${modulePath}`))) return 2
-  if (provider.endsWith('.go') && basenameOf(direct) === basenameOf(providerDir)) return 1
-  const moduleBasenames = new Set([...modulePaths].map(basenameOf))
-  return !direct.includes('/') && moduleBasenames.has(direct) ? 1 : 0
+  const slash = imported.lastIndexOf('/')
+  return { path: compile(imported), ...(slash >= 0 ? { symbol: imported.slice(slash + 1), withoutSymbol: compile(imported.slice(0, slash)) } : {}) }
 }
 
 function add(m: Map<string, Set<string>>, k: string, v: string) { let s = m.get(k); if (!s) { s = new Set(); m.set(k, s) } s.add(v) }

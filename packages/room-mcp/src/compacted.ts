@@ -5,7 +5,7 @@
  * is joined afresh under the same name and session id, the participant's claims and scope stay (they are in the
  * compacted room), and the workers room is re-attached.
  */
-import { joinSession, whenStale, type JoinOptions, type Session } from './session.js'
+import { detachCheckout, joinSession, whenStale, type CheckoutReuse, type JoinOptions, type Session } from './session.js'
 import { rejoinOptions } from './tools/join.js'
 
 export interface StaleReplacementOptions {
@@ -18,7 +18,7 @@ export interface StaleReplacementOptions {
 }
 
 export class StaleReplacement {
-  private pending: { primary: Session; secondaries: Session[] } | undefined
+  private pending: { primary: Session; secondaries: Session[]; reuse: Map<Session, CheckoutReuse> } | undefined
   constructor(private readonly o: StaleReplacementOptions) {}
 
   /** A replacement is owed: its join has not been adopted yet. */
@@ -29,7 +29,7 @@ export class StaleReplacement {
     if (!this.pending && current?.stale) {
       const joined = this.o.joinedSessions()
       const all = joined.includes(current) ? joined : [current, ...joined]
-      this.pending = { primary: all[0]!, secondaries: all.slice(1) }
+      this.pending = { primary: all[0]!, secondaries: all.slice(1), reuse: new Map(all.map(old => [old, detachCheckout(old)])) }
       this.o.log(`${current.roomName}: rejoining with a fresh copy of the room under the same name`)
       for (const old of [...all].reverse()) await this.o.drop(old, current.stale.reason)
     }
@@ -38,25 +38,32 @@ export class StaleReplacement {
 
   /** The replacement's join: the stale primary's room and name, under its session id. */
   join(): Promise<Session> {
-    const { primary } = this.pending!
-    return (this.o.join ?? joinSession)({ ...rejoinOptions(primary, this.o.credentialsPath), sessionId: primary.lease?.sessionId, log: this.o.log })
+    const { primary, reuse } = this.pending!
+    return (this.o.join ?? joinSession)({ ...rejoinOptions(primary, this.o.credentialsPath), reuse: reuse.get(primary), sessionId: primary.lease?.sessionId, log: this.o.log })
   }
 
   /** Adopt the fresh session without clearing its own claims, as a host rebind does, then rejoin the secondaries. */
   async finish(fresh: Session, adopt: (s: Session, clearStale: boolean) => Promise<void>): Promise<void> {
-    const { primary, secondaries } = this.pending!
+    const { primary, secondaries, reuse } = this.pending!
     this.pending = undefined
+    try {
     const removed = removeOwnMirrors(fresh)
     if (removed) this.o.log(`${fresh.roomName}: removed ${removed} mirrored worker claim(s); the workers bridge mirrors them again`)
+    await reuse.get(primary)?.watcher?.dispose()
     await adopt(fresh, false)
     for (const old of secondaries) {
-      try { this.o.attachWorkersRoom(await (this.o.join ?? joinSession)({ ...rejoinOptions(old, this.o.credentialsPath), sessionId: primary.lease?.sessionId, log: this.o.log }), fresh) }
+      try { this.o.attachWorkersRoom(await (this.o.join ?? joinSession)({ ...rejoinOptions(old, this.o.credentialsPath), reuse: reuse.get(old), sessionId: primary.lease?.sessionId, log: this.o.log }), fresh) }
       catch (error) { this.o.log(`could not rejoin ${old.roomName} after the replacement: ${error instanceof Error ? error.message : String(error)}; it is joined again when a worker needs it`) }
+      finally { await reuse.get(old)?.watcher?.dispose() }
     }
+    } finally { await Promise.all([...reuse.values()].map(value => value.watcher?.dispose())) }
   }
 
   /** A human chose a room (room_join, room_create): no replacement is owed any more. */
-  forget(): void { this.pending = undefined }
+  forget(): void {
+    for (const value of this.pending?.reuse.values() ?? []) void value.watcher?.dispose().catch(error => this.o.log(`watch cleanup failed: ${String(error)}`))
+    this.pending = undefined
+  }
 }
 
 /**

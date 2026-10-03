@@ -30,7 +30,8 @@ import { WebsocketProvider } from 'y-websocket'
 import { claimDigest, reanchorClaims, type ClaimMove, type ClaimRelease, type ClaimSearchProgress } from './reanchor.js'
 import type { Claim, ParticipantGit, PushedMsg, ReleaseMsg } from '@room/shared'
 import * as Y from 'yjs'
-import chokidar, { type FSWatcher } from 'chokidar'
+import { CheckoutWatch, WatcherHandoff, type WatchHandlers } from './checkout-watch.js'
+export { WatcherHandoff } from './checkout-watch.js'
 import { RoomDoc, assertValidParticipantName, roomConnection, claimReleaseText, colorFor, holderFence, isRegenerableBuildPath, manifestKey, manifestPaths, newId, participantRecord, type Identity, type Kind, type Msg, type NoteMsg, type PostBody, type Presence } from '@room/shared'
 
 import { parseRoomIgnore, type RoomIgnore } from './roomignore.js'
@@ -160,6 +161,8 @@ export interface RoomdOptions {
   onProvider?: (provider: WebsocketProvider) => void
   /** Test scheduler for remote repair; callback is awaited by the test without a wall clock. */
   remoteRepairSchedule?: (run: () => Promise<void>) => () => void
+  /** Same-checkout reconnect only; consumed once by the replacement daemon. */
+  watcher?: WatcherHandoff
   /** Test hook after the seed scan, before the watcher is established. */
   beforeWatcherReady?: () => void
   /** Slow Git-state reconciliation interval; default 60s. */
@@ -172,6 +175,8 @@ export interface Skipped { size: string[]; budget: string[]; ignore: string[] }
 
 export interface Roomd {
   stop(reason?: string): Promise<void>
+  /** Detach disk events before replacing the room replica; the next daemon reconciles the gap. */
+  takeWatcher?(): WatcherHandoff | undefined
   /** Pause all fenced publication after a server size-cap rejection. */
   setPublicationRejected(rejected: boolean): void
   reconcileGitChanges(): Promise<void>
@@ -329,7 +334,8 @@ class Daemon implements Roomd {
 
   private tracked = new Set<string>()
   private indexed = new Set<string>()
-  private watcher: FSWatcher | null = null
+  private watcher: CheckoutWatch | null = null
+  private watcherHandoff?: WatcherHandoff
   readonly batch: DiskBatch
   private readonly publisher: Publisher
   private workQueue: Promise<void> = Promise.resolve()
@@ -360,6 +366,7 @@ class Daemon implements Roomd {
     if (options.owner) assertValidParticipantName(options.owner)
     if (options.label) assertValidParticipantName(options.label)
     this.dir = path.resolve(options.dir)
+    this.watcherHandoff = options.watcher
     this.name = options.name
     this.kind = options.kind ?? 'human'
     this.owner = options.owner ?? options.name
@@ -424,6 +431,8 @@ class Daemon implements Roomd {
   }
 
   async start(): Promise<void> {
+    this.watcher = this.watcherHandoff?.take(this.dir) ?? null
+    this.watcherHandoff = undefined
     if (!fs.existsSync(path.join(this.dir, '.git'))) {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
@@ -535,6 +544,15 @@ class Daemon implements Roomd {
     this.roomIgnoreText = text
     this.roomIgnore = parseRoomIgnore(text)
     if (this.roomIgnore.patterns) this.log(`${ROOMIGNORE}: ${this.roomIgnore.patterns} pattern(s)`)
+  }
+
+  takeWatcher(): WatcherHandoff | undefined {
+    if (!this.watcher || !this.started || this.stopped) return undefined
+    const watcher = this.watcher
+    watcher.ignoredDirs = new Set(this.ignoredDirs)
+    watcher.unwatchedDirs = this.unwatchedDirs
+    this.watcher = null
+    return new WatcherHandoff(watcher)
   }
 
   async stop(reason = 'requested'): Promise<void> {
@@ -1230,7 +1248,7 @@ class Daemon implements Roomd {
     // Opening the root and reading one entry proves it is listable without enumerating a wide root.
     try { const root = fs.opendirSync(this.dir); try { root.readSync() } finally { root.closeSync() } }
     catch (error) { throw new RoomdError(`cannot watch ${this.dir}: ${errMsg(error)}`, 1) }
-    const watchedFiles = new Set<string>()
+    const watchedFiles = this.watcher?.files ?? new Set<string>()
     let warnedLarge = false
     const countFile = (absolute: string, add: boolean) => {
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
@@ -1241,10 +1259,7 @@ class Daemon implements Roomd {
         this.log(`warn: watching ${watchedFiles.size} files; add generated or bulky paths to ${ROOMIGNORE}`)
       }
     }
-    const watcher = chokidar.watch(this.dir, {
-      ignoreInitial: true,
-      followSymlinks: false,
-      persistent: true,
+    const handlers: WatchHandlers = {
       ignored: (absolute: string, stat?: fs.Stats) => {
         const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
         if (relpath === '') return false
@@ -1261,9 +1276,7 @@ class Daemon implements Roomd {
         if (stat?.isFile()) countFile(absolute, true)
         return false
       },
-    })
-    this.watcher = watcher
-    watcher.on('all', (event, absolute) => {
+      event: (event, absolute) => {
       if (this.stopped) return
       if (event === 'add') countFile(absolute, true)
       else if (event === 'unlink') countFile(absolute, false)
@@ -1277,19 +1290,24 @@ class Daemon implements Roomd {
       }
       if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
-    })
-    watcher.on('error', error => this.log(`watcher error: ${errMsg(error)}`))
-    // Before ready, an error on the clone itself or running out of watches means nothing would be seen: fail the start.
-    // An unreadable subdirectory is only logged; the rest of the clone is still watched.
-    await new Promise<void>((resolve, reject) => {
-      const fatal = (error: unknown) => {
-        const e = error as NodeJS.ErrnoException
-        if (e?.path === this.dir || e?.code === 'EMFILE' || e?.code === 'ENOSPC') { watcher.off('ready', ready); reject(new RoomdError(`cannot watch ${this.dir}: ${errMsg(error)}`, 1)) }
-      }
-      const ready = () => { watcher.off('error', fatal); resolve() }
-      watcher.on('error', fatal)
-      watcher.once('ready', ready)
-    })
+      },
+      error: error => this.log(`watcher error: ${errMsg(error)}`),
+    }
+    const reused = this.watcher
+    const watcher = this.watcher = reused ?? new CheckoutWatch(this.dir, handlers, watchedFiles)
+    if (reused) {
+      watcher.attach(handlers)
+      const currentIgnored = this.ignoredDirs
+      this.ignoredDirs = watcher.ignoredDirs
+      this.unwatchedDirs = watcher.unwatchedDirs
+      this.applyIgnoredDirs(currentIgnored)
+      // The replacement's tracked set may now include files below a build folder
+      // pruned by the previous daemon. There will be no later "added" poll for them.
+      for (const relpath of this.tracked) if (isRegenerableBuildPath(relpath) && !this.isIgnoredPath(relpath))
+        watcher.add(this.abs(relpath))
+    }
+    try { await watcher.ready }
+    catch (error) { throw new RoomdError(`cannot watch ${this.dir}: ${errMsg(error)}`, 1) }
     this.log(`watching ${watchedFiles.size} files`)
   }
 

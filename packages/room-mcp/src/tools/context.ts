@@ -28,6 +28,8 @@ export interface ToolDef {
 }
 
 export interface ToolCtx {
+  /** Finish host rebinding before completion; the caller bounds this wait. */
+  completionReady?(): Promise<void>
   /** Current session, or null before room_join. */
   getSession(): Session | null
   setSession(s: Session | null): void

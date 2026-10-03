@@ -34,6 +34,7 @@ afterEach(async () => {
 })
 
 async function worker() {
+  let current: Session | null = null
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-done-publish-')))
   git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
   fs.writeFileSync(path.join(dir, '.gitignore'), '.room/\n')
@@ -49,19 +50,20 @@ async function worker() {
       on() {}, off() {}, destroy() { this.awareness.destroy() } }) as unknown as WebsocketProvider,
   })
   // Make the publication depend on room_done, not on watcher delivery or periodic polling.
-  const internal = daemon as Roomd & { watcher: { removeAllListeners(event: string): void } }
-  internal.watcher.removeAllListeners('all')
+  const internal = daemon as Roomd & { watcher: { suspend(): void } }
+  internal.watcher.suspend()
   const room = daemon.roomDoc
   const session = { dir, daemon, room, me: { name, kind: 'agent', owner: 'lead', label: 'w' },
     awareness: daemon.provider.awareness, provider: daemon.provider, policyStore: testPolicyStore(),
     ...hubSeam(room), roomName: 'local/test', roomUrl: 'ws://memory/local/test', browserUrl: 'http://memory',
     shareMax: 'full', shareRequested: 'full',
   } as Session
+  current = session
   log.mockClear()
-  tools = createTools({ cwd: dir, getSession: () => session, setSession() {}, listCwdProcesses: () => [], log,
+  tools = createTools({ cwd: dir, getSession: () => current, setSession(s) { current = s }, listCwdProcesses: () => [], log,
     config: { ...await resolveConfig({ dir }), workerId: record.id } })
   room.addClaim({ path: 'app.txt', from: 1, to: 1, by: name, byKind: 'agent', intent: 'edit app' })
-  return { room, name, registry, record, session }
+  return { room, name, registry, record, session, clear: () => { current = null } }
 }
 
 it('publishes a commit and overlay before room_done releases claims and reports', async () => {
@@ -86,6 +88,28 @@ it('publishes a commit and overlay before room_done releases claims and reports'
   expect(manifestPaths(room, name)).toEqual(['app.txt', 'extra.txt'])
   expect(registry.reports(record.id)[0].done?.changed).toEqual(['app.txt', 'extra.txt'])
   expect(room.openClaims().filter(c => c.by === name)).toEqual([])
+})
+
+it('waits through a transient disconnect before marking done', async () => {
+  const { session, registry, record } = await worker()
+  session.provider.synced = false
+  const call = tools!.call('room_done', { summary: 'completed after reconnect' })
+  setTimeout(() => { session.provider.synced = true }, 50)
+  expect(await call).toContain('marked done')
+  expect(registry.reports(record.id)[0].done?.summary).toBe('completed after reconnect')
+})
+
+it('saves an offline worker report durably without releasing claims or posting', async () => {
+  const { session, room, name, registry, record } = await worker()
+  session.provider.synced = false
+  const post = vi.spyOn(session, 'post')
+  // Advance the bounded reconnect clock, leaving filesystem operations on real timers.
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now += 31_000)
+  expect(await tools!.call('room_done', { summary: 'saved through outage' })).toContain('completion report saved locally')
+  expect(registry.reports(record.id)[0].done?.summary).toBe('saved through outage')
+  expect(room.openClaims().some(c => c.by === name)).toBe(true)
+  expect(post).not.toHaveBeenCalled()
 })
 
 it('records a report and releases claims within 5 s when publication never settles', async () => {
@@ -163,4 +187,25 @@ it('uses the checkout publisher when the worker is a secondary session', async (
   room.participants.delete(`${name}\0git`)
   room.manifestHead.set(name, { ...head, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: 'primary' })
   expect(await tools!.call('room_done', { summary: 'finished' })).toContain('marked done')
+})
+
+it('saves completion through a failed replacement with no current session', async () => {
+  const { registry, record, clear } = await worker()
+  clear()
+  tools!.setAutoJoin({ ensure: async () => { throw new Error('replacement failed') }, settle: async () => {}, cancel() {}, retarget() {} })
+  let now = Date.now()
+  vi.spyOn(Date, 'now').mockImplementation(() => now += 31_000)
+  expect(await tools!.call('room_done', { summary: 'retained after failed replacement' })).toContain('completion report saved locally')
+  expect(registry.reports(record.id)[0].done?.summary).toBe('retained after failed replacement')
+})
+
+it('cancels promptly while auto-join is still pending', async () => {
+  await worker()
+  let finish!: () => void
+  const held = new Promise<void>(resolve => { finish = resolve })
+  tools!.setAutoJoin({ ensure: () => held, settle: () => held, cancel() {}, retarget() {} })
+  const abort = new AbortController()
+  const done = tools!.call('room_done', { summary: 'cancelled' }, abort.signal)
+  abort.abort()
+  try { expect(await done).toBe('error: tool call cancelled') } finally { finish() }
 })
