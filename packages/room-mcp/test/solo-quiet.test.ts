@@ -50,10 +50,10 @@ async function mcp() {
   return {
     s, tools, texts,
     /** Another participant arrives (fresh awareness and the participant record a join publishes). */
-    arrive(who: { name: string; kind: 'agent' | 'human' }) {
+    arrive(who: { name: string; kind: 'agent' | 'human' }, watchedDirectory?: string) {
       visiblePeer(doc, who.name, who.kind)
       const peer = new Awareness(new Y.Doc())
-      peer.setLocalState({ user: { ...who, color: '#111' }, status: 'idle', lastActive: Date.now() })
+      peer.setLocalState({ user: { ...who, color: '#111' }, watchedDirectory, status: 'idle', lastActive: Date.now() })
       applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
       peers.push(peer)
     },
@@ -108,7 +108,8 @@ it('own workers are company for their own notices only', async () => {
     writeFileSync(join(dir, '.git/room/registry/migration.json'), JSON.stringify({ v: 1, sources: {}, done: true }))
     const registry = await registryForDir(dir)
     await seedRegistryWorker(dir, 'money', { name: 'Rohan+money', room: 'r', lead: { participant: 'Rohan', room: 'r', instance: registry.instance } })
-    m.arrive({ name: 'Rohan+money', kind: 'agent' })
+    m.s.awareness.setLocalStateField('watchedDirectory', 'shared-checkout')
+    m.arrive({ name: 'Rohan+money', kind: 'agent' }, 'shared-checkout')
     hubAppend<NoteMsg>(m.s.room, room, { type: 'note', to: 'Rohan', priority: 'notify', text: 'released your claim on db.py:1-2: that code changed in abcdef0123' })
     await quiet()
     expect(m.texts).toEqual([])
@@ -116,5 +117,17 @@ it('own workers are company for their own notices only', async () => {
     await vi.waitFor(() => expect(m.texts).toHaveLength(1))
     expect(m.texts[0]).toContain('Rohan+money finished')
     expect(m.texts[0]).not.toContain('sent a note')
+  } finally { await m.close() }
+})
+
+it('a distinct agent in the same checkout wakes for an addressed question and reaches the hook', async () => {
+  const m = await mcp()
+  try {
+    m.s.awareness.setLocalStateField('watchedDirectory', 'shared-checkout')
+    m.arrive(kieran, 'shared-checkout')
+    hubAppend<QuestionMsg>(m.s.room, kieran, { type: 'question', to: 'Rohan', text: 'can you review my edit?' })
+    await vi.waitFor(() => expect(m.texts).toHaveLength(1))
+    expect(m.texts[0]).toContain('Kieran asked a question')
+    expect(m.hookLines().join('\n')).toContain('can you review my edit?')
   } finally { await m.close() }
 })

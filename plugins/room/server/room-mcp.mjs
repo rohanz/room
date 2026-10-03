@@ -31674,7 +31674,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.1",
+      version: "0.17.2",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -32959,7 +32959,7 @@ function hasCompany(s, runningWorkers = [], now = Date.now()) {
   const nb = neighbours(participantsView(s.room, s.awareness, now), s.me.name);
   for (const [clientId, value2] of s.awareness.getStates()) {
     const p = value2;
-    if (!p.user || clientId === s.awareness.clientID || !nb.has(p.user.name) || sameCheckoutSession(s, p.user.name)) continue;
+    if (!p.user || clientId === s.awareness.clientID || !nb.has(p.user.name)) continue;
     if (!isFresh(s.awareness, clientId, now)) continue;
     if (p.user.kind === "human" && p.status === "viewing") continue;
     names.set(p.user.name, p.user.name);
@@ -59802,7 +59802,7 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       await loadAreas(s);
       const m = s.room.meta;
       const publisher = publisherLine(s);
-      const people = new Set(presences(s).filter((p) => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map((p) => p.user.name)).size;
+      const people = new Set(presences(s).filter((p) => p.user.name !== s.me.name && !isPrName(p.user.name)).map((p) => p.user.name)).size;
       const participants = `${people} other participant${people === 1 ? "" : "s"}`;
       const noUnseen = !ledger2.candidates(s).length;
       const sharingLevel = shareOf(s, s.me.name);
@@ -60030,7 +60030,11 @@ function createAreas(deps) {
   };
   const myAreas = (s) => areasFor(s, s.me.name);
   const inMyAreas = (s, person) => sharesArea(myAreas(s), areasFor(s, person));
-  const alsoIn = (s, areas) => others(s).filter((n) => !sameCheckoutSession(s, n)).map((n) => ({ n, shared: areasFor(s, n).filter((a) => areas.includes(a)) })).filter((x) => x.shared.length).map((x) => `${x.n} (${x.shared.join(", ")})`);
+  const alsoIn = (s, areas) => others(s).map((n) => {
+    const scope = s.room.scope(n);
+    const theirs = sameCheckoutSession(s, n) ? [...scope?.areas ?? [], ...areasOf(s).areasOf(scope?.paths ?? [])] : areasFor(s, n);
+    return { n, shared: [...new Set(theirs)].filter((a) => areas.includes(a)) };
+  }).filter((x) => x.shared.length).map((x) => `${x.n} (${x.shared.join(", ")})`);
   const ownerHints = (s, areas) => {
     const ax = areasOf(s);
     const login = s.me.owner ?? s.me.name;
@@ -60450,13 +60454,13 @@ function handlers6(state) {
         return out2.join("\n");
       }
       out2.push(shareLine(s));
-      const here = others(s).filter((n) => !sameCheckoutSession(s, n) && presences(s).some((p) => p.user.name === n));
+      const here = others(s).filter((n) => presences(s).some((p) => p.user.name === n));
       const label = (name2) => displayName({ name: name2, kind: (presences(s).find((p) => p.user.name === name2 && p.user.kind === "agent") ?? presences(s).find((p) => p.user.name === name2))?.user.kind ?? s.room.scope(name2)?.byKind ?? s.room.openClaims().find((c) => c.by === name2)?.byKind ?? "human" });
       const mineA = myAreas(s);
       setPresence(s, { areas: mineA });
       out2.push(...areaLines(s, mineA));
       out2.push(here.length ? `here now: ${here.map(label).join(", ")}` : "nobody else is here yet");
-      for (const n of here) out2.push(`  ${label(n)}: ${personLine2(s, n)}`);
+      for (const n of here) out2.push(`  ${label(n)}: ${sameCheckoutSession(s, n) ? "another session in this checkout" : personLine2(s, n)}`);
       const away = others(s).filter((n) => !sameCheckoutSession(s, n) && !here.includes(n) && manifestPaths(s.room, n).length);
       for (const n of away) out2.push(`  ${label(n)} (offline): ${personLine2(s, n)}`);
       if (s.autoTagNote) {

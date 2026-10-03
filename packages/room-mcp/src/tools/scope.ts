@@ -117,7 +117,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       await loadAreas(s)
       const m = s.room.meta
       const publisher = publisherLine(s)
-      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !sameCheckoutSession(s, p.user.name) && !isPrName(p.user.name)).map(p => p.user.name)).size
+      const people = new Set(presences(s).filter(p => p.user.name !== s.me.name && !isPrName(p.user.name)).map(p => p.user.name)).size
       const participants = `${people} other participant${people === 1 ? '' : 's'}`
       const noUnseen = !ledger.candidates(s).length
       const sharingLevel = shareOf(s, s.me.name)
@@ -316,8 +316,15 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
     }
   const myAreas = (s: Session): string[] => areasFor(s, s.me.name)
   const inMyAreas = (s: Session, person: string): boolean => sharesArea(myAreas(s), areasFor(s, person))
-  const alsoIn = (s: Session, areas: string[]): string[] => others(s).filter(n => !sameCheckoutSession(s, n))
-      .map(n => ({ n, shared: areasFor(s, n).filter(a => areas.includes(a)) }))
+  const alsoIn = (s: Session, areas: string[]): string[] => others(s)
+      .map(n => {
+        // Shared files are not independent work, but another agent's declared scope is.
+        const scope = s.room.scope(n)
+        const theirs = sameCheckoutSession(s, n)
+          ? [...(scope?.areas ?? []), ...areasOf(s).areasOf(scope?.paths ?? [])]
+          : areasFor(s, n)
+        return { n, shared: [...new Set(theirs)].filter(a => areas.includes(a)) }
+      })
       .filter(x => x.shared.length)
       .map(x => `${x.n} (${x.shared.join(', ')})`)
   const ownerHints = (s: Session, areas: string[]): string[] => {

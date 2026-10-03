@@ -10,7 +10,7 @@ export interface CompanyState {
   others: string[]
 }
 
-/** Another Room process can watch this exact physical checkout under a different name. */
+/** File-publication deduplication only: distinct agents in one checkout still count as company. */
 export function sameCheckoutSession(s: Session, name: string): boolean {
   const mine = s.awareness.getLocalState()?.watchedDirectory
   if (!mine || name === s.me.name) return false
@@ -26,7 +26,7 @@ export function hasCompany(s: Session, runningWorkers: readonly Pick<LocalWorker
   const nb = neighbours(participantsView(s.room, s.awareness, now), s.me.name)
   for (const [clientId, value] of s.awareness.getStates()) {
     const p = value as Partial<Presence>
-    if (!p.user || clientId === s.awareness.clientID || !nb.has(p.user.name) || sameCheckoutSession(s, p.user.name)) continue
+    if (!p.user || clientId === s.awareness.clientID || !nb.has(p.user.name)) continue
     if (!isFresh(s.awareness, clientId, now)) continue
     if (p.user.kind === 'human' && p.status === 'viewing') continue
     names.set(p.user.name, p.user.name)

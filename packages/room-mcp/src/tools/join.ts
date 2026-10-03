@@ -276,13 +276,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return out.join('\n')
       }
       out.push(shareLine(s))
-      const here = others(s).filter(n => !sameCheckoutSession(s, n) && presences(s).some(p => p.user.name === n))
+      const here = others(s).filter(n => presences(s).some(p => p.user.name === n))
       const label = (name: string) => displayName({ name, kind: (presences(s).find(p => p.user.name === name && p.user.kind === 'agent') ?? presences(s).find(p => p.user.name === name))?.user.kind ?? s.room.scope(name)?.byKind ?? s.room.openClaims().find(c => c.by === name)?.byKind ?? 'human' })
       const mineA = myAreas(s)
       setPresence(s, { areas: mineA })
       out.push(...areaLines(s, mineA))
       out.push(here.length ? `here now: ${here.map(label).join(', ')}` : 'nobody else is here yet')
-      for (const n of here) out.push(`  ${label(n)}: ${personLine(s, n)}`)
+      for (const n of here) out.push(`  ${label(n)}: ${sameCheckoutSession(s, n) ? 'another session in this checkout' : personLine(s, n)}`)
       const away = others(s).filter(n => !sameCheckoutSession(s, n) && !here.includes(n) && manifestPaths(s.room, n).length)
       for (const n of away) out.push(`  ${label(n)} (offline): ${personLine(s, n)}`)
       if (s.autoTagNote) { out.push(s.autoTagNote); delete s.autoTagNote }

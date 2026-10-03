@@ -16,7 +16,7 @@ import type { SessionBinding } from '../src/binding.js'
 import { memorySession } from './fixtures/session.js'
 import { presentPeer, visiblePeer } from './fixtures/visible.js'
 
-it('counts a teammate with a different machine checkout id, while deduping the same physical checkout', () => {
+it('counts distinct participants as company regardless of their physical checkout', () => {
   const own = new Y.Doc(), foreign = new Y.Doc(), remote = new Y.Doc()
   const awareness = new Awareness(own), peer = new Awareness(foreign), remotePeer = new Awareness(remote)
   const room = new RoomDoc(own)
@@ -30,7 +30,7 @@ it('counts a teammate with a different machine checkout id, while deduping the s
     expect(hasCompany(session)).toEqual({ company: true, others: ['Bea'] })
     peer.setLocalStateField('watchedDirectory', 'machine-a:path')
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(peer, [foreign.clientID]), 'test')
-    expect(hasCompany(session)).toEqual({ company: false, others: [] })
+    expect(hasCompany(session)).toEqual({ company: true, others: ['Bea'] })
     remotePeer.setLocalState({ user: { name: 'Bea', kind: 'agent' }, sessionId: 'bea-session', watchedDirectory: 'machine-b:path' })
     applyAwarenessUpdate(awareness, encodeAwarenessUpdate(remotePeer, [remote.clientID]), 'test')
     expect(hasCompany(session)).toEqual({ company: true, others: ['Bea'] })

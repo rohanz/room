@@ -12,7 +12,7 @@ Another session in this clone or its linked worktrees uses the same local room w
 
 Automatic room selection does not always mean immediate connection. Claude normally connects when its Room MCP starts. With Codex’s shared app-server, the first Room tool call supplies the repository and starts joining; **“show room state”** is enough, with no explicit join request. A remembered team choice or `ROOM_SERVER` overrides the local default.
 
-Two sessions in the **exact same checkout** are shown as separate sessions, but currently do not count as company for automatic announcements or wakes. Their messages still appear on the next Room tool call. For ordinary automatic coordination notifications, use separate linked worktrees; they still share the local room.
+Two connected sessions in the **exact same checkout** count as company and can receive addressed questions and notifications through their host’s wake path. Room still deduplicates shared file reports; explicit scopes and claims remain separate. For substantial parallel edits, use separate linked worktrees to isolate file changes; they still share the local room.
 
 ## Add teammates
 

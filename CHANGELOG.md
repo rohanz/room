@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.2
+
+- Separate connected participants in one checkout now count as company for announcements, hooks and eligible message wakes. Join output and participant counts include them. Shared file reports remain deduplicated, while explicit scopes and claims still coordinate independent agents.
+- Codex shared app-server startup still requires the first Room tool call to discover the repository.
+
+This patch updates the plugin only; no hosted-server deployment or migration is needed. Update the plugin on both hosts and restart sessions.
+
 ## 0.17.1
 
 - Automatic session names no longer reuse another host’s remembered label: a Claude session does not inherit `+codex` or `+codex-N`. Explicit tags and remembered custom labels remain supported.
