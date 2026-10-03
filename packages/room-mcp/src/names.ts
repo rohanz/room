@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { HolderIn } from '@room/hub-core'
-import { manifestPaths, type RoomDoc } from '@room/shared'
+import { manifestPaths, participantRecord, type RoomDoc } from '@room/shared'
 import { compareAndRelease, createExclusive, liveness, recover, replace, type InstanceToken, type Liveness } from './leases.js'
 import { HubError, type HubClient } from './hub-client.js'
 import { probeProcess, type ProcessProbe } from './worker-process.js'
@@ -197,7 +197,11 @@ export interface ChosenName extends Acquired { label?: string; note?: string }
  */
 export async function chooseName(o: ChooseNameOptions): Promise<ChosenName> {
   const worktree = await worktreePath(o.dir)
-  const remembered = o.explicitTag === undefined ? (await readChoice(o.dir))?.tags?.[worktree] : undefined
+  const savedTag = o.explicitTag === undefined ? (await readChoice(o.dir))?.tags?.[worktree] : undefined
+  // Automatic host labels belong to that host, even when another host opens the same checkout.
+  // Explicit tags and remembered custom labels retain their existing meaning.
+  const savedHost = savedTag?.match(/^(claude|codex|agent)(?:-\d+)?$/)?.[1]
+  const remembered = savedHost && savedHost !== o.host ? undefined : savedTag
   const nameOf = (tag: string) => tag ? `${o.owner}+${tag}` : o.owner
   function* candidates(): Generator<Candidate> {
     if (o.explicitTag !== undefined) { yield { name: nameOf(o.explicitTag), tag: o.explicitTag }; return }
@@ -208,21 +212,30 @@ export async function chooseName(o: ChooseNameOptions): Promise<ChosenName> {
     }
   }
   const holdsWork = (name: string) => manifestPaths(o.doc, name).length > 0
+  // Retirement removes participant keys, but the archived worker still owns its historical name.
+  const workerNames = new Set([...o.doc.retiredWorkers(), ...o.doc.acceptedWorkerViews()]
+    .filter(worker => !o.workerId || worker.id !== o.workerId).map(worker => worker.name))
   const chosen = await acquireName({
     commonDir: o.commonDir, roomKey: o.roomKey, candidates: candidates(), explicit: o.explicitTag !== undefined,
     token: o.token, holder: o.holder, host: o.host, worktree, hub: o.hub, supersedes: o.supersedes, workerId: o.workerId, takeover: o.takeover,
-    skip: c => c.tag !== remembered && holdsWork(c.name) ? 'holds uncommitted work from another clone' : undefined,
+    skip: c => {
+      const worker = participantRecord(o.doc, c.name)?.holder?.workerId
+      if ((worker && worker !== o.workerId) || workerNames.has(c.name)) return 'belongs to a previous worker'
+      return c.tag !== remembered && holdsWork(c.name) ? 'holds uncommitted work from another clone' : undefined
+    },
   })
   const label = chosen.tag || undefined
   if (o.explicitTag !== undefined) return { ...chosen, label }
   const rememberedName = remembered === undefined ? undefined : nameOf(remembered)
   const heldElsewhere = (name: string) => chosen.passed.get(name) === 'held by another session'
   const otherAccount = (name: string) => chosen.passed.get(name) === 'belongs to another account with the same display name'
+  const previousWorker = [rememberedName, o.owner].find(name => name && chosen.passed.get(name) === 'belongs to a previous worker')
   const rememberedHeld = rememberedName !== undefined && heldElsewhere(rememberedName)
   let note: string | undefined
   if (rememberedHeld || (chosen.name !== o.owner && chosen.name !== rememberedName)) {
     note = `joined as ${chosen.name} (${rememberedName && otherAccount(rememberedName) ? `remembered name ${rememberedName} belongs to another account with the same display name`
       : otherAccount(o.owner) ? `${o.owner} belongs to another account with the same display name`
+      : previousWorker ? `${previousWorker} belongs to a previous worker`
       : rememberedHeld ? `remembered name ${rememberedName} is in use by another session`
       : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`
     o.log?.(note)

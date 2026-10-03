@@ -627,7 +627,7 @@ describe('one login, two agents', () => {
     expect(manifestPaths(a, 'rohanz+codex')).toEqual(['session.py'])
     const state = await t1.call('room_state', {})
     expect(state).toContain("you: rohanz's agent in r")
-    expect(state).toContain('1 others: rohanz+codex (all:true for detail)')
+    expect(state).toMatch(/rohanz\+codex.*online/)
     const taggedState = await t2.call('room_state', { all: true })
     expect(taggedState).toContain('you: rohanz+codex · agent of rohanz · codex in r')
     expect(taggedState).toContain('rohanz+codex · agent of rohanz · codex (you):')
@@ -1740,6 +1740,36 @@ it('does not treat changed paths from another session in this checkout as claim 
   } finally { old.destroy(); await t.tools.shutdown(); s.awareness.destroy() }
 })
 
+it('scoped room_state distinguishes a live session elsewhere from offline history', async () => {
+  const t = setup()
+  const peer = addPresence(t.session!.awareness, 'Bea')
+  peer.setLocalStateField('host', 'claude')
+  applyAwarenessUpdate(t.session!.awareness, encodeAwarenessUpdate(peer, [peer.clientID]), 'test')
+  try {
+    await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
+    t.other.setScope({ by: 'Ada', byKind: 'agent', area: 'docs', summary: 'old task', paths: ['docs/'] })
+    const out = await t.tools.call('room_state', {})
+    expect(out).toContain('participants elsewhere (1 online):')
+    expect(out).toMatch(/Bea's agent.*claude.*online/)
+    expect(out).toContain("1 offline elsewhere: Ada's agent")
+  } finally { peer.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
+})
+
+it('scoped room_state keeps a projected worker status separate from offline teammates', async () => {
+  const t = setup()
+  try {
+    await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
+    const worker: FixtureWorker = { name: 'Rohan+elsewhere', tag: 'elsewhere', lead: 'Rohan', host: 'codex', task: 'review docs', dir, branch: 'main', pid: 0, startedAt: 1, status: 'done' }
+    const registry = await registerWorkers(t.session!, [worker])
+    await projectWorkers(t.session!, registry, 'Rohan', 'joined')
+    t.other.setScope({ by: worker.name, byKind: 'agent', area: 'docs', summary: 'review docs', paths: ['docs/'] })
+    const out = await t.tools.call('room_state', {})
+    expect(out).toContain('workers elsewhere:')
+    expect(out).toMatch(/Rohan\+elsewhere.*via Rohan \(done\)/)
+    expect(out).not.toMatch(/offline elsewhere:.*Rohan\+elsewhere/)
+  } finally { await t.tools.shutdown(); t.session?.awareness.destroy(); await dropRegistry() }
+})
+
 it('scoped room_state shows scope overlap, hides unrelated claims and their owners', async () => {
   const t = setup()
   const ada = addPresence(t.session!.awareness, 'Ada')
@@ -1747,12 +1777,12 @@ it('scoped room_state shows scope overlap, hides unrelated claims and their owne
   try {
     await t.tools.call('room_scope', { area: 'src', summary: 'edit', paths: ['src/'] })
     t.other.setScope({ by: 'Ada', byKind: 'agent', area: 'src', summary: 'review', paths: ['src/file.ts'] })
-    t.other.addClaim({ by: 'Bea', byKind: 'agent', path: 'other/file.ts', from: 1, to: 1, intent: 'elsewhere' })
+    t.other.addClaim({ by: 'Bea', byKind: 'agent', path: 'other/file.ts', from: 1, to: 1, intent: 'refactor a private helper' })
     const out = await t.tools.call('room_state', {})
     expect(out).toContain('Ada')
-    expect(out).toContain("1 others: Bea's agent (all:true for detail)")
+    expect(out).toMatch(/Bea's agent.*online/)
     expect(out).toContain('Bea: 1 claim · other/file.ts\n')
-    expect(out).not.toContain('elsewhere')
+    expect(out).not.toContain('refactor a private helper')
   } finally { ada.destroy(); bea.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }
 })
 
@@ -1777,7 +1807,7 @@ it('scoped room_state hides a disjoint claim owner while still showing same-path
     t.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'src/file.ts', from: 1, to: 2, intent: 'top' })
     t.other.addClaim({ by: 'Ada', byKind: 'agent', path: 'src/file.ts', from: 10, to: 12, intent: 'bottom' })
     const out = await t.tools.call('room_state', {})
-    expect(out).toContain("1 others: Ada's agent (all:true for detail)")
+    expect(out).toMatch(/Ada's agent.*online/)
     expect(out).toContain('Ada: 1 claim\n')
     expect(out).toContain('bottom')
   } finally { ada.destroy(); await t.tools.shutdown(); t.session?.awareness.destroy() }

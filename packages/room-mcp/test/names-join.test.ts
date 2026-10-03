@@ -7,6 +7,7 @@ import { participantRecord, participantsView } from '@room/shared'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 import { IDLE_CLAIMS_MS, releaseIdleHeld } from '../src/presence-end.js'
+import { rememberTag } from '../src/choice.js'
 
 let dir: string
 const cleanups: (() => Promise<void> | void)[] = []
@@ -33,6 +34,14 @@ async function join1(sessionId: string, extra: { tag?: string } = {}): Promise<S
 const holder = (s: Session, name: string) => participantRecord(s.room, name)?.holder
 
 describe('joining under the hub name lease (registry §15; wave-0 rehearsal §2)', () => {
+  it('does not give Claude a remembered automatic Codex label', async () => {
+    await rememberTag(dir, 'codex-2')
+    vi.stubEnv('ROOM_HOST', 'claude')
+    const s = await join1('cross-host')
+    expect(s.awareness.getLocalState()?.host).toBe('claude')
+    expect(s.me.name).not.toMatch(/\+codex(?:-\d+)?$/)
+  }, 45_000)
+
   it('a second session gets the next candidate; the name, its fence and presence all follow the hub lease', async () => {
     const a = await join1('sa')
     const b = await join1('sb')
@@ -53,6 +62,26 @@ describe('joining under the hub name lease (registry §15; wave-0 rehearsal §2)
     const tools = createTools({ getSession: () => a, setSession: () => {}, cwd: dir, log: () => {} })
     await vi.waitFor(async () => expect(await tools.call('room_state', { all: true })).toMatch(new RegExp(`${b.me.name.replace('+', '\\+')}.*idle 25 min`)), { timeout: 10_000, interval: 200 })
     await tools.shutdown()
+  }, 45_000)
+
+  it('a fresh session reusing a released name does not inherit its done status', async () => {
+    const a = await join1('old-status', { tag: 'status-reuse' })
+    const oldTools = createTools({ getSession: () => a, setSession: () => {}, cwd: dir, log })
+    await oldTools.call('room_done', { summary: 'old hooks task finished' })
+    expect(a.room.messages().some(m => m.type === 'note' && m.text.includes('old hooks task finished'))).toBe(true)
+    await oldTools.shutdown()
+    await leaveSession(a)
+    const b = await join1('new-status', { tag: 'status-reuse' })
+    expect(b.room.messages().some(m => m.type === 'note' && m.text.includes('old hooks task finished'))).toBe(true)
+    const tools = createTools({ getSession: () => b, setSession: () => {}, cwd: dir, log })
+    try {
+      const state = await tools.call('room_state', { all: true })
+      const ownLine = state.split('\n').find(line => line.includes('(you):'))
+      expect(ownLine).toBeDefined()
+      expect(ownLine).not.toContain('done')
+      expect(ownLine).not.toContain('old hooks task')
+      expect(b.awareness.getLocalState()?.joinedAt).toBeTypeOf('number')
+    } finally { await tools.shutdown() }
   }, 45_000)
 
   it('H1: after eight idle hours a session releases its own claims and scope, with one notice (registry §18)', async () => {

@@ -31674,7 +31674,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.0",
+      version: "0.17.1",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -40443,7 +40443,9 @@ async function acquireName(options) {
 }
 async function chooseName(o) {
   const worktree = await worktreePath(o.dir);
-  const remembered = o.explicitTag === void 0 ? (await readChoice(o.dir))?.tags?.[worktree] : void 0;
+  const savedTag = o.explicitTag === void 0 ? (await readChoice(o.dir))?.tags?.[worktree] : void 0;
+  const savedHost = savedTag?.match(/^(claude|codex|agent)(?:-\d+)?$/)?.[1];
+  const remembered = savedHost && savedHost !== o.host ? void 0 : savedTag;
   const nameOf = (tag) => tag ? `${o.owner}+${tag}` : o.owner;
   function* candidates() {
     if (o.explicitTag !== void 0) {
@@ -40457,6 +40459,7 @@ async function chooseName(o) {
     }
   }
   const holdsWork = (name2) => manifestPaths(o.doc, name2).length > 0;
+  const workerNames = new Set([...o.doc.retiredWorkers(), ...o.doc.acceptedWorkerViews()].filter((worker) => !o.workerId || worker.id !== o.workerId).map((worker) => worker.name));
   const chosen = await acquireName({
     commonDir: o.commonDir,
     roomKey: o.roomKey,
@@ -40470,17 +40473,22 @@ async function chooseName(o) {
     supersedes: o.supersedes,
     workerId: o.workerId,
     takeover: o.takeover,
-    skip: (c) => c.tag !== remembered && holdsWork(c.name) ? "holds uncommitted work from another clone" : void 0
+    skip: (c) => {
+      const worker = participantRecord(o.doc, c.name)?.holder?.workerId;
+      if (worker && worker !== o.workerId || workerNames.has(c.name)) return "belongs to a previous worker";
+      return c.tag !== remembered && holdsWork(c.name) ? "holds uncommitted work from another clone" : void 0;
+    }
   });
   const label = chosen.tag || void 0;
   if (o.explicitTag !== void 0) return { ...chosen, label };
   const rememberedName = remembered === void 0 ? void 0 : nameOf(remembered);
   const heldElsewhere = (name2) => chosen.passed.get(name2) === "held by another session";
   const otherAccount = (name2) => chosen.passed.get(name2) === "belongs to another account with the same display name";
+  const previousWorker = [rememberedName, o.owner].find((name2) => name2 && chosen.passed.get(name2) === "belongs to a previous worker");
   const rememberedHeld = rememberedName !== void 0 && heldElsewhere(rememberedName);
   let note;
   if (rememberedHeld || chosen.name !== o.owner && chosen.name !== rememberedName) {
-    note = `joined as ${chosen.name} (${rememberedName && otherAccount(rememberedName) ? `remembered name ${rememberedName} belongs to another account with the same display name` : otherAccount(o.owner) ? `${o.owner} belongs to another account with the same display name` : rememberedHeld ? `remembered name ${rememberedName} is in use by another session` : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`;
+    note = `joined as ${chosen.name} (${rememberedName && otherAccount(rememberedName) ? `remembered name ${rememberedName} belongs to another account with the same display name` : otherAccount(o.owner) ? `${o.owner} belongs to another account with the same display name` : previousWorker ? `${previousWorker} belongs to a previous worker` : rememberedHeld ? `remembered name ${rememberedName} is in use by another session` : heldElsewhere(o.owner) ? `${o.owner} is in use by another session` : `${o.owner} still holds uncommitted work from another clone`})`;
     o.log?.(note);
   }
   if (chosen.tag !== remembered && !chosen.ownWorktree.has(rememberedName ?? o.owner)) await rememberTag(o.dir, chosen.tag);
@@ -59881,7 +59889,24 @@ ${out2.join("\n")}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else
       }
       if (hidden.length) {
         const label = (name2) => displayName({ name: name2, kind: (ps.find((p) => p.user.name === name2 && isAgentic(p.user.kind)) ?? ps.find((p) => p.user.name === name2))?.user.kind ?? s.room.scope(name2)?.byKind ?? s.room.openClaims().find((c) => c.by === name2)?.byKind ?? "human" });
-        out2.push(`  ${hidden.length} others: ${hidden.map(label).join(", ")} (all:true for detail)`);
+        const online = hidden.filter((name2) => ps.some((p) => p.user.name === name2));
+        const projected = hidden.filter((name2) => !online.includes(name2) && s.room.acceptedWorkerViewOf(name2));
+        const offline = hidden.filter((name2) => !online.includes(name2) && !projected.includes(name2));
+        if (online.length) {
+          out2.push(`participants elsewhere (${online.length} online):`);
+          for (const name2 of online) {
+            const p = ps.find((p2) => p2.user.name === name2 && isAgentic(p2.user.kind)) ?? ps.find((p2) => p2.user.name === name2);
+            out2.push(`  - ${participantIdentityLine(ps, name2, s.room.acceptedWorkerViewOf(name2))} \xB7 online \xB7 ${idleLabel(p?.idleMin, s.room.openClaims().filter((c) => c.by === name2).length) ?? activityLabel(p?.lastActive, now())}`);
+          }
+        }
+        if (projected.length) {
+          out2.push("workers elsewhere:");
+          for (const name2 of projected) {
+            const worker = s.room.acceptedWorkerViewOf(name2);
+            out2.push(`  - ${participantIdentityLine(ps, name2, worker)} \xB7 via ${worker.lead} (${worker.status})`);
+          }
+        }
+        if (offline.length) out2.push(`  ${offline.length} offline elsewhere: ${offline.map(label).join(", ")} (all:true for detail)`);
       }
       if (a.link === true) out2.push(`browser view: ${await refreshBrowserUrl(s)}`);
       const areaScopes = s.room.allScopes().filter((sc) => nb.has(sc.by) && (all2 || inView(sc.by)) || sc.by === s.me.name);

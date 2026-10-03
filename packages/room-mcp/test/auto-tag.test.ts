@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import * as Y from 'yjs'
 import { localRoomName } from '@room/roomd/local'
-import { manifestKey, participantRecord } from '@room/shared'
+import { manifestKey, participantRecord, type RetiredWorker } from '@room/shared'
 import { startAutoTaggedRoomd } from '../src/session.js'
 import { resolveConfig, resolveSessionHost } from '../src/config.js'
 import { clearChoice, readChoice, rememberTag, writeChoice, worktreePath } from '../src/choice.js'
@@ -36,6 +36,33 @@ async function start(room: HubRoom, dir = repo(), tag?: string, sessionId = `s${
   return { ...result, log, dir }
 }
 describe('automatic session tags (registry §15: local lease, then hub lease)', () => {
+  it.each([false, true])('skips archived worker names after participant keys are removed (legacy archive: %s)', async legacy => {
+    const room = hubRoom(), dir = repo()
+    await room.hold('name')
+    room.doc.retireWorker('w_old', { id: 'w_old', name: 'name+claude', tag: 'claude', lead: 'name', host: 'claude', task: 'old task', summary: 'done', files: [], fileCount: 0, startedAt: 1, finishedAt: 2, retiredAt: 3, outcome: 'merged' }, () => {})
+    if (legacy) {
+      const archive = room.doc.doc.getArray<RetiredWorker>('retiredWorkers')
+      const { id: _id, ...record } = archive.get(0)
+      archive.delete(0); archive.push([record])
+    }
+    expect(participantRecord(room.doc, 'name+claude')?.holder).toBeUndefined()
+    await rememberTag(dir, 'claude')
+    const joined = await start(room, dir)
+    expect(joined.me.name).toBe('name+claude-2')
+    expect(joined.autoTagNote).toContain('name+claude belongs to a previous worker')
+  })
+
+  it('does not automatically reuse a released worker name for a fresh host session', async () => {
+    const room = hubRoom(), dir = repo()
+    await room.hold('name')
+    room.doc.participants.set('name+claude\0id', { name: 'name+claude', kind: 'agent' })
+    room.doc.participants.set('name+claude\0holder', { sessionId: 'old-worker', epoch: 1, workerId: 'w_old', ended: 'released' })
+    await rememberTag(dir, 'claude')
+    expect((await start(room, dir)).me.name).toBe('name+claude-2')
+    // An intentional tag still permits reclaiming the released identity (as a worker resume does).
+    expect((await start(room, repo(), 'claude')).me.name).toBe('name+claude')
+  })
+
   it('a second OIDC principal with the same login automatically tries a tagged name', async () => {
     const room = hubRoom()
     const first = { id: 'oidc:first', login: 'name', readOnly: false as const }

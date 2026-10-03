@@ -8,7 +8,11 @@
 2. Say **“show room state”**. Look for `local: nothing leaves this machine`, `room: local/<repo>`, and `you: <name> in local/<repo>`. Ask for the browser link if you want to see participants and activity; the local link works while a session is running.
 3. If you do not see those lines, ask **“is Room set up right?”**. The agent checks its Room connection and hooks. The installed plugin also has `bin/room-doctor`; see [the quickstart](../README.md#start-in-five-minutes).
 
-Another session in this clone or its linked worktrees joins the same local room. Its participant name may get a tag such as `rohanz+claude`. Room shows work near your agent's own area and delivers addressed questions and relevant conflicts.
+Another session in this clone or its linked worktrees uses the same local room when both select local. A separate clone has its own local room. Its participant name may get a tag such as `rohanz+claude`; automatic labels match the host and avoid retained worker names. The default state view shows online participants elsewhere separately from offline history.
+
+Automatic room selection does not always mean immediate connection. Claude normally connects when its Room MCP starts. With Codex’s shared app-server, the first Room tool call supplies the repository and starts joining; **“show room state”** is enough, with no explicit join request. A remembered team choice or `ROOM_SERVER` overrides the local default.
+
+Two sessions in the **exact same checkout** are shown as separate sessions, but currently do not count as company for automatic announcements or wakes. Their messages still appear on the next Room tool call. For ordinary automatic coordination notifications, use separate linked worktrees; they still share the local room.
 
 ## Add teammates
 

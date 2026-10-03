@@ -22,6 +22,8 @@ codex plugin add room@room
 
 In Codex, accept the Room hooks prompt, or trust Room in `/hooks`. Its session-start and before-edit hooks put relevant room context in the agent's path. Start your agent as usual inside your repository. You can simply work: the default **local room** stays on this machine. Say **“join the room”** when you want the team room.
 
+Sessions in one clone and its linked worktrees use the same local room by default; separate clones have separate local rooms. Claude normally connects when its Room MCP starts. Codex’s shared app-server waits until the first Room tool call supplies the session’s repository, so say **“show room state”** once to establish and verify its connection. Two sessions watching the exact same checkout are visible to each other, but currently do not trigger automatic company announcements or wakes by themselves; messages remain available on the next Room tool call. Separate linked worktrees support normal coordination notifications. See [startup and wake behavior](docs/reference.md#rooms-and-destinations).
+
 The [defaults table](#defaults-and-how-to-change-them) shows what Room chooses and what to say to change it.
 
 Ask **“show room state”** to check it. A local session starts with `local: nothing leaves this machine`, then shows `room: local/<repo>` and `you: <name> in local/<repo>`. A team session shows `team room:`, `room: github.com/<owner>/<repo>`, and your branch and base. Ask for the browser link to see participants and activity.

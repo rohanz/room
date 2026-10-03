@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.17.1
+
+- Automatic session names no longer reuse another host’s remembered label: a Claude session does not inherit `+codex` or `+codex-N`. Explicit tags and remembered custom labels remain supported.
+- Automatic naming skips names retained for prior workers, including archived workers whose participant records were removed. Explicit worker resumes keep their requested names.
+- Default `room_state` lists online participants working elsewhere with their host and activity, separates offline history, and describes projected workers by their reported status. Area filtering still limits detailed claims and file changes.
+- Real local-session regressions confirm that a new session does not inherit an earlier session’s completion status, even when the old completion message remains in the room. This protection was already in 0.17.0.
+- The quickstart, onboarding and reference now distinguish automatic local room selection from deferred Codex startup, and document the existing suppression of automatic wakes between sessions in the exact same checkout.
+
+This patch updates the plugin only; it needs no hosted-server deployment or data migration. Update the plugin on both hosts and restart sessions.
+
 ## 0.17.0
 
 Room now has **one room per repository across branches**. Each participant reports their own branch and base, and conflicts are compared at each pair's merge base. The hub grants participant names and orders messages. At-least-once delivery applies to messages retained in a surviving replica's ledger; an acknowledged post can be lost if every replica holding it disappears before persistence. Expiry and caps can remove retained messages. Idle-session wakes contain a pointer, not the message text.

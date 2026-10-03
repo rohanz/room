@@ -17,7 +17,8 @@ use broke and proposes the order of work.
 
 ## Post-0.17
 
-- **Session identity and visibility.** After installing 0.17, verify that several sessions of one person show the correct host, fresh names without inherited completion status, and clearly visible active participants in the default `room_state`; fix any remaining confusion observed during the 0.16 handoff.
+- **Session identity and visibility — fixed in 0.17.1.** Automatic host labels stay with their host, retained worker names are skipped, and online sessions outside your area are visible separately from offline history. Regression tests cover real relay reconnects and confirm old completion messages do not become a fresh session’s status.
+- **Immediate discovery and same-checkout notifications.** Codex’s shared app-server waits for the first Room tool call before binding a repository. Two sessions watching the exact same checkout are visible but do not count as company for automatic announcements or wakes. Investigate safe startup discovery and distinguish separate host sessions from duplicate checkout publication without reintroducing self-conflict noise.
 
 - **One local database.** Consolidate local durable state (the worker registry, receipts, cursors, leases, choice files) into one embedded SQLite database via `node:sqlite`, replacing the hand-built temp-and-rename, fsync and O_EXCL machinery.
 - **Host adapter layer.** Isolate Claude Code and Codex specifics behind one interface.

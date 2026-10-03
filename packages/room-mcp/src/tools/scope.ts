@@ -199,7 +199,24 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (hidden.length) {
         const label = (name: string) => displayName({ name, kind: (ps.find(p => p.user.name === name && isAgentic(p.user.kind)) ?? ps.find(p => p.user.name === name))?.user.kind ?? s.room.scope(name)?.byKind ?? s.room.openClaims().find(c => c.by === name)?.byKind ?? 'human' })
-        out.push(`  ${hidden.length} others: ${hidden.map(label).join(', ')} (all:true for detail)`)
+        const online = hidden.filter(name => ps.some(p => p.user.name === name))
+        const projected = hidden.filter(name => !online.includes(name) && s.room.acceptedWorkerViewOf(name))
+        const offline = hidden.filter(name => !online.includes(name) && !projected.includes(name))
+        if (online.length) {
+          out.push(`participants elsewhere (${online.length} online):`)
+          for (const name of online) {
+            const p = ps.find(p => p.user.name === name && isAgentic(p.user.kind)) ?? ps.find(p => p.user.name === name)
+            out.push(`  - ${participantIdentityLine(ps, name, s.room.acceptedWorkerViewOf(name))} · online · ${idleLabel(p?.idleMin, s.room.openClaims().filter(c => c.by === name).length) ?? activityLabel(p?.lastActive, now())}`)
+          }
+        }
+        if (projected.length) {
+          out.push('workers elsewhere:')
+          for (const name of projected) {
+            const worker = s.room.acceptedWorkerViewOf(name)!
+            out.push(`  - ${participantIdentityLine(ps, name, worker)} · via ${worker.lead} (${worker.status})`)
+          }
+        }
+        if (offline.length) out.push(`  ${offline.length} offline elsewhere: ${offline.map(label).join(', ')} (all:true for detail)`)
       }
       if (a.link === true) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
       const areaScopes = s.room.allScopes().filter(sc => nb.has(sc.by) && (all || inView(sc.by)) || sc.by === s.me.name)

@@ -118,7 +118,7 @@ describe('areas from CODEOWNERS', () => {
     expect(mine).toContain('participants overlapping your work (1 active):')
     expect(mine).toContain("Rohan's agent (you)")
     expect(mine).not.toContain('Kieran · agent')
-    expect(mine).toContain("1 others: Kieran's agent (all:true for detail)")
+    expect(mine).toMatch(/Kieran's agent.*online/)
     expect(mine).toContain('open claims (1):')
     expect(mine).toContain('Kieran: 1 claim · api/a.py\n')
     expect(mine).not.toContain('tune a')
@@ -177,7 +177,7 @@ describe('areas without CODEOWNERS', () => {
     t.sync()
     const st = await t.rohan.tools.call('room_state', {})
     expect(st).toContain('your areas: /, api/')
-    expect(st).toContain("1 others: Kieran's agent (all:true for detail)")
+    expect(st).toMatch(/Kieran's agent.*online/)
   })
 
   it('with no scope and no changes you see everything', async () => {
