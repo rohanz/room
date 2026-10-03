@@ -6,6 +6,20 @@ was accessed through a localhost proxy. It ran the fix-0.17.1 image (f7787045;
 code identical to 07b1cb6c), with production authentication and Rohan's GitHub
 device login. Production itself remained on 0.16.40 and was not migrated.
 
+## Candidate validation
+
+The merge passed typecheck, knip, the web build, and the full plugin build; rebuilt
+assets matched the committed assets. The final full suite ran outside the sandbox:
+318 files, 3,435 tests passed in 371 seconds.
+
+Two test-only reliability corrections were needed. The relocated parser packaging
+smoke passed alone but its child failed under full-suite load with a 10-second
+limit; its all-15-grammar child now has 30 seconds inside a 45-second test. The
+watchdog test now sends non-terminating SIGCONT on its child timeout, avoiding the
+race where SIGTERM could kill a starting shell before it installed its trap. Both
+focused suites and the final full suite passed. Runtime code is unchanged by these
+test corrections.
+
 ## Results
 
 All eight repositories joined with a 0.17 client using empty local repositories,
