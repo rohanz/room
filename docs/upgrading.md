@@ -85,7 +85,7 @@ codex plugin add room@room
 
 A `v0.16.40` tag on that commit would make this pin simpler if added later.
 
-The snapshot and restore procedure is documented for this cutover and will be rehearsed on staging separately; it has not yet been exercised.
+The volume snapshot and restore procedure was [exercised on staging on 2026-10-03](superpowers/rehearsals/2026-10-03-rc14-live.md): real GitHub authentication, synthetic branch rooms, migration to rc14, and restoration under 0.16.40 preserved the login, claims, scopes and messages. The Postgres variant was not exercised.
 
 On a migrated team repository, a 0.16 client gets HTTP **403** or WebSocket close **4001** with: `update Room to 0.17 or later: this repository now has one room for all branches (<repo>)`. A 0.17 client pointed at an old server tells you the server needs Room 0.17. Upgrade both sides rather than retrying the old branch room.
 

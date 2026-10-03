@@ -35,7 +35,7 @@ Watch it: `for i in 1 2 3; do sleep 30; curl -s -o /dev/null -w "%{http_code}\n"
 
 ## 0.17 cutover snapshot and rollback
 
-This procedure is documented and will be rehearsed on staging separately; it has **not yet been exercised**. Commands follow Fly's [volume snapshot](https://docs.fly.io/volumes/snapshots/) and [volume management](https://docs.fly.io/volumes/volume-manage/) documentation as fetched on 2026-09-30. Fly keeps snapshots for **5 days by default** (configurable from 1 to 60 days). Roll back within that window or raise retention before upgrading.
+The volume snapshot, 0.17 migration and restored-volume rollback to 0.16.40 were [exercised on staging on 2026-10-03](../docs/superpowers/rehearsals/2026-10-03-rc14-live.md) with real GitHub authentication and synthetic room data. The Postgres variant was not exercised. Commands follow Fly's [volume snapshot](https://docs.fly.io/volumes/snapshots/) and [volume management](https://docs.fly.io/volumes/volume-manage/) documentation as fetched on 2026-09-30. Fly keeps snapshots for **5 days by default** (configurable from 1 to 60 days). Roll back within that window or raise retention before upgrading.
 
 **Step 0, before deploying 0.17:** stop the machine for a quiescent snapshot, since LevelDB may otherwise be mid-write. Record the machine and volume IDs, then create a snapshot of `room_data` in `sin`; wait until the new snapshot appears and record its ID. If `DATABASE_URL` is configured, take a `pg_dump` at the same stopped-machine point and retain it with the volume snapshot.
 
