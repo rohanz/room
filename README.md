@@ -81,6 +81,8 @@ The browser view shows participants, changed files, claims, the activity feed an
 
 Room has been used live with small teams, local rooms, mixed Claude Code and Codex workers, and GitHub repositories on macOS. OIDC, Postgres, Linux (where CI runs), Windows and large monorepos have test coverage but limited live use. Claims cannot prevent writes. Symbol impact is inferred and needs tests to confirm compatibility. A team room trusts everyone it admits; [the roadmap](docs/roadmap.md) tracks finer permissions and scale work. See [failure handling and diagnostics](docs/reference.md#limits-and-diagnostics).
 
+The [0.17.5 release record](docs/superpowers/rehearsals/2026-10-05-0175-release.md) tracks the plugin-only collection review-hold update and installation checks.
+
 The [0.17.4 validation record](docs/superpowers/rehearsals/2026-10-04-0174-release.md) covers eight-worker Python rehearsals, sharing and lifecycle recovery, independent review, release CI and an installed-plugin smoke test. These are bounded checks, not a guarantee of unattended reliability. If a worker outlives its launcher and its exit cannot be verified, collection retains its worktree for inspection.
 
 A [local TypeScript trial on historical Zod](docs/superpowers/rehearsals/2026-10-04-zod-historical.md) ran eight Codex workers and retained five independently matched historical fixes. One unresolved proposal was saved separately and two invalid task selections were rejected. The trial also recorded a delivered review-pause message that the lead ignored; passing project tests did not erase that coordination failure.

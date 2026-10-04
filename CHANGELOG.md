@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.17.5
 
 - Optional collection review holds: a reviewer can block new apply, copy and discard calls for a destination checkout until explicitly released. Holds survive MCP restarts, support multiple reviewers and private recovery tokens, and cannot be bypassed with `force`. Ordinary collection is unchanged.
 
 - Documentation: record the local TypeScript historical trial, separate upstream-verified fixes from rejected or unresolved requests, and clarify that coordination messages do not enforce a review pause. README, onboarding and reference now explain restarting sessions after plugin updates; future historical trials require verified reference behavior before dispatch.
+
+- Verification: expanded delegation diagnostics and a CI fixture fix that drains pending hub lease writes before deleting test storage. The earlier unexplained extra native-agent call remains recorded; passing reruns do not establish its cause.
+
+Plugin-only update. Update both host plugins and restart sessions; no server deploy, schema change or migration is needed. Review holds require the new plugin in every collecting session.
 
 ## 0.17.4
 
