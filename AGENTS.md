@@ -156,6 +156,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   Codex 0.156.1 (2026-09-23) lists GPT-6 Sol and GPT-6 Luna (the 2026-09-24 batch ran
   codex-cli 0.155.1). Check `model/list` before choosing a model on a different installation.
 - Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.
+- Historical issue rehearsals need a separate curator: check maintainer disposition, reproduce the failure on the pinned baseline, and verify the same assertion passes on a pinned upstream reference before dispatch. A closed issue or linked commit is not sufficient. Keep reference implementations and upstream history out of worker briefs; record supplied hints and any post-freeze review feedback. Report target-code correctness separately from Room coordination, and verify requested checkpoints against raw event order rather than the lead's recollection.
 - `scripts/demo.sh` brings up a server and two clones and prints the join commands. Join
   from a clone with plain Codex (`ROOM_SERVER=ws://host:1234 codex --no-daemon`, then `$room-join`) or
   with `npx tsx packages/agent/src/cli.ts --dir <clone>`.

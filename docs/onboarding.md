@@ -32,4 +32,4 @@ For a substantial task, say **“use a couple of Room workers in parallel for th
 
 A question addressed to an idle agent can wake its session. Claude Code 2.1.224+ uses its messaging inbox with plain `claude` (2.1.234+ on native Windows); Codex uses its queue. The wake carries a short pointer, then the agent reads the actual Room message. See [wake paths](reference.md#wake-paths).
 
-If something is missing or stale, ask for room state and use [diagnostics](reference.md#limits-and-diagnostics). After a plugin update, restart the agent session or reconnect its MCP server to load the new tools.
+If something is missing or stale, ask for room state and use [diagnostics](reference.md#limits-and-diagnostics). Finish active worker batches before updating the plugin, then restart the host app and agent sessions so both tools and hooks load the new installation. Ask “is Room set up right?” afterward; see [updating plugins](reference.md#updating-plugins).

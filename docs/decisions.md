@@ -393,3 +393,17 @@ runtime from the temporary packaging copy made the smoke fail; the intact copy p
 **Validation:** Methods, failed attempts and final results are retained in the [worker reliability record](superpowers/rehearsals/2026-10-04-worker-reliability-loop.md), [Flask fault record](superpowers/rehearsals/2026-10-04-flask-fault-rehearsal.md) and [0.17.4 release record](superpowers/rehearsals/2026-10-04-0174-release.md).
 
 **Built when:** 4 Oct, post-hackathon, during the user-requested fix/rehearse loop. No schema migration is introduced. Durable exit witnessing after a launcher dies remains a separate roadmap item; cleanup does not infer an exit code from a worker's report.
+
+## 2026-10-04 — Historical TypeScript trial
+
+**Decision:** Follow the Python lifecycle rehearsals with local historical bug fixes in a TypeScript project, using an older pinned upstream baseline and an actual Codex lead with Codex Room workers. Zod 4.0.6 is the candidate baseline. Room remains on 0.17.4; “rollback” applies only to the disposable target checkout.
+
+**Method:** Select original issue reports that reproduce on the baseline, verify that a later upstream resolution exists, and keep that reference implementation out of the lead and workers' context until their candidate fixes are frozen. Check runtime behavior, TypeScript inference and the combined build, then independently compare against the historical reference. A closed issue is not by itself a valid answer key. Record rejected cards, setup failures and unresolved findings rather than counting them as fixes.
+
+**Scope:** Local evaluation only; no upstream pull requests or pushes. Preserve issue attribution and distinguish reproduced historical fixes from new contributions. Results and failed intermediate assumptions are retained in the dedicated trial report below.
+
+**Observed result:** Eight original workers produced a combined candidate. Independent review confirmed five historical matches, found that two requests were intentionally unsupported rather than historical fixes, and identified one still-unresolved upstream type improvement. The accepted historical checkout retains only the five matched fixes; the unresolved proposal and all rejected/initial evidence remain separate. The [trial report](superpowers/rehearsals/2026-10-04-zod-historical.md) records exact gates, references and timings. The reduced checkout passes 2,819 runtime/type test entries across 285 files, plus build and explicit TypeScript compilation.
+
+**Coordination limit:** Room delivered a requested precollection review pause in the preview response, but the lead collected anyway. Raw event order disproved its later recollection that the request arrived after collection. Treat this as an agent compliance failure, not lost delivery or a successful checkpoint. README/reference now state this advisory limit; an optional enforced collection gate is a roadmap item.
+
+**Method correction:** Keeping all maintainer comments out of preflight also hid whether the requested behavior was intended. Future trials use a separate curator to verify maintainer disposition and baseline-fails/reference-passes behavior before dispatch, while keeping implementation answers out of workers' context. This trial's late-selected references and post-freeze corrections remain explicitly recorded; it is not an 8/8 historical-fix result or a statistical reliability estimate.

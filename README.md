@@ -30,6 +30,8 @@ Ask **“show room state”** to check it. A local session starts with `local: n
 
 If setup seems wrong, ask **“is Room set up right?”**. The agent checks Room state, server schema, hub protocol and storage health, and verifies a saved login when the server supports it. You can also run `plugins/room/bin/room-doctor` from a checkout, or from the installed plugin at `~/.claude/plugins/cache/room/room/<version>/bin/room-doctor` or `~/.codex/plugins/cache/room/room/<version>/bin/room-doctor` (replace `<version>` with the installed version).
 
+When updating Room, finish active worker batches first, update the plugin, then restart your agent sessions. A running session can keep an old hook path after the installer removes that version. Ask **“is Room set up right?”** in the fresh session to verify the loaded bundle and hook trust. See [updating plugins](docs/reference.md#updating-plugins).
+
 ### Work with teammates
 
 One team room covers **every branch of a repository**. You need push access to its GitHub repository.
@@ -65,7 +67,7 @@ The hosted server is `wss://room-rohanz.fly.dev`. To choose it explicitly, launc
 
 ## How people use it
 
-When you ask your agent to work on a feature, it can announce the files it expects to edit. If another agent is near that code, Room shows the overlap and the agents can claim separate lines or ask each other a question. An addressed question can wake an idle session. Before bringing work together, agents can preview the combined tree and run checks. Claims are advisory; commits and pushes remain your decision.
+When you ask your agent to work on a feature, it can announce the files it expects to edit. If another agent is near that code, Room shows the overlap and the agents can claim separate lines or ask each other a question. An addressed question can wake an idle session. Before bringing work together, agents can preview the combined tree and run checks. Claims and coordination messages are advisory: delivering a requested pause does not guarantee the agent follows it. Commits and pushes remain your decision.
 
 Ask explicitly for **“Room workers”** or **“use Room to have Codex do half of this”**. Generic requests for another agent or background work use your host’s normal delegation. Room runs workers in their own Git worktrees and brings finished work back as uncommitted, unstaged edits. The spawn reply names each worker's host, model and effort when known. Room has no default worker model or effort: a request or worker environment setting can select one; otherwise the host chooses.
 
@@ -78,6 +80,10 @@ The browser view shows participants, changed files, claims, the activity feed an
 [![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)
 
 Room has been used live with small teams, local rooms, mixed Claude Code and Codex workers, and GitHub repositories on macOS. OIDC, Postgres, Linux (where CI runs), Windows and large monorepos have test coverage but limited live use. Claims cannot prevent writes. Symbol impact is inferred and needs tests to confirm compatibility. A team room trusts everyone it admits; [the roadmap](docs/roadmap.md) tracks finer permissions and scale work. See [failure handling and diagnostics](docs/reference.md#limits-and-diagnostics).
+
+The [0.17.4 validation record](docs/superpowers/rehearsals/2026-10-04-0174-release.md) covers eight-worker Python rehearsals, sharing and lifecycle recovery, independent review, release CI and an installed-plugin smoke test. These are bounded checks, not a guarantee of unattended reliability. If a worker outlives its launcher and its exit cannot be verified, collection retains its worktree for inspection.
+
+A [local TypeScript trial on historical Zod](docs/superpowers/rehearsals/2026-10-04-zod-historical.md) ran eight Codex workers and retained five independently matched historical fixes. One unresolved proposal was saved separately and two invalid task selections were rejected. The trial also recorded a delivered review-pause message that the lead ignored; passing project tests did not erase that coordination failure.
 
 Room began as an [“Agents leaving the chatbox” hackathon](RULES.md) entry. Its environment matters because an agent can respond to actual uncommitted files, Git bases, teammate plans and questions while you work.
 

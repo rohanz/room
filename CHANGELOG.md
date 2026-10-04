@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Documentation: record the local TypeScript historical trial, separate upstream-verified fixes from rejected or unresolved requests, and clarify that coordination messages do not enforce a review pause. README, onboarding and reference now explain restarting sessions after plugin updates; future historical trials require verified reference behavior before dispatch.
+
 ## 0.17.4
 
 - Automatic reconnects keep the session's current sharing choice instead of reapplying its launch environment. Resumed workers retain their saved sharing choice; an explicit sharing command can still change it.
