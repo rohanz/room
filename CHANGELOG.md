@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.4
 
 - Automatic reconnects keep the session's current sharing choice instead of reapplying its launch environment. Resumed workers retain their saved sharing choice; an explicit sharing command can still change it.
 - Workers still running after a lead-shutdown stop request are labelled as running with a pending stop, rather than incorrectly shown as stopped.
@@ -9,6 +9,8 @@
 - Normal collection cleans recognized generated Python virtual environments, while preserving unrecognized top-level state and unsafe layouts.
 - A follow-up addressed to someone else’s finished worker now identifies the lead who can resume it.
 - Codex workers now retain host thread IDs discovered through session hooks, including after startup and immediately before completion. Follow-ups can resume the original conversation when the MCP environment did not provide its thread ID. Admission rejects synthetic or conflicting IDs and keeps the existing worker/run/checkout checks.
+
+Validation and release status: [0.17.4 record](docs/superpowers/rehearsals/2026-10-04-0174-release.md). This patch updates shared server/browser behavior and the plugin; deploy the server, update both host plugins and restart sessions. Schema remains 2; no data migration is required.
 
 ## 0.17.3
 

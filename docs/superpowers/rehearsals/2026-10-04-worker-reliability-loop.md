@@ -2,6 +2,8 @@
 
 Follow-up to the [resume rerun](2026-10-04-werkzeug-resume-rerun.md), using the fixes and acceptance criteria in the [reliability plan](../plans/2026-10-04-worker-reliability-loop.md). These are local development rehearsals, not a released version or a statistical success-rate estimate.
 
+Historical record: the local/unreleased status below describes each rehearsal at the time. Subsequent Flask findings, the final candidate and publication/deployment status are tracked in the [0.17.4 release record](2026-10-04-0174-release.md). The Werkzeug/HTTPX results here apply to their recorded candidate, not the later Flask fixes.
+
 ## First candidate
 
 The frozen MCP bundle SHA-256 is `78c743c5483b3e3d4137a300f11190a37d6b27f5efd3e477ab884973cf733e0c`. Room's full suite passed **3,508 tests across 321 files**; typecheck and the full plugin build passed. Two Codex Astra reviewers checked the lifecycle/cache and cleanup/resume changes, including follow-up reviews. Their blocking findings were fixed before freezing the candidate.
