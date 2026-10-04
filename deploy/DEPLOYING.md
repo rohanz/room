@@ -86,9 +86,18 @@ After a server deploy that also changed the plugin bundle, refresh the local ins
 run against the shipped code:
 
 ```sh
-claude plugin marketplace update room && claude plugin uninstall room@room && claude plugin install room@room --scope user
-codex plugin marketplace upgrade room && codex plugin remove room@room && codex plugin add room@room
+claude plugin marketplace update room && claude plugin update room@room --scope user
+codex plugin marketplace upgrade room && codex plugin add room@room
 ```
+
+Codex's marketplace upgrade command applies to Git marketplaces. For a local-directory
+marketplace, update the source checkout and run `codex plugin add room@room` directly.
+These update commands were verified with Codex 0.160.0 and Claude Code 2.1.289 on
+2026-10-04. Finish active worker batches before updating, then restart the host app/sessions:
+an already-running session can retain an old versioned hook path after the installer
+removes that cache directory, producing repeated hook failures. Do not work around that
+by disabling hooks or changing trust. In a fresh session, `room_state(check=true)` verifies
+installed versions, hook trust and whether its running bundle matches the installation.
 
 ## Configuration on the app
 
