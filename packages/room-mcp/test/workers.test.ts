@@ -1686,7 +1686,9 @@ describe('workers review: env, keys, sessions, reservation, signals', () => {
     let clock = 0
     const realKill = process.kill.bind(process)
     vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
-      if (pid === 8 && signal === 0) {
+      // Every OS operation sees this synthetic PID as absent, including the
+      // SIGKILL fallback after the fake handle refuses to stop.
+      if (pid === 8) {
         const error = new Error('synthetic worker has no OS process') as NodeJS.ErrnoException
         error.code = 'ESRCH'
         throw error
