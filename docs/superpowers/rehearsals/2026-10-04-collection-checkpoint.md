@@ -26,3 +26,5 @@ A real bundled-MCP smoke used two separate local processes in a disposable Git r
 Additional artifacts: `/tmp/room-collection-checkpoint-timeout-recheck.log`, `/tmp/room-collection-checkpoint-tests-final.log`, `/tmp/room-collection-routing-diagnostic/`. The built MCP bundle SHA256 is `dded5055edc9301d666a81245fdf56f103db91b3dd3a42bdd9a52a5c4b49f2c3`.
 
 This is an unreleased plugin change; neither installed plugin nor the hosted server has been updated by this work. Every collecting session must load the updated bundle before relying on a hold; an older plugin process does not implement the gate.
+
+Follow-up: the [routing investigation](2026-10-04-routing-investigation.md) passed six unchanged repetitions with retained traces and identified inconsistent static worker mocks. The original failure was an extra native call alongside a correctly spawned Codex Room worker; its exact cause remains unproven.
