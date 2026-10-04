@@ -407,3 +407,16 @@ runtime from the temporary packaging copy made the smoke fail; the intact copy p
 **Coordination limit:** Room delivered a requested precollection review pause in the preview response, but the lead collected anyway. Raw event order disproved its later recollection that the request arrived after collection. Treat this as an agent compliance failure, not lost delivery or a successful checkpoint. README/reference now state this advisory limit; an optional enforced collection gate is a roadmap item.
 
 **Method correction:** Keeping all maintainer comments out of preflight also hid whether the requested behavior was intended. Future trials use a separate curator to verify maintainer disposition and baseline-fails/reference-passes behavior before dispatch, while keeping implementation answers out of workers' context. This trial's late-selected references and post-freeze corrections remain explicitly recorded; it is not an 8/8 historical-fix result or a statistical reliability estimate.
+
+
+## 2026-10-04 — Enforced collection review checkpoint
+
+**Decision:** Add an explicit opt-in hold to `room_collect`, owned by the requesting reviewer in the destination checkout. The Zod transcript proves the pause was delivered before collection, but cannot establish the model's internal reason for ignoring it. Strengthening a prompt alone cannot enforce the requested checkpoint.
+
+**Implementation:** Durable local holds use the same canonical-checkout lease as collection. Apply, copy and discard check holds before mutation; `force` cannot bypass them. Only the creating host session or a private recovery capability can release a hold; all reviewers must release independently. Holds persist across restarts and fail closed if their saved state is corrupt. Release does not collect. No hold is created for ordinary batches, and natural-language messages are not parsed as policy.
+
+**Limits:** A successful hold blocks new collection calls for that destination; it does not undo an already-running collection or freeze separate lifecycle paths such as leave, ancestor discard and replay of existing discard journals. The reviewer must use the actual destination checkout. This is a cooperative workflow guard, not a security boundary against agents with filesystem access.
+
+**Validation:** Independent Astra review, state/integration tests, a real two-process bundled-MCP restart smoke, and natural-language checkpoint evaluation; see the [validation record](superpowers/rehearsals/2026-10-04-collection-checkpoint.md), including the initial timeouts and broader routing failure.
+
+**Built when:** 4 Oct, after the historical TypeScript trial. This is an unreleased plugin change; no server/schema change is required.

@@ -39,7 +39,20 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    do not wake you. Answer questions with `room_send(type="answer", inReplyTo=...)`;
    ask your human only for a blocking decision. Loop short `room_wait` calls (at most
    100 seconds each); read state only when more context is needed.
-4. Preview current worker output together using full participant names:
+4. If the human explicitly requests a review checkpoint before collection, establish it
+   before dispatch or collection: from the destination checkout call
+   `room_collect(checkpoint="hold", reason="<requested review>")` and wait for success.
+   A separate reviewer/controller should own the hold when its approval is required;
+   it must use that same checkout, not its own worker worktree. Keep the returned private
+   `reviewToken` for recovery; do not send it to the collecting lead. Messages alone do
+   not establish holds. Preview, tests and worker follow-ups can continue while held.
+   After review, the creating session calls `room_collect(checkpoint="release")`;
+   a replacement reviewer can use `reviewToken` to release it. Release does not collect.
+   Check with `room_collect(checkpoint="status")`; all reviewers must release their holds.
+   Do not establish a hold when no checkpoint was requested. This blocks new collection
+   calls for that destination only; it does not cancel an already-running collection,
+   freeze lifecycle recovery, or protect against explicit leave/ancestor discard.
+   Preview current worker output together using full participant names:
    `room_preview_merge(people=[...], run="<tests>")`. Repeat after the last worker finishes
    and resolve conflicts or failing tests before collecting.
 5. When asked to "bring in their work" or "take the worker's changes", call `room_collect()` once with no tag to bring every finished worker's changes into

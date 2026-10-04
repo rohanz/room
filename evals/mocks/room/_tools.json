@@ -720,7 +720,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to \"bring in their work\" or \"take the worker's changes\" as unstaged edits; discard to \"throw away the worker\". Skips live workers; tag a stopped worker for partial edits; copy takes named files. Conflicts write nothing.",
+      "description": "Use to \"bring in their work\" as unstaged edits or \"throw away the worker\". checkpoint gates collection. Conflicts write nothing.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",
@@ -748,7 +748,21 @@
           },
           "force": {
             "type": "boolean",
-            "description": "overwrite modified copy destinations; discard ignored artifacts too"
+            "description": "overwrite copies; discard ignored files"
+          },
+          "checkpoint": {
+            "type": "string",
+            "enum": [
+              "hold",
+              "release",
+              "status"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reviewToken": {
+            "type": "string"
           }
         }
       }

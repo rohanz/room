@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Optional collection review holds: a reviewer can block new apply, copy and discard calls for a destination checkout until explicitly released. Holds survive MCP restarts, support multiple reviewers and private recovery tokens, and cannot be bypassed with `force`. Ordinary collection is unchanged.
+
 - Documentation: record the local TypeScript historical trial, separate upstream-verified fixes from rejected or unresolved requests, and clarify that coordination messages do not enforce a review pause. README, onboarding and reference now explain restarting sessions after plugin updates; future historical trials require verified reference behavior before dispatch.
 
 ## 0.17.4

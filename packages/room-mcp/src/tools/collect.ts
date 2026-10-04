@@ -17,15 +17,19 @@ import { retireWorker } from '../retire.js'
 import { localWorkers, registryForDir, registrySnapshotForDir } from '../worker-registry.js'
 import { realStateInput, type LocalWorker } from '../worker-status.js'
 import { currentToolTiming } from '../timing.js'
+import { CollectionReview } from '../collection-review.js'
+import { createSessionBinding } from '../binding.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" or "take the worker\'s changes" as unstaged edits; discard to "throw away the worker". Skips live workers; tag a stopped worker for partial edits; copy takes named files. Conflicts write nothing.',
+  description: 'Use to "bring in their work" as unstaged edits or "throw away the worker". checkpoint gates collection. Conflicts write nothing.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
     paths: strs('copy mode: repo-relative files or directories'),
-    force: { type: 'boolean', description: 'overwrite modified copy destinations; discard ignored artifacts too' },
+    force: { type: 'boolean', description: 'overwrite copies; discard ignored files' },
+    checkpoint: { type: 'string', enum: ['hold', 'release', 'status'] },
+    reason: { type: 'string' }, reviewToken: { type: 'string' },
   } },
 }]
 
@@ -757,10 +761,29 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     finally { endPhase?.(); for (const workerLock of workerLocks) await registry.finishOperation(workerLock) }
   }
   return { room_collect: async a => {
-    const registry = await registryForDir(state.S().dir)
-    if (a.discard) return roomCollect(a)
+    const session = state.S()
+    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force', 'checkpoint', 'reason', 'reviewToken'].includes(key))
+    if (unknown) return 'error: unknown argument ' + unknown
+    if (a.checkpoint !== undefined && (!['hold', 'release', 'status'].includes(String(a.checkpoint))
+      || ['tag', 'mode', 'discard', 'paths', 'force'].some(key => a[key] !== undefined))) return 'error: use checkpoint hold, release or status in a separate call without collection arguments'
+    if (a.reason !== undefined && (a.checkpoint !== 'hold' || typeof a.reason !== 'string')) return 'error: reason is only for checkpoint hold'
+    if (a.reviewToken !== undefined && (a.checkpoint !== 'release' || typeof a.reviewToken !== 'string' || !/^[a-f0-9]{64}$/.test(a.reviewToken))) return 'error: reviewToken is only for checkpoint release and must be the private recovery token'
+    if (a.checkpoint === 'hold' && (typeof a.reason !== 'string' || !a.reason.trim() || a.reason.length > 1000)) return 'error: checkpoint hold requires a reason of 1–1000 characters'
+    const registry = await registryForDir(session.dir)
     const endLease = currentToolTiming()?.begin('lease')
-    try { return await registry.withCollectLease(state.S().dir, () => { endLease?.(); return roomCollect(a) }) }
+    try { return await registry.withCollectLease(session.dir, async () => {
+      endLease?.()
+      const review = new CollectionReview(registry.root, session.dir)
+      // Bound host IDs survive MCP restarts. The recovery token also serves unbound controllers.
+      if (a.checkpoint === 'hold' || a.checkpoint === 'release') {
+        const owner = (state.ctx.binding ?? createSessionBinding(session.dir)).id()
+        return a.checkpoint === 'hold' ? review.hold(owner, session.me.name, (a.reason as string).trim())
+          : review.release(owner, a.reviewToken as string | undefined)
+      }
+      if (a.checkpoint === 'status') return review.status()
+      review.assertClear()
+      return roomCollect(a)
+    }) }
     catch (error) { return `error: ${error instanceof Error ? error.message : String(error)}` }
     finally { endLease?.() }
   } }

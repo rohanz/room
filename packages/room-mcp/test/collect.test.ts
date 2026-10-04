@@ -1611,3 +1611,46 @@ describe('worker preview', () => {
     expect(result).toContain('exit 0')
   })
 })
+
+it('enforces a durable review hold before apply, copy, discard or force and preserves resumable work', async () => {
+  const t = setup()
+  let reviewer = 'review-thread'
+  t.state.ctx.binding = { id: () => reviewer } as NonNullable<typeof t.state.ctx.binding>
+  put(worker, 'file.txt', 'reviewed change\n')
+  const held = await t.call({ checkpoint: 'hold', reason: 'independent review before collection' })
+  expect(held).toContain('hold active')
+  reviewer = 'lead-thread'
+  for (const args of [{}, { tag: 'test' }, { tag: 'test', mode: 'copy', paths: ['file.txt'], force: true }, { tag: 'test', discard: true, force: true }]) {
+    expect(await t.call(args)).toContain('held for review')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect((await registryForDir(lead)).read((await registryForDir(lead)).list()[0].id)?.phase).not.toBe('retired')
+  }
+  expect(await t.call({ checkpoint: 'release' })).toContain('no matching review hold')
+  expect(await t.call({ checkpoint: 'status' })).toContain('independent review')
+  reviewer = 'review-thread'
+  expect(await t.call({ checkpoint: 'release' })).toContain('no work collected')
+  expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
+  expect(await t.call({})).not.toContain('error:')
+  expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('reviewed change\n')
+  expect(fs.existsSync(worker)).toBe(false)
+})
+
+it.each([
+  { checkpoint: 'hold', reason: 'review', discard: true },
+  { checkpoint: 'release', tag: 'test' },
+  { checkpoint: 'status', force: false },
+  { checkpoint: 'hold', reason: '' },
+  { checkpoint: 'hold', reason: 'review', reviewToken: '0'.repeat(64) },
+  { checkpoint: 'release', reason: 'review' },
+  { checkpoint: 'unknown' },
+  { checkpoint: 'hold', reason: 'review', typo: true },
+  { reason: 'review' },
+  { reviewToken: '0'.repeat(64) },
+])('rejects malformed or mixed review requests without collecting: %j', async args => {
+  const t = setup()
+  put(worker, 'file.txt', 'worker edit\n')
+  expect(await t.call(args)).toContain('error:')
+  expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
+  expect(fs.existsSync(worker)).toBe(true)
+})
