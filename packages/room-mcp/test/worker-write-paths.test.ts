@@ -202,8 +202,10 @@ describe('registry write paths', () => {
     fs.writeFileSync(path.join(record.dir, 'change.txt'), 'recover me\n')
     const lead = await open(root)
     await lead.writeIntent(record)
+    // Supply a verified identity so injected liveness controls this fixture.
+    // A PID-only launch must be retained if that PID happens to exist on CI.
     await lead.update(record.id, old => ({ ...old, base, prep: { step: 'prepared' }, phase: 'active',
-      runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: 201 } }], seq: old.seq + 1 }))
+      runs: [{ ...old.runs[0], launch: { outcome: 'launched', pid: process.pid, process: { pid: process.pid, startTime: 'fixture-host', executable: 'codex' } } }], seq: old.seq + 1 }))
     await lead.beginDiscard(record.id, true, [])
     const observer = await open(root, 'observer', 'dead')
     expect(observer.read(record.id)?.phase).toBe('retiring')

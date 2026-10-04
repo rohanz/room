@@ -1397,8 +1397,12 @@ describe('derived pair slots', () => {
       })
       await graph.whenIdle(); await waitForGraph(f.room, 'B', 3)
       await set.reconcile('re-entry')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(2)
+      // reconcile() bounds work per turn; an in-flight stale pass can leave a
+      // coalesced follow-up scheduled. Observe delivery, not one pass's return.
+      await vi.waitFor(() => {
+        expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+        expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(2)
+      }, { timeout: 10_000 })
       expect(new Set(post.mock.calls.filter(call => call[1]?.type === 'contract').map(call => call[2].id)).size).toBe(2)
       if (variant === 'changed') expect([...accepted.values()].at(-1)).toMatchObject({ text: expect.stringContaining('call(a, b, c)') })
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
