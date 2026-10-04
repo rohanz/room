@@ -34,6 +34,18 @@ vi.mock('../src/leases.js', async importOriginal => {
   return { ...actual, liveness: (identity: Parameters<typeof actual.liveness>[0]) => fixtureLiveness(identity, actual.liveness) }
 })
 
+// A different lead can see a fixture worker without owning its in-memory handle.
+// Keep the fallback signal path in the same synthetic process model as probes
+// and liveness; fixture PIDs may belong to unrelated processes on the test host.
+vi.mock('../src/worker-process.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/worker-process.js')>()
+  return { ...actual, signalWorker: (...args: Parameters<typeof actual.signalWorker>) => {
+    const [pid, , , , worker, probe] = args
+    if (probe === fixtureProbe) return !!worker && actual.pidIsOurWorker(pid, worker, probe)
+    return actual.signalWorker(...args)
+  } }
+})
+
 // Worker lifecycle tests exercise real worktrees and process-stop waits under concurrent suites.
 vi.setConfig({ testTimeout: 30_000 })
 // These sessions have synthetic publication; real daemon completion is covered in done-publication.test.ts.
@@ -499,6 +511,14 @@ describe('room_spawn / room_done / room_collect discard', () => {
   })
 
   it('keeps ports distinct across independent lead registries', async () => {
+    // A second lead has no handle for the first lead's synthetic worker. Its
+    // shutdown must not turn a fixture PID into a signal to an unrelated OS process.
+    const realKill = process.kill.bind(process)
+    const fixtureSignals: number[] = []
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (fixtureProbe(pid) && signal !== 0) { fixtureSignals.push(pid); return true }
+      return realKill(pid, signal)
+    })
     const first = setup(), second = setup()
     try {
       await Promise.all([
@@ -510,6 +530,7 @@ describe('room_spawn / room_done / room_collect discard', () => {
       await first.leadTools.shutdown()
       await second.leadTools.shutdown()
     }
+    expect(fixtureSignals).toEqual([])
   })
 
   it('does not assign a nested worker its parent dev-server port', async () => {
