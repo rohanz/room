@@ -35,6 +35,7 @@ async function hubServer(clock: FakeClock, opts: { full?: () => boolean; identit
   setPersistence(hubs.persistence(provider))
   const wss = new WebSocketServer({ noServer: true })
   const guards = new Map<string, DocumentIdentityGuard>()
+  const openedHubs = new Set<Hub>()
   wss.on('connection', (conn, req) => {
     const docName = docNameOf(req.url ?? '/')
     setupWSConnection(conn, req, { gc: true, docName })
@@ -64,11 +65,16 @@ async function hubServer(clock: FakeClock, opts: { full?: () => boolean; identit
     async open(room = ROOM, query = ''): Promise<ContractClient & { ws: import('ws').WebSocket }> {
       const c = await socketClient(this.url(room, query))
       await waitFor(() => hubs.current(room))
+      openedHubs.add(hubs.current(room)!)
       return c
     },
     async close() {
       for (const c of wss.clients) c.terminate()
       await new Promise<void>(r => { wss.close(); server.close(() => r()) })
+      // Disconnects can enqueue lease writes. Drain them before removing the
+      // backing directory, including hubs already removed from the registry.
+      for (const hub of openedHubs) hub.stop()
+      await Promise.all([...openedHubs].map(hub => hub.flushLeases()))
       fs.rmSync(dir, { recursive: true, force: true })
     },
   }
