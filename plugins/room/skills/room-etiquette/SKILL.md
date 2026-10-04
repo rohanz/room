@@ -45,5 +45,5 @@ Split by task, even when tasks touch the same file. Claim the functions or line 
 you edit, ask about overlapping work, and preview combined changes. Sequence parts
 that must change the same lines or depend on another part's result.
 Collection always leaves output uncommitted and unstaged. If asked to commit, use plain git
-for one task commit with a normal message. A message to a finished worker resumes its retained session
+for one task commit with a normal message. A message from its lead to a finished worker resumes its retained session
 until that worker is collected or discarded. Keep bus messages brief and concrete.

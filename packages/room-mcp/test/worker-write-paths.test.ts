@@ -30,6 +30,43 @@ const open = (root: string, nonce = 'lead', alive: 'alive' | 'dead' = 'alive') =
   { identity: token(nonce), migrate: false, watch: false, liveness: () => alive })
 
 describe('registry write paths', () => {
+  it('retains a late host session through completion, an operation lease, and lead restart', async () => {
+    const { root, record } = fixture()
+    const lead = await open(root)
+    await lead.writeIntent({ ...record, phase: 'prepared' })
+    const worker = await open(root, 'worker')
+    const admission = { id: record.id, run: 1, nonce: 'nonce-1', dir: record.dir,
+      chain: [{ pid: 201, startTime: 'child', executable: 'codex' }], hostProcess: { pid: 201, startTime: 'child', executable: 'codex' } }
+    await worker.admit(admission)
+    await worker.reportDone(record.id, 1, 'finished', ['src/a.ts'])
+    await worker.admit({ ...admission, hostSessionId: 'late-thread' })
+    expect(worker.read(record.id)?.hostSessionId).toBeUndefined() // lead still owns the operation
+    expect(worker.reports(record.id)[0]).toMatchObject({ hostSessionId: 'late-thread', done: { summary: 'finished' } })
+    await lead.finishOperation(record.id)
+    worker.close(); lead.close()
+    const restarted = await open(root, 'restarted')
+    await restarted.reconcile()
+    expect(restarted.read(record.id)?.hostSessionId).toBe('late-thread')
+    expect(restarted.reports(record.id)[0].done?.summary).toBe('finished')
+    restarted.close()
+  })
+
+  it('rejects synthetic, conflicting and stale admission facts without changing the recorded thread', async () => {
+    const { root, record } = fixture()
+    const store = await open(root)
+    await store.writeIntent({ ...record, phase: 'prepared' })
+    const admission = { id: record.id, run: 1, nonce: 'nonce-1', dir: record.dir, chain: [] }
+    await expect(store.admit({ ...admission, hostSessionId: 'mcp:123:synthetic' })).rejects.toThrow('session mismatch')
+    await store.admit({ ...admission, hostSessionId: 'original-thread' })
+    for (const override of [{ hostSessionId: 'another-thread' }, { run: 2 }, { nonce: 'stale' }, { dir: root }]) {
+      await expect(store.admit({ ...admission, hostSessionId: 'original-thread', ...override })).rejects.toThrow()
+    }
+    await store.finishOperation(record.id)
+    await store.reconcile()
+    expect(store.read(record.id)?.hostSessionId).toBe('original-thread')
+    store.close()
+  })
+
   it('builds one deterministic completion message for a reported run', () => {
     const { record } = fixture()
     expect(completionMessage(record, record.runs[0], { status: 'done', summary: 'finished' },

@@ -3,8 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { participantRecord } from '@room/shared'
+import { participantRecord, snapshot, versionOf } from '@room/shared'
 import { joinSession, leaveSession, type Session } from '../src/session.js'
+import { createTools } from '../src/tools.js'
 
 let dir: string
 const sessions: Session[] = []
@@ -25,6 +26,36 @@ afterAll(() => { clearRoomEnv(); Object.assign(process.env, prevRoomEnv) })
 const publishing = (s: Session) => s.daemon.inputs.policy.publisher
 
 describe('one publisher per checkout, end to end (registry §16, D5)', () => {
+  it('ending presence before daemon shutdown preserves the final publication for other checkouts', async () => {
+    const workerDir = join(dir, '.room', 'workers', 'worker')
+    git('worktree', 'add', '-qb', 'worker', workerDir)
+    const peer = await joinSession({ dir, sessionId: 'peer-offline', log: () => {} })
+    sessions.push(peer)
+    const worker = await joinSession({ dir: workerDir, sessionId: 'worker-offline', log: () => {} })
+    sessions.push(worker)
+    writeFileSync(join(workerDir, 'app.py'), 'x = 42\n')
+    const read = () => versionOf(snapshot(peer.room, worker.me.name, []), 'app.py')
+    await vi.waitFor(async () => expect(await read()).toMatchObject({ kind: 'text', text: 'x = 42\n' }), { timeout: 15_000 })
+    // tools.shutdown deliberately ends the lease first so presence vanishes even
+    // while worker process cleanup is still running.
+    await worker.lease!.end()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await leaveSession(worker)
+    sessions.splice(sessions.indexOf(worker), 1)
+    await vi.waitFor(async () => expect(await read()).toMatchObject({ kind: 'text', text: 'x = 42\n' }), { timeout: 5_000 })
+    expect(peer.room.manifestHead.get(worker.me.name)?.coverage).toEqual({ kind: 'all' })
+    const tools = createTools({ cwd: dir, getSession: () => peer, setSession: () => {} })
+    try {
+      expect(await tools.call('room_read', { person: worker.me.name, path: 'app.py' })).toContain('x = 42')
+      const preview = await tools.call('room_preview_merge', { people: [worker.me.name], includeOffline: true })
+      expect(preview).not.toMatch(/PARTIAL|no manifest record|not-publisher/)
+      expect(preview).toContain('app.py')
+    } finally {
+      await tools.shutdown()
+      sessions.splice(sessions.indexOf(peer), 1)
+    }
+  }, 30_000)
+
   it('five sessions in one checkout, local room: one publisher; a commit gives one git.rev bump, from it, and no notice (row 23b)', async () => {
     for (let i = 0; i < 5; i++) sessions.push(await joinSession({ dir, sessionId: `s${i}`, log: () => {} }))
     expect(new Set(sessions.map(s => s.me.name)).size).toBe(5)

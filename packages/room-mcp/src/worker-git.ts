@@ -14,6 +14,38 @@ import type { PrepJournal, PrepStep } from './worker-status.js'
 
 const WORKERS_DIR = path.join('.room', 'workers')
 
+/** Recognize an environment, not merely a directory named .venv. Unexpected
+ * top-level files are local state and must retain the worktree for inspection. */
+function generatedPythonEnvironment(root: string, rel: string): boolean {
+  const dir = path.join(root, rel)
+  try {
+    if (!fs.lstatSync(dir).isDirectory() || !isInsideRoot(fs.realpathSync(root), fs.realpathSync(dir))) return false
+    const config = path.join(dir, 'pyvenv.cfg')
+    const configStat = fs.lstatSync(config)
+    if (!configStat.isFile() || configStat.size > 16 * 1024) return false
+    const text = fs.readFileSync(config, 'utf8')
+    if (!/^home\s*=\s*\S/m.test(text) || !/^version(?:_info)?\s*=\s*\d+\.\d+/m.test(text)) return false
+    const directories = new Set(['bin', 'Scripts', 'lib', 'Lib', 'include', 'Include', 'share'])
+    const files = new Set(['pyvenv.cfg', '.gitignore', 'CACHEDIR.TAG', '.lock'])
+    for (const name of fs.readdirSync(dir)) {
+      const entry = path.join(dir, name), stat = fs.lstatSync(entry)
+      if (directories.has(name) && stat.isDirectory() || files.has(name) && stat.isFile()) continue
+      if (name === 'lib64' && (stat.isDirectory() || stat.isSymbolicLink() && isInsideRoot(fs.realpathSync(dir), fs.realpathSync(entry)) && fs.statSync(entry).isDirectory())) continue
+      return false
+    }
+    // Interpreters are normally symlinks; inspect their existence without following
+    // them. Cleanup removes the owned worktree, never the interpreter target.
+    return ['bin/python', 'Scripts/python.exe'].some(name => {
+      try {
+        const parent = path.dirname(path.join(dir, name))
+        if (!fs.lstatSync(parent).isDirectory()) return false
+        const stat = fs.lstatSync(path.join(dir, name))
+        return stat.isFile() || stat.isSymbolicLink()
+      } catch { return false }
+    })
+  } catch { return false }
+}
+
 /** Inputs Room installed itself, rather than worker output. */
 export function workerOwnedPaths(w?: { link?: readonly string[] }) {
   const paths = w?.link ?? []
@@ -26,9 +58,19 @@ export function workerOwnedPaths(w?: { link?: readonly string[] }) {
 /** Ignored output that a discard patch cannot recover. */
 export async function ignoredWorkerArtifacts(w: LocalWorker): Promise<string[]> {
   const raw = await git(w.dir, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', '--', '.', ...workerOwnedPaths(w).exclusions])
+  const environments = new Map<string, boolean>()
+  const generatedEnvironment = (p: string) => {
+    const parts = p.split('/')
+    const i = parts.findIndex(part => part === '.venv' || part === 'venv')
+    if (i < 0) return false
+    const rel = parts.slice(0, i + 1).join('/')
+    if (!environments.has(rel)) environments.set(rel, generatedPythonEnvironment(w.dir, rel))
+    return environments.get(rel)!
+  }
   return raw.split('\0').filter(Boolean)
     .filter(p => p !== '.room' && p !== '.room/' && !p.startsWith('.room/'))
     .filter(p => !isRegenerableBuildPath(p))
+    .filter(p => !generatedEnvironment(p))
     .sort()
 }
 

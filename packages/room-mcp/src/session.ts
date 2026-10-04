@@ -36,7 +36,7 @@ import { HubClient, hubTransport } from './hub-client.js'
 import { createPost, greet, type Post } from './post.js'
 import { attachPublisher, publisherLease } from './publisher-lease.js'
 import { chooseName, NameRefused, ParticipantLease, processToken, type ChosenName } from './names.js'
-import { joinableRoot } from './repository.js'
+import { joinableRoot, sameFolder } from './repository.js'
 import type { HolderIn } from '@room/hub-core'
 import { currentToolTiming } from './timing.js'
 import { revokeLeadProjections } from './bridge.js'
@@ -263,7 +263,9 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
   if (!commonDir) return undefined
   const records = sessionRecords(commonDir).filter(record => record.host === host)
   if (workerId) {
-    const matching = records.filter(record => record.worker_id === workerId).sort((a, b) => b.at - a.at)[0]
+    const matching = records.filter(record => record.worker_id === workerId
+      && (!options.cwd || typeof record.cwd === 'string' && sameFolder(record.cwd, options.cwd)))
+      .sort((a, b) => b.at - a.at)[0]
     const id = matching?.session_id ?? (host === 'codex' ? options.codexLogSessionId : undefined)
     return id ? { id, host } : undefined
   }
@@ -606,11 +608,16 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   const lease = new ParticipantLease({ name, file: chosen.file, token, holder, hub, epoch: chosen.epoch, hostCurrent, log: options.log,
     onChange: fence => {
       if (!attachPublication || stopping) return
+      // Shutdown ends presence before stopping the daemon. Keep its last publication
+      // readable offline; losing authority to another session must still withdraw it.
+      const ended = lease.state === 'ended'
       publicationTransition = publicationTransition.then(async () => {
         if (stopping) return
         if (!fence) {
-          if (daemon && lease.epoch !== undefined) withdrawFormerPublisher(daemon.roomDoc, name, String(lease.epoch), 'another session')
-          policyStore.setPublisher(false)
+          if (!ended) {
+            if (daemon && lease.epoch !== undefined) withdrawFormerPublisher(daemon.roomDoc, name, String(lease.epoch), 'another session')
+            policyStore.setPublisher(false)
+          }
           const attachment = publishing
           publishing = undefined
           await attachment?.detach()
@@ -680,7 +687,7 @@ export async function startAutoTaggedRoomd(options: Omit<Parameters<typeof start
   let announcedRebind: string | undefined
   const watchRecords = () => {
     const currentBound = binding.bound()?.id
-    if (boundAtJoin && currentBound !== sessionId) {
+    if ((boundAtJoin || currentBound) && currentBound !== sessionId) {
       lease.check() // withdraw publisher authority before asking the host to rejoin.
       if (currentBound && currentBound !== announcedRebind && rebindListener) {
         announcedRebind = currentBound
@@ -762,7 +769,7 @@ export async function joinSession(opts: JoinOptions): Promise<Session> {
   const config = await resolveConfig({ dir, env: process.env, args: opts })
   const localWorkerLead = config.workerId && config.server === LOCAL ? process.env.ROOM_LEAD_CLONE : undefined
   if (localWorkerLead && await realGitCommonDir(dir) !== localWorkerLead) throw new RoomdError(`this worker is in ${dir}, another repository than its lead's (${localWorkerLead}); it cannot join the lead's local room. Start a lead in ${dir} instead.`, 2)
-  await admitWorkerEnvironment(dir)
+  if (process.env.ROOM_WORKER_ID) await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
   for (const value of [config.name, config.owner, config.tag]) if (value) assertValidParticipantName(value)
   configureCredentials(config.credentialsPath)
   if (opts.log) setServerLog(opts.log)

@@ -23,7 +23,7 @@ import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWo
 import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
-import { ownWorkerNames } from './worker-registry.js'
+import { admitWorkerEnvironment, ownWorkerNames } from './worker-registry.js'
 import { ToolTimingTracker, currentToolTiming, registerPrepareGitTiming, startEventLoopWatchdog } from './timing.js'
 
 /** Plugin release, also advertised in the MCP handshake. Package versions are private. */
@@ -169,6 +169,10 @@ async function main() {
         return rebinding
       }
       const call = async (req: { params: { name: string; arguments?: Record<string, unknown> } }, signal?: AbortSignal, handoff?: (settle: Settle) => void) => {
+        // Completion bypasses lease rebinding, but must retain a thread discovered since admission.
+        if (req.params.name === 'room_done' && process.env.ROOM_WORKER_ID) {
+          await admitWorkerEnvironment(dir, process.env, createSessionBinding(dir).bound())
+        }
         if (req.params.name === 'room_done' || req.params.name === 'room_state' && req.params.arguments?.check === true) {
           if (req.params.name === 'room_done') presence!.activity()
           return tools.call(req.params.name, req.params.arguments ?? {}, signal, handoff)
@@ -186,6 +190,7 @@ async function main() {
       }
 
       const joined = (s: Session) => {
+        autoJoin.remember(s)
         s.onHookActivity?.(() => presence?.activity()); s.onRebind?.(id => { void rebindHost(id).catch(error => log(`host rebind failed: ${String(error)}`)) })
         rejoinWhenStale(s, () => session, autoJoin)
         log(`${displayName(s.me)} joined ${decodeRoom(s.roomName)} (clone ${s.dir})`)
@@ -203,7 +208,7 @@ async function main() {
           // A session whose relay was taken by another clone's relay cannot reconnect on the same URL: leave it and join afresh.
           if (session?.local?.lost) await tools.drop(session, session.local.lost)
           if (await replacement.begin(session)) return replacement.join()
-          // After room_join/room_create, keep the repository room the human chose.
+          // Reconnect with the latest accepted session, including its current sharing choice.
           if (target) {
             const s = await joinSession({ ...rejoinOptions(target, startup.credentialsPath), log })
             return s

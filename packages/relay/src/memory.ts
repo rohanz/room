@@ -19,7 +19,7 @@ function largestRoots(update: Uint8Array): string {
   const doc = new Y.Doc()
   try {
     Y.applyUpdate(doc, update)
-    return [...memoryTypes(doc)]
+    return [...memoryTypes(doc, true)]
       .map(([name, kind]) => [name, JSON.stringify(kind === 'array' ? doc.getArray(name).toJSON() : doc.getMap(name).toJSON()).length] as const)
       .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, size]) => `${name} ${mb(size)} MB`).join(', ')
   } finally { doc.destroy() }
@@ -133,7 +133,7 @@ export class RoomMemory {
     // Propagate deletions to connected replicas too, so a surviving relay owner cannot
     // restore the forgotten story from its old in-memory copy after taking over.
     this.doc.transact(() => {
-      for (const [name, kind] of memoryTypes(this.doc)) {
+      for (const [name, kind] of memoryTypes(this.doc, true)) {
         if (kind === 'map') this.doc.getMap(name).clear()
         else { const array = this.doc.getArray(name); array.delete(0, array.length) }
       }

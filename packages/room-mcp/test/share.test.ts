@@ -1,5 +1,5 @@
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -14,6 +14,9 @@ import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
+import { PolicyStore } from '../src/policy-store.js'
+import { Rooms } from '../src/registry.js'
+import { rejoinOptions } from '../src/tools/join.js'
 
 const COMMITTED = 'def validate(x):\n    return x\n\ndef b():\n    return 2\n'
 const MINE = COMMITTED.replace('return 2', 'return 22')
@@ -92,6 +95,29 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('room_share', () => {
+  it('reconnects with the committed policy while room_share is still projecting', async () => {
+    const t = setup()
+    t.session.policyStore = await PolicyStore.open({ dir, room: t.session.roomName, participant: me.name, requested: 'full',
+      onChange: policy => t.daemon.applyInputs({ policy }) })
+    await t.session.policyStore.setRequested('full')
+    let entered!: () => void, release!: () => void
+    const projecting = new Promise<void>(resolve => { entered = resolve })
+    const projection = new Promise<void>(resolve => { release = resolve })
+    const project = vi.spyOn(Rooms.prototype, 'project').mockImplementation(async () => { entered(); await projection })
+    const sharing = t.tools.call('room_share', { level: 'intent' })
+    try {
+      await projecting
+      expect(t.session.policyStore.requested).toBe('intent')
+      expect(t.session.shareRequested).toBe('full') // The handler has not reached its delayed copy update.
+      expect(rejoinOptions(t.session).share).toBe('intent')
+    } finally {
+      release()
+      await sharing
+      project.mockRestore()
+      t.session.graph?.stop()
+    }
+  })
+
   it('reports the current level without arguments', async () => {
     const t = setup()
     expect(t.body(await t.tools.call('room_share', {}))).toBe('sharing: the full text of files you change')

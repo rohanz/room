@@ -3,6 +3,7 @@ import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-windo
 import { inlineDetails } from './inline-detail.ts'
 import {
   RoomDoc,
+  manifestHeadOf,
   conflictSpanStatus,
   deriveConflictSpans,
   activityLabel,
@@ -763,7 +764,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (version.kind !== 'text' && version.kind !== 'base') return empty(`${person}: version unavailable`)
       const text = version.text
       if (text === undefined) return empty(`${person}: base text not in the room`)
-      const baseSha = conn.room.manifestHead.get(person)?.base
+      const baseSha = manifestHeadOf(conn.room, person)?.base
       const base = baseSha ? conn.room.baseText(person, baseSha, selected.path) : undefined
       if (base === undefined) {
         legend.append(h('span', { class: 'muted' }, 'Base text not in the room; showing shared file only'))
@@ -797,7 +798,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       if (gaps.length) legend.append(h('span', { class: 'muted' }, `PARTIAL · ${gaps.join('; ')}`))
       const mergeable = resolved.filter(({ version }) => version.kind === 'text' || version.kind === 'base' || version.kind === 'deleted')
       if (!mergeable.length) return empty(gaps.length ? `PARTIAL · ${gaps.join('; ')}` : 'Select participants to merge')
-      const bases = [...new Set(mergeable.map(({ name }) => conn.room.manifestHead.get(name)?.base).filter(Boolean))]
+      const bases = [...new Set(mergeable.map(({ name }) => manifestHeadOf(conn.room, name)?.base).filter(Boolean))]
       if (bases.length !== 1) return empty(`PARTIAL · branches differ; an agent's room_preview_merge checks the combination${gaps.length ? '; ' + gaps.join('; ') : ''}`)
       const base = mergeable.map(({ name }) => conn.room.baseText(name, bases[0]!, selected.path)).find(text => text !== undefined)
       if (base === undefined) return empty(`PARTIAL · base text not in the room${gaps.length ? '; ' + gaps.join('; ') : ''}`)
@@ -825,7 +826,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     const view = participantsView(conn.room, conn.provider.awareness, Date.now())
     coverageBlock.replaceChildren(...manifestPeople(conn.room).map(name => {
       const coverage = webCoverage(conn.room, name, view)
-      const head = conn.room.manifestHead.get(name)
+      const head = manifestHeadOf(conn.room, name)
       return h('div', { class: coverage.complete ? 'coverage-complete' : 'coverage-partial' },
         `${coverage.complete ? 'Complete' : 'PARTIAL'} · ${name} (${head?.level ?? 'unknown'}): ${coverage.shared.length} shared, ${coverage.held.length} not shared${coverage.unchanged.length ? ` · unchanged so far: ${coverage.unchanged.join(', ')}` : ''}${coverage.declaredDirectories ? ` · ${coverage.declaredDirectories} declared directories` : ''}${coverage.gaps.length ? ` · ${coverage.gaps.map(g => `${g.path ? `${g.path}: ` : ''}${g.why}`).join('; ')}` : ''}`)
     }))

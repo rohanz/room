@@ -82,11 +82,11 @@ export function removeOwnMirrors(s: Session): number {
  * server compacted between its sync and the join's return): the join in flight is its own, so the replacement is
  * started after that join settles, if `s` is still the current session.
  */
-export function rejoinWhenStale(s: Session, current: () => Session | null, autoJoin: { settle(): Promise<void>; retarget(s: Session): void; ensure(): Promise<void> }): void {
+export function rejoinWhenStale(s: Session, current: () => Session | null, autoJoin: { settle(): Promise<void>; remember(s: Session): void; ensure(): Promise<void> }): void {
   whenStale(s, () => {
     void autoJoin.settle().then(() => {
       if (current() !== s || !s.stale) return
-      autoJoin.retarget(s)
+      autoJoin.remember(s)
       void autoJoin.ensure()
     })
   })

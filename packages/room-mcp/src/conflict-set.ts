@@ -329,7 +329,8 @@ export class ConflictSet {
     }
     if (this.team.graph) this.stops.push(this.team.graph.onChange(schedule))
     for (const map of [this.team.room.manifest, this.team.room.manifestHead,
-      this.team.room.claims, this.team.room.graphs, this.team.room.workerViews, this.team.room.expiry]) {
+      this.team.room.claims, this.team.room.graphs, this.team.room.workerViews, this.team.room.expiry,
+      this.team.room.doc.getMap('completedPublications'), this.team.room.doc.getMap('completedPublicationRevisions')]) {
       map.observeDeep(schedule)
       this.stops.push(() => map.unobserveDeep(schedule))
     }
@@ -571,7 +572,7 @@ export class ConflictSet {
       let replayable = true
       try {
         const theirs = snapshot(room, other, views)
-        const theirGit = acceptedGit(participantRecord(room, other), views)
+        const theirGit = acceptedGit(theirs?.record ?? participantRecord(room, other), views)
         const graphInput = room.graphs.get(other)?.observed
         this.guard = () => !this.stopped && authority() && this.pairInputs(other,
           participantsView(room, this.team.awareness, Date.now())) === pairInputs

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RoomDoc, formatMsg, snapshot } from '@room/shared'
+import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -301,6 +301,56 @@ describe('derived pair slots', () => {
       lease: { fence: () => localFence.value } }) as unknown as Session
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
+
+  it.each(['between checks', 'during a version read', 'revision during a version read'])('checks a completed peer from cold memory and withdraws lost authority (%s)', async when => {
+    const f = fixture(), restored = new RoomDoc()
+    f.holder('L'); f.holder('B'); f.entry('B', 'worker\n')
+    f.room.participants.set('B\0holder', { ...participantRecord(f.room, 'B')!.holder!, workerId: 'w' })
+    const worker = { id: 'w', tag: 'b', name: 'B', lead: 'L', mode: 'here' as const, host: 'codex' as const,
+      task: 'test', branch: 'worker', status: 'done' as const, run: 1, startedAt: 1, finishedAt: 2, fence: '1' }
+    f.room.workerViews.set(worker.id, worker)
+    Y.applyUpdate(restored.doc, memorySnapshot(f.room.doc))
+    epochPublication(restored, 'A', f.base, 1)
+    epochPublication(restored, 'L', f.base, 1)
+    restored.workerViews.set(worker.id, worker)
+    restored.manifestHead.set('A', { ...f.room.manifestHead.get('B')! })
+    const entries = new Y.Map<any>()
+    restored.manifest.set(manifestKey('A', '1'), entries)
+    entries.set('x', { change: 'M', state: 'shared', hash: gitBlobHash('mine\n'), at: 1, fence: '1' })
+    restored.setOverlay(manifestKey('A', '1'), 'x', 'mine\n')
+    const session = { ...f.session('A'), room: restored }
+    const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
+    try {
+      expect(participantRecord(restored, 'B')).toBeUndefined()
+      expect(snapshot(restored, 'B', [])?.retained).toBeDefined()
+      await set.reconcile('cold completed publication')
+      expect(restored.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'x'))).toMatchObject({ status: 'conflict' })
+      expect(restored.doc.getMap('conflicts').has(slotKey('A', 'merge', 'B', '*'))).toBe(false)
+      f.post.mockClear()
+      const revoke = () => {
+        if (when.startsWith('revision')) {
+          const head = f.room.manifestHead.get('B')!
+          f.room.manifestHead.set('B', { ...head, semRev: head.semRev + 1, level: 'intent', coverage: { kind: 'none', reason: 'intent' } })
+          Y.applyUpdate(restored.doc, memorySnapshot(f.room.doc))
+          expect(restored.manifestHead.has('B')).toBe(false)
+          expect(snapshot(restored, 'B', [])).toBeUndefined()
+        } else restored.participants.set('L\0holder', { ...participantRecord(restored, 'L')!.holder!, ended: 'released' })
+      }
+      if (when === 'between checks') revoke()
+      else {
+        const reader = set as unknown as { read(snap: NonNullable<ReturnType<typeof snapshot>>, path: string): Promise<unknown> }
+        const read = reader.read.bind(reader)
+        vi.spyOn(reader, 'read').mockImplementation(async (snap, path) => {
+          const value = await read(snap, path)
+          if (snap.name === 'B') revoke()
+          return value
+        })
+      }
+      await set.reconcile('lead no longer authorizes cache')
+      expect(restored.doc.getMap('conflicts').has(slotKey('A', 'merge', 'B', 'x'))).toBe(false)
+      expect(f.post.mock.calls.some(([, body]) => body.type === 'merge-conflict')).toBe(false)
+    } finally { set.stop(); restored.doc.destroy(); f.room.doc.destroy(); f.cleanup() }
+  })
 
   it('defers stale replay slots after an awaited post changes another conflict input', async () => {
     const f = fixture({ y: 'old\n' })

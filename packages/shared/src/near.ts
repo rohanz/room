@@ -1,6 +1,6 @@
 import type { RoomDoc } from './doc.js'
 import { isAgentic } from './identity.js'
-import { manifestPaths } from './manifest.js'
+import { manifestNames, manifestPaths } from './manifest.js'
 import type { ParticipantView } from './views.js'
 
 /** File-level coordination evidence, excluding the current participant. */
@@ -25,7 +25,7 @@ export function coordinationPaths(room: RoomDoc, nb: Neighbourhood, me: string, 
       .flatMap(([by, record]) => record.paths.map(path => ({ by, path, reason: 'scope' as const }))),
     ...room.openClaims().filter(claim => nb.has(claim.by) || (claim.by === me && options.includeOwnNonAgentClaims && !isAgentic(claim.byKind)))
       .map(claim => ({ by: claim.by, path: claim.path, reason: 'claim' as const })),
-    ...[...room.manifestHead.keys()]
+    ...manifestNames(room)
       .filter(by => nb.has(by))
       .flatMap(by => manifestPaths(room, by).map(path => ({ by, path, reason: 'changed' as const }))),
   ]

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Automatic reconnects keep the session's current sharing choice instead of reapplying its launch environment. Resumed workers retain their saved sharing choice; an explicit sharing command can still change it.
+- Workers still running after a lead-shutdown stop request are labelled as running with a pending stop, rather than incorrectly shown as stopped.
+- Git previews use their own merge directory, so a long-running MCP process can still merge files after its inherited working directory is removed.
+- Finished workers keep their published files on graceful shutdown. A bounded local restart cache makes completed workers readable and previewable again once their live lead confirms the retained run; cached data cannot revive retired workers or override current sharing. Browser readers use the same rules.
+- Normal collection cleans recognized generated Python virtual environments, while preserving unrecognized top-level state and unsafe layouts.
+- A follow-up addressed to someone else’s finished worker now identifies the lead who can resume it.
+- Codex workers now retain host thread IDs discovered through session hooks, including after startup and immediately before completion. Follow-ups can resume the original conversation when the MCP environment did not provide its thread ID. Admission rejects synthetic or conflicting IDs and keeps the existing worker/run/checkout checks.
+
 ## 0.17.3
 
 - Room worker delegation now requires an explicit request to use Room, or continuation of an existing Room worker workflow. Generic agent, parallel and background requests stay with the host’s normal delegation.

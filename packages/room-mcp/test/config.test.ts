@@ -52,6 +52,15 @@ describe('resolveConfig', () => {
     expect(await resolveConfig({ dir, env: {}, args: { share: 'full', shareExplicit: false } })).toMatchObject({ share: 'full', shareExplicit: false })
   })
 
+  it('uses worker launch sharing as a default while retaining explicit argument and nonworker environment overrides', async () => {
+    const dir = repo()
+    const env = { ROOM_WORKER_ID: 'w_retained', ROOM_SHARE: 'full' }
+    expect(await resolveConfig({ dir, env })).toMatchObject({ share: 'full', shareExplicit: false })
+    expect(await resolveConfig({ dir, env, args: { share: 'declared' } })).toMatchObject({ share: 'declared', shareExplicit: true })
+    expect(await resolveConfig({ dir, env, args: { shareExplicit: true } })).toMatchObject({ share: 'full', shareExplicit: true })
+    expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'full' } })).toMatchObject({ share: 'full', shareExplicit: true })
+  })
+
   it('treats runner URLs as explicit environment destinations', async () => {
     const dir = repo(), url = 'ws://runner/room'
     expect((await resolveConfig({ dir, env: { ROOM_URL: url } })).roomUrl).toBe(url)

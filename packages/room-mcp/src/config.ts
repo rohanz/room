@@ -115,6 +115,10 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
   const kind = rawKind === 'bot' || rawKind === 'ci' ? rawKind : 'agent'
   const rawShare = args.share ?? e.ROOM_SHARE
   const sharing = resolveShare(rawShare, args.share !== undefined ? 'share' : 'ROOM_SHARE')
+  // A worker's launcher supplies its initial default on every run, including retained runs.
+  // Preserve the participant's durable policy after that first seed; tool arguments still override it.
+  // joinSession admits the worker before any of these options reach publication.
+  const shareExplicit = args.shareExplicit ?? (args.share !== undefined || rawShare !== undefined && !value(e.ROOM_WORKER_ID))
   const credentialsPath = resolveCredentialsPath(args, e)
   const explicitRoom = value(args.room) ?? value(e.ROOM_ROOM) ?? (url ? decodeURIComponent(url.pathname.replace(/^\/+/, '')) || undefined : undefined)
   return {
@@ -123,7 +127,7 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     workerId: value(e.ROOM_WORKER_ID),
     roomUrl, dir: path.resolve(dir), server: resolveServer(where, teamServer), teamServer, where, whereRule, whereEnv,
     name: value(args.name) ?? value(e.ROOM_NAME), owner: value(args.owner) ?? value(e.ROOM_OWNER),
-    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit: args.shareExplicit ?? rawShare !== undefined, shareWarning: sharing.warning, credentialsPath,
+    tag: value(args.tag) ?? value(e.ROOM_TAG), kind, share: sharing.level, shareExplicit, shareWarning: sharing.warning, credentialsPath,
     token: value(args.token) ?? value(e.ROOM_TOKEN), logFile: value(args.logFile) ?? value(e.ROOM_LOG_FILE),
     maxWorkers: positive(args.maxWorkers ?? e.ROOM_MAX_WORKERS, DEFAULT_MAX_WORKERS),
     staleDays: positive(args.staleDays ?? e.ROOM_STALE_DAYS, DEFAULT_STALE_DAYS),

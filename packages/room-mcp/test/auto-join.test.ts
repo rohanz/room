@@ -56,7 +56,7 @@ async function startMcp(dir: string, workerEnv: Record<string, string> = {}) {
       await new Promise(r => setTimeout(r, 20))
     }
   }
-  return { call, lines, waitFor }
+  return { call, lines, waitFor, close: () => client.close() }
 }
 
 /** What a wedged relay owner looks like from outside: /health answers as this clone's relay, websockets never open. */
@@ -80,6 +80,36 @@ async function wedgedRelay(commonDir: string, key: string): Promise<{ close(): v
 }
 
 describe('automatic join (real room-mcp processes)', () => {
+  it('a retained worker process uses its launch sharing as a seed and preserves later policy choices', async () => {
+    const dir = repo()
+    const room = 'local/demo'
+    const lead = await joinSession({ dir, server: LOCAL, room, name: 'Ada' })
+    cleanups.push(() => leaveSession(lead))
+    const workerDir = path.join(dir, '.room', 'workers', 'privacy')
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-qb', 'privacy', workerDir], { stdio: 'pipe' })
+    const launcher = (await registryForDir(dir)).instance
+    cleanups.push(() => closeRegistryForDir(dir))
+    const { registry, record } = await seedRegistryWorker(dir, 'privacy', {
+      name: 'Ada+privacy', room, lead: { participant: 'Ada', room, instance: launcher }, host: 'codex', task: 'sharing', dir: workerDir, branch: 'privacy',
+      runs: [{ n: 1, mode: 'fresh', intentAt: Date.now(), nonce: 'privacy-run-1', busFrontier: 0, promptMsgIds: [], launcher, logStart: 0 }],
+    })
+    const run = record.runs[0]
+    const env = workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: LOCAL, room, dir: workerDir,
+      tag: 'privacy', lead: 'Ada', owner: 'Ada', share: 'full', run: run.n, nonce: run.nonce, registry: registry.root, id: record.id, logDir: dir, isWorker: false, leadClone: path.join(dir, '.git') })
+    const first = await startMcp(workerDir, env)
+    await first.waitFor(/^room-mcp: ready$/, 30_000)
+    expect(await first.call('room_share')).toContain('full text of files you change')
+    expect(await first.call('room_share', { level: 'intent' })).toContain('only your plans')
+    await first.close()
+    await registry.update(record.id, old => ({ ...old, phase: 'active', seq: old.seq + 1,
+      runs: [...old.runs, { ...run, n: 2, mode: 'resume', nonce: 'privacy-run-2', launch: { outcome: 'launched', pid: 0 } }] }))
+    const retained = await startMcp(workerDir, { ...env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: 'privacy-run-2' })
+    await retained.waitFor(/^room-mcp: ready$/, 30_000)
+    expect(await retained.call('room_share')).toContain('only your plans')
+    // An explicit tool argument remains a deliberate override of the persisted policy.
+    expect(await retained.call('room_join', { room, share: 'full' })).toContain('full text of files you change')
+  }, 90_000)
+
   it('a spawned worker auto-joins and its first wait delivers the lead broadcast before the later interrupt, without old history', async () => {
     const dir = repo()
     const room = 'local/demo'
@@ -172,6 +202,35 @@ describe('automatic join (real room-mcp processes)', () => {
     await mcp.waitFor(/^room-mcp: HEAD moved /, 20_000)
     await vi.waitFor(() => expect(fs.readFileSync(path.join(dir, '.git', 'room-mcp.log'), 'utf8')).toMatch(/HEAD moved /), { timeout: 5000 })
   }, 60_000)
+
+  it('automatic reconnect keeps the current sharing policy instead of replaying the startup environment', async () => {
+    const dir = repo()
+    const commonDir = path.join(dir, '.git')
+    const owner = await ensureLocalRelay(commonDir, 'local/x', { watchMs: 60_000, log: () => {} })
+    cleanups.push(() => owner.stop())
+    const mcp = await startMcp(dir, { ROOM_NAME: 'Source', ROOM_TAG: 'privacy', ROOM_SHARE: 'full' })
+    await mcp.waitFor(/^room-mcp: ready$/, 30_000)
+    fs.writeFileSync(path.join(dir, 'app.py'), 'PRIVATE-RECONNECT-EDIT\n')
+    expect(await mcp.call('room_share', { level: 'intent' })).toContain('only your plans')
+    const port = owner.port
+    await owner.stop()
+    const foreign = await startRelay(port, { key: 'other-key', commonDir: fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-other-')) })
+    cleanups.push(() => foreign.close())
+    await mcp.waitFor(/another clone's relay; the session will join afresh/, 20_000)
+    expect(await mcp.call('room_state')).toContain('you: Source+privacy')
+
+    // A distinct checkout reads the fresh publication, rather than any cached tool result.
+    const observerDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-autojoin-observer-')))
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '--detach', observerDir], { stdio: 'pipe' })
+    const observer = await joinSession({ dir: observerDir, server: LOCAL, name: 'Observer', tag: 'reader', share: 'intent' })
+    cleanups.push(() => leaveSession(observer))
+    const tools = createTools({ cwd: observerDir, getSession: () => observer, setSession: () => {} })
+    cleanups.push(() => tools.shutdown())
+    await vi.waitFor(() => expect(observer.room.manifestHead.get('Source+privacy')).toBeDefined(), { timeout: 10_000 })
+    expect(await tools.call('room_read', { person: 'Source+privacy', path: 'app.py' })).not.toContain('PRIVATE-RECONNECT-EDIT')
+    expect(observer.room.manifestHead.get('Source+privacy')?.level).toBe('intent')
+    expect(await mcp.call('room_share')).toContain('only your plans')
+  }, 90_000)
 })
 
 describe('AutoJoin (the ensure step)', () => {
@@ -192,6 +251,44 @@ describe('AutoJoin (the ensure step)', () => {
     await t.a.ensure()
     expect(calls).toBe(1)
     expect(t.current()).not.toBeNull()
+  })
+
+  it('retries with the latest adopted session even after it was dropped, including its changed policy', async () => {
+    const targets: (Session | undefined)[] = []
+    let connected = false
+    const first = Object.assign(fakeSession('first'), { shareRequested: 'full' })
+    const fresh = Object.assign(fakeSession('fresh'), { shareRequested: 'intent' })
+    const t = setup(async target => { targets.push(target); return target ? fresh : first }, {
+      joined: () => connected, adopt: async () => { connected = true },
+    })
+    await t.a.ensure()
+    first.shareRequested = 'intent'
+    connected = false
+    await t.a.ensure()
+    expect(targets).toEqual([undefined, first])
+    connected = false
+    await t.a.ensure()
+    expect(targets[2]).toBe(fresh)
+    expect(targets[2]?.shareRequested).toBe('intent')
+    // Runtime host rebinding or replica replacement adopts a different session object.
+    const replacement = Object.assign(fakeSession('replacement'), { shareRequested: 'declared' })
+    t.a.remember(replacement)
+    connected = false
+    await t.a.ensure()
+    expect(targets[3]).toBe(replacement)
+  })
+
+  it('refreshes a replaced session without reviving a cancelled join', async () => {
+    const targets: (Session | undefined)[] = []
+    const t = setup(async target => { targets.push(target); return fakeSession('joined') })
+    t.a.cancel()
+    const rebound = Object.assign(fakeSession('rebound'), { shareRequested: 'declared' })
+    t.a.remember(rebound)
+    await t.a.ensure()
+    expect(targets).toEqual([])
+    t.a.retarget(rebound)
+    await t.a.ensure()
+    expect(targets).toEqual([rebound])
   })
 
   it('retries transient failures with backoff, then reports once with the step that failed and no team advice', async () => {

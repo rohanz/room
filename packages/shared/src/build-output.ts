@@ -5,7 +5,8 @@ export const REGENERABLE_BUILD_DIRS = [
   'node_modules', 'vendor', '__pycache__', '.pytest_cache', '.mypy_cache',
   '.ruff_cache', '.tox', '.gradle', 'target',
 ] as const
-// .venv and venv are deliberately retained: rebuilding a virtualenv is costly and it may hold local state.
+// A .venv/venv name alone is not enough: worker cleanup separately recognizes
+// generated environments by their metadata and layout, preserving arbitrary state.
 
 const buildDirs = new Set<string>(REGENERABLE_BUILD_DIRS)
 

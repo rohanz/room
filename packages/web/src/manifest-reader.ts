@@ -1,5 +1,5 @@
 import {
-  manifestChangers, manifestKey, manifestPaths, normalizeCoordinationPath, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf,
+  manifestChangers, manifestNames, manifestPaths, normalizeCoordinationPath, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf,
   type ManifestEntry, type ParticipantView, type RoomDoc, type Version,
 } from '@room/shared'
 
@@ -91,12 +91,11 @@ export function versionGap(version: Version): string | undefined {
   return undefined
 }
 
-export function manifestPeople(room: RoomDoc): string[] { return [...room.manifestHead.keys()].sort() }
+export function manifestPeople(room: RoomDoc): string[] { return manifestNames(room) }
 export function webChangedPaths(room: RoomDoc, name: string): string[] { return manifestPaths(room, name) }
 export function webChangerLabels(room: RoomDoc, path: string): string[] {
   return manifestChangers(room, path).map(name => {
-    const head = room.manifestHead.get(name)
-    const entry = head && room.manifest.get(manifestKey(name, head.fence))?.get(path)
+    const entry = snapshotMetadata(room, name, [])?.entries.get(path)
     return entry?.state === 'held' ? `${name} (not shared: ${heldReason(entry)})` : name
   })
 }

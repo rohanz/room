@@ -97,7 +97,8 @@ export async function registryForDir(dir: string, sessionId?: string): Promise<W
 }
 
 /** Called before roomd publishes a worker's identity or files. */
-export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv = process.env,
+  bound?: { id: string; host: 'claude' | 'codex' }): Promise<void> {
   const id = env.ROOM_WORKER_ID
   if (!id) return
   const room = env.ROOM_ROOM ?? ''
@@ -105,14 +106,17 @@ export async function admitWorkerEnvironment(dir: string, env: NodeJS.ProcessEnv
   const run = Number(env.ROOM_WORKER_RUN), nonce = env.ROOM_LAUNCH_NONCE
   if (!Number.isSafeInteger(run) || run < 1 || !nonce) throw new Error('this worker run was collected, discarded or superseded')
   const registry = await registryForDir(dir, env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID)
-  if (!room || registry.read(id)?.room !== room) throw new Error('this worker run was collected, discarded or superseded')
+  const record = registry.read(id)
+  if (!room || record?.room !== room) throw new Error('this worker run was collected, discarded or superseded')
+  if (bound && bound.host !== record.host) throw new Error('worker host session mismatch')
+  const hostSessionId = bound?.id ?? (record.host === 'claude' ? env.CLAUDE_CODE_SESSION_ID : env.CODEX_THREAD_ID)
   if (env.ROOM_REGISTRY && fs.realpathSync(path.resolve(env.ROOM_REGISTRY)) !== fs.realpathSync(registry.root)) throw new Error('this worker run was collected, discarded or superseded')
   const processInfo = probeProcess(process.pid)
   const parentInfo = probeProcess(process.ppid)
   const chain = [{ pid: process.pid, startTime: processInfo?.startTime ?? '', executable: processInfo?.executable ?? '' },
     ...(parentInfo ? [{ pid: process.ppid, startTime: parentInfo.startTime ?? '', executable: parentInfo.executable ?? '' }] : [])]
   try { await registry.admit({ id, run, nonce, dir, chain, hostProcess: chain[1] ?? null,
-    hostSessionId: env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID }) }
+    hostSessionId }) }
   catch { throw new Error('this worker run was collected, discarded or superseded') }
 }
 /**
@@ -785,13 +789,20 @@ export class WorkerRegistry {
     catch { throw new Error('worker run not admitted: checkout missing') }
     if (!run || run.n !== input.run || run.nonce !== input.nonce || actual !== expected
       || !['prepared', 'active'].includes(record!.phase)) throw new Error('worker run not admitted')
+    const existingSession = record!.hostSessionId ?? this.reports(input.id).find(value => value.run === run.n)?.hostSessionId
+    if (input.hostSessionId && (input.hostSessionId.startsWith('mcp:')
+      || existingSession && existingSession !== input.hostSessionId)) throw new Error('worker host session mismatch')
     const report: RunReport = { run: run.n, nonce: run.nonce, chain: input.chain,
       ...(input.hostProcess !== undefined ? { hostProcess: input.hostProcess } : {}),
       joinedAt: this.now(), ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}) }
     await this.writeReport(input.id, report)
-    if (input.hostSessionId && !record!.hostSessionId && !fs.existsSync(this.opFile(input.id))) await this.update(input.id, old => ({ ...old,
-      hostSessionId: old.hostSessionId ?? input.hostSessionId, seq: old.seq + 1 }))
-    return this.reports(input.id).find(value => value.run === run.n)!
+    const persisted = this.reports(input.id).find(value => value.run === run.n)!
+    if (persisted.hostSessionId && !record!.hostSessionId && !fs.existsSync(this.opFile(input.id))) await this.update(input.id, old => {
+      const latest = old.runs.at(-1)
+      if (latest?.n !== input.run || latest.nonce !== input.nonce || !['prepared', 'active'].includes(old.phase)) throw new Error('worker run not admitted')
+      return { ...old, hostSessionId: old.hostSessionId ?? persisted.hostSessionId, seq: old.seq + 1 }
+    })
+    return persisted
   }
 
   async reportDone(id: string, n: number, summary: string, changed: string[]): Promise<RunReport> {

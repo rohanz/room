@@ -17,7 +17,7 @@ import { finishWorker, registerWorkers, workerByTag, type FixtureWorker } from '
 import { closeRegistryForDir, localWorkers, registryForDir } from '../src/worker-registry.js'
 import { projectWorkers } from '../src/worker-projector.js'
 import { autoRetire } from '../src/retire.js'
-import { cleanupWorker, type WorkerCleanupPreservation } from '../src/worker-git.js'
+import { cleanupWorker, ignoredWorkerArtifacts, type WorkerCleanupPreservation } from '../src/worker-git.js'
 import { realStateInput } from '../src/worker-status.js'
 import { currentToolTiming, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 import { hubSeam } from './fixtures/hub.js'
@@ -251,6 +251,47 @@ describe('room_collect', () => {
     const kept = await t.call({ tag: 'other' })
     expect(kept).toContain('kept .venv/')
     expect(fs.existsSync(other)).toBe(true)
+  })
+
+  it('collects and cleans a generated Python virtual environment', async () => {
+    fs.appendFileSync(path.join(lead, '.git/info/exclude'), '.venv/\n')
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'new.txt', 'worker change')
+    put(worker, '.venv/pyvenv.cfg', 'home = /python/bin\nversion_info = 3.12.0.final.0\n')
+    put(root, 'python', 'interpreter')
+    fs.mkdirSync(path.join(worker, '.venv/bin'))
+    fs.symlinkSync(path.join(root, 'python'), path.join(worker, '.venv/bin/python'))
+    put(worker, '.venv/.gitignore', '*\n')
+    put(worker, '.venv/CACHEDIR.TAG', 'Signature: 8a477f597d28d172789f06886806bc55\n')
+    put(worker, '.venv/lib/python3.12/site-packages/dependency.py', 'installed dependency')
+    fs.symlinkSync('lib', path.join(worker, '.venv/lib64'))
+    expect(await ignoredWorkerArtifacts(t.w)).toEqual([])
+    expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
+    expect(fs.existsSync(path.join(lead, '.venv'))).toBe(false)
+    expect(fs.readFileSync(path.join(root, 'python'), 'utf8')).toBe('interpreter')
+  })
+
+  it.each(['unknown file', 'linked config', 'linked directory', 'missing interpreter', 'file named share', 'directory named .lock'])('retains a virtual environment with %s', async kind => {
+    fs.appendFileSync(path.join(lead, '.git/info/exclude'), '.venv\n')
+    const t = setup()
+    put(worker, '.venv/pyvenv.cfg', 'home = /python/bin\nversion = 3.12.0\n')
+    put(worker, '.venv/bin/python', 'interpreter')
+    if (kind === 'unknown file') put(worker, '.venv/notes.txt', 'keep this')
+    if (kind === 'file named share') put(worker, '.venv/share', 'keep this')
+    if (kind === 'directory named .lock') put(worker, '.venv/.lock/state', 'keep this')
+    if (kind === 'missing interpreter') fs.unlinkSync(path.join(worker, '.venv/bin/python'))
+    if (kind === 'linked config') {
+      fs.renameSync(path.join(worker, '.venv/pyvenv.cfg'), path.join(root, 'pyvenv.cfg'))
+      fs.symlinkSync(path.join(root, 'pyvenv.cfg'), path.join(worker, '.venv/pyvenv.cfg'))
+    }
+    if (kind === 'linked directory') {
+      fs.renameSync(path.join(worker, '.venv'), path.join(root, 'external-env'))
+      fs.symlinkSync(path.join(root, 'external-env'), path.join(worker, '.venv'))
+    }
+    expect(await ignoredWorkerArtifacts(t.w)).not.toEqual([])
   })
 
   it('names a worktree server before the worker host exits during collect', async () => {

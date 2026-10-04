@@ -5,7 +5,7 @@ import { createPrs } from './prs.js'
 import { createInbox } from './messaging.js'
 import { createClaims } from './claims.js'
 import { createAreas } from './scope.js'
-import { neighbours, participantRecord, participantsView, snapshotPath, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
+import { neighbours, participantRecord, participantsView, manifestHeadOf, snapshotPath, snapshotStillCurrent, versionOf, type Presence } from '@room/shared'
 import type { SharePresence } from '@room/roomd'
 import { Bridge } from '../bridge.js'
 import { HooksBridge } from '../hooks-bridge.js'
@@ -91,7 +91,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   const presences = (s: Session): SharePresence[] =>
     Array.from(s.awareness.getStates().values()).filter((x): x is SharePresence => !!x && typeof x === 'object' && !!(x as Presence).user)
   /** Display only; publication and reads use the manifest, never presence sharing. */
-  const shareOf = (s: Session, person: string) => s.room.manifestHead.get(person)?.level ?? 'intent'
+  const shareOf = (s: Session, person: string) => manifestHeadOf(s.room, person)?.level ?? 'intent'
   const setPresence = (s: Session, patch: Partial<Presence>) => {
     const cur = (s.awareness.getLocalState() ?? {}) as Partial<Presence>
     s.awareness.setLocalState({ ...cur, ...patch, lastActive: now() })
@@ -99,7 +99,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
   /** The commit a person's overlay is a delta from (their own HEAD). A carried worker in a
    *  team room publishes its lead's HEAD, because only the lead's machine has the carried commit; that machine (the lead
    *  and its workers) uses the carried commit itself. */
-  const baseFor = (s: Session, person: string) => s.room.manifestHead.get(person)?.base ?? participantRecord(s.room, person)?.git?.base ?? 'HEAD'
+  const baseFor = (s: Session, person: string) => manifestHeadOf(s.room, person)?.base ?? participantRecord(s.room, person)?.git?.base ?? 'HEAD'
   const baseText = async (s: Session, path: string, person = s.me.name): Promise<string | undefined> => readBoundedHistoricalText(s.dir, baseFor(s, person), path)
   const readVersion: HandlerState['readVersion'] = async (s, path, person) => {
     for (let attempt = 0; attempt < 2; attempt++) {

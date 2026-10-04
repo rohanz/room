@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { gitMergeFile } from '../src/merge.js'
 
@@ -23,6 +24,32 @@ async function rawGit(base: string, ours: string, theirs: string): Promise<{ cod
 }
 
 describe('gitMergeFile', () => {
+  // Windows keeps an in-use cwd locked; Unix hosts can remove it while an MCP lives.
+  it.skipIf(process.platform === 'win32')('uses Git when the host process inherited a deleted cwd', async () => {
+    const base = 'first\nkeep\nlast\n'
+    const ours = 'FIRST\nkeep\nlast\n'
+    const theirs = 'first\nkeep\nLAST\n'
+    const program = `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { gitMergeFile } from ${JSON.stringify(new URL('../src/merge.ts', import.meta.url).href)};
+      const previous = process.cwd();
+      const removed = fs.mkdtempSync(path.join(previous, 'removed-cwd-'));
+      process.chdir(removed);
+      fs.rmdirSync(removed);
+      try {
+        const result = await gitMergeFile(${JSON.stringify(base)}, ${JSON.stringify(ours)}, ${JSON.stringify(theirs)},
+          { ours: 'ours', base: 'base', theirs: 'theirs' });
+        process.stdout.write(JSON.stringify(result));
+      } finally { process.chdir(previous); }
+    `
+    const { stdout, stderr } = await promisify(execFile)(process.execPath,
+      ['--import', import.meta.resolve('tsx'), '--input-type=module', '--eval', program],
+      { cwd: dir, timeout: 15_000 })
+    const result = JSON.parse(stdout)
+    expect(result, result.fallbackReason ?? stderr).toMatchObject({ algorithm: 'git', status: 'clean', text: 'FIRST\nkeep\nLAST\n' })
+  })
+
   it('reports the adjacent EOF append/edit conflict exactly as git merge-file does', async () => {
     const base = 'def old():\n    return 1\n'
     const ours = 'def old():\n    return 1\n\ndef added():\n    return 2\n'

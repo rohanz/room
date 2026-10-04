@@ -17,6 +17,22 @@ afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: 
 const openRegistry = (dir: string, options: Parameters<typeof WorkerRegistry.open>[1] = {}) => WorkerRegistry.open(dir, { ...options, watch: false })
 const token = { pid: 31, startTime: 'start', executable: '/bin/agent', sessionId: 's', nonce: 'n' }
 const legacyMemoryFile = (commonDir: string, room: string) => path.join(commonDir, 'room-local', `${encodeURIComponent(room)}.ydoc`)
+it('passes a discovered Codex binding to admission without host ID environment variables', async () => {
+  const dir = common()
+  execFileSync('git', ['-C', dir, 'init', '-q'])
+  const registry = await registryForDir(dir)
+  const read = vi.spyOn(registry, 'read').mockReturnValue(intent())
+  const admit = vi.spyOn(registry, 'admit').mockResolvedValue({} as Awaited<ReturnType<WorkerRegistry['admit']>>)
+  const env = { ROOM_WORKER_ID: 'w_01', ROOM_WORKER_RUN: '1', ROOM_LAUNCH_NONCE: 'nonce', ROOM_ROOM: 'local/repo' }
+  try {
+    await admitWorkerEnvironment(dir, env)
+    expect(admit.mock.calls[0][0].hostSessionId).toBeUndefined()
+    await admitWorkerEnvironment(dir, env, { id: 'discovered-thread', host: 'codex' })
+    expect(admit.mock.calls[1][0].hostSessionId).toBe('discovered-thread')
+    await expect(admitWorkerEnvironment(dir, env, { id: 'wrong-host', host: 'claude' })).rejects.toThrow('session mismatch')
+    expect(admit).toHaveBeenCalledTimes(2)
+  } finally { read.mockRestore(); admit.mockRestore(); await closeRegistryForDir(dir) }
+})
 it('refuses a worker launched by an older Room before it can publish', async () => {
   await expect(admitWorkerEnvironment('/tmp', { ROOM_WORKER_ID: 'lead/tag#1', ROOM_ROOM: 'local/repo/main' })).rejects.toThrow("this worker runs Room 0.17 but its lead runs an older Room")
 })

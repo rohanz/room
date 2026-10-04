@@ -84,6 +84,27 @@ it('returns only populated line detail sections without missing-data placeholder
   expect(lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: true }] }).sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
 })
 
+it('distinguishes a pending lead-shutdown stop from a worker that actually stopped', async () => {
+  const { activityLabel } = await import('./views.js')
+  const worker: WorkerView = { id: 'w_1', mode: 'local', run: 1, fence: 's', name: 'lead+busy', tag: 'busy', lead: 'lead', host: 'codex', task: 'task', branch: 'main', startedAt: 1, status: 'running', stopReason: 'lead-session-ended' }
+  const pending = 'stop requested when your last session ended; still running'
+  expect(activityLabel(1, 10, { worker })).toBe(pending)
+  const lines = workerLine({ worker, changedCount: 1, now: 10, activity: { label: 'editing app.py', at: 9 } })
+  expect(lines[0]).toContain(pending)
+  expect(lines[2]).toContain('editing app.py')
+  const stopped = 'stopped when your last session ended; its partial work is in its worktree'
+  expect(activityLabel(1, 10, { worker, processGone: true })).toBe(stopped)
+  expect(workerLine({ worker, changedCount: 1, now: 10, processGone: true })[0]).toContain(stopped)
+  expect(activityLabel(1, 10, { worker: { ...worker, status: 'stopped' } })).toBe(stopped)
+  expect(workerLine({ worker: { ...worker, status: 'stopped' }, changedCount: 1, now: 10 })[0]).toContain(stopped)
+  for (const status of ['starting', 'unknown', 'ambiguous'] as const) {
+    const uncertain = { ...worker, status }
+    const unconfirmed = 'stop requested when your last session ended; process state unconfirmed'
+    expect(activityLabel(1, 10, { worker: uncertain })).toBe(unconfirmed)
+    expect(workerLine({ worker: uncertain, changedCount: 1, now: 10 })[0]).toContain(unconfirmed)
+  }
+})
+
 it('uses the same reported runtime line online and for recorded offline workers', async () => {
   const { participantIdentityLine, deriveParticipants } = await import('./views.js')
   const p = { user: { name: 'rohanz+codex', kind: 'agent' as const, owner: 'rohanz', label: 'codex', color: '#000' } }

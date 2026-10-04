@@ -64,6 +64,15 @@ describe('host session binding', () => {
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'wrapper', env: {} })).toBeUndefined()
   })
 
+  it('ignores another worker, host, or checkout when discovering a worker thread', () => {
+    const dir = common(), other = common()
+    record(dir, 'own-thread', 'codex', 1, [child], 'w_123')
+    record(dir, 'other-worker', 'codex', 2, [child], 'w_456')
+    record(dir, 'other-host', 'claude', 3, [parent], 'w_123')
+    writeSessionRecord(dir, { session_id: 'other-checkout', host: 'codex', worker_id: 'w_123', cwd: other, at: 4, chain: [child], hostPid: child.pid })
+    expect(boundSession({ commonDir: dir, cwd: dir, host: 'codex', workerId: 'w_123' })).toEqual({ id: 'own-thread', host: 'codex' })
+  })
+
   it('binds a Claude lead even when its prompt mentions app-server', () => {
     const dir = common()
     record(dir, 'claude-prompt', 'claude', 1, [parent])

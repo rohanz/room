@@ -4,7 +4,7 @@ import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
 import { sameCheckoutSession } from '../company.js'
-import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestKey, manifestPaths } from '@room/shared'
+import { coordinationPaths, neighbours, participantsView, participantRecord, manifestChangers, manifestNames, manifestPaths, snapshotMetadata } from '@room/shared'
 import { activityLabel, idleLabel, Areas, CODEOWNERS_PATHS, RoomDoc, areaMembershipSummary, claimLine as formatClaimLine, clampRange, claimInMyLines, claimsOverlap, describeClaim, displayName, participantIdentityLine, splitParticipants, formatCount, formatMsg, formatPlans, isAgentic, msgPaths, otherAreasLine, personLine as formatPersonLine, rangesOverlap, scopeCovers, scopeLine as formatScopeLine, sharesArea, summarizeFiles, workerLines as formatWorkerLines, type Claim, type Msg, type NoteMsg, type Scope, type ScopeMsg } from '@room/shared'
 import { git, gitShow } from '@room/roomd/git'
 import { workerChangedPaths } from '@room/roomd/baseline'
@@ -73,8 +73,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         }
         for (const sc of x.room.allScopes()) if ((nb.has(sc.by) || isPrName(sc.by)) && scopeCovers(sc, p)) out.push(tagged(x, `scope: ${sc.by} is on ${scopeLine(sc)}`))
         for (const n of manifestChangers(x.room, p)) if (nb.has(n) && !sameCheckoutSession(s, n)) {
-          const fence = x.room.manifestHead.get(n)?.fence
-          const entry = fence ? x.room.manifest.get(manifestKey(n, fence))?.get(p) : undefined
+          const entry = snapshotMetadata(x.room, n, [])?.entries.get(p)
           who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
         }
       }
@@ -170,7 +169,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       const groups = splitParticipants({
         presences: ps, workers: s.room.acceptedWorkerViews(), retiredWorkers: s.room.retiredWorkers(),
-        scopes: [...s.room.scopes.entries()], overlayPeople: [...s.room.manifestHead.keys()],
+        scopes: [...s.room.scopes.entries()], overlayPeople: manifestNames(s.room),
         changesByPerson: new Map(), claims: s.room.openClaims(), now: now(),
       })
       const retiredNames = new Set(s.room.retiredWorkers().map(worker => worker.name))
@@ -362,6 +361,7 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
   const scopeLine = formatScopeLine
   const personLine = (s: Session, name: string): string => {
       const accepted = s.room.acceptedWorkerViewOf(name)
+      const publication = snapshotMetadata(s.room, name, participantsView(s.room, s.awareness, now()))
       const raw = [...s.room.workerViews.values()].find(view => view.name === name && view.mode === 'local')
       return formatPersonLine({
         name,
@@ -372,8 +372,8 @@ export function createAreas(deps: Pick<HandlerState, 'ctx' | 'log' | 'presences'
           : manifestPaths(s.room, name),
         messages: s.room.messages().filter((m): m is NoteMsg => m.type === 'note'),
         share: shareOf(s, name),
-        heldCount: (() => { const head = s.room.manifestHead.get(name); return head ? [...s.room.manifest.get(`${name}\u0000${head.fence}`)?.values() ?? []].filter(entry => entry.fence === head.fence && entry.state === 'held').length : 0 })(),
-        excludedCount: s.room.manifestHead.get(name)?.excluded.length ?? 0,
+        heldCount: [...publication?.entries.values() ?? []].filter(entry => entry.state === 'held').length,
+        excludedCount: publication?.head.excluded.length ?? 0,
         ...(accepted?.mode === 'local' ? { projectedWorker: accepted } : raw && !accepted ? { projectedStale: raw.lead } : {}),
       })
     }

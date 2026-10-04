@@ -280,6 +280,7 @@ it('refuses the HEAD-transition transaction when an early validated path changes
   } finally { spy.mockRestore() }
 })
 
+// Multiple real filesystem scans need headroom under concurrent test load.
 it('republishes, narrows, and deletes 2050 shared files without retaining content', async () => {
   const checkout = repo()
   const roomDoc = new RoomDoc()
@@ -321,7 +322,7 @@ it('republishes, narrows, and deletes 2050 shared files without retaining conten
   expect(roomDoc.overlays.get(key)?.size ?? 0).toBe(0)
   expect(incarnationText(roomDoc, 'Alice', paths[0])).toBeUndefined()
   publisher.stop()
-})
+}, 60_000)
 
 it('leaves an explicit base gap for an oversized carried blob replaced by six bytes', async () => {
   const checkout = repo()

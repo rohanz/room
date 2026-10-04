@@ -2,6 +2,7 @@ import type { RoomDoc, ParticipantRecord } from './doc.js'
 import { holderFence, participantRecord } from './doc.js'
 import { normalizeCoordinationPath } from './near.js'
 import { liveHolder, type ParticipantView } from './views.js'
+import { retainedPublication, publicationRevisionCurrent, type CompletedPublication } from './worker-memory.js'
 import type { ShareLevel } from './types.js'
 
 export type Coverage = { kind: 'all' } | { kind: 'none'; reason: 'intent' | 'not-publisher' | 'starting' | 'unprojectable' }
@@ -40,6 +41,8 @@ export interface ParticipantSnapshot {
   texts: ReadonlyMap<string, string>
   roomSalt?: string
   fenceValid: boolean
+  /** Identity of an immutable restart cache, never a live publication. */
+  retained?: CompletedPublication
 }
 export type ParticipantMetadataSnapshot = Omit<ParticipantSnapshot, 'texts'>
 
@@ -52,17 +55,23 @@ export type Version =
   | { kind: 'unknown'; why: 'intent' | 'not-publisher' | 'updating' | 'no-record' | 'fetch' | 'no-base-text' | 'too-large'; detail: string }
 
 export function manifestKey(name: string, fence: string): string { return `${name}\u0000${fence}` }
+export function manifestHeadOf(room: RoomDoc, name: string): ManifestHead | undefined {
+  return room.manifestHead.get(name) ?? retainedPublication(room, name)?.head
+}
+export function manifestNames(room: RoomDoc): string[] {
+  return [...new Set([...room.manifestHead.keys(), ...[...room.workerViews.values()].filter(worker => retainedPublication(room, worker.name)).map(worker => worker.name)])].sort()
+}
 
 /** Enumerate facts from the current writer incarnation, never stale overlay keys. */
 export function manifestPaths(room: RoomDoc, name: string): string[] {
   const fence = room.manifestHead.get(name)?.fence
-  if (!fence) return []
+  if (!fence) return retainedPublication(room, name)?.entries.map(([path]) => path).sort() ?? []
   return [...room.manifest.get(manifestKey(name, fence))?.entries() ?? []]
     .filter(([, entry]) => entry.fence === fence).map(([path]) => path).sort()
 }
 
 export function manifestChangers(room: RoomDoc, path: string): string[] {
-  return [...room.manifestHead.keys()].filter(name => manifestPaths(room, name).includes(path)).sort()
+  return manifestNames(room).filter(name => manifestPaths(room, name).includes(path))
 }
 
 function fenceValid(head: ManifestHead, record: ParticipantRecord | undefined, view: readonly ParticipantView[]): boolean {
@@ -73,13 +82,19 @@ function fenceValid(head: ManifestHead, record: ParticipantRecord | undefined, v
 /** Copy the current incarnation's metadata without converting overlay text. */
 export function snapshotMetadata(room: RoomDoc, name: string, view: readonly ParticipantView[]): ParticipantMetadataSnapshot | undefined {
   const head = room.manifestHead.get(name)
-  if (!head) return undefined
+  if (!head) {
+    const retained = retainedPublication(room, name)
+    if (!retained) return undefined
+    return { name, head: { ...retained.head, excluded: [...retained.head.excluded] },
+      record: { holder: retained.holder, git: retained.git }, entries: new Map(retained.entries),
+      roomSalt: room.roomSalt, fenceValid: true, retained }
+  }
   const record = participantRecord(room, name)
   const entries = new Map<string, ManifestEntry>()
   for (const [path, entry] of room.manifest.get(manifestKey(name, head.fence))?.entries() ?? []) {
     if (entry.fence === head.fence) entries.set(path, { ...entry })
   }
-  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
+  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) && publicationRevisionCurrent(room.doc, name, head) }
 }
 
 /** Copy the current incarnation in one synchronous read, including plain text values. */
@@ -87,6 +102,7 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
   const meta = snapshotMetadata(room, name, view)
   if (!meta) return undefined
   const texts = new Map<string, string>()
+  if (meta.retained) return { ...meta, texts: new Map(meta.retained.texts) }
   const overlay = room.overlays.get(manifestKey(name, meta.head.fence))
   for (const [path, text] of overlay?.entries() ?? []) texts.set(path, text.toString())
   return { ...meta, texts }
@@ -95,7 +111,7 @@ export function snapshot(room: RoomDoc, name: string, view: readonly Participant
 /** A single-file reader need not materialize every published overlay in the room. */
 export function snapshotPath(room: RoomDoc, name: string, view: readonly ParticipantView[], path: string): ParticipantSnapshot | undefined {
   const head = room.manifestHead.get(name)
-  if (!head) return undefined
+  if (!head) return snapshot(room, name, view)
   const record = participantRecord(room, name)
   const key = manifestKey(name, head.fence)
   const entry = room.manifest.get(key)?.get(path)
@@ -104,15 +120,17 @@ export function snapshotPath(room: RoomDoc, name: string, view: readonly Partici
   const texts = new Map<string, string>()
   const value = entry?.fence === head.fence ? room.overlays.get(key)?.get(path) : undefined
   if (value) texts.set(path, value.toString())
-  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) }
+  return { name, head: { ...head, excluded: [...head.excluded] }, record, entries, texts, roomSalt: room.roomSalt, fenceValid: fenceValid(head, record, view) && publicationRevisionCurrent(room.doc, name, head) }
 }
 
 export function snapshotStillCurrent(room: RoomDoc, snap: ParticipantSnapshot, view: readonly ParticipantView[]): boolean {
+  if (snap.retained) return retainedPublication(room, snap.name) === snap.retained && snap.roomSalt === room.roomSalt
   const head = room.manifestHead.get(snap.name)
   const record = participantRecord(room, snap.name)
   // An already unavailable snapshot stays a conservative gap until its captured identity changes.
   // A once-authoritative snapshot that loses its fence must still be retried.
-  if (!head || fenceValid(snap.head, record, view) !== snap.fenceValid || fenceValid(head, record, view) !== snap.fenceValid) return false
+  const valid = (head: ManifestHead) => fenceValid(head, record, view) && publicationRevisionCurrent(room.doc, snap.name, head)
+  if (!head || valid(snap.head) !== snap.fenceValid || valid(head) !== snap.fenceValid) return false
   const a = snap.head, b = head
   return a.semRev === b.semRev && a.rev === b.rev && a.fence === b.fence && a.base === b.base &&
     a.complete === b.complete && a.level === b.level && a.projectedBy === b.projectedBy &&

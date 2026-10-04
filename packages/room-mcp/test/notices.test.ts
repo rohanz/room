@@ -83,7 +83,7 @@ describe('unavailable addressed recipients', () => {
     addWorker(s, worker({ lead: 'other' }))
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'Can you review?' })
     const question = s.room.messages().find(m => m.type === 'question')!
-    const notice = 'lead+state finished 3m ago and will not answer; its summary: Fixed state. Tests passed.'
+    const notice = 'lead+state finished 3m ago and will not answer; its summary: Fixed state. Tests passed. Ask its lead other to resume it if follow-up is needed.'
     expect(sent).toContain(notice)
     expect(sent).not.toContain('to block for the answer')
     expect(await tools.room_wait({ questionId: question.id })).toBe(notice)
@@ -180,7 +180,7 @@ describe('unavailable addressed recipients', () => {
     const presences = vi.mocked(state.presences as (x: Session) => unknown[])
     presences.mockImplementation(x => [...Array.from(x.awareness.getStates().values()), { user: { name: 'lead+state', kind: 'agent' } }])
     const sent = await tools.room_send({ type: 'question', to: 'lead+state', text: 'More?' })
-    const notice = 'lead+state reported ' + shown + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.'
+    const notice = 'lead+state reported ' + shown + ' 0m ago and will not answer; its summary: Fixed state. Tests passed.' + (status === 'done' ? ' Ask its lead other to resume it if follow-up is needed.' : '')
     expect(sent).toContain(notice)
     expect(sent).not.toContain('to block for the answer')
     expect(await tools.room_wait({ questionId: s.room.messages().at(-1)!.id })).toBe(notice)

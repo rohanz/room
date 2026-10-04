@@ -1,0 +1,2 @@
+# Generated editor snippets contain intentional indentation in JavaScript template literals.
+plugins/room/web/assets/*.js -whitespace

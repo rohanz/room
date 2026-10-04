@@ -96,7 +96,7 @@ export async function offerTeamSharingDisclosure(s: Session, ledger: Ledger): Pr
 
 /** Join s's room again as s did, without opening the repo again. */
 export function rejoinOptions(s: Session, credentialsPath?: string): JoinOptions {
-  return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.shareRequested, token: s.token }
+  return { dir: s.dir, credentialsPath, name: s.me.owner ?? s.me.name, tag: s.me.label, room: s.roomName, server: s.local ? LOCAL : s.roomUrl.slice(0, s.roomUrl.lastIndexOf('/')), share: s.policyStore.requested, token: s.token }
 }
 
 export function handlers(state: HandlerState): Record<string, Handler> {

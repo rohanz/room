@@ -36,7 +36,7 @@ function boundWorker(host: 'codex' | 'claude' = 'codex') {
   const sessionDir = sessionDirectory(path.join(dir, '.git'), 'worker-thread')
   fs.mkdirSync(sessionDir, { recursive: true })
   const write = (name: string, value: object) => fs.writeFileSync(path.join(sessionDir, name), JSON.stringify(value))
-  write('session.json', { session_id: 'worker-thread', host, worker_id: 'w1', at: 100, chain: [], hostPid: 1, model: 'gpt-6-astra' })
+  write('session.json', { session_id: 'worker-thread', host, worker_id: 'w1', cwd: dir, at: 100, chain: [], hostPid: 1, model: 'gpt-6-astra' })
   return { dir, write }
 }
 
@@ -47,7 +47,7 @@ it('publishes runtime.json after the hook rewrites it, clears a missing model, a
     expect(daemon.provider.awareness.getLocalState()).toMatchObject({ model: 'gpt-6-astra' })
     write('runtime.json', { model: 'actual-model', at: 200 })
     await expect.poll(() => daemon.provider.awareness.getLocalState()?.model).toBe('actual-model')
-    write('session.json', { session_id: 'worker-thread', host: 'codex', worker_id: 'w1', at: 300, chain: [], hostPid: 1 })
+    write('session.json', { session_id: 'worker-thread', host: 'codex', worker_id: 'w1', cwd: dir, at: 300, chain: [], hostPid: 1 })
     await expect.poll(() => daemon.provider.awareness.getLocalState()?.model).toBeUndefined()
     expect(daemon.provider.awareness.getLocalState()?.effort).toBeUndefined()
     const publish = vi.spyOn(daemon.provider.awareness, 'setLocalState')
@@ -106,10 +106,24 @@ it('M13 pauses the old grant and reports a same-chain host session rebind', asyn
     named.onRebind(next)
     const newDir = sessionDirectory(path.join(dir, '.git'), 'after-clear')
     fs.mkdirSync(newDir, { recursive: true })
-    fs.writeFileSync(path.join(newDir, 'session.json'), JSON.stringify({ session_id: 'after-clear', host: 'claude', worker_id: 'w1', at: Date.now(), chain: [], hostPid: 1 }))
+    fs.writeFileSync(path.join(newDir, 'session.json'), JSON.stringify({ session_id: 'after-clear', host: 'claude', worker_id: 'w1', cwd: dir, at: Date.now(), chain: [], hostPid: 1 }))
     await expect.poll(() => next.mock.calls.length, { timeout: 3_000 }).toBe(1)
     expect(next).toHaveBeenCalledWith('after-clear')
     expect(named.lease.fence()).toBeUndefined()
+  } finally { await named.daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('reports a Codex binding first discovered after startup, without waiting for a tool call', async () => {
+  const { dir, write } = boundWorker()
+  fs.rmSync(path.join(sessionDirectory(path.join(dir, '.git'), 'worker-thread'), 'session.json'))
+  const named = await startAutoTaggedRoomd({ dir, name: 'Ada+worker', label: 'worker', room: 'ws://unused/room', providerFactory: (_s: string, _r: string, doc: Y.Doc) => hubRoom().provider(doc) } as Parameters<typeof startAutoTaggedRoomd>[0], 'worker')
+  const next = vi.fn()
+  try {
+    expect(named.lease.sessionId).toMatch(/^mcp:/)
+    named.onRebind(next)
+    write('session.json', { session_id: 'worker-thread', host: 'codex', worker_id: 'w1', cwd: dir, at: Date.now(), chain: [], hostPid: 1 })
+    await expect.poll(() => next.mock.calls.length, { timeout: 3_000 }).toBe(1)
+    expect(next).toHaveBeenCalledWith('worker-thread')
   } finally { await named.daemon.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 

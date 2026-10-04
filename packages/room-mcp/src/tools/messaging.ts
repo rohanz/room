@@ -73,7 +73,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const resumable = !!own && own.status === 'done' && !!own.hostSessionId && fs.existsSync(own.dir) && !retired
       return { text: resumable
         ? `${name} ${verb}${ago}; message a finished worker to resume it in its worktree. Its summary: ${summary}`
-        : `${name} ${verb}${ago} and will not answer; its summary: ${summary}`, terminal: true }
+        : `${name} ${verb}${ago} and will not answer; its summary: ${summary}${!own && !retired && worker?.status === 'done' ? ` Ask its lead ${worker.lead} to resume it if follow-up is needed.` : ''}`, terminal: true }
     }
     if (presences(s).some(p => p.user.name === name && p.wakeUnavailable === true)) return { text: `${name} cannot be woken in this session; it will see this at its next turn`, terminal: false }
     if (present || worker) return undefined

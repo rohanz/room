@@ -1,6 +1,6 @@
 import { subscribeRender } from './scheduler.ts'
 import { bindTooltip, showTooltip, hideTooltip } from './tooltip.ts'
-import { acceptedGit, manifestChangers, manifestPaths, participantRecord, participantsView, type GraphSnapshot } from '@room/shared'
+import { acceptedGit, manifestChangers, manifestPaths, participantRecord, participantsView, snapshotMetadata, type GraphSnapshot } from '@room/shared'
 import { presences, type Conn } from './conn.ts'
 import { h, type FocusState } from './panels.ts'
 import { deriveNetwork, deriveContractImpact, deriveWorkImpact, observedImpactClaims, rememberPlanClaims, type ImpactClaim, type NetworkNode } from './network-model.ts'
@@ -117,8 +117,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       emptyDetails(); fileSet = ''; return
     }
     const changed = manifestPaths(conn.room, selectedPerson)
-    const head = conn.room.manifestHead.get(selectedPerson)
-    const entries = head && conn.room.manifest.get(`${selectedPerson}\0${head.fence}`)
+    const entries = snapshotMetadata(conn.room, selectedPerson, [])?.entries
     const deleted = changed.filter(path => entries?.get(path)?.change === 'D')
     const model = deriveNetwork(snapshot, changed, deleted, false)
     const foreignObserved = [...conn.room.graphs.entries()].flatMap(([owner, graph]) => owner === selectedPerson ? [] : observedImpactClaims(graph, owner))
@@ -127,7 +126,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
     for (const path of new Set([...workView.work, ...impact.contracts.keys()])) if (!model.nodes.some(n => n.path === path)) model.nodes.push({ path, role: 'context', deleted: false })
     stats.replaceChildren(...[[workView.upstreamPlans, 'upstream contract risks'], [workView.work.size, 'my work files'], [workView.ownPlans, 'my contract changes'], [workView.downstream.size, 'potential consumers']].map(([count, label]) => h('div', {}, h('strong', {}, String(count)), h('span', {}, String(label)))))
     const online = presences(conn.provider, conn.room).some(p => p.user.name === selectedPerson)
-    const git = acceptedGit(participantRecord(conn.room, selectedPerson), participantsView(conn.room, conn.provider.awareness, Date.now()))
+    const git = acceptedGit(snapshotMetadata(conn.room, selectedPerson, [])?.record ?? participantRecord(conn.room, selectedPerson), participantsView(conn.room, conn.provider.awareness, Date.now()))
     const notices = [snapshot.status === 'ready' ? '' : snapshot.status === 'error' ? 'Index failed — showing last available data.' : 'Indexing — dependencies may be incomplete.',
       !online ? 'Participant offline — retained snapshot.' : '', git === 'updating' ? 'Participant git state is updating.' : snapshot.base !== git.base ? 'Snapshot is on an older participant base.' : '', snapshot.truncated ? 'Indexer limits reached; graph is partial.' : '',
       !workView.work.size ? 'No edits or open claims for this participant. Turn off Relevant to my work to explore the repository.' : '',
@@ -181,8 +180,7 @@ export function networkPanel(conn: Conn, shared?: FocusState): HTMLElement {
       const { x, y } = positions.get(node.path)!
       const editedBy = manifestChangers(conn.room, node.path)
       const heldBy = editedBy.filter(name => {
-        const head = conn.room.manifestHead.get(name)
-        return head && conn.room.manifest.get(`${name}\0${head.fence}`)?.get(node.path)?.state === 'held'
+        return snapshotMetadata(conn.room, name, [])?.entries.get(node.path)?.state === 'held'
       })
       const declared = impact.contracts.has(node.path)
       const released = declared && (impact.contracts.get(node.path) ?? []).every(p => p.released)

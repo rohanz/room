@@ -1,5 +1,6 @@
 import * as Y from 'yjs'
 import { RECEIPTS_BYTES } from './delivery.js'
+import { workerMemory } from './worker-memory.js'
 
 /** The snapshot target: `memorySnapshot` sheds droppable data to stay under it. */
 export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
@@ -9,7 +10,8 @@ export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
 export const ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024
 
 /** Memory keeps coordination (including migrated claims awaiting an old owner's return).
- * Live file text and graphs are rebuilt by whoever is present. */
+ * Live file text and graphs are rebuilt by whoever is present. Completed workers'
+ * publications are copied separately, within the snapshot budget. */
 export const MEMORY_TYPES = {
   bus: 'array', ledger: 'map', retiredWorkers: 'array', workers: 'map',
   scopes: 'map', claims: 'map', unresolved: 'map', aliases: 'map', colors: 'map',
@@ -20,8 +22,11 @@ export const MEMORY_TYPES = {
  * Only receipts that bus, mail or outcomes reference are kept; never persist arbitrary future maps. */
 export const MEMORY_PREFIXES = { 'seen:': 'map' } as const
 
-export function* memoryTypes(doc: Y.Doc): Generator<[string, 'map' | 'array']> {
+export function* memoryTypes(doc: Y.Doc, includePublications = false): Generator<[string, 'map' | 'array']> {
   for (const [name, kind] of Object.entries(MEMORY_TYPES)) if (doc.share.has(name)) yield [name, kind]
+  if (includePublications) for (const name of ['completedPublications', 'completedPublicationRevisions']) {
+    if (doc.share.has(name)) yield [name, 'map']
+  }
   for (const name of doc.share.keys()) {
     for (const [prefix, kind] of Object.entries(MEMORY_PREFIXES)) if (name.startsWith(prefix)) yield [name, kind]
   }
@@ -40,14 +45,16 @@ function validReceipt(value: unknown): boolean {
 }
 
 /**
- * Copy values into fresh CRDT types: no live text or deleted CRDT history on disk. Receipts keep, in order:
+ * Copy values into fresh CRDT types: no live participant text or deleted CRDT history on disk. Receipts keep, in order:
  * those for mail and outcomes, those for addressed bus messages, then broadcasts newest first within
- * RECEIPTS_BYTES. Over `maxBytes` it drops archive entries oldest first, then broadcast receipts, then the
- * oldest bus broadcasts; never mail, outcomes, addressed receipts or other roots, and logs what it dropped.
+ * RECEIPTS_BYTES. Over `maxBytes` it drops completed publications first, then archive entries oldest first,
+ * then broadcast receipts and the oldest bus broadcasts; never publication revision markers, mail,
+ * outcomes, addressed receipts or other roots, and logs what it dropped.
  * When those protected roots alone exceed `maxBytes`, it returns the smallest achievable snapshot, which
  * is over `maxBytes`, and says "still over"; the caller decides what to do with it.
  */
 export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }: { maxBytes?: number; log?: (line: string) => void } = {}): Uint8Array {
+  const { publications, copyRevisionsTo } = workerMemory(doc)
   const arrays = new Map<string, unknown[]>(), maps = new Map<string, [string, unknown][]>()
   const seenMaps = new Map<string, [string, unknown][]>()
   for (const [name, kind] of memoryTypes(doc)) {
@@ -90,6 +97,8 @@ export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }:
         for (const [name, values] of arrays) if (values.length) copy.getArray(name).push(values)
         for (const [name, entries] of maps) for (const [key, value] of entries) copy.getMap(name).set(key, value)
         for (const [name, kept] of receipts) for (const [key, value] of kept) copy.getMap(name).set(key, value)
+        for (const publication of publications) publication.copyTo(copy)
+        copyRevisionsTo(copy)
       })
       return Y.encodeStateAsUpdate(copy)
     } finally { copy.destroy() }
@@ -108,6 +117,8 @@ export function memorySnapshot(doc: Y.Doc, { maxBytes = MAX_MEMORY_BYTES, log }:
     }
     return dropped
   }
+  const publicationsDropped = shed(publications, value => value.size, () => {})
+  if (publicationsDropped) log?.(`snapshot over ${maxBytes} bytes: dropped ${publicationsDropped} completed worker publications`)
   const archive = (maps.get('archive') ?? []).sort(([a, x], [b, y]) => ((x as unknown[])[2] as number) - ((y as unknown[])[2] as number) || compare(a, b))
   const archiveDropped = shed(archive, ([id, value]) => entrySize(id, value), () => {})
   const receiptsDropped = shed(keptBroadcasts.reverse(), r => r.size, items => { for (const r of items) receipts.get(r.map)!.delete(r.id) })

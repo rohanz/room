@@ -383,3 +383,13 @@ without dependencies; skip explicitly when the committed JavaScript bundles are 
 **Validation:** Scheduler and retry regressions failed before their fixes. Removing the
 runtime from the temporary packaging copy made the smoke fail; the intact copy passes.
 **Built when:** 3 Oct, post-hackathon, during review round 3. No plugin rebuild or push.
+
+## 2026-10-04 — Worker recovery and fault rehearsal
+
+**Decision:** Persist verified host-thread identity, preserve completed workers' already-shared publications in bounded local restart memory, and validate retained reads against current worker authority and publication revisions. Clean recognized generated Python environments during normal collection; keep unknown artifacts and unwitnessed exits for inspection. Run Git previews from their private merge directory.
+
+**Findings:** Fresh eight-worker Werkzeug and HTTPX rehearsals passed. A subsequent Flask fault rehearsal exposed automatic reconnect reapplying launch-time sharing over a later intent-only choice, and pending shutdown requests being labelled as completed stops. Reconnect now retains the adopted session's current policy; a retained worker's launch environment is an initial default, not an override of its saved choice. Views distinguish running, unconfirmed and stopped processes. Independent Astra reviews checked the changes and failing-before regressions.
+
+**Validation:** Methods, failed attempts and final results are retained in the [worker reliability record](superpowers/rehearsals/2026-10-04-worker-reliability-loop.md), [Flask fault record](superpowers/rehearsals/2026-10-04-flask-fault-rehearsal.md) and [0.17.4 release record](superpowers/rehearsals/2026-10-04-0174-release.md).
+
+**Built when:** 4 Oct, post-hackathon, during the user-requested fix/rehearse loop. No schema migration is introduced. Durable exit witnessing after a launcher dies remains a separate roadmap item; cleanup does not infer an exit code from a worker's report.

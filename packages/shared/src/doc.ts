@@ -1,4 +1,5 @@
 import { deliveryIndex } from './delivery.js'
+import { retainedPublication, publicationRevisionCurrent, type CompletedPublication } from './worker-memory.js'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
 import { boundedTextDiff, type DiffStats, type TextOp } from './text-diff.js'
@@ -224,6 +225,8 @@ export class RoomDoc {
     if (archived.id !== id) throw new Error('retirement id does not match record')
     const name = archived.name
     this.doc.transact(() => {
+      const cached = this.doc.getMap<CompletedPublication>('completedPublications')
+      for (const [key, value] of cached) if (value.worker.id === id) cached.delete(key)
       if (this.workerOwnsName(id, name)) {
         this.clearWorkerCoordination(name, 'retired', post)
         const conflicts = this.doc.getMap<{ owner?: string }>('conflicts')
@@ -252,7 +255,12 @@ export class RoomDoc {
     return key.startsWith(this.baseTextPrefix(person)) && !key.slice(person.length + 1).includes('\u0000')
   }
   baseText(person: string, sha: string, relpath: string): string | undefined {
-    return this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath))
+    const head = this.manifestHead.get(person)
+    if (head && !publicationRevisionCurrent(this.doc, person, head)) return undefined
+    const live = this.ownedBaseTexts.get(this.baseTextKey(person, sha, relpath))
+    if (live !== undefined) return live
+    const retained = retainedPublication(this, person)
+    return retained?.head.base === sha ? retained.baseTexts.find(([path]) => path === relpath)?.[1] : undefined
   }
   /** Remove only this participant's entries that no longer back their live work. */
   reconcileBaseTexts(person: string, origin?: unknown, baseSha?: string): void {

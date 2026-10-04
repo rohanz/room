@@ -1,4 +1,5 @@
 import { describeClaim } from './claims.js'
+import { retainedPublication } from './worker-memory.js'
 import { describeIdentity, isAgentic } from './identity.js'
 import { holderFence, participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
 import { workerLive, type Claim, type Kind, type NoteMsg, type Presence, type RetiredWorker, type Scope, type ShareLevel, type WorkerView } from './types.js'
@@ -29,6 +30,7 @@ export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: nu
     const split = key.lastIndexOf('\u0000')
     if (split > 0) names.add(key.slice(0, split))
   }
+  for (const worker of doc.workerViews.values()) if (retainedPublication(doc, worker.name)) names.add(worker.name)
   const current = new Map<string, Partial<Presence>[]>()
   for (const [clientId, value] of awareness.getStates()) {
     const state = value as Partial<Presence> | null
@@ -40,7 +42,8 @@ export function participantsView(doc: RoomDoc, awareness: AwarenessView, now: nu
     current.set(name, [...(current.get(name) ?? []), state])
   }
   return [...names].sort().map(name => {
-    const record = participantRecord(doc, name)
+    const cached = retainedPublication(doc, name)
+    const record: ParticipantRecord | undefined = participantRecord(doc, name) ?? (cached ? { holder: cached.holder, git: cached.git } : undefined)
     const presences = current.get(name) ?? []
     const own = record?.holder ? presences.find(state => state.sessionId === record.holder?.sessionId) : undefined
     const fresh = !!own
@@ -113,8 +116,15 @@ export function summarizeFiles(paths: readonly string[], options: FileSummaryOpt
 }
 
 const STOPPED_WITH_SESSION = 'stopped when your last session ended; its partial work is in its worktree'
+const STOP_REQUESTED_WITH_SESSION = 'stop requested when your last session ended; still running'
+const STOP_UNCONFIRMED_WITH_SESSION = 'stop requested when your last session ended; process state unconfirmed'
 const STOPPED_UNWITNESSED = 'stopped while no session of yours was running; reason unknown'
 const stoppedWithSession = (w: { stopReason?: WorkerView['stopReason'] }): boolean => w.stopReason === 'lead-session-ended'
+function sessionStopLabel(w: Pick<WorkerView, 'status' | 'stopReason'>, processGone = false): string | undefined {
+  if (!stoppedWithSession(w)) return undefined
+  if (processGone || !workerLive(w.status)) return STOPPED_WITH_SESSION
+  return w.status === 'running' ? STOP_REQUESTED_WITH_SESSION : STOP_UNCONFIRMED_WITH_SESSION
+}
 const stoppedAfterMessage = (w: { stopReason?: WorkerView['stopReason'] }): string | undefined =>
   w.stopReason?.startsWith('message-delivered-')
     ? `stopped after receiving your message: ${w.stopReason === 'message-delivered-cancelled' ? 'cancelled' : 'launch failed'}`
@@ -122,7 +132,8 @@ const stoppedAfterMessage = (w: { stopReason?: WorkerView['stopReason'] }): stri
 
 /** Wording for action recency; connectivity and process liveness are separate facts. */
 export function activityLabel(lastActive: number | undefined, now = Date.now(), options: { running?: boolean; processGone?: boolean; worker?: { status: WorkerView['status']; finishedAt?: number; stopReason?: WorkerView['stopReason'] } } = {}): string {
-  if (options.worker && stoppedWithSession(options.worker)) return STOPPED_WITH_SESSION
+  const stop = options.worker && sessionStopLabel(options.worker, options.processGone)
+  if (stop) return stop
   if (options.worker && workerLive(options.worker.status) && options.processGone) return STOPPED_UNWITNESSED
   const finished = options.worker !== undefined && !workerLive(options.worker.status)
   const running = options.worker ? workerLive(options.worker.status) : options.running
@@ -360,11 +371,10 @@ const ago = (ms: number): string => {
 /** The canonical room_state lines for one dispatched worker; a live worker with known activity gets a third. */
 export function workerLine({ worker: w, dir, processGone = false, lastActive, changedCount, last, activity, now = Date.now() }: WorkerLineInput): string[] {
   const age = Math.max(0, Math.round((now - w.startedAt) / 60000))
-  const showActivity = activity && workerLive(w.status) && !processGone && !w.stopReason
+  const showActivity = activity && workerLive(w.status) && !processGone && (!w.stopReason || stoppedWithSession(w))
   if (showActivity) lastActive = Math.max(lastActive ?? 0, activity.at)
   const summary = w.summary?.startsWith(STOPPED_UNWITNESSED) ? w.summary : w.summary?.slice(0, 120)
-  const state = stoppedAfterMessage(w) ?? (stoppedWithSession(w) ? STOPPED_WITH_SESSION
-    : w.stopReason === 'discarded' ? `discard pending (${w.status})`
+  const state = stoppedAfterMessage(w) ?? sessionStopLabel(w, processGone) ?? (w.stopReason === 'discarded' ? `discard pending (${w.status})`
     : w.stopReason ? `stopped (${w.stopReason})`
     : w.noReport ? 'ended without a report'
     : workerLive(w.status) && processGone ? STOPPED_UNWITNESSED

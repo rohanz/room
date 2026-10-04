@@ -8,7 +8,7 @@
  * bridge) so they start when a session is added and stop when it is removed, and the process
  * handles of workers this process spawned, keyed by the worker's stable id.
  */
-import { highestSeq, type Presence } from '@room/shared'
+import { highestSeq, manifestHeadOf, type Presence } from '@room/shared'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -168,7 +168,7 @@ export class Rooms {
     return !!view && (view.mode === 'here' || !!s.local)
   }
   private static activeIn(s: Session, name: string): boolean {
-    return s.room.scopes.has(name) || s.room.manifestHead.has(name) || Rooms.presences(s).some(p => p.user.name === name)
+    return s.room.scopes.has(name) || !!manifestHeadOf(s.room, name) || Rooms.presences(s).some(p => p.user.name === name)
   }
   /**
    * The session in which a participant lives. Where the person is present or has work wins; a worker

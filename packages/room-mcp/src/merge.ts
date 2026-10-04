@@ -62,7 +62,7 @@ export async function gitMergeFile(
     fs.writeFileSync(theirsPath, theirs)
     const result = await new Promise<{ code: number; stdout: string; unavailable: boolean; error?: Error }>(resolve => {
       execFile('git', ['merge-file', '-p', '--diff3', '-L', labels.ours, '-L', labels.base, '-L', labels.theirs, oursPath, basePath, theirsPath],
-        { maxBuffer: 16 * 1024 * 1024, timeout: 10_000 }, (error, stdout) => {
+        { cwd: dir, maxBuffer: 16 * 1024 * 1024, timeout: 10_000 }, (error, stdout) => {
           const raw = error && (error as NodeJS.ErrnoException & { code?: unknown }).code
           resolve({
             code: typeof raw === 'number' ? raw : error ? -1 : 0,

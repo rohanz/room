@@ -2,7 +2,7 @@
  * Being in the room this session is meant to be in: one step, used at startup and before every
  * room tool call. It is single-flight (concurrent callers share one run), retries transient
  * failures with backoff inside a total deadline, and reports a failure once with its cause. The room
- * meant is the startup choice until the human joins one (room_join, room_create), then that one; it
+ * meant is the startup choice until a session is adopted, then that session's current choices; it
  * stops for good when the human leaves (room_leave, room_close) or the process shuts down.
  */
 import type { Session } from './session.js'
@@ -11,7 +11,7 @@ import { RoomdError } from '@room/roomd'
 import { NotARepository } from './repository.js'
 
 export interface AutoJoinOptions {
-  /** One join attempt, of the room a human joined (target) or else the startup choice: the session, or undefined when there is nothing to join (no retry). */
+  /** One join attempt using the latest adopted session (target), or the startup choice before the first adoption. */
   attempt(target?: Session): Promise<Session | undefined>
   /** Make a joined session the current one. */
   adopt(s: Session): Promise<void>
@@ -98,9 +98,12 @@ export class AutoJoin {
   /** The run in progress, if any. */
   settle(): Promise<void> { return this.inflight ?? Promise.resolve() }
 
+  /** Keep the current accepted identity and mutable policy for reconnects; never resume a cancelled join. */
+  remember(s: Session): void { this.target = s }
+
   /** A human joined s: from now on s's room is the one meant, and a stopped automatic join resumes for it. */
   retarget(s: Session): void {
-    this.target = s
+    this.remember(s)
     this.cancelled = false
     this.permanent = false
     this.failure = undefined
@@ -127,6 +130,7 @@ export class AutoJoin {
         if (!s) { this.permanent = true; return }
         this.failure = undefined
         await this.o.adopt(s)
+        this.remember(s)
         return
       } catch (e) {
         last = e

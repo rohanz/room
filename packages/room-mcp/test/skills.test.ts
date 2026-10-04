@@ -48,8 +48,10 @@ it('tells workers, and leads briefing them, that background jobs die when the tu
   }
 })
 
-it('explains that a finished worker can resume until collection', () => {
-  const skill = readFileSync(new URL('../../../plugins/room/skills/room-etiquette/SKILL.md', import.meta.url), 'utf8')
-  expect(skill).toContain('A message to a finished worker resumes its retained session')
-  expect(skill).not.toContain('Finished headless workers cannot answer new questions')
+it('teaches that the lead can resume a finished worker', () => {
+  for (const name of ['room-workers', 'room-etiquette']) {
+    const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
+    expect(skill, name).toMatch(/[Aa] message from its lead to a finished worker resumes its retained session/)
+    expect(skill, name).not.toContain('Finished headless workers cannot answer new questions')
+  }
 })

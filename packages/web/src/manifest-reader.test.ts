@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { RoomDoc, digestPath, gitBlobHash, manifestKey, participantsView, type ManifestEntry } from '@room/shared'
-import { browserBlobHash, readWebVersion, webChangerLabels, webCoverage } from './manifest-reader.ts'
+import { RoomDoc, digestPath, gitBlobHash, manifestKey, manifestHeadOf, memorySnapshot, participantRecord, participantsView, type ManifestEntry, type WorkerView } from '@room/shared'
+import { browserBlobHash, readWebVersion, webChangerLabels, webCoverage, manifestPeople } from './manifest-reader.ts'
 import { epochPublication } from '@room/shared/testing'
 
 function roomWith(name = 'Ben') {
@@ -16,6 +16,32 @@ function roomWith(name = 'Ben') {
 }
 
 describe('git-less manifest reader', () => {
+  it('reads cached worker files and base text after restart only while the lead confirms the run', async () => {
+    const { room, entries, name, fence, base } = roomWith('lead+worker')
+    const view: WorkerView = { id: 'w1', name, tag: 'worker', lead: 'lead', mode: 'here', host: 'codex', task: 'test', branch: 'worker', status: 'done', run: 1, startedAt: 1, finishedAt: 2, fence: '9' }
+    room.workerViews.set(view.id, view)
+    room.participants.set(`${name}\0holder`, { ...participantRecord(room, name)!.holder, workerId: view.id })
+    entries.set('src/file.ts', { change: 'M', state: 'shared', hash: gitBlobHash('after\n'), at: 1, fence })
+    entries.set('private.ts', { change: 'M', state: 'held', held: 'scope', at: 1, fence })
+    room.setOverlay(manifestKey(name, fence), 'src/file.ts', 'after\n')
+    room.setBaseText(name, base, 'src/file.ts', 'before\n')
+    const restored = new RoomDoc()
+    try {
+      Y.applyUpdate(restored.doc, memorySnapshot(room.doc))
+      expect(manifestPeople(restored)).not.toContain(name)
+      restored.participants.set('lead\0holder', { sessionId: 'lead-session', epoch: 9 })
+      restored.workerViews.set(view.id, view)
+      expect(manifestPeople(restored)).toContain(name)
+      expect(await readWebVersion(restored, name, 'src/file.ts', () => [])).toMatchObject({ kind: 'text', text: 'after\n' })
+      expect(manifestHeadOf(restored, name)?.base).toBe(base)
+      expect(restored.baseText(name, base, 'src/file.ts')).toBe('before\n')
+      expect(webChangerLabels(restored, 'private.ts')).toEqual([`${name} (not shared: outside declared area; text not shared)`])
+      expect(webCoverage(restored, name, []).held).toEqual(['private.ts'])
+      restored.workerViews.delete(view.id)
+      expect(await readWebVersion(restored, name, 'src/file.ts', () => [])).toMatchObject({ kind: 'unknown' })
+    } finally { restored.doc.destroy(); room.doc.destroy() }
+  })
+
   it('converts only the selected overlay for repeated one-path reads', async () => {
     const { room, entries, name, fence } = roomWith()
     const overlay = new Y.Map<Y.Text>()
