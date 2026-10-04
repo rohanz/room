@@ -27,4 +27,6 @@ The case therefore exercises recovery from an inconsistent mocked workflow as we
 
 ## Conclusion
 
+Next-day follow-up: [20 isolated and original-workflow trials](2026-10-05-delegation-isolation.md) passed, including explicit versus generic delegation, failed-worker recovery and read-only helper work. The original failure remains unexplained; no speculative product change was made.
+
 The original extra native call remains unreproduced and unexplained. Mock-induced recovery is a plausible contributing factor, **not a demonstrated cause of the original failure**. No product routing change was made on speculation, and the original 59/60 result remains recorded. Future failures need retained traces before changing instructions. A follow-up evaluation should separately measure dispatch-only routing and workflow recovery with coherent worker-state mocks, retaining the existing whole-run regression.
