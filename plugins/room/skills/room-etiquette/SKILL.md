@@ -33,7 +33,12 @@ While alone, work normally. With company:
    `room_done(summary)` with one line. Report the result and any unresolved blocker.
    Never commit or push unless asked; do not ask as a finishing ritual. Workers report
    progress in `room_done` and send notes only when the lead must know before they finish;
-   notes from your own workers do not wake you. A worker runs tests and builds in the foreground
+   routine progress notes from your own workers do not wake you, but addressed questions,
+   worker completion (`room_done`), and eligible interrupts can. Interactive leads with
+   an available wake path need not poll; headless leads must stay alive with `room_wait`.
+   If wake is unavailable or disabled, use `room_wait` while supervising workers too.
+   For missing wakes, inspect `room_state(check=true)` and `room-mcp.log` before
+   concluding that Room cannot wake the host. A worker runs tests and builds in the foreground
    and waits: ending its turn ends the headless process and kills background jobs.
 
 Room never changes your files unless you ask it to bring in a worker's output; explicit

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.6
+
+- Clarify worker wake guidance: routine progress notes stay quiet, while addressed questions, completion and eligible interrupts can wake the lead. Interactive leads need not poll when wake is configured; headless leads must remain alive while supervising workers. Skills now explain fallback delivery and missing-wake diagnostics. Runtime behavior is unchanged.
+
 ## 0.17.5
 
 - Optional collection review holds: a reviewer can block new apply, copy and discard calls for a destination checkout until explicitly released. Holds survive MCP restarts, support multiple reviewers and private recovery tokens, and cannot be bypassed with `force`. Without a hold, apply/copy retain their normal outcomes. Discard now shares the destination collection lease and can wait or report contention with an ongoing collection.

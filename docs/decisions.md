@@ -420,3 +420,11 @@ runtime from the temporary packaging copy made the smoke fail; the intact copy p
 **Validation:** Independent Astra review, state/integration tests, a real two-process bundled-MCP restart smoke, and natural-language checkpoint evaluation; see the [validation record](superpowers/rehearsals/2026-10-04-collection-checkpoint.md), including the initial timeouts and broader routing failure.
 
 **Built when:** 4 Oct, after the historical TypeScript trial. This is an unreleased plugin change; no server/schema change is required.
+
+## 2026-10-06 — Make worker wake behavior explicit
+
+**Decision:** Clarify that routine own-worker progress notes stay quiet but addressed questions and completion can wake the lead. Teach agents the existing host wake paths and missing-wake diagnostics. Do not equate configuration with successful delivery, and distinguish interactive leads from headless leads that must remain alive.
+
+**Validation:** Existing wake behavior passed a new real-socket regression without `room_wait`; agent comprehension is a separate before/after check. The [validation record](superpowers/rehearsals/2026-10-06-wake-guidance.md) records the successful paired Claude comprehension evaluation and the limits of both checks.
+
+**Built when:** 6 Oct, post-hackathon. Packaged as 0.17.6: plugin guidance change; no server, schema or wake-policy change.

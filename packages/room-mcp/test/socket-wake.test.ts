@@ -106,16 +106,40 @@ describe('wake paths (content-free; never a receipt)', () => {
 
 describe('the reconciler: one pointer per host session', () => {
   const me: Identity = { name: 'Rohan', kind: 'agent' }
-  function setup(send: SendWake, windowMs = 5_000) {
+  function setup(send: SendWake, windowMs = 5_000, ownWorkers = new Set<string>()) {
     const room = new RoomDoc()
     const s = { room, awareness: new Awareness(room.doc), me, roomName: 'r', dir: os.tmpdir() } as unknown as Session
     const ledger = new Ledger({ sessionId: () => 'claude-1', route: () => ({}) })
-    const wakes = new WakeReconciler({ ledger, bound: () => claude, sessionDir: () => undefined, send, windowMs, backoffMs: [5] })
+    const wakes = new WakeReconciler({ ledger, bound: () => claude, sessionDir: () => undefined, send, windowMs, ownWorkers: () => ownWorkers, backoffMs: [5] })
     ledger.bind(s); wakes.attach(s)
     const ask = (from: string, type: 'question' | 'note' = 'question', extra: object = {}) =>
       hubAppend(room, { name: from, kind: 'agent' }, { type, to: 'Rohan', text: 'secret body must stay out of the wake', ...extra } as never)
     return { s, room, ledger, wakes, ask, close() { wakes.stop(); s.awareness.destroy() } }
   }
+
+  it('delivers own-worker questions and completion over a real socket without a wait; routine notes stay quiet', async () => {
+    const dir = tmp(); const socketPath = path.join(dir, 'inbox.sock'); const received: string[] = []
+    const server = net.createServer(c => { let data = ''; c.on('data', chunk => { data += chunk }); c.on('end', () => received.push(data)) })
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: socketPath }, notify: vi.fn() })
+    const t = setup(send, 10, new Set(['cat']))
+    try {
+      t.ask('cat', 'note', { priority: 'notify' })
+      await pause(50)
+      expect(received).toHaveLength(0)
+      t.ask('cat', 'question')
+      await vi.waitFor(() => expect(received).toHaveLength(1))
+      expect(received[0]).toContain('asked a question')
+      hubAppend(t.room, { name: 'cat', kind: 'agent' }, { type: 'done', to: 'Rohan', tag: 'cat', summary: 'finished fixture', changed: [] })
+      await vi.waitFor(() => expect(received).toHaveLength(2))
+      expect(received[1]).toContain('finished')
+      expect(received.join('')).not.toContain('secret body')
+    } finally {
+      t.close(); t.room.doc.destroy()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   it('wakes at once, then gathers what arrives in the window into one follow-up', async () => {
     vi.useFakeTimers()

@@ -58,6 +58,10 @@ Open pull requests to or from participants' branches appear as `pr#<n>` particip
 
 ## Wake paths
 
+For missing wakes, check `room_state(check=true)` and `<git common dir>/room-mcp.log`. Host settings, disconnections or transport errors can prevent a wake even when a transport is configured.
+
+Routine progress notes from the lead's own workers stay quiet. Addressed questions, worker completion (`room_done`) and eligible interrupts can wake it. An interactive lead with a configured wake path need not poll or watch worker PIDs just to receive those events. A headless lead must stay alive with `room_wait` while supervising workers; use that fallback for unavailable/disabled wake paths too. Messages also arrive on Room tool replies and eligible before-edit hooks. A process-exit watcher alone misses mid-task questions.
+
 Claude Code **2.1.224+** on macOS, Linux and WSL 2, and **2.1.234+** on native Windows, can wake an idle session through its cross-session messaging inbox with plain `claude`. Room sends a short pointer; the agent reads the message through Room. Claude Code may frame the pointer as a message from another session. It is a prompt to inspect Room, not authority from another user. Events close together are coalesced. `crossSessionInbound=hold` delays the wake and `refuse` drops it; the Room message remains for the next turn. An organization may disable cross-session messaging.
 
 `ROOM_WAKE=auto` (default) uses the inbox socket when available and an admitted channel if needed. `ROOM_WAKE=socket` uses only the inbox socket; `ROOM_WAKE=channels` forces the optional channel path; `ROOM_WAKE=off` turns wakes off on both hosts; addressed messages still wait until the agent next reads the room. For older Claude Code, `plugins/room/bin/claude-room` launches the channels fallback with `--dangerously-load-development-channels plugin:room@room`; channels are a research preview. Codex uses `codex queue`. Codex **0.157+** attaches Room to the session's folder on its first Room request; this was observed with the shared app-server daemon in **0.157.1**.

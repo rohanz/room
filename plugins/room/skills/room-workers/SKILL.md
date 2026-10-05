@@ -35,10 +35,19 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    If asked to follow up with a worker, use `room_send(to=...)`; a message from its lead to a finished worker resumes its retained session in its worktree. Other workers ask that lead for a follow-up. When it needs a commit you made after spawning it, add `refresh=true`: Room rebases its branch onto your HEAD first (a stopped worker only; a conflict changes nothing) and tells it which commits came in. Do not point it at files in your tree. To stop the current edit and redirect that same worker, send the new task with `priority="interrupt"`; discard only when the human wants its work thrown away. Codex workers use the installed Room plugin, so install the lead's Room version for Codex or use host claude.
    The worker starts with eligible uncommitted work, or pass `carry=false` to start from HEAD. Tracked changes use a carry commit on the worker branch (`git push --all` can publish them); non-ignored untracked files are copied, never committed to a branch, with a private ref for merge and recovery. Files over 5 MB or beyond 50 MB total, nested repositories, escaping symlinks and linked inputs are skipped and named in the spawn reply. Carried edits are the lead's work in progress, already in the worker's worktree to build on. Edit around and after them freely; ask the lead before changing or removing the lead's own lines. Each worker gets its own `PORT` for dev servers.
 3. Briefly state what you dispatched. Workers report progress in `room_done`; they send
-   notes only when the lead must know before they finish. Notes from your own workers
-   do not wake you. Answer questions with `room_send(type="answer", inReplyTo=...)`;
-   ask your human only for a blocking decision. Loop short `room_wait` calls (at most
-   100 seconds each); read state only when more context is needed.
+   notes only when the lead must know before they finish. Routine progress notes from
+   your own workers do not wake you; addressed questions, worker completion (room_done),
+   and eligible interrupts can. Claude Code uses its inbox (2.1.224+ on macOS/Linux,
+   2.1.234+ on Windows, or channels fallback); Codex uses `codex queue`. With an
+   available wake path, an interactive lead can continue other work or wait for a wake
+   instead of polling or watching worker PIDs. Host settings can still block delivery.
+   A headless lead must stay alive: use short room_wait calls while supervising workers.
+   If wake is unavailable or disabled, use room_wait too (at most 100 seconds per call);
+   messages also arrive on other Room tool replies and eligible before-edit hooks.
+   If an expected wake is missing, inspect room_state(check=true) and room-mcp.log;
+   do not infer that Room cannot wake sessions from the progress-note rule. Answer
+   questions with room_send(type="answer", inReplyTo=...); ask your human only for a
+   blocking decision. A process-exit watcher cannot substitute for mid-task questions.
 4. If the human explicitly requests a review checkpoint before collection, establish it
    before dispatch or collection: from the destination checkout call
    `room_collect(checkpoint="hold", reason="<requested review>")` and wait for success.
