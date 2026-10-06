@@ -50,6 +50,8 @@ jobs:
         run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/windows-smoke.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-smoke.json"
       - name: Preserve worktrees when process inspection is unavailable
         run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/collect.test.ts -t "cwd inspection fails" --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-cleanup.json"
+      - name: Windows Git common directory aliases
+        run: npx vitest run --root packages/roomd --config vitest.config.ts test/windows-git-dirs.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-git-dirs.json"
       - name: Upload fake-host native Windows evidence
         if: always()
         uses: actions/upload-artifact@v4

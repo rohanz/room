@@ -66,7 +66,7 @@ it('matches the dependency-free hook over clones, nested worktrees, subdirectori
     expect(gitStatePath(dir, 'room-state.json')).toBe(path.join(expectedPrivate, 'room-state.json'))
     expect(commonGitDirFromDotGit(dir)).toBe(expectedCommon)
     expect(await gitCommonDir(dir)).toBe(expectedCommon)
-    expect(await realGitCommonDir(dir)).toBe(fs.realpathSync(expectedCommon))
+    expect(await realGitCommonDir(dir)).toBe(process.platform === 'win32' ? fs.realpathSync.native(expectedCommon) : fs.realpathSync(expectedCommon))
     const subdir = path.join(dir, 'subdir')
     fs.mkdirSync(subdir)
     expect(gitRoot(subdir)).toBe(dir)

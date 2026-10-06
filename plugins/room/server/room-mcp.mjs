@@ -19569,7 +19569,8 @@ async function gitCommonDir(dir) {
   return path2.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim());
 }
 async function realGitCommonDir(dir) {
-  return fs4.realpathSync(await gitCommonDir(dir));
+  const common = await gitCommonDir(dir);
+  return process.platform === "win32" ? fs4.realpathSync.native(common) : fs4.realpathSync(common);
 }
 var init_git_dirs = __esm({
   "packages/roomd/src/git-dirs.ts"() {
@@ -31873,7 +31874,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.10",
+      version: "0.17.11",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",

@@ -40,5 +40,8 @@ export async function gitCommonDir(dir: string): Promise<string> {
 
 /** Worker ownership compares canonical common directories. */
 export async function realGitCommonDir(dir: string): Promise<string> {
-  return fs.realpathSync(await gitCommonDir(dir))
+  const common = await gitCommonDir(dir)
+  // Git expands Windows 8.3 names (RUNNER~1 -> runneradmin), while JS realpath
+  // can retain the short spelling. Compare the OS-resolved directory names.
+  return process.platform === 'win32' ? fs.realpathSync.native(common) : fs.realpathSync(common)
 }

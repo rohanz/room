@@ -361,3 +361,9 @@ Review found a real lifecycle consequence: a launch that persisted no process id
 Node 22 ChildProcess.kill delegates to libuv; on Windows signal zero checks the retained process handle, not a fresh PID lookup. Sources checked 2026-10-06: https://raw.githubusercontent.com/nodejs/node/v22.x/lib/internal/child_process.js and https://raw.githubusercontent.com/libuv/libuv/v1.x/src/win/process.c. Room does not interpret child.killed as liveness.
 
 The final launch/doctor/handshake run passed 34 tests, including all three launch failure cases. Typecheck, knip, full bundle build, and diff-check passed. Astra approved the final follow-up; installation remains gated on native Windows CI.
+
+## Native Windows Git aliases
+
+Run 37453887677 passed native worker identity (two attempts, 3,532 ms), PowerShell filtering, hook binding, relay messaging and fresh/resumed fake-host launches. It then failed the three public collection checks before cleanup with no local worker capability. Diagnostic run 37454339722 showed the same Git directory as `C:\Users\RUNNER~1\...\lead\.git` for the lead and `C:\Users\runneradmin\...\lead\.git` for the worker. Branch, lexical worker path and registry ownership fields were valid; exact comparison of the differently spelled common paths rejected ownership.
+
+The fix uses `fs.realpathSync.native` only on Windows in `realGitCommonDir`; other platforms retain their behavior. A native regression checks a clone and linked worktree through their original and expanded paths, drive-letter casing, and a distinct repository negative case. Existing local Git-directory tests passed 4/4; the native case is skipped on macOS pending CI. No case-insensitive string comparison or ownership bypass was added.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.11
+
+- Resolve Windows Git common directories through the native filesystem API. A short path such as `RUNNER~1` and Git's expanded `runneradmin` path now identify the same repository, so valid workers are not rejected as unmanaged. Different repositories still fail ownership checks.
+- Add a native Windows regression for linked worktrees, path aliases and repository separation.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.10
 
 - Retry temporarily unreadable worker identities while the child is still owned. Windows launch verifies the retained process handle before and after each bounded CIM probe, so an exited child or reused PID cannot supply a replacement identity.
