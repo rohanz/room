@@ -18,11 +18,11 @@ Two connected sessions in the **exact same checkout** count as company and can r
 
 One team room covers every branch of a GitHub repository. Each teammate needs push access and installs the same Room version.
 
-1. Say **“log in to Room”**. Open the GitHub device page, enter the code, and approve Room.
-2. One participant says **“open this repo on the server”**. This runs `room_create` once.
-3. Each teammate says **“join the room”** from their clone. **“Show room state”** now reports `team room:`, `room: github.com/<owner>/<repo>`, and `you: <name> in github.com/<owner>/<repo>` with that person's branch and base.
+1. [Set up a server](../deploy/self-hosting.md) or get its URL from your team. Say **“log in to Room at wss://room.example.com”**. Open the GitHub device page, enter the code, and approve Room.
+2. One participant says **“open this repo on wss://room.example.com”**. This runs `room_create` once.
+3. Each teammate says **“join the room at wss://room.example.com”** from their clone. **“Show room state”** now reports `team room:`, `room: github.com/<owner>/<repo>`, and `you: <name> in github.com/<owner>/<repo>` with that person's branch and base.
 
-The hosted server is `wss://room-rohanz.fly.dev`. For a self-hosted server, launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; the shared app-server daemon does not inherit shell `ROOM_*` variables. Room states what this worktree shares on first join. By default, members of the team room on every branch see the full text of eligible files you change. Say **“share plans only”** or **“only my declared files”** to narrow it; `room_share` changes it later. The [defaults table](../README.md#defaults-and-how-to-change-them) and [reference](reference.md#sharing-and-agent-context) explain the levels. **“Work locally”** returns to the local room.
+There is no default public server. The selected URL is remembered for this clone. Alternatively, launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; the shared app-server daemon does not inherit shell `ROOM_*` variables. Room states what this worktree shares on first join. By default, members of the team room on every branch see the full text of eligible files you change. Say **“share plans only”** or **“only my declared files”** to narrow it; `room_share` changes it later. The [defaults table](../README.md#defaults-and-how-to-change-them) and [reference](reference.md#sharing-and-agent-context) explain the levels. **“Work locally”** returns to the local room.
 
 ## Coordinate a task
 

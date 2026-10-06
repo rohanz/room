@@ -428,3 +428,7 @@ runtime from the temporary packaging copy made the smoke fail; the intact copy p
 **Validation:** Existing wake behavior passed a new real-socket regression without `room_wait`; agent comprehension is a separate before/after check. The [validation record](superpowers/rehearsals/2026-10-06-wake-guidance.md) records the successful paired Claude comprehension evaluation and the limits of both checks.
 
 **Built when:** 6 Oct, post-hackathon. Packaged as 0.17.6: plugin guidance change; no server, schema or wake-policy change.
+
+## 2026-10-06 — Self-hosted team rooms
+
+Remove the implicit public-server fallback. Local use remains automatic; team use requires an explicit or previously configured server URL. Preserve existing URL choices. For an operator-managed server, restrict opening/closing rooms to existing admin identities while preserving GitHub collaborator admission. The existing room registry is the approved-repository list; no duplicate user or repo allowlist is needed. Build the web viewer inside Docker so a clean checkout can follow the self-hosting quickstart without a host Node install. Built 6 Oct, post-hackathon.

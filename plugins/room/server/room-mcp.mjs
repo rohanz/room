@@ -31670,10 +31670,14 @@ function normaliseWhere(where) {
   if (["team", "hosted", "web", "shared"].includes(w)) return "team";
   return w;
 }
-function resolveServer(raw, teamServer = DEFAULT_SERVER) {
+function resolveServer(raw, teamServer) {
   const w = normaliseWhere(raw);
   if (!w || w === LOCAL) return LOCAL;
-  return w === "team" ? teamServer : w;
+  if (w === "team") {
+    if (!teamServer) throw new Error(TEAM_SERVER_REQUIRED);
+    return teamServer;
+  }
+  return w;
 }
 function sharingDescription(level, retainedChangedFiles = false) {
   return level === "full" ? "the full text of files you change" : level === "declared" ? `paths of every changed file; text only in your declared area${retainedChangedFiles ? "; changed files declared earlier remain shared" : ""}` : "only your plans, no file text";
@@ -31721,9 +31725,10 @@ async function resolveConfig({ env, args: args3 = {}, dir }) {
     if (!["ws:", "wss:"].includes(u.protocol)) throw new Error("ROOM_URL must use ws:// or wss://");
     teamUrl = `${u.protocol}//${u.host}${u.search}`;
   }
-  const teamServer = concrete(envServer) ?? teamUrl ?? concrete(normaliseWhere(rememberedChoice.where)) ?? DEFAULT_SERVER;
+  const teamServer = concrete(envServer) ?? teamUrl ?? concrete(normaliseWhere(rememberedChoice.where));
   const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : void 0;
-  const where = argWhere ?? (argUrl ? urlServer : void 0) ?? envWhere ?? remembered ?? LOCAL;
+  let where = argWhere ?? (argUrl ? urlServer : void 0) ?? envWhere ?? remembered ?? LOCAL;
+  if (!argWhere && where === "team" && !teamServer) where = LOCAL;
   const whereRule = argWhere || argUrl ? "argument" : envWhere ? "env" : remembered ? "remembered" : "default";
   const whereEnv = whereRule === "env" ? envServer ? "ROOM_SERVER" : "ROOM_URL" : void 0;
   const rawKind = value(args3.kind) ?? value(e.ROOM_KIND) ?? "agent";
@@ -31793,7 +31798,7 @@ function resolveSessionRuntime(sessionDir, env = process.env) {
   const pick2 = (field, check) => ownSession ? (newer ? check(runtime2[field]) : void 0) ?? check(session[field]) : void 0;
   return { model: pick2("model", clean3) ?? clean3(env.ROOM_WORKER_MODEL), effort: pick2("effort", effort) ?? effort(env.ROOM_WORKER_EFFORT) };
 }
-var DEFAULT_SERVER, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive;
+var TEAM_SERVER_REQUIRED, LOCAL, DEFAULT_CLAUDE_CHANNEL, DEFAULT_MAX_WORKERS, DEFAULT_STALE_DAYS, value, positive;
 var init_config = __esm({
   "packages/room-mcp/src/config.ts"() {
     "use strict";
@@ -31801,7 +31806,7 @@ var init_config = __esm({
     init_local();
     init_src4();
     init_room_name();
-    DEFAULT_SERVER = "wss://room-rohanz.fly.dev";
+    TEAM_SERVER_REQUIRED = "No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.";
     LOCAL = "local";
     DEFAULT_CLAUDE_CHANNEL = "plugin:room@room";
     DEFAULT_MAX_WORKERS = 8;
@@ -31828,7 +31833,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.6",
+      version: "0.17.7",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -39582,7 +39587,6 @@ async function clearChoice(dir) {
 }
 function describeWhere(server) {
   if (server === LOCAL) return "local (this machine)";
-  if (server === DEFAULT_SERVER) return `team (${DEFAULT_SERVER})`;
   return `team (${server})`;
 }
 var CHOICE_FILE, SCHEMA;
@@ -60455,7 +60459,7 @@ function rejoinOptions(s, credentialsPath2) {
 function handlers6(state) {
   const { ctx, now, S, serverOf, LOCAL_LOGIN, codeLine, doJoin, ledger: ledger2, rooms, cleanupMine, log: log2, loadAreas, shareLine, hasCompany: hasCompany2, others, presences, myAreas, setPresence, areaLines, personLine: personLine2, claimLine: claimLine2, runningWorkers, dismissWorker, closeWorkersRoom, doLeave, doClose } = state;
   async function configureLogin(a) {
-    const config2 = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
+    const config2 = await resolveConfig({ dir: ctx.getSession()?.dir ?? ctx.cwd ?? process.cwd(), args: { server: typeof a.server === "string" ? a.server : void 0, credentials: typeof a.credentials === "string" ? a.credentials : ctx.config?.credentialsPath } });
     configureCredentials(config2.credentialsPath);
     ctx.config = { ...config2, ...ctx.config, credentialsPath: config2.credentialsPath, teamServer: config2.teamServer };
     return config2;
@@ -60514,7 +60518,7 @@ function handlers6(state) {
       const whereArg = typeof a.where === "string" && a.where ? a.where : typeof a.server === "string" && a.server ? a.server : void 0;
       const resolved = await timed2("resolve", () => resolveConfig({ dir, env: process.env, args: { credentialsPath: ctx.config?.credentialsPath, where: whereArg, name: typeof a.name === "string" ? a.name : void 0, room: typeof a.room === "string" ? a.room : void 0, share: typeof a.share === "string" ? a.share : void 0 } }));
       const createFromLocal = a.create === true && resolved.server === LOCAL;
-      const choice = { server: createFromLocal ? resolved.teamServer : resolved.server, where: createFromLocal ? "team" : resolved.where, rule: resolved.whereRule };
+      const choice = { server: createFromLocal ? resolveServer("team", resolved.teamServer) : resolved.server, where: createFromLocal ? "team" : resolved.where, rule: resolved.whereRule };
       const rawRoom = createFromLocal && resolved.whereRule === "remembered" ? typeof a.room === "string" ? a.room : process.env.ROOM_ROOM : resolved.room;
       const requestedRoom = choice.server !== LOCAL && rawRoom ? normalizeExplicitRoomName(rawRoom, log2) : rawRoom;
       const targetRoom = choice.server === LOCAL ? requestedRoom !== void 0 ? normalizeLocalRoomName(requestedRoom) : await localRoomName(dir) : requestedRoom ?? (await deriveRoomName(dir)).roomName;
@@ -60534,7 +60538,7 @@ function handlers6(state) {
         if (e instanceof NoRoom) {
           const repo = e.roomName.startsWith("github.com/") ? e.roomName.split("/").slice(1, 3).join("/") : e.roomName;
           return `No room for ${repo} on ${e.server ?? parseServer(choice.server).server} yet.${e.roomName.startsWith("git/") ? ` Server says: ${e.message}
-` : " "}Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.${stay}`;
+` : " "}Ask the user whether to open one (teammates on every branch join the same repository room; some servers require their operator to open it). Call room_create with where=${JSON.stringify(parseServer(choice.server).server)} and confirm=true only after they say yes.${stay}`;
         }
         const why = message2(e);
         return `error: ${why}${/[.!?]$/.test(why) ? "" : "."}${stay}`;
@@ -60642,7 +60646,7 @@ function handlers6(state) {
       }
       out2.push(`room: ${describeWhere(choice.server === LOCAL ? LOCAL : parseServer(choice.server).server)} \u2014 chosen by ${choice.rule === "argument" ? "your instruction (remembered for this clone and its worktrees)" : choice.rule === "env" ? resolved.whereEnv : choice.rule === "remembered" ? "the choice remembered for this clone (room_leave forget=true clears it)" : "default"}`);
       await offerTeamSharingDisclosure(s, ledger2);
-      if (s.local) out2.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER=hosted (or a URL) and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
+      if (s.local) out2.push(`local room (no server): relay on ${s.local.url}${s.local.owned ? " run by this session" : ""}. Only sessions on this machine in this clone or its worktrees can join; the browser view below is reachable from this machine only. ${a.create ? "room_create needs a server: set ROOM_SERVER to your server URL and call it again to open this repo for teammates." : 'room_spawn dispatches worker agents into it; say "join the room" (room_join where=team) to work with teammates instead.'}`);
       if (s.local?.canonicalWarning) out2.push(`WARN: ${s.local.canonicalWarning}`);
       if (presences(s).some((p) => sameCheckoutSession(s, p.user.name))) out2.push("another session in this checkout");
       const sameCheckoutNames = new Set(presences(s).filter((p) => sameCheckoutSession(s, p.user.name)).map((p) => p.user.name));
@@ -60785,7 +60789,7 @@ function createJoin(deps) {
     const r = requested ?? (current ? current.local ? LOCAL : current.roomUrl.slice(0, current.roomUrl.lastIndexOf("/")) : resolvedServer);
     return r === LOCAL ? LOCAL : parseServer(r).server;
   };
-  const LOCAL_LOGIN = `no server configured: local rooms need no login. Set ROOM_SERVER=hosted (or a server URL, or pass server=...) to log in to a team server (${DEFAULT_SERVER} is the hosted one)`;
+  const LOCAL_LOGIN = `no server configured: local rooms need no login. Ask the user for their self-hosted server URL, then pass server="wss://..." to log in`;
   const codeLine = (p) => p.provider === "oidc" || p.url ? `Open ${p.url} in a browser and sign in (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for the login to confirm.` : `Open ${p.verification_uri} and enter the code ${p.user_code} (valid ${Math.round(p.expires_in / 60)} min). Then call room_login again to wait for GitHub to confirm.`;
   return { cleanupMine, serverOf, LOCAL_LOGIN, codeLine };
 }

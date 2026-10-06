@@ -72,7 +72,9 @@ const SHARE_MAX = (['intent', 'declared', 'full'] as const).find(l => l === proc
 const IDENTITY_GUARD_MODE = process.env.ROOM_IDENTITY_GUARD?.trim() === 'enforce' ? 'enforce' : 'observe'
 /** Directory with the built browser view (packages/web/dist). Served at / when present. */
 const STATIC = process.env.ROOM_STATIC ?? path.resolve(process.cwd(), 'public')
-/** Logins allowed to read the audit log (ROOM_ADMINS, comma list). */
+/** Optional operator approval for repository registration; joining keeps normal admission. */
+const MANAGED_REPOS = process.env.ROOM_MANAGED_REPOS === 'true'
+/** Operator identities for audit/inventory and, in managed mode, opening/closing repos. */
 const ADMINS = new Set((process.env.ROOM_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean))
 /** GitHub admins use their login; OIDC admins use the issuer/subject identity only. */
 const isAdmin = (st: { login: string; id?: string; provider?: Provider }) => isAdminIdentity(st, ADMINS)
@@ -647,6 +649,10 @@ const server = http.createServer((req, res) => {
     return
   }
   if (url.pathname === '/rooms' && req.method === 'DELETE') return withBody(async o => {
+    if (MANAGED_REPOS) {
+      const manager = auth.resolve(creds(o).session)
+      if (!manager || !isAdmin(manager)) return text(403, 'This server requires an operator to open or close repository rooms. Ask its operator to open this repo, or use your own server.')
+    }
     const room = str(o.room)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, o.schema === 2)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')
@@ -661,6 +667,10 @@ const server = http.createServer((req, res) => {
     json(200, { repo, closed, ...(v.login ? { login: v.login } : {}) })
   })
   if (url.pathname === '/rooms' && req.method === 'POST') return withBody(async o => {
+    if (MANAGED_REPOS) {
+      const manager = auth.resolve(creds(o).session)
+      if (!manager || !isAdmin(manager)) return text(403, 'This server requires an operator to open or close repository rooms. Ask its operator to open this repo, or use your own server.')
+    }
     const room = str(o.room)
     if (!room) return text(400, 'room required')
     if (!parseRoomName(room, o.schema === 2) || o.schema !== 2 && !parseRoomName(oldBranchRepo(roomNameOf(room)), true)) return text(400, 'invalid room name: use github.com/owner/repo, git/host/path, or local/name')

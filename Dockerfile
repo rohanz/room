@@ -1,6 +1,6 @@
 # Room server (GitHub/OIDC login, LevelDB persistence, optional Postgres store).
 # docker build -t room-server .  or  docker compose -f deploy/docker-compose.yml up -d
-# Build the browser view first: npm run build -w @room/web. See deploy/self-hosting.md.
+# Builds the server and browser view inside Docker. See deploy/self-hosting.md.
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -19,7 +19,8 @@ COPY scripts/build-server.mjs scripts/
 COPY packages/shared/src packages/shared/src
 COPY packages/hub-core/src packages/hub-core/src
 COPY packages/server/src packages/server/src
-RUN npm run build:server
+COPY packages/web packages/web
+RUN npm run build:server && npm run build -w @room/web
 
 FROM node:22-slim AS runtime
 WORKDIR /app
@@ -35,7 +36,7 @@ COPY --from=build /app/packages/web/package.json packages/web/
 RUN npm ci --omit=dev --no-audit --no-fund -w @room/server
 COPY --from=build /app/packages/server/dist packages/server/dist
 # ROOM_STATIC defaults to ./public.
-COPY packages/web/dist ./public
+COPY --from=build /app/packages/web/dist ./public
 # glibc's per-thread malloc arenas fragment under native addons' threadpool I/O
 # (such as LevelDB); freed allocations otherwise leave more memory resident.
 ENV MALLOC_ARENA_MAX=2

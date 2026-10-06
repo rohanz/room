@@ -10,7 +10,7 @@ Room selects local automatically only when no environment or remembered team des
 
 Since 0.17.1, remembered automatic host labels are reused only for the matching host, and automatic naming avoids retained worker identities. An explicit tag still selects that exact identity subject to its name lease. Default `room_state` lists online sessions outside your work area with their identity and activity; offline history is summarized separately. Detailed claims and changed files remain filtered to your area unless `all=true`.
 
-The destination rule is **tool argument > `ROOM_SERVER` > legacy `ROOM_URL` > remembered clone choice > local**. `room_join(where="team")` chooses `ROOM_SERVER`, then the server in `ROOM_URL`, then the team server this clone used before, then `wss://room-rohanz.fly.dev`. An explicit URL wins. `room_join(where="local")` keeps everything on this machine. Saying “join the room” makes a team choice; “work locally” switches back. The choice is stored in the common Git directory and applies to linked worktrees. `room_leave(forget=true)` clears it. Environment settings override the choice without saving it. Room never moves to a team room on its own initiative.
+The destination rule is **tool argument > `ROOM_SERVER` > legacy `ROOM_URL` > remembered clone choice > local**. `room_join(where="team")` chooses `ROOM_SERVER`, then the server in `ROOM_URL`, then the team server this clone used before, otherwise asks for a server URL without making a network request. There is no default public server. An explicit URL wins. `room_join(where="local")` keeps everything on this machine. Saying “join the room” makes a team choice; “work locally” switches back. The choice is stored in the common Git directory and applies to linked worktrees. `room_leave(forget=true)` clears it. Environment settings override the choice without saving it. Room never moves to a team room on its own initiative.
 
 For a self-hosted server, see [self-hosting](../deploy/self-hosting.md). If launching Codex with `ROOM_SERVER`, use `codex --no-daemon`; the shared app-server daemon does not inherit your shell's `ROOM_*` variables. In a team room, `room_login` prints a GitHub device URL and code. The server holds the approved token; Room does not send your `gh` token. `room_state(link=true)` returns a seven-day, room-scoped browser view key. Anyone holding the link can read the shared code and activity.
 
@@ -102,7 +102,7 @@ See [Defaults, and how to change them](../README.md#defaults-and-how-to-change-t
 
 | Variable | Purpose |
 |---|---|
-| `ROOM_SERVER` | `hosted` or a team WebSocket URL; takes priority over remembered choice. |
+| `ROOM_SERVER` | A team WebSocket URL; takes priority over remembered choice. |
 | `ROOM_URL` | Legacy team URL fallback. |
 | `ROOM_SHARE` | `full`, `declared`, or `intent`. |
 | `ROOM_SHARE_MAX` | Server ceiling for sharing: `full`, `declared`, or `intent`. |

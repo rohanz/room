@@ -23,7 +23,7 @@ import { RoomDoc, STALE_REPLICA_CODE, STALE_REPLICA_REASON, assertValidParticipa
 import { GraphIndex, type GraphSeed } from './graph-index.js'
 import { withdrawFormerPublisher } from '@room/roomd/publisher'
 import { configureCredentials, getCredential, removeCredential, setCredential } from './credentials.js'
-import { DEFAULT_SERVER, LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
+import { LOCAL, resolveConfig, resolveShare, resolveServer, resolveSessionHost, resolveSessionRuntime } from './config.js'
 import { createSessionBinding } from './binding.js'
 import { isFresh } from './presence.js'
 import { migrateLegacyLocalChoice, worktreePath } from './choice.js'
@@ -44,7 +44,7 @@ import { revokeLeadProjections } from './bridge.js'
 const timed = <T>(name: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(name, work) ?? Promise.resolve().then(work)
 
 /** A server requires an argument, ROOM_SERVER/ROOM_URL, or a remembered choice. */
-export { DEFAULT_SERVER, LOCAL, resolveServer }
+export { LOCAL, resolveServer }
 const DEFAULT_WEB = 'http://localhost:5173'
 const VIEWER_MISSING = 'not built; run npm run build -w @room/web'
 

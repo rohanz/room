@@ -194,7 +194,7 @@ describe('automatic session tags (registry §15: local lease, then hub lease)', 
     const first = await start(room, dir)
     expect(first.me.name).toBe('name+claude')
     await first.daemon.stop()
-    await writeChoice(dir, 'team')
+    await writeChoice(dir, 'ws://test')
     expect((await start(room, dir)).me.name).toBe('name+claude')
   })
   it('does not remember a temporary tag while this worktree\'s previous process still holds the bare name lease', async () => {

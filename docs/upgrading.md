@@ -98,3 +98,7 @@ A clone that remembered a 0.16 local room `local/<main worktree folder>/<branch>
 Update a lead and all its workers together. A mixed-version lead and worker may fail admission or miss addressed messages. Finish, collect or stop old workers before starting new ones; workers that were already collected or discarded cannot resume.
 
 For any setup problem, ask **“is Room set up right?”** or run `room-doctor` from the installed plugin's `bin/` folder (paths in [the quickstart](../README.md#start-in-five-minutes)). See [the reference](reference.md#updating-plugins) for cache locations, sharing and diagnostics.
+
+## 0.17.7 team destinations
+
+Room no longer supplies a default public server. Existing explicit server URLs remain remembered. Old `team`/`hosted` choices with no actual URL start locally; say “join the room at wss://your-server.example” to select a server. An explicit team join without a configured URL asks for one and makes no network request. See [self-hosting](../deploy/self-hosting.md). Operators can restrict repository registration with `ROOM_MANAGED_REPOS=true` and `ROOM_ADMINS`; existing rooms remain approved and collaborators keep their usual admission rules. Restart after changing it.

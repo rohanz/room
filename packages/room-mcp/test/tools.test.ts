@@ -463,9 +463,9 @@ describe('session gating', () => {
 
   it('room_create opens the repo then joins; room_join never opens', async () => {
     const t = setup({ joined: false })
-    expect(await t.tools.call('room_create', {})).toContain('opened and joined r as Rohan')
+    expect(await t.tools.call('room_create', { where: 'ws://127.0.0.1:9' })).toContain('opened and joined r as Rohan')
     expect(t.created).toEqual([true])
-    await t.tools.call('room_leave', {})
+    await t.tools.call('room_leave', { forget: true })
     await t.tools.call('room_join', {})
     expect(t.created).toEqual([true, false])
   })
@@ -563,7 +563,7 @@ describe('session gating', () => {
 
   it('offers to open the repository room, whatever the branch', async () => {
     const tools = createTools({ cwd: dir, getSession: () => null, setSession: () => {}, admit: async () => {}, join: async () => { throw new NoRoom('github.com/o/r/feature/fix', 'missing') } })
-    expect(await tools.call('room_join', { where: 'team' })).toContain('No room for o/r on wss://room-rohanz.fly.dev yet.')
+    expect(await tools.call('room_join', { where: 'wss://team.example' })).toContain('No room for o/r on wss://team.example yet.')
   })
 
   it.each(['room_state', 'room_join', 'room_done'])('shows an auto-join tag once in the first %s reply', async tool => {
@@ -583,6 +583,7 @@ describe('session gating', () => {
   })
 
   it.each(['claude', 'codex', undefined])('keeps quiet joins free of wake-up guidance (%s)', async host => {
+    vi.stubEnv('ROOM_SERVER', 'ws://127.0.0.1:9')
     const file = join(dir, '.git', 'room-session.json')
     writeFileSync(file, JSON.stringify({ session_id: 'test-session', at: Date.now(), cwd: dir, host }))
     try {
@@ -597,7 +598,7 @@ describe('session gating', () => {
         expect(done).not.toContain('only see new room messages')
         await t.tools.call('room_leave', {})
       }
-    } finally { rmSync(file, { force: true }) }
+    } finally { rmSync(file, { force: true }); vi.unstubAllEnvs() }
   })
 
   it('lists the twenty advertised tools', () => {

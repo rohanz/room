@@ -9,7 +9,7 @@ import { RoomDoc, trim, type AnswerMsg, type NoteMsg, type QuestionMsg } from '@
 import { hubAppend } from '@room/shared/testing'
 import { createTools } from '../src/tools.js'
 import { getCredential } from '../src/credentials.js'
-import { DEFAULT_SERVER, NotLoggedIn, joinSession, startupJoinOptions, type JoinOptions, type Session } from '../src/session.js'
+import { NotLoggedIn, joinSession, startupJoinOptions, type JoinOptions, type Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 import { memorySession } from './fixtures/session.js'
 import { testPolicyStore } from './policy-fixture.js'

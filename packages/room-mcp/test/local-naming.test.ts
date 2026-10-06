@@ -90,8 +90,8 @@ it.each(['local', 'team'])('reports the actual %s name and preserves team argume
   } as Session
   const joiner = vi.fn(async () => fake)
   const tools = createTools({ cwd: dir, getSession: () => session, setSession: s => { session = s }, join: joiner, leave: async () => {} })
-  const reply = await tools.call('room_join', { where, room: 'anything' })
-  expect(joiner).toHaveBeenCalledWith(expect.objectContaining({ room: where === 'local' ? 'local/anything' : 'anything', server: where === 'local' ? 'local' : 'wss://room-rohanz.fly.dev' }))
+  const reply = await tools.call('room_join', { where: where === 'local' ? where : 'wss://team.example', room: 'anything' })
+  expect(joiner).toHaveBeenCalledWith(expect.objectContaining({ room: where === 'local' ? 'local/anything' : 'anything', server: where === 'local' ? 'local' : 'wss://team.example' }))
   if (where === 'local') {
     expect(reply.split('\n')[0]).toMatch(/^joined local\/anything /)
     expect(reply).not.toContain('browser view:')

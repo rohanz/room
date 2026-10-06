@@ -1,6 +1,8 @@
 # Operating the hosted server
 
-The hosted Room server is the Fly app `room-rohanz` (https://room-rohanz.fly.dev, region `sin`).
+The operator’s Room server is the Fly app `room-rohanz` (https://room-rohanz.fly.dev, region `sin`).
+Room clients no longer default to this server. `deploy/fly.toml` sets `ROOM_MANAGED_REPOS=true` and `ROOM_ADMINS=rohanz`: only Rohan can open or close repository rooms. Existing open rooms remain available to their GitHub collaborators with push access. Review the registered rooms before enabling this on a previously public server. Browser view links remain shareable bearer capabilities.
+
 Anyone with `flyctl` access to the app can do everything below. Nothing here needs SSH.
 
 ## What needs a deploy, and what does not
@@ -19,7 +21,6 @@ For the **0.17 cutover**, step 0 is the [pre-upgrade snapshot](#017-cutover-snap
 
 ```sh
 cd <repo root>
-npm run build -w @room/web            # the image copies packages/web/dist
 flyctl deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
 flyctl releases -a room-rohanz | head -3
 curl -s https://room-rohanz.fly.dev/health     # {"ok":true,"schema":2,"hub":1}
@@ -27,8 +28,7 @@ curl -s https://room-rohanz.fly.dev/auth/config  # {"github":"device","clientIdS
 ```
 
 `--depot=false` uses Fly's classic remote builder. The default Depot builder has timed out from
-this region before (Fly status page: "Depot builder failures"); the classic one has not. There is
-no local Docker on the usual dev machine, so `--local-only` is not an option.
+this region before (Fly status page: "Depot builder failures"); the classic one has not. Use the remote builder for production; the local Docker engine can run isolated self-hosting checks.
 
 A deploy restarts the machine; expect one `502` for up to a minute, then `200` in under 100 ms.
 Watch it: `for i in 1 2 3; do sleep 30; curl -s -o /dev/null -w "%{http_code}\n" https://room-rohanz.fly.dev/health; done`.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.7
+
+- Team rooms are self-hosted: joining or creating one requires a configured server URL. Local rooms remain the default, existing explicit URLs are preserved, and destination-free legacy aliases start locally until a URL is supplied.
+- Docker builds both the server and browser viewer from source; the Compose quickstart needs no host Node installation. Updated team onboarding and server setup instructions.
+- Optional `ROOM_MANAGED_REPOS=true` restricts opening and closing repository rooms to `ROOM_ADMINS`. Collaborators join approved GitHub repos through their existing push access; no separate teammate allowlist is needed.
+
 ## 0.17.6
 
 - Clarify worker wake guidance: routine progress notes stay quiet, while addressed questions, completion and eligible interrupts can wake the lead. Interactive leads need not poll when wake is configured; headless leads must remain alive while supervising workers. Skills now explain fallback delivery and missing-wake diagnostics. Runtime behavior is unchanged.

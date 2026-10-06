@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { choiceFile, clearChoice, normaliseWhere, readChoice, writeChoice, describeWhere, rememberTag, worktreePath } from '../src/choice.js'
 import { resolveConfig } from '../src/config.js'
-import { DEFAULT_SERVER, LOCAL } from '../src/session.js'
+import { LOCAL } from '../src/session.js'
 import { RELEASE_VERSION } from '../src/index.js'
 
 it('advertises the plugin release version in the MCP handshake', () => {
@@ -35,13 +35,13 @@ describe('room choice', () => {
 
   it('defaults to local, remembers an explicit choice per clone, and lets env and arguments override it', async () => {
     expect(await configured()).toMatchObject({ server: LOCAL, whereRule: 'default', where: LOCAL })
-    expect(await configured('team')).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'argument', where: 'team' })
+    await expect(configured('team')).rejects.toThrow('No team server configured')
     expect(await configured('team', 'ws://own-team.test')).toMatchObject({ server: 'ws://own-team.test', whereRule: 'argument', where: 'team' })
     expect(await readChoice(dir)).toBeUndefined() // choosing does not remember; the join does, on success
-    await writeChoice(dir, 'team', 'rohanz')
+    await writeChoice(dir, 'wss://team.example', 'rohanz')
     expect(existsSync(await choiceFile(dir))).toBe(true)
     expect((await choiceFile(dir)).endsWith('/.git/room-choice.json')).toBe(true)
-    expect(await configured()).toMatchObject({ server: DEFAULT_SERVER, whereRule: 'remembered', where: 'team' })
+    expect(await configured()).toMatchObject({ server: 'wss://team.example', whereRule: 'remembered', where: 'wss://team.example' })
     expect(await configured(undefined, 'ws://own-team.test')).toMatchObject({ server: 'ws://own-team.test', whereRule: 'env' })
     expect(await configured(undefined, 'local')).toMatchObject({ server: LOCAL, whereRule: 'env' })
     expect(await configured('wss://own.example', 'local')).toMatchObject({ server: 'wss://own.example', whereRule: 'argument' })
@@ -52,7 +52,7 @@ describe('room choice', () => {
 
   it('describes the room in one word for humans', () => {
     expect(describeWhere(LOCAL)).toBe('local (this machine)')
-    expect(describeWhere(DEFAULT_SERVER)).toBe(`team (${DEFAULT_SERVER})`)
+    expect(describeWhere('wss://team.example')).toBe('team (wss://team.example)')
   })
 })
 
@@ -94,9 +94,9 @@ describe('tags per worktree', () => {
 
 it('choice writes keep only destination and identity, never sharing authority', async () => {
   await clearChoice(dir)
-  await writeChoice(dir, 'team', 'rohanz')
+  await writeChoice(dir, 'wss://team.example', 'rohanz')
   const choice = await readChoice(dir)
-  expect(choice).toMatchObject({ where: 'team', by: 'rohanz' })
+  expect(choice).toMatchObject({ where: 'wss://team.example', by: 'rohanz' })
   expect(choice).not.toHaveProperty('share')
   expect(choice).not.toHaveProperty('warned')
   await clearChoice(dir)

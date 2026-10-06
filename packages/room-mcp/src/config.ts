@@ -13,7 +13,7 @@ import { mainWorktree } from '@room/roomd/local'
 import { parseShare, type ShareLevel } from '@room/roomd'
 import { legacyLocalBranchRoom } from './room-name.js'
 
-export const DEFAULT_SERVER = 'wss://room-rohanz.fly.dev'
+const TEAM_SERVER_REQUIRED = 'No team server configured. Ask the user for their server URL (wss://...). Team rooms are self-hosted: https://github.com/rohanz/room/blob/main/deploy/self-hosting.md. Local rooms need no server.'
 export const LOCAL = 'local'
 export const DEFAULT_CLAUDE_CHANNEL = 'plugin:room@room'
 const DEFAULT_MAX_WORKERS = 8
@@ -26,7 +26,7 @@ export interface ConfigArgs {
   claudeChannel?: string; maxWorkers?: number | string; staleDays?: number | string; room?: string; web?: string; roomUrl?: string
 }
 export interface ResolvedConfig {
-  dir: string; server: string; teamServer: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
+  dir: string; server: string; teamServer?: string; where: string; whereRule: ConfigRule; whereEnv?: 'ROOM_SERVER' | 'ROOM_URL'
   name?: string; owner?: string; tag?: string; kind: 'agent' | 'bot' | 'ci'; share: ShareLevel; shareExplicit: boolean; shareWarning?: string
   credentialsPath: string; token?: string; logFile?: string; maxWorkers: number; staleDays: number
   room?: string; web?: string; roomUrl?: string
@@ -44,10 +44,14 @@ export function normaliseWhere(where?: string): string | undefined {
   return w
 }
 /** "team" follows the configured team server, which resolveConfig also reads from this clone. */
-export function resolveServer(raw?: string, teamServer = DEFAULT_SERVER): string {
+export function resolveServer(raw?: string, teamServer?: string): string {
   const w = normaliseWhere(raw)
   if (!w || w === LOCAL) return LOCAL
-  return w === 'team' ? teamServer : w
+  if (w === 'team') {
+    if (!teamServer) throw new Error(TEAM_SERVER_REQUIRED)
+    return teamServer
+  }
+  return w
 }
 
 /** Plain wording shared by join, state and sharing controls. */
@@ -106,9 +110,12 @@ export async function resolveConfig({ env, args = {}, dir }: { env?: NodeJS.Proc
     if (!['ws:', 'wss:'].includes(u.protocol)) throw new Error('ROOM_URL must use ws:// or wss://')
     teamUrl = `${u.protocol}//${u.host}${u.search}`
   }
-  const teamServer = concrete(envServer) ?? teamUrl ?? concrete(normaliseWhere(rememberedChoice.where)) ?? DEFAULT_SERVER
+  const teamServer = concrete(envServer) ?? teamUrl ?? concrete(normaliseWhere(rememberedChoice.where))
   const remembered = !argWhere && !argUrl && !envWhere ? normaliseWhere(rememberedChoice.where) : undefined
-  const where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
+  let where = argWhere ?? (argUrl ? urlServer : undefined) ?? envWhere ?? remembered ?? LOCAL
+  // An old saved/environment alias has no destination now. Keep startup local and
+  // the tools usable so the user can supply a URL; explicit team requests still fail.
+  if (!argWhere && where === 'team' && !teamServer) where = LOCAL
   const whereRule: ConfigRule = argWhere || argUrl ? 'argument' : envWhere ? 'env' : remembered ? 'remembered' : 'default'
   const whereEnv = whereRule === 'env' ? envServer ? 'ROOM_SERVER' : 'ROOM_URL' : undefined
   const rawKind = value(args.kind) ?? value(e.ROOM_KIND) ?? 'agent'

@@ -36,11 +36,11 @@ When updating Room, finish active worker batches first, update the plugin, then 
 
 One team room covers **every branch of a repository**. You need push access to its GitHub repository.
 
-1. Say **“log in to Room”**. Open the GitHub device page, enter the code, and approve Room.
-2. One person says **“open this repo on the server”**. The agent uses `room_create` to open it once.
-3. Teammates install Room and say **“join the room”** from their own clones.
+1. [Set up a team server](deploy/self-hosting.md), or get its URL from your team. Say **“log in to Room at wss://room.example.com”**. Open the GitHub device page, enter the code, and approve Room.
+2. One person says **“open this repo on wss://room.example.com”**. The agent uses `room_create` to open it once.
+3. Teammates install Room and say **“join the room at wss://room.example.com”** from their own clones.
 
-The hosted server is `wss://room-rohanz.fly.dev`. To choose it explicitly, launch Codex with `ROOM_SERVER=hosted codex --no-daemon`. For your own server, use `ROOM_SERVER=wss://room.example.com codex --no-daemon` and [self-hosting instructions](deploy/self-hosting.md). Codex's shared app-server daemon does not pass shell `ROOM_*` variables to Room. The agent tells you what the clone will share on its first team join; you can say **“share plans only”** or **“only my declared files”**.
+Team rooms are self-hosted; Room has no default public server. Say **“join the room at wss://room.example.com”** to choose and remember your team’s server. Alternatively launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; its shared app-server daemon does not inherit shell `ROOM_*` variables. The agent explains what the clone will share on its first team join. Say **“share plans only”** or **“only my declared files”** to narrow sharing.
 
 [Follow a first session](docs/onboarding.md) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
 
@@ -48,7 +48,7 @@ The hosted server is `wss://room-rohanz.fly.dev`. To choose it explicitly, launc
 
 | Default | What it means | Change it |
 |---|---|---|
-| Local room | Nothing leaves this machine until you choose a team room. Room remembers the choice per clone, including linked worktrees. | Say **“join the room”** or **“work locally”**; use `room_join(where="team"/"local")`. Set `ROOM_SERVER=hosted` or a WebSocket URL to choose a team destination at launch. `room_leave(forget=true)` clears the saved choice. |
+| Local room | Nothing leaves this machine until you choose a team room. Room remembers the choice per clone, including linked worktrees. | Say **“join the room”** or **“work locally”**; use `room_join(where="team"/"local")`. Set `ROOM_SERVER` to a WebSocket URL to choose a team destination at launch. `room_leave(forget=true)` clears the saved choice. |
 | `full` sharing in a team room | Members of that repository's team room, on **every branch**, receive the full text of eligible files you change. A server can lower the ceiling with `ROOM_SHARE_MAX`; your request cannot exceed it. Local rooms stay on this machine. | Say **“share plans only”** for `intent` (plans and claims, no file text), **“only my declared files”** for `declared` (eligible changed paths, text only in your declared area), or **“share all changed files”** for `full`. Ignored, unsafe, oversized and budget-excluded paths remain digest-only. Use `room_share(level=...)` or set `ROOM_SHARE` before launch. |
 | File publication limits | Room skips files matching `.roomignore`; it also excludes `.env` and `.env.*` except `.env.example`, common build and cache directories, temporary and binary extensions, and untracked lockfiles; it does not watch wholly gitignored folders. It shares at most **512 KiB per file** and **8 MiB total** of changed file text. | Edit `.roomignore` in the clone to exclude more paths. Say **“show room state”** to see skipped files. These built-in limits are not user settings. |
 | Worker host, model and effort | The caller's host runs a worker by default. Room passes through a model and effort named in a spawn request; otherwise the host chooses its own default. The spawn reply names what runs when known. | Ask for a specific host, model or effort, or pass `host`, `model`, `effort` to `room_spawn`. Set `ROOM_WORKER_MODEL` / `ROOM_WORKER_EFFORT`, or the per-host `ROOM_CODEX_WORKER_*` / `ROOM_CLAUDE_WORKER_*` pair. |
@@ -80,6 +80,8 @@ The browser view shows participants, changed files, claims, the activity feed an
 [![CI](https://github.com/rohanz/room/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rohanz/room/actions/workflows/ci.yml)
 
 Room has been used live with small teams, local rooms, mixed Claude Code and Codex workers, and GitHub repositories on macOS. OIDC, Postgres, Linux (where CI runs), Windows and large monorepos have test coverage but limited live use. Claims cannot prevent writes. Symbol impact is inferred and needs tests to confirm compatibility. A team room trusts everyone it admits; [the roadmap](docs/roadmap.md) tracks finer permissions and scale work. See [failure handling and diagnostics](docs/reference.md#limits-and-diagnostics).
+
+The [0.17.7 validation record](docs/superpowers/rehearsals/2026-10-06-self-hosting.md) covers explicit team servers, operator-approved repositories and a clean Docker Compose rehearsal.
 
 The [0.17.6 validation record](docs/superpowers/rehearsals/2026-10-06-wake-guidance.md) covers clarified worker wake instructions and a paired Claude comprehension check. Room’s wake behavior is unchanged.
 

@@ -1,5 +1,4 @@
 # Fly.io config for the room server. Runbook: deploy/DEPLOYING.md. Short version, from the repo root:
-#   npm run build -w @room/web
 #   fly deploy --config deploy/fly.toml --dockerfile Dockerfile --depot=false
 # First time only: fly launch ... --no-deploy; fly volumes create room_data --size 1;
 #   fly secrets set GITHUB_CLIENT_ID=<OAuth App with Device Flow>; fly scale memory 512
@@ -13,6 +12,8 @@ primary_region = "sin"
   PORT = "8080"
   YPERSISTENCE = "/data"
   NODE_ENV = "production"         # refuses the test login issuer (GITHUB_CLIENT_ID=fake)
+  ROOM_ADMINS = "rohanz"          # only the operator can approve hosted repositories
+  ROOM_MANAGED_REPOS = "true"     # collaborators still join through GitHub push access
   ROOM_TRUST_PROXY = "true"       # Fly's proxy fronts every request: rate limits key on Fly-Client-IP, not the proxy address
 
 [http_service]

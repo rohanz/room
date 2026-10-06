@@ -3,12 +3,20 @@ import { execFileSync } from 'node:child_process'
 import fs, { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveSessionHost, resolveSessionRuntime, resolveConfig, DEFAULT_SERVER, LOCAL } from '../src/config.js'
+import { resolveSessionHost, resolveSessionRuntime, resolveConfig, LOCAL } from '../src/config.js'
 import { writeChoice } from '../src/choice.js'
 
 const repo = () => { const dir = mkdtempSync(join(tmpdir(), 'room-config-')); execFileSync('git', ['-C', dir, 'init', '-q']); return dir }
 
 describe('resolveConfig', () => {
+  it('keeps legacy destination-free aliases local at startup but asks for a URL on explicit team joins', async () => {
+    const dir = repo()
+    await writeChoice(dir, 'team')
+    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: LOCAL })
+    expect(await resolveConfig({ dir, env: { ROOM_SERVER: 'hosted' } })).toMatchObject({ server: LOCAL })
+    await expect(resolveConfig({ dir, env: {}, args: { where: 'team' } })).rejects.toThrow('No team server configured')
+  })
+
   it('restores a named local room after restart and still reads legacy choices', async () => {
     const dir = repo()
     await writeChoice(dir, 'local', 'Ada', 'local/picked')
@@ -20,8 +28,8 @@ describe('resolveConfig', () => {
   it('uses documented argument > environment > remembered > default precedence', async () => {
     const dir = repo()
     expect((await resolveConfig({ dir, env: {} })).server).toBe(LOCAL)
-    await writeChoice(dir, 'team')
-    expect((await resolveConfig({ dir, env: {} })).server).toBe(DEFAULT_SERVER)
+    await writeChoice(dir, 'wss://team.example')
+    expect((await resolveConfig({ dir, env: {} })).server).toBe('wss://team.example')
     expect((await resolveConfig({ dir, env: { ROOM_SERVER: 'ws://env' } })).server).toBe('ws://env')
     const c = await resolveConfig({ dir, env: { ROOM_SERVER: 'ws://env', ROOM_SHARE: 'declared', ROOM_MAX_WORKERS: '3' }, args: { where: 'local', share: 'intent', maxWorkers: 2 } })
     expect(c).toMatchObject({ server: LOCAL, whereRule: 'argument', share: 'intent', maxWorkers: 2 })
@@ -34,8 +42,7 @@ describe('resolveConfig', () => {
       .toMatchObject({ server: 'ws://self-hosted.test:4403', where: 'team', whereRule: 'argument' })
     expect(await resolveConfig({ dir, args, env: { ROOM_URL: 'ws://runner.test:4403/o/r' } }))
       .toMatchObject({ server: 'ws://runner.test:4403', where: 'team', whereRule: 'argument' })
-    expect(await resolveConfig({ dir, args, env: {} }))
-      .toMatchObject({ server: DEFAULT_SERVER, where: 'team', whereRule: 'argument' })
+    await expect(resolveConfig({ dir, args, env: {} })).rejects.toThrow('No team server configured')
     expect(await resolveConfig({ dir, args: { where: 'wss://explicit.test' }, env: { ROOM_SERVER: 'ws://self-hosted.test:4403' } }))
       .toMatchObject({ server: 'wss://explicit.test', whereRule: 'argument' })
     await writeChoice(dir, 'ws://remembered.test:4403')
@@ -45,8 +52,8 @@ describe('resolveConfig', () => {
 
   it('keeps the remembered destination separate from explicit sharing inputs', async () => {
     const dir = repo()
-    await writeChoice(dir, 'team', 'Ada')
-    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: DEFAULT_SERVER, share: 'full', shareExplicit: false })
+    await writeChoice(dir, 'wss://team.example', 'Ada')
+    expect(await resolveConfig({ dir, env: {} })).toMatchObject({ server: 'wss://team.example', share: 'full', shareExplicit: false })
     expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' } })).toMatchObject({ share: 'declared', shareExplicit: true })
     expect(await resolveConfig({ dir, env: { ROOM_SHARE: 'declared' }, args: { share: 'full' } })).toMatchObject({ share: 'full', shareExplicit: true })
     expect(await resolveConfig({ dir, env: {}, args: { share: 'full', shareExplicit: false } })).toMatchObject({ share: 'full', shareExplicit: false })

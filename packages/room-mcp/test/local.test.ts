@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import http from 'node:http'
 import { deterministicPort } from '../../relay/src/index.js'
-import { joinSession, leaveSession, resolveServer, DEFAULT_SERVER, captureCapClose, watchClosed, type Session } from '../src/session.js'
+import { joinSession, leaveSession, resolveServer, captureCapClose, watchClosed, type Session } from '../src/session.js'
 import { createTools } from '../src/tools.js'
 
 let dir: string
@@ -57,7 +57,7 @@ describe('local mode (no server)', () => {
   it('resolves the server setting: unset/local → local, hosted → the hosted URL, else the URL', () => {
     expect(resolveServer(undefined)).toBe('local')
     expect(resolveServer('local')).toBe('local')
-    expect(resolveServer('hosted')).toBe(DEFAULT_SERVER)
+    expect(() => resolveServer('hosted')).toThrow('No team server configured')
     expect(resolveServer('ws://localhost:1234')).toBe('ws://localhost:1234')
   })
 

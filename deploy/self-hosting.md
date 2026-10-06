@@ -1,6 +1,6 @@
 # Self-hosting the room server
 
-One container, one volume. Login with a GitHub OAuth App, with your company identity provider
+Team rooms are self-hosted; Room has no default public server. One container, one volume. Login with a GitHub OAuth App, with your company identity provider
 (OIDC), or both. This page is the whole runbook.
 
 ## Prerequisites
@@ -14,15 +14,19 @@ One container, one volume. Login with a GitHub OAuth App, with your company iden
 
 ```sh
 git clone https://github.com/rohanz/room.git && cd room
-npm ci && npm run build -w @room/web          # the browser view baked into the image
 cp deploy/.env.example deploy/.env             # fill in PUBLIC_URL and a login provider
 docker compose -f deploy/docker-compose.yml up -d
 curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1}
 curl https://room.example.com/auth/config      # {"github":"device","providers":["github","oidc"],...}
 ```
 
-Clients point at it with `ROOM_SERVER=wss://room.example.com`, run `room_login` once per
-machine, then `room_create` once per repo.
+Clients say “join the room at wss://room.example.com”. The agent logs in to that server and asks before opening the repository with `room_create`; teammates use the same URL. The destination is remembered per clone. Alternatively launch with `ROOM_SERVER=wss://room.example.com`; Codex requires `codex --no-daemon` for shell environment variables to reach the plugin. Explicit tool URLs also work with the shared daemon.
+
+## Operator-approved repositories
+
+For a personal/demo server, set `ROOM_ADMINS=your-github-login` and `ROOM_MANAGED_REPOS=true` in `deploy/.env`, then recreate the container. As that account, log in and open each repository with `room_create`. You still need GitHub push access to open a GitHub repo. Its collaborators can then log in and join using their own GitHub accounts and push access; they cannot open unrelated rooms or close yours. Ask your agent to list open rooms to review the hosting list. Closing a room removes it for everyone, so close only repositories you intend to retire.
+
+This controls repository registration, not who can visit the login page. Existing rooms stay approved. Browser view links remain bearer capabilities: anyone you give a link to can read that room until the key expires or the room closes. Non-GitHub rooms retain their configured token/OIDC admission rules; they do not infer GitHub collaborators.
 
 ## Environment
 
@@ -40,7 +44,8 @@ server is open (fine on a laptop, not on the internet).
 | `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | The OIDC client registered at the issuer. Required with `OIDC_ISSUER`. | — |
 | `OIDC_ALLOWED_DOMAINS` | Comma list of email domains allowed to log in (`example.com,example.org`). Empty: anyone the issuer authenticates. | any |
 | `ROOM_LOAD_MAX_MB` | Stored-byte ceiling per document during migration, gated first on native SST table metadata, then summed with early exit below the gate. Other cold loads and joins use the larger of this and twice `ROOM_DOC_MAX_MB`. | `32` |
-| `ROOM_ADMINS` | Comma list of identities allowed to read `GET /audit`, `GET /admin/inventory` and call confirmed `POST /admin/purge` for never-served or unregistered keys: a GitHub login for GitHub sessions, `oidc:<issuer-host>:<sub>` for OIDC sessions. An OIDC display name or email never matches. | nobody |
+| `ROOM_MANAGED_REPOS` | Set to `true` to let only identities in `ROOM_ADMINS` open or close repository rooms. Existing rooms remain open; collaborators still need normal room admission (GitHub push access for GitHub repos). With no admins configured, nobody can open or close rooms. Restart after changes. | off |
+| `ROOM_ADMINS` | Comma list of identities allowed to read `GET /audit`, `GET /admin/inventory` and call confirmed `POST /admin/purge` for never-served or unregistered keys, and manage repos when `ROOM_MANAGED_REPOS=true`: a GitHub login for GitHub sessions, `oidc:<issuer-host>:<sub>` for OIDC sessions. An OIDC display name or email never matches. | nobody |
 | `ROOM_TRUST_PROXY` | Set to `true` only when a reverse proxy fronts every request. Rate limits and per-address budgets then key on `Fly-Client-IP`, else the last `X-Forwarded-For` entry; without it they key on the socket address, which behind a proxy is the proxy for everyone. | off |
 | `ROOM_MAX_BODY_READS` | Concurrent HTTP body reads; past the limit the server answers 503. Bodies are fixed at 64 KiB while streaming (413), with a fixed 10 s read deadline (408). | `32` |
 | PR note body (fixed) | `POST /github/pr-note` accepts up to 4 MiB only when the `Authorization` header is a live session. Other requests keep the fixed 64 KiB limit. | Fixed at 4 MiB |
@@ -187,7 +192,6 @@ For a **0.16 → 0.17 cutover**, keep a pre-upgrade copy of the entire stopped-s
 
 ```sh
 git pull
-npm ci && npm run build -w @room/web
 docker compose -f deploy/docker-compose.yml build room
 docker compose -f deploy/docker-compose.yml up -d room
 ```
@@ -195,7 +199,7 @@ docker compose -f deploy/docker-compose.yml up -d room
 For the 0.17 cutover, take the stopped-server snapshot described above **before** these commands. Earlier session records load as GitHub sessions, and Postgres tables are created with `IF NOT EXISTS`; this does not make a migrated 0.17 volume backward-compatible with 0.16. Clients must update together as described in [the upgrade guide](../docs/upgrading.md). The `docker compose` healthcheck hits `/health`.
 
 Running without Docker is the same server: build it once per checkout or upgrade (`npm run build:server`),
-then run `MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server` under systemd, with the same environment.
+build the viewer with `npm run build -w @room/web`, then run `ROOM_STATIC=packages/web/dist MALLOC_ARENA_MAX=2 YPERSISTENCE=/var/lib/room PORT=8080 npm run server` under systemd, with the same environment.
 
 ## Local path boundary
 

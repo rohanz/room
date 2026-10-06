@@ -37,7 +37,7 @@ function server(open: boolean, dir = repo, config?: Awaited<ReturnType<typeof re
   vi.stubEnv('ROOM_TAG', 'test')
   return { posts, requests, tools: createTools({ cwd: dir, config, getSession: () => null, setSession: () => {} }) }
 }
-const args = { where: 'team', room: 'o/r', name: 'test' }
+const args = { where: 'wss://team.example', room: 'o/r', name: 'test' }
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
 function clone() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-destination-'))
@@ -46,6 +46,26 @@ function clone() {
   return dir
 }
 describe('opening requires user consent', () => {
+  it.each(['team', 'hosted', 'web', 'shared'])('joining %s without a URL makes no network request', async where => {
+    vi.stubEnv('ROOM_SERVER', '')
+    vi.stubEnv('ROOM_URL', '')
+    const dir = clone()
+    try {
+      const fixture = server(false, dir)
+      expect(await fixture.tools.call('room_join', { where })).toContain('No team server configured')
+      expect(fixture.requests).toEqual([])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+  it('an explicit login URL recovers from a legacy hosted alias', async () => {
+    vi.stubEnv('ROOM_SERVER', 'hosted')
+    const dir = clone()
+    try {
+      const fixture = server(false, dir)
+      expect(await fixture.tools.call('room_login', { server: 'wss://team.example' })).not.toContain('No team server configured')
+      expect(fixture.requests.length).toBeGreaterThan(0)
+      expect(fixture.requests.every(url => new URL(url).host === 'team.example')).toBe(true)
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  })
   it('asks the Claude host to confirm create and close on every call', () => {
     for (const name of ['room_create', 'room_close']) {
       expect(DEFS.find(d => d.name === name)?._meta).toEqual({ 'anthropic/requiresUserInteraction': true })
@@ -53,7 +73,7 @@ describe('opening requires user consent', () => {
   })
   it('offers an unopened team repo without opening it', async () => {
     const { tools, posts } = server(false)
-    expect(await tools.call('room_join', args)).toBe('No room for o/r on wss://room-rohanz.fly.dev yet. Ask the user whether to open one (anyone with push access can; teammates on every branch join the same repository room). Call room_create with confirm=true only after they say yes.')
+    expect(await tools.call('room_join', args)).toBe('No room for o/r on wss://team.example yet. Ask the user whether to open one (teammates on every branch join the same repository room; some servers require their operator to open it). Call room_create with where="wss://team.example" and confirm=true only after they say yes.')
     expect(posts).toEqual([])
   })
   it.each([undefined, false])('refuses creating without true confirmation (%s)', async confirm => {
@@ -86,18 +106,18 @@ describe('opening requires user consent', () => {
       expect(requests.every(url => new URL(url).host === 'remembered-room.test:4403')).toBe(true)
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
-  it('room_create without a team choice uses hosted, and an explicit URL wins', async () => {
+  it('room_create without a team URL makes no requests, and an explicit URL wins', async () => {
     vi.stubEnv('ROOM_SERVER', '')
     vi.stubEnv('ROOM_URL', '')
     const dir = clone()
     try {
       const hosted = server(false, dir)
-      expect(await hosted.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon.')
-      expect(hosted.requests.every(url => new URL(url).host === 'room-rohanz.fly.dev')).toBe(true)
+      expect(await hosted.tools.call('room_create', { room: 'o/r', confirm: true })).toContain('No team server configured')
+      expect(hosted.requests).toEqual([])
       await writeChoice(dir, 'local', 'test', 'local/picked')
       const local = server(false, dir)
-      expect(await local.tools.call('room_create', { room: 'o/r', confirm: true })).toBe('error: reached daemon.')
-      expect(local.requests.every(url => new URL(url).host === 'room-rohanz.fly.dev')).toBe(true)
+      expect(await local.tools.call('room_create', { room: 'o/r', confirm: true })).toContain('No team server configured')
+      expect(local.requests).toEqual([])
       await writeChoice(dir, 'ws://remembered-room.test:4403')
       const explicit = server(false, dir)
       expect(await explicit.tools.call('room_create', { where: 'ws://explicit-room.test:4403', room: 'o/r', confirm: true })).toBe('error: reached daemon.')
@@ -107,7 +127,7 @@ describe('opening requires user consent', () => {
   it.each(['room_join', 'room_create'])('%s where=team uses ROOM_SERVER', async tool => {
     vi.stubEnv('ROOM_SERVER', 'ws://custom-room.test:4403')
     const { tools, requests } = server(false)
-    const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
+    const result = await tools.call(tool, { ...args, where: 'team', ...(tool === 'room_create' ? { confirm: true } : {}) })
     if (tool === 'room_join') expect(result).toContain('custom-room.test:4403')
     else expect(result).toBe('error: reached daemon.')
     expect(requests.length).toBeGreaterThan(0)
@@ -116,7 +136,7 @@ describe('opening requires user consent', () => {
   it.each(['room_join', 'room_create'])('%s where=team uses the server in ROOM_URL', async tool => {
     vi.stubEnv('ROOM_URL', 'ws://runner-room.test:4403/o/r')
     const { tools, requests } = server(false)
-    const result = await tools.call(tool, { ...args, ...(tool === 'room_create' ? { confirm: true } : {}) })
+    const result = await tools.call(tool, { ...args, where: 'team', ...(tool === 'room_create' ? { confirm: true } : {}) })
     if (tool === 'room_join') expect(result).toContain('runner-room.test:4403')
     else expect(result).toBe('error: reached daemon.')
     expect(requests.length).toBeGreaterThan(0)

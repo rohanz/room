@@ -14,7 +14,7 @@ import path from 'node:path'
 import { git } from '@room/roomd/git'
 import { gitCommonDir } from '@room/roomd'
 import { mainWorktree } from '@room/roomd/local'
-import { DEFAULT_SERVER, LOCAL, normaliseWhere } from './config.js'
+import { LOCAL, normaliseWhere } from './config.js'
 import { acquireOwnedFile } from './owned-file.js'
 import { withGuard, writeAtomic } from './leases.js'
 import { legacyLocalBranchRoom } from './room-name.js'
@@ -121,6 +121,5 @@ export async function clearChoice(dir: string): Promise<boolean> {
 /** One word for humans: "local" or "team", else the URL. */
 export function describeWhere(server: string): string {
   if (server === LOCAL) return 'local (this machine)'
-  if (server === DEFAULT_SERVER) return `team (${DEFAULT_SERVER})`
   return `team (${server})`
 }

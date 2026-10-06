@@ -10,13 +10,16 @@ on the first Room request; the shared app-server daemon was observed in 0.157.1.
 
 Where to be is the user's call, by instruction:
 - "team" means your team server (`ROOM_SERVER`, otherwise the server in `ROOM_URL`,
-  otherwise the server remembered for this clone, otherwise the hosted default).
+  otherwise the server remembered for this clone). There is no default public server.
+  If none is configured, ask for the user’s team server URL and point them to
+  https://github.com/rohanz/room/blob/main/deploy/self-hosting.md if they need to host one.
+  Stay local until they provide a URL; never invent a destination.
   A server URL selects that exact server.
 - "join the room" / "join the team room": `room_join(where="team")`, including
   when you are already in a local room. Relay the returned `note for your human`
   sharing sentence once, exactly as written. The choice is remembered for
   this clone; later sessions go there on their own.
-  A bare "join the room" (including "join the room for this repo") means the team room, because the session is already in a local room by default; do not ask which room.
+  A bare "join the room" (including "join the room for this repo") means the team room, because the session is already in a local room by default. Ask only for the server URL if none is configured.
 - "work locally" / "leave the team room" / "local room": `room_join(where="local")`.
   If the user also wants to forget the team destination for later sessions,
   call `room_leave(forget=true)` first.
@@ -37,6 +40,7 @@ Live sharing does not apply other participants' edits; collection and explicit e
 When your human asks you to push, push your current branch; Room tells teammates on that branch to catch up. Run git pull --ff-only --autostash to catch up on a shared branch. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.
 
 If it fails:
+- "No team server configured": ask for their server URL; local rooms need no server.
 - "Room was updated on disk; restart this session to pick up fixes": restart this session to load the
   updated plugin before retrying.
 - "not logged in": the server uses GitHub login. Preserve the server named in the error:
@@ -44,9 +48,10 @@ If it fails:
   then call `room_login(server="…")` again with the same server to wait for GitHub to confirm.
   Retry the original join destination afterward. Never ask the user for a token. Your name in
   the room is your GitHub login.
+- "This server requires an operator": explain that the server operator must open or close this repo; do not retry with another identity or destination.
 - "no room for <repo> yet": nobody has opened this repo on the team server. Ask the user
   whether to open one; joining is not permission to open it. Only after they say yes, call
-  `room_create(where="team", confirm=true)`. Once per repo; teammates on every branch join
+  `room_create(where="<the same server URL>", confirm=true)`. Once per repo; teammates on every branch join
   that same room automatically.
 - "no origin remote" when joining a team/server room: ask the user for a room name and call `room_join` with `room`. A local room needs no name and no origin; its name is derived from the clone.
 - "could not sync with wss://...": the server is not reachable. Continue independent work, and ask your human only if choosing another destination blocks the task.

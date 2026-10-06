@@ -72,7 +72,7 @@ async function recordWorker(tag: string, finished = false): Promise<void> {
 
 it('keeps the local room and says why when a team room needs an origin this clone lacks', async () => {
   const t = setup(async () => { throw new Error('unexpected join') })
-  const reply = await t.tools.call('room_join', { where: 'team' })
+  const reply = await t.tools.call('room_join', { where: 'ws://team.example' })
   expect(reply).toBe(`Team rooms need a shared server and a git origin remote to name the room, and ${dir} has no origin.${STILL()} To use a team room, add an origin (git remote add origin <url>) and say 'join the room' again, or name a room: room_join(where="team", room="<name>").`)
   expect(t.events).toEqual([])
   expect(t.session()).toBe(t.cur)
