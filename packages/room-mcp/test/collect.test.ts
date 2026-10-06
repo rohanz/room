@@ -19,6 +19,8 @@ import { projectWorkers } from '../src/worker-projector.js'
 import { autoRetire } from '../src/retire.js'
 import { cleanupWorker, ignoredWorkerArtifacts, type WorkerCleanupPreservation } from '../src/worker-git.js'
 import { realStateInput } from '../src/worker-status.js'
+import { isOwnedWorkerWorktree, roomWorkerPathMatchesBranch } from '../src/worker-state.js'
+import { realGitCommonDir } from '@room/roomd'
 import { currentToolTiming, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
@@ -105,18 +107,34 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
+  async function ownershipEvidence(t: ReturnType<typeof setup>): Promise<string | undefined> {
+    if (process.platform !== 'win32') return undefined
+    const registry = await registryForDir(lead)
+    const record = registry.reserved('test')
+    return JSON.stringify({
+      lead, worker, leadRoot: fs.realpathSync(lead), workerRoot: fs.realpathSync(worker),
+      pathMatches: roomWorkerPathMatchesBranch(lead, worker, 'room/test'),
+      commonLead: await realGitCommonDir(lead), commonWorker: await realGitCommonDir(worker),
+      branch: git(worker, 'branch', '--show-current'),
+      owned: await isOwnedWorkerWorktree(lead, t.w, 'lead'),
+      record: record && { id: record.id, phase: record.phase, lead: record.lead.participant, room: record.lead.room, dir: record.dir },
+      status: record && registry.status(record.id),
+      trusted: !!await registry.trusted({ participant: 'lead', room: t.s.roomName, dir: lead }, 'test'),
+    })
+  }
   it.each([false, true])('refuses discard before a recovery snapshot when cwd inspection fails (retired: %s)', async retired => {
     const t = setup()
     t.set('test', { ...t.w, exitCode: 0 })
     put(worker, 'new.txt', 'worker change')
     if (retired) {
       put(worker, 'artifact.bin', 'ignored output')
-      expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
+      const collected = await t.call({ tag: 'test' })
+      expect(collected, await ownershipEvidence(t)).toContain('Changes from test: new.txt')
       expect(workerByTag(lead, 'test')).toBeUndefined()
     }
     t.state.ctx!.listCwdProcesses = () => { throw new Error('worktree process inspection is unsupported on win32') }
     const result = await t.call({ tag: 'test', discard: true, force: true })
-    expect(result).toContain('worktree process inspection is unsupported on win32')
+    expect(result, await ownershipEvidence(t)).toContain('worktree process inspection is unsupported on win32')
     expect(fs.existsSync(path.join(lead, '.git/room/registry/patches/w_test.patch'))).toBe(false)
     expect(fs.readFileSync(path.join(worker, 'new.txt'), 'utf8')).toBe('worker change')
     expect(git(lead, 'rev-parse', '--verify', 'room/test')).toBe(base)
@@ -127,7 +145,7 @@ describe('room_collect', () => {
     put(worker, 'new.txt', 'worker change')
     t.state.ctx!.listCwdProcesses = () => { throw new Error('worktree process inspection is unsupported on win32') }
     const result = await t.call({ tag: 'test' })
-    expect(result).toContain('Changes from test: new.txt')
+    expect(result, await ownershipEvidence(t)).toContain('Changes from test: new.txt')
     expect(result).toContain('worktree process inspection is unsupported on win32')
     expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
     expect(fs.existsSync(worker)).toBe(true)
