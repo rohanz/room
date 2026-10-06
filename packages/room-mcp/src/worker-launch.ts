@@ -1,5 +1,6 @@
 /** Owns starting a worker process, fresh or resumed. Worktree preparation happens before this boundary. */
 import path from 'node:path'
+import { setImmediate as yieldTurn, setTimeout as pause } from 'node:timers/promises'
 import type { Session } from './session.js'
 import { processToken } from './names.js'
 import { toolCallAborted } from './registry.js'
@@ -26,6 +27,7 @@ interface Policy {
   server: string; isWorker: boolean; token?: string; claudeChannel?: string
   spawner?: Spawner; probe?: (pid: number) => ProcessInfo | undefined; log: (line: string) => void; at?: () => number
   usedPorts?: number[]; preferredPort?: number
+  platform?: NodeJS.Platform
 }
 type Command =
   | { mode: 'fresh'; task: string; links: string[]; carriedPaths?: string[]; deps?: string; sessionId?: string }
@@ -39,6 +41,25 @@ export interface WorkerLaunchResult {
   processStartTime?: string
   /** Read in the same probe as processStartTime: the registry records both from one snapshot. */
   processExecutable?: string
+}
+
+/** Capture only while this exact child is still owned; never adopt a later process with its reused PID. */
+export async function captureOwnedWorkerIdentity(proc: SpawnedProcess, active: () => boolean,
+  probe: (pid: number) => ProcessInfo | undefined = probeProcessNow,
+  platform: NodeJS.Platform = process.platform): Promise<ProcessInfo | undefined> {
+  const alive = () => active() && (proc.isRunning?.() ?? platform !== 'win32')
+  // Each Windows probe remains bounded to 3 s. Give a temporarily unavailable CIM
+  // provider two more attempts without extending a single synchronous pause.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!alive()) return undefined
+    const identity = probe(proc.pid)
+    if (!alive()) return undefined
+    await yieldTurn()
+    if (!alive()) return undefined
+    if (identity?.startTime && identity.executable) return identity
+    if (attempt < 2) await pause(100)
+  }
+  return undefined
 }
 
 /**
@@ -112,8 +133,12 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('start', String(e instanceof Error ? e.message : e)) }
     delivered = true
     passed = true
-    // One fresh read: the shared probe may still hold an exited predecessor's identity for this pid.
-    const identity = (policy.probe ?? probeProcessNow)(proc.pid)
+    // Fresh reads only: the shared probe may hold an exited predecessor's identity.
+    const identity = await captureOwnedWorkerIdentity(proc, () => !exited && !host.aborted(), policy.probe, policy.platform)
+    if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)
+    if ((policy.platform ?? process.platform) === 'win32' && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity) {
+      throw new WorkerLaunchError('start', 'could not verify the Windows worker process identity; stopping its retained child handle')
+    }
     const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
@@ -130,7 +155,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
       delivered = started || launchedProc.pid > 0
       if (delivered) {
         try {
-          if (watching) stopped = await stopWorkerWithEscalation({
+          if (watching) stopped = exited || await stopWorkerWithEscalation({
             terminate: () => launchedProc.kill(), exited: () => exited,
             force: () => launchedProc.killForce?.() ?? false,
           })

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.10
+
+- Retry temporarily unreadable worker identities while the child is still owned. Windows launch verifies the retained process handle before and after each bounded CIM probe, so an exited child or reused PID cannot supply a replacement identity.
+- Stop a live Windows child through its retained handle if launch cannot capture a complete identity; never silently launch a worker that becomes unmanageable after the lead restarts. Fresh and resumed launch smoke tests check identity capture.
+
+Plugin-only follow-up to the first native Windows CI run for 0.17.9. Update the plugin and restart sessions; no server deployment or migration is needed.
+
 ## 0.17.9
 
 - Identify native Windows worker processes by CIM creation time and executable name, including Claude hook ancestry, while refusing signals to unknown or reused process identities.

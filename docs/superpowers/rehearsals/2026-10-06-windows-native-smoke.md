@@ -351,3 +351,13 @@ Feng Kai reported the original Windows startup bug; the release commit and chang
 Final local validation: typecheck, knip, full plugin build, and diff-check passed. An initial full run was invalidated by changing release metadata while it ran (0.17.8 remained loaded while disk became 0.17.9). The stable-build rerun passed 3,576 tests, skipped two native-only checks, and hit one 30-second timeout in the existing 3,000-file bridge test. That test passed independently in 24.73 seconds including setup. Its timeout was scoped to 60 seconds without changing the yielding/atomic-read assertions; full CI remains the release gate.
 
 After the scoped deadline change, the complete bridge suite passed: 30/30, 15.86 seconds. Astra independently approved the lifecycle follow-up after its three public regressions passed. The frozen hook manifest remains byte-identical.
+
+## First native CI result and owned-child recovery
+
+CI run 37452501972 passed the full Linux suite (3,577 tests, two native-only skips), builds, and the native drive-root regressions. The new native Windows job passed the relay fixtures and real PowerShell environment scrub, but its first real process identity read returned unknown after 3,047 ms. This strongly suggests the 3,000 ms query timeout; the swallowed exception does not prove cold CIM startup. Later native smoke steps were skipped.
+
+Review found a real lifecycle consequence: a launch that persisted no process identity could remain unmanageable after lead restart. The follow-up retries only while the child remains owned, uses the Windows retained process HANDLE for liveness before and after each query, and stops an unverifiable live child rather than reporting launch success. The original launch regression failed because its onSpawn snapshot had undefined identity fields after one unreadable probe; the retry implementation passed. Additional tests cover PID reuse before JS close delivery, bounded retries, cancellation, and live launch failure/retained-handle shutdown. The seven focused launch/resume/cleanup suites passed 216 tests before the final negative launch cases were added.
+
+Node 22 ChildProcess.kill delegates to libuv; on Windows signal zero checks the retained process handle, not a fresh PID lookup. Sources checked 2026-10-06: https://raw.githubusercontent.com/nodejs/node/v22.x/lib/internal/child_process.js and https://raw.githubusercontent.com/libuv/libuv/v1.x/src/win/process.c. Room does not interpret child.killed as liveness.
+
+The final launch/doctor/handshake run passed 34 tests, including all three launch failure cases. Typecheck, knip, full bundle build, and diff-check passed. Astra approved the final follow-up; installation remains gated on native Windows CI.

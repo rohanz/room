@@ -31873,7 +31873,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.9",
+      version: "0.17.10",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -32608,6 +32608,14 @@ var init_worker_process = __esm({
         killForce: () => {
           try {
             return child.kill("SIGKILL");
+          } catch {
+            return false;
+          }
+        },
+        isRunning: () => {
+          if (process.platform !== "win32") return child.exitCode === null && child.signalCode === null;
+          try {
+            return child.kill(0);
           } catch {
             return false;
           }
@@ -43082,8 +43090,8 @@ ${text}--- end ${p} ---`);
   return handlers10;
 }
 async function linkSharedDirs(cloneDir, scratchDir) {
-  const yieldTurn = () => new Promise((resolve5) => setImmediate(resolve5));
-  await yieldTurn();
+  const yieldTurn2 = () => new Promise((resolve5) => setImmediate(resolve5));
+  await yieldTurn2();
   ensureMergedDirectory(scratchDir, "");
   const venv = path34.join(cloneDir, ".venv");
   const scratchVenv = path34.join(scratchDir, ".venv");
@@ -43095,7 +43103,7 @@ async function linkSharedDirs(cloneDir, scratchDir) {
   if (fs38.existsSync(venv) && !fs38.existsSync(scratchVenv)) fs38.symlinkSync(venv, scratchVenv);
   const candidates = /* @__PURE__ */ new Set(["node_modules"]);
   for (const top of ["packages", "apps", "libs"]) {
-    await yieldTurn();
+    await yieldTurn2();
     for (const root of [cloneDir, scratchDir]) {
       const d = path34.join(root, top);
       try {
@@ -43106,13 +43114,13 @@ async function linkSharedDirs(cloneDir, scratchDir) {
       }
       let count = 0;
       for (const e of fs38.readdirSync(d, { withFileTypes: true })) {
-        if (count++ % 32 === 0) await yieldTurn();
+        if (count++ % 32 === 0) await yieldTurn2();
         if (e.isDirectory()) candidates.add(path34.join(top, e.name, "node_modules"));
       }
     }
   }
   for (const [index, rel] of [...candidates].entries()) {
-    if (index % 32 === 0) await yieldTurn();
+    if (index % 32 === 0) await yieldTurn2();
     const src = path34.join(cloneDir, rel), dst = path34.join(scratchDir, rel);
     if (rel !== "node_modules") ensureMergedDirectory(scratchDir, path34.dirname(rel));
     try {
@@ -57953,6 +57961,7 @@ import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";
 // packages/room-mcp/src/worker-launch.ts
 init_names();
 import path39 from "node:path";
+import { setImmediate as yieldTurn, setTimeout as pause } from "node:timers/promises";
 
 // packages/room-mcp/src/port-reservations.ts
 init_owned_file();
@@ -58010,6 +58019,19 @@ var WorkerLaunchError = class extends Error {
   pid;
   stopped;
 };
+async function captureOwnedWorkerIdentity(proc, active, probe = probeProcessNow, platform = process.platform) {
+  const alive = () => active() && (proc.isRunning?.() ?? platform !== "win32");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!alive()) return void 0;
+    const identity3 = probe(proc.pid);
+    if (!alive()) return void 0;
+    await yieldTurn();
+    if (!alive()) return void 0;
+    if (identity3?.startTime && identity3.executable) return identity3;
+    if (attempt < 2) await pause(100);
+  }
+  return void 0;
+}
 async function reserveWorkerName(s, name2, workerId, log2) {
   if (!s.hub || !s.lease) return void 0;
   const token = processToken(s.lease.sessionId);
@@ -58132,7 +58154,11 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
     }
     delivered = true;
     passed = true;
-    const identity3 = (policy.probe ?? probeProcessNow)(proc.pid);
+    const identity3 = await captureOwnedWorkerIdentity(proc, () => !exited && !host.aborted(), policy.probe, policy.platform);
+    if (host.aborted()) throw new WorkerLaunchError("cancelled", "tool call cancelled", true);
+    if ((policy.platform ?? process.platform) === "win32" && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity3) {
+      throw new WorkerLaunchError("start", "could not verify the Windows worker process identity; stopping its retained child handle");
+    }
     const result2 = {
       proc,
       port,
@@ -58161,7 +58187,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
       delivered = started || launchedProc.pid > 0;
       if (delivered) {
         try {
-          if (watching) stopped = await stopWorkerWithEscalation({
+          if (watching) stopped = exited || await stopWorkerWithEscalation({
             terminate: () => launchedProc.kill(),
             exited: () => exited,
             force: () => launchedProc.killForce?.() ?? false

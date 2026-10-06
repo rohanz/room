@@ -25,6 +25,8 @@ export interface SpawnedProcess {
   kill(): boolean
   /** SIGKILL the same child after SIGTERM's grace period. */
   killForce?(): boolean
+  /** Check the retained child handle, not a newly looked-up PID (important for Windows PID reuse). */
+  isRunning?(): boolean
 }
 /** Injectable for tests: how a worker process is started. */
 export type Spawner = (spec: SpawnSpec) => SpawnedProcess
@@ -279,6 +281,12 @@ export const defaultSpawner: Spawner = spec => {
     onError: cb => { child.once('error', cb) },
     kill: () => { try { return child.kill('SIGTERM') } catch { return false } },
     killForce: () => { try { return child.kill('SIGKILL') } catch { return false } },
+    isRunning: () => {
+      if (process.platform !== 'win32') return child.exitCode === null && child.signalCode === null
+      // libuv's Windows signal 0 checks the retained HANDLE, even while JS exit
+      // callbacks are queued behind a synchronous CIM query. Do not use child.killed.
+      try { return child.kill(0) } catch { return false }
+    },
   }
 }
 

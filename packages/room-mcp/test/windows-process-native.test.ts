@@ -6,6 +6,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { probeProcessNow } from '@room/relay/process'
 import { defaultSpawner, quiesceWorktreeProcesses, signalWorker, stopWorkerWithEscalation, terminateWorktreeProcesses } from '../src/worker-process.js'
+import { captureOwnedWorkerIdentity } from '../src/worker-launch.js'
 
 describe.skipIf(process.platform !== 'win32')('native Windows process identity and owned child stop', () => {
   it('records birth/executable and hook ancestors; refuses reused identity and stops its retained child', async () => {
@@ -19,7 +20,12 @@ describe.skipIf(process.platform !== 'win32')('native Windows process identity a
     })
     try {
       await child.started
-      const info = probeProcessNow(child.pid)!
+      let attempts = 0
+      const started = Date.now()
+      const info = await captureOwnedWorkerIdentity(child, () => !exited, pid => { attempts++; return probeProcessNow(pid) })
+      console.info(`owned Windows identity: ${attempts} attempt(s), ${Date.now() - started} ms`)
+      expect(info).toBeDefined()
+      if (!info) throw new Error('owned Windows process identity remained unreadable')
       expect(info.executable).toBe('node')
       expect(info.startTime).toMatch(/^windows:/)
       const { processChain } = await import(/* @vite-ignore */ pathToFileURL(path.resolve(__dirname, '../../../plugins/room/hooks/common.mjs')).href)

@@ -117,12 +117,16 @@ describe('native OS smoke (fake Claude host)', () => {
     const watch = { setHandle: () => {}, watch: (_id: string, proc: SpawnedProcess, cb: (code: number | null) => void) => proc.onExit(cb), aborted: () => false }
     const sid = '550e8400-e29b-41d4-a716-446655440000'
     const fresh = await launchWorkerProcess(policy, { mode: 'fresh', task: 'prompt with spaces & literal "quotes"', links: [], sessionId: sid }, watch, async () => {}, async () => {}, async () => {})
+    expect(fresh.processStartTime).toBeTruthy()
+    expect(fresh.processExecutable).toBe('claude')
     await vi.waitFor(() => expect(fs.readFileSync(fresh.logFile, 'utf8')).toContain('fake-host-ready'), { timeout: 10_000 })
     const first = processes.at(-1)!
     expect(await stopWorkerWithEscalation({ terminate: () => first.proc.kill(), force: () => first.proc.killForce!(), exited: first.closed })).toBe(true)
     await first.exited
     const start = fs.statSync(fresh.logFile).size
     const resumed = await launchWorkerProcess({ ...policy, run: 2 }, { mode: 'resume', sessionId: sid, followUp: 'follow-up with spaces & literal "quotes"', oldPort: fresh.port }, watch, async () => {}, async () => {}, async () => {})
+    expect(resumed.processStartTime).toBeTruthy()
+    expect(resumed.processExecutable).toBe('claude')
     await vi.waitFor(() => expect(resumeAccepted(resumed.logFile, 'claude', sid, start)).toBe(true), { timeout: 10_000 })
     const log = fs.readFileSync(resumed.logFile, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line))
     const receipts = log.filter(e => e.type === 'fake-host-ready')

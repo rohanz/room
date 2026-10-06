@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto'
 import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, type DoctorFacts } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 
-const version = '0.17.9'
+const version = '0.17.10'
 const trust = `[hooks.state."room@room:hooks.json:pre_tool_use:0:0"]
 trusted_hash = "${CODEX_ROOM_HOOK_HASHES['pre_tool_use:0:0']}"
 [hooks.state."room@room:hooks.json:session_start:0:0"]
