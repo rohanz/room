@@ -12,7 +12,7 @@ Starting point: `ef0b1f7935`, Room 0.17.8. Prepared 2026-10-06 by
 | Relay startup and addressed question/answer across spaced worktrees | Real source relay/WebSockets, macOS Room preview runner | Passed in combined preview; direct worker shell blocked `listen EPERM` |
 | Source SessionStart, ancestor identity, durable worker binding after simulated `/clear` | Real Node hook subprocess; fabricated host event, macOS Room preview runner | Passed in combined preview; direct shell denies process inspection |
 | Process identity and PowerShell environment suites from sibling workers | Offline fixtures plus native-only cases | See sibling reports; new CI runs these on `windows-latest` |
-| Native Windows fake-host smoke | Real Windows OS, copied Node executable named `claude.exe`, fabricated host stream | Added CI gate; **not executed on native Windows here** |
+| Native Windows fake-host smoke | Real Windows OS, copied Node executable named `claude.exe`, fabricated host stream | Worker added the gate; **passed native Windows in the final lead validation below** |
 | Genuine Claude + Room, idle wake, worker admission/resume, permission checks | Authenticated native Windows, actual model turns | **Not run; operator opt-in and authenticated Windows required** |
 
 The existing eight durable-directory tests already passed Windows before this
@@ -367,3 +367,11 @@ The final launch/doctor/handshake run passed 34 tests, including all three launc
 Run 37453887677 passed native worker identity (two attempts, 3,532 ms), PowerShell filtering, hook binding, relay messaging and fresh/resumed fake-host launches. It then failed the three public collection checks before cleanup with no local worker capability. Diagnostic run 37454339722 showed the same Git directory as `C:\Users\RUNNER~1\...\lead\.git` for the lead and `C:\Users\runneradmin\...\lead\.git` for the worker. Branch, lexical worker path and registry ownership fields were valid; exact comparison of the differently spelled common paths rejected ownership.
 
 The fix uses `fs.realpathSync.native` only on Windows in `realGitCommonDir`; other platforms retain their behavior. A native regression checks a clone and linked worktree through their original and expanded paths, drive-letter casing, and a distinct repository negative case. Existing local Git-directory tests passed 4/4; the native case is skipped on macOS pending CI. No case-insensitive string comparison or ownership bypass was added.
+
+## Native Windows gate passed
+
+[CI run 37454945495](https://github.com/rohanz/room/actions/runs/37454945495), commit `27947237`, passed both native Windows jobs on 2026-10-06. The new job passed 43 selected checks: six relay process cases, 30 process/shell/launch cases, three real-relay/fake-host smoke cases, three public collection safety cases, and one native Git-alias case. The Bash-only shell case was intentionally skipped on Windows; 134 unrelated collection tests were unselected by the focused filter. The separate durable-directory job passed its existing eight tests.
+
+The owned-process identity was captured on attempt two in 4,082 ms, confirming bounded recovery after an initially unreadable query on a real Windows runner. Both subsequent hook identity and retained-child stopping assertions passed. Fresh/resumed fake-host launches persisted complete process identities.
+
+These results cover the Windows OS, real PowerShell execution, Git/filesystem behavior, Room relay and hooks, and fake host launch logs. They still do not establish authenticated Claude permissions, model turns, worker admission or idle wake; the genuine-host checklist above remains the manual check. The full Linux gate runs separately on the release commit and this documentation follow-up.
