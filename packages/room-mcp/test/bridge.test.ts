@@ -354,7 +354,9 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     await t.bridge.sync()
     expect(map.size).toBe(0)
     expect(t.team.a.manifestHead.get(worker.name)).toMatchObject({ level: 'intent', complete: false })
-  })
+    // This checks yielding and atomic reads, not disk throughput. Seeding and
+    // projecting 3,000 real files can exceed 30 s alongside the full suite.
+  }, 60_000)
   it('F5 rechecks a narrowing policy after a preparation yield before writing hashes', async () => {
     const policy = testPolicyStore()
     const t = await setup({ policy, start: false })

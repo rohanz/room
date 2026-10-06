@@ -24568,6 +24568,37 @@ function pidAlive(pid) {
     return e.code === "EPERM";
   }
 }
+function windowsProcessName(name2) {
+  return path6.win32.basename(name2).toLowerCase().replace(/\.exe$/, "");
+}
+function parseWindowsProcessTable(output) {
+  const table = /* @__PURE__ */ new Map();
+  let parsed;
+  try {
+    parsed = JSON.parse(output.replace(/^\uFEFF/, "").trim());
+  } catch {
+    return table;
+  }
+  for (const row of Array.isArray(parsed) ? parsed : [parsed]) {
+    if (!row || typeof row !== "object") continue;
+    const { pid, ppid, creationDate, name: name2 } = row;
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid < 0) continue;
+    let startTime;
+    if (typeof creationDate === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(creationDate)) {
+      const millis = Date.parse(creationDate);
+      if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + "Z") startTime = `windows:${creationDate}`;
+    }
+    const executable = typeof name2 === "string" && name2 ? windowsProcessName(name2) || void 0 : void 0;
+    table.set(pid, { ppid, startTime, executable });
+  }
+  return table;
+}
+function readWindowsProcessTable(readers, pid) {
+  if (pid !== void 0 && (!Number.isSafeInteger(pid) || pid <= 0)) return /* @__PURE__ */ new Map();
+  const query2 = `Get-CimInstance Win32_Process${pid === void 0 ? "" : ` -Filter "ProcessId = ${pid}"`}`;
+  const script = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(${query2} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress`;
+  return parseWindowsProcessTable(readers.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { timeout: 3e3, maxBuffer: 8 * 1024 * 1024 }));
+}
 function sameStartTime(a, b) {
   if (a === b) return true;
   const x = /^darwin:(\d+):(\d+)$/.exec(a), y = /^darwin:(\d+):(\d+)$/.exec(b);
@@ -24621,6 +24652,10 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
       });
       return { startTime: `linux:${bootId}:${startTicks}`, executable };
     }
+    if (readers.platform === "win32") {
+      const info2 = readWindowsProcessTable(readers, pid).get(pid);
+      return info2 ? { startTime: info2.startTime, executable: info2.executable } : unreadable();
+    }
     if (readers.platform === "darwin") {
       const lstart = readers.exec("ps", ["-o", "lstart=", "-p", String(pid)]).trim();
       const startSeconds2 = parsePsLstartUtc(lstart);
@@ -24639,7 +24674,7 @@ function probeUncached(pid, readers, boottime = () => readers.exec("sysctl", ["-
   return unreadable();
 }
 function createProcessProbe(readers, options = {}) {
-  if (readers.platform !== "darwin") {
+  if (readers.platform !== "darwin" && readers.platform !== "win32") {
     const read3 = (pid) => probeUncached(pid, readers);
     return Object.assign(read3, { confirm: read3, fresh: read3 });
   }
@@ -24654,9 +24689,9 @@ function createProcessProbe(readers, options = {}) {
   const fresh = (pid) => {
     const info2 = probeUncached(pid, readers, boottime);
     const started = startSeconds(info2?.startTime);
-    if (info2?.executable && Number.isFinite(started)) {
+    if (info2 && (readers.platform === "win32" || info2.executable && Number.isFinite(started))) {
       if (cache.size >= 1024) cache.clear();
-      cache.set(pid, { info: info2, until: now() + (wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
+      cache.set(pid, { info: info2, until: now() + (info2.executable && Number.isFinite(started) && wall() / 1e3 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) });
     } else cache.delete(pid);
     return info2;
   };
@@ -24696,10 +24731,11 @@ var init_process = __esm({
       platform: process.platform,
       readFile: (file) => fs9.readFileSync(file, "utf8"),
       readLink: (file) => fs9.readlinkSync(file),
-      exec: (file, args3) => execFileSync2(file, args3, {
+      exec: (file, args3, options) => execFileSync2(file, args3, {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 3e3,
+        ...options,
         ...file === "ps" ? { env: { ...process.env, TZ: "UTC", LC_ALL: "C", LANG: "C" } } : {}
       })
     };
@@ -24708,7 +24744,7 @@ var init_process = __esm({
     SETTLED_AFTER_S = 5;
     BOOTTIME_TTL_MS = 6e4;
     CONFIRMED_TTL_MS = 6e4;
-    startSeconds = (startTime) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
+    startSeconds = (startTime) => startTime?.startsWith("windows:") ? Date.parse(startTime.slice("windows:".length)) / 1e3 : Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? "")?.[1]);
     agrees = (info2, recorded) => (!info2.startTime || !recorded.startTime || sameStartTime(info2.startTime, recorded.startTime)) && (!info2.executable || !recorded.executable || info2.executable === recorded.executable);
     systemProbe = createProcessProbe(systemProcessReaders);
   }
@@ -31837,7 +31873,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.8",
+      version: "0.17.9",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -31881,6 +31917,8 @@ function workerShellEnvScript(inherited) {
 }
 function writeWorkerShellEnv(leadDir, tag, inherited = process.env.CLAUDE_ENV_FILE) {
   const file = path15.join(leadDir, ".room", "workers", `${tag}.env.sh`);
+  const hook = path15.join(leadDir, ".room", "workers", `${tag}.shell-env.mjs`);
+  let writtenFile;
   try {
     for (const dir of [path15.join(leadDir, ".room"), path15.dirname(file)]) {
       try {
@@ -31892,9 +31930,12 @@ function writeWorkerShellEnv(leadDir, tag, inherited = process.env.CLAUDE_ENV_FI
     }
     fs17.rmSync(file, { force: true });
     fs17.writeFileSync(file, workerShellEnvScript(inherited), { mode: 384, flag: "wx" });
-    return { file };
+    writtenFile = file;
+    fs17.rmSync(hook, { force: true });
+    fs17.writeFileSync(hook, POWERSHELL_HOOK, { mode: 384, flag: "wx" });
+    return { file, hook };
   } catch (e) {
-    return { warning: `warning: could not write ${file} (${e instanceof Error ? e.message : String(e)}); ${tag}'s shell commands still see Room's ROOM_* variables.` };
+    return { ...writtenFile ? { file: writtenFile } : {}, warning: `warning: could not write ${writtenFile ? hook : file} (${e instanceof Error ? e.message : String(e)}); ${tag}'s ${writtenFile ? "PowerShell" : "shell"} commands still see Room's ROOM_* variables.` };
   }
 }
 function codexShellFilterWarning(version3) {
@@ -31918,10 +31959,10 @@ async function workerShellEnvWarnings(tag, host, written, platform = process.pla
   if (host === "codex") return [codexShellFilterWarning(await codex())].filter((w) => !!w);
   return [
     ...written.warning ? [written.warning] : [],
-    ...platform === "win32" ? [`note: Claude's PowerShell tool does not run CLAUDE_ENV_FILE, so ${tag}'s PowerShell commands still see Room's ROOM_* variables; its Bash commands do not.`] : []
+    ...platform === "win32" && !written.hook ? [`note: Claude's PowerShell tool does not run CLAUDE_ENV_FILE and its scrub hook is unavailable, so ${tag}'s PowerShell commands still see Room's ROOM_* variables.`] : []
   ];
 }
-var CODEX_SHELL_FILTER, CODEX_SHELL_FILTER_SINCE, UNSET_ROOM, quote, codexVersion;
+var CODEX_SHELL_FILTER, CODEX_SHELL_FILTER_SINCE, UNSET_ROOM, quote, POWERSHELL_HOOK, codexVersion;
 var init_worker_shell_env = __esm({
   "packages/room-mcp/src/worker-shell-env.ts"() {
     "use strict";
@@ -31929,6 +31970,32 @@ var init_worker_shell_env = __esm({
     CODEX_SHELL_FILTER_SINCE = [0, 146, 0];
     UNSET_ROOM = `for v in $(env | sed -n 's/^\\(ROOM_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset "$v"; done`;
     quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+    POWERSHELL_HOOK = String.raw`import fs from 'node:fs'
+const deny = reason => console.log(JSON.stringify({ hookSpecificOutput: {
+  hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason,
+} }))
+let event
+try { event = JSON.parse(fs.readFileSync(0, 'utf8')) }
+catch { deny('Room could not read the PowerShell hook input; retry the tool call.'); process.exit(0) }
+if (event?.hook_event_name && event.hook_event_name !== 'PreToolUse') process.exit(0)
+if (event?.tool_name && event.tool_name !== 'PowerShell') process.exit(0)
+if (event?.hook_event_name !== 'PreToolUse' || event?.tool_name !== 'PowerShell') {
+  deny('Room cannot identify this PowerShell hook event; retry the tool call.'); process.exit(0)
+}
+const input = event.tool_input
+if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.command !== 'string') {
+  deny('Room cannot isolate this malformed PowerShell input; supply a command string.'); process.exit(0)
+}
+// Deliberately conservative text check, not a PowerShell parser. Declarations can depend on being first; a
+// prefix could invalidate them. This also rejects matches in strings/comments. Invoke a .ps1 file instead.
+if (/\bparam\b|^\s*#requires\b|^\s*using\b/im.test(input.command)) {
+  deny('Room cannot prefix PowerShell commands containing param, #requires or using declarations. Put the command in a .ps1 file and invoke that file instead.'); process.exit(0)
+}
+const prefix = 'Get-ChildItem Env:ROOM_* | Remove-Item -ErrorAction Stop\n'
+console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: {
+  ...input, command: input.command.startsWith(prefix) ? input.command : prefix + input.command,
+} } }))
+`;
   }
 });
 
@@ -32097,9 +32164,15 @@ function workerCommand(host, model, prompt, claudeChannel = DEFAULT_CLAUDE_CHANN
   effort = hostWorkerEffort(host, effort);
   if (options.resume && !options.sessionId) throw new Error("resuming a worker requires its host session id");
   if (host === "codex") return { cmd: "codex", args: options.resume ? ["exec", "resume", options.sessionId, "-c", 'sandbox_mode="workspace-write"', "-c", CODEX_SHELL_FILTER, ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] : ["exec", "-s", "workspace-write", "-c", CODEX_SHELL_FILTER, ...model ? ["-m", model] : [], ...effort ? ["-c", `model_reasoning_effort=${effort}`] : [], "--json", prompt] };
+  const settings = {
+    ...options.pluginDir ? { enabledPlugins: { "room@room": false } } : {},
+    ...options.shellEnvHook ? { hooks: { PreToolUse: [{ matcher: "PowerShell", hooks: [
+      { type: "command", command: "node", args: [options.shellEnvHook], timeout: 5 }
+    ] }] } } : {}
+  };
   return {
     cmd: "claude",
-    args: [...options.pluginDir ? ["--plugin-dir", options.pluginDir, "--settings", JSON.stringify({ enabledPlugins: { "room@room": false } })] : [], ...options.wakeChannels && claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
+    args: [...options.pluginDir ? ["--plugin-dir", options.pluginDir] : [], ...Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [], ...options.wakeChannels && claudeChannel ? ["--dangerously-load-development-channels", claudeChannel] : [], "-p", ...options.resume ? ["--resume", options.sessionId] : [], prompt, "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep", ...model ? ["--model", model] : [], ...effort ? ["--effort", effort] : [], ...options.tag ? ["--name", options.tag] : [], ...!options.resume && options.sessionId ? ["--session-id", options.sessionId] : [], ...options.maxBudgetUsd ? ["--max-budget-usd", options.maxBudgetUsd] : []]
   };
 }
 function workerMaxBudget(env = process.env) {
@@ -32349,7 +32422,7 @@ function ownershipBy(pid, w, probe) {
   if (!w.processStartTime) return "unknown";
   if (!info2?.startTime || !info2.executable) return "unknown";
   if (!sameStartTime(info2.startTime, w.processStartTime)) return "not-ours";
-  const executable = path17.basename(info2.executable);
+  const executable = info2.startTime.startsWith("windows:") ? windowsProcessName(info2.executable) : path17.basename(info2.executable);
   return executable === w.host || executable === "node" ? "ours" : "not-ours";
 }
 function pidIsOurWorker(pid, w, probe = probeProcess) {
@@ -32396,6 +32469,8 @@ function listCwdProcesses(platform = process.platform) {
       if (line.startsWith("p")) pid = Number(line.slice(1));
       else if (line.startsWith("n") && pid > 0) result2.push({ pid, cwd: line.slice(1), command: "" });
     }
+  } else {
+    throw new Error(`worktree process inspection is unsupported on ${platform}; worktree retained`);
   }
   return result2;
 }
@@ -32442,7 +32517,8 @@ async function terminateWorktreeProcesses(dir, options = {}) {
   }
   return named;
 }
-async function quiesceWorktreeProcesses(dir) {
+async function quiesceWorktreeProcesses(dir, platform = process.platform) {
+  if (platform !== "linux" && platform !== "darwin") return false;
   try {
     await terminateWorktreeProcesses(dir);
     const root = fs19.realpathSync(dir);
@@ -44328,7 +44404,7 @@ async function cleanupWorker(leadDir, w, collected = false, discarded = false, t
 }
 function cleanupWorkerLogs(leadDir, w) {
   const parent = path35.basename(path35.dirname(w.dir)) === "workers" && path35.basename(path35.dirname(path35.dirname(w.dir))) === ".room" ? path35.resolve(w.dir, "../../..") : leadDir;
-  for (const suffix of [".log", ".mcp.log", ".env.sh"]) {
+  for (const suffix of [".log", ".mcp.log", ".env.sh", ".shell-env.mjs"]) {
     try {
       fs39.rmSync(path35.join(parent, WORKERS_DIR, w.tag + suffix), { force: true });
     } catch {
@@ -58020,6 +58096,7 @@ Your dev-server port is ${port} (PORT=${port}).` : ""}`;
         sessionId: command2.sessionId,
         resume: command2.mode === "resume",
         maxBudgetUsd,
+        shellEnvHook: shellEnv.hook,
         wakeChannels: process.env.ROOM_WAKE === "channels",
         pluginDir: policy.host === "claude" ? leadClaudePluginDir() : void 0
       }
@@ -63203,6 +63280,7 @@ repeat with force=true to delete them`;
           await registry2.beginStop(active.id, "discarded");
           const cleanupErrors = [];
           const terminated = borrowed2 ? [] : await stopOwnedWorktreeProcesses(s2.dir, w2, s2.me.name, ownershipRecords(s2), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses);
+          if (cleanupErrors.length) throw new Error(cleanupErrors.join("; "));
           const missingDetail = missing2 ? await pruneMissingWorkerWorktree(s2.dir, w2) : void 0;
           if (missing2 || borrowed2) cleanupWorkerLogs(s2.dir, w2);
           await registry2.markDiscardStep(active.id, "stop");
@@ -63302,6 +63380,7 @@ repeat with force=true to delete them`;
           return unsafeAfterDismissal;
         }
         if (!borrowed) terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses));
+        if (cleanupErrors.length) throw new Error(cleanupErrors.join("; "));
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) });
         const missing2 = !borrowed && decideDiscard(afterStop) === "prune";
         let missingDetail;

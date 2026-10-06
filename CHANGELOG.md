@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.9
+
+- Identify native Windows worker processes by CIM creation time and executable name, including Claude hook ancestry, while refusing signals to unknown or reused process identities.
+- Scrub worker coordination variables from Claude PowerShell commands through a visible pre-tool hook, without changing permission decisions. Bash and Codex retain their existing environment filtering.
+- Retain worker worktrees when process inspection is unavailable. Windows collection can return edits, but discard and automatic cleanup cannot safely remove the folder.
+- Add native Windows CI for process identity, PowerShell filtering, local relay and hook binding, executable paths, and fresh/resumed launches using fake hosts. Authenticated Claude behavior still requires a manual Windows check.
+
+Thanks to Feng Kai for reporting the Windows startup bug that prompted these fixes. Plugin-only update; restart host sessions after updating. No server deploy or migration is needed.
+
 ## 0.17.8
 
 - Fix Windows local-room startup failing with `EPERM` when durable bookkeeping walks up to a drive root. The relay and server now validate the root without trying to create it, preserving parent-directory syncing for descendants and concurrent writers.

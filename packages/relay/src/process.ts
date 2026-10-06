@@ -15,14 +15,52 @@ export interface ProcessReaders {
   platform: NodeJS.Platform
   readFile(file: string): string
   readLink(file: string): string
-  exec(file: string, args: string[]): string
+  exec(file: string, args: string[], options?: { timeout: number; maxBuffer: number }): string
 }
 const systemProcessReaders: ProcessReaders = {
   platform: process.platform,
   readFile: file => fs.readFileSync(file, 'utf8'),
   readLink: file => fs.readlinkSync(file),
-  exec: (file, args) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+  exec: (file, args, options) => execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, ...options,
     ...(file === 'ps' ? { env: { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' } } : {}) }),
+}
+
+/** Windows uses case-insensitive executable basenames; only the terminal .exe suffix is removed. */
+export function windowsProcessName(name: string): string {
+  return path.win32.basename(name).toLowerCase().replace(/\.exe$/, '')
+}
+
+export interface WindowsProcessInfo extends ProcessInfo { ppid: number }
+
+/** CIM JSON projected by readWindowsProcessTable; preserve all seven fractional birth digits. */
+export function parseWindowsProcessTable(output: string): Map<number, WindowsProcessInfo> {
+  const table = new Map<number, WindowsProcessInfo>()
+  let parsed: unknown
+  try { parsed = JSON.parse(output.replace(/^\uFEFF/, '').trim()) } catch { return table }
+  for (const row of Array.isArray(parsed) ? parsed : [parsed]) {
+    if (!row || typeof row !== 'object') continue
+    const { pid, ppid, creationDate, name } = row as Record<string, unknown>
+    if (!Number.isSafeInteger(pid) || (pid as number) <= 0 || !Number.isSafeInteger(ppid) || (ppid as number) < 0) continue
+    let startTime: string | undefined
+    if (typeof creationDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(creationDate)) {
+      // Date.parse truncates precision and normalizes impossible days; validate without using it as the token.
+      const millis = Date.parse(creationDate)
+      if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + 'Z') startTime = `windows:${creationDate}`
+    }
+    const executable = typeof name === 'string' && name ? windowsProcessName(name) || undefined : undefined
+    table.set(pid as number, { ppid: ppid as number, startTime, executable })
+  }
+  return table
+}
+
+/** No WMIC dependency, command lines or environments. A PID filter bounds per-worker queries. */
+export function readWindowsProcessTable(readers: Pick<ProcessReaders, 'exec'>, pid?: number): Map<number, WindowsProcessInfo> {
+  if (pid !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) return new Map()
+  const query = `Get-CimInstance Win32_Process${pid === undefined ? '' : ` -Filter "ProcessId = ${pid}"`}`
+  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+    + `@(${query} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; `
+    + "creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress"
+  return parseWindowsProcessTable(readers.exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }))
 }
 
 /**
@@ -93,6 +131,10 @@ function probeUncached(pid: number, readers: ProcessReaders, boottime = () => re
         cmdline: () => readers.readFile(`/proc/${pid}/cmdline`), exe: () => readers.readLink(`/proc/${pid}/exe`) })
       return { startTime: `linux:${bootId}:${startTicks}`, executable }
     }
+    if (readers.platform === 'win32') {
+      const info = readWindowsProcessTable(readers, pid).get(pid)
+      return info ? { startTime: info.startTime, executable: info.executable } : unreadable()
+    }
     if (readers.platform === 'darwin') {
       const lstart = readers.exec('ps', ['-o', 'lstart=', '-p', String(pid)]).trim()
       const startSeconds = parsePsLstartUtc(lstart)
@@ -122,7 +164,8 @@ export interface CachedProcessProbe extends ProcessProbe {
   fresh(pid: number): ProcessInfo | undefined
 }
 
-const startSeconds = (startTime: string | undefined) => Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? '')?.[1])
+const startSeconds = (startTime: string | undefined) => startTime?.startsWith('windows:')
+  ? Date.parse(startTime.slice('windows:'.length)) / 1000 : Number(/^darwin:\d+:(\d+)$/.exec(startTime ?? '')?.[1])
 const agrees = (info: ProcessInfo, recorded: { startTime?: string; executable?: string }) =>
   (!info.startTime || !recorded.startTime || sameStartTime(info.startTime, recorded.startTime))
   && (!info.executable || !recorded.executable || info.executable === recorded.executable)
@@ -130,11 +173,12 @@ const agrees = (info: ProcessInfo, recorded: { startTime?: string; executable?: 
 /**
  * A probe bounded to one identity read per live pid per PROBE_TTL_MS (YOUNG_TTL_MS for a process younger than
  * SETTLED_AFTER_S, which may not have exec'd into its host yet), however many callers ask: on macOS a read is three
- * synchronous processes (`ps`, `sysctl`, `ps`), and status reads probe every worker on each room change. A dead pid
+ * synchronous processes (`ps`, `sysctl`, `ps`); Windows reads CIM via one bounded PowerShell process. Unreadable
+ * Windows identities get only the short TTL and never establish ownership. Status reads probe every worker on each room change. A dead pid
  * is answered at once by `kill(pid, 0)`. Lifetimes run on the monotonic clock. Linux reads /proc and is not cached.
  */
 export function createProcessProbe(readers: ProcessReaders & { alive?(pid: number): boolean }, options: { now?: () => number; wall?: () => number } = {}): CachedProcessProbe {
-  if (readers.platform !== 'darwin') {
+  if (readers.platform !== 'darwin' && readers.platform !== 'win32') {
     const read = (pid: number) => probeUncached(pid, readers)
     return Object.assign(read, { confirm: read, fresh: read })
   }
@@ -149,9 +193,9 @@ export function createProcessProbe(readers: ProcessReaders & { alive?(pid: numbe
   const fresh = (pid: number) => {
     const info = probeUncached(pid, readers, boottime)
     const started = startSeconds(info?.startTime)
-    if (info?.executable && Number.isFinite(started)) {
+    if (info && (readers.platform === 'win32' || info.executable && Number.isFinite(started))) {
       if (cache.size >= 1024) cache.clear()
-      cache.set(pid, { info, until: now() + (wall() / 1000 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) })
+      cache.set(pid, { info, until: now() + (info.executable && Number.isFinite(started) && wall() / 1000 - started >= SETTLED_AFTER_S ? PROBE_TTL_MS : YOUNG_TTL_MS) })
     } else cache.delete(pid)
     return info
   }

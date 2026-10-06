@@ -81,6 +81,8 @@ The browser view shows participants, changed files, claims, the activity feed an
 
 Room has been used live with small teams, local rooms, mixed Claude Code and Codex workers, and GitHub repositories on macOS. OIDC, Postgres, Linux (where CI runs), Windows and large monorepos have test coverage but limited live use. Claims cannot prevent writes. Symbol impact is inferred and needs tests to confirm compatibility. A team room trusts everyone it admits; [the roadmap](docs/roadmap.md) tracks finer permissions and scale work. See [failure handling and diagnostics](docs/reference.md#limits-and-diagnostics).
 
+Native Windows cannot yet inspect processes by their working directory. Worker collection can bring back edits but keeps the checkout; discard refuses to remove it, including with `force`. See [worker lifecycle and shell isolation](docs/reference.md#workers-and-previews) for cleanup and PowerShell limits.
+
 The [0.17.7 validation record](docs/superpowers/rehearsals/2026-10-06-self-hosting.md) covers explicit team servers, operator-approved repositories and a clean Docker Compose rehearsal.
 
 The [0.17.6 validation record](docs/superpowers/rehearsals/2026-10-06-wake-guidance.md) covers clarified worker wake instructions and a paired Claude comprehension check. Room’s wake behavior is unchanged.

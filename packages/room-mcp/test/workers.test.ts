@@ -641,8 +641,8 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const t = setup()
       expect(await t.leadTools.call('room_spawn', { tag: 'channel', task: 'check channels' })).toContain('spawned channel')
       const args = t.specs[0].args
-      expect(args[0]).toBe(channel ? '--dangerously-load-development-channels' : '-p')
-      if (channel) expect(args[1]).toBe(channel)
+      expect(args).toContain('-p')
+      if (channel) expect(args[args.indexOf('--dangerously-load-development-channels') + 1]).toBe(channel)
       else expect(args).not.toContain('--dangerously-load-development-channels')
       await t.leadTools.shutdown()
     } finally { vi.unstubAllEnvs() }
@@ -2087,6 +2087,11 @@ describe('worker follow-up sessions', () => {
     const initial = workerByTag(dir, 'money')!
     expect(initial.hostSessionId).toMatch(/^[0-9a-f-]{36}$/)
     expect(t.specs[0].args).toContain('--session-id')
+    const settings = JSON.parse(t.specs[0].args[t.specs[0].args.indexOf('--settings') + 1])
+    expect(settings).toEqual({ hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [{
+      type: 'command', command: 'node', args: [join(dir, '.room', 'workers', 'money.shell-env.mjs')], timeout: 5,
+    }] }] } })
+    expect(existsSync(settings.hooks.PreToolUse[0].hooks[0].args[0])).toBe(true)
     mkdirSync(initial.dir, { recursive: true })
     await reportDone('money', 'first done')
     t.exits[0](0)
@@ -2096,10 +2101,12 @@ describe('worker follow-up sessions', () => {
     expect(t.specs[1].env).toMatchObject({ ...t.specs[0].env, ROOM_WORKER_RUN: '2', ROOM_LAUNCH_NONCE: t.specs[1].env.ROOM_LAUNCH_NONCE })
     expect(t.specs[1].env.ROOM_LAUNCH_NONCE).not.toBe(t.specs[0].env.ROOM_LAUNCH_NONCE)
     expect(t.specs[1]).toMatchObject({ cwd: initial.dir, env: { ROOM_TAG: 'money', ROOM_WORKER_THREADS: t.specs[0].env.ROOM_WORKER_THREADS, ROOM_WORKER_MEM_GB: t.specs[0].env.ROOM_WORKER_MEM_GB } })
-    const resumePrompt = t.specs[1].args[3]
+    expect(JSON.parse(t.specs[1].args[t.specs[1].args.indexOf('--settings') + 1])).toEqual(settings)
+    const resumeArgs = t.specs[1].args.slice(2) // Worker-specific --settings is asserted above.
+    const resumePrompt = resumeArgs[3]
     expect(resumePrompt).toMatch(/^Room messages for this resumed turn \(each line includes its message ID, sender, and reply metadata\):\n/)
     expect(JSON.parse(resumePrompt.slice(resumePrompt.indexOf('\n') + 1))).toMatchObject({ type: 'note', text: 'fix the review finding', to: 'rohanz+money', from: 'rohanz', id: expect.stringMatching(/^m_/) })
-    expect(t.specs[1].args).toEqual(['-p', '--resume', initial.hostSessionId, resumePrompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
+    expect(resumeArgs).toEqual(['-p', '--resume', initial.hostSessionId, resumePrompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', '--model', 'opus', '--effort', 'high', '--name', 'money', '--max-budget-usd', '3.25'])
     expect(workerByTag(dir, 'money')).toMatchObject({ status: 'running', hostSessionId: initial.hostSessionId, dir: initial.dir })
   })
 

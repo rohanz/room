@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
-export const HOOKS_VERSION = '0.17.8'
+export const HOOKS_VERSION = '0.17.9'
 
 export function readStdinJson() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8') || '{}') } catch { return {} }
@@ -127,10 +127,15 @@ export function writeStdout(text) {
  */
 export function processChain(start = process.ppid, depth = 8, readers = systemProcessReaders) {
   const table = processTable(readers)
-  const chain = []
+  const chain = [], seen = new Set()
   for (let pid = start; pid > 1 && chain.length < depth; pid = table.get(pid)?.ppid ?? 0) {
+    if (seen.has(pid)) break
+    seen.add(pid)
     const entry = table.get(pid)
     if (!entry?.startTime) break
+    // A parent PID can outlive its original process and be reused: a newer birth is not an ancestor.
+    const childStart = chain.at(-1)?.startTime
+    if (readers.platform === 'win32' && childStart && entry.startTime > childStart) break
     chain.push({ pid, startTime: entry.startTime, executable: entry.executable?.() })
   }
   return chain
@@ -162,6 +167,42 @@ export function linuxProcessName(files) {
   return name ?? (exe ? path.basename(exe) : undefined)
 }
 
+/** Windows uses case-insensitive executable basenames; only the terminal .exe suffix is removed. */
+export function windowsProcessName(name) {
+  return path.win32.basename(name).toLowerCase().replace(/\.exe$/, '')
+}
+
+/** CIM JSON projected by readWindowsProcessTable; preserve all seven fractional birth digits. */
+export function parseWindowsProcessTable(output) {
+  const table = new Map()
+  let parsed
+  try { parsed = JSON.parse(output.replace(/^\uFEFF/, '').trim()) } catch { return table }
+  for (const row of Array.isArray(parsed) ? parsed : [parsed]) {
+    if (!row || typeof row !== 'object') continue
+    const { pid, ppid, creationDate, name } = row
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(ppid) || ppid < 0) continue
+    let startTime
+    if (typeof creationDate === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(creationDate)) {
+      // Date.parse truncates precision and normalizes impossible days; validate without using it as the token.
+      const millis = Date.parse(creationDate)
+      if (Number.isFinite(millis) && new Date(millis).toISOString() === creationDate.slice(0, 23) + 'Z') startTime = `windows:${creationDate}`
+    }
+    const executable = typeof name === 'string' && name ? windowsProcessName(name) || undefined : undefined
+    table.set(pid, { ppid, startTime, executable })
+  }
+  return table
+}
+
+/** No WMIC dependency, command lines or environments. A PID filter bounds per-worker queries. */
+export function readWindowsProcessTable(readers, pid) {
+  if (pid !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) return new Map()
+  const query = `Get-CimInstance Win32_Process${pid === undefined ? '' : ` -Filter "ProcessId = ${pid}"`}`
+  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+    + `@(${query} | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; `
+    + "creationDate = $(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) } else { $null }); name = $_.Name } }) | ConvertTo-Json -Compress"
+  return parseWindowsProcessTable(readers.exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 }))
+}
+
 function processTable(readers) {
   const table = new Map()
   try {
@@ -177,6 +218,10 @@ function processTable(readers) {
             cmdline: () => readers.readFile(`/proc/${name}/cmdline`), exe: () => readers.readLink(`/proc/${name}/exe`) })
           table.set(Number(name), { ppid: Number(fields[1]), startTime: `linux:${bootId}:${fields[19]}`, executable })
         } catch { /* exited while listing */ }
+      }
+    } else if (readers.platform === 'win32') {
+      for (const [pid, info] of readWindowsProcessTable(readers)) {
+        table.set(pid, { ...info, executable: () => info.executable })
       }
     } else if (readers.platform === 'darwin') {
       const env = { ...process.env, TZ: 'UTC', LC_ALL: 'C', LANG: 'C' }

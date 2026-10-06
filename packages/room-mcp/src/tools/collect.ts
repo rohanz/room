@@ -275,6 +275,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           await registry.beginStop(active.id, 'discarded')
           const cleanupErrors: string[] = []
           const terminated = borrowed ? [] : await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses)
+          if (cleanupErrors.length) throw new Error(cleanupErrors.join('; '))
           // A kept worktree that is no longer an owned Room worktree is refused, not forgotten: cleanupWorker decides.
           const missingDetail = missing ? await pruneMissingWorkerWorktree(s.dir, w) : undefined
           if (missing || borrowed) cleanupWorkerLogs(s.dir, w)
@@ -369,6 +370,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return unsafeAfterDismissal
         }
         if (!borrowed) terminated.push(...await stopOwnedWorktreeProcesses(s.dir, w, s.me.name, ownershipRecords(s), cleanupErrors, state.ctx?.probe, state.ctx?.listCwdProcesses))
+        // A failed inspection is not an empty process table. Do not publish a
+        // recovery snapshot or delete a checkout whose writers we cannot inspect.
+        if (cleanupErrors.length) throw new Error(cleanupErrors.join('; '))
         const afterStop = await workerRealState(s.dir, w, { ownership: true, leadName: s.me.name, workers: ownershipRecords(s) })
         const missing = !borrowed && decideDiscard(afterStop) === 'prune'
         let missingDetail: string | undefined

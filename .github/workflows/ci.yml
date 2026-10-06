@@ -27,12 +27,43 @@ jobs:
       - name: Check durable directory creation on Windows
         run: npx vitest run packages/relay/test/durable-directory.test.ts packages/server/test/durable-directory.test.ts
 
+  windows-native-smoke:
+    name: Native Windows smoke (fake hosts, no model calls)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Record native OS and runtime
+        run: node -e "console.log(JSON.stringify({kind:'real OS + fake host',platform:process.platform,arch:process.arch,node:process.version,os:require('node:os').release()}))"
+      # Package configs use package-relative include paths. Vitest resolves --config against --root.
+      # Setup clears inherited Room/host identity, points config at temp, and never uses account credentials.
+      - name: Relay process identity on Windows
+        run: npx vitest run --root packages/relay --config vitest.config.ts test/windows-process.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-relay.json"
+      - name: Worker process and shell identity on Windows
+        run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/windows-process.test.ts test/windows-process-native.test.ts test/worker-shell-env.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-workers.json"
+      - name: Local relay, hooks, executable paths and retained launch smoke
+        run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/windows-smoke.test.ts --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-smoke.json"
+      - name: Preserve worktrees when process inspection is unavailable
+        run: npx vitest run --root packages/room-mcp --config vitest.config.ts test/collect.test.ts -t "cwd inspection fails" --maxWorkers 1 --reporter default --reporter json --outputFile "$env:RUNNER_TEMP/room-windows-cleanup.json"
+      - name: Upload fake-host native Windows evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-fake-host-results
+          path: ${{ runner.temp }}/room-windows-*.json
+          if-no-files-found: warn
+
   test:
     runs-on: ubuntu-latest
     # The suite alone takes about 6 minutes on an M-series Mac and longer on a 4-vCPU runner;
     # the test watchdog already ends any single file after 15 minutes.
     timeout-minutes: 45
-    # The full suite and plugin build run on Ubuntu; root-directory regressions also run on Windows.
+    # The full suite and plugin build run on Ubuntu; focused OS smoke also runs on native Windows.
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

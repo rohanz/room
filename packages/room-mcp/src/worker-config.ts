@@ -156,7 +156,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
 export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
 export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return host === 'claude' && effort === 'minimal' ? 'low' : effort }
 
-export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string }
+export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string; shellEnvHook?: string }
 
 /** The bundle path identifies the plugin Claude actually loaded, even when its root env is absent. */
 export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, modulePath = fileURLToPath(import.meta.url), installedPath?: string): string | undefined {
@@ -193,9 +193,15 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
   if (host === 'codex') return { cmd: 'codex', args: options.resume
     ? ['exec', 'resume', options.sessionId!, '-c', 'sandbox_mode="workspace-write"', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt]
     : ['exec', '-s', 'workspace-write', '-c', CODEX_SHELL_FILTER, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), '--json', prompt] }
+  const settings = {
+    ...(options.pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
+    ...(options.shellEnvHook ? { hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [
+      { type: 'command', command: 'node', args: [options.shellEnvHook], timeout: 5 },
+    ] }] } } : {}),
+  }
   return {
     cmd: 'claude',
-    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir, '--settings', JSON.stringify({ enabledPlugins: { 'room@room': false } })] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
+    args: [...(options.pluginDir ? ['--plugin-dir', options.pluginDir] : []), ...(Object.keys(settings).length ? ['--settings', JSON.stringify(settings)] : []), ...(options.wakeChannels && claudeChannel ? ['--dangerously-load-development-channels', claudeChannel] : []), '-p', ...(options.resume ? ['--resume', options.sessionId!] : []), prompt, '--output-format', 'stream-json', '--verbose', '--permission-mode', 'acceptEdits', '--allowedTools', 'mcp__room__*,mcp__plugin_room_room__*,Edit,Write,Read,Bash,Glob,Grep', ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(options.tag ? ['--name', options.tag] : []), ...(!options.resume && options.sessionId ? ['--session-id', options.sessionId] : []), ...(options.maxBudgetUsd ? ['--max-budget-usd', options.maxBudgetUsd] : [])],
   }
 }
 

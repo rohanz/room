@@ -304,7 +304,7 @@ export async function stopWorkerWithEscalation(options: {
 }
 
 export { pidAlive, parsePsLstartUtc, probeProcess, probeProcessNow, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
-import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
+import { pidAlive, probeProcess, probeProcessConfirm, probeProcessNow, sameStartTime, windowsProcessName, type ProcessInfo, type ProcessProbe } from '@room/relay/process'
 
 export function pidPresent(pid: number, probe: ProcessProbe = probeProcess): boolean {
   return pid > 0 && probe(pid) !== undefined
@@ -331,7 +331,7 @@ function ownershipBy(pid: number, w: WorkerIdentity, probe: ProcessProbe): Proce
   if (!w.processStartTime) return 'unknown'
   if (!info?.startTime || !info.executable) return 'unknown'
   if (!sameStartTime(info.startTime, w.processStartTime)) return 'not-ours'
-  const executable = path.basename(info.executable)
+  const executable = info.startTime.startsWith('windows:') ? windowsProcessName(info.executable) : path.basename(info.executable)
   return executable === w.host || executable === 'node' ? 'ours' : 'not-ours'
 }
 
@@ -373,6 +373,8 @@ function listCwdProcesses(platform: NodeJS.Platform = process.platform): CwdProc
       if (line.startsWith('p')) pid = Number(line.slice(1))
       else if (line.startsWith('n') && pid > 0) result.push({ pid, cwd: line.slice(1), command: '' })
     }
+  } else {
+    throw new Error(`worktree process inspection is unsupported on ${platform}; worktree retained`)
   }
   return result
 }
@@ -416,7 +418,9 @@ export async function terminateWorktreeProcesses(dir: string, options: {
 }
 
 /** A discard snapshot is safe only after no process can keep writing in this worktree. */
-export async function quiesceWorktreeProcesses(dir: string): Promise<boolean> {
+export async function quiesceWorktreeProcesses(dir: string, platform: NodeJS.Platform = process.platform): Promise<boolean> {
+  // Windows has no supported cwd enumeration here. An empty table cannot establish quiescence.
+  if (platform !== 'linux' && platform !== 'darwin') return false
   try {
     await terminateWorktreeProcesses(dir)
     const root = fs.realpathSync(dir)

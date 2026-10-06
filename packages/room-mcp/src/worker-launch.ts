@@ -92,7 +92,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }
     const built = workerCommand(policy.host, policy.model, prompt, policy.claudeChannel,
       policy.effort, { tag, sessionId: command.sessionId, resume: command.mode === 'resume',
-        maxBudgetUsd, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: policy.host === 'claude' ? leadClaudePluginDir() : undefined })
+        maxBudgetUsd, shellEnvHook: shellEnv.hook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: policy.host === 'claude' ? leadClaudePluginDir() : undefined })
     const priority = workerPriority(built, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')

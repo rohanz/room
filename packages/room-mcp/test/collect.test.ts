@@ -105,6 +105,34 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
+  it.each([false, true])('refuses discard before a recovery snapshot when cwd inspection fails (retired: %s)', async retired => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'new.txt', 'worker change')
+    if (retired) {
+      put(worker, 'artifact.bin', 'ignored output')
+      expect(await t.call({ tag: 'test' })).toContain('Changes from test: new.txt')
+      expect(workerByTag(lead, 'test')).toBeUndefined()
+    }
+    t.state.ctx!.listCwdProcesses = () => { throw new Error('worktree process inspection is unsupported on win32') }
+    const result = await t.call({ tag: 'test', discard: true, force: true })
+    expect(result).toContain('worktree process inspection is unsupported on win32')
+    expect(fs.existsSync(path.join(lead, '.git/room/registry/patches/w_test.patch'))).toBe(false)
+    expect(fs.readFileSync(path.join(worker, 'new.txt'), 'utf8')).toBe('worker change')
+    expect(git(lead, 'rev-parse', '--verify', 'room/test')).toBe(base)
+  })
+  it('collects edits but retains the worktree when cwd inspection fails', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'new.txt', 'worker change')
+    t.state.ctx!.listCwdProcesses = () => { throw new Error('worktree process inspection is unsupported on win32') }
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: new.txt')
+    expect(result).toContain('worktree process inspection is unsupported on win32')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker change')
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(t.s.room.retiredWorkers()[0].keptWorktree).toBe(worker)
+  })
   it('checks Git operation markers in one call per checkout and reports collect phases', async () => {
     const t = setup()
     put(worker, 'new.txt', 'worker output\n')
