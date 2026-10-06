@@ -23,11 +23,17 @@ async function syncDirectory(dir: string): Promise<void> {
 
 async function ensureDurableDirectory(dir: string): Promise<void> {
   const parent = path.dirname(dir)
-  if (parent !== dir) await ensureDurableDirectory(parent)
+  // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
+  // Stop only here: existing descendants still need their parent synced below.
+  if (parent === dir) {
+    if (!(await fsp.stat(dir)).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
+    return
+  }
+  await ensureDurableDirectory(parent)
   try { await fsp.mkdir(dir, { mode: 0o700 }) }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
   // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
-  if (parent !== dir) await syncDirectory(parent)
+  await syncDirectory(parent)
 }
 
 /** Temp, fsync, rename, fsync-dir, in a directory whose own entry is durable. */

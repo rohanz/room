@@ -14,12 +14,25 @@ permissions:
   contents: read
 
 jobs:
+  windows-durable-files:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check durable directory creation on Windows
+        run: npx vitest run packages/relay/test/durable-directory.test.ts packages/server/test/durable-directory.test.ts
+
   test:
     runs-on: ubuntu-latest
     # The suite alone takes about 6 minutes on an M-series Mac and longer on a 4-vCPU runner;
     # the test watchdog already ends any single file after 15 minutes.
     timeout-minutes: 45
-    # The test suite and plugin build run on the hosted Ubuntu image (the only CI platform).
+    # The full suite and plugin build run on Ubuntu; root-directory regressions also run on Windows.
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -25958,13 +25958,17 @@ function syncDirectory2(dir) {
 }
 function ensureDurableDirectory(dir) {
   const parent = path8.dirname(dir);
-  if (parent !== dir) ensureDurableDirectory(parent);
+  if (parent === dir) {
+    if (!fs11.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: "ENOTDIR" });
+    return;
+  }
+  ensureDurableDirectory(parent);
   try {
     fs11.mkdirSync(dir, { mode: 448 });
   } catch (e) {
     if (e.code !== "EEXIST") throw e;
   }
-  if (parent !== dir) syncDirectory2(parent);
+  syncDirectory2(parent);
 }
 function cleanupOrphanTemps(dir, probe = probeProcess) {
   let removed = 0;
@@ -31833,7 +31837,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.7",
+      version: "0.17.8",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",

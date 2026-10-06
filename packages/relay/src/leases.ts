@@ -39,12 +39,18 @@ function syncDirectory(dir: string): void {
 
 function ensureDurableDirectory(dir: string): void {
   const parent = path.dirname(dir)
-  if (parent !== dir) ensureDurableDirectory(parent)
+  // A drive/share root already exists; Windows rejects mkdir on it with EPERM.
+  // Stop only here: existing descendants still need their parent synced below.
+  if (parent === dir) {
+    if (!fs.statSync(dir).isDirectory()) throw Object.assign(new Error(`Not a directory: ${dir}`), { code: 'ENOTDIR' })
+    return
+  }
+  ensureDurableDirectory(parent)
   try {
     fs.mkdirSync(dir, { mode: 0o700 })
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e }
   // EEXIST may mean another writer created this directory but has not fsynced its parent yet.
-  if (parent !== dir) syncDirectory(parent)
+  syncDirectory(parent)
 }
 
 const startMarker = (startTime: string): string => createHash('sha256').update(startTime).digest('hex').slice(0, 24)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.8
+
+- Fix Windows local-room startup failing with `EPERM` when durable bookkeeping walks up to a drive root. The relay and server now validate the root without trying to create it, preserving parent-directory syncing for descendants and concurrent writers.
+- Add regression coverage for root rejection, concurrent directory creation, permission errors and file/directory collisions, including a focused native Windows CI job.
+
+Update the plugin and restart affected sessions. Windows self-hosted servers also need the updated server build; no schema change or data migration is required.
+
 ## 0.17.7
 
 - Team rooms are self-hosted: joining or creating one requires a configured server URL. Local rooms remain the default, existing explicit URLs are preserved, and destination-free legacy aliases start locally until a URL is supplied.
