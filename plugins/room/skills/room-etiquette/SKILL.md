@@ -34,7 +34,10 @@ While alone, work normally. With company:
    Never commit or push unless asked; do not ask as a finishing ritual. Workers report
    progress in `room_done` and send notes only when the lead must know before they finish;
    routine progress notes from your own workers do not wake you, but addressed questions,
-   worker completion (`room_done`), and eligible interrupts can. Interactive leads with
+   worker completion (`room_done`), and eligible interrupts can. Codex leads on the shared
+   app-server can receive addressed questions and eligible interrupts mid-turn as tool
+   output after the running tool finishes; completion is `fyi` and waits for idle
+   `codex queue`, also the fallback when mid-turn delivery is unavailable. Interactive leads with
    an available wake path need not poll; headless leads must stay alive with `room_wait`.
    If wake is unavailable or disabled, use `room_wait` while supervising workers too.
    For missing wakes, inspect `room_state(check=true)` and `room-mcp.log` before

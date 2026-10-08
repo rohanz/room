@@ -193,6 +193,8 @@ export interface SessionBindingOptions {
   workerId?: string
   /** Registry's pre-generated Claude session, or an admitted Codex log thread ID. */
   workerSessionId?: string
+  /** Thread identity supplied by Codex tool-call metadata under the shared daemon. */
+  codexThreadId?: string
   codexLogSessionId?: string
   appServer?: boolean
   parentArgs?: string
@@ -248,6 +250,19 @@ function codexArguments(parent: ProcessIdentity | undefined, commandLine: string
   return undefined
 }
 
+// Each daemon thread owns its MCP process; every binding in that process shares this identity.
+let codexThreadId: string | undefined
+const codexThreadConflictsLogged = new Set<string>()
+export function admitCodexThread(id: string, log?: (line: string) => void): void {
+  if (!/^[A-Za-z0-9-]{1,128}$/.test(id)) return
+  if (!codexThreadId) codexThreadId = id
+  else if (id !== codexThreadId && !codexThreadConflictsLogged.has(id) && codexThreadConflictsLogged.size < 32) {
+    codexThreadConflictsLogged.add(id)
+    log?.(`ignoring Codex thread ${id}; this MCP is bound to ${codexThreadId}`)
+  }
+}
+export function admittedCodexThread(): string | undefined { return codexThreadId }
+
 /** Re-evaluate on every call: a new SessionStart after Claude /clear supersedes the prior ID. */
 export function boundSession(options: SessionBindingOptions = {}): { id: string; host: 'claude' | 'codex' } | undefined {
   const env = options.env ?? process.env
@@ -270,8 +285,11 @@ export function boundSession(options: SessionBindingOptions = {}): { id: string;
     return id ? { id, host } : undefined
   }
   if (host === 'codex') {
+    const id = options.codexThreadId ?? admittedCodexThread()
+    if (id) return { id, host }
     const args = codexArguments(parent, options.parentArgs ?? parentCommandLine())
-    if (options.appServer || args === undefined || args.match(/^\S+/)?.[0] === 'app-server') return undefined
+    if (options.appServer || args?.match(/^\S+/)?.[0] === 'app-server') return undefined
+    if (args === undefined) return undefined
   }
   const matching = parent && records.filter(record => !record.worker_id && record.chain?.some(member => sameProcess(member, parent))).sort((a, b) => b.at - a.at)[0]
   if (matching) return { id: matching.session_id, host }

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Awareness } from 'y-protocols/awareness'
@@ -10,6 +10,8 @@ import { manifestKey } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { Ledger } from '../src/ledger.js'
 import { createRelevance } from '../src/relevance.js'
+import type { WakeReconcilerOptions } from '../src/wake-reconciler.js'
+import { createMidTurnSender, createWakeSender } from '../src/wake-path.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
 import { CodexTurnProbe } from '../src/codex-turn.js'
 import type { Session } from '../src/session.js'
@@ -19,7 +21,7 @@ import { visiblePeer } from './fixtures/visible.js'
 const dirs: string[] = []
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function rig(started: boolean) {
+function rig(started: boolean, options: Partial<WakeReconcilerOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'room-wake-turn-'))
   dirs.push(dir)
   const home = join(dir, 'codex')
@@ -41,11 +43,11 @@ function rig(started: boolean) {
   const texts: string[] = []
   const log: string[] = []
   const wakes = new WakeReconciler({ ledger, bound: () => ({ id, host: 'codex' }), sessionDir: () => undefined,
-    send: async (_target, text) => { texts.push(text); return 'queue' }, log: line => log.push(line), busyPollMs: 20, pollMs: 20, windowMs: 0 })
+    send: async (_target, text) => { texts.push(text); return 'queue' }, log: line => log.push(line), busyPollMs: 20, pollMs: 20, windowMs: 0, ...options })
   wakes.attach(s)
   const note = () => hubAppend<NoteMsg>(room, { name: 'Ana', kind: 'agent' }, { type: 'note', to: 'Pat', text: 'please check' })
   const close = () => { wakes.stop(); awareness.destroy(); room.doc.destroy() }
-  return { s, ledger, wakes, texts, log, note, event, close, head, room, id, rollout }
+  return { s, ledger, wakes, texts, log, note, event, close, head, room, id, rollout, dir }
 }
 
 function appendItems(rollout: string, count = 1_300) {
@@ -166,10 +168,11 @@ it('wakeable does no synchronous child-process work for claim-release ancestry',
 })
 
 it('does not queue a mid-turn message that the hook then receipts', async () => {
-  const r = rig(true)
+  const midTurn = vi.fn(async () => 'turn' as const)
+  const r = rig(true, { midTurn })
   try {
     const m = r.note()
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
     expect(r.texts).toEqual([])
     const hook = r.ledger.open('hook')
     expect(r.ledger.select(r.s, hook).map(x => x.id)).toContain(m.id)
@@ -226,5 +229,163 @@ it('rechecks a push against HEAD when the busy turn ends', async () => {
     r.event('task_complete')
     await new Promise(resolve => setTimeout(resolve, 80))
     expect(r.texts).toEqual([])
+  } finally { r.close() }
+})
+
+
+it('joins notify once while busy, then queues each still-owed message once after idle', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  let sessionDir: string | undefined
+  const r = rig(true, { midTurn, sessionDir: () => sessionDir })
+  sessionDir = r.dir
+  try {
+    const note = r.note()
+    const done = hubAppend(r.room, { name: 'worker', kind: 'agent' }, { type: 'done', to: 'Pat', tag: 'worker', summary: 'finished', changed: [] })
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
+    expect(midTurn.mock.calls[0][1]).toContain('Ana sent a note')
+    expect(midTurn.mock.calls[0][1]).not.toContain('worker finished')
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(join(r.dir, 'wakes.json'), 'utf8')).r[note.id].via).toBe('turn'))
+    expect(r.ledger.candidates(r.s).map(m => m.id)).toContain(note.id)
+    expect(JSON.parse(readFileSync(join(r.dir, 'wakes.json'), 'utf8')).r[done.id]).toBeUndefined()
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(r.texts[0]).toContain('worker finished')
+    expect(r.texts[0]).toContain('Ana sent a note')
+    expect(JSON.parse(readFileSync(join(r.dir, 'wakes.json'), 'utf8')).r[note.id].via).toBe('queue')
+    r.event('task_complete')
+    r.wakes.reconcile()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(r.texts).toHaveLength(1)
+    r.event('task_started')
+    r.wakes.reconcile()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(r.texts).toHaveLength(1)
+    expect(midTurn).toHaveBeenCalledOnce()
+  } finally { r.close() }
+})
+
+it('keeps fyi completion out of a busy turn', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  const r = rig(true, { midTurn })
+  try {
+    hubAppend(r.room, { name: 'worker', kind: 'agent' }, { type: 'done', to: 'Pat', tag: 'worker', summary: 'finished', changed: [] })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(midTurn).not.toHaveBeenCalled()
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+  } finally { r.close() }
+})
+
+it.each(['unavailable', 'throw'])('retries mid-turn %s without duplicate wakes after success', async failure => {
+  let calls = 0
+  const midTurn = vi.fn(async () => {
+    if (++calls < 3) { if (failure === 'throw') throw new Error('unavailable'); return undefined }
+    return 'turn' as const
+  })
+  const r = rig(true, { midTurn })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(calls).toBe(3))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(calls).toBe(3)
+    expect(r.log.filter(line => line.includes('mid-turn failed'))).toHaveLength(failure === 'throw' ? 1 : 0)
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(calls).toBe(3)
+  } finally { r.close() }
+})
+
+it('coalesces urgent mid-turn wakes', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  const r = rig(true, { midTurn, windowMs: 200 })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
+    r.note(); r.note()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(midTurn).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledTimes(2))
+    expect(midTurn.mock.calls[1][1]).toContain('2 things')
+  } finally { r.close() }
+})
+
+it('never calls the mid-turn sender for Claude', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  const r = rig(true, { midTurn, bound: () => ({ id: 'claude', host: 'claude' }) })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(midTurn).not.toHaveBeenCalled()
+  } finally { r.close() }
+})
+
+it('ROOM_WAKE=off suppresses mid-turn transport', async () => {
+  const post = vi.fn()
+  const env = { ROOM_WAKE: 'off' }
+  const queue = vi.fn(async () => {})
+  const midTurn = createMidTurnSender({ env, post })
+  const send = createWakeSender({ env, queue, notify: vi.fn() })
+  const r = rig(true, { midTurn, send })
+  try {
+    r.note()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(post).not.toHaveBeenCalled()
+    r.event('task_complete')
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(queue).not.toHaveBeenCalled()
+    expect(r.texts).toEqual([])
+  } finally { r.close() }
+})
+
+it('rechecks the bound session after a busy probe', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  let bound = { id: 'initial', host: 'codex' as const }
+  const r = rig(true, { midTurn, bound: () => bound, codexTurn: { busy: async () => { bound = { id: bound.id === 'initial' ? 'replacement' : 'initial', host: 'codex' }; return true } }, pollMs: 1000 })
+  try {
+    r.note()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(midTurn).not.toHaveBeenCalled()
+  } finally { r.close() }
+})
+
+
+it('mid-turn sender maps daemon outcomes, skips Claude and logs each failure reason once', async () => {
+  const post = vi.fn().mockResolvedValue({ kind: 'unavailable', reason: 'thread not found' })
+  const log = vi.fn()
+  const send = createMidTurnSender({ env: { CODEX_HOME: '/missing-room-codex-home' }, post, log, clientVersion: '0.17.11' })
+  const target = { id: 'thread', host: 'codex' as const }
+  expect(await send({ id: 'claude', host: 'claude' }, 'pointer')).toBeUndefined()
+  expect(post).not.toHaveBeenCalled()
+  expect(await send(target, 'pointer')).toBeUndefined()
+  expect(await send(target, 'pointer')).toBeUndefined()
+  expect(log).toHaveBeenCalledOnce()
+  post.mockResolvedValue({ kind: 'idle' })
+  expect(await send(target, 'pointer')).toBeUndefined()
+  post.mockResolvedValue({ kind: 'joined', turnId: 'turn' })
+  expect(await send(target, 'pointer')).toBe('turn')
+  expect(log).toHaveBeenLastCalledWith('wake: Codex mid-turn joined turn turn of session thread')
+  expect(post).toHaveBeenLastCalledWith({ socketPath: undefined, threadId: 'thread', text: 'pointer', clientVersion: '0.17.11' })
+  post.mockResolvedValue({ kind: 'unavailable', reason: 'thread not found' })
+  await send(target, 'pointer')
+  expect(log).toHaveBeenCalledTimes(3)
+})
+
+it('uses kind priorities for legacy messages with no explicit priority', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
+  const r = rig(true, { midTurn })
+  try {
+    r.room.doc.transact(() => {
+      r.note()
+      hubAppend(r.room, { name: 'worker', kind: 'agent' }, { type: 'done', to: 'Pat', tag: 'worker', summary: 'finished', changed: [] })
+      const legacy = r.room.bus.toArray().map(({ priority: _priority, ...m }) => m)
+      r.room.bus.delete(0, r.room.bus.length)
+      r.room.bus.push(legacy)
+    })
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
+    expect(midTurn.mock.calls[0][1]).toContain('Ana sent a note')
+    expect(midTurn.mock.calls[0][1]).not.toContain('worker finished')
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(r.texts[0]).toContain('worker finished')
   } finally { r.close() }
 })

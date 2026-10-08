@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.12
+
+- Bind daemon-hosted Codex sessions to their thread using host tool-call metadata, restoring Room wake delivery when process ancestry cannot identify the chat.
+- Deliver eligible urgent notifications into an active Codex daemon turn as Room tool output. Running commands finish normally; the agent can read the message before its next step. Idle sessions and unsupported hosts retain the queue fallback.
+- Preserve delivery accounting, retry ambiguous failures without losing owed messages, and keep routine activity quiet. Claude continues to use its existing inbox delivery.
+- Add regression coverage, live before/after rehearsal evidence, and updated setup and coordination guidance.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed. The daemon path uses the experimental Codex app-server interface.
+
 ## 0.17.11
 
 - Resolve Windows Git common directories through the native filesystem API. A short path such as `RUNNER~1` and Git's expanded `runneradmin` path now identify the same repository, so valid workers are not rejected as unmanaged. Different repositories still fail ownership checks.

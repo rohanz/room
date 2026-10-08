@@ -439,9 +439,12 @@ longer keeps a collected worktree.
   `hooks.json` hash trust was unaffected. Testing Codex worker Git-directory sandbox access
   remains open. The Claude `PowerShell` matcher and before-edit command handling landed,
   including repo-relative write intents from aliases and quoted Windows paths.
-- **Next experiment: Codex mid-turn messages through the app-server.** External messages
-  arrived in Codex Python SDK 0.155.0; test delivery to a busy Room session before
-  replacing the `codex queue` path. The app-server is experimental.
+- **Done 2026-10-08: Codex mid-turn messages through the app-server.** Urgent Room messages
+  join a busy shared-daemon thread as tool output; idle and `fyi` messages retain `codex queue`.
+  See [capability proof and limits](superpowers/rehearsals/2026-10-08-midturn-delivery.md).
+  Remaining limits: ordering around the TUI's own long tool is unproven; `--no-daemon` and
+  `codex exec` fall back to the idle queue; a thread going idle between the status read and
+  the post starts a new tool-output turn. The app-server is experimental.
 
 ### From the host-alignment batch (0.15.0, 2026-09-24, open)
 

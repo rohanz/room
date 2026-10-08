@@ -40,6 +40,16 @@ const worktreeRoot = (dir: string): string | undefined => {
   catch { return undefined }
 }
 
+/** Thread identity supplied by Codex, including daemon calls that carry no workspaces. */
+export function codexThreadFromMeta(params: { _meta?: unknown }): string | undefined {
+  const meta = params._meta
+  if (!meta || typeof meta !== 'object') return undefined
+  const fields = meta as Record<string, unknown>
+  const turn = fields['x-codex-turn-metadata']
+  const id = turn && typeof turn === 'object' ? (turn as Record<string, unknown>).thread_id : undefined
+  return typeof id === 'string' ? id : undefined
+}
+
 /** Tool-call metadata is supplied by Codex, not by MCP initialize or roots/list. */
 export function codexWorkspace(params: { _meta?: unknown }, rootOf: (dir: string) => string | undefined = worktreeRoot): string | undefined {
   const meta = params._meta

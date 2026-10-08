@@ -1,22 +1,22 @@
 /**
  * Wakes, level-triggered (ledger "Wake (MF8)"). One reconciler per host session, across its rooms. A message
  * is wakeable when it is owed, its kind wakes (`shouldWakeOnMsg`), it is above the session's frontier, no
- * batch holds it, no pending room_wait will return it, this session was not already woken for it, and it has
+ * batch holds it, no pending room_wait will return it, this path has not already woken for it, and it has
  * company (solo.ts: a room is silent while alone).
  * All wakeable messages go out as one content-free pointer over the host's path; only a successful send is
  * recorded, in `wakes.json`, and a wake is never a receipt: the message stays owed until a reply, a wait or
- * the edit hook hands it off.
+ * the edit hook hands it off. A mid-turn wake still permits one idle queue wake while the message is owed.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
-import { isAgentic, manifestPaths, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
+import { isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
 import type { Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
 import { claudeWakeUnavailable } from './prompt.js'
 import { waitConsumesMessage } from './tools/messaging.js'
-import type { SendWake, WakeTarget, WakeVia } from './wake-path.js'
+import type { SendMidTurn, SendWake, WakeTarget, WakeVia } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
 
 /** After a failed send: 1, 3, 8, then every 30 s while anything stays wakeable. */
@@ -39,6 +39,7 @@ export interface WakeReconcilerOptions {
   /** Its directory, for wakes.json; undefined keeps the record in memory. */
   sessionDir: () => string | undefined
   send: SendWake
+  midTurn?: SendMidTurn
   /** A lead's own workers: their routine progress notes do not wake it. */
   ownWorkers?: (s: Session) => ReadonlySet<string>
   /** Whether company makes `m` wakeable now (solo.ts); a room is silent while alone. Default: always. */
@@ -63,6 +64,7 @@ export class WakeReconciler {
   private sequence = 0
   private record?: { dir: string | undefined; wakes: WakesFile }
   private silent = false
+  private readonly midTurnFailures = new Set<string>()
   private readonly codexTurn: Pick<CodexTurnProbe, 'busy'>
   private readonly releaseChecks = new Map<string, { own: boolean; at: number }>()
   /** Messages already logged as held back while alone (one line each). */
@@ -101,7 +103,7 @@ export class WakeReconciler {
   }
 
   /** What would be woken now, in delivery order. */
-  private wakeable(): { s: Session; m: Msg }[] {
+  private wakeable(busy = false): { s: Session; m: Msg }[] {
     const out: { s: Session; m: Msg }[] = []
     const woken = this.wakes()
     for (const s of this.sessions.keys()) {
@@ -115,7 +117,8 @@ export class WakeReconciler {
       const audible = this.o.audible?.(s)
       for (const m of ledger.candidates(s)) {
         // Messages owed before this session existed are left for its first reply or hook.
-        if ((m.seq ?? 0) <= frontier || done[m.id] || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || this.ownCommitRelease(s, m)) continue
+        const prior = done[m.id]
+        if ((m.seq ?? 0) <= frontier || (prior && (busy || prior.via !== 'turn')) || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || this.ownCommitRelease(s, m)) continue
         if (!shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) continue
         if (audible && !audible(m)) {
           const key = `${s.roomName}\0${m.id}`
@@ -143,20 +146,43 @@ export class WakeReconciler {
     if (!due.length) { this.failures = 0; return }
     const target = this.o.bound()
     if (!target) { this.arm(this.o.pollMs ?? POLL_MS); return }
-    if (target.host === 'codex' && await this.codexTurn.busy(target.id)) {
-      this.arm(this.o.busyPollMs ?? BUSY_POLL_MS)
-      return
-    }
+    const busy = target.host === 'codex' && await this.codexTurn.busy(target.id)
     const windowMs = this.o.windowMs ?? WINDOW_MS
     const since = this.lastSentAt === undefined ? Infinity : this.now() - this.lastSentAt
     if (since < windowMs) { this.arm(windowMs - since); return }
     // The turn probe and window may have taken time: hook and reply receipts, or HEAD, can move meanwhile.
     await this.refreshOwnCommitReleases()
     if (this.stopped) return
-    due = this.wakeable()
+    due = this.wakeable(busy)
+    // A mid-turn wake stays eligible for the idle queue until the message is received.
+    if (busy && !due.length) { this.arm(this.o.busyPollMs ?? BUSY_POLL_MS); return }
     if (!due.length) { this.failures = 0; return }
     const current = this.o.bound()
     if (current?.id !== target.id || current.host !== target.host) { this.arm(this.o.pollMs ?? POLL_MS); return }
+    if (busy) {
+      const urgent = due.filter(({ m }) => (m.priority ?? defaultPriority({ ...m })) !== 'fyi')
+      if (urgent.length && this.o.midTurn) {
+        try {
+          const via = await this.o.midTurn(target, this.pointer(urgent))
+          if (this.stopped) return
+          if (via === 'turn') {
+            this.midTurnFailures.clear()
+            this.lastSentAt = this.now()
+            const wakes = this.wakes(), at = this.now()
+            for (const { s, m } of urgent) (wakes[s.roomName] ??= {})[m.id] = { via, at }
+            this.persist()
+            this.o.log?.(`wake: delivered mid-turn to codex session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
+          }
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e)
+          const key = `${target.id}\0${reason}`
+          if (!this.midTurnFailures.has(key)) this.o.log?.(`wake: mid-turn failed for codex session ${target.id}: ${reason}`)
+          this.midTurnFailures.add(key)
+        }
+      }
+      this.arm(this.o.busyPollMs ?? BUSY_POLL_MS)
+      return
+    }
     let via: WakeVia | undefined
     try { via = await this.o.send(target, this.pointer(due)) }
     catch (e) {

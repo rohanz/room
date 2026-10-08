@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const entry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
+const sessionEntry = fileURLToPath(new URL('../src/session.ts', import.meta.url))
 const tsx = import.meta.resolve('tsx')
 
-async function callDoctor(roomUrl?: string, failRuntime = false): Promise<{ reply: any; stderr: string }> {
+async function callDoctor(roomUrl?: string, failRuntime = false, threadId?: string): Promise<{ reply: any; stderr: string }> {
   const root = mkdtempSync(path.join(os.tmpdir(), 'room-doctor-entry-'))
   const repo = path.join(root, 'checkout')
   const bin = path.join(root, 'bin')
@@ -22,7 +23,8 @@ async function callDoctor(roomUrl?: string, failRuntime = false): Promise<{ repl
   for (const name of ['claude', 'codex']) writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   const preload = path.join(root, 'probe.mjs')
   writeFileSync(preload, `import net from 'node:net'
-net.createServer = () => { process.stderr.write('PROBE_LISTEN\\n'); throw new Error('listener started') }
+import { boundSession } from ${JSON.stringify(sessionEntry)}
+net.createServer = () => { process.stderr.write('PROBE_BOUND ' + JSON.stringify(boundSession({ commonDir: ${JSON.stringify(path.join(repo, '.git'))}, host: 'codex', appServer: true, env: {} })) + '\\n'); process.stderr.write('PROBE_LISTEN\\n'); throw new Error('listener started') }
 globalThis.fetch = async url => { process.stderr.write('PROBE_FETCH ' + url + '\\n'); return new Response('{\"ok\":true,\"schema\":2,\"hub\":1}', { status: 200 }) }
 `)
   // The wrapper names the parent like Codex's shared app-server, so startup stays deferred.
@@ -63,10 +65,10 @@ child.on('exit', code => process.exit(code ?? 0))
     } }) + '\n')
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
     if (failRuntime) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
-      name: 'room_state', arguments: {}, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} } } },
+      name: 'room_state', arguments: {}, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} }, ...(threadId ? { thread_id: threadId } : {}) } },
     } }) + '\n')
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: failRuntime ? 3 : 2, method: 'tools/call', params: {
-      name: 'room_state', arguments: { check: true }, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} } } },
+      name: 'room_state', arguments: { check: true }, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} }, ...(threadId ? { thread_id: threadId } : {}) } },
     } }) + '\n')
   }).finally(() => child.kill('SIGTERM'))
   return { reply, stderr }
@@ -84,6 +86,12 @@ describe('MCP entry doctor route', () => {
     const { reply, stderr } = await callDoctor('not-a-websocket-url')
     expect(reply.result.content[0].text).toMatch(/FAIL  Room config: Invalid URL/)
     expect(stderr).not.toContain('PROBE_LISTEN')
+  })
+
+  it('admits a tool call thread before deferred runtime initialization', async () => {
+    const id = '01a119cb-010e-7883-a11e-04bf44b77f04'
+    const { stderr } = await callDoctor(undefined, true, id)
+    expect(stderr).toContain(`PROBE_BOUND ${JSON.stringify({ id, host: 'codex' })}`)
   })
 
   it('still answers after runtime initialization fails at the arbitration listener', async () => {

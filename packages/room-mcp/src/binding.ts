@@ -4,12 +4,12 @@
  */
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
-import { boundSession, sessionDirectory, syntheticSessionId } from './session.js'
+import { admitCodexThread, admittedCodexThread, boundSession, sessionDirectory, syntheticSessionId } from './session.js'
 import { probeProcess } from './worker-process.js'
 import { migrateLocalState } from './local-migration.js'
 
 export interface SessionBinding {
-  /** The bound host session, or undefined (the shared Codex app-server; registry §17). */
+  /** The bound host session, or undefined until the shared Codex app-server supplies its thread ID. */
   bound(): { id: string; host: 'claude' | 'codex' } | undefined
   /** The session receipts name: the bound one, else this process's synthetic `mcp:<pid>:<startTime>`. */
   id(): string
@@ -20,11 +20,12 @@ export interface SessionBinding {
 
 const RECHECK_MS = 1_000
 
-export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now): SessionBinding {
+export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = process.env, now: () => number = Date.now,
+  options: { log?: (line: string) => void } = {}): SessionBinding & { admitCodexThread(id: string): void } {
   let commonDir: string | null | undefined
   let parent: ReturnType<typeof identity> | null | undefined
   let parentArgs: string | undefined
-  let cached: { at: number; value: ReturnType<SessionBinding['bound']> } | undefined
+  let cached: { at: number; codexThreadId?: string; value: ReturnType<SessionBinding['bound']> } | undefined
   let ownGitDir: string | undefined
   const migrated = new Set<string>()
   const common = () => {
@@ -36,17 +37,19 @@ export function createSessionBinding(cwd: string, env: NodeJS.ProcessEnv = proce
   }
   const self = identity(process.pid)
   const bound = () => {
-    if (cached && now() - cached.at < RECHECK_MS) return cached.value
+    const codexThreadId = admittedCodexThread()
+    if (cached && cached.codexThreadId === codexThreadId && now() - cached.at < RECHECK_MS) return cached.value
     if (parent === undefined) {
       parent = identity(process.ppid) ?? null
       try { parentArgs = execFileSync('ps', ['-o', 'args=', '-p', String(process.ppid)], { encoding: 'utf8', timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch { parentArgs = '' }
     }
     const dir = common()
     const value = dir ? boundSession({ commonDir: dir, cwd, env, ...(parent ? { parent } : {}), parentArgs }) : undefined
-    cached = { at: now(), value }
+    cached = { at: now(), value, codexThreadId }
     return value
   }
   return {
+    admitCodexThread: id => admitCodexThread(id, options.log),
     bound,
     id: () => bound()?.id ?? syntheticSessionId(self ?? { pid: process.pid, startTime: '', executable: '' }),
     dir: () => {

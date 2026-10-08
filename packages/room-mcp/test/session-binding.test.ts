@@ -53,6 +53,9 @@ describe('host session binding', () => {
     expect(boundSession({ commonDir: dir, host: 'claude', workerId: 'w_456', workerSessionId: 'pre-generated', appServer: true })).toEqual({ id: 'pre-generated', host: 'claude' })
     expect(boundSession({ commonDir: dir, host: 'codex', appServer: true, parent: child })).toBeUndefined()
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex app-server', env: {} })).toBeUndefined()
+    expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'codex app-server', codexThreadId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
+    expect(boundSession({ commonDir: dir, host: 'codex', appServer: true, codexThreadId: 'daemon-thread', env: {} })).toEqual({ id: 'daemon-thread', host: 'codex' })
+    expect(boundSession({ commonDir: dir, host: 'codex', workerId: 'w_123', appServer: true, codexThreadId: 'daemon-thread' })).toEqual({ id: 'worker-thread', host: 'codex' })
     expect(syntheticSessionId(parent)).toBe('mcp:71:birth-71')
   })
 
@@ -62,6 +65,20 @@ describe('host session binding', () => {
     record(dir, 'thread-b', 'codex', 2, [child])
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: '', env: {} })).toBeUndefined()
     expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs: 'wrapper', env: {} })).toBeUndefined()
+  })
+
+  it('prefers an admitted Codex thread before inspecting parent arguments', () => {
+    const dir = common()
+    record(dir, 'chain-thread', 'codex', 1, [child])
+    for (const parentArgs of ['codex', undefined, 'node shim.js']) {
+      expect(boundSession({ commonDir: dir, host: 'codex', parent: child, parentArgs, codexThreadId: 'admitted-thread', env: {} })).toEqual({ id: 'admitted-thread', host: 'codex' })
+    }
+  })
+
+  it('ignores an admitted Codex thread for Claude', () => {
+    const dir = common()
+    record(dir, 'claude-thread', 'claude', 1, [parent])
+    expect(boundSession({ commonDir: dir, host: 'claude', parent, codexThreadId: 'admitted-thread', env: {} })).toEqual({ id: 'claude-thread', host: 'claude' })
   })
 
   it('ignores another worker, host, or checkout when discovering a worker thread', () => {

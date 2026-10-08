@@ -38,7 +38,10 @@ Use this workflow only for explicit Room delegation or its continuation. Install
    notes only when the lead must know before they finish. Routine progress notes from
    your own workers do not wake you; addressed questions, worker completion (room_done),
    and eligible interrupts can. Claude Code uses its inbox (2.1.224+ on macOS/Linux,
-   2.1.234+ on Windows, or channels fallback); Codex uses `codex queue`. With an
+   2.1.234+ on Windows, or channels fallback); Codex leads on the shared app-server can
+   receive addressed questions and eligible interrupts mid-turn as tool output after the
+   running tool finishes; completion is `fyi` and waits for idle `codex queue`, also the
+   fallback when mid-turn delivery is unavailable. With an
    available wake path, an interactive lead can continue other work or wait for a wake
    instead of polling or watching worker PIDs. Host settings can still block delivery.
    A headless lead must stay alive: use short room_wait calls while supervising workers.

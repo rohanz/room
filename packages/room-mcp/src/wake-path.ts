@@ -1,7 +1,9 @@
 /**
  * How a content-free wake reaches the bound host session (ledger "Wake (MF8)"). No path acknowledges that
  * the model read anything, so a sent wake is never a receipt.
- *  - Codex: `codex queue --thread <id> --message <text>` queues the text for the thread's next turn.
+ *  - Codex active daemon turn: room_notify tool output joins it between tool calls.
+ *  - Codex idle: `codex queue --thread <id> --message <text>` queues the next turn.
+ *  - Codex daemon unavailable (including exec/--no-daemon): wait for idle, then use the queue.
  *  - Claude Code 2.1.224+ (2.1.234+ on native Windows): the session's cross-session messaging inbox,
  *    exported as CLAUDE_CODE_MESSAGING_SOCKET and _TOKEN; an idle session starts a turn with the message.
  *  - Claude Code with the Room channel admitted (channels research preview, `--channels` or
@@ -9,6 +11,7 @@
  */
 import net from 'node:net'
 import { execFile, execFileSync } from 'node:child_process'
+import { codexControlSocket, postCodexToolOutput } from './codex-app-server.js'
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { sendChannelNotification, type ChannelNotification } from './channel.js'
 
@@ -16,7 +19,7 @@ type WakeEnv = NodeJS.ProcessEnv
 type Mode = 'auto' | 'socket' | 'channels' | 'off'
 
 export interface WakeTarget { id: string; host: 'claude' | 'codex' }
-export type WakeVia = 'queue' | 'socket' | 'channel'
+export type WakeVia = 'queue' | 'socket' | 'channel' | 'turn'
 /** Resolves with the path that took the wake, or undefined when this host has none; rejects when the path failed. */
 export type SendWake = (target: WakeTarget, text: string) => Promise<WakeVia | undefined>
 
@@ -119,5 +122,27 @@ export function createWakeSender(o: WakeSenderOptions): SendWake {
       if (selected === 'auto' && admitted()) return channel()
       throw error
     }
+  }
+}
+
+export type SendMidTurn = (target: WakeTarget, text: string) => Promise<WakeVia | undefined>
+
+export function createMidTurnSender(o: { env?: WakeEnv; post?: typeof postCodexToolOutput; log?: (line: string) => void; clientVersion?: string } = {}): SendMidTurn {
+  const reasons = new Map<string, Set<string>>()
+  return async (target, text) => {
+    const env = o.env ?? process.env
+    if (target.host !== 'codex' || mode(env) === 'off') return undefined
+    const result = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text, clientVersion: o.clientVersion })
+    if (result.kind === 'joined') {
+      reasons.delete(target.id)
+      o.log?.(`wake: Codex mid-turn joined turn ${result.turnId} of session ${target.id}`)
+      return 'turn'
+    }
+    if (result.kind === 'unavailable') {
+      const seen = reasons.get(target.id) ?? new Set<string>()
+      if (!seen.has(result.reason)) o.log?.(`wake: Codex mid-turn unavailable for session ${target.id}: ${result.reason}`)
+      seen.add(result.reason); reasons.set(target.id, seen)
+    }
+    return undefined
   }
 }

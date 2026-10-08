@@ -12,14 +12,15 @@ import { joinableRoot, sameFolder } from './repository.js'
 import { AutoJoin } from './auto-join.js'
 import { gitCommonDir } from '@room/roomd'
 import { resolveConfig } from './config.js'
-import { createWakeSender } from './wake-path.js'
+import { createMidTurnSender, createWakeSender } from './wake-path.js'
 import { CodexTurnProbe } from './codex-turn.js'
 import { offerTeamSharingDisclosure, rejoinOptions } from './tools/join.js'
 import type { Settle } from './tools/index.js'
 import { FlushedStdioTransport } from './transport.js'
+import { admitCodexThread } from './session.js'
 import { createSessionBinding } from './binding.js'
 import { startArbitration } from './arbitration.js'
-import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
+import { codexThreadFromMeta, codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from './workspace.js'
 import { PresenceEnd, hostKind, hostSessionAlive, idleLeaseTickMs, joinedPresenceHolds, joinedPresenceWorkers, nextIdleEpisode, releaseIdleHeld, resolveIdleLeaseMs } from './presence-end.js'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { runDoctor } from './doctor.js'
@@ -101,15 +102,16 @@ async function main() {
       const sessionBinding = createSessionBinding(dir)
       let rebinding: Promise<void> | undefined
       let rebindHost: (sessionId: string) => Promise<void> = async () => {}
-      // Content-free wakes of this host session: the Codex queue, or Claude Code's inbox socket, then the channel.
+      // Content-free wakes: Codex active-turn output or idle queue; Claude inbox or channel.
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
+      const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
       const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() })
       const tools = createTools({ completionReady: async () => {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)
         else if (rebinding) await rebinding
-      }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, wakeProbe, binding: sessionBinding, log })
+      }, getSession: () => session, setSession: s => { session = s; if (s) { replacement.forget(); joined(s) } }, cwd: dir, config: startup, wake, midTurn, wakeProbe, binding: sessionBinding, log })
       // A replica the server refused after a compacting restart is replaced inside the auto-join (compacted.ts).
       const replacement = new StaleReplacement({ joinedSessions: () => tools.joinedSessions(), drop: (s, why) => tools.drop(s, why),
         attachWorkersRoom: (s, lead) => tools.attachWorkersRoom(s, lead), credentialsPath: startup.credentialsPath, log })
@@ -246,6 +248,8 @@ async function main() {
   // The reply's ledger batch commits when its bytes reach the host's pipe (FlushedStdioTransport).
   const transport = new FlushedStdioTransport()
   mcp.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    const threadId = codexThreadFromMeta(req.params)
+    if (threadId) admitCodexThread(threadId, log)
     extra.signal.addEventListener('abort', () => transport.forget(extra.requestId), { once: true })
     const result = await timing.run(req.params.name, async () => {
       if (req.params.name === 'room_state' && req.params.arguments?.check === true) {

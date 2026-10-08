@@ -6,7 +6,7 @@ import path from 'node:path'
 import { AutoJoin } from '../src/auto-join.js'
 import { deriveRoomName } from '../src/session.js'
 import type { Session } from '../src/session.js'
-import { codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from '../src/workspace.js'
+import { codexThreadFromMeta, codexWorkspace, createWorkspaceBinding, deferForSharedCodex, fallbackWorkspace } from '../src/workspace.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }) })
@@ -28,6 +28,18 @@ it('defers for a shared or unknown Codex parent, but not Claude, workers or ordi
   expect(deferForSharedCodex(codex, () => 'codex exec', 'darwin')).toBe(false)
   expect(deferForSharedCodex({ ...codex, ROOM_DIR: '/worker' }, () => 'codex app-server', 'darwin')).toBe(false)
   expect(deferForSharedCodex({ ROOM_HOST: 'claude' }, () => 'codex app-server', 'darwin')).toBe(false)
+})
+
+it('reads the daemon thread metadata without requiring workspaces', () => {
+  const id = '01a119cb-010e-7883-a11e-04bf44b77f04'
+  expect(codexThreadFromMeta({ _meta: {
+    progressToken: 1, callId: 'exec-probe',
+    'x-codex-turn-metadata': { session_id: id, thread_id: id, reasoning_effort: 'low', turn_id: '01a119cb-0141-7fd1-938b-04e5a748c086', model: 'gpt-6.1-sol', sandbox: 'seatbelt', sandbox_mode: 'workspace-write', turn_started_at_unix_ms: 1791434096967, codex_version: '0.161.0' },
+    threadId: 'fallback-thread', sessionId: id, windowId: `${id}:0`, itemId: 'ctc-probe',
+  } })).toBe(id)
+  expect(codexThreadFromMeta({ _meta: { threadId: id } })).toBeUndefined()
+  expect(codexThreadFromMeta({ _meta: { 'x-codex-turn-metadata': { thread_id: 1 }, threadId: id } })).toBeUndefined()
+  for (const params of [{}, { _meta: null }, { _meta: 'bad' }, { _meta: { 'x-codex-turn-metadata': {} } }, { _meta: { threadId: 1 } }]) expect(codexThreadFromMeta(params)).toBeUndefined()
 })
 
 it('selects one real worktree, deduplicating aliases and nested paths', () => {

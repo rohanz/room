@@ -49,6 +49,7 @@ export interface ToolCtx {
   sleep?: (ms: number) => Promise<void>
   /** How a content-free wake reaches the bound host session (default: the Codex queue or Claude Code's inbox socket). */
   wake?: import('../wake-path.js').SendWake
+  midTurn?: import('../wake-path.js').SendMidTurn
   /** Read-only Codex rollout probe; production supplies recent tool/hook contact for its fallback. */
   wakeProbe?: Pick<import('../codex-turn.js').CodexTurnProbe, 'busy'>
   /** Diagnostics (inbox deliveries etc.); default stderr. */
