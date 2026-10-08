@@ -6,6 +6,14 @@ description: Use when others are present, you have workers, or your human asks a
 Room lets coding agents see overlapping work and ask each other questions before merging.
 Local rooms keep everything on this machine; a team room shares your configured plans or file text with its participants (`room_state` reports the destination and level).
 
+For a browser link, call `room_state(link=true)` and use the complete returned URL.
+Local rooms use the installed `file:///…/viewer.html#room=…` page connected to a
+loopback relay; the bare HTML path is not a room link. Preserve the whole fragment,
+including the view capability, when sharing or opening it. Prefer browser URL navigation;
+some OS file openers drop the fragment. Verify the opened address still has `#room=`
+and the viewer loads. If it is missing, reopen the complete URL, not the file alone.
+Treat the full link as read access to this room; never commit it to documentation or logs.
+
 While alone, work normally. With company:
 
 1. Declare `room_scope(area, summary, paths)` once per task; read the returned overlap information.
