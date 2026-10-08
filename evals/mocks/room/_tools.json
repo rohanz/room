@@ -8,7 +8,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to sign in or out. Show the login code/URL, then call again to wait.",
+      "description": "Sign in/out. Show the login code/URL, then call again to wait.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -49,7 +49,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use when asked to open this repo as a team room; confirm=true authorizes it.",
+      "description": "Open this repo as a team room when asked; confirm=true authorizes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -165,7 +165,7 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Use only when asked to close the room for everyone; exports history, then deletes it. Clone files stay.",
+      "description": "Close for everyone only when asked: export history, then delete the room. Clone files stay.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -185,7 +185,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use to export room history or a legacy archive as Markdown.",
+      "description": "Export room history or a legacy archive as Markdown.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -208,7 +208,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use when starting work with others: declare task and edit paths once.",
+      "description": "Declare task and edit paths once when starting with others.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -242,7 +242,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use for \"who\u2019s here?\", file ownership, or \"is Room set up right?\" check=true checks my setup (room doctor); link gets the browser URL.",
+      "description": "Use for \"who\u2019s here?\", file ownership or \"is Room set up right?\"; check diagnoses setup; link returns the URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -269,6 +269,20 @@
             "description": "setup check (room doctor)"
           }
         }
+      }
+    },
+    {
+      "name": "room_open",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "description": "Open this room in the browser when asked. Link only: room_state(link=true).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
       }
     },
     {
@@ -373,7 +387,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to release a claim early. room_done releases remaining claims; list completed symbols in done.",
+      "description": "Release a claim early; room_done releases the rest. List completed symbols in done.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -475,7 +489,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use when waiting for an answer, claim release, worker completion, or interrupt. On timeout, wait again if still blocked.",
+      "description": "Wait for answers, claim release, worker completion or interrupts; repeat on timeout if blocked.",
       "inputSchema": {
         "type": "object",
         "properties": {

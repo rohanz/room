@@ -11,7 +11,7 @@ import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.
 export const defs: ToolDef[] = [
   { name: 'room_claim', annotations: RW, description: 'Use before editing a file near another participant. Claim a symbol, lines (whole file: from=1, to=last line) or directory; declare public API plans.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path; directory ends /'), symbol: str('definition name, or from/to'), from: int('first line'), to: int('last line'), intent: str('intent'), plans: PLANS }, required: ['path', 'intent'] } },
-  { name: 'room_release', annotations: RW, description: 'Use to release a claim early. room_done releases remaining claims; list completed symbols in done.',
+  { name: 'room_release', annotations: RW, description: 'Release a claim early; room_done releases the rest. List completed symbols in done.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('completed symbols') }, required: ['claimId'] } }
 ]
 

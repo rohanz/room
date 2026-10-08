@@ -26,17 +26,17 @@ import { currentToolTiming } from '../timing.js'
 const timed = <T>(phase: string, work: () => Promise<T> | T): Promise<T> => currentToolTiming()?.phase(phase, work) ?? Promise.resolve().then(work)
 
 export const defs: ToolDef[] = [
-  { name: 'room_login', annotations: RW, description: 'Use to sign in or out. Show the login code/URL, then call again to wait.',
+  { name: 'room_login', annotations: RW, description: 'Sign in/out. Show the login code/URL, then call again to wait.',
     inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['login', 'logout'] }, provider: { type: 'string', enum: ['github', 'oidc'] }, wait: int('wait seconds, default 90, max 600'), server: str('server URL'), credentials: str('credentials file') } } },
-  { name: 'room_create', annotations: RW, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Use when asked to open this repo as a team room; confirm=true authorizes it.',
+  { name: 'room_create', annotations: RW, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Open this repo as a team room when asked; confirm=true authorizes.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' }, where: str('team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE } } },
   { name: 'room_join', annotations: RW, description: 'Use for "join the room", "work locally", or moving rooms. Remembers this clone’s choice.',
     inputSchema: { type: 'object', properties: { where: str('local | team | server URL'), room: str('room name override'), name: str('name override'), server: str('alias of where'), dir: str('clone; default cwd'), share: SHARE, takeover: { type: 'boolean', description: 'take a local name only when its process identity is unknown' } } } },
   { name: 'room_leave', annotations: RW, description: 'Use for "stop sharing" or "leave the room". Releases claims; force dismisses workers; forget clears saved choice. To "work locally", use room_join.',
     inputSchema: { type: 'object', properties: { forget: { type: 'boolean' }, force: { type: 'boolean' } } } },
-  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Use only when asked to close the room for everyone; exports history, then deletes it. Clone files stay.',
+  { name: 'room_close', annotations: { ...RW, destructiveHint: true, idempotentHint: false }, _meta: { 'anthropic/requiresUserInteraction': true }, description: 'Close for everyone only when asked: export history, then delete the room. Clone files stay.',
     inputSchema: { type: 'object', properties: { confirm: { type: 'boolean' } }, required: ['confirm'] } },
-  { name: 'room_export', annotations: RO, description: 'Use to export room history or a legacy archive as Markdown.',
+  { name: 'room_export', annotations: RO, description: 'Export room history or a legacy archive as Markdown.',
     inputSchema: { type: 'object', properties: { room: str('legacy branch room'), path: str('output Markdown path') } } }
 ]
 

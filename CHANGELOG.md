@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.13
+
+- Add `room_open`: ask to open the room in your browser. A private redirect page preserves the complete local viewer link when OS file openers would otherwise drop its fragment.
+- Keep link-only requests separate, return a copyable URL if launching fails, and refresh team-room viewer credentials before opening.
+- Add launcher, routing and team-link regression tests, plus native Windows path coverage with a mock OS opener.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.12
 
 - Bind daemon-hosted Codex sessions to their thread using host tool-call metadata, restoring Room wake delivery when process ancestry cannot identify the chat.

@@ -432,3 +432,8 @@ runtime from the temporary packaging copy made the smoke fail; the intact copy p
 ## 2026-10-06 — Self-hosted team rooms
 
 Remove the implicit public-server fallback. Local use remains automatic; team use requires an explicit or previously configured server URL. Preserve existing URL choices. For an operator-managed server, restrict opening/closing rooms to existing admin identities while preserving GitHub collaborator admission. The existing room registry is the approved-repository list; no duplicate user or repo allowlist is needed. Build the web viewer inside Docker so a clean checkout can follow the self-hosting quickstart without a host Node install. Built 6 Oct, post-hackathon.
+
+## 2026-10-08 — Explicit browser opening
+**Decision:** Add `room_open` separately from read-only `room_state(link=true)`. Keep the packaged viewer and local relay architecture.
+**Why:** macOS `open` discarded a `file://` URL fragment in a real browser probe, and the chat renderer also removed it from clickable links. A private redirect page opened as a file lets the browser navigate the complete URL. The launcher uses platform commands without a shell, reports launch failures with a copyable URL, and does not claim connection success from OS acceptance.
+**Cut / not doing:** No new local HTTP page server, custom URI handler, automatic launch on join, or browser process management. macOS live validation and mocked Windows/Linux command checks are distinct evidence.

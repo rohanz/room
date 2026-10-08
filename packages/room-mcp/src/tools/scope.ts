@@ -1,3 +1,6 @@
+import path from 'node:path'
+import { gitCommonDir } from '@room/roomd'
+import { openRoomBrowser } from '../browser-open.js'
 import { sharingDescription, sharingHumanChoices } from '../config.js'
 import { runDoctor } from '../doctor.js'
 import { checkoutPublisher, publisherLine } from './share.js'
@@ -20,9 +23,11 @@ import { importedHistory, unresolvedLines, type UnresolvedEntry } from '@room/sh
 
 
 export const defs: ToolDef[] = [
-  { name: 'room_scope', annotations: RW, description: 'Use when starting work with others: declare task and edit paths once.',
+  { name: 'room_open', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }, description: 'Open this room in the browser when asked. Link only: room_state(link=true).',
+    inputSchema: { type: 'object', properties: {} } },
+  { name: 'room_scope', annotations: RW, description: 'Declare task and edit paths once when starting with others.',
     inputSchema: { type: 'object', properties: { area: str('one word, lowercase'), summary: str('one line'), paths: strs('non-empty edit files or directories') }, required: ['area', 'summary', 'paths'] } },
-  { name: 'room_state', annotations: RO, description: 'Use for "who’s here?", file ownership, or "is Room set up right?" check=true checks my setup (room doctor); link gets the browser URL.',
+  { name: 'room_state', annotations: RO, description: 'Use for "who’s here?", file ownership or "is Room set up right?"; check diagnoses setup; link returns the URL.',
     inputSchema: { type: 'object', properties: { all: { type: 'boolean' }, path: str('file ownership'), from: int('first line'), to: int('last line'), link: { type: 'boolean' }, check: { type: 'boolean', description: 'setup check (room doctor)' } } } },
 ]
 
@@ -81,6 +86,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
   }
   const handlers: Record<string, Handler> = {
+    async room_open() {
+      const s = S(), url = await refreshBrowserUrl(s)
+      if (!URL.canParse(url)) return 'Browser viewer unavailable; build or reinstall the Room plugin.'
+      try {
+        const directory = path.join(await gitCommonDir(s.dir), 'room', 'browser')
+        await (state.ctx.openBrowser ?? openRoomBrowser)(url, directory)
+        return `Requested the default browser to open ${s.roomName}. If it did not appear, paste this complete URL into its address bar:\n${url}`
+      } catch {
+        return `Could not open the default browser. Paste this complete URL into your browser address bar:\n${url}`
+      }
+    },
     async room_scope(a) {
       const s = S()
       const area = String(a.area ?? '').trim().toLowerCase().split(/\s+/)[0]

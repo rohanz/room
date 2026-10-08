@@ -77,7 +77,7 @@ const WORKER_OPS = new Set(['room_spawn', 'room_send', 'room_collect'])
 const FENCED = new Set(['room_scope', 'room_claim', 'room_release', 'room_done'])
 
 const ALL_DEFS = [...joinDefs, ...scopeDefs, ...fileDefs, ...claimDefs, ...messagingDefs, ...workerDefs, ...collectDefs, ...prDefs, ...shareDefs]
-const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
+const DEF_ORDER = ['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect']
 export const DEFS: ToolDef[] = DEF_ORDER.map(name => ALL_DEFS.find(d => d.name === name)!)
 
 export function createTools(ctx: ToolCtx): Tools {

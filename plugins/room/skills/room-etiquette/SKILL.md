@@ -6,13 +6,17 @@ description: Use when others are present, you have workers, or your human asks a
 Room lets coding agents see overlapping work and ask each other questions before merging.
 Local rooms keep everything on this machine; a team room shares your configured plans or file text with its participants (`room_state` reports the destination and level).
 
-For a browser link, call `room_state(link=true)` and use the complete returned URL.
-Local rooms use the installed `file:///…/viewer.html#room=…` page connected to a
-loopback relay; the bare HTML path is not a room link. Preserve the whole fragment,
-including the view capability, when sharing or opening it. Prefer browser URL navigation;
-some OS file openers drop the fragment. Verify the opened address still has `#room=`
-and the viewer loads. If it is missing, reopen the complete URL, not the file alone.
-Treat the full link as read access to this room; never commit it to documentation or logs.
+When asked to open or show the room in a browser, call `room_open`. It opens the
+current room in the configured HTML handler (normally your browser), preserving the complete URL. A successful tool
+reply means the OS accepted the launch, not that the page was verified as connected.
+If opening fails, return the tool's complete URL for pasting into the address bar.
+
+When asked only for a room/browser link, call `room_state(link=true)` and return the
+complete URL; do not launch a browser. Some clients strip fragments or block local
+`file://` links: include the complete local URL as copyable text, and only present it
+as clickable when that host is known to preserve it. Local links work on this machine.
+The entire fragment, including the view capability, is required; the bare HTML path
+is not a room link. Never commit the full link to documentation or logs.
 
 While alone, work normally. With company:
 

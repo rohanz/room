@@ -39,7 +39,7 @@ export const defs: ToolDef[] = [
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency' },
       refresh: { type: 'boolean', description: 'rebase stopped worker on your HEAD' },
     }, required: ['type'] } },
-  { name: 'room_wait', annotations: RO, description: 'Use when waiting for an answer, claim release, worker completion, or interrupt. On timeout, wait again if still blocked.',
+  { name: 'room_wait', annotations: RO, description: 'Wait for answers, claim release, worker completion or interrupts; repeat on timeout if blocked.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 100000') } } }
 ]
 

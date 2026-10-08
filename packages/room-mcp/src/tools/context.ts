@@ -70,6 +70,8 @@ export interface ToolCtx {
   binding?: SessionBinding
   /** How long a hook's selection stays reserved without a confirm; injectable for tests. */
   hookLeaseMs?: number
+  /** Browser launcher; injectable so tests never open a real browser. */
+  openBrowser?: (url: string, directory: string) => Promise<void>
   /** Injectable version probe for room_state replies. */
   staleVersionWarning?: () => string | undefined
 }

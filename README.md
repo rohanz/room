@@ -26,7 +26,7 @@ Sessions in one clone and its linked worktrees use the same local room by defaul
 
 The [defaults table](#defaults-and-how-to-change-them) shows what Room chooses and what to say to change it.
 
-Ask **“show room state”** to check it. A local session starts with `local: nothing leaves this machine`, then shows `room: local/<repo>` and `you: <name> in local/<repo>`. A team session shows `team room:`, `room: github.com/<owner>/<repo>`, and your branch and base. Ask for the browser link to see participants and activity.
+Ask **“show room state”** to check it. A local session starts with `local: nothing leaves this machine`, then shows `room: local/<repo>` and `you: <name> in local/<repo>`. A team session shows `team room:`, `room: github.com/<owner>/<repo>`, and your branch and base. Ask **“open the room in my browser”** to see participants and activity. Room opens the complete link in your configured HTML handler (normally your browser). Asking only for the link returns it without launching a browser; local file links may need to be copied into the address bar.
 
 If setup seems wrong, ask **“is Room set up right?”**. The agent checks Room state, server schema, hub protocol and storage health, and verifies a saved login when the server supports it. You can also run `plugins/room/bin/room-doctor` from a checkout, or from the installed plugin at `~/.claude/plugins/cache/room/room/<version>/bin/room-doctor` or `~/.codex/plugins/cache/room/room/<version>/bin/room-doctor` (replace `<version>` with the installed version).
 

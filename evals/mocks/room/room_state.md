@@ -1,4 +1,5 @@
 local: nothing leaves this machine
+browser view: file:///mock/room/web/viewer.html#room=ws%3A%2F%2F127.0.0.1%3A1234%2Flocal%252Fshop&view=mock-view&relay=1
 room: local/shop/shop — local (this machine)
 you: ada · agent in local/shop/shop
 participants (2 active):

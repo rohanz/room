@@ -96,7 +96,7 @@ function fakeSession(room: RoomDoc, synced = true, wsconnected?: boolean): Sessi
   }
 }
 
-function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake; staleVersionWarning?: () => string | undefined; now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
+function setup(opts: { openBrowser?: (url: string, directory: string) => Promise<void>; synced?: boolean; wsconnected?: boolean; joined?: boolean; config?: ResolvedConfig; wake?: SendWake; staleVersionWarning?: () => string | undefined; now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
   const { a, b } = pair()
   a.setMeta({ repo: 'demo' })
   setParticipantBase(a, 'Rohan', base)
@@ -107,7 +107,7 @@ function setup(opts: { synced?: boolean; wsconnected?: boolean; joined?: boolean
   const joined: string[] = []
   const created: boolean[] = []
   const tools = createTools({
-    config: opts.config, staleVersionWarning: opts.staleVersionWarning, getSession: () => session, setSession: s => { session = s }, cwd: dir, admit: async () => {},
+    openBrowser: opts.openBrowser, config: opts.config, staleVersionWarning: opts.staleVersionWarning, getSession: () => session, setSession: s => { session = s }, cwd: dir, admit: async () => {},
     ...(opts.now ? { now: opts.now } : {}), ...(opts.sleep ? { sleep: opts.sleep } : {}),
     ...(opts.wake ? { wake: opts.wake, binding: { bound: () => ({ id: 'claude-1', host: 'claude' as const }), id: () => 'claude-1', dir: () => undefined, commonDir: () => undefined } } : {}),
     join: async o => { joined.push(o.dir); created.push(!!o.create); return fakeSession(a) },
@@ -421,6 +421,58 @@ describe('session gating', () => {
     expect(t.session).toBeNull()
   })
 
+  it('opens only on room_open and passes the complete viewer link to the launcher', async () => {
+    const openBrowser = vi.fn(async () => {})
+    const t = setup({ openBrowser })
+    const url = 'file:///opt/room/viewer.html#room=ws%3A%2F%2F127.0.0.1%2Flocal%252Fr&view=secret&relay=1'
+    t.session!.browserUrl = url
+    t.session!.local = {} as Session['local']
+    await t.tools.call('room_state', { link: true })
+    expect(openBrowser).not.toHaveBeenCalled()
+    const reply = await t.tools.call('room_open', {})
+    expect(openBrowser).toHaveBeenCalledWith(url, expect.stringMatching(/room[/\\]browser$/))
+    expect(reply).toContain('Requested the default browser')
+    expect(reply).toContain(url)
+    await t.tools.shutdown()
+  })
+
+  it('returns a copyable link on launcher failure without leaking the exception', async () => {
+    const t = setup({ openBrowser: async () => { throw Error('private diagnostic') } })
+    const reply = await t.tools.call('room_open', {})
+    expect(reply).toContain('Could not open the default browser')
+    expect(reply).toContain('http://x')
+    expect(reply).not.toContain('private diagnostic')
+    await t.tools.shutdown()
+  })
+
+  it('reports a missing viewer without offering build instructions as a URL', async () => {
+    const openBrowser = vi.fn(async () => {})
+    const t = setup({ openBrowser })
+    t.session!.local = {} as Session['local']
+    t.session!.browserUrl = '(browser viewer not built; run npm run build:plugin)'
+    expect(await t.tools.call('room_open', {})).toBe('Browser viewer unavailable; build or reinstall the Room plugin.')
+    expect(openBrowser).not.toHaveBeenCalled()
+    await t.tools.shutdown()
+  })
+
+  it('opens a team viewer with a refreshed room-scoped capability', async () => {
+    const openBrowser = vi.fn(async () => {})
+    const t = setup({ openBrowser })
+    t.session!.browserUrl = 'https://viewer.example/#room=old&view=expired'
+    t.session!.token = 'test-token'
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.endsWith('/auth/config')) return Response.json({ providers: [] })
+      if (url.endsWith('/view-token')) return Response.json({ view: 'fresh-view' })
+      throw new Error(`unexpected request ${url}`)
+    })
+    try {
+      await t.tools.call('room_open', {})
+      expect(openBrowser).toHaveBeenCalledWith('https://viewer.example/#room=ws%3A%2F%2F127.0.0.1%3A9%2Fr&view=fresh-view&participant=Rohan', expect.any(String))
+      expect(JSON.stringify(openBrowser.mock.calls)).not.toContain('test-token')
+    } finally { fetch.mockRestore(); await t.tools.shutdown() }
+  })
+
   it('joins and rejoins with company retain the browser link', async () => {
     const t = setup()
     const peer = addPresence(t.session!.awareness, 'Kieran')
@@ -601,8 +653,8 @@ describe('session gating', () => {
     } finally { rmSync(file, { force: true }); vi.unstubAllEnvs() }
   })
 
-  it('lists the twenty advertised tools', () => {
-    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect'])
+  it('lists the advertised tools', () => {
+    expect(DEFS.map(d => d.name)).toEqual(['room_login', 'room_create', 'room_join', 'room_leave', 'room_close', 'room_export', 'room_scope', 'room_state', 'room_open', 'room_read', 'room_claim', 'room_release', 'room_send', 'room_wait', 'room_done', 'room_pr_note', 'room_impact', 'room_preview_merge', 'room_share', 'room_spawn', 'room_collect'])
   })
 })
 
