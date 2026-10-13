@@ -163,7 +163,8 @@ describe('relay awareness budgets (A5)', () => {
     expect(d.awareness.getStates().has(1)).toBe(false)
     b.send(presence([[3, 2, {}]]))
     expect(d.awareness.getStates().has(3)).toBe(false)
-    now += 60_001
+    // Yjs stamps records with its own clock; expire relative to those stamps, not fixture setup.
+    now = Math.max(...[...d.awareness.meta.values()].map(record => record.lastUpdated)) + 60_001
     b.send(presence([[3, 3, {}]]))
     expect(d.awareness.meta.has(1)).toBe(false)
     expect(d.awareness.meta.size).toBeLessThanOrEqual(3)
@@ -182,9 +183,10 @@ describe('relay awareness budgets (A5)', () => {
     let now = Date.now()
     const f = fixture({ awareness: { maxIdsPerRoom: 3, maxIdsPerConnection: 3, now: () => now } }), a = f.connect(), b = f.connect()
     a.send(presence([[1, 1, {}], [1, 2, null]]))
-    now += 60_001
-    b.send(presence([[2, 1, {}], [3, 1, {}], [4, 1, {}]]))
     const d = [...f.docs.values()][0]
+    // Yjs stamps records with its own clock; expire relative to those stamps, not fixture setup.
+    now = Math.max(...[...d.awareness.meta.values()].map(record => record.lastUpdated)) + 60_001
+    b.send(presence([[2, 1, {}], [3, 1, {}], [4, 1, {}]]))
     expect(d.awareness.meta.size).toBe(3)
     a.send(presence([[1, 3, {}]]))
     expect(d.awareness.meta.size).toBe(3)
@@ -196,7 +198,8 @@ describe('relay awareness budgets (A5)', () => {
     const f = fixture({ awareness: { now: () => now } }), a = f.connect(), d = [...f.docs.values()][0]
     a.send(presence([[1, 1, {}]])); a.socket.close()
     expect(d.awareness.meta.has(1)).toBe(true)
-    now += 60_001
+    // Yjs stamps records with its own clock; expire relative to those stamps, not fixture setup.
+    now = Math.max(...[...d.awareness.meta.values()].map(record => record.lastUpdated)) + 60_001
     d.presence.prune() // the relay maintenance ticker uses the same operation
     expect(d.awareness.meta.has(1)).toBe(false)
   })

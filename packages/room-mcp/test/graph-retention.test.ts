@@ -20,6 +20,8 @@ function fixture(count = 4, text = (i: number) => `export function f${i}(){retur
   const dir = mkdtempSync(join(tmpdir(), 'room-graph-retention-'))
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
   git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+  // Large fixtures can trigger detached Git maintenance, racing directory teardown.
+  git('config', 'gc.auto', '0'); git('config', 'maintenance.auto', 'false')
   for (let i = 0; i < count; i++) writeFileSync(join(dir, `base${i}.js`), text(i))
   git('add', '.'); git('commit', '-qm', 'synthetic graph')
   const base = git('rev-parse', 'HEAD'), room = new RoomDoc()
