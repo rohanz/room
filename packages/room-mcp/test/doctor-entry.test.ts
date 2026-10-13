@@ -48,11 +48,17 @@ child.on('exit', code => process.exit(code ?? 0))
   child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk })
   const reply = await new Promise<any>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`MCP doctor timed out: ${stderr}`)), 15_000)
+    const sendDoctor = () => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: failRuntime ? 3 : 2, method: 'tools/call', params: {
+      name: 'room_state', arguments: { check: true }, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} }, ...(threadId ? { thread_id: threadId } : {}) } },
+    } }) + '\n')
     child.stdout.setEncoding('utf8').on('data', chunk => {
       stdout += chunk
       for (const line of stdout.split('\n').slice(0, -1)) {
         try {
           const message = JSON.parse(line)
+          // MCP handles calls concurrently. Establish the failed startup before asking
+          // doctor to diagnose it; otherwise its reply can win and kill startup early.
+          if (failRuntime && message.id === 2) { sendDoctor(); continue }
           if (message.id === (failRuntime ? 3 : 2)) { clearTimeout(timeout); resolve(message) }
         } catch { /* incomplete or unrelated MCP line */ }
       }
@@ -67,9 +73,7 @@ child.on('exit', code => process.exit(code ?? 0))
     if (failRuntime) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
       name: 'room_state', arguments: {}, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} }, ...(threadId ? { thread_id: threadId } : {}) } },
     } }) + '\n')
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: failRuntime ? 3 : 2, method: 'tools/call', params: {
-      name: 'room_state', arguments: { check: true }, _meta: { 'x-codex-turn-metadata': { workspaces: { [repo]: {} }, ...(threadId ? { thread_id: threadId } : {}) } },
-    } }) + '\n')
+    else sendDoctor()
   }).finally(() => child.kill('SIGTERM'))
   return { reply, stderr }
 }
