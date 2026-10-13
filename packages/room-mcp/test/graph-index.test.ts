@@ -5,11 +5,14 @@ import fs from 'node:fs'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { RoomDoc } from '@room/shared'
+import { RoomDoc, type Msg } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import * as gitModule from '@room/roomd/git'
+import { ParseWorker } from '../src/parse/client.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { handlers as fileHandlers } from '../src/tools/files.js'
+import { createInbox } from '../src/tools/messaging.js'
+import type { Session } from '../src/session.js'
 import type { HandlerState } from '../src/tools/context.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
@@ -34,6 +37,194 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('GraphIndex', () => {
+  it('reports a declined supported parser as uncovered and recovers when parsing succeeds', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const log = vi.fn()
+    const original = ParseWorker.prototype.parse
+    const parse = vi.spyOn(ParseWorker.prototype, 'parse').mockImplementation(function(path, texts) {
+      return path === 'declined.ts' ? Promise.resolve(texts.map(() => undefined)) : original.call(this, path, texts)
+    })
+    const gi = new GraphIndex(room, 'Rohan', dir, log, { minPublishMs: 0, random: () => 0 })
+    try {
+      publishFixture(room, 'Rohan', 'declined.ts', 'function Added(x: number){return x}', { base })
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      expect(room.graphs.get('Rohan')?.uncoveredPaths).toEqual(['declined.ts'])
+      expect(gi.isReady).toBe(true)
+      expect(room.graphs.get('Rohan')?.observed).toEqual([])
+      const warnings = () => log.mock.calls.filter(([line]) => line.includes('parser-unavailable'))
+      expect(warnings()).toHaveLength(1)
+      await gi.refresh('declined.ts'); await gi.whenIdle()
+      expect(warnings()).toHaveLength(1)
+      parse.mockRestore()
+      await gi.refresh('declined.ts'); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.observed?.some(change => change.symbol === 'Added') ?? false)
+      expect(room.graphs.get('Rohan')?.uncoveredPaths).toEqual([])
+      expect(gi.contractCoverageNote).toBe('')
+    } finally { parse.mockRestore(); gi.stop(); room.doc.destroy(); rmSync(join(dir, 'declined.ts'), { force: true }) }
+  })
+
+  it('marks a certified shared entry with no local file unavailable instead of inventing additions', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    const text = 'function existing(x){return x}\n'
+    const read = vi.fn(async (_dir: string, _sha: string, path: string) => path === 'missing.js' ? text : gitModule.gitShow(_dir, _sha, path))
+    const log = vi.fn()
+    const gi = new GraphIndex(room, 'Rohan', dir, log, { minPublishMs: 0, random: () => 0, read })
+    try {
+      publishFixture(room, 'Rohan', 'missing.js', text, { base })
+      expect(fs.existsSync(join(dir, 'missing.js'))).toBe(false)
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      expect(room.graphs.get('Rohan')?.observed).toEqual([])
+      expect(room.graphs.get('Rohan')?.uncoveredPaths).toEqual(['missing.js'])
+      expect(log.mock.calls.some(([line]) => line.includes('local-text-unavailable'))).toBe(true)
+      const fence = room.manifestHead.get('Rohan')!.fence
+      room.clearOverlay(`Rohan\0${fence}`, 'missing.js')
+      await gi.refresh('missing.js'); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.uncoveredPaths?.includes('missing.js') ?? false)
+      expect((gi as any).uncoveredPaths.has('missing.js')).toBe(true)
+      expect(room.graphs.get('Rohan')?.observed).toEqual([])
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('keeps edges while bounding long uncovered paths by snapshot bytes', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    const paths = Array.from({ length: 200 }, (_, i) => `${Array.from({ length: 7 }, () => 'x'.repeat(200)).join('/')}/${String(i).padStart(4, '0')}.js`)
+    for (const path of paths) publishFixture(room, 'Rohan', path, 'function incomplete\n', { base })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
+    try {
+      Object.assign(gi, { base, uncoveredPaths: new Set(paths) })
+      for (const [path, symbols] of [
+        ['utils.py', { defs: ['validate_token'], refs: [] }],
+        ['session.py', { defs: ['login'], refs: ['validate_token'] }],
+      ] as const) {
+        ;(gi as any).publishedCache.set(path, symbols)
+        ;(gi as any).publishedSource.set(path, { kind: 'base', base })
+        ;(gi as any).publishedGraph.set(path, '')
+      }
+      await (gi as any).publishSnapshot('ready', 0)
+      const graph = room.graphs.get('Rohan')!
+      expect(Buffer.byteLength(JSON.stringify(graph))).toBeLessThanOrEqual(200 * 1024)
+      expect(graph.uncoveredPaths!.length).toBeLessThan(200)
+      expect(graph.uncoveredTruncated).toBe(true)
+      expect(graph.truncated).toBe(false)
+      expect(graph.edges).toEqual([{ source: 'utils.py', target: 'session.py', symbols: ['validate_token'] }])
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('treats a byte-oversized own file as uncovered instead of inventing additions from an empty base', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const text = '/*' + 'é'.repeat(140 * 1024) + '*/\nfunction existing(x){return x}\n'
+    const read = vi.fn(async (_dir: string, _sha: string, path: string) => path === 'unicode.js' ? text : gitModule.gitShow(_dir, _sha, path))
+    const log = vi.fn()
+    const gi = new GraphIndex(room, 'Rohan', dir, log, { minPublishMs: 0, random: () => 0, read })
+    try {
+      publishFixture(room, 'Rohan', 'unicode.js', text.replace('return x', 'return x+1'), { base })
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      expect(room.graphs.get('Rohan')?.observed).toEqual([])
+      expect(room.graphs.get('Rohan')?.uncoveredPaths).toEqual(['unicode.js'])
+      expect(gi.contractCoverageNote).toContain('unicode.js')
+      expect(log.mock.calls.some(([line]) => line.includes('local-text-unavailable'))).toBe(true)
+    } finally { gi.stop(); room.doc.destroy(); rmSync(join(dir, 'unicode.js'), { force: true }) }
+  })
+
+  it('withdraws uncovered path names and the coverage note synchronously when sharing becomes intent', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0, random: () => 0 })
+    try {
+      publishFixture(room, 'Rohan', 'large.js', '/*' + 'x'.repeat(257 * 1024) + '*/', { base })
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.uncoveredPaths?.length === 1)
+      room.manifestHead.set('Rohan', { ...room.manifestHead.get('Rohan')!, level: 'intent' })
+      expect(room.graphs.get('Rohan')?.uncoveredPaths).toEqual([])
+      expect(gi.contractCoverageNote).toBe('')
+    } finally { gi.stop(); room.doc.destroy(); rmSync(join(dir, 'large.js'), { force: true }) }
+  })
+
+  it('marks an existing unreadable own file uncovered without inventing an empty baseline', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const log = vi.fn()
+    const gi = new GraphIndex(room, 'Rohan', dir, log, { minPublishMs: 0, random: () => 0 })
+    publishFixture(room, 'Rohan', 'unreadable.js', 'function existing(){}', { base })
+    const realOpen = fs.openSync
+    const open = vi.spyOn(fs, 'openSync').mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+      if (String(args[0]).endsWith('/unreadable.js')) throw Object.assign(new Error('access denied'), { code: 'EACCES' })
+      return realOpen(...args)
+    })
+    try {
+      gi.start(); await gi.whenIdle()
+      expect((gi as any).uncoveredPaths.has('unreadable.js'), JSON.stringify(log.mock.calls)).toBe(true)
+      expect((gi as any).observedByPath.has('unreadable.js')).toBe(false)
+      expect(gi.isReady).toBe(true)
+    } finally { open.mockRestore(); gi.stop(); room.doc.destroy(); rmSync(join(dir, 'unreadable.js'), { force: true }) }
+  })
+
+  it('bounds a sorted list of 1000 authorized long-named uncovered paths separately from graph truncation', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
+    const paths = Array.from({ length: 1000 }, (_, i) => `generated/${'a'.repeat(120)}/${'b'.repeat(120)}/${String(i).padStart(4, '0')}.js`)
+    for (const path of paths) publishFixture(room, 'Rohan', path, 'function incomplete\n', { base })
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0 })
+    try {
+      Object.assign(gi, { base, uncoveredPaths: new Set(paths.reverse()) })
+      await (gi as any).publishSnapshot('ready', 0)
+      const graph = room.graphs.get('Rohan')!
+      expect(graph.uncoveredPaths).toEqual([...paths].sort().slice(0, 200))
+      expect((graph as any).uncoveredTruncated).toBe(true)
+      expect(graph.truncated).toBe(false)
+      expect(graph.observedTruncated).toBe(false)
+    } finally { gi.stop(); room.doc.destroy() }
+  })
+
+  it('reports oversized contract text as uncovered without blocking readiness, then recovers coverage', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const log = vi.fn()
+    const gi = new GraphIndex(room, 'Rohan', dir, log, { minPublishMs: 0, random: () => 0 })
+    try {
+      publishFixture(room, 'Rohan', 'large.js', '/*' + 'x'.repeat(257 * 1024) + '*/', { base })
+      gi.start(); await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready')
+      expect((gi as any).observedByPath.has('large.js')).toBe(false)
+      expect((gi as any).uncoveredPaths.has('large.js')).toBe(true)
+      expect((gi as any).degradedPaths.has('large.js')).toBe(false)
+      expect(gi.isReady).toBe(true)
+      expect(gi.indexingStatus).toContain('not covered')
+      expect(gi.contractCoverageNote).toContain('not covered: large.js')
+      const impact = fileHandlers({ S: () => ({ room, graph: gi }), describeUsers: (_s: unknown, users: string[]) => users.join(', ') } as unknown as HandlerState).room_impact!
+      expect(await impact({ symbol: 'missing' })).toContain('not covered: large.js')
+      const inbox = createInbox({ others: () => [], upgraded: new Set() } as unknown as Parameters<typeof createInbox>[0])
+      const session = { room, graph: gi, me: { name: 'Rohan', kind: 'agent' } } as Session
+      expect((await inbox.waitingOn(session)).join('\n')).toContain('not covered: large.js')
+      expect((await inbox.upgrade(session, { type: 'changed' } as Msg, [], ['missing'])).join('\n')).toContain('not covered: large.js')
+      expect((room.graphs.get('Rohan') as any)?.uncoveredPaths).toEqual(['large.js'])
+      expect(room.graphs.get('Rohan')?.observedTruncated).toBe(false)
+      const warnings = () => log.mock.calls.filter(([line]) => line.includes('over the 256 KB contract analysis cap'))
+      expect(warnings()).toHaveLength(1)
+      await gi.refresh('large.js'); await gi.whenIdle()
+      expect(warnings()).toHaveLength(1)
+      publishFixture(room, 'Rohan', 'large.js', '/*' + 'x'.repeat(100 * 1024) + '*/\nfunction Added(x){return x}\n', { base })
+      await gi.whenIdle()
+      await eventually(() => room.graphs.get('Rohan')?.observed?.some(change => change.symbol === 'Added') ?? false)
+      expect((gi as any).uncoveredPaths.has('large.js')).toBe(false)
+      expect(gi.contractCoverageNote).toBe('')
+      expect(room.graphs.get('Rohan')?.observed?.filter(change => change.path === 'large.js')).toEqual([
+        { path: 'large.js', symbol: 'Added', kind: 'add', detail: 'now `function Added(x)`' },
+      ])
+    } finally { gi.stop(); room.doc.destroy(); rmSync(join(dir, 'large.js'), { force: true }) }
+  })
+
+  it('reports too many parsed definitions as uncovered rather than partial observed changes', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { minPublishMs: 0, random: () => 0 })
+    try {
+      publishFixture(room, 'Rohan', 'many.js', Array.from({ length: 4001 }, (_, i) => `function f${i}(){}`).join('\n'), { base })
+      gi.start(); await gi.whenIdle()
+      expect((gi as any).uncoveredPaths.has('many.js')).toBe(true)
+      expect((gi as any).observedByPath.has('many.js')).toBe(false)
+      expect(gi.isReady).toBe(true)
+    } finally { gi.stop(); room.doc.destroy(); rmSync(join(dir, 'many.js'), { force: true }) }
+  })
+
   it('reuses immutable base facts in a fresh replica without rereading unchanged files', async () => {
     const old = new RoomDoc(); setParticipantBase(old, 'Rohan', base)
     const first = new GraphIndex(old, 'Rohan', dir, undefined, { random: () => 0 })

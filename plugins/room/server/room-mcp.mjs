@@ -18139,111 +18139,70 @@ var init_wake = __esm({
 
 // packages/shared/src/graph.ts
 function whitespaceOutsideLiterals(text, separator) {
-  let out2 = "", quote2 = "", escaped = false, pending = false;
+  const chunks = [];
+  let quote2 = "", escaped = false, pending = false;
   for (const ch of text.trim()) {
     if (quote2) {
-      out2 += ch;
+      chunks.push(ch);
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
       else if (ch === quote2) quote2 = "";
     } else if (ch === '"' || ch === "'" || ch === "`") {
-      if (pending && out2) out2 += separator;
+      if (pending && chunks.length) chunks.push(separator);
       pending = false;
       quote2 = ch;
-      out2 += ch;
+      chunks.push(ch);
     } else if (/\s/.test(ch)) pending = true;
     else {
-      if (pending && out2) out2 += separator;
+      if (pending && chunks.length) chunks.push(separator);
       pending = false;
-      out2 += ch;
+      chunks.push(ch);
     }
   }
-  return out2;
-}
-function pythonHeader(line) {
-  let depth = 0, quote2 = "", escaped = false;
-  for (let i2 = 0; i2 < line.length; i2++) {
-    const ch = line[i2];
-    if (quote2) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === quote2) quote2 = "";
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote2 = ch;
-      continue;
-    }
-    if ("([{".includes(ch)) depth++;
-    else if (")]}".includes(ch)) depth = Math.max(0, depth - 1);
-    else if (ch === ":" && depth === 0) return line.slice(0, i2 + 1);
-  }
-  return line;
+  return chunks.join("");
 }
 function definitionLines(path59, text, parse3) {
-  const parsed = parse3?.(path59, text);
-  if (parsed) {
-    const out3 = /* @__PURE__ */ new Map();
-    for (const definition of parsed.defs) {
-      const name2 = definitionName(definition);
-      const display = normalized(definition.signature);
-      const lines2 = out3.get(name2) ?? [];
-      const line = { display, canonical: comparable(display) };
-      if (!lines2.some((existing) => existing.canonical === line.canonical)) lines2.push(line);
-      out3.set(name2, lines2);
-    }
-    return out3;
-  }
-  const ext = path59.slice(path59.lastIndexOf(".") + 1);
-  const out2 = /* @__PURE__ */ new Map();
-  const add2 = (name2, raw, signature = raw) => {
-    const display = normalized(raw);
-    const lines2 = out2.get(name2) ?? [];
-    const line = { display, canonical: comparable(normalized(signature)) };
-    if (!lines2.some((existing) => existing.canonical === line.canonical)) lines2.push(line);
-    out2.set(name2, lines2);
+  const lines2 = /* @__PURE__ */ new Map();
+  if (text === "") return { status: "ok", lines: lines2, method: "parsed" };
+  if (!parse3) return unavailable("no-parser", "contract analysis requires a parser");
+  const parsed = parse3(path59, text);
+  if (!parsed) return unavailable("parser-unavailable", `parser unavailable for ${path59}`);
+  const add2 = (name2, signature) => {
+    const display = normalized(boundedSignature(signature));
+    const values = lines2.get(name2) ?? [];
+    const line = { display, canonical: comparable(signature) };
+    if (!values.some((existing) => existing.canonical === line.canonical)) values.push(line);
+    lines2.set(name2, values);
   };
-  if (ext === "py") {
-    for (const match of text.matchAll(PY_DEF)) {
-      const nameIndex = match.index + match[0].lastIndexOf(match[1]);
-      add2(match[1], pythonHeader(lineContaining(text, nameIndex)));
-    }
-    for (const match of text.matchAll(PY_ASSIGN)) {
-      const line = lineContaining(text, match.index);
-      add2(match[1], line.slice(0, line.indexOf("=") + 1));
-    }
-  } else if (["js", "jsx", "ts", "tsx", "mjs", "mts", "cjs"].includes(ext)) {
-    for (const match of text.matchAll(JS_DEF)) {
-      const name2 = match[1] ?? match[2];
-      const line = lineContaining(text, match.index);
-      let signature = line;
-      const declaration = match[0];
-      if (/\b(?:const|let|var)\b/.test(declaration)) {
-        const arrow = line.indexOf("=>");
-        const equals2 = line.indexOf("=");
-        signature = arrow >= 0 ? line.slice(0, arrow + 2) : line.slice(0, equals2 + 1);
-      } else if (/\b(?:function\*?|class|interface|enum)\b/.test(declaration)) {
-        const brace = line.indexOf("{");
-        if (brace >= 0) signature = line.slice(0, brace);
-      }
-      add2(name2, line, signature);
-    }
-  } else return void 0;
-  return out2;
+  if (parsed.defs.length > CONTRACT_MAX_DEFINITIONS) return tooManyDefinitions();
+  for (const definition of parsed.defs) add2(definitionName(definition), definition.signature);
+  return { status: "ok", lines: lines2, method: "parsed" };
 }
-function observedContractChanges(baseText, overlayText, path59, parse3) {
-  const before = definitionLines(path59, baseText, parse3), after = definitionLines(path59, overlayText, parse3);
-  if (!before || !after) return [];
+function observedContractAnalysis(baseText, overlayText, path59, parse3) {
+  if (baseText.length > CONTRACT_TEXT_MAX_CHARS || overlayText.length > CONTRACT_TEXT_MAX_CHARS)
+    return unavailable("over-size", `over the ${CONTRACT_TEXT_MAX_CHARS / 1024} KB contract analysis cap`);
+  const before = definitionLines(path59, baseText, parse3);
+  if (before.status === "unavailable") return before;
+  const after = definitionLines(path59, overlayText, parse3);
+  if (after.status === "unavailable") return after;
   const changes = [];
   const signatureSet = (lines2) => lines2.map((line) => line.canonical).sort().join("\0");
-  const displaySet = (lines2) => lines2.map((line) => line.display).sort().join(" | ");
-  for (const [symbol, oldLines] of before) {
-    const newLines = after.get(symbol);
+  const displaySet = (lines2) => {
+    const displays = lines2.map((line) => line.display).sort();
+    const more = Math.max(0, displays.length - CONTRACT_MAX_OVERLOADS_SHOWN);
+    return displays.slice(0, CONTRACT_MAX_OVERLOADS_SHOWN).join(" | ") + (more ? ` \u2026 +${more} more` : "");
+  };
+  for (const [symbol, oldLines] of before.lines) {
+    const newLines = after.lines.get(symbol);
     if (!newLines) changes.push({ symbol, kind: "delete", detail: `was \`${displaySet(oldLines)}\`` });
     else if (signatureSet(oldLines) !== signatureSet(newLines)) changes.push({ symbol, kind: "signature", detail: `was \`${displaySet(oldLines)}\` now \`${displaySet(newLines)}\`` });
   }
-  for (const [symbol, newLines] of after) if (!before.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${displaySet(newLines)}\`` });
-  return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind));
+  for (const [symbol, newLines] of after.lines) if (!before.lines.has(symbol)) changes.push({ symbol, kind: "add", detail: `now \`${displaySet(newLines)}\`` });
+  return {
+    status: "ok",
+    changes: changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind)),
+    method: "parsed"
+  };
 }
 function normalizedPath(value2) {
   const parts2 = [];
@@ -18336,7 +18295,7 @@ function symbolRange(path59, text, symbol, parse3) {
   }
   return void 0;
 }
-var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, normalized, comparable, lineContaining, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, withoutExtension, directoryOf, basenameOf;
+var WORD, PY_DEF, PY_ASSIGN, JS_DEF, KEYWORDS, regexExtractor, bareSymbol, CONTRACT_TEXT_MAX_CHARS, CONTRACT_MAX_DEFINITIONS, CONTRACT_SIGNATURE_MAX_CHARS, CONTRACT_MAX_OVERLOADS_SHOWN, unavailable, tooManyDefinitions, normalized, comparable, boundedSignature, definitionName, COMMON_SYMBOL_FILE_THRESHOLD, SymbolGraph, withoutExtension, directoryOf, basenameOf;
 var init_graph = __esm({
   "packages/shared/src/graph.ts"() {
     "use strict";
@@ -18363,13 +18322,15 @@ var init_graph = __esm({
       return { defs: Array.from(defs10), refs: Array.from(refs) };
     };
     bareSymbol = (symbol) => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? "";
+    CONTRACT_TEXT_MAX_CHARS = 256 * 1024;
+    CONTRACT_MAX_DEFINITIONS = 4e3;
+    CONTRACT_SIGNATURE_MAX_CHARS = 240;
+    CONTRACT_MAX_OVERLOADS_SHOWN = 6;
+    unavailable = (reason, detail) => ({ status: "unavailable", changes: [], reason, detail });
+    tooManyDefinitions = () => unavailable("too-many-definitions", `over the ${CONTRACT_MAX_DEFINITIONS} definition contract analysis cap`);
     normalized = (line) => whitespaceOutsideLiterals(line, " ");
     comparable = (line) => whitespaceOutsideLiterals(line, "");
-    lineContaining = (text, index) => {
-      const from2 = text.lastIndexOf("\n", index - 1) + 1;
-      const to2 = text.indexOf("\n", index);
-      return text.slice(from2, to2 < 0 ? text.length : to2);
-    };
+    boundedSignature = (text) => text.length > CONTRACT_SIGNATURE_MAX_CHARS ? text.slice(0, CONTRACT_SIGNATURE_MAX_CHARS) + "\u2026" : text;
     definitionName = (definition) => definition.container ? `${definition.container}.${definition.name}` : definition.name;
     COMMON_SYMBOL_FILE_THRESHOLD = 5;
     SymbolGraph = class {
@@ -25617,8 +25578,8 @@ var init_hub = __esm({
         if (!isName(req.name) || !holder || req.supersedes !== void 0 && !isCounter(req.supersedes)) return fail("invalid", "acquire needs a name and a holder");
         const { name: name2 } = req;
         if (this.host.owns && !this.host.owns(p, name2)) return fail("not-yours", `${name2} is not a name this login may hold`);
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
+        const unavailable2 = this.unavailable(fail);
+        if (unavailable2) return unavailable2;
         if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit");
         const live = this.live(name2);
         if (req.supersedes !== void 0 && this.records.get(name2)?.epoch === req.supersedes && this.records.get(name2)?.principal !== this.principal(p)) return fail("not-yours", `${name2} belongs to another principal`);
@@ -25676,8 +25637,8 @@ var init_hub = __esm({
         if (this.host.owns && !this.host.owns(p, req.name) || existing?.epoch === req.epoch && !this.owner(conn, p, req.name, existing)) {
           return fail("not-yours", `${req.name} belongs to another holder session`);
         }
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
+        const unavailable2 = this.unavailable(fail);
+        if (unavailable2) return unavailable2;
         const live = this.live(req.name);
         const known = this.records.get(req.name);
         if ((live?.epoch === req.epoch || known?.epoch === req.epoch) && !this.owner(conn, p, req.name, live ?? known)) return fail("not-yours", `${req.name} belongs to another holder session`);
@@ -25694,8 +25655,8 @@ var init_hub = __esm({
         if (this.host.owns && !this.host.owns(p, req.lease.name) || existing?.epoch === req.lease.epoch && !this.owner(conn, p, req.lease.name, existing)) {
           return fail("not-yours", `${req.lease.name} belongs to another holder session`);
         }
-        const unavailable = this.unavailable(fail);
-        if (unavailable) return unavailable;
+        const unavailable2 = this.unavailable(fail);
+        if (unavailable2) return unavailable2;
         const live = this.live(req.lease.name);
         if (live?.epoch !== req.lease.epoch) return fail("stale", `epoch ${req.lease.epoch} is not the live lease on ${req.lease.name}`);
         if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", `${req.lease.name} belongs to another holder session`);
@@ -31874,7 +31835,7 @@ var init_plugin = __esm({
   "plugins/room/.claude-plugin/plugin.json"() {
     plugin_default = {
       name: "room",
-      version: "0.17.13",
+      version: "0.17.14",
       description: "Lets your coding agent see what teammates' agents are changing. Silent while you work alone; local by default.",
       author: {
         name: "Rohan",
@@ -38491,7 +38452,7 @@ function hashOf(text) {
   }
   return h >>> 0;
 }
-var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_REFRESH_CONCURRENCY, MAX_EDGES, MAX_OBSERVED, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, YIELD_EVERY, YIELD_AFTER_MS, yieldToEventLoop, GraphIndex;
+var isSourcePath, MAX_FILES, MAX_BYTES2, MAX_REFRESH_CONCURRENCY, MAX_EDGES, MAX_OBSERVED, MAX_UNCOVERED_PATHS, MAX_SNAPSHOT_BYTES, MIN_PUBLISH_MS, YIELD_EVERY, YIELD_AFTER_MS, yieldToEventLoop, GraphIndex;
 var init_graph_index = __esm({
   "packages/room-mcp/src/graph-index.ts"() {
     "use strict";
@@ -38510,6 +38471,7 @@ var init_graph_index = __esm({
     MAX_REFRESH_CONCURRENCY = 8;
     MAX_EDGES = 4e3;
     MAX_OBSERVED = 200;
+    MAX_UNCOVERED_PATHS = 200;
     MAX_SNAPSHOT_BYTES = 200 * 1024;
     MIN_PUBLISH_MS = 2e4;
     YIELD_EVERY = 100;
@@ -38537,6 +38499,7 @@ var init_graph_index = __esm({
       get indexingStatus() {
         if (this.phase === "error") return "graph unavailable (index discovery failed)";
         if (this.degradedPaths.size) return `graph coverage degraded (${this.degradedPaths.size} file(s) unavailable)`;
+        if (this.isReady && this.uncoveredPaths.size) return `graph: ${this.uncoveredPaths.size} file(s) outside the contract analysis budget or not analysable, not covered`;
         if (this.isReady) return "graph has no pending files";
         const unfinished = [...this.pending.keys()].filter((path59) => !this.completedFiles.has(path59)).length;
         const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size);
@@ -38555,6 +38518,15 @@ var init_graph_index = __esm({
       revisions = /* @__PURE__ */ new Map();
       observedByPath = /* @__PURE__ */ new Map();
       degradedPaths = /* @__PURE__ */ new Set();
+      uncoveredPaths = /* @__PURE__ */ new Set();
+      uncoveredWarnings = /* @__PURE__ */ new Map();
+      /** A completed index can still have declared gaps; negative tool replies must mention them. */
+      get contractCoverageNote() {
+        const paths = [...this.uncoveredPaths].filter((path59) => this.uncoveredAuthorized(path59)).sort();
+        if (!paths.length) return "";
+        const more = paths.length > 3 ? `, +${paths.length - 3} more` : "";
+        return `(${paths.length} file${paths.length === 1 ? "" : "s"} outside the contract analysis budget or not analysable, not covered: ${paths.slice(0, 3).join(", ")}${more})`;
+      }
       generation = 0;
       graphRevision = 0;
       localRevision = 0;
@@ -38641,7 +38613,7 @@ var init_graph_index = __esm({
       }
       /** Grant changes can make a previously ignored peer path relevant again. */
       grantPaths() {
-        const paths = /* @__PURE__ */ new Set([...this.cache.keys(), ...this.degradedPaths]);
+        const paths = /* @__PURE__ */ new Set([...this.cache.keys(), ...this.degradedPaths, ...this.uncoveredPaths]);
         for (const person of this.room.manifestHead.keys()) for (const path59 of manifestPaths(this.room, person)) paths.add(path59);
         return paths;
       }
@@ -38675,6 +38647,7 @@ var init_graph_index = __esm({
           for (const [path59, source] of this.publishedSource) if (source.kind === "entry" && source.person === person) paths.add(path59);
           for (const path59 of manifestPaths(this.room, person)) paths.add(path59);
           for (const path59 of this.degradedPaths) paths.add(path59);
+          for (const path59 of this.uncoveredPaths) paths.add(path59);
           peerRefreshInTransaction.set(transaction, paths);
           this.withdrawRestricted();
         };
@@ -38830,6 +38803,8 @@ var init_graph_index = __esm({
           this.observedByPath.clear();
           this.observedRevision++;
           this.degradedPaths.clear();
+          this.uncoveredPaths.clear();
+          this.uncoveredWarnings.clear();
           let removed = 0, lastRemovalYield = Date.now();
           for (const p of this.cache.keys()) {
             this.removeGraph(p);
@@ -38917,7 +38892,7 @@ var init_graph_index = __esm({
             fs27.closeSync(fd);
           }
         } catch (error2) {
-          if (error2.code === "ENOENT") return void 0;
+          if (["ENOENT", "EACCES", "EPERM"].includes(error2.code ?? "")) return void 0;
           throw error2;
         }
       }
@@ -38990,6 +38965,11 @@ var init_graph_index = __esm({
         const record2 = participantRecord(this.room, person);
         return !!head && !!entry && head.complete && head.coverage.kind === "all" && holderFence(record2?.holder) === head.fence && record2?.git?.base === head.base && record2.git.fence === head.fence && entry.fence === head.fence && entry.state === "shared" && (entry.change === "D" ? !entry.hash : !!entry.hash) && (head.level === "full" || head.level === "declared" && (head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path59))) && !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path59));
       }
+      uncoveredAuthorized(path59) {
+        const fence = this.room.manifestHead.get(this.me)?.fence;
+        const entry = fence ? this.room.manifest.get(manifestKey(this.me, fence))?.get(path59) : void 0;
+        return this.entryAuthorized(this.me, path59, entry);
+      }
       publicationAllowed(path59, source = this.publishedSource.get(path59)) {
         if (!source) return false;
         const head = this.room.manifestHead.get(this.me);
@@ -39010,6 +38990,12 @@ var init_graph_index = __esm({
         const head = this.room.manifestHead.get(this.me);
         if (!head && graph?.sourceFence === void 0) return;
         const allowed = (p) => (graph?.sourceFence === void 0 || graph.sourceFence === head?.fence) && this.publicationAllowed(p);
+        const gapAllowed = (p) => (graph?.sourceFence === void 0 || graph.sourceFence === head?.fence) && this.uncoveredAuthorized(p);
+        for (const path59 of this.uncoveredPaths) if (!gapAllowed(path59)) {
+          this.uncoveredPaths.delete(path59);
+          this.uncoveredWarnings.delete(path59);
+          this.observedRevision++;
+        }
         for (const path59 of this.publishedSource.keys()) if (!allowed(path59)) {
           this.publishedCache.delete(path59);
           this.publishedSource.delete(path59);
@@ -39022,13 +39008,15 @@ var init_graph_index = __esm({
         const paths = graph.paths.filter(allowed);
         const edges = graph.edges.filter((e) => allowed(e.source) && allowed(e.target));
         const observed = graph.observed?.filter((o) => allowed(o.path));
-        if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length) return;
+        const uncoveredPaths = graph.uncoveredPaths?.filter(gapAllowed);
+        if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length && uncoveredPaths?.length === graph.uncoveredPaths?.length) return;
         this.room.graphs.set(this.me, {
           ...graph,
           status: "indexing",
           paths,
           edges,
           observed,
+          uncoveredPaths,
           sourceFence: head?.fence,
           sourceRev: head?.rev,
           at: Date.now()
@@ -39136,6 +39124,7 @@ var init_graph_index = __esm({
           const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path59) : void 0;
           const mine = myEntry && myEntry.change !== "D" ? this.ownText(path59) : void 0;
           const mineDeleted = myEntry?.change === "D";
+          const ownFileUnavailable = myEntry?.state === "shared" && !mineDeleted && mine === void 0;
           const own2 = carriedFrom(this.dir, this.me)?.baseline;
           const read3 = (sha, file) => this.historicalText(sha, file);
           const baseRead = mine !== void 0 || mineDeleted ? await (own2?.untracked.has(path59) ? readBoundedCheckoutText(own2.dir, own2.untracked.get(path59).sha, path59).then((text2) => {
@@ -39145,7 +39134,7 @@ var init_graph_index = __esm({
             (text2) => text2 === void 0 ? { kind: "absent" } : { kind: "available", text: text2 },
             (error2) => ({ kind: "unavailable", error: error2 instanceof Error ? error2 : new Error(String(error2)) })
           ) : void 0;
-          const baseText = baseRead?.kind === "available" ? baseRead.text : "";
+          const baseText = ownFileUnavailable ? void 0 : baseRead?.kind === "available" ? baseRead.text : "";
           const [parsed, publicParsed, baseParsed, emptyParsed] = await this.parser.parse(
             path59,
             [text, publicText, baseText, ""].map((value2) => value2 !== void 0 && value2.length <= MAX_BYTES2 ? value2 : void 0)
@@ -39161,6 +39150,7 @@ var init_graph_index = __esm({
           }
           if (this.stopped) return true;
           if (generation !== this.generation) return false;
+          this.uncoveredPaths.delete(path59);
           if (!symbols || text === void 0) {
             this.cache.delete(path59);
             this.removeGraph(path59);
@@ -39184,7 +39174,7 @@ var init_graph_index = __esm({
             }
           }
           this.graphRevision++;
-          if (myEntry?.state === "shared" && this.ownTextAuthorized(path59) && (publicText !== void 0 || mineDeleted)) {
+          if (myEntry?.state === "shared" && this.ownTextAuthorized(path59) && (publicText !== void 0 || mineDeleted || ownFileUnavailable)) {
             if (baseRead?.kind === "unavailable") {
               this.degradedPaths.add(path59);
               this.observedByPath.delete(path59);
@@ -39194,7 +39184,24 @@ var init_graph_index = __esm({
               return revision === this.revisions.get(path59);
             }
             this.degradedPaths.delete(path59);
-            const changes = observedContractChanges(baseText, mineDeleted ? "" : publicText ?? "", path59, (_path, value2) => value2 === "" ? emptyParsed : value2 === baseText ? baseParsed : publicParsed).map((change) => ({ path: path59, ...change }));
+            const afterText = mineDeleted ? "" : publicText ?? "";
+            const chars = Math.max(baseText?.length ?? 0, afterText.length);
+            const bytes = Buffer.byteLength(afterText);
+            const analysis = ownFileUnavailable || chars > MAX_BYTES2 ? void 0 : observedContractAnalysis(baseText, afterText, path59, (_path, value2) => value2 === "" ? emptyParsed : value2 === baseText ? baseParsed : publicParsed);
+            if (!analysis || analysis.status === "unavailable") {
+              const warning = !analysis ? (ownFileUnavailable ? "local-text-unavailable: " : "") + (ownFileUnavailable && bytes <= MAX_BYTES2 ? "local text cannot be read; observed contract coverage degraded" : `${Math.ceil(Math.max(chars, bytes) / 1024)} KB is over the 256 KB contract analysis cap; observed contract coverage degraded`) : `${analysis.reason}: ${analysis.detail}; observed contract coverage degraded`;
+              this.uncoveredPaths.add(path59);
+              this.observedByPath.delete(path59);
+              if (this.uncoveredWarnings.get(path59) !== warning) {
+                this.uncoveredWarnings.set(path59, warning);
+                this.log(`graph: ${path59}: ${warning}`);
+              }
+              this.observedRevision++;
+              await this.yieldAfterIndex();
+              return revision === this.revisions.get(path59);
+            }
+            this.uncoveredWarnings.delete(path59);
+            const changes = analysis.changes.map((change) => ({ path: path59, ...change }));
             if (changes.length && mineDeleted && baseRead?.kind === "available" && this.entryAuthorized(this.me, path59, myEntry) && publicationSource?.fenceValid && snapshotStillCurrent(this.room, publicationSource, []))
               this.publishedSource.set(path59, {
                 kind: "deletion",
@@ -39206,6 +39213,7 @@ var init_graph_index = __esm({
             if (changes.length) this.observedByPath.set(path59, changes);
             else this.observedByPath.delete(path59);
           } else {
+            this.uncoveredWarnings.delete(path59);
             this.observedByPath.delete(path59);
             if (heldBy.length) {
               this.degradedPaths.add(path59);
@@ -39268,18 +39276,27 @@ var init_graph_index = __esm({
         }
         let edgeList = [...edges.values()];
         const allObserved = [...this.observedByPath.values()].flat().filter((change) => (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === "deletion") && this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol));
+        const allUncovered = [...this.uncoveredPaths].filter((path59) => this.uncoveredAuthorized(path59)).sort();
+        const uncoveredPaths = allUncovered.slice(0, MAX_UNCOVERED_PATHS);
+        let uncoveredTruncated = allUncovered.length > uncoveredPaths.length;
         let observedTruncated = allObserved.length > MAX_OBSERVED;
         const observed = allObserved.slice(0, MAX_OBSERVED);
-        let body2 = JSON.stringify({ paths, edges: edgeList, observed });
-        if (body2.length > MAX_SNAPSHOT_BYTES) {
+        const budget = MAX_SNAPSHOT_BYTES - 512;
+        if (Buffer.byteLength(JSON.stringify({ paths, edges: edgeList, observed })) > budget) {
           edgeList = [];
           truncated = true;
-          body2 = JSON.stringify({ paths, observed });
         }
-        while (body2.length > MAX_SNAPSHOT_BYTES && observed.length) {
+        const serialize = () => JSON.stringify({ paths, edges: edgeList, observed, uncoveredPaths, uncoveredTruncated });
+        let body2 = serialize();
+        while (Buffer.byteLength(body2) > budget && uncoveredPaths.length) {
+          uncoveredPaths.pop();
+          uncoveredTruncated = true;
+          body2 = serialize();
+        }
+        while (Buffer.byteLength(body2) > budget && observed.length) {
           observed.pop();
           observedTruncated = true;
-          body2 = JSON.stringify({ paths, observed });
+          body2 = serialize();
         }
         const key2 = `${this.base}|${status}|${provenance}|${body2.length}|${hashOf(body2)}`;
         const now = Date.now();
@@ -39311,6 +39328,8 @@ var init_graph_index = __esm({
           edges: edgeList,
           observed,
           observedTruncated,
+          uncoveredPaths,
+          uncoveredTruncated,
           truncated
         });
       }
@@ -42910,13 +42929,15 @@ function handlers(state) {
         out2.push(i2.usedIn.length ? `used in ${i2.usedIn.length} file(s): ${describeUsers(s, i2.usedIn)}` : "used by no other indexed file");
         for (const c of s.room.openClaims()) if (c.plans?.some((pl2) => pl2.symbol === a.symbol)) out2.push(`open plan: ${describeClaim(c)}`);
       } else if (typeof a.path === "string" && a.path) {
-        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)`;
+        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)${s.graph.contractCoverageNote ? `
+${s.graph.contractCoverageNote}` : ""}`;
         const deps = g.dependenciesOf(a.path), dependents = g.dependentsOf(a.path);
         out2.push(`${a.path} depends on ${deps.length} symbol(s) defined elsewhere:`);
         for (const d of deps.slice(0, 40)) out2.push(`  - ${d.symbol} from ${describeUsers(s, d.definedIn)}`);
         out2.push(`${a.path} defines ${dependents.length} symbol(s) used elsewhere:`);
         for (const d of dependents.slice(0, 40)) out2.push(`  - ${d.symbol} used in ${describeUsers(s, d.usedIn)}`);
       } else return "error: pass symbol or path";
+      if (s.graph.contractCoverageNote) out2.push(s.graph.contractCoverageNote);
       return out2.join("\n");
     },
     async room_preview_merge(a) {
@@ -42939,7 +42960,7 @@ function handlers(state) {
       const present = Array.from(new Set(allSessions.flatMap((s) => neighbours(participantsView(s.room, s.awareness, Date.now()), caller.me.name).names().filter((name2) => presences(s).some((p) => p.user.name === name2)))));
       const available = Array.from(new Set(allSessions.flatMap((s) => others(s)))).filter((p) => p !== caller.me.name);
       const myPaths = [...manifestPaths(caller.room, caller.me.name), ...caller.room.scope(caller.me.name)?.paths ?? []];
-      const unavailable = [];
+      const unavailable2 = [];
       const overlaps = async (person) => {
         const session = rooms.holding(person, caller);
         const worker = session.room.acceptedWorkerViewOf(person);
@@ -42953,12 +42974,12 @@ function handlers(state) {
           const changed = async (base) => base === ancestor ? [] : [...new Set((await gitWholeTree(caller.dir, ["diff", "--name-only", "-z", ancestor, base])).split("\0").filter(Boolean))];
           const mineCommitted = await changed(mineBase), theirCommitted = await changed(theirBase);
           const overBound = mineCommitted.length > 2e3 || theirCommitted.length > 2e3;
-          if (overBound) unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`);
+          if (overBound) unavailable2.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`);
           const mine = [.../* @__PURE__ */ new Set([...myPaths, ...!overBound ? mineCommitted : []])];
           const peer = [.../* @__PURE__ */ new Set([...theirs, ...!overBound ? theirCommitted : []])];
           return peer.some((p) => mine.some((path59) => coversPath(p, path59)));
         } catch (error2) {
-          unavailable.push(`${person}: committed changes unavailable (${error2 instanceof Error ? error2.message : String(error2)})`);
+          unavailable2.push(`${person}: committed changes unavailable (${error2 instanceof Error ? error2.message : String(error2)})`);
           return false;
         }
       };
@@ -42989,11 +43010,11 @@ function handlers(state) {
         });
       };
       if (!people.length) {
-        if (unavailable.length || skippedNote) {
+        if (unavailable2.length || skippedNote) {
           recordPreview({ clean: false, complete: false, testsPassed: false });
-          await recordPartial([], [...unavailable, ...skippedNote ? [skippedNote] : []]);
+          await recordPartial([], [...unavailable2, ...skippedNote ? [skippedNote] : []]);
         }
-        return [...dropped, "no present participants to merge", skippedNote, ...unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join("; ")}`] : []].filter(Boolean).join("\n");
+        return [...dropped, "no present participants to merge", skippedNote, ...unavailable2.length ? [`PARTIAL preview: skipped ${unavailable2.join("; ")}`] : []].filter(Boolean).join("\n");
       }
       const participants = people.map((person) => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }));
       const anchorsFor = async (result2) => (await Promise.all(result2.includedParticipants.map(async ({ person, base, gitRecord, liveShared }) => {
@@ -43030,8 +43051,8 @@ function handlers(state) {
           const anchors = await anchorsFor(result2);
           const anchorNote = anchors.length ? `; included ${anchors.join(", ")}` : "";
           const { ancestor, paths, merged, hardCount, conflictCount, resolvedText, out: out2, gaps } = result2;
-          const complete = result2.complete && unavailable.length === 0;
-          const gapLines = [...gaps.map((gap) => gap.path ? `${gap.path}: ${gap.person}'s version not included (${gap.why})` : `${gap.person}: ${gap.why}`), ...unavailable];
+          const complete = result2.complete && unavailable2.length === 0;
+          const gapLines = [...gaps.map((gap) => gap.path ? `${gap.path}: ${gap.person}'s version not included (${gap.why})` : `${gap.person}: ${gap.why}`), ...unavailable2];
           if (!paths.length && !result2.callerOnly && !run3) {
             recordPreview({ clean: hardCount === 0, complete, testsPassed: false });
             if (!complete) await recordPartial(people, gapLines, "", void 0, anchorNote);
@@ -56678,6 +56699,7 @@ init_merge();
 init_libesm();
 init_baseline();
 init_engine();
+init_parse();
 init_graph_index();
 init_context();
 init_disk_text();
@@ -57041,7 +57063,9 @@ var ConflictSet = class _ConflictSet {
       graph?.sourceRev === theirs?.head.rev,
       graph?.truncated,
       graph?.observedTruncated,
-      graph?.observed
+      graph?.observed,
+      graph?.uncoveredPaths,
+      graph?.uncoveredTruncated
     ] : void 0;
     return hash(JSON.stringify([
       metadata2(mine),
@@ -57517,32 +57541,41 @@ var ConflictSet = class _ConflictSet {
     const graph = this.team.room.graphs.get(other);
     const carried = this.carriedFrom?.(this.owner);
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline);
+    if (!carriedProvider && graph?.uncoveredTruncated) {
+      this.unknownContracts(other, "contract coverage gap list truncated");
+      return;
+    }
     if (!carriedProvider && (!graph || graph.status !== "ready" || graph.base !== theirs.head.base || graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
       this.unknownContracts(other, "provider graph or manifest coverage is updating");
       return;
     }
     const live = /* @__PURE__ */ new Set();
+    const uncovered = /* @__PURE__ */ new Set();
+    const unknownPath = async (path59, why, inputs) => {
+      uncovered.add(path59);
+      const key2 = slotKey(this.owner, "contract", other, path59, "*");
+      live.add(key2);
+      await this.settle(key2, { owner: this.owner, other, kind: "contract", path: path59, subject: "*", status: "unknown", inputs, factId: "", why });
+      for (const [priorKey, slot] of this.slots.owned(this.owner)) if (slot.kind === "contract" && slot.other === other && slot.path === path59 && priorKey !== key2) {
+        live.add(priorKey);
+        await this.settle(priorKey, { ...slot, status: "unknown", inputs, why });
+      }
+    };
     let changes = graph?.observed ?? [];
+    if (!carriedProvider) for (const path59 of graph?.uncoveredPaths ?? []) {
+      if (!this.contractPathAuthorized(theirs, path59)) continue;
+      await unknownPath(path59, "outside the contract analysis budget or not analysable", hash(JSON.stringify([graph?.sourceFence, graph?.sourceRev, path59, "uncovered"])));
+    }
     if (carriedProvider) {
       const paths = /* @__PURE__ */ new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()]);
       const observed = [];
       for (const path59 of paths) {
         await this.fileTurn();
-        if (!this.contractPathAuthorized(theirs, path59)) continue;
+        if (!specForPath(path59) || !this.contractPathAuthorized(theirs, path59)) continue;
         const before = await boundedBaseline(this.team.dir, carried.baseline, path59);
         if (before.kind === "unavailable") {
           const key2 = slotKey(this.owner, "contract", other, path59, "*");
-          await this.settle(key2, {
-            owner: this.owner,
-            other,
-            kind: "contract",
-            path: path59,
-            subject: "*",
-            status: "unknown",
-            inputs: hash(JSON.stringify([carried.baseline.sha, path59, "unavailable"])),
-            factId: "",
-            why: before.error.message
-          });
+          await unknownPath(path59, before.error.message, hash(JSON.stringify([carried.baseline.sha, path59, "unavailable"])));
           const id3 = `cf:${hash(`${key2}\0${carried.baseline.sha}`)}:degraded`;
           if (this.guard && !this.guard()) throw new StaleConflictInputs();
           const notice = await this.notices.post(ROOM, {
@@ -57565,16 +57598,21 @@ var ConflictSet = class _ConflictSet {
         let parsed = this.contractCache.get(cacheKey);
         if (!parsed) {
           await ensureLanguages([path59]);
-          parsed = observedContractChanges(oldText, after, path59, parseFile);
+          parsed = observedContractAnalysis(oldText, after, path59, parseFile);
           if (this.contractCache.size >= 1e3) this.contractCache.delete(this.contractCache.keys().next().value);
           this.contractCache.set(cacheKey, parsed);
         }
-        observed.push(...parsed.map((change) => ({ path: path59, ...change })));
+        if (parsed.status === "unavailable") {
+          await unknownPath(path59, parsed.detail, cacheKey);
+          continue;
+        }
+        observed.push(...parsed.changes.map((change) => ({ path: path59, ...change })));
       }
       changes = observed;
     }
     for (const change of changes) {
       await this.fileTurn();
+      if (uncovered.has(change.path)) continue;
       if (change.kind === "add") continue;
       if (!this.contractPathAuthorized(theirs, change.path)) continue;
       const provider = await this.read(theirs, change.path);
@@ -57902,6 +57940,7 @@ function handlers2(state) {
           }
           out2.push(users.length ? `impact: ${pl2.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl2.symbol} has no other users in the indexed graph`);
         }
+        if (s.graph.contractCoverageNote) out2.push(s.graph.contractCoverageNote);
       }
       const scopesHit = s.room.allScopes().filter((sc) => sc.by !== s.me.name && nearby.some((n2) => n2.by === sc.by && n2.reason === "scope") && scopeCovers(sc, p));
       for (const sc of scopesHit) out2.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`);
@@ -61810,6 +61849,7 @@ ${fresh.map(line).join("\n")}${more ? `
         if (files2) out2.push(`  - ${c.by}'s agent plans ${pl2.kind} ${pl2.symbol}${pl2.detail ? ` \u2192 ${pl2.detail}` : ""} in ${c.path} (claim ${c.id}); you use it in ${Array.from(new Set(files2)).join(", ")}`);
       }
     }
+    if (s.graph.contractCoverageNote) out2.push(`  ${s.graph.contractCoverageNote}`);
     return out2;
   };
   const allIndexed = (s) => {
@@ -61829,6 +61869,7 @@ ${fresh.map(line).join("\n")}${more ? `
       const copy2 = await s.post(s.me, { ...body2, to: person, priority: "notify", copyOf: m.id }, { auto: true });
       notes.push(copy2.ok ? `notified ${person}'s agent (${why})` : `could not notify ${person}'s agent: ${copy2.text}`);
     }
+    if (symbols.length && !notes.length && m.type !== "claim" && s.graph?.contractCoverageNote) notes.push(s.graph.contractCoverageNote);
     return notes;
   };
   return { forMe, inbox, describeUsers, waitingOn, upgrade };

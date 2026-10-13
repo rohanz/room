@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractChanges, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
+import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
 import { git } from '@room/roomd/git'
@@ -9,6 +9,7 @@ import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
 import { carriedPaths, carriesWork, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
 import { ensureLanguages, parseFile } from './parse/engine.js'
+import { specForPath } from './parse/index.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
@@ -288,7 +289,7 @@ export class ConflictSet {
   private scheduledInputs = ''
   private carriedInput?: { baseline: Baseline; lead: string }
   private starts: number[] = []
-  private readonly contractCache = new Map<string, ReturnType<typeof observedContractChanges>>()
+  private readonly contractCache = new Map<string, ReturnType<typeof observedContractAnalysis>>()
   private guard: (() => boolean) | undefined
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
@@ -380,7 +381,7 @@ export class ConflictSet {
         claims.some(c => coversPath(c.path, path)) ? entry.at : undefined] : undefined]
     })
     const graphFacts = contracts ? [graph?.base, graph?.status, graph?.sourceFence,
-      graph?.sourceRev === theirs?.head.rev, graph?.truncated, graph?.observedTruncated, graph?.observed] : undefined
+      graph?.sourceRev === theirs?.head.rev, graph?.truncated, graph?.observedTruncated, graph?.observed, graph?.uncoveredPaths, graph?.uncoveredTruncated] : undefined
     return hash(JSON.stringify([metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
       worker ? [worker.id, worker.lead, worker.status, worker.run] : undefined,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : undefined,
@@ -783,24 +784,43 @@ export class ConflictSet {
     const graph = this.team.room.graphs.get(other)
     const carried = this.carriedFrom?.(this.owner)
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
+    if (!carriedProvider && graph?.uncoveredTruncated) {
+      this.unknownContracts(other, 'contract coverage gap list truncated')
+      return
+    }
     if (!carriedProvider && (!graph || graph.status !== 'ready' || graph.base !== theirs.head.base ||
         graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev || graph.observedTruncated || graph.truncated)) {
       this.unknownContracts(other, 'provider graph or manifest coverage is updating')
       return
     }
     const live = new Set<string>()
+    const uncovered = new Set<string>()
+    const unknownPath = async (path: string, why: string, inputs: string) => {
+      uncovered.add(path)
+      const key = slotKey(this.owner, 'contract', other, path, '*')
+      live.add(key)
+      await this.settle(key, { owner: this.owner, other, kind: 'contract', path, subject: '*', status: 'unknown', inputs, factId: '', why })
+      // A coverage gap cannot certify that a previously reported symbol conflict disappeared.
+      for (const [priorKey, slot] of this.slots.owned(this.owner)) if (slot.kind === 'contract' && slot.other === other && slot.path === path && priorKey !== key) {
+        live.add(priorKey)
+        await this.settle(priorKey, { ...slot, status: 'unknown', inputs, why })
+      }
+    }
     let changes = graph?.observed ?? []
+    if (!carriedProvider) for (const path of graph?.uncoveredPaths ?? []) {
+      if (!this.contractPathAuthorized(theirs, path)) continue
+      await unknownPath(path, 'outside the contract analysis budget or not analysable', hash(JSON.stringify([graph?.sourceFence, graph?.sourceRev, path, 'uncovered'])))
+    }
     if (carriedProvider) {
       const paths = new Set([...await carriedPaths(carried.baseline), ...theirs.entries.keys()])
       const observed: typeof changes = []
       for (const path of paths) {
         await this.fileTurn()
-        if (!this.contractPathAuthorized(theirs, path)) continue
+        if (!specForPath(path) || !this.contractPathAuthorized(theirs, path)) continue
         const before = await boundedBaseline(this.team.dir, carried.baseline, path)
         if (before.kind === 'unavailable') {
           const key = slotKey(this.owner, 'contract', other, path, '*')
-          await this.settle(key, { owner: this.owner, other, kind: 'contract', path, subject: '*', status: 'unknown',
-            inputs: hash(JSON.stringify([carried.baseline.sha, path, 'unavailable'])), factId: '', why: before.error.message })
+          await unknownPath(path, before.error.message, hash(JSON.stringify([carried.baseline.sha, path, 'unavailable'])))
           const id = `cf:${hash(`${key}\0${carried.baseline.sha}`)}:degraded`
           if (this.guard && !this.guard()) throw new StaleConflictInputs()
           const notice = await this.notices.post<NoteMsg>(ROOM, { type: 'note', to: this.owner, priority: 'notify',
@@ -816,16 +836,21 @@ export class ConflictSet {
         let parsed = this.contractCache.get(cacheKey)
         if (!parsed) {
           await ensureLanguages([path])
-          parsed = observedContractChanges(oldText, after, path, parseFile)
+          parsed = observedContractAnalysis(oldText, after, path, parseFile)
           if (this.contractCache.size >= 1000) this.contractCache.delete(this.contractCache.keys().next().value!)
           this.contractCache.set(cacheKey, parsed)
         }
-        observed.push(...parsed.map(change => ({ path, ...change })))
+        if (parsed.status === 'unavailable') {
+          await unknownPath(path, parsed.detail, cacheKey)
+          continue
+        }
+        observed.push(...parsed.changes.map(change => ({ path, ...change })))
       }
       changes = observed
     }
     for (const change of changes) {
       await this.fileTurn()
+      if (uncovered.has(change.path)) continue
       if (change.kind === 'add') continue
       if (!this.contractPathAuthorized(theirs, change.path)) continue
       const provider = await this.read(theirs, change.path)

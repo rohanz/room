@@ -448,6 +448,7 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
           if (files) out.push(`  - ${c.by}'s agent plans ${pl.kind} ${pl.symbol}${pl.detail ? ` → ${pl.detail}` : ''} in ${c.path} (claim ${c.id}); you use it in ${Array.from(new Set(files)).join(', ')}`)
         }
       }
+      if (s.graph.contractCoverageNote) out.push(`  ${s.graph.contractCoverageNote}`)
       return out
     }
   const allIndexed = (s: Session): string[] => {
@@ -468,6 +469,7 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
         const copy = await s.post(s.me, { ...(body as object), to: person, priority: 'notify', copyOf: m.id } as PostBody, { auto: true })
         notes.push(copy.ok ? `notified ${person}'s agent (${why})` : `could not notify ${person}'s agent: ${copy.text}`)
       }
+      if (symbols.length && !notes.length && m.type !== 'claim' && s.graph?.contractCoverageNote) notes.push(s.graph.contractCoverageNote)
       return notes
     }
   return { forMe, inbox, describeUsers, waitingOn, upgrade }

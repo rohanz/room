@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.14
+
+- Make contract analysis parser-only with tree-sitter; remove the regex header fallback that could exhaust the heap on large single-line JavaScript files (256–512 KiB).
+- Report files outside the analysis budget, files whose parser is unavailable, and files with over 4000 definitions as uncovered in `room_state`, graph snapshots and tool replies instead of analysing them.
+- Add a bounded-subprocess regression that checks the pathological single-line input under a 96 MiB heap limit.
+- Users of 0.16.x and 0.17.x through 0.17.13 must update: every Room process sharing a clone containing such a file could exhaust its heap.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.13
 
 - Add `room_open`: ask to open the room in your browser. A private redirect page preserves the complete local viewer link when OS file openers would otherwise drop its fragment.

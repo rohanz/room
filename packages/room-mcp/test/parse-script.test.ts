@@ -233,3 +233,29 @@ describe('script-language regression coverage', () => {
       .toContainEqual(expect.objectContaining({ symbol: 'B.run', kind: 'signature' }))
   })
 })
+
+// Coverage moved from shared's parser-less pricing assertions: contracts now require the real parser.
+describe('pricing contract changes with tree-sitter', () => {
+  it('finds Python signature, deletion and addition while ignoring bodies and whitespace', () => {
+    const base = 'def total(price: int) -> int:\n    return price\n\ndef removed(x):\n    return x\n'
+    expect(observedContractChanges(base, base.replace('return price', 'return price + 1'), 'pricing.py', parseFile)).toEqual([])
+    expect(observedContractChanges(base, base.replace('price: int', 'price: float'), 'pricing.py', parseFile)).toContainEqual({
+      symbol: 'total', kind: 'signature', detail: 'was `def total(price: int) -> int:` now `def total(price: float) -> int:`',
+    })
+    expect(observedContractChanges(base, 'def total( price: int )->int:\n    return price\n\ndef added(y):\n    return y\n', 'pricing.py', parseFile)).toEqual([
+      { symbol: 'added', kind: 'add', detail: 'now `def added(y):`' },
+      { symbol: 'removed', kind: 'delete', detail: 'was `def removed(x):`' },
+    ])
+  })
+
+  it('finds JavaScript function and arrow signatures without treating their bodies as contracts', () => {
+    const base = 'export function total(price: number): number {\n  return price\n}\nconst tax = (price: number): number => price * .1\n'
+    expect(observedContractChanges(base, base.replace('return price', 'return price + 1').replace('price * .1', 'price * .2'), 'pricing.ts', parseFile)).toEqual([])
+    const changed = base.replace('price: number): number {', 'price: number, coupon?: string): number {')
+      .replace('(price: number): number =>', '(price: number, rate = .1): number =>')
+    expect(observedContractChanges(base, changed, 'pricing.ts', parseFile).map(change => [change.symbol, change.kind])).toEqual([
+      ['tax', 'signature'], ['total', 'signature'],
+    ])
+  })
+
+})

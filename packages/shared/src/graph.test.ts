@@ -1,8 +1,106 @@
 import { describe, it, expect } from 'vitest'
-import { observedContractChanges, SymbolGraph, regexExtractor, symbolRange } from './graph.js'
+import { observedContractChanges, observedContractAnalysis, SymbolGraph, regexExtractor, symbolRange } from './graph.js'
 import type { FileParser, ParsedDef } from './parsed.js'
+import { spawnSync } from 'node:child_process'
+import { performance } from 'node:perf_hooks'
 
 const parsed = (defs: ParsedDef[]): ReturnType<FileParser> => ({ defs, refs: [], ownRefs: [], imports: [] })
+
+describe('bounded contract analysis', () => {
+  it('requires a parser for nonempty text', () => {
+    expect(observedContractAnalysis('function f(){}', '', 'a.ts')).toMatchObject({ status: 'unavailable', reason: 'no-parser', changes: [] })
+  })
+
+  it('never fabricates changes when either nonempty side is declined', () => {
+    const defs = parsed([{ name: 'f', kind: 'function', from: 1, to: 1, signature: 'function f()' }])
+    for (const available of ['before', 'after']) {
+      const parser: FileParser = (_path, text) => text === available ? defs : undefined
+      expect(observedContractAnalysis('before', 'after', 'a.ts', parser)).toMatchObject({ status: 'unavailable', reason: 'parser-unavailable', changes: [] })
+    }
+    for (const [before, after] of [['', 'declined'], ['declined', '']])
+      expect(observedContractAnalysis(before, after, 'a.ts', () => undefined)).toMatchObject({ status: 'unavailable', reason: 'parser-unavailable', changes: [] })
+  })
+
+  it('certifies actual empty text without calling a parser', () => {
+    const parser: FileParser = (_path, text) => {
+      expect(text).not.toBe('')
+      return parsed([{ name: 'f', kind: 'function', from: 1, to: 1, signature: 'function f()' }])
+    }
+    expect(observedContractAnalysis('', '', 'a.ts')).toEqual({ status: 'ok', method: 'parsed', changes: [] })
+    expect(observedContractAnalysis('', '', 'a.ts', () => { throw new Error('empty text must not parse') })).toEqual({ status: 'ok', method: 'parsed', changes: [] })
+    expect(observedContractChanges('', 'after', 'a.ts', parser)).toEqual([{ symbol: 'f', kind: 'add', detail: 'now `function f()`' }])
+    expect(observedContractChanges('before', '', 'a.ts', parser)).toEqual([{ symbol: 'f', kind: 'delete', detail: 'was `function f()`' }])
+  })
+
+  it('compares full parsed signatures beyond the 240-character display cap', () => {
+    const before = `function f(${Array.from({ length: 35 }, (_, i) => `arg${i}: number`).join(', ')})`
+    const after = before.replace('arg34: number', 'arg34: string')
+    const parser: FileParser = (_path, text) => parsed([{ name: 'f', kind: 'function', from: 1, to: 1, signature: text }])
+    const changes = observedContractChanges(before, after, 'a.ts', parser)
+    expect(changes).toEqual([{ symbol: 'f', kind: 'signature', detail: `was \`${before.slice(0, 240)}…\` now \`${after.slice(0, 240)}…\`` }])
+  })
+
+  it('preserves literal whitespace while comparing multiline parsed signatures', () => {
+    const before = 'function f(\n value: string = "a b",\n other: number\n)'
+    const parser: FileParser = (_path, text) => parsed([{ name: 'f', kind: 'function', from: 1, to: 4, signature: text }])
+    expect(observedContractChanges(before, before.replace('\n', '\n  '), 'a.ts', parser)).toEqual([])
+    expect(observedContractChanges(before, before.replace('"a b"', '"ab"'), 'a.ts', parser)).toMatchObject([{ symbol: 'f', kind: 'signature' }])
+  })
+
+  it('contains the single-line no-parser micro repro in a 96 MiB subprocess', () => {
+    const source = new URL('./graph.ts', import.meta.url).href
+    const script = `
+      import * as contracts from ${JSON.stringify(source)};
+      const base = Array.from({length: 3000}, (_, i) => {
+        const body = 'return t+' + i + ';/*' + 'x'.repeat(28) + '*/';
+        return i % 4 === 0 ? 'function N'+i+'(t){'+body+'}' :
+          i % 4 === 1 ? 'var V'+i+'=function(t){'+body+'};' :
+          i % 4 === 2 ? 'const C'+i+'=(t)=>{'+body+'};' : 'class K'+i+'{m(t){'+body+'}}';
+      }).join('');
+      const start = performance.now();
+      const changes = contracts.observedContractChanges(base, base+'\\nfunction Added(x){return x}\\n', 'lib/d3.min.js');
+      console.log(JSON.stringify({bytes:base.length, ms:performance.now()-start, changes}));
+    `
+    const started = performance.now()
+    const child = spawnSync(process.execPath, ['--max-old-space-size=96', '--import', 'tsx', '--input-type=module', '-e', script],
+      { encoding: 'utf8', timeout: 30_000, maxBuffer: 128 * 1024, env: { ...process.env, NODE_OPTIONS: '' } })
+    console.info(`contract micro repro: ${Math.round(performance.now() - started)}ms, exit=${child.status}, signal=${child.signal}`)
+    expect(child.status, child.stderr.slice(-2000)).toBe(0)
+    const result = JSON.parse(child.stdout.trim())
+    expect(result.bytes).toBeGreaterThan(180 * 1024)
+    expect(result.bytes).toBeLessThan(256 * 1024)
+    expect(result.changes).toEqual([])
+    expect(performance.now() - started).toBeLessThan(30_000)
+  }, 35_000)
+
+  it('rejects oversized input before calling the parser and keeps the legacy wrapper safe', () => {
+    const text = 'x'.repeat(300 * 1024)
+    const parser: FileParser = () => { throw new Error('size gate must run first') }
+    const start = performance.now()
+    expect(observedContractAnalysis('', text, 'large.js', parser)).toMatchObject({ status: 'unavailable', reason: 'over-size', changes: [] })
+    expect(observedContractChanges(text, '', 'large.js')).toEqual([])
+    expect(performance.now() - start).toBeLessThan(1000)
+  })
+
+  it('rejects too many definitions on either side rather than returning partial changes', () => {
+    const defs = Array.from({ length: 4001 }, (_, i) => ({ name: `f${i}`, kind: 'function', from: 1, to: 1, signature: 'f()' }))
+    for (const [before, after] of [['before', 'after'], ['', 'after'], ['before', '']])
+      expect(observedContractAnalysis(before, after, 'a.rs', () => parsed(defs))).toMatchObject({ status: 'unavailable', reason: 'too-many-definitions', changes: [] })
+    expect(observedContractAnalysis('', 'after', 'a.rs', () => parsed(defs.slice(0, 4000))).status).toBe('ok')
+  })
+
+  it('bounds long parsed signatures and caps overload prose without hiding comparison changes', () => {
+    const long = `function f(${ 'x'.repeat(400) })`
+    const result = observedContractAnalysis('', 'after', 'a.rs', (_path, text) => parsed(text ? [{ name: 'f', kind: 'function', from: 1, to: 1, signature: long }] : []))
+    expect(result.changes[0]?.detail).toBe(`now \`${long.slice(0, 240)}…\``)
+    const parser: FileParser = (_path, text) => parsed(Array.from({ length: 8 }, (_, i) => ({ name: 'f', kind: 'method', from: i + 1, to: i + 1,
+      signature: `f(x: T${text === 'after' && i === 7 ? 9 : i})` })))
+    const changes = observedContractChanges('before', 'after', 'a.ts', parser)
+    expect(changes).toHaveLength(1)
+    expect(changes[0].kind).toBe('signature')
+    expect(changes[0].detail).toBe('was `f(x: T0) | f(x: T1) | f(x: T2) | f(x: T3) | f(x: T4) | f(x: T5) … +2 more` now `f(x: T0) | f(x: T1) | f(x: T2) | f(x: T3) | f(x: T4) | f(x: T5) … +2 more`')
+  })
+})
 
 describe('SymbolGraph', () => {
   it('extracts python defs and refs, ignoring keywords and self-defs', () => {
@@ -32,28 +130,6 @@ describe('SymbolGraph', () => {
 })
 
 describe('observedContractChanges', () => {
-  it('finds Python signature, deletion and addition while ignoring bodies and whitespace', () => {
-    const base = 'def total(price: int) -> int:\n    return price\n\ndef removed(x):\n    return x\n'
-    expect(observedContractChanges(base, base.replace('return price', 'return price + 1'), 'pricing.py')).toEqual([])
-    expect(observedContractChanges(base, base.replace('price: int', 'price: float'), 'pricing.py')).toContainEqual({
-      symbol: 'total', kind: 'signature', detail: 'was `def total(price: int) -> int:` now `def total(price: float) -> int:`',
-    })
-    expect(observedContractChanges(base, 'def total( price: int )->int:\n    return price\n\ndef added(y):\n    return y\n', 'pricing.py')).toEqual([
-      { symbol: 'added', kind: 'add', detail: 'now `def added(y):`' },
-      { symbol: 'removed', kind: 'delete', detail: 'was `def removed(x):`' },
-    ])
-  })
-
-  it('finds JavaScript function and arrow signatures without treating their bodies as contracts', () => {
-    const base = 'export function total(price: number): number {\n  return price\n}\nconst tax = (price: number): number => price * .1\n'
-    expect(observedContractChanges(base, base.replace('return price', 'return price + 1').replace('price * .1', 'price * .2'), 'pricing.ts')).toEqual([])
-    const changed = base.replace('price: number): number {', 'price: number, coupon?: string): number {')
-      .replace('(price: number): number =>', '(price: number, rate = .1): number =>')
-    expect(observedContractChanges(base, changed, 'pricing.ts').map(change => [change.symbol, change.kind])).toEqual([
-      ['tax', 'signature'], ['total', 'signature'],
-    ])
-  })
-
   it('uses parser signatures and container-qualified names without treating bodies as contracts', () => {
     const parser: FileParser = (_path, text) => {
       if (text === 'base' || text === 'body') return parsed([

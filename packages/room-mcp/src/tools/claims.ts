@@ -116,6 +116,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           out.push(users.length ? `impact: ${pl.symbol} is used in ${users.length} file(s): ${describeUsers(s, users)}` : `impact: ${pl.symbol} has no other users in the indexed graph`)
         }
+        if (s.graph.contractCoverageNote) out.push(s.graph.contractCoverageNote)
       }
       const scopesHit = s.room.allScopes().filter(sc => sc.by !== s.me.name && nearby.some(n => n.by === sc.by && n.reason === 'scope') && scopeCovers(sc, p))
       for (const sc of scopesHit) out.push(`note: ${p} is inside ${sc.by}'s scope (${sc.area}); they will be told of your plans`)

@@ -437,3 +437,11 @@ Remove the implicit public-server fallback. Local use remains automatic; team us
 **Decision:** Add `room_open` separately from read-only `room_state(link=true)`. Keep the packaged viewer and local relay architecture.
 **Why:** macOS `open` discarded a `file://` URL fragment in a real browser probe, and the chat renderer also removed it from clickable links. A private redirect page opened as a file lets the browser navigate the complete URL. The launcher uses platform commands without a shell, reports launch failures with a copyable URL, and does not claim connection success from OS acceptance.
 **Cut / not doing:** No new local HTTP page server, custom URI handler, automatic launch on join, or browser process management. macOS live validation and mocked Windows/Linux command checks are distinct evidence.
+
+## 2026-10-13 — Parser-only contract analysis
+**Incident:** The regex contract-header fallback could exhaust the heap on large single-line JavaScript files in every Room process sharing the clone.
+**Decision:** Choose candidate B, parser-only contract analysis, over candidate A's bounded regex header recovery. Keep the text and definition caps, full parsed-signature comparison and bounded display; publish explicit coverage gaps through `uncoveredPaths`. Carried-provider comparisons skip paths without a language spec, so unsupported documents do not become unknown contracts.
+**Why:** Tree-sitter already supplies production contract signatures; removing the fallback avoids maintaining a second grammar and reports unavailable analysis explicitly instead of guessing headers.
+**Cut / not doing:** Deliberately lose best-effort Python/JavaScript/TypeScript contract detection when the grammar or runtime fails to load; these supported files are reported as uncovered, and carried-provider checks settle them as unknown. The separate regex symbol extractor and symbol-range fallback remain.
+**Validation:** Parser-availability, coverage recovery, warning deduplication and real-parser pricing tests, plus a bounded 96 MiB subprocess regression for the single-line input.
+**Built when:** 13 Oct, post-hackathon. Plugin-only change; no server deployment or schema migration is needed.

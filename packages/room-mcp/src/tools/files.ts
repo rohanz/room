@@ -220,13 +220,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(i.usedIn.length ? `used in ${i.usedIn.length} file(s): ${describeUsers(s, i.usedIn)}` : 'used by no other indexed file')
         for (const c of s.room.openClaims()) if (c.plans?.some(pl => pl.symbol === a.symbol)) out.push(`open plan: ${describeClaim(c)}`)
       } else if (typeof a.path === 'string' && a.path) {
-        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)`
+        if (!g.has(a.path)) return `${a.path} is not in the graph (not a source file, too large, or not at base/overlays)${s.graph.contractCoverageNote ? `\n${s.graph.contractCoverageNote}` : ''}`
         const deps = g.dependenciesOf(a.path), dependents = g.dependentsOf(a.path)
         out.push(`${a.path} depends on ${deps.length} symbol(s) defined elsewhere:`)
         for (const d of deps.slice(0, 40)) out.push(`  - ${d.symbol} from ${describeUsers(s, d.definedIn)}`)
         out.push(`${a.path} defines ${dependents.length} symbol(s) used elsewhere:`)
         for (const d of dependents.slice(0, 40)) out.push(`  - ${d.symbol} used in ${describeUsers(s, d.usedIn)}`)
       } else return 'error: pass symbol or path'
+      if (s.graph.contractCoverageNote) out.push(s.graph.contractCoverageNote)
       return out.join('\n')
     },
     async room_preview_merge(a) {

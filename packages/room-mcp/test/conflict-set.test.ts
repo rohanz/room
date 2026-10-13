@@ -16,6 +16,7 @@ import type { Session } from '../src/session.js'
 import { registrySnapshotForDir } from '../src/worker-registry.js'
 import * as roomd from '@room/roomd'
 import * as gitModule from '@room/roomd/git'
+import * as parseEngine from '../src/parse/engine.js'
 import * as mergeModule from '../src/merge.js'
 
 async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
@@ -1906,6 +1907,69 @@ describe('derived pair slots', () => {
       const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
       expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
+    } finally { f.cleanup() }
+  })
+
+  it.each(['notes.md', 'declined.ts'])('skips unsupported carried paths and marks declined supported paths unknown: %s', async path => {
+    const f = fixture()
+    const parse = vi.spyOn(parseEngine, 'parseFile').mockReturnValue(undefined)
+    try {
+      f.holder('W'); f.holder('B'); f.entry('W', undefined); f.entry('B', undefined)
+      const text = 'function changed(){}'
+      f.room.manifest.get(manifestKey('B', '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), path, text)
+      const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', '--stdin'], { input: 'function prior(){}', encoding: 'utf8' }).trim()
+      const baseline = { worker: 'W', sha: f.base, dir: f.dir, carriedCommit: false, untracked: new Map([[path, { sha: blob }]]) }
+      const checker = new ConflictSet(f.session('W'), 'W', f.session('W'), () => {}, 0,
+        person => person === 'W' ? { baseline, lead: 'B' } : undefined)
+      await checker.reconcile('carried'); await checker.reconcile('cached analysis')
+      const slot = f.room.doc.getMap('conflicts').get(slotKey('W', 'contract', 'B', path, '*'))
+      if (path.endsWith('.md')) { expect(slot).toBeUndefined(); expect(parse).not.toHaveBeenCalled() }
+      else expect(slot).toMatchObject({ status: 'unknown', why: expect.stringContaining('parser') })
+      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
+    } finally { parse.mockRestore(); f.cleanup() }
+  })
+
+  it('keeps unavailable carried contract analysis unknown instead of fabricating changes', async () => {
+    const f = fixture()
+    try {
+      f.holder('W'); f.holder('B'); f.entry('W', undefined); f.entry('B', undefined)
+      const path = 'large.js', text = '/*' + 'x'.repeat(257 * 1024) + '*/'
+      f.room.manifest.get(manifestKey('B', '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), path, text)
+      const blob = execFileSync('git', ['-C', f.dir, 'hash-object', '-w', '--stdin'], { input: 'function prior(){}', encoding: 'utf8' }).trim()
+      const baseline = { worker: 'W', sha: f.base, dir: f.dir, carriedCommit: false, untracked: new Map([[path, { sha: blob }]]) }
+      const checker = new ConflictSet(f.session('W'), 'W', f.session('W'), () => {}, 0,
+        person => person === 'W' ? { baseline, lead: 'B' } : undefined)
+      await checker.reconcile('carried'); await checker.reconcile('cached analysis')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('W', 'contract', 'B', path, '*'))).toMatchObject({ status: 'unknown', why: expect.stringContaining('256') })
+      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps uncovered snapshot paths unknown while checking covered contract changes', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    return a\n' })
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      for (const [name, path, text] of [
+        ['A', 'consumer.py', 'from api import call\ncall(1)\n'],
+        ['B', 'api.py', 'def call(a,b):\n    return a+b\n'],
+        ['B', 'large.js', '/* unavailable */'],
+      ]) {
+        f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey(name, '1'), path, text)
+      }
+      f.room.graphs.set('B', { version: 1, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready', paths: ['api.py'], edges: [], truncated: false,
+        uncoveredPaths: ['large.js'], observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'call(a) → call(a,b)' }] } as any)
+      const checker = new ConflictSet(f.session('A'))
+      await checker.reconcile('uncovered'); await checker.reconcile('still uncovered')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'contract', 'B', 'large.js', '*'))).toMatchObject({ status: 'unknown', why: 'outside the contract analysis budget or not analysable' })
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', 'call'))).toMatchObject({ status: 'conflict' })
+      f.room.graphs.set('B', { ...f.room.graphs.get('B')!, uncoveredTruncated: true } as any)
+      await checker.reconcile('gap list truncated')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', 'call'))).toMatchObject({
+        status: 'unknown', why: 'contract coverage gap list truncated',
+      })
     } finally { f.cleanup() }
   })
 

@@ -1,7 +1,7 @@
 /**
  * Keeps a SymbolGraph current for one room from local files and shared manifest versions.
  */
-import { bareSymbol, containsPath, digestPath, holderFence, manifestKey, manifestPaths, observedContractChanges, participantRecord, snapshotPath, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
+import { bareSymbol, containsPath, digestPath, holderFence, manifestKey, manifestPaths, observedContractAnalysis, participantRecord, snapshotPath, SymbolGraph, versionOf, type FileSymbols, type ObservedContractChange, type RoomDoc } from '@room/shared'
 import type * as Y from 'yjs'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -22,6 +22,7 @@ const MAX_REFRESH_CONCURRENCY = 8
 /** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
 const MAX_EDGES = 4000
 const MAX_OBSERVED = 200
+const MAX_UNCOVERED_PATHS = 200
 const MAX_SNAPSHOT_BYTES = 200 * 1024
 const MIN_PUBLISH_MS = 20_000
 const YIELD_EVERY = 100
@@ -68,6 +69,7 @@ export class GraphIndex {
   get indexingStatus(): string {
     if (this.phase === 'error') return 'graph unavailable (index discovery failed)'
     if (this.degradedPaths.size) return `graph coverage degraded (${this.degradedPaths.size} file(s) unavailable)`
+    if (this.isReady && this.uncoveredPaths.size) return `graph: ${this.uncoveredPaths.size} file(s) outside the contract analysis budget or not analysable, not covered`
     if (this.isReady) return 'graph has no pending files'
     const unfinished = [...this.pending.keys()].filter(path => !this.completedFiles.has(path)).length
     const total = Math.max(this.totalFiles, this.completedFiles.size + unfinished, this.pending.size)
@@ -86,6 +88,15 @@ export class GraphIndex {
   private revisions = new Map<string, number>()
   private observedByPath = new Map<string, ObservedContractChange[]>()
   private degradedPaths = new Set<string>()
+  private uncoveredPaths = new Set<string>()
+  private uncoveredWarnings = new Map<string, string>()
+  /** A completed index can still have declared gaps; negative tool replies must mention them. */
+  get contractCoverageNote(): string {
+    const paths = [...this.uncoveredPaths].filter(path => this.uncoveredAuthorized(path)).sort()
+    if (!paths.length) return ''
+    const more = paths.length > 3 ? `, +${paths.length - 3} more` : ''
+    return `(${paths.length} file${paths.length === 1 ? '' : 's'} outside the contract analysis budget or not analysable, not covered: ${paths.slice(0, 3).join(', ')}${more})`
+  }
   private generation = 0
   private graphRevision = 0
   private localRevision = 0
@@ -162,7 +173,7 @@ export class GraphIndex {
 
   /** Grant changes can make a previously ignored peer path relevant again. */
   private grantPaths(): Set<string> {
-    const paths = new Set([...this.cache.keys(), ...this.degradedPaths])
+    const paths = new Set([...this.cache.keys(), ...this.degradedPaths, ...this.uncoveredPaths])
     for (const person of this.room.manifestHead.keys()) for (const path of manifestPaths(this.room, person)) paths.add(path)
     return paths
   }
@@ -187,6 +198,7 @@ export class GraphIndex {
       for (const [path, source] of this.publishedSource) if (source.kind === 'entry' && source.person === person) paths.add(path)
       for (const path of manifestPaths(this.room, person)) paths.add(path)
       for (const path of this.degradedPaths) paths.add(path)
+      for (const path of this.uncoveredPaths) paths.add(path)
       peerRefreshInTransaction.set(transaction, paths)
       this.withdrawRestricted()
     }
@@ -337,6 +349,8 @@ export class GraphIndex {
       this.observedByPath.clear()
       this.observedRevision++
       this.degradedPaths.clear()
+      this.uncoveredPaths.clear()
+      this.uncoveredWarnings.clear()
       let removed = 0, lastRemovalYield = Date.now()
       for (const p of this.cache.keys()) {
         this.removeGraph(p)
@@ -411,7 +425,7 @@ export class GraphIndex {
         return used > MAX_BYTES ? undefined : bytes.toString('utf8', 0, used)
       } finally { fs.closeSync(fd) }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      if (['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined
       throw error
     }
   }
@@ -502,6 +516,12 @@ export class GraphIndex {
       !!this.room.roomSalt && /^[a-f0-9]{64}$/i.test(this.room.roomSalt) && !head.excluded.includes(digestPath(this.room.roomSalt, path))
   }
 
+  private uncoveredAuthorized(path: string): boolean {
+    const fence = this.room.manifestHead.get(this.me)?.fence
+    const entry = fence ? this.room.manifest.get(manifestKey(this.me, fence))?.get(path) : undefined
+    return this.entryAuthorized(this.me, path, entry)
+  }
+
   private publicationAllowed(path: string, source = this.publishedSource.get(path)): boolean {
     if (!source) return false
     const head = this.room.manifestHead.get(this.me)
@@ -530,6 +550,12 @@ export class GraphIndex {
     const head = this.room.manifestHead.get(this.me)
     if (!head && graph?.sourceFence === undefined) return // base-only index before the first manifest
     const allowed = (p: string) => (graph?.sourceFence === undefined || graph.sourceFence === head?.fence) && this.publicationAllowed(p)
+    const gapAllowed = (p: string) => (graph?.sourceFence === undefined || graph.sourceFence === head?.fence) && this.uncoveredAuthorized(p)
+    for (const path of this.uncoveredPaths) if (!gapAllowed(path)) {
+      this.uncoveredPaths.delete(path)
+      this.uncoveredWarnings.delete(path)
+      this.observedRevision++
+    }
     for (const path of this.publishedSource.keys()) if (!allowed(path)) {
       this.publishedCache.delete(path)
       this.publishedSource.delete(path)
@@ -542,8 +568,10 @@ export class GraphIndex {
     const paths = graph.paths.filter(allowed)
     const edges = graph.edges.filter(e => allowed(e.source) && allowed(e.target))
     const observed = graph.observed?.filter(o => allowed(o.path))
-    if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length) return
-    this.room.graphs.set(this.me, { ...graph, status: 'indexing', paths, edges, observed,
+    const uncoveredPaths = graph.uncoveredPaths?.filter(gapAllowed)
+    if (paths.length === graph.paths.length && edges.length === graph.edges.length && observed?.length === graph.observed?.length &&
+        uncoveredPaths?.length === graph.uncoveredPaths?.length) return
+    this.room.graphs.set(this.me, { ...graph, status: 'indexing', paths, edges, observed, uncoveredPaths,
       sourceFence: head?.fence, sourceRev: head?.rev, at: Date.now() })
     this.lastPublished.key = ''
     this.lastPublishedRevision = { graph: -1, observed: -1, base: '', provenance: '' }
@@ -637,6 +665,7 @@ export class GraphIndex {
       const myEntry = myFence ? this.room.manifest.get(manifestKey(this.me, myFence))?.get(path) : undefined
       const mine = myEntry && myEntry.change !== 'D' ? this.ownText(path) : undefined
       const mineDeleted = myEntry?.change === 'D'
+      const ownFileUnavailable = myEntry?.state === 'shared' && !mineDeleted && mine === undefined
       // A worker's own changes are measured from its baseline, so carried lead work is not credited to it.
       const own = carriedFrom(this.dir, this.me)?.baseline
       const read = (sha: string, file: string) => this.historicalText(sha, file)
@@ -651,7 +680,7 @@ export class GraphIndex {
           text => text === undefined ? { kind: 'absent' as const } : { kind: 'available' as const, text },
           error => ({ kind: 'unavailable' as const, error: error instanceof Error ? error : new Error(String(error)) }),
         ) : undefined
-      const baseText = baseRead?.kind === 'available' ? baseRead.text : ''
+      const baseText = ownFileUnavailable ? undefined : baseRead?.kind === 'available' ? baseRead.text : ''
       const [parsed, publicParsed, baseParsed, emptyParsed] = await this.parser.parse(path,
         [text, publicText, baseText, ''].map(value => value !== undefined && value.length <= MAX_BYTES ? value : undefined))
       const symbols: FileSymbols | undefined = parsed ? {
@@ -665,6 +694,7 @@ export class GraphIndex {
       }
       if (this.stopped) return true
       if (generation !== this.generation) return false
+      this.uncoveredPaths.delete(path)
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }
       else { this.cache.set(path, symbols); this.setGraph(path, text) }
       if (publicText === undefined || publicText.length > MAX_BYTES) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
@@ -677,7 +707,7 @@ export class GraphIndex {
         }
       }
       this.graphRevision++
-      if (myEntry?.state === 'shared' && this.ownTextAuthorized(path) && (publicText !== undefined || mineDeleted)) {
+      if (myEntry?.state === 'shared' && this.ownTextAuthorized(path) && (publicText !== undefined || mineDeleted || ownFileUnavailable)) {
         if (baseRead?.kind === 'unavailable') {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
@@ -687,8 +717,29 @@ export class GraphIndex {
           return revision === this.revisions.get(path)
         }
         this.degradedPaths.delete(path)
-        const changes = observedContractChanges(baseText, mineDeleted ? '' : publicText ?? '', path, (_path, value) =>
-          value === '' ? emptyParsed : value === baseText ? baseParsed : publicParsed).map(change => ({ path, ...change }))
+        const afterText = mineDeleted ? '' : publicText ?? ''
+        const chars = Math.max(baseText?.length ?? 0, afterText.length)
+        const bytes = Buffer.byteLength(afterText)
+        const analysis = ownFileUnavailable || chars > MAX_BYTES ? undefined : observedContractAnalysis(baseText!, afterText, path, (_path, value) =>
+          value === '' ? emptyParsed : value === baseText ? baseParsed : publicParsed)
+        if (!analysis || analysis.status === 'unavailable') {
+          const warning = !analysis
+            ? (ownFileUnavailable ? 'local-text-unavailable: ' : '') + (ownFileUnavailable && bytes <= MAX_BYTES
+              ? 'local text cannot be read; observed contract coverage degraded'
+              : `${Math.ceil(Math.max(chars, bytes) / 1024)} KB is over the 256 KB contract analysis cap; observed contract coverage degraded`)
+            : `${analysis.reason}: ${analysis.detail}; observed contract coverage degraded`
+          this.uncoveredPaths.add(path)
+          this.observedByPath.delete(path)
+          if (this.uncoveredWarnings.get(path) !== warning) {
+            this.uncoveredWarnings.set(path, warning)
+            this.log(`graph: ${path}: ${warning}`)
+          }
+          this.observedRevision++
+          await this.yieldAfterIndex()
+          return revision === this.revisions.get(path)
+        }
+        this.uncoveredWarnings.delete(path)
+        const changes = analysis.changes.map(change => ({ path, ...change }))
         if (changes.length && mineDeleted && baseRead?.kind === 'available' &&
             this.entryAuthorized(this.me, path, myEntry) && publicationSource?.fenceValid &&
             snapshotStillCurrent(this.room, publicationSource, []))
@@ -697,6 +748,7 @@ export class GraphIndex {
         if (changes.length) this.observedByPath.set(path, changes)
         else this.observedByPath.delete(path)
       } else {
+        this.uncoveredWarnings.delete(path)
         this.observedByPath.delete(path)
         if (heldBy.length) {
           this.degradedPaths.add(path)
@@ -762,12 +814,20 @@ export class GraphIndex {
     const allObserved = [...this.observedByPath.values()].flat().filter(change =>
       (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === 'deletion') &&
       this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    const allUncovered = [...this.uncoveredPaths].filter(path => this.uncoveredAuthorized(path)).sort()
+    const uncoveredPaths = allUncovered.slice(0, MAX_UNCOVERED_PATHS)
+    let uncoveredTruncated = allUncovered.length > uncoveredPaths.length
     let observedTruncated = allObserved.length > MAX_OBSERVED
     const observed = allObserved.slice(0, MAX_OBSERVED)
-    let body = JSON.stringify({ paths, edges: edgeList, observed })
-    if (body.length > MAX_SNAPSHOT_BYTES) { edgeList = []; truncated = true; body = JSON.stringify({ paths, observed }) }
-    while (body.length > MAX_SNAPSHOT_BYTES && observed.length) {
-      observed.pop(); observedTruncated = true; body = JSON.stringify({ paths, observed })
+    const budget = MAX_SNAPSHOT_BYTES - 512 // room/base/fence/status metadata around this body
+    if (Buffer.byteLength(JSON.stringify({ paths, edges: edgeList, observed })) > budget) { edgeList = []; truncated = true }
+    const serialize = () => JSON.stringify({ paths, edges: edgeList, observed, uncoveredPaths, uncoveredTruncated })
+    let body = serialize()
+    while (Buffer.byteLength(body) > budget && uncoveredPaths.length) {
+      uncoveredPaths.pop(); uncoveredTruncated = true; body = serialize()
+    }
+    while (Buffer.byteLength(body) > budget && observed.length) {
+      observed.pop(); observedTruncated = true; body = serialize()
     }
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${provenance}|${body.length}|${hashOf(body)}`
@@ -789,7 +849,7 @@ export class GraphIndex {
     this.lastPublished = { at: now, key, status }
     this.lastPublishedRevision = { graph: graphRevision, observed: observedRevision, base, provenance }
     this.room.graphs.set(this.me, { version: 1, base: this.base, sourceFence, sourceRev,
-      at: now, status, paths, edges: edgeList, observed, observedTruncated, truncated })
+      at: now, status, paths, edges: edgeList, observed, observedTruncated, uncoveredPaths, uncoveredTruncated, truncated })
   }
 }
 

@@ -27,6 +27,9 @@ export interface GraphSnapshot {
   /** Contract-level changes inferred from this participant's overlay. */
   observed?: ObservedContractChange[]
   observedTruncated?: boolean
+  /** Authorized paths omitted from contract analysis outside the analysis budget or not analysable. */
+  uncoveredPaths?: string[]
+  uncoveredTruncated?: boolean
   truncated: boolean
 }
 export type Extractor = (path: string, text: string) => FileSymbols | undefined
@@ -59,122 +62,95 @@ export const regexExtractor: Extractor = (path, text) => {
 
 export const bareSymbol = (symbol: string): string => symbol.trim().split(/[.:]+/).filter(Boolean).at(-1)?.toLowerCase() ?? ''
 
+export const CONTRACT_TEXT_MAX_CHARS = 256 * 1024
+export const CONTRACT_MAX_DEFINITIONS = 4000
+export const CONTRACT_SIGNATURE_MAX_CHARS = 240
+export const CONTRACT_MAX_OVERLOADS_SHOWN = 6
+
+export type ContractAnalysis =
+  | { status: 'ok'; changes: Omit<ObservedContractChange, 'path'>[]; method: 'parsed' }
+  | { status: 'unavailable'; changes: []; reason: 'over-size' | 'too-many-definitions' | 'no-parser' | 'parser-unavailable'; detail: string }
+
 interface DefinitionLine { display: string; canonical: string }
+type Definitions = { status: 'ok'; lines: Map<string, DefinitionLine[]>; method: 'parsed' } | Extract<ContractAnalysis, { status: 'unavailable' }>
+const unavailable = (reason: Extract<ContractAnalysis, { status: 'unavailable' }>['reason'], detail: string): Extract<ContractAnalysis, { status: 'unavailable' }> =>
+  ({ status: 'unavailable', changes: [], reason, detail })
+const tooManyDefinitions = () => unavailable('too-many-definitions', `over the ${CONTRACT_MAX_DEFINITIONS} definition contract analysis cap`)
 
 function whitespaceOutsideLiterals(text: string, separator: string): string {
-  let out = '', quote = '', escaped = false, pending = false
+  const chunks: string[] = []
+  let quote = '', escaped = false, pending = false
   for (const ch of text.trim()) {
     if (quote) {
-      out += ch
+      chunks.push(ch)
       if (escaped) escaped = false
       else if (ch === '\\') escaped = true
       else if (ch === quote) quote = ''
     } else if (ch === '"' || ch === "'" || ch === '`') {
-      if (pending && out) out += separator
-      pending = false; quote = ch; out += ch
+      if (pending && chunks.length) chunks.push(separator)
+      pending = false; quote = ch; chunks.push(ch)
     } else if (/\s/.test(ch)) pending = true
     else {
-      if (pending && out) out += separator
-      pending = false; out += ch
+      if (pending && chunks.length) chunks.push(separator)
+      pending = false; chunks.push(ch)
     }
   }
-  return out
+  return chunks.join('')
 }
 
 const normalized = (line: string) => whitespaceOutsideLiterals(line, ' ')
 const comparable = (line: string) => whitespaceOutsideLiterals(line, '')
-const lineContaining = (text: string, index: number) => {
-  const from = text.lastIndexOf('\n', index - 1) + 1
-  const to = text.indexOf('\n', index)
-  return text.slice(from, to < 0 ? text.length : to)
-}
-
-function pythonHeader(line: string): string {
-  let depth = 0, quote = '', escaped = false
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    if (quote) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === quote) quote = ''
-      continue
-    }
-    if (ch === '"' || ch === "'") { quote = ch; continue }
-    if ('([{'.includes(ch)) depth++
-    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1)
-    else if (ch === ':' && depth === 0) return line.slice(0, i + 1)
-  }
-  return line
-}
+const boundedSignature = (text: string) => text.length > CONTRACT_SIGNATURE_MAX_CHARS ? text.slice(0, CONTRACT_SIGNATURE_MAX_CHARS) + '…' : text
 
 const definitionName = (definition: ParsedDef): string => definition.container ? `${definition.container}.${definition.name}` : definition.name
 
-function definitionLines(path: string, text: string, parse?: FileParser): Map<string, DefinitionLine[]> | undefined {
-  const parsed = parse?.(path, text)
-  if (parsed) {
-    const out = new Map<string, DefinitionLine[]>()
-    for (const definition of parsed.defs) {
-      const name = definitionName(definition)
-      const display = normalized(definition.signature)
-      const lines = out.get(name) ?? []
-      const line = { display, canonical: comparable(display) }
-      if (!lines.some(existing => existing.canonical === line.canonical)) lines.push(line)
-      out.set(name, lines)
-    }
-    return out
+function definitionLines(path: string, text: string, parse?: FileParser): Definitions {
+  const lines = new Map<string, DefinitionLine[]>()
+  // Actual empty text certifies no definitions, including absent baselines and deletions.
+  if (text === '') return { status: 'ok', lines, method: 'parsed' }
+  if (!parse) return unavailable('no-parser', 'contract analysis requires a parser')
+  const parsed = parse(path, text)
+  if (!parsed) return unavailable('parser-unavailable', `parser unavailable for ${path}`)
+  const add = (name: string, signature: string) => {
+    const display = normalized(boundedSignature(signature))
+    const values = lines.get(name) ?? []
+    const line = { display, canonical: comparable(signature) }
+    if (!values.some(existing => existing.canonical === line.canonical)) values.push(line)
+    lines.set(name, values)
   }
-  const ext = path.slice(path.lastIndexOf('.') + 1)
-  const out = new Map<string, DefinitionLine[]>()
-  const add = (name: string, raw: string, signature = raw) => {
-    const display = normalized(raw)
-    const lines = out.get(name) ?? []
-    const line = { display, canonical: comparable(normalized(signature)) }
-    if (!lines.some(existing => existing.canonical === line.canonical)) lines.push(line)
-    out.set(name, lines)
-  }
-  if (ext === 'py') {
-    for (const match of text.matchAll(PY_DEF)) {
-      const nameIndex = match.index! + match[0].lastIndexOf(match[1])
-      add(match[1], pythonHeader(lineContaining(text, nameIndex)))
-    }
-    for (const match of text.matchAll(PY_ASSIGN)) {
-      const line = lineContaining(text, match.index!)
-      add(match[1], line.slice(0, line.indexOf('=') + 1))
-    }
-  } else if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'mts', 'cjs'].includes(ext)) {
-    for (const match of text.matchAll(JS_DEF)) {
-      const name = match[1] ?? match[2]
-      const line = lineContaining(text, match.index!)
-      let signature = line
-      const declaration = match[0]
-      if (/\b(?:const|let|var)\b/.test(declaration)) {
-        const arrow = line.indexOf('=>')
-        const equals = line.indexOf('=')
-        signature = arrow >= 0 ? line.slice(0, arrow + 2) : line.slice(0, equals + 1)
-      } else if (/\b(?:function\*?|class|interface|enum)\b/.test(declaration)) {
-        const brace = line.indexOf('{')
-        if (brace >= 0) signature = line.slice(0, brace)
-      }
-      add(name, line, signature)
-    }
-  } else return undefined
-  return out
+  if (parsed.defs.length > CONTRACT_MAX_DEFINITIONS) return tooManyDefinitions()
+  for (const definition of parsed.defs) add(definitionName(definition), definition.signature)
+  return { status: 'ok', lines, method: 'parsed' }
 }
 
-/** Definition-line changes inferred from an overlay; ordinary body edits are intentionally ignored. */
-export function observedContractChanges(baseText: string, overlayText: string, path: string, parse?: FileParser): Omit<ObservedContractChange, 'path'>[] {
-  const before = definitionLines(path, baseText, parse), after = definitionLines(path, overlayText, parse)
-  if (!before || !after) return []
+/** Bounded analysis returns an explicit coverage gap rather than a partial definition map. */
+export function observedContractAnalysis(baseText: string, overlayText: string, path: string, parse?: FileParser): ContractAnalysis {
+  if (baseText.length > CONTRACT_TEXT_MAX_CHARS || overlayText.length > CONTRACT_TEXT_MAX_CHARS)
+    return unavailable('over-size', `over the ${CONTRACT_TEXT_MAX_CHARS / 1024} KB contract analysis cap`)
+  const before = definitionLines(path, baseText, parse)
+  if (before.status === 'unavailable') return before
+  const after = definitionLines(path, overlayText, parse)
+  if (after.status === 'unavailable') return after
   const changes: Omit<ObservedContractChange, 'path'>[] = []
   const signatureSet = (lines: DefinitionLine[]) => lines.map(line => line.canonical).sort().join('\0')
-  const displaySet = (lines: DefinitionLine[]) => lines.map(line => line.display).sort().join(' | ')
-  for (const [symbol, oldLines] of before) {
-    const newLines = after.get(symbol)
+  const displaySet = (lines: DefinitionLine[]) => {
+    const displays = lines.map(line => line.display).sort()
+    const more = Math.max(0, displays.length - CONTRACT_MAX_OVERLOADS_SHOWN)
+    return displays.slice(0, CONTRACT_MAX_OVERLOADS_SHOWN).join(' | ') + (more ? ` … +${more} more` : '')
+  }
+  for (const [symbol, oldLines] of before.lines) {
+    const newLines = after.lines.get(symbol)
     if (!newLines) changes.push({ symbol, kind: 'delete', detail: `was \`${displaySet(oldLines)}\`` })
     else if (signatureSet(oldLines) !== signatureSet(newLines)) changes.push({ symbol, kind: 'signature', detail: `was \`${displaySet(oldLines)}\` now \`${displaySet(newLines)}\`` })
   }
-  for (const [symbol, newLines] of after) if (!before.has(symbol)) changes.push({ symbol, kind: 'add', detail: `now \`${displaySet(newLines)}\`` })
-  return changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind))
+  for (const [symbol, newLines] of after.lines) if (!before.lines.has(symbol)) changes.push({ symbol, kind: 'add', detail: `now \`${displaySet(newLines)}\`` })
+  return { status: 'ok', changes: changes.sort((a, b) => a.symbol.localeCompare(b.symbol) || a.kind.localeCompare(b.kind)),
+    method: 'parsed' }
+}
+
+/** Compatibility entry point; callers needing coverage information use observedContractAnalysis. */
+export function observedContractChanges(baseText: string, overlayText: string, path: string, parse?: FileParser): Omit<ObservedContractChange, 'path'>[] {
+  return observedContractAnalysis(baseText, overlayText, path, parse).changes
 }
 
 export interface Impact {
