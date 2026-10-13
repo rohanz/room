@@ -55,6 +55,8 @@ export class HooksBridge {
   private unobserve: (() => void)[] = []
   private stopped = false
   private revision = 0
+  private writing?: Promise<void>
+  private dirty = false
   private written?: string
   constructor(private s: Session, private o: HooksBridgeOptions) {
     hookHealth.set(s, newHookHealth(this.now()))
@@ -85,12 +87,25 @@ export class HooksBridge {
     if (this.stopped) return
     this.revision++
     if (this.timer) return
-    this.timer = setTimeout(() => {
-      this.timer = null
-      try { void this.write().catch(e => this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`)) }
-      catch (e) { this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`) }
-    }, 150)
+    this.timer = setTimeout(() => { this.timer = null; this.runWrite() }, 150)
     this.timer.unref?.()
+  }
+
+  /**
+   * One pass at a time: a scan awaits git per claim and retains its snapshots and texts until it
+   * ends, so activity during a pass marks it dirty and the pass reruns once instead of overlapping.
+   */
+  private runWrite(): void {
+    if (this.writing) { this.dirty = true; return }
+    this.dirty = false
+    const failed = (e: unknown) => this.o.log?.(`hooks: could not write state: ${e instanceof Error ? e.message : String(e)}`)
+    let pass: Promise<void>
+    try { pass = this.write().catch(failed) }
+    catch (e) { failed(e); return }
+    this.writing = pass.finally(() => {
+      this.writing = undefined
+      if (this.dirty && !this.stopped) this.scheduleWrite()
+    })
   }
 
   /** state.json: counts and coordination while fenced, or a minimal paused health state on lease loss. */

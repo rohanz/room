@@ -7,8 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { git, gitShow } from '@room/roomd/git'
 import { DISK_READ_PATH, containedRepoPath, validRepoPath } from '@room/roomd'
-import { parseFile, ensureLanguages } from './parse/engine.js'
-import { ParseWorker } from './parse/client.js'
+import { acquireParseWorker, parseInWorker, TransientParserError, type ParseWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import type { BaselineRead } from '@room/roomd/baseline'
 import { carriedFrom } from './worker-registry.js'
@@ -19,6 +18,20 @@ const isSourcePath = (path: string): boolean => specForPath(path) !== undefined
 const MAX_FILES = 3000
 const MAX_BYTES = 256 * 1024
 const MAX_REFRESH_CONCURRENCY = 8
+const MAX_RETAINED_SYMBOLS = 400_000
+const MAX_RETAINED_BYTES = 64 * 1024 * 1024
+const MAX_SYMBOLS_PER_FILE = 4000
+const BUDGET_WARNING_PREFIX = 'retained graph budget: '
+type RetainedCost = { symbols: number; bytes: number }
+let processSymbols = 0, processBytes = 0
+function symbolCost(path: string, symbols: FileSymbols | undefined): RetainedCost {
+  if (!symbols) return { symbols: 0, bytes: 0 }
+  let count = 0, bytes = 256 + path.length * 2
+  for (const values of [symbols.defs, symbols.refs, symbols.imports ?? []]) for (const value of values) {
+    count++; bytes += value.length * 2 + 96
+  }
+  return { symbols: count, bytes }
+}
 /** Snapshot limits: every publish is appended to the room's persisted update log, so keep each one small and rare. */
 const MAX_EDGES = 4000
 const MAX_OBSERVED = 200
@@ -31,25 +44,18 @@ const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve
 type PublicationSource = { kind: 'base'; base: string } | { kind: 'entry'; person: string; fence: string; hash: string } |
   { kind: 'deletion'; person: string; fence: string; base: string; baseline: string }
 
-/** Read references from live worker text, including calls in the definition's own file. */
-async function referencesSymbol(path: string, text: string, symbol: string): Promise<boolean> {
-  if (!isSourcePath(path) || text.length > MAX_BYTES) return false
-  await ensureLanguages([path])
-  const parsed = parseFile(path, text)
-  if (!parsed) return false
-  const wanted = bareSymbol(symbol)
-  return [...parsed.refs, ...parsed.ownRefs].some(ref => bareSymbol(ref) === wanted)
-}
-
 /**
  * Whether a consumer uses `symbol` as defined in `provider`: a call in the provider's own file,
  * or a reference the graph's import narrowing resolves to the provider rather than to another
  * definer that `known` (the caller's symbol graph) has indexed.
  */
 export async function consumesSymbol(consumer: string, text: string, provider: string, symbol: string, known?: SymbolGraph): Promise<boolean> {
-  if (!await referencesSymbol(consumer, text, symbol)) return false
+  if (!isSourcePath(consumer) || text.length > MAX_BYTES) return false
+  const [parsed] = await parseInWorker(consumer, [text])
+  if (!parsed) return false
+  const wanted = bareSymbol(symbol)
+  if (![...parsed.refs, ...parsed.ownRefs].some(ref => bareSymbol(ref) === wanted)) return false
   if (consumer === provider) return true
-  const parsed = parseFile(consumer, text)!
   const name = symbol.split(/[.:]+/).filter(Boolean).at(-1) ?? symbol
   const files = new Map<string, FileSymbols>([[provider, { defs: [name], refs: [], imports: [] }]])
   for (const path of known?.definersOf(name) ?? []) if (path !== provider && path !== consumer) files.set(path, known!.symbolsOf(path)!)
@@ -61,9 +67,30 @@ export async function consumesSymbol(consumer: string, text: string, provider: s
 
 /** Immutable base facts only; no room, leases, overlays or sharing grants cross a reconnect. */
 export interface GraphSeed { dir: string; base: string; files: ReadonlyMap<string, FileSymbols> }
+export interface GraphIndexOptions {
+  minPublishMs?: number; random?: () => number; read?: typeof gitShow; seed?: GraphSeed
+  maxPaths?: number; maxRetainedSymbols?: number; maxRetainedBytes?: number; maxSymbolsPerFile?: number
+  /** Test-only isolated parser; production indexes use the process-shared parser. */
+  parser?: Pick<ParseWorker, 'parse' | 'stop'>
+}
 
 export class GraphIndex {
-  private readonly parser = new ParseWorker()
+  private readonly parser: Pick<ParseWorker, 'parse' | 'stop'>
+  private admitted = new Set<string>()
+  private activePaths = new Set<string>()
+  private retainedCosts = new Map<string, RetainedCost>()
+  private recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private budgetWarned = false
+  private priorityCache = new Map<string, number>()
+  private priorityClaimPaths?: string[]
+  private budgetPublishing?: NodeJS.Immediate
+  private withdrawalPending = false
+  /** Test-only accounting includes both local and published graph facts. */
+  get retainedBudgetForTest(): RetainedCost & { processSymbols: number; processBytes: number } {
+    let symbols = 0, bytes = 0
+    for (const cost of this.retainedCosts.values()) { symbols += cost.symbols; bytes += cost.bytes }
+    return { symbols, bytes, processSymbols, processBytes }
+  }
   private completedFiles = new Set<string>()
   private totalFiles = 0
   get indexingStatus(): string {
@@ -145,7 +172,8 @@ export class GraphIndex {
     }
   }
 
-  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: { minPublishMs?: number; random?: () => number; read?: typeof gitShow; seed?: GraphSeed } = {}) {
+  constructor(private room: RoomDoc, private me: string, private dir: string, private log: (s: string) => void = () => {}, private opts: GraphIndexOptions = {}) {
+    this.parser = opts.parser ?? acquireParseWorker()
     this.graph = new SymbolGraph(path => this.cache.get(path))
     this.publishedGraph = new SymbolGraph(path => this.publishedCache.get(path))
   }
@@ -215,6 +243,7 @@ export class GraphIndex {
       const known = new Map([...root].map(([person, map]) => [person, new Set(map.keys())]))
       return (events: Y.YEvent<any>[]) => {
         if (this.stopped) return
+        this.invalidatePriorities()
         this.withdrawRestricted()
         const paths = touchedPaths(events, root, known)
         for (const event of events) {
@@ -228,8 +257,19 @@ export class GraphIndex {
     const onManifest = observe(this.room.manifest)
     this.room.manifest.observeDeep(onManifest)
     this.unobserve.push(() => this.room.manifest.unobserveDeep(onManifest))
+    const onClaims = (event: { keysChanged: Set<string> }) => {
+      this.invalidatePriorities()
+      if (!this.base || this.stopped) return
+      for (const claim of this.room.openClaims()) if (event.keysChanged.has(claim.id)) {
+        const paths = claim.path.endsWith('/') ? [...this.grantPaths()].filter(path => containsPath(claim.path, path)) : [claim.path]
+        for (const path of paths) if (!this.admitted.has(path)) void this.refresh(path)
+      }
+    }
+    this.room.claims.observe(onClaims)
+    this.unobserve.push(() => this.room.claims.unobserve(onClaims))
     this.ownPublicationKey = this.publicationKey()
     const onHead = (event: { keysChanged: Set<string>; transaction: Y.Transaction }) => {
+      this.invalidatePriorities()
       for (const person of event.keysChanged) if (person !== this.me) refreshPeerPublication(person, event.transaction)
       if (!event.keysChanged.has(this.me)) return
       const next = this.publicationKey()
@@ -306,9 +346,12 @@ export class GraphIndex {
       if (this.room.manifest.get(manifestKey(person, head.fence))?.has(path)) return false
       if (this.room.roomSalt && head.excluded.includes(digestPath(this.room.roomSalt, path))) return false
     }
-    this.cache.set(path, symbols); this.setGraph(path, '')
+    if (!this.admitPath(path)) return true
     const source: PublicationSource = { kind: 'base', base: this.base }
-    if (this.publicationAllowed(path, source)) {
+    const published = this.publicationAllowed(path, source) ? symbols : undefined
+    if (!this.reserveSymbols(path, symbols, published)) return true
+    this.cache.set(path, symbols); this.setGraph(path, '')
+    if (published) {
       this.publishedCache.set(path, symbols); this.publishedSource.set(path, source)
       this.publishedGraph.set(path, '')
     }
@@ -319,10 +362,20 @@ export class GraphIndex {
   stop(): void {
     this.stopped = true
     this.parser.stop()
+    clearImmediate(this.budgetPublishing); this.budgetPublishing = undefined; this.withdrawalPending = false
+    this.invalidatePriorities()
+    for (const timer of this.recoveryTimers.values()) clearTimeout(timer)
+    this.recoveryTimers.clear()
+    for (const path of this.retainedCosts.keys()) this.setRetainedCost(path, { symbols: 0, bytes: 0 })
+    this.admitted.clear()
+    for (const path of this.cache.keys()) this.graph.remove(path)
+    for (const path of this.publishedCache.keys()) this.publishedGraph.remove(path)
+    this.cache.clear(); this.publishedCache.clear(); this.publishedSource.clear(); this.observedByPath.clear()
     this.changeListeners.clear()
     clearTimeout(this.jitterTimer); this.endJitter?.(); clearTimeout(this.publishing)
     for (const entry of this.pending.values()) { entry.resolve(); entry.resolveIdle() }
     this.pending.clear()
+    this.activePaths.clear()
     this.refreshQueue.length = 0
     for (const u of this.unobserve) u()
     this.unobserve = []
@@ -339,6 +392,7 @@ export class GraphIndex {
 
   private async rebuild(): Promise<void> {
     const generation = ++this.generation
+    this.invalidatePriorities()
     this.discovering = true
     try {
       for (const entry of this.pending.values()) entry.resolve() // release any superseded build
@@ -347,12 +401,16 @@ export class GraphIndex {
       this.totalFiles = 0
       this.base = participantRecord(this.room, this.me)?.git?.base ?? ''
       this.observedByPath.clear()
+      for (const path of this.retainedCosts.keys()) this.syncRetainedCost(path)
       this.observedRevision++
       this.degradedPaths.clear()
       this.uncoveredPaths.clear()
       this.uncoveredWarnings.clear()
+      for (const timer of this.recoveryTimers.values()) clearTimeout(timer)
+      this.recoveryTimers.clear(); this.admitted.clear()
       let removed = 0, lastRemovalYield = Date.now()
       for (const p of this.cache.keys()) {
+        this.cache.delete(p); this.publishedCache.delete(p); this.publishedSource.delete(p)
         this.removeGraph(p)
         if (++removed % YIELD_EVERY === 0 || Date.now() - lastRemovalYield >= YIELD_AFTER_MS) {
           await yieldToEventLoop()
@@ -361,7 +419,9 @@ export class GraphIndex {
         }
       }
       this.cache.clear()
-      for (const p of this.publishedCache.keys()) this.publishedGraph.remove(p)
+      for (const p of this.publishedCache.keys()) {
+        this.publishedCache.delete(p); this.publishedGraph.remove(p); this.syncRetainedCost(p)
+      }
       this.publishedCache.clear()
       this.publishedSource.clear()
       if (!this.base) return
@@ -371,12 +431,13 @@ export class GraphIndex {
       try { paths = (await git(this.dir, ['ls-tree', '-r', '--name-only', '-z', this.base])).split('\0').filter(isSourcePath) }
       catch (e) { if (generation === this.generation) { this.phase = 'error'; this.publish('error') }; this.log(`graph: ls-tree failed: ${e instanceof Error ? e.message : e}`); return }
       if (generation !== this.generation || this.stopped) return
-      this.truncated = paths.length > MAX_FILES
-      if (paths.length > MAX_FILES) { this.log(`graph: ${paths.length} source files, indexing first ${MAX_FILES}`); paths = paths.slice(0, MAX_FILES) }
+      this.truncated = false
       const all = new Set(paths)
       for (const person of this.room.manifestHead.keys()) for (const p of manifestPaths(this.room, person)) if (isSourcePath(p)) all.add(p)
       const t0 = Date.now()
-      const pathsToRefresh = Array.from(all)
+      const ordered = Array.from(all).sort((a, b) => this.comparePriority(a, b))
+      const pathsToRefresh = ordered.slice(0, this.opts.maxPaths ?? MAX_FILES)
+      for (const path of ordered.slice(pathsToRefresh.length)) this.omit(path, 'path admission limit')
       this.totalFiles = pathsToRefresh.length
       if (generation !== this.generation || this.stopped) return
       const refreshes: Promise<void>[] = []
@@ -519,7 +580,9 @@ export class GraphIndex {
   private uncoveredAuthorized(path: string): boolean {
     const fence = this.room.manifestHead.get(this.me)?.fence
     const entry = fence ? this.room.manifest.get(manifestKey(this.me, fence))?.get(path) : undefined
-    return this.entryAuthorized(this.me, path, entry)
+    return this.entryAuthorized(this.me, path, entry) || !entry &&
+      !!this.uncoveredWarnings.get(path)?.startsWith(BUDGET_WARNING_PREFIX) &&
+      this.publicationAllowed(path, { kind: 'base', base: this.base })
   }
 
   private publicationAllowed(path: string, source = this.publishedSource.get(path)): boolean {
@@ -561,6 +624,7 @@ export class GraphIndex {
       this.publishedSource.delete(path)
       this.publishedGraph.remove(path)
       this.observedByPath.delete(path)
+      this.syncRetainedCost(path)
       this.graphRevision++
       this.observedRevision++
     }
@@ -577,8 +641,108 @@ export class GraphIndex {
     this.lastPublishedRevision = { graph: -1, observed: -1, base: '', provenance: '' }
   }
 
+  private setRetainedCost(path: string, cost: RetainedCost): void {
+    const old = this.retainedCosts.get(path) ?? { symbols: 0, bytes: 0 }
+    processSymbols += cost.symbols - old.symbols; processBytes += cost.bytes - old.bytes
+    if (cost.bytes) this.retainedCosts.set(path, cost)
+    else this.retainedCosts.delete(path)
+  }
+
+  private syncRetainedCost(path: string): void {
+    const local = symbolCost(path, this.cache.get(path)), published = symbolCost(path, this.publishedCache.get(path))
+    this.setRetainedCost(path, { symbols: local.symbols + published.symbols,
+      bytes: local.bytes + published.bytes + this.observedBytes(this.observedByPath.get(path)) })
+  }
+
+  private observedBytes(changes: ObservedContractChange[] | undefined): number {
+    let bytes = 0
+    for (const change of changes ?? []) bytes += 128 + 2 * (change.path.length + change.symbol.length + change.detail.length)
+    return bytes
+  }
+
+  private priority(path: string): number {
+    const cached = this.priorityCache.get(path)
+    if (cached !== undefined) return cached
+    const head = this.room.manifestHead.get(this.me)
+    const claims = this.priorityClaimPaths ??= this.room.openClaims().map(claim => claim.path)
+    const rank = head && this.room.manifest.get(manifestKey(this.me, head.fence))?.has(path) ? 0
+      : claims.some(prefix => containsPath(prefix, path)) ? 1 : 2
+    this.priorityCache.set(path, rank)
+    return rank
+  }
+  private invalidatePriorities(): void {
+    this.priorityCache.clear(); this.priorityClaimPaths = undefined
+  }
+  private comparePriority(a: string, b: string): number {
+    return this.priority(a) - this.priority(b) || (a < b ? -1 : a > b ? 1 : 0)
+  }
+
+  private omit(path: string, reason: string): void {
+    this.admitted.delete(path)
+    // Drop queued work on eviction. Keep active requests until their existing settlement path runs.
+    if (!this.activePaths.has(path)) {
+      const pending = this.pending.get(path)
+      pending?.resolve(); pending?.resolveIdle(); this.pending.delete(path)
+      const queued = this.refreshQueue.indexOf(path)
+      if (queued >= 0) this.refreshQueue.splice(queued, 1)
+      this.revisions.delete(path); this.completedFiles.delete(path)
+    }
+    this.cache.delete(path); this.publishedCache.delete(path); this.publishedSource.delete(path)
+    this.observedByPath.delete(path); this.observedRevision++
+    this.removeGraph(path)
+    this.degradedPaths.delete(path); this.uncoveredPaths.add(path)
+    this.uncoveredWarnings.set(path, BUDGET_WARNING_PREFIX + reason); this.truncated = true
+    this.lastPublished.key = ''
+    clearTimeout(this.recoveryTimers.get(path)); this.recoveryTimers.delete(path)
+    if (!this.budgetWarned) { this.budgetWarned = true; this.log(`graph: retained graph budget: ${reason}; omitted paths are not covered`) }
+    this.priorityCache.delete(path)
+    // One guarded snapshot withdraws a whole admission pass, even inside the publish window.
+    const current = this.room.graphs.get(this.me)
+    this.queueBudgetPublish(!!(current?.paths.includes(path) || current?.observed?.some(change => change.path === path)))
+  }
+
+  private admitPath(path: string): boolean {
+    if (!isSourcePath(path)) return false
+    if (this.admitted.has(path)) return true
+    if (this.admitted.size >= (this.opts.maxPaths ?? MAX_FILES)) {
+      let worst: string | undefined
+      for (const candidate of this.admitted) if (!worst || this.comparePriority(candidate, worst) > 0) worst = candidate
+      if (!worst || this.comparePriority(path, worst) >= 0) { this.omit(path, 'path admission limit'); return false }
+      this.omit(worst, 'path admission limit')
+    }
+    this.admitted.add(path)
+    return true
+  }
+
+  private reserveSymbols(path: string, local: FileSymbols | undefined, published: FileSymbols | undefined, observed?: ObservedContractChange[]): boolean {
+    const a = symbolCost(path, local), b = symbolCost(path, published)
+    if (Math.max(a.symbols, b.symbols) > (this.opts.maxSymbolsPerFile ?? MAX_SYMBOLS_PER_FILE)) {
+      this.omit(path, 'per-file symbol limit'); return false
+    }
+    const cost = { symbols: a.symbols + b.symbols, bytes: a.bytes + b.bytes + this.observedBytes(observed) }
+    const old = this.retainedCosts.get(path) ?? { symbols: 0, bytes: 0 }
+    const fits = () => processSymbols - old.symbols + cost.symbols <= (this.opts.maxRetainedSymbols ?? MAX_RETAINED_SYMBOLS) &&
+      processBytes - old.bytes + cost.bytes <= (this.opts.maxRetainedBytes ?? MAX_RETAINED_BYTES)
+    if (fits()) { this.setRetainedCost(path, cost); return true }
+    const victims = [...this.retainedCosts.keys()].filter(other => other !== path && this.comparePriority(other, path) > 0)
+      .sort((a, b) => this.comparePriority(b, a))
+    const refundable = victims.reduce((sum, other) => {
+      const cost = this.retainedCosts.get(other)!
+      return { symbols: sum.symbols + cost.symbols, bytes: sum.bytes + cost.bytes }
+    }, { symbols: 0, bytes: 0 })
+    if (processSymbols - old.symbols + cost.symbols - refundable.symbols > (this.opts.maxRetainedSymbols ?? MAX_RETAINED_SYMBOLS) ||
+        processBytes - old.bytes + cost.bytes - refundable.bytes > (this.opts.maxRetainedBytes ?? MAX_RETAINED_BYTES)) {
+      this.omit(path, 'retained symbol/byte limit'); return false
+    }
+    while (!fits() && victims.length) this.omit(victims.shift()!, 'retained symbol/byte limit')
+    if (!fits()) { this.omit(path, 'retained symbol/byte limit'); return false }
+    this.setRetainedCost(path, cost)
+    return true
+  }
+
   refresh(path: string): Promise<void> {
     if (this.stopped) return Promise.resolve()
+    if (!this.admitPath(path)) return Promise.resolve()
     this.revisions.set(path, (this.revisions.get(path) ?? 0) + 1)
     const inflight = this.pending.get(path)
     if (inflight) {
@@ -592,7 +756,7 @@ export class GraphIndex {
     let resolve!: () => void
     const promise = new Promise<void>(r => { resolve = r })
     let resolveIdle!: () => void
-    const idle = new Promise<void>(r => { resolveIdle = r })
+    const idle = new Promise<void>(r => { resolveIdle = () => { this.activePaths.delete(path); r() } })
     this.pending.set(path, { generation: this.generation, promise, resolve, idle, resolveIdle })
     this.refreshQueue.push(path)
     this.drainRefreshQueue()
@@ -602,6 +766,7 @@ export class GraphIndex {
   private removeGraph(path: string): void {
     const existed = this.graph.has(path)
     this.graph.remove(path); this.publishedGraph.remove(path); this.graphRevision++
+    this.syncRetainedCost(path)
     if (existed) this.changedResolution()
   }
   private setGraph(path: string, text: string): void {
@@ -637,7 +802,12 @@ export class GraphIndex {
         const entry = this.pending.get(path)
         if (entry?.generation === generation) entry.resolve()
         if (!done && !this.stopped) this.refreshQueue.push(path)
-        else { entry?.resolveIdle(); this.pending.delete(path) }
+        else {
+          entry?.resolveIdle(); this.pending.delete(path)
+          // A path's revision only matters while its refresh is in flight; without this, every
+          // path ever refreshed would be remembered for the session's lifetime.
+          this.revisions.delete(path)
+        }
         if (!this.stopped && !this.pending.size) {
           clearTimeout(this.publishing)
           this.publishing = setTimeout(() => { void this.publish(this.phase) }, 100)
@@ -648,6 +818,31 @@ export class GraphIndex {
   }
 
   private async runRefresh(path: string): Promise<boolean> {
+    if (!this.admitted.has(path)) return true
+    this.activePaths.add(path)
+    const generation = this.generation
+    try {
+      const done = await this.runRefreshOnce(path)
+      if (done) { clearTimeout(this.recoveryTimers.get(path)); this.recoveryTimers.delete(path) }
+      if (done && !this.cache.has(path) && !this.publishedCache.has(path)) this.admitted.delete(path)
+      return done
+    } catch (error) {
+      if (error instanceof TransientParserError && !this.stopped && generation === this.generation &&
+          this.admitted.has(path) && !this.recoveryTimers.has(path)) {
+        const timer = setTimeout(() => {
+          this.recoveryTimers.delete(path)
+          if (!this.stopped) void this.refresh(path)
+        }, Math.max(1, error.retryAt - Date.now()))
+        timer.unref()
+        this.recoveryTimers.set(path, timer)
+      } else if (!(error instanceof TransientParserError)) {
+        clearTimeout(this.recoveryTimers.get(path)); this.recoveryTimers.delete(path)
+      }
+      throw error
+    }
+  }
+
+  private async runRefreshOnce(path: string): Promise<boolean> {
     if (!this.stopped) {
       const revision = this.revisions.get(path), generation = this.generation
       const text = await this.textFor(path)
@@ -694,6 +889,14 @@ export class GraphIndex {
       }
       if (this.stopped) return true
       if (generation !== this.generation) return false
+      if (!this.admitted.has(path)) return true
+      const publishedSymbols = publicParsed && publicText !== undefined && publicText.length <= MAX_BYTES ? {
+        defs: publicParsed.defs.map(d => d.name), refs: publicParsed.refs, imports: publicParsed.imports,
+      } : undefined
+      if (!this.reserveSymbols(path, symbols, publishedSymbols)) {
+        await this.yieldAfterIndex()
+        return revision === this.revisions.get(path)
+      }
       this.uncoveredPaths.delete(path)
       if (!symbols || text === undefined) { this.cache.delete(path); this.removeGraph(path) }
       else { this.cache.set(path, symbols); this.setGraph(path, text) }
@@ -701,7 +904,7 @@ export class GraphIndex {
       else {
         if (!publicParsed) { this.publishedCache.delete(path); this.publishedSource.delete(path); this.publishedGraph.remove(path) }
         else {
-          this.publishedCache.set(path, { defs: publicParsed.defs.map(d => d.name), refs: publicParsed.refs, imports: publicParsed.imports })
+          this.publishedCache.set(path, publishedSymbols!)
           this.publishedSource.set(path, publication!.source)
           this.publishedGraph.set(path, publicText)
         }
@@ -711,6 +914,7 @@ export class GraphIndex {
         if (baseRead?.kind === 'unavailable') {
           this.degradedPaths.add(path)
           this.observedByPath.delete(path)
+          this.syncRetainedCost(path)
           this.log(`graph: baseline unavailable for ${path}; observed contract coverage degraded: ${baseRead.error.message}`)
           this.observedRevision++
           await this.yieldAfterIndex()
@@ -730,6 +934,7 @@ export class GraphIndex {
             : `${analysis.reason}: ${analysis.detail}; observed contract coverage degraded`
           this.uncoveredPaths.add(path)
           this.observedByPath.delete(path)
+          this.syncRetainedCost(path)
           if (this.uncoveredWarnings.get(path) !== warning) {
             this.uncoveredWarnings.set(path, warning)
             this.log(`graph: ${path}: ${warning}`)
@@ -740,6 +945,10 @@ export class GraphIndex {
         }
         this.uncoveredWarnings.delete(path)
         const changes = analysis.changes.map(change => ({ path, ...change }))
+        if (!this.reserveSymbols(path, this.cache.get(path), this.publishedCache.get(path), changes)) {
+          await this.yieldAfterIndex()
+          return revision === this.revisions.get(path)
+        }
         if (changes.length && mineDeleted && baseRead?.kind === 'available' &&
             this.entryAuthorized(this.me, path, myEntry) && publicationSource?.fenceValid &&
             snapshotStillCurrent(this.room, publicationSource, []))
@@ -756,6 +965,7 @@ export class GraphIndex {
         } else this.degradedPaths.delete(path)
       }
       this.observedRevision++
+      this.syncRetainedCost(path)
       this.completedFiles.add(path)
       await this.yieldAfterIndex()
       return revision === this.revisions.get(path)
@@ -769,15 +979,32 @@ export class GraphIndex {
     while (this.pending.size) await Promise.all([...this.pending.values()].map(entry => entry.idle))
   }
 
+  private queueBudgetPublish(withdrawal: boolean): void {
+    this.withdrawalPending ||= withdrawal
+    if (this.budgetPublishing || this.stopped) return
+    this.budgetPublishing = setImmediate(() => {
+      this.budgetPublishing = undefined
+      if (!this.stopped) void this.publish(this.phase)
+    })
+    this.budgetPublishing.unref()
+  }
+
   private publish(status: 'ready' | 'indexing' | 'error'): Promise<void> {
     const generation = this.generation
-    this.publication = this.publication.then(() => this.publishSnapshot(status, generation)).catch(e => {
+    this.publication = this.publication.then(async () => {
+      const withdrawal = this.withdrawalPending
+      await this.publishSnapshot(status, generation, withdrawal)
+      const current = this.room.graphs.get(this.me), head = this.room.manifestHead.get(this.me)
+      if (withdrawal && this.lastPublishedRevision.graph === this.graphRevision && this.lastPublishedRevision.observed === this.observedRevision &&
+          current?.at === this.lastPublished.at && current.base === this.base && current.sourceFence === head?.fence && current.sourceRev === head?.rev)
+        this.withdrawalPending = false
+    }).catch(e => {
       this.log(`graph: could not publish: ${e instanceof Error ? e.message : String(e)}`)
     })
     return this.publication
   }
 
-  private async publishSnapshot(status: 'ready' | 'indexing' | 'error', generation: number): Promise<void> {
+  private async publishSnapshot(status: 'ready' | 'indexing' | 'error', generation: number, withdrawal = false): Promise<void> {
     if (this.stopped) return
     if (generation !== this.generation) return
     if (this.degradedPaths.size) status = 'error'
@@ -790,19 +1017,37 @@ export class GraphIndex {
         this.lastPublishedRevision.base === base && this.lastPublishedRevision.provenance === provenance && this.lastPublished.status === status) return
     const paths = Array.from(this.publishedCache.keys()).filter(path => this.publicationAllowed(path)).sort()
     const allowedPaths = new Set(paths)
+    const allObserved = [...this.observedByPath.values()].flat().filter(change =>
+      (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === 'deletion') &&
+      this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    let observedTruncated = allObserved.length > MAX_OBSERVED
+    const observed = allObserved.slice(0, MAX_OBSERVED)
+    const budget = MAX_SNAPSHOT_BYTES - 512 // room/base/fence/status metadata around this body
     const edges = new Map<string, { source: string; target: string; symbols: string[] }>()
     let truncated = this.truncated
+    // Edges over the byte budget are dropped as a whole, so stop collecting them as soon as the
+    // serialized body would exceed it instead of materializing every edge's symbol list first.
+    let bodyBytes = Buffer.byteLength(JSON.stringify({ paths, edges: [], observed }))
+    let overBudget = bodyBytes > budget
     let lastYield = Date.now()
-    for (let i = 0; i < paths.length; i++) {
+    for (let i = 0; i < paths.length && !overBudget; i++) {
       const target = paths[i]
-      for (const dep of this.publishedGraph.dependenciesOf(target)) for (const source of dep.definedIn) {
-        if (!allowedPaths.has(source)) continue
-        const key = JSON.stringify([source, target])
-        if (!edges.has(key)) {
-          if (edges.size >= MAX_EDGES) { truncated = true; continue }
-          edges.set(key, { source, target, symbols: [] })
+      for (const dep of this.publishedGraph.dependenciesOf(target)) {
+        if (overBudget) break
+        for (const source of dep.definedIn) {
+          if (!allowedPaths.has(source)) continue
+          const key = JSON.stringify([source, target])
+          let edge = edges.get(key)
+          if (!edge) {
+            if (edges.size >= MAX_EDGES) { truncated = true; continue }
+            edge = { source, target, symbols: [] }
+            edges.set(key, edge)
+            bodyBytes += Buffer.byteLength(JSON.stringify(edge)) + (edges.size > 1 ? 1 : 0)
+          }
+          bodyBytes += Buffer.byteLength(JSON.stringify(dep.symbol)) + (edge.symbols.length ? 1 : 0)
+          edge.symbols.push(dep.symbol)
+          if (bodyBytes > budget) { overBudget = true; break }
         }
-        edges.get(key)!.symbols.push(dep.symbol)
       }
       if ((i + 1) % YIELD_EVERY === 0 || Date.now() - lastYield >= YIELD_AFTER_MS) {
         await yieldToEventLoop()
@@ -810,16 +1055,12 @@ export class GraphIndex {
         lastYield = Date.now()
       }
     }
-    let edgeList = [...edges.values()]
-    const allObserved = [...this.observedByPath.values()].flat().filter(change =>
-      (allowedPaths.has(change.path) || this.publishedSource.get(change.path)?.kind === 'deletion') &&
-      this.publicationAllowed(change.path)).sort((a, b) => a.path.localeCompare(b.path) || a.symbol.localeCompare(b.symbol))
+    let edgeList = overBudget ? [] : [...edges.values()]
+    if (overBudget) truncated = true
     const allUncovered = [...this.uncoveredPaths].filter(path => this.uncoveredAuthorized(path)).sort()
     const uncoveredPaths = allUncovered.slice(0, MAX_UNCOVERED_PATHS)
     let uncoveredTruncated = allUncovered.length > uncoveredPaths.length
-    let observedTruncated = allObserved.length > MAX_OBSERVED
-    const observed = allObserved.slice(0, MAX_OBSERVED)
-    const budget = MAX_SNAPSHOT_BYTES - 512 // room/base/fence/status metadata around this body
+    // The running count mirrors this serialization exactly; the check stays as the single gate.
     if (Buffer.byteLength(JSON.stringify({ paths, edges: edgeList, observed })) > budget) { edgeList = []; truncated = true }
     const serialize = () => JSON.stringify({ paths, edges: edgeList, observed, uncoveredPaths, uncoveredTruncated })
     let body = serialize()
@@ -828,6 +1069,14 @@ export class GraphIndex {
     }
     while (Buffer.byteLength(body) > budget && observed.length) {
       observed.pop(); observedTruncated = true; body = serialize()
+    }
+    // Many long names can exceed the budget on their own. Edges that survived the first check
+    // exactly at the limit go first, so trimming the sorted path list leaves no dangling edge.
+    let bodyBytesLeft = Buffer.byteLength(body)
+    if (bodyBytesLeft > budget && edgeList.length) { edgeList = []; truncated = true; body = serialize(); bodyBytesLeft = Buffer.byteLength(body) }
+    if (bodyBytesLeft > budget) {
+      while (bodyBytesLeft > budget && paths.length) { bodyBytesLeft -= Buffer.byteLength(JSON.stringify(paths.pop()!)) + 1; truncated = true }
+      body = serialize()
     }
     // Same content as last time: nothing to write. Same status within the window: wait, then write once.
     const key = `${this.base}|${status}|${provenance}|${body.length}|${hashOf(body)}`
@@ -840,7 +1089,7 @@ export class GraphIndex {
       return
     }
     const minMs = this.opts.minPublishMs ?? MIN_PUBLISH_MS
-    if (status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
+    if (!withdrawal && status === this.lastPublished.status && now - this.lastPublished.at < minMs) {
       clearTimeout(this.publishing)
       this.publishing = setTimeout(() => { void this.publish(this.phase) }, minMs - (now - this.lastPublished.at))
       return

@@ -2,7 +2,7 @@ import { ConflictSet } from '../conflict-set.js'
 import { sameCheckoutSession } from '../company.js'
 import { authorizesText, claimDigest } from '@room/roomd'
 import type { Session } from '../session.js'
-import { ensureLanguages, parseFile } from '../parse/engine.js'
+import { parseInWorker } from '../parse/client.js'
 import { coordinationPaths, neighbours, coversPath, nearPath, claimsOverlap, clampRange, describeClaim, displayName, formatPlans, scopeCovers, symbolRange, participantsView, snapshotPath, snapshotStillCurrent, versionOf, prepareClaimLineMap, type Claim, type ClaimMsg, type Plan, type PlanMsg, type NoteMsg, type ReleaseMsg } from '@room/shared'
 import { PLANS, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { carriedFrom } from '../worker-registry.js'
@@ -46,8 +46,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (directory) {
         range = { from: 1, to: Number.MAX_SAFE_INTEGER }
       } else if (symbol) {
-        if (!isNew) await ensureLanguages([p])
-        const r0 = isNew ? undefined : symbolRange(p, t!, symbol, parseFile)
+        const [parsed] = isNew ? [] : await parseInWorker(p, [t!])
+        const r0 = isNew ? undefined : symbolRange(p, t!, symbol, () => parsed)
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
         range = r0
       } else {

@@ -685,6 +685,33 @@ describe('hooks bridge state file', () => {
     } finally { b.stop(); s.awareness.destroy(); vi.useRealTimers() }
   })
 
+  it('runs one scheduled state write at a time and reruns once for activity during the write', async () => {
+    const s = session(new RoomDoc())
+    const b = bridge(s)
+    let running = 0, maxRunning = 0
+    const write = vi.spyOn(b, 'write').mockImplementation(async () => {
+      running++; maxRunning = Math.max(maxRunning, running)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      running--
+    })
+    vi.useFakeTimers()
+    try {
+      b.scheduleWrite()
+      await vi.advanceTimersByTimeAsync(150)
+      expect(write).toHaveBeenCalledTimes(1)
+      // Doc activity every 160 ms while the write is still in flight must not start more passes.
+      for (let i = 0; i < 5; i++) { b.scheduleWrite(); await vi.advanceTimersByTimeAsync(160) }
+      expect(maxRunning).toBe(1)
+      expect(write).toHaveBeenCalledTimes(1)
+      // The finished pass reruns exactly once for the activity it missed, then rests.
+      await vi.advanceTimersByTimeAsync(1000 + 150)
+      expect(write).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1000 + 150)
+      expect(write).toHaveBeenCalledTimes(2)
+      expect(maxRunning).toBe(1)
+    } finally { b.stop(); s.awareness.destroy(); s.room.doc.destroy(); vi.useRealTimers() }
+  })
+
   it('hook snapshot excludes own agent claims but retains same-name non-agent claims as nearby work', async () => {
     const s = session(new RoomDoc())
     s.room.addClaim({ by: 'Rohan', byKind: 'agent', path: 'agent.py', from: 1, to: 1, intent: 'my edit' })

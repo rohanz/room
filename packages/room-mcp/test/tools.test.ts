@@ -11,6 +11,7 @@ import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, syntheticSessionId, type Session } from '../src/session.js'
 import { resolveConfig, type ResolvedConfig } from '../src/config.js'
+import { languageLoadAttemptsForTest } from '../src/parse/engine.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { ConflictSet } from '../src/conflict-set.js'
 import type { SendWake } from '../src/wake-path.js'
@@ -1988,4 +1989,16 @@ describe('a preview waits for participants to settle', () => {
       await t.tools.shutdown(); t.session?.awareness.destroy()
     }
   })
+})
+
+
+it('claims a parsed symbol without loading tree-sitter in the main isolate', async () => {
+  expect(languageLoadAttemptsForTest('python')).toBe(0)
+  const t = setup()
+  t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'api', summary: 'nearby', paths: ['app.py'] })
+  try {
+    expect(await t.tools.call('room_claim', { path: 'app.py', symbol: 'validate', intent: 'symbol lookup' })).toContain('claimed')
+    expect(t.room.openClaims().find(claim => claim.by === 'Rohan')).toMatchObject({ path: 'app.py', from: 1, to: 2 })
+    expect(languageLoadAttemptsForTest('python')).toBe(0)
+  } finally { await t.tools.shutdown(); t.session?.awareness.destroy() }
 })

@@ -8,7 +8,7 @@ import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
 import { carriedPaths, carriesWork, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
-import { ensureLanguages, parseFile } from './parse/engine.js'
+import { parseInWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import { consumesSymbol } from './graph-index.js'
 import { trustedWorker, workerText } from './tools/context.js'
@@ -273,6 +273,33 @@ const sideInput = (snap: ParticipantSnapshot, path: string): unknown => {
     : { committed: snap.head.base }
 }
 
+/** Contract results vary widely in size; bound bytes as well as entry overhead. */
+export class ContractAnalysisCache {
+  private entries = new Map<string, { value: ReturnType<typeof observedContractAnalysis>; bytes: number }>()
+  private used = 0
+  constructor(private readonly maxBytes = 4 * 1024 * 1024) {}
+  get size(): number { return this.entries.size }
+  get bytes(): number { return this.used }
+  get(key: string): ReturnType<typeof observedContractAnalysis> | undefined {
+    const entry = this.entries.get(key)
+    if (!entry) return undefined
+    this.entries.delete(key); this.entries.set(key, entry)
+    return entry.value
+  }
+  set(key: string, value: ReturnType<typeof observedContractAnalysis>): void {
+    this.delete(key)
+    const bytes = Buffer.byteLength(JSON.stringify(value)) + key.length * 2 + 96
+    if (bytes > this.maxBytes) return
+    while (this.used + bytes > this.maxBytes || this.entries.size >= 1000) this.delete(this.entries.keys().next().value!)
+    this.entries.set(key, { value, bytes }); this.used += bytes
+  }
+  private delete(key: string): void {
+    const entry = this.entries.get(key)
+    if (entry) { this.used -= entry.bytes; this.entries.delete(key) }
+  }
+  clear(): void { this.entries.clear(); this.used = 0 }
+}
+
 /** Reconciles one owner's slots against all other comparable bases. */
 export class ConflictSet {
   private static readonly MAX_PAIR_FILES = 2000
@@ -289,7 +316,7 @@ export class ConflictSet {
   private scheduledInputs = ''
   private carriedInput?: { baseline: Baseline; lead: string }
   private starts: number[] = []
-  private readonly contractCache = new Map<string, ReturnType<typeof observedContractAnalysis>>()
+  private readonly contractCache = new ContractAnalysisCache()
   private guard: (() => boolean) | undefined
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
@@ -437,6 +464,7 @@ export class ConflictSet {
   }
   stop(): void {
     this.stopped = true
+    this.contractCache.clear()
     clearImmediate(this.inputCheck)
     for (const stop of this.stops) stop()
     this.stops.length = 0
@@ -835,10 +863,10 @@ export class ConflictSet {
         const cacheKey = hash(JSON.stringify([carried.baseline.sha, path, oldText, after]))
         let parsed = this.contractCache.get(cacheKey)
         if (!parsed) {
-          await ensureLanguages([path])
-          parsed = observedContractAnalysis(oldText, after, path, parseFile)
-          if (this.contractCache.size >= 1000) this.contractCache.delete(this.contractCache.keys().next().value!)
-          this.contractCache.set(cacheKey, parsed)
+          const versions = await parseInWorker(path, [oldText, after])
+          const preparsed = new Map([[oldText, versions[0]], [after, versions[1]]])
+          parsed = observedContractAnalysis(oldText, after, path, (_path, text) => preparsed.get(text))
+          if (!this.stopped) this.contractCache.set(cacheKey, parsed)
         }
         if (parsed.status === 'unavailable') {
           await unknownPath(path, parsed.detail, cacheKey)

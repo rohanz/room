@@ -336,6 +336,13 @@ class Daemon implements Roomd {
   private indexed = new Set<string>()
   private watcher: CheckoutWatch | null = null
   private watcherHandoff?: WatcherHandoff
+  /** Invalidates checkout setup/refreshes across publisher demotion. */
+  private checkoutEpoch = 0
+  private checkoutClosing: Promise<void> = Promise.resolve()
+  private checkoutRetryAt = 0
+  private checkoutSetupFailures = 0
+  private readonly checkoutFailureClasses = new Set<string>()
+  private checkoutSettingUp = false
   readonly batch: DiskBatch
   private readonly publisher: Publisher
   private workQueue: Promise<void> = Promise.resolve()
@@ -437,17 +444,20 @@ class Daemon implements Roomd {
       throw new RoomdError(`${this.dir} is not a git repository`, 1)
     }
 
+    const inventoryEpoch = this.checkoutEpoch
+    const initialPublisher = this.inputs.policy.publisher
     const [branch, base, tracked, remote, ignoredDirs] = await this.step('git', () => Promise.all([
       gitBranch(this.dir),
       gitHead(this.dir),
-      gitTracked(this.dir),
+      initialPublisher ? gitTracked(this.dir) : { paths: new Set<string>(), indexed: new Set<string>() },
       this.localRoom ? undefined : roomRemote(this.dir, this.roomName),
-      gitIgnoredDirs(this.dir).catch(error => {
+      initialPublisher ? gitIgnoredDirs(this.dir).catch(error => {
         this.ignoredDirsStale = true
         this.log(`warn: could not list gitignored folders (${errMsg(error)}); watching them file by file until a later listing works`)
         return new Set<string>()
-      }),
+      }) : new Set<string>(),
     ]))
+    if (this.stopped) return
     this.branch = branchName(branch)
     this.base = base
     this.inputs = { ...this.inputs, head: base }
@@ -472,13 +482,14 @@ class Daemon implements Roomd {
     this.loadRoomIgnore()
     this.inputs = { ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) }
     await this.step('seed', () => this.seedLocalOverlay())
+    if (this.stopped) return
     if (this.inputs.policy.publisher) this.writeRoomFile()
     this.excludeRoomFile()
-    await this.step('watch', () => this.startWatcher())
+    await this.step('watch', () => this.syncCheckout(initialPublisher && inventoryEpoch === this.checkoutEpoch))
     // Events can be missed between the seed scan and watch readiness.
     await this.reconcileGitChanges()
+    if (this.stopped) return
     if (this.reconcileIntervalMs > 0) this.cancelPeriodicReconcile = this.periodicReconcileSchedule(() => { void this.reconcileGitChanges() }, this.reconcileIntervalMs)
-    this.trackedPoll = new CoalescedPoll('tracked refresh', this.trackedRefreshMs, () => this.refreshTracked(), this.log)
     if (this.basePollMs > 0) this.headPoll = new CoalescedPoll('HEAD poll', this.basePollMs, () => this.queuedHeadPoll(), this.log)
     this.started = true
     const skips = this.skipEntries()
@@ -522,6 +533,7 @@ class Daemon implements Roomd {
 
   applyInputs(next: PublicationInputs): void {
     if (this.stopped || this.inputs === next) return
+    const demoted = this.inputs.policy.publisher && !next.policy.publisher
     this.roomDoc.doc.transact(() => {
       for (const [id, claim] of this.roomDoc.claims) {
         if (claim.by !== this.name || !claim.claimedHash || authorizesText(next.policy, claim.path)) continue
@@ -532,9 +544,96 @@ class Daemon implements Roomd {
     }, this)
     this.publisher.applyInputs(next)
     this.inputs = next
+    if (demoted) void this.stopCheckout()
     this.claimSearchProgress.clear()
     this.setStatus(this.currentStatus())
-    void this.enqueue(async () => { await this.publisher.reconcile('all', this.publicationComplete()) })
+    void this.enqueue(async () => {
+      if (this.started) await this.syncCheckout()
+      await this.publisher.reconcile('all', this.publicationComplete())
+    })
+  }
+
+  /** Only the elected publisher owns checkout inventory and native watches. HEAD/claims stay per session. */
+  private async syncCheckout(inventoryReady = false): Promise<boolean> {
+    if (this.stopped || !this.inputs.policy.publisher) { await this.stopCheckout(); return false }
+    if (this.watcher && this.trackedPoll) return false
+    if (Date.now() < this.checkoutRetryAt) return false
+    const epoch = this.checkoutEpoch
+    const valid = () => !this.stopped && this.inputs.policy.publisher && epoch === this.checkoutEpoch
+    await this.checkoutClosing
+    if (!valid()) return false
+    try {
+      if (!inventoryReady) {
+        const [tracked, ignoredDirs] = await Promise.all([gitTracked(this.dir), gitIgnoredDirs(this.dir).catch(error => {
+          this.ignoredDirsStale = true
+          this.log(`warn: could not list gitignored folders (${errMsg(error)}); watching them file by file until a later listing works`)
+          return new Set<string>()
+        })])
+        if (!valid()) return false
+        this.tracked = tracked.paths
+        this.indexed = tracked.indexed
+        this.applyIgnoredDirs(ignoredDirs)
+        this.ignoredDirsAt = Date.now()
+        // No follower watches .roomignore: use current rules before any widened publication.
+        this.loadRoomIgnore()
+        this.inputs = { ...this.inputs, rules: rulesFromText(this.roomIgnoreText, this.sizeCap, this.totalBudget) }
+      }
+      this.checkoutSettingUp = true
+      await this.startWatcher()
+      if (!valid()) return false
+      this.trackedPoll = new CoalescedPoll('tracked refresh', this.trackedRefreshMs, () => this.refreshTracked(), this.log)
+      this.resetCheckoutRetry()
+      return true
+    } catch (error) {
+      const stale = !valid()
+      const closing = this.stopCheckout(false)
+      const cleanupEpoch = this.checkoutEpoch
+      await closing
+      if (stale || this.stopped || !this.inputs.policy.publisher || cleanupEpoch !== this.checkoutEpoch) return false
+      // Initial startup still fails in the watch phase. Later failures must not prevent HEAD/claims
+      // or enter Publisher's fixed retry/log loop: the ordinary HEAD tick observes this deadline.
+      if (!this.started) throw error
+      this.checkoutSetupFailures++
+      const interval = this.basePollMs > 0 ? this.basePollMs : 3_000
+      const delay = Math.min(3 * 60_000, interval * 2 ** Math.min(this.checkoutSetupFailures, 30))
+      this.checkoutRetryAt = Date.now() + delay
+      this.logCheckoutSetupFailure(error)
+      return false
+    } finally { this.checkoutSettingUp = false }
+  }
+
+  private resetCheckoutRetry(): void {
+    this.checkoutRetryAt = 0
+    this.checkoutSetupFailures = 0
+    this.checkoutFailureClasses.clear()
+  }
+
+  private logCheckoutSetupFailure(error: unknown): void {
+    const message = errMsg(error)
+    // startWatcher wraps native errors in RoomdError; keep the native code as their common class.
+    const failureClass = (error as NodeJS.ErrnoException | undefined)?.code ?? message.match(/\bE[A-Z0-9]{2,}\b/)?.[0]
+      ?? (error instanceof Error ? error.name : typeof error)
+    if (this.checkoutFailureClasses.has(failureClass)) return
+    this.checkoutFailureClasses.add(failureClass)
+    this.log(`warn: ${message} (checkout setup; retries back off to at most 3 min)`)
+  }
+
+  /** Detach synchronously, then await native close; late Git results cannot restore the inventory. */
+  private stopCheckout(resetRetry = true): Promise<void> {
+    if (resetRetry) this.resetCheckoutRetry()
+    this.checkoutEpoch++
+    this.trackedPoll?.stop()
+    this.trackedPoll = undefined
+    const watcher = this.watcher
+    this.watcher = null
+    watcher?.suspend()
+    this.tracked.clear()
+    this.indexed.clear()
+    this.ignoredDirs.clear()
+    // A handed-off watcher retains the old map; leave its pruning history intact.
+    this.unwatchedDirs = new Map()
+    this.checkoutClosing = this.checkoutClosing.then(() => watcher?.close().catch(() => {}))
+    return this.checkoutClosing
   }
 
 
@@ -561,12 +660,11 @@ class Daemon implements Roomd {
     this.unobserveOwnedData?.()
     this.remoteRepairTimer?.()
     this.publisher.stop()
-    this.trackedPoll?.stop()
     this.headPoll?.stop()
     this.cancelPeriodicReconcile?.()
     this.log(`stopped: ${reason.replace(/\s+/g, ' ')}`)
     this.batch.stop()
-    await this.watcher?.close().catch(() => {})
+    await this.stopCheckout()
     try { this.provider.awareness.setLocalState(null) } catch { /* already disconnected */ }
     // y-websocket sends awareness updates immediately, but the OS socket may still have bytes queued.
     // Give the offline update a bounded chance to leave before a signal handler exits the process.
@@ -800,6 +898,9 @@ class Daemon implements Roomd {
     const fence = this.fence
     // Paused (hub §7): nothing fenced goes out, and nothing is applied, so the resumed transition redoes it all.
     if (this.stopped || fence === undefined) return
+    // Retry checkout setup after a failed promotion through the existing reconciliation retry.
+    const checkoutStarted = this.started && this.inputs.policy.publisher && !this.trackedPoll
+      ? await this.syncCheckout() : false
     await this.postPushedPending()
     const [head, rawBranch] = await Promise.all([gitHead(this.dir), gitBranch(this.dir)])
     const branch = branchName(rawBranch)
@@ -817,6 +918,8 @@ class Daemon implements Roomd {
     const latestPush = this.roomDoc.messages().filter((m): m is PushedMsg => m.type === 'pushed' && m.upstream === inputs.refs.upstream?.name).at(-1)
     const currentRefsKey = JSON.stringify([refsKey(inputs), latestPush?.toSha])
     if (!headMoved && currentRefsKey === this.appliedRefs && publishing === this.appliedAsPublisher && fence === this.appliedFence) {
+      // The watch may have missed edits during failed promotion setup even when HEAD stayed put.
+      if (checkoutStarted) await this.publisher.reconcile('all', this.publicationComplete())
       await this.retryPendingClaims(head, fence)
       return
     }
@@ -844,7 +947,11 @@ class Daemon implements Roomd {
     if (headMoved) {
       this.base = head
       this.branch = branch
-      this.tracked = (await gitTracked(this.dir)).paths
+      if (publishing) {
+        const epoch = this.checkoutEpoch
+        const tracked = await gitTracked(this.dir)
+        if (this.inputs.policy.publisher && epoch === this.checkoutEpoch && !this.stopped) this.tracked = tracked.paths
+      }
       if (this.fence !== fence) throw new Error('the name lease changed during the HEAD transition')
     }
     const resolved = await resolveBase(this.dir, inputs, this.localRoom ? { local: true, carried: this.workerBase() } : {
@@ -1243,6 +1350,7 @@ class Daemon implements Roomd {
 
   private async startWatcher(): Promise<void> {
     this.beforeWatcherReady?.()
+    if (this.stopped || !this.inputs.policy.publisher) return
     // Chokidar can emit neither `ready` nor `error` when the watched root becomes
     // unreadable before its initial scan. Check the root ourselves before waiting.
     // Opening the root and reading one entry proves it is listable without enumerating a wide root.
@@ -1277,7 +1385,7 @@ class Daemon implements Roomd {
         return false
       },
       event: (event, absolute) => {
-      if (this.stopped) return
+      if (this.stopped || !this.inputs.policy.publisher) return
       if (event === 'add') countFile(absolute, true)
       else if (event === 'unlink') countFile(absolute, false)
       const relpath = path.relative(this.dir, absolute).split(path.sep).join('/')
@@ -1291,7 +1399,10 @@ class Daemon implements Roomd {
       if (relpath === ROOMIGNORE) { this.reloadRoomIgnore(); return }
       this.scheduleDisk(relpath, event === 'add')
       },
-      error: error => this.log(`watcher error: ${errMsg(error)}`),
+      error: error => {
+        if (this.checkoutSettingUp) this.logCheckoutSetupFailure(error)
+        else this.log(`watcher error: ${errMsg(error)}`)
+      },
     }
     const reused = this.watcher
     const watcher = this.watcher = reused ?? new CheckoutWatch(this.dir, handlers, watchedFiles)
@@ -1325,13 +1436,17 @@ class Daemon implements Roomd {
   }
 
   scheduleDisk(relpath: string, isNew: boolean): void {
+    if (this.stopped || !this.inputs.policy.publisher) return
     this.batch.add(relpath, isNew)
   }
 
   private async onDiskChange(relpath: string, isNew: boolean): Promise<void> {
-    if (this.stopped) return
+    if (this.stopped || !this.inputs.policy.publisher) return
+    const epoch = this.checkoutEpoch
     const pruned = this.inIgnoredDir(relpath)
-    if (pruned || await gitIgnored(this.dir, relpath)) {
+    const ignored = pruned || await gitIgnored(this.dir, relpath)
+    if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) return
+    if (ignored) {
       // Only a path this daemon offered or withheld before has anything to withdraw.
       if (this.tracked.delete(relpath) || this.publisher.pathsToReconcile().has(relpath)) await this.publisher.reconcile('all', this.publicationComplete())
       // A file in a folder that became ignored after the last listing (fresh build output): learn the folder, so the
@@ -1356,13 +1471,15 @@ class Daemon implements Roomd {
 
   /** Ask Git for the wholly ignored folders again; concurrent callers share one listing. Never throws. */
   private refreshIgnoredDirs(): Promise<void> {
+    if (this.stopped || !this.inputs.policy.publisher) return Promise.resolve()
     this.ignoredDirsRefresh ??= (async () => {
+      const epoch = this.checkoutEpoch
       this.ignoredDirsStale = false
       try {
         const next = await gitIgnoredDirs(this.dir)
         this.ignoredDirsAt = Date.now()
         this.ignoredDirsFailure = undefined
-        if (!this.stopped) this.applyIgnoredDirs(next)
+        if (!this.stopped && this.inputs.policy.publisher && epoch === this.checkoutEpoch) this.applyIgnoredDirs(next)
       } catch (error) {
         this.ignoredDirsStale = true
         const text = errMsg(error)
@@ -1397,9 +1514,11 @@ class Daemon implements Roomd {
   }
 
   private async refreshTracked(): Promise<void> {
-    if (this.stopped) return
+    if (this.stopped || !this.inputs.policy.publisher) return
+    const epoch = this.checkoutEpoch
     const [next] = await Promise.all([gitTracked(this.dir),
       this.ignoredDirsStale || Date.now() - this.ignoredDirsAt >= IGNORED_DIRS_REFRESH_MS ? this.refreshIgnoredDirs() : undefined])
+    if (this.stopped || !this.inputs.policy.publisher || epoch !== this.checkoutEpoch) return
     const added = Array.from(next.paths).filter(relpath => !this.tracked.has(relpath))
     const promoted = Array.from(next.indexed).filter(relpath => !this.indexed.has(relpath))
     const demoted = Array.from(this.indexed).filter(relpath => !next.indexed.has(relpath) && next.paths.has(relpath))

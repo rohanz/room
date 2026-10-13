@@ -162,3 +162,11 @@ npm run build:plugin
 ```
 
 Start `HOST=127.0.0.1 PORT=1234 npm run server:dev` and `npm run web` in separate terminals. For a local team-server test, use `ROOM_SERVER=ws://localhost:1234 ROOM_WEB=http://localhost:5173 codex --no-daemon`. Set `GITHUB_CLIENT_ID=fake` on a development server for test login; production refuses it. A repo still needs `room_create` before joining. Without `YPERSISTENCE`, a server restart resets state. Run `npm test`, `npm run typecheck`, `npm run build -w @room/web`, and `npm run build:plugin` before shipping. [AGENTS.md](../AGENTS.md) has the current contributor commands; [deploy instructions](../deploy/DEPLOYING.md) cover hosted operations.
+
+## Resource limits
+
+Room 0.17.15 shares one parser worker per process and releases it after 30 seconds idle. Parsing restarts lazily; crash recovery is limited to three recreations per ten minutes. Each index admits up to 3,000 paths, prioritizing own changes and claimed files. Retained analysis has process-wide budgets of 400,000 symbols and 64 MiB of accounted data; this is not a cap on total process RSS. Files omitted by analysis budgets remain visibly uncovered. Contract analyses use a separate 4 MiB weighted cache, and graph snapshots are bounded to 200 KiB.
+
+Base texts have a separate allowance equal to the configured sharing budget (8 MiB by default). Files that do not fit are excluded whole and reported as budget exclusions. Same-clone followers keep HEAD tracking but leave file watching and inventory polling to the publisher; promotion rescans current files.
+
+A local relay admits up to eight retained rooms, 200 connections in total and 100 per room, with bounded awareness messages and identities. Idle rooms still count: their documents are retained rather than evicted through a potentially lossy snapshot. These local defaults are separate from hosted-server limits.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.15
+
+- Release idle tree-sitter workers and share one parser per process; recover from transient parser crashes with bounded retries.
+- Bound retained code indexes, contract caches, base texts and graph snapshots; report analysis omissions instead of silently implying complete coverage.
+- Avoid duplicate file watchers and inventory polling in same-clone follower sessions. Rescan on promotion, back off failed setup, and cancel pending watcher startup safely on demotion.
+- Coalesce overlapping hook scans and disk updates, skip unchanged base publications, and expire stale publication history.
+- Cap local relay rooms, connections and awareness state while preserving existing retained room documents.
+- Add independent before/after regressions and memory probes. The combined native suite passed 3,749 tests (3 skipped), with a clean independent Astra review.
+
+Plugin-only update; restart sessions after updating. No server deployment or migration is needed.
+
 ## 0.17.14
 
 - Make contract analysis parser-only with tree-sitter; remove the regex header fallback that could exhaust the heap on large single-line JavaScript files (256–512 KiB).

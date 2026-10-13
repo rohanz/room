@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { setImmediate } from 'node:timers/promises'
 import { manifestKey, type RoomDoc } from '@room/shared'
-import { gitHead, gitShowManyCapped, type GitBlobInfo } from './git.js'
+import { gitBlobInfoById, gitHead, gitShowManyCapped, type GitBlobInfo } from './git.js'
 import { checkoutText, type Baseline } from './baseline.js'
 import { readDisk, StalePublication } from './disk-scan.js'
 import { markManifestIncomplete, prepareManifestPublication, prepareManifestPublicationYielding, type ManifestFact } from './manifest-publish.js'
@@ -104,6 +104,7 @@ export class Publisher {
     const factPaths = new Set<string>()
     const retainedText = new Set<string>()
     let budget = 0
+    let baseBudget = 0
     if (next.policy.level !== 'intent' && next.policy.publisher) {
       for (const [path, entry] of [...current?.entries() ?? []].sort(([a], [b]) => a.localeCompare(b))) {
         if (defaultExcludedPath(path) || next.rules.roomIgnore.ignores(path) || (entry.size !== undefined && entry.size > next.rules.sizeCap)) {
@@ -114,13 +115,16 @@ export class Publisher {
         }
         const permit = authorizesText(next.policy, path)
         const text = permit && entry.change !== 'D' && entry.state === 'shared' ? host.roomDoc.overlayText(incarnation, path)?.toString() : undefined
-        if (text !== undefined && budget + Buffer.byteLength(text) > next.rules.budget) {
+        const baseText = permit ? host.roomDoc.ownedBaseTexts.get(`${host.name}\0${next.head}:${path}`) : undefined
+        const baseSize = baseText === undefined ? 0 : Buffer.byteLength(baseText)
+        if ((text !== undefined && budget + Buffer.byteLength(text) > next.rules.budget) || baseBudget + baseSize > next.rules.budget) {
           facts.push({ path, change: entry.change, excluded: true })
           factPaths.add(path)
           this.excludedPaths.add(path)
           continue
         }
         if (text !== undefined) budget += Buffer.byteLength(text)
+        baseBudget += baseSize
         facts.push({ path, change: entry.change, ...(permit ? { hash: entry.hash, size: entry.size, baseHash: entry.baseHash } : {}),
           ...(text !== undefined ? { text } : {}), binary: entry.held === 'binary', at: entry.at })
         factPaths.add(path)
@@ -167,8 +171,19 @@ export class Publisher {
     let baseBlobs: ReadonlyMap<string, GitBlobInfo | undefined> = new Map()
     const disk = await readDisk(this.host.dir, inputs, this.pathsToReconcile(carried?.untracked.keys()), p => this.host.isSafeRoomPath(p), this.oversizedCache, carried?.untracked, valid,
       blobs => { baseBlobs = blobs })
+    const carriedInfo = await gitBlobInfoById(this.host.dir, new Set([...carried?.untracked.values() ?? []].map(blob => blob.sha)))
+    const oversized = new Set<string>()
     let diskCount = 0
-    for (const item of disk) { if (diskCount++ % 32 === 0) await setImmediate(); await this.host.beforeBaseRead?.(item.path) }
+    for (const fact of disk) {
+      if (diskCount++ % 32 === 0) await setImmediate()
+      const carriedBlob = carried?.untracked.get(fact.path)
+      const size = carriedBlob ? carriedInfo.get(carriedBlob.sha)?.size ?? inputs.rules.sizeCap : baseBlobs.get(fact.path)?.size
+      // Over-cap bases remain unavailable, as before; no contents are read for them.
+      fact.baseSize = size !== undefined && size <= inputs.rules.sizeCap ? size : 0
+      if (fact.kind === 'file' && fact.size !== undefined && fact.size > inputs.rules.sizeCap) oversized.add(fact.path)
+      await this.host.beforeBaseRead?.(fact.path)
+    }
+    for (const p of this.oversizedCache.keys()) if (!oversized.has(p)) this.oversizedCache.delete(p)
     let desired: PublicationPlan
     try { desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt()) }
     catch (error) {
@@ -179,6 +194,36 @@ export class Publisher {
       if (this.host.fence !== undefined) markManifestIncomplete(this.host.roomDoc, this.host.name, this.host.fence)
       this.reconcileFailed(new Error(`scan incomplete: could not read ${desired.unsettled.length} path(s)`))
     }
+    // Read admitted carried blobs first: checkout filters can expand beyond their raw
+    // reservations. Keep their transient map bounded, then re-plan using actual sizes
+    // before any ordinary base blob is read. Never widen the initial admitted set.
+    const carriedTexts = new Map<string, string | undefined>()
+    let carriedBytes = 0
+    let carriedRead = false
+    let carriedCount = 0
+    for (const fact of disk) {
+      if (carriedCount++ % 32 === 0) await setImmediate()
+      if (desired.excludedReasons.get(fact.path) === 'budget') fact.budgetOmitted = true
+      const sha = carried?.untracked.get(fact.path)?.sha
+      if (!sha || desired.entries.get(fact.path)?.state !== 'shared' || !authorizesText(inputs.policy, fact.path)) continue
+      carriedRead = true
+      if (!valid()) throw new StalePublication('publication inputs changed during base read')
+      // Decode after the bounded raw checkout read so invalid UTF-8 cannot expand
+      // through replacement characters beyond the reservation or per-blob cap.
+      const raw = await checkoutText(this.host.dir, sha, fact.path, 'latin1', inputs.rules.sizeCap)
+      let text: string | undefined
+      if (raw !== undefined) {
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.from(raw, 'latin1')) }
+        catch { /* A malformed base is unavailable. */ }
+      }
+      const bytes = text === undefined ? 0 : Buffer.byteLength(text)
+      if (carriedBytes + bytes > inputs.rules.budget) { fact.budgetOmitted = true; continue }
+      carriedBytes += bytes
+      fact.baseSize = bytes
+      carriedTexts.set(fact.path, text)
+    }
+    if (carriedRead) desired = await planYielding(inputs, disk, this.host.roomDoc.ensureRoomSalt())
+    for (const p of carriedTexts.keys()) if (desired.entries.get(p)?.state !== 'shared') carriedTexts.delete(p)
     const textPaths: string[] = []
     let textCount = 0
     for (const [p, entry] of desired.entries) {
@@ -187,13 +232,9 @@ export class Publisher {
     }
     const baseTextPaths: string[] = []
     let basePathCount = 0
-    for (const p of textPaths) { if (basePathCount++ % 32 === 0) await setImmediate(); if (baseBlobs.get(p) !== undefined) baseTextPaths.push(p) }
+    for (const p of textPaths) { if (basePathCount++ % 32 === 0) await setImmediate(); if (baseBlobs.get(p) !== undefined && !carried?.untracked.has(p)) baseTextPaths.push(p) }
     const baseTexts = await gitShowManyCapped(this.host.dir, inputs.head, baseTextPaths, inputs.rules.sizeCap, baseBlobs)
-    for (const p of textPaths) {
-      if (textCount++ % 32 === 0) await setImmediate()
-      const sha = carried?.untracked.get(p)?.sha
-      if (sha) baseTexts.set(p, await checkoutText(this.host.dir, sha, p, 'utf8', inputs.rules.sizeCap))
-    }
+    for (const [p, text] of carriedTexts) baseTexts.set(p, text)
     const facts: ManifestFact[] = []
     const textOps = new Map<string, ReturnType<RoomDoc['prepareOverlayDiff']>>()
     let lastYield = performance.now()
@@ -302,7 +343,7 @@ export class Publisher {
           host.roomDoc.applyPreparedOverlayDiff(incarnation, p, prepared.textOps.get(p)!, host)
         }
         const base = prepared.baseTexts.get(p)
-        if (base !== undefined) host.roomDoc.ownedBaseTexts.set(`${host.name}\0${inputs.head}:${p}`, base)
+        if (base !== undefined) host.roomDoc.setBaseText(host.name, inputs.head, p, base, host)
       }
       for (const key of prepared.baseTextDeletes) host.roomDoc.ownedBaseTexts.delete(key)
     }, host)

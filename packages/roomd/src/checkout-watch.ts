@@ -12,6 +12,7 @@ export interface WatchHandlers {
 export class CheckoutWatch {
   readonly dir: string
   private readonly root: fs.Stats
+  /** Rejects on fatal setup errors or close before readiness. */
   readonly ready: Promise<void>
   readonly files: Set<string>
   ignoredDirs = new Set<string>()
@@ -20,6 +21,7 @@ export class CheckoutWatch {
   private handlers: WatchHandlers
   private suspended = false
   private closed = false
+  private cancelReady?: () => void
 
   constructor(dir: string, handlers: WatchHandlers, files = new Set<string>()) {
     this.dir = path.resolve(dir)
@@ -33,15 +35,26 @@ export class CheckoutWatch {
     this.watcher.on('all', (event, path) => { if (!this.suspended) this.handlers.event(event, path) })
     this.watcher.on('error', error => { if (!this.suspended) this.handlers.error(error) })
     this.ready = new Promise((resolve, reject) => {
+      const cleanup = () => {
+        this.watcher.off('ready', ready)
+        this.watcher.off('error', fatal)
+        this.cancelReady = undefined
+      }
       const fatal = (error: unknown) => {
         const e = error as NodeJS.ErrnoException
         if (e.path === dir || e.path === this.dir || e.code === 'EMFILE' || e.code === 'ENOSPC') {
-          this.watcher.off('ready', ready); this.watcher.off('error', fatal); reject(error)
+          cleanup(); reject(error)
         }
       }
-      const ready = () => { this.watcher.off('error', fatal); resolve() }
+      const ready = () => { cleanup(); resolve() }
+      this.cancelReady = () => {
+        cleanup()
+        reject(Object.assign(new Error('checkout watch closed before readiness'), { name: 'AbortError' }))
+      }
       this.watcher.on('error', fatal); this.watcher.once('ready', ready)
     })
+    // A handoff can be disposed without a readiness consumer. Awaiters still see the rejection.
+    void this.ready.catch(() => {})
   }
 
   matches(dir: string): boolean {
@@ -56,6 +69,7 @@ export class CheckoutWatch {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true; this.suspended = true
+    this.cancelReady?.()
     await this.watcher.close()
   }
 }

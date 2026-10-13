@@ -32,6 +32,10 @@ import { DOC_SIZE_CAP_CODE, DocSizeMeter, HUB_ORIGIN, MSG_HUB, STARTING_RETRY_MS
 import { ROOM_DOC_MAX_BYTES, RoomDoc } from '@room/shared'
 import { ProofVerifier, localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, sameProof, viewTicketProof, PROOF_WINDOW_MS } from './proof.js'
 import { SecureSession } from './secure.js'
+import { RelayAdmission, type RelayAdmissionLimits } from './limits.js'
+import { RelayAwarenessBudget, awarenessLimits, type RelayAwarenessLimits } from './awareness.js'
+export type { RelayAdmissionLimits } from './limits.js'
+export type { RelayAwarenessLimits } from './awareness.js'
 export { SecureSession } from './secure.js'
 export { localProofHeader, localViewKey, relayHealth, relayIdentity, relayProof, viewTicketProof, ProofVerifier } from './proof.js'
 class HttpFailure extends Error { constructor(public status: number, message: string) { super(message) } }
@@ -61,7 +65,7 @@ export function stateRequestLimiter(now: () => number = Date.now): (buf: Uint8Ar
     return ++count <= RELAY_STATE_REQUESTS_PER_MINUTE && queued <= RELAY_STATE_QUEUE_BYTES
   }
 }
-interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; closed?: boolean; cap: RoomCap }
+interface RelayDoc { doc: Y.Doc; awareness: awarenessProtocol.Awareness; presence: RelayAwarenessBudget; conns: Map<WebSocket, Set<number>>; memory?: RoomMemory; room?: RoomDoc; hub?: Hub; closed?: boolean; cap: RoomCap }
 /** The live size cap of one room (the server's rule, hub-core/src/doc-cap.ts) and when it last logged a refusal. */
 interface RoomCap { maxBytes: number; meter: DocSizeMeter; logged: number }
 /** A room's live document cap; by default ROOM_DOC_MAX_BYTES (also the snapshot ceiling), measured at the server's cadence. */
@@ -69,7 +73,7 @@ export interface RelayDocCap { maxBytes?: number; meter?: DocSizeMeterOptions }
 /** A relay started under the clone's authority lock runs a hub per room; test clocks are optional. */
 export interface RelayHubOptions { lock: AuthorityLock; mono?: () => number; wall?: () => number }
 interface RelayHubRuntime { lock: AuthorityLock; store: IncarnationStore; mono: () => number; wall: () => number; holderDead: ReturnType<typeof holderDeadCheck> }
-interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap }
+interface DocOptions { commonDir?: string; log?: (line: string) => void; hub?: RelayHubRuntime; seed?: { room: string; update: Uint8Array }; readOnly?: boolean; socketQueueBytes?: number; docCap?: RelayDocCap; admission?: RelayAdmissionLimits; awareness?: RelayAwarenessLimits; admissionState?: RelayAdmission }
 function relayDocs(): Map<string, RelayDoc> { return new Map() }
 /** One full document (the 64 MiB snapshot ceiling) plus slack may wait for one socket; four such queues for all. */
 export const RELAY_SOCKET_QUEUE_BYTES = 68 * 1024 * 1024
@@ -134,7 +138,7 @@ function getDoc(docs: Map<string, RelayDoc>, name: string, opts: DocOptions): Re
   const awareness = new awarenessProtocol.Awareness(doc)
   awareness.setLocalState(null)
   const meter = new DocSizeMeter(() => Y.encodeStateAsUpdate(doc).byteLength, opts.docCap?.meter)
-  d = { doc, awareness, conns: new Map(), memory, cap: { maxBytes: opts.docCap?.maxBytes ?? ROOM_DOC_MAX_BYTES, meter, logged: 0 } }
+  d = { doc, awareness, presence: new RelayAwarenessBudget(awareness, opts.awareness), conns: new Map(), memory, cap: { maxBytes: opts.docCap?.maxBytes ?? ROOM_DOC_MAX_BYTES, meter, logged: 0 } }
   doc.on('update', (update: Uint8Array, origin: unknown) => {
     // Hub writes count towards the next measurement, as the server's do.
     if (origin === HUB_ORIGIN) meter.size(update.byteLength)
@@ -188,8 +192,10 @@ export function hubReply(d: RelayDoc, conn: WebSocket, raw: Uint8Array, hubOn: b
   if (!d.hub) return { v: 1, re, ok: false, reason: 'starting', text: 'the hub is starting', retryMs: STARTING_RETRY_MS }
   return d.hub.handle(conn, frame, { local: true }, raw.byteLength)
 }
+/** Preserve both the encoded modern route and legacy raw-slash/unnamespaced room routes. */
+function relayRoomName(target: string | undefined): string { return encodeURIComponent(decodeURIComponent((target ?? '/').slice(1).split('?')[0])) }
 function attach(docs: Map<string, RelayDoc>, conn: WebSocket, req: http.IncomingMessage, opts: DocOptions & { key: string }): void {
-  const name = encodeURIComponent(decodeURIComponent((req.url ?? '/').slice(1).split('?')[0]))
+  const name = relayRoomName(req.url)
   const room = decodeURIComponent(name)
   const session = new SecureSession(opts.readOnly ? localViewKey(opts.key, room) : opts.key, room, 'relay')
   sessions.set(conn, session)
@@ -227,8 +233,10 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
   d.conns.set(conn, new Set())
   if (opts.socketQueueBytes) socketBudgets.set(conn, opts.socketQueueBytes)
   const allowState = stateRequestLimiter()
+  const allowPresence = d.presence.connection(reason => conn.close(4429, reason))
   conn.binaryType = 'arraybuffer'
   conn.on('message', (raw: ArrayBuffer | Buffer | Buffer[]) => {
+    if (failedSockets.has(conn) || conn.readyState !== conn.OPEN) return
     let buf: Uint8Array
     try { buf = raw === first ? first : sessions.get(conn)!.decrypt(raw instanceof ArrayBuffer ? new Uint8Array(raw) : Array.isArray(raw) ? Buffer.concat(raw) : raw) }
     catch { conn.close(1008, 'invalid secure frame'); return }
@@ -262,6 +270,7 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
           break
         case MSG_AWARENESS:
           if (opts.readOnly) break
+          if (!allowPresence(buf)) break
           awarenessProtocol.applyAwarenessUpdate(d.awareness, decoding.readVarUint8Array(dec), conn)
           break
         case MSG_HUB:
@@ -296,10 +305,14 @@ function attachReady(docs: Map<string, RelayDoc>, conn: WebSocket, name: string,
 
 /** The first operation on every accepted websocket is its error listener. */
 export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOptions & { key: string }): (conn: WebSocket, req: http.IncomingMessage) => void {
+  opts = { ...opts, awareness: awarenessLimits(opts.awareness) }
+  const admission = opts.admissionState ?? new RelayAdmission(docs, opts.admission)
   return (conn, req) => {
+    let release: (() => void) | undefined
     conn.on('error', error => {
       if (failedSockets.has(conn)) return
       failedSockets.add(conn)
+      release?.()
       try { opts.log?.(`relay websocket: ${error instanceof Error ? error.message : String(error)}`) } catch { /* cleanup still matters */ }
       handshakeCleanup.get(conn)?.()
       handshakeCleanup.delete(conn)
@@ -307,7 +320,14 @@ export function relayConnectionHandler(docs: Map<string, RelayDoc>, opts: DocOpt
       dropSocket(conn)
       try { conn.terminate() } catch { /* already gone */ }
     })
-    try { safeUrl(req.url); attach(docs, conn, req, { ...opts, readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView }) }
+    try {
+      safeUrl(req.url)
+      const name = relayRoomName(req.url), reason = admission.refusal(name)
+      if (reason) { conn.close(1013, reason); return }
+      release = admission.reserve(name)
+      conn.once('close', release)
+      attach(docs, conn, req, { ...opts, readOnly: !!(req as http.IncomingMessage & { ticketView?: boolean }).ticketView })
+    }
     catch (e) { opts.log?.(`relay connection: ${e instanceof Error ? e.message : e}`); conn.close(1008, 'Bad Request') }
   }
 }
@@ -407,6 +427,10 @@ export interface RelayOptions {
   socketQueueBytes?: number
   /** The live document cap per room; default ROOM_DOC_MAX_BYTES. */
   docCap?: RelayDocCap
+  /** Retained and handshaking rooms (8), total sockets (200), and sockets per room (100). */
+  admission?: RelayAdmissionLimits
+  /** Hosted-equivalent presence bounds; options also permit smaller deterministic fixtures. */
+  awareness?: RelayAwarenessLimits
 }
 export interface StartedRelay {
   port: number
@@ -422,7 +446,7 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
   return new Promise((resolve, reject) => {
     if (opts.hub && !opts.commonDir) throw new Error("a relay hub needs the clone's common dir")
     const docOptions: DocOptions = {
-      commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes, docCap: opts.docCap,
+      commonDir: opts.commonDir, log: opts.log, seed: opts.seed, socketQueueBytes: opts.socketQueueBytes, docCap: opts.docCap, admission: opts.admission, awareness: awarenessLimits(opts.awareness),
       ...(opts.hub ? { hub: { lock: opts.hub.lock, store: incarnationFile(opts.commonDir!), mono: opts.hub.mono ?? (() => performance.now()), wall: opts.hub.wall ?? Date.now, holderDead: holderDeadCheck() } } : {}),
     }
     const requestedTicketTtl = opts.ticketTtlMs ?? 60_000
@@ -510,9 +534,11 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
     const wss = new WebSocketServer({ noServer: true })
     wss.on('headers', headers => headers.push('Referrer-Policy: no-referrer'))
     const docs = relayDocs()
+    const admission = docOptions.admissionState = new RelayAdmission(docs, opts.admission)
     wss.on('connection', relayConnectionHandler(docs, { ...docOptions, key: opts.key ?? '' }))
     const ticker = setInterval(() => {
       for (const [name, d] of docs) {
+        d.presence.prune()
         try { d.hub?.tick() }
         catch (error) { opts.log?.(`hub maintenance ${name}: ${error instanceof Error ? error.message : String(error)}`) }
         if (opts.commonDir && d.memory) try { catchUpLocal(opts.commonDir, decodeURIComponent(name), d.doc, opts.log) }
@@ -540,6 +566,8 @@ export function startRelay(port: number, opts: RelayOptions = {}): Promise<Start
         if (!ticketOk && !proofOk(req)) return refuse(403, 'Forbidden: local room proof missing or wrong')
         if (ticketOk) (req as http.IncomingMessage & { ticketView?: boolean }).ticketView = true
       }
+      const capacityReason = admission.refusal(relayRoomName(req.url))
+      if (capacityReason) return refuse(503, capacityReason)
       wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req))
       } catch (e) { opts.log?.(`relay upgrade: ${e instanceof Error ? e.message : e}`); refuse(e instanceof HttpFailure ? e.status : 500, e instanceof HttpFailure ? e.message : 'Internal Server Error') }
     })

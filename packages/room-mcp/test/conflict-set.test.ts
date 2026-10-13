@@ -17,6 +17,7 @@ import { registrySnapshotForDir } from '../src/worker-registry.js'
 import * as roomd from '@room/roomd'
 import * as gitModule from '@room/roomd/git'
 import * as parseEngine from '../src/parse/engine.js'
+import { ParseWorker } from '../src/parse/client.js'
 import * as mergeModule from '../src/merge.js'
 
 async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
@@ -1885,6 +1886,7 @@ describe('derived pair slots', () => {
   })
 
   it('checks a worker against its carried baseline when the lead changes a definition', async () => {
+    expect(parseEngine.languageLoadAttemptsForTest('python')).toBe(0)
     const f = fixture()
     try {
       f.holder('W'); f.holder('B')
@@ -1907,12 +1909,13 @@ describe('derived pair slots', () => {
       const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
       expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
+      expect(parseEngine.languageLoadAttemptsForTest('python')).toBe(0)
     } finally { f.cleanup() }
   })
 
   it.each(['notes.md', 'declined.ts'])('skips unsupported carried paths and marks declined supported paths unknown: %s', async path => {
     const f = fixture()
-    const parse = vi.spyOn(parseEngine, 'parseFile').mockReturnValue(undefined)
+    const parse = vi.spyOn(ParseWorker.prototype, 'parse').mockImplementation(async (_path, texts) => texts.map(() => undefined))
     try {
       f.holder('W'); f.holder('B'); f.entry('W', undefined); f.entry('B', undefined)
       const text = 'function changed(){}'

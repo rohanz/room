@@ -62,6 +62,8 @@ export interface DiskFact {
   kind: 'file' | 'absent' | 'unsafe' | 'error'
   hash?: string
   baseHash?: string
+  /** Bytes reserved for an authorized, capped base text; separate from the overlay budget. */
+  baseSize?: number
   size?: number
   text?: string
   binary?: boolean
@@ -96,6 +98,7 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
   const policy = inputs.policy
   if (policy.level === 'intent' || !policy.publisher) return { entries, excluded, excludedPaths, unsettled, textPaths, excludedReasons }
   let used = 0
+  let baseUsed = 0
   for (const fact of [...disk].sort((a, b) => a.path.localeCompare(b.path))) {
     yield
     const p = normalizeCoordinationPath(fact.path)
@@ -105,6 +108,10 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
     if (fact.kind === 'error') { unsettled.push(p); continue }
     if (!changed) continue
     if (fact.kind === 'absent') {
+      if (authorizesText(policy, p)) {
+        if (fact.budgetOmitted || baseUsed + (fact.baseSize ?? 0) > inputs.rules.budget) { hide('budget'); continue }
+        baseUsed += fact.baseSize ?? 0
+      }
       const entry: PlannedEntry = { change: 'D', state: 'shared' }
       if (authorizesText(policy, p) && fact.baseHash) entry.baseHash = fact.baseHash
       entries.set(p, entry)
@@ -116,8 +123,9 @@ function* planSteps(inputs: PublicationInputs, disk: readonly DiskFact[], salt: 
     const values = { change, hash: fact.hash, size: fact.size, ...(fact.baseHash ? { baseHash: fact.baseHash } : {}), at: fact.at, ino: fact.ino } as const
     if (fact.budgetOmitted) { hide('budget'); continue }
     if (fact.binary || fact.text === undefined) { entries.set(p, { ...values, state: 'held', held: 'binary' }); continue }
-    if (used + fact.size > inputs.rules.budget) { hide('budget'); continue }
+    if (used + fact.size > inputs.rules.budget || baseUsed + (fact.baseSize ?? 0) > inputs.rules.budget) { hide('budget'); continue }
     used += fact.size
+    baseUsed += fact.baseSize ?? 0
     entries.set(p, { ...values, state: 'shared', text: fact.text })
     textPaths.push(p)
   }

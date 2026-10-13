@@ -133,10 +133,15 @@ export async function gitShow(dir: string, base: string, relpath: string): Promi
  * that commit maps to undefined. Paths git's batch format cannot carry (newlines) are read one by one.
  */
 export async function gitShowMany(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number): Promise<Map<string, string | undefined>> {
+  return gitShowManyImpl(dir, base, relpaths, configuredTimeoutMs)
+}
+
+async function gitShowManyImpl(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number,
+  blobs?: ReadonlyMap<string, GitBlobInfo | undefined>): Promise<Map<string, string | undefined>> {
   const out = new Map<string, string | undefined>()
   const batch: string[] = []
   for (const p of relpaths) {
-    if (/[\r\n]/.test(p)) out.set(p, await gitShow(dir, base, p))
+    if (!blobs && /[\r\n]/.test(p)) out.set(p, await gitShow(dir, base, p))
     else batch.push(p)
   }
   if (!batch.length) return out
@@ -152,7 +157,7 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
     child.on('error', e => { clearTimeout(timer); done(); reject(e) })
     child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(`git cat-file --batch failed: ${stderr.trim() || `exit ${code}`}`)) })
     child.stdin.on('error', () => { /* reported by close */ })
-    child.stdin.end(batch.map(p => `${base}:${p}\n`).join(''))
+    child.stdin.end(batch.map(p => `${blobs ? blobs.get(p)!.hash : `${base}:${p}`}\n`).join(''))
   })
   let at = 0
   for (const p of batch) {
@@ -162,7 +167,16 @@ export async function gitShowMany(dir: string, base: string, relpaths: Iterable<
     const [, type, size] = header.split(' ')
     if (header.endsWith(' missing') || header.endsWith(' ambiguous') || size === undefined) { out.set(p, undefined); continue }
     const n = Number(size)
-    out.set(p, type === 'blob' ? raw.subarray(at, at + n).toString('utf8') : undefined)
+    const bytes = raw.subarray(at, at + n)
+    let text: string | undefined
+    if (type === 'blob') {
+      if (!blobs) text = bytes.toString('utf8')
+      else {
+        try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+        catch { /* Invalid text is unavailable, never replacement characters or an empty base. */ }
+      }
+    }
+    out.set(p, text)
     at += n + 1
   }
   return out
@@ -172,6 +186,16 @@ export interface GitBlobInfo { hash: string; size: number }
 
 /** Blob ids and sizes at one commit, without reading the blobs. NUL framing also permits newline paths. */
 export async function gitBlobInfoMany(dir: string, base: string, relpaths: Iterable<string>, configuredTimeoutMs?: number): Promise<Map<string, GitBlobInfo | undefined>> {
+  return gitObjectInfoMany(dir, relpaths, p => `${base}:${p}`, configuredTimeoutMs)
+}
+
+/** Sizes of carried untracked blobs, without reading their contents or applying checkout filters. */
+export async function gitBlobInfoById(dir: string, ids: Iterable<string>): Promise<Map<string, GitBlobInfo | undefined>> {
+  return gitObjectInfoMany(dir, ids, id => id)
+}
+
+async function gitObjectInfoMany(dir: string, relpaths: Iterable<string>, object: (p: string) => string,
+  configuredTimeoutMs?: number): Promise<Map<string, GitBlobInfo | undefined>> {
   const paths: string[] = []
   for (const p of relpaths) {
     if (paths.length % 32 === 0) await setImmediate()
@@ -191,7 +215,7 @@ export async function gitBlobInfoMany(dir: string, base: string, relpaths: Itera
     child.on('error', e => { clearTimeout(timer); done(); reject(e) })
     child.on('close', code => { clearTimeout(timer); done(); code === 0 ? resolve(Buffer.concat(chunks).toString()) : reject(new Error(`git cat-file --batch-check failed: ${stderr.trim() || `exit ${code}`}`)) })
     child.stdin.on('error', () => { /* reported by close */ })
-    child.stdin.end(paths.map(p => `${base}:${p}\0`).join(''))
+    child.stdin.end(paths.map(p => `${object(p)}\0`).join(''))
   })
   const headers = raw.split('\0')
   if (headers.length !== paths.length + 1) throw new Error(`git cat-file --batch-check returned ${headers.length - 1} results for ${paths.length} paths`)
@@ -214,7 +238,7 @@ export async function gitShowManyCapped(dir: string, base: string, relpaths: Ite
   let bytes = 0
   const flush = async () => {
     if (!group.length) return
-    for (const [p, text] of await gitShowMany(dir, base, group)) result.set(p, text)
+    for (const [p, text] of await gitShowManyImpl(dir, base, group, undefined, info)) result.set(p, text)
     group = []
     bytes = 0
   }
@@ -223,7 +247,7 @@ export async function gitShowManyCapped(dir: string, base: string, relpaths: Ite
     if (i++ % 32 === 0) await setImmediate()
     const blob = info.get(p)
     if (!blob || blob.size > perBlobCap) { result.set(p, undefined); continue }
-    if (group.length >= 32 || bytes + blob.size > 1024 * 1024) await flush()
+    if (group.length >= 32 || bytes + blob.size > Math.min(perBlobCap, 1024 * 1024)) await flush()
     group.push(p)
     bytes += blob.size
   }

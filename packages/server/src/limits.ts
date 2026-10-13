@@ -13,6 +13,10 @@ export const AWARENESS_MAX_MESSAGE_BYTES = 64 * 1024
 export const AWARENESS_MAX_STATE_BYTES = 16 * 1024
 // Allows reconnecting client IDs while preventing one socket from filling the room's presence map.
 export const AWARENESS_MAX_IDS_PER_CONNECTION = 16
+// Local relay mirrors these awareness bounds (including 6000 messages/minute and 4096 IDs/room).
+// Admission differs by environment: hosted defaults are 100 rooms / 4000 sockets / 200 per room;
+// the local relay defaults to 8 retained-or-pending rooms / 200 sockets / 100 per room.
+// RelayOptions.admission and RelayOptions.awareness permit overrides; see relay/src/limits.ts.
 // Allows several browser links per login and room without accumulating unlimited capabilities.
 export const VIEW_MAX_PER_PRINCIPAL = 5
 // Allows link renewal and sharing while bounding capability churn from one login.

@@ -8,10 +8,68 @@ import { execFileSync } from 'node:child_process'
 import { Awareness } from 'y-protocols/awareness'
 import type { WebsocketProvider } from 'y-websocket'
 import { startRoomd } from '../src/index.js'
+import { DiskBatch } from '../src/disk-batch.js'
 
 vi.setConfig({ testTimeout: 60_000 })
 beforeAll(() => { vi.stubEnv('CHOKIDAR_USEPOLLING', '1') })
 afterAll(() => { vi.unstubAllEnvs() })
+
+it('expires cold publication histories and hot membership on later lifecycle activity', () => {
+  vi.useFakeTimers()
+  let now = 0
+  const batch = new DiskBatch(() => {}, 20, () => now)
+  const state = batch as unknown as { publications: Map<string, number[]>; hot: Set<string> }
+  try {
+    batch.published('cold')
+    for (let i = 0; i < 6; i++) batch.published('hot')
+    expect(batch.deferHot('hot')).toBe(true)
+    now = 120_001
+    batch.published('new')
+    expect([...state.publications.keys()]).toEqual(['new'])
+    expect(state.hot.size).toBe(0)
+    expect(batch.deferHot('hot')).toBe(false)
+    batch.stop()
+    expect(state.publications.size).toBe(0)
+  } finally { batch.stop(); vi.useRealTimers() }
+})
+
+it('drains 5000 stale histories through bounded sweeps while continued publication keeps hot throttling', () => {
+  let now = 0
+  const batch = new DiskBatch(() => {}, 20, () => now)
+  const state = batch as unknown as { publications: Map<string, number[]>; hot: Set<string> }
+  try {
+    for (let i = 0; i < 5000; i++) batch.published(`old-${i}`)
+    expect(state.publications.size).toBe(5000)
+    now = 120_001
+    const removed = vi.spyOn(state.publications, 'delete')
+    const originalEntries = state.publications.entries.bind(state.publications)
+    let inspected = 0
+    const countedEntries = () => {
+      const iterator = originalEntries()
+      const next = iterator.next.bind(iterator)
+      iterator.next = () => { inspected++; return next() }
+      return iterator
+    }
+    vi.spyOn(state.publications, 'entries').mockImplementation(countedEntries)
+    vi.spyOn(state.publications, Symbol.iterator).mockImplementation(countedEntries)
+    for (let i = 0; i < 20; i++) {
+      removed.mockClear()
+      inspected = 0
+      batch.published('live')
+      // At most 256 expired keys plus moving the live key to the newest position.
+      expect(removed.mock.calls.length).toBeLessThanOrEqual(257)
+      expect(inspected).toBeLessThanOrEqual(256)
+      if (i === 0) expect(state.publications.size).toBe(5000 - 256 + 1)
+    }
+    expect([...state.publications.keys()]).toEqual(['live'])
+    expect(state.publications.get('live')).toHaveLength(6)
+    expect(state.hot.has('live')).toBe(true)
+    now += 29_999
+    expect(batch.deferHot('live')).toBe(true)
+    now++
+    expect(batch.deferHot('live')).toBe(false)
+  } finally { batch.stop(); vi.restoreAllMocks() }
+})
 
 async function until(check: () => boolean, ms: number): Promise<void> {
   const deadline = Date.now() + ms

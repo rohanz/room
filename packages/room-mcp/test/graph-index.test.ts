@@ -8,8 +8,9 @@ import { join } from 'node:path'
 import { RoomDoc, type Msg } from '@room/shared'
 import { setParticipantBase } from '@room/shared/testing'
 import * as gitModule from '@room/roomd/git'
+import { languageLoadAttemptsForTest } from '../src/parse/engine.js'
 import { ParseWorker } from '../src/parse/client.js'
-import { GraphIndex } from '../src/graph-index.js'
+import { GraphIndex, consumesSymbol } from '../src/graph-index.js'
 import { handlers as fileHandlers } from '../src/tools/files.js'
 import { createInbox } from '../src/tools/messaging.js'
 import type { Session } from '../src/session.js'
@@ -717,6 +718,64 @@ describe('GraphIndex snapshot discipline', () => {
     } finally { gi.stop(); room.doc.destroy() }
   }, 30_000)
 
+  it('stops collecting edges once the snapshot byte budget is exceeded', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', largeBase); setFixtureLocalRoot(room, 'Rohan', repo)
+    const gi = new GraphIndex(room, 'Rohan', repo, undefined, { random: () => 0, minPublishMs: 0, read: readLarge })
+    const published = (gi as unknown as { publishedGraph: typeof gi.graph }).publishedGraph
+    const dependencies = vi.spyOn(published, 'dependenciesOf')
+    try {
+      gi.start(); await gi.ready
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready', 10_000)
+      expect(published.size).toBe(total)
+      // Force one more publish and count the edge work it does: the body is far over the
+      // 200 KiB budget, so construction must stop well before every path is visited.
+      dependencies.mockClear()
+      const internals = gi as unknown as { graphRevision: number; generation: number; publishSnapshot(status: 'ready', generation: number): Promise<void> }
+      internals.graphRevision++
+      await internals.publishSnapshot('ready', internals.generation)
+      const graph = room.graphs.get('Rohan')!
+      expect(graph.truncated).toBe(true)
+      expect(graph.edges).toEqual([])
+      expect(dependencies.mock.calls.length).toBeGreaterThan(0)
+      expect(dependencies.mock.calls.length).toBeLessThan(total / 2)
+    } finally { gi.stop(); room.doc.destroy() }
+  }, 30_000)
+
+  it('keeps a snapshot of many long path names within the byte budget', async () => {
+    const wide = mkdtempSync(join(tmpdir(), 'room-graph-wide-'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', wide, ...args], { stdio: 'pipe' }).toString().trim()
+    git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+    const names = Array.from({ length: 1200 }, (_, i) => `${'d'.repeat(180)}_${String(i).padStart(4, '0')}.py`)
+    for (const name of names) writeFileSync(join(wide, name), '')
+    git('add', '.'); git('commit', '-qm', 'wide'); const wideBase = git('rev-parse', 'HEAD')
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', wideBase); setFixtureLocalRoot(room, 'Rohan', wide)
+    const read = async (): Promise<string> => 'def shared(): pass\n'
+    const gi = new GraphIndex(room, 'Rohan', wide, undefined, { random: () => 0, minPublishMs: 0, read })
+    try {
+      gi.start(); await gi.ready
+      await eventually(() => room.graphs.get('Rohan')?.status === 'ready', 20_000)
+      const graph = room.graphs.get('Rohan')!
+      expect(Buffer.byteLength(JSON.stringify(graph))).toBeLessThanOrEqual(200 * 1024)
+      expect(graph.truncated).toBe(true)
+      expect(graph.paths.length).toBeGreaterThan(0)
+      expect(graph.paths.length).toBeLessThan(names.length)
+    } finally { gi.stop(); room.doc.destroy(); rmSync(wide, { recursive: true, force: true }) }
+  }, 60_000)
+
+  it('forgets per-path revisions once their refreshes settle', async () => {
+    const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base); setFixtureLocalRoot(room, 'Rohan', dir)
+    const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
+    const internals = gi as unknown as { revisions: Map<string, number> }
+    try {
+      gi.start(); await gi.whenIdle()
+      for (let i = 0; i < 500; i++) void gi.refresh(`gone/${i}.py`)
+      expect(internals.revisions.size).toBe(500)
+      await gi.whenIdle()
+      expect(gi.graph.has('gone/0.py')).toBe(false)
+      expect(internals.revisions.size).toBe(0)
+    } finally { gi.stop(); room.doc.destroy() }
+  }, 30_000)
+
   it('skips edge construction when the queued publish finds no graph changes', async () => {
     const room = new RoomDoc(); setParticipantBase(room, 'Rohan', base)
     const gi = new GraphIndex(room, 'Rohan', dir, undefined, { random: () => 0, minPublishMs: 0 })
@@ -832,4 +891,14 @@ describe('shared graph startup', () => {
     } finally { gi.stop(); room.doc.destroy() }
   })
 
+})
+
+
+it('resolves consumers without loading tree-sitter in the main isolate', async () => {
+  expect(languageLoadAttemptsForTest('javascript')).toBe(0)
+  const text = 'import { sample } from "./provider.js"; sample();'
+  expect(await consumesSymbol('consumer.js', text, 'provider.js', 'sample')).toBe(true)
+  expect(await consumesSymbol('consumer.js', text, 'provider.js', 'unused')).toBe(false)
+  expect(await consumesSymbol('provider.js', 'function sample() { sample(); }', 'provider.js', 'sample')).toBe(true)
+  expect(languageLoadAttemptsForTest('javascript')).toBe(0)
 })

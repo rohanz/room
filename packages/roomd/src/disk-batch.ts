@@ -8,6 +8,7 @@ export class DiskBatch {
   private timer?: ReturnType<typeof setTimeout>
   private settleAt = 0
   private stopped = false
+  private running = false
 
   constructor(private run: (paths: Map<string, boolean>) => void | Promise<void>, private debounceMs = 300, private now = Date.now, private hotThrottleMs = 30_000, private onError: (error: unknown) => void = () => {}) {}
 
@@ -15,9 +16,14 @@ export class DiskBatch {
   knownPaths(): string[] { return [...new Set([...this.pending.keys(), ...this.active.keys()])] }
 
   published(path: string): void {
+    if (this.stopped) return
     const now = this.now()
-    const times = (this.publications.get(path) ?? []).filter(at => now - at < 120_000)
+    this.expireHistories(now)
+    const times = this.recent(path, now)
     times.push(now)
+    // Six timestamps suffice to decide whether the two-minute window is hot.
+    if (times.length > 6) times.shift()
+    this.publications.delete(path)
     this.publications.set(path, times)
     if (times.length > 5) this.hot.add(path)
   }
@@ -25,6 +31,11 @@ export class DiskBatch {
   add(path: string, isNew: boolean): void {
     if (this.stopped) return
     const now = this.now()
+    this.expireHistories(now)
+    this.queue(path, isNew, now)
+  }
+
+  private queue(path: string, isNew: boolean, now: number): void {
     this.pending.set(path, isNew || this.pending.get(path) === true)
     this.arrivals.set(path, now)
     for (const [p, at] of this.arrivals) if (now - at >= 1000) this.arrivals.delete(p)
@@ -34,37 +45,72 @@ export class DiskBatch {
 
   /** Recheck when queued work executes: another publish may have made the path hot. */
   deferHot(path: string): boolean {
-    if (!this.hot.has(path) || this.due(path) <= this.now()) return false
-    this.add(path, true)
+    if (this.stopped) return false
+    const now = this.now()
+    this.expireHistories(now)
+    if (this.due(path, now) <= now) return false
+    this.queue(path, true, now)
     return true
   }
 
-  private due(path: string): number {
+  /** Map order is last-publication order; stop at the first still-live history. */
+  private expireHistories(now: number): void {
+    const entries = this.publications.entries()
+    for (let n = 0; n < 256; n++) {
+      const oldest = entries.next().value
+      if (!oldest || now - oldest[1].at(-1)! < 120_000) break
+      this.publications.delete(oldest[0])
+      this.hot.delete(oldest[0])
+    }
+  }
+
+  private recent(path: string, now: number): number[] {
+    const prior = this.publications.get(path)
+    if (!prior) return []
+    const times = prior.filter(at => now - at < 120_000)
+    if (!times.length) this.publications.delete(path)
+    else if (times.length !== prior.length) this.publications.set(path, times)
+    if (times.length <= 5) this.hot.delete(path)
+    return times
+  }
+
+  private due(path: string, now = this.now()): number {
+    this.recent(path, now)
     return this.hot.has(path) ? (this.publications.get(path)?.at(-1) ?? 0) + this.hotThrottleMs : 0
   }
 
   private arm(): void {
     clearTimeout(this.timer)
-    if (!this.pending.size || this.stopped) return
+    this.timer = undefined
+    if (!this.pending.size || this.stopped || this.running) return
     const next = Math.max(this.settleAt, Math.min(...Array.from(this.pending.keys(), p => this.due(p))))
     this.timer = setTimeout(() => {
+      this.timer = undefined
       const ready = new Map<string, boolean>()
       for (const [p, fresh] of this.pending) if (this.due(p) <= this.now()) { ready.set(p, fresh); this.pending.delete(p) }
       if (ready.size) {
-        for (const p of ready.keys()) this.active.set(p, (this.active.get(p) ?? 0) + 1)
-        void Promise.resolve().then(() => this.run(ready)).catch(error => {
+        this.running = true
+        for (const p of ready.keys()) this.active.set(p, 1)
+        void Promise.resolve().then(() => this.stopped ? undefined : this.run(ready)).catch(error => {
           try { this.onError(error) } catch { /* error reporting must not strand a batch */ }
         }).finally(() => {
-          for (const p of ready.keys()) {
-            const count = this.active.get(p) ?? 0
-            if (count <= 1) this.active.delete(p)
-            else this.active.set(p, count - 1)
-          }
+          this.active.clear()
+          this.running = false
+          this.expireHistories(this.now())
+          this.arm()
         })
       }
-      this.arm()
+      else this.arm()
     }, Math.max(0, next - this.now()))
   }
 
-  stop(): void { this.stopped = true; clearTimeout(this.timer); this.pending.clear() }
+  stop(): void {
+    this.stopped = true
+    clearTimeout(this.timer)
+    this.timer = undefined
+    this.pending.clear()
+    this.arrivals.clear()
+    this.publications.clear()
+    this.hot.clear()
+  }
 }
