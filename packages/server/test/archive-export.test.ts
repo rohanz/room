@@ -108,7 +108,15 @@ it('exports a stored empty document as one empty-update frame', async () => {
 it('exports exact percent-containing legacy names and refuses their purge', async () => {
   const session = await login(), headers = { authorization: `Bearer ${session}` }
   for (const name of historical) {
-    const result = await post('/archive/export', { room: name, schema: 2, session })
+    let result = await post('/archive/export', { room: name, schema: 2, session })
+    // Content-Length can complete the client download before the server closes its
+    // LevelDB iterator and releases the previous export slot. Allow only that busy
+    // response here; the capacity tests below still assert limits without retries.
+    for (let attempt = 0; result.status === 429 && attempt < 50; attempt++) {
+      expect(await result.text()).toBe('archive export busy; retry')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      result = await post('/archive/export', { room: name, schema: 2, session })
+    }
     expect(result.status).toBe(200)
     const frame = Buffer.from(await result.arrayBuffer()), doc = new Y.Doc()
     Y.applyUpdate(doc, frame.subarray(4)); expect(doc.getMap('fixture').get('name')).toBe(name); doc.destroy()
