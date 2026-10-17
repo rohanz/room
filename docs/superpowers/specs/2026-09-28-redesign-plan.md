@@ -7,7 +7,7 @@ items remained, and checked against each other by the lead.
 - [registry](2026-09-28-registry.md): durable local worker registry and leases ([review](reviews/2026-09-28-registry-review.md))
 - [reporooms](2026-09-28-reporooms.md): repository-level rooms and derived conflicts ([review](reviews/2026-09-28-reporooms-review.md))
 
-The problem statement is [the 2026-09-27 audit synthesis](../../audit-2026-09-27-design.md).
+The problem statement is [the 2026-09-27 audit synthesis](../../archive/reports/audit-2026-09-27-design.md).
 
 Amended the same day with the human's decisions D1–D5 ([below](#decided-by-the-human-2026-09-28)): D1–D3
 settle the three questions this plan put to the human, D4 settles ledger Q4 with a live check, and D5 adds

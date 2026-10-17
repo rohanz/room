@@ -21,6 +21,6 @@ it('refuses a Codex installed Room version mismatch with an actionable message',
 
 it('advertises that messaging a finished worker resumes its worktree session', () => {
   for (const description of [sendDefs[0].description, workerDefs.find(d => d.name === 'room_spawn')!.description]) {
-    expect(description).toContain('message a finished worker to resume it in its worktree')
+    expect(description).toMatch(/message (?:a )?finished workers? to resume(?: it| them)? in (?:its|their) worktrees?/i)
   }
 })

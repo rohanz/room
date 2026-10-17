@@ -102,6 +102,27 @@ describe('wake paths (content-free; never a receipt)', () => {
     expect(claudeWakeAvailable({ host: 'claude', env: {}, parentArgs: 'claude' })).toBe(false)
     expect(claudeWakeAvailable({ host: 'claude', env: { ROOM_WAKE: 'off', CLAUDE_CODE_MESSAGING_SOCKET: '/x' }, parentArgs: flag })).toBe(false)
   })
+  it('reports a socket write without claiming acceptance, including held/refused messages', async () => {
+    const post = vi.fn(async () => {}) // raw own-socket protocol cannot observe inbound hold/refuse
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/private/socket', CLAUDE_CODE_MESSAGING_TOKEN: 'private-token' }, notify: vi.fn(), post })
+    expect(send.describe?.(claude)).toEqual({ mode: 'auto', transport: 'socket', availability: 'configured' })
+    expect(send.lastAttempt?.()).toBeUndefined()
+    await send(claude, 'private pointer')
+    expect(send.lastAttempt?.(claude)).toMatchObject({ via: 'socket', outcome: 'written' })
+    expect(send.lastAttempt?.({ ...claude, id: 'other' })).toBeUndefined()
+    expect(JSON.stringify(send.lastAttempt?.())).not.toMatch(/private|accepted|read|acted/)
+  })
+
+  it('records the selected fallback path and keeps off free of attempts', async () => {
+    const send = createWakeSender({ env: { CLAUDE_CODE_MESSAGING_SOCKET: '/unused' }, parentArgs: flag,
+      post: async () => { throw new Error('secret host failure') }, notify: vi.fn() })
+    expect(await send(claude, TEXT)).toBe('channel')
+    expect(send.lastAttempt?.()).toMatchObject({ via: 'channel', outcome: 'written', fallback: 'socket-failed' })
+    const off = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })
+    await off(claude, TEXT)
+    expect(off.describe?.(claude)).toMatchObject({ availability: 'off', transport: 'none' })
+    expect(off.lastAttempt?.()).toBeUndefined()
+  })
 })
 
 describe('the reconciler: one pointer per host session', () => {
@@ -221,6 +242,44 @@ describe('the reconciler: one pointer per host session', () => {
       t.ask('cat')
       await vi.advanceTimersByTimeAsync(100)
       expect(send).toHaveBeenCalledOnce()
+    } finally { t.close() }
+  })
+
+  it('bounds failed idle sends per message and offers just one degraded notice', async () => {
+    vi.useFakeTimers()
+    const send = vi.fn(async () => { throw new Error('offline') })
+    const t = setup(send, 0)
+    try {
+      t.ask('cat')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(send).toHaveBeenCalledTimes(3)
+      t.ask('dog')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(send).toHaveBeenCalledTimes(6)
+      for (const [, text] of send.mock.calls.slice(3) as unknown as [unknown, string][]) {
+        expect(text).toContain('dog'); expect(text).not.toContain('cat')
+      }
+    } finally { t.close() }
+  })
+
+  it('recovers an old message after the bounded retry burst cools down, without new traffic', async () => {
+    vi.useFakeTimers()
+    let online = false
+    const send = vi.fn(async () => { if (!online) throw new Error('restart'); return 'socket' as const })
+    const t = setup(send, 0)
+    try {
+      const message = t.ask('cat')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(send).toHaveBeenCalledTimes(3)
+      online = true
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(send).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(send).toHaveBeenCalledTimes(4)
+      expect(t.ledger.candidates(t.s).map(m => m.id)).toContain(message.id)
+      expect(t.ledger.noticeCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(send).toHaveBeenCalledTimes(4)
     } finally { t.close() }
   })
 

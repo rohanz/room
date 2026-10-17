@@ -3,6 +3,8 @@
 Team rooms are self-hosted; Room has no default public server. One container, one volume. Login with a GitHub OAuth App, with your company identity provider
 (OIDC), or both. This page is the whole runbook.
 
+The separate [Fly runbook](DEPLOYING.md) and `deploy/fly.toml` describe Rohan’s existing deployment. They are not required for this setup.
+
 ## Prerequisites
 
 - A host with Docker (Compose v2) and a DNS name, e.g. `room.example.com`.

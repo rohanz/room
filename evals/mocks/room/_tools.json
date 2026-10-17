@@ -292,20 +292,21 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use to read a teammate\u2019s live file or diff; omit path for all diffs.",
+      "description": "Read peer text/diffs; omit path with diff=true for all diffs.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "path": {
-            "type": "string",
-            "description": "repo-relative path"
+            "type": "string"
           },
           "person": {
-            "type": "string",
-            "description": "default you"
+            "type": "string"
           },
           "diff": {
             "type": "boolean"
+          },
+          "cursor": {
+            "type": "string"
           }
         }
       }
@@ -420,7 +421,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to \"tell X\", \"ask the worker a follow-up\", or \"interrupt the worker\" (priority=interrupt); message a finished worker to resume it in its worktree.",
+      "description": "Use to \"ask the worker a follow-up\" or \"interrupt the worker\" (priority=interrupt); message a finished worker to resume it in its worktree. Send findings to the owning peer.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -435,11 +436,11 @@
           },
           "to": {
             "type": "string",
-            "description": "recipient; omit to broadcast"
+            "description": "recipient; default broadcast"
           },
           "text": {
             "type": "string",
-            "description": "text or change summary"
+            "description": "text"
           },
           "message": {
             "type": "string",
@@ -461,7 +462,7 @@
           },
           "inReplyTo": {
             "type": "string",
-            "description": "question or addressed note id"
+            "description": "question/note id"
           },
           "priority": {
             "type": "string",
@@ -489,7 +490,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Wait for answers, claim release, worker completion or interrupts; repeat on timeout if blocked.",
+      "description": "Room dependencies only; one wait at a time. For your own commands use host task completion.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -560,7 +561,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use before changing a public function or file: find who depends on it.",
+      "description": "Find consumers before public API edits.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -582,7 +583,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Use for \"will our changes work together?\" or \"check for conflicts before I finish\"; optionally run tests.",
+      "description": "For \"will our changes work together?\" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -591,23 +592,23 @@
             "items": {
               "type": "string"
             },
-            "description": "participants in merge order; default all"
+            "description": "names; worker collect order"
           },
           "person": {
             "type": "string",
-            "description": "one participant"
+            "description": "one name"
           },
           "includeOffline": {
             "type": "boolean",
-            "description": "include offline overlays"
+            "description": "include offline"
           },
           "run": {
             "type": "string",
-            "description": "test command"
+            "description": "real test command; stops at 5 min/4 MB"
           },
           "resolve": {
             "type": "boolean",
-            "description": "resolve superset conflicts"
+            "description": "superset resolution"
           }
         }
       }
@@ -644,13 +645,13 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Only for explicitly requested Room workers or continued Room worker workflows; generic agent, parallel or background requests use host delegation; split by task, brief tasks, claim regions and preview; message a finished worker to resume it in its worktree.",
+      "description": "Only for explicitly requested Room workers or continued Room worker workflows; other requests use host delegation; split by task; dispatch each part when its interfaces are agreed, with short briefs. Message finished workers to resume in their worktrees.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "tag": {
             "type": "string",
-            "description": "worker tag"
+            "description": "tag"
           },
           "task": {
             "type": "string",
@@ -666,7 +667,7 @@
           },
           "model": {
             "type": "string",
-            "description": "host model override"
+            "description": "model"
           },
           "effort": {
             "type": "string",
@@ -676,14 +677,14 @@
               "medium",
               "high"
             ],
-            "description": "reasoning effort"
+            "description": "effort"
           },
           "link": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "input paths; default .roomlinks; [] disables"
+            "description": "paths; default .roomlinks; [] off"
           },
           "carry": {
             "type": "boolean",
@@ -692,7 +693,7 @@
           "threads": {
             "type": "integer",
             "minimum": 1,
-            "description": "worker thread budget"
+            "description": "threads"
           },
           "share": {
             "type": "string",
@@ -705,11 +706,11 @@
           },
           "allowOutside": {
             "type": "boolean",
-            "description": "allow a team worker outside this repo"
+            "description": "allow outside repo"
           },
           "dir": {
             "type": "string",
-            "description": "existing directory; no new worktree"
+            "description": "existing checkout"
           },
           "where": {
             "type": "string",
@@ -717,7 +718,7 @@
               "here",
               "local"
             ],
-            "description": "here (default) or local workers room"
+            "description": "default here; local workers room"
           }
         },
         "required": [
@@ -734,7 +735,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Use to \"bring in their work\" as unstaged edits or \"throw away the worker\". checkpoint gates collection. Conflicts write nothing.",
+      "description": "Use to \"bring in their work\" unstaged or discard. Defer until follow-ups end, or keep=true for resumption (apply only). Conflicts write nothing; checkpoint gates collection.",
       "inputSchema": {
         "additionalProperties": false,
         "type": "object",
@@ -751,6 +752,9 @@
             ]
           },
           "discard": {
+            "type": "boolean"
+          },
+          "keep": {
             "type": "boolean"
           },
           "paths": {

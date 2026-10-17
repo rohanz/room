@@ -15,16 +15,22 @@ it('keeps all advertised tool names, descriptions and schemas within 9,500 chara
   const spawn = DEFS.find(d => d.name === 'room_spawn')!.description
   for (const phrase of ['explicitly requested Room workers', 'continued Room worker workflows', 'requests use host delegation']) expect(spawn).toContain(phrase)
   expect(spawn).toContain('split by task')
+  expect(spawn).toContain('dispatch each part when its interfaces are agreed')
+  expect(spawn).not.toContain('Contract first')
   const share = DEFS.find(d => d.name === 'room_share')!.description
   expect(share).toContain('share plans only')
   expect(share).toContain('only my declared files')
   const description = (name: string) => DEFS.find(d => d.name === name)!.description
+  expect(description('room_wait')).toContain('Room dependencies only; one wait at a time')
+  expect(description('room_wait')).toContain('For your own commands use host task completion')
   expect(description('room_state')).toContain('is Room set up right?')
   expect(description('room_send')).toContain('ask the worker a follow-up')
   expect(description('room_send')).toContain('interrupt the worker')
   expect(description('room_collect')).toContain('bring in their work')
   expect(description('room_leave')).toContain('work locally')
   expect(description('room_preview_merge')).toContain('will our changes work together?')
+  expect(description('room_preview_merge')).toContain('Snapshot passes are interim; rerun for relevant changes, failures or final current evidence')
+  expect(description('room_read')).toContain('omit path with diff=true for all diffs')
   const state = DEFS.find(d => d.name === 'room_state')!
   if ('check' in state.inputSchema.properties) expect(state.inputSchema.properties.check).toHaveProperty('description', 'setup check (room doctor)')
 })

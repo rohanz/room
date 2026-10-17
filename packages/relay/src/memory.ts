@@ -69,9 +69,9 @@ export function saveMemory(commonDir: string, room: string, doc: Y.Doc, log = st
     }
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     fs.chmodSync(path.dirname(file), 0o700)
-    fs.writeFileSync(temp, update, { mode: 0o600, flag: 'wx' })
-    const fd = fs.openSync(temp, 'r')
-    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    const fd = fs.openSync(temp, 'wx', 0o600)
+    // Keep the writable handle: Windows cannot flush a read-only file handle.
+    try { fs.writeFileSync(fd, update); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
     fs.renameSync(temp, file)
     syncDirectory(path.dirname(file))
     return true

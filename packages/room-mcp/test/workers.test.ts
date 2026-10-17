@@ -184,7 +184,11 @@ describe('worker plumbing', () => {
     const x = workerCommand('codex', undefined, 'do it')
     expect(x.cmd).toBe('codex'); expect(x.args.slice(0, 3)).toEqual(['exec', '-s', 'workspace-write'])
     expect(x.args).toContain('--json')
-    expect(workerPrompt('rohanz', 'money', 'switch to cents')).toContain('to "rohanz"')
+    const prompt = workerPrompt('rohanz', 'money', 'switch to cents')
+    expect(prompt).toContain('Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>")')
+    expect(prompt).toContain('ask rohanz for scope decisions or unresolved ownership')
+    expect(prompt).toContain('Continue independent work while an answer is pending')
+    expect(prompt).toContain('TASK: switch to cents')
   })
 
   it('uses the resolved channel override and supports disabling it', async () => {
@@ -655,6 +659,10 @@ describe('room_spawn / room_done / room_collect discard', () => {
       const first = await t.leadTools.call('room_spawn', { tag: 'wip1', task: 'a' })
       expect(first).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(first).not.toContain('starts from HEAD')
+      expect(first).toContain('carried preview freshness pending')
+      const record = (await registryForDir(dir)).reservedByTagOrName('wip1')!
+      expect(record.keptPublication).toMatchObject({ paths: ['wip.txt'], pending: true, base: record.base })
+      expect(await t.leadTools.call('room_send', { type: 'note', to: 'wip1', text: 'continue with your carried copy' })).toContain('sent [')
       expect(workerByTag(dir, 'wip1')?.base).toBe(execFileSync('git', ['-C', join(dir, '.room', 'workers', 'wip1'), 'rev-parse', 'HEAD']).toString().trim())
       expect(await t.leadTools.call('room_spawn', { tag: 'wip2', task: 'b' })).toContain('carried your uncommitted work into its worktree: 1 untracked file copied')
       expect(workerByTag(dir, 'wip2')?.base).toBe(base)
@@ -1449,6 +1457,8 @@ describe('review fixes: the workers room', () => {
     ls!.roomName = 'github.com/rohanz/x'; ls!.roomUrl = 'wss://team.example/github.com%2Frohanz%2Fx'
     const leadTools = createTools({
       getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined,
+      // An idle lead lets this fixture test cross-room wake routing independently of host discovery.
+      wakeProbe: { busy: async () => false },
       ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
       join: async () => fakeSession(local.a, lead),
       leave: async () => {},
@@ -2004,12 +2014,12 @@ describe('spawn inputs and effort', () => {
     const t = setupLead()
     expect(await t.leadTools.call('room_state', {})).not.toContain('For your human:')
     const reply = await t.leadTools.call('room_spawn', { tag: 'warning', task: 'x' })
-    expect(reply.split('\n')[0]).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(reply.split('\n')[0]).toContain('Continue independent work while workers run.')
     expect(reply.split('\n')[1]).toMatch(/^For your human:/)
     expect(reply).toContain('>> ~/.bashrc')
     const second = await t.leadTools.call('room_spawn', { tag: 'another', task: 'y' })
     expect(second).not.toContain('For your human:')
-    expect(second).not.toContain('room_wait in a loop')
+    expect(second).not.toContain('Continue independent work while workers run.')
     await t.leadTools.shutdown()
   })
 
@@ -2025,7 +2035,7 @@ describe('spawn inputs and effort', () => {
     expect(first).toContain('For your human:')
     expect(await t.leadTools.call('room_state', {})).not.toContain('For your human:')
     const spawn = await t.leadTools.call('room_spawn', { tag: 'after-state', task: 'x' })
-    expect(spawn.split('\n')[0]).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(spawn.split('\n')[0]).toContain('Continue independent work while workers run.')
     expect(spawn).not.toContain('For your human:')
     peer.destroy()
     peerDoc.destroy()
@@ -2089,9 +2099,9 @@ describe('worker follow-up sessions', () => {
     expect(t.specs[0].args).toContain('--session-id')
     const settings = JSON.parse(t.specs[0].args[t.specs[0].args.indexOf('--settings') + 1])
     expect(settings).toEqual({ hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [{
-      type: 'command', command: 'node', args: [join(dir, '.room', 'workers', 'money.shell-env.mjs')], timeout: 5,
+      type: 'command', command: 'node', args: ['--input-type=module', '-e', expect.stringContaining('PowerShell')], timeout: 5,
     }] }] } })
-    expect(existsSync(settings.hooks.PreToolUse[0].hooks[0].args[0])).toBe(true)
+    expect(fs.readdirSync(join(dir, '.room', 'workers')).filter(name => /\.[cm]?js$/.test(name))).toEqual([])
     mkdirSync(initial.dir, { recursive: true })
     await reportDone('money', 'first done')
     t.exits[0](0)
@@ -2267,7 +2277,7 @@ describe('preview of a finished local worker', () => {
     }
   })
 
-  it('a finished worker resumed during the preview is checked again, never certified from its old run', async () => {
+  it('a finished worker resumed during the preview returns a disk snapshot, never certified from its old run', async () => {
     vi.stubEnv('ROOM_HOST', 'claude')
     const { a, b } = pair()
     a.setMeta({ repo: 'x' }); setParticipantBase(a, lead.name, base)
@@ -2299,7 +2309,11 @@ describe('preview of a finished local worker', () => {
       await vi.waitFor(() => expect(workerByTag(dir, 'resumer')?.status).not.toBe('running'))
       const out = await leadTools.call('room_preview_merge', { person: 'rohanz+resumer', run: `touch '${flag}' && sleep 0.5 && cat app.py` })
       expect(await resumed).toContain('resumed')
-      expect(out.includes('x = 8') || out.includes('moved during the preview')).toBe(true)
+      expect(out).toContain('SNAPSHOT result')
+      expect(out).toContain('rohanz+resumer moved since this snapshot was built')
+      expect(out).toContain('rohanz+resumer (disk worktree snapshot, base ')
+      expect(out).toContain('x = 7')
+      expect(ls!.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
     } finally {
       clearInterval(watch)
       rmSync(flagDir, { recursive: true, force: true })

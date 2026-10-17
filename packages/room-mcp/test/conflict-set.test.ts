@@ -1,3 +1,4 @@
+import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
 import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
@@ -304,6 +305,179 @@ describe('derived pair slots', () => {
     return { room, base, dir, holder, entry, post, session, localFence, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
   }
 
+  it.each(['x', ' café "quoted"\tline\nname.txt '])('detects committed rename deletion conflicts for the exact path %j', async path => {
+    const f = fixture({ [path]: 'old\n' })
+    const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    const set = new ConflictSet(f.session('A'))
+    try {
+      run('config', 'diff.renames', 'true'); run('config', 'core.quotePath', 'true')
+      run('mv', '--', path, 'renamed.txt'); run('commit', '-qm', 'rename')
+      const tip = run('rev-parse', 'HEAD')
+      expect(run('diff', '--name-status', f.base, tip)).toMatch(/^R100\s/)
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, base: tip })
+      f.room.participants.set('B\0git', { ...f.room.participants.get('B\0git')!, base: tip, head: tip, fence: '1', rev: 2 })
+      f.room.manifest.get(manifestKey('A', '1'))!.set(path, { change: 'M', state: 'shared', hash: gitBlobHash('edited\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), path, 'edited\n')
+      await set.reconcile('committed rename')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', path))).toMatchObject({ status: 'conflict', path })
+      expect(f.post.mock.calls.some(call => call[1].type === 'merge-conflict')).toBe(true)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['owner', 'peer'] as const)('detects committed rename deletion inside a directory claim with a %s non-publisher', async side => {
+    const path = 'dir/ café "quoted"\tline\nname.txt '
+    const f = fixture()
+    const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+    mkdirSync(join(f.dir, 'dir')); writeFileSync(join(f.dir, path), 'old\n')
+    run('add', '.'); run('commit', '-qm', 'claim base')
+    const claimBase = run('rev-parse', 'HEAD')
+    for (const name of ['A', 'B', 'C']) { f.holder(name); f.entry(name, undefined) }
+    for (const name of ['A', 'B', 'C']) {
+      f.room.manifestHead.set(name, { ...f.room.manifestHead.get(name)!, base: claimBase })
+      f.room.participants.set(`${name}\0git`, { ...f.room.participants.get(`${name}\0git`)!, base: claimBase, head: claimBase, fence: '1', rev: 2 })
+    }
+    const owner = side === 'owner' ? 'B' : 'A', other = side === 'owner' ? 'C' : 'B'
+    const set = new ConflictSet(f.session(owner))
+    try {
+      run('config', 'diff.renames', 'true'); run('config', 'core.quotePath', 'true')
+      run('mv', '--', path, 'renamed.txt'); run('commit', '-qm', 'rename')
+      const tip = run('rev-parse', 'HEAD')
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, base: tip })
+      f.room.participants.set('A\0git', { ...f.room.participants.get('A\0git')!, base: tip, head: tip, fence: '1', rev: 3 })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, coverage: { kind: 'none', reason: 'not-publisher' }, publisher: side === 'owner' ? 'A' : 'C' })
+      f.room.participants.delete('B\0git')
+      // A directory claim makes discovery depend on the committed-path set.
+      f.room.addClaim({ by: other, byKind: 'agent', path: 'dir/', from: 1, to: 1, intent: 'edit files' })
+      await set.reconcile('committed rename with non-publisher')
+      expect([...f.room.doc.getMap<any>('conflicts').values()]).toContainEqual(expect.objectContaining({ owner, other, path, kind: 'edit-in-claim', status: 'conflict' }))
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each([
+    ['new file', false, false],
+    ['existing file', true, false],
+    ['claimed new file', false, true],
+    ['claimed existing file', true, true],
+  ] as const)('keeps byte-identical peer copies of an %s silent, including when removed', async (_, existing, claimed) => {
+    const text = 'return shared\n'
+    const path = 'copied.lua'
+    const f = fixture(existing ? { [path]: 'return old\n' } : {})
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    for (const name of ['A', 'B']) {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: existing ? 'M' : 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+    }
+    if (claimed) f.room.addClaim({ by: 'B', byKind: 'agent', path, from: 1, to: 1, intent: 'implement shared include' })
+    const set = new ConflictSet(f.session('A'))
+    const key = slotKey('A', 'merge', 'B', path)
+    try {
+      await set.reconcile('identical peer copy')
+      await set.reconcile('unchanged identical copy')
+      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'clean', epoch: 0 })
+      expect(f.post).not.toHaveBeenCalled()
+      f.room.manifest.get(manifestKey('A', '1'))!.delete(path)
+      f.room.clearOverlay(manifestKey('A', '1'), path)
+      await set.reconcile('temporary copy removed')
+      expect(f.post).not.toHaveBeenCalled()
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps the add/add notice id when its first differing line moves', async () => {
+    const f = fixture(), path = 'copied.lua'
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    const publish = (name: string, text: string, rev: number) => {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: rev, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+      f.room.manifestHead.set(name, { ...f.room.manifestHead.get(name)!, rev, semRev: rev })
+    }
+    const set = new ConflictSet(f.session('A')), key = slotKey('A', 'merge', 'B', path)
+    try {
+      publish('A', 'header\nours\n', 1); publish('B', 'header\ntheirs\n', 1)
+      await set.reconcile('diverged')
+      const first = f.room.doc.getMap<any>('conflicts').get(key)
+      expect(first).toMatchObject({ status: 'conflict', epoch: 1, lines: [2] })
+      publish('B', 'new header\nheader\ntheirs\n', 2)
+      await set.reconcile('difference moved')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ factId: first.factId, epoch: 1, lines: [1] })
+      expect(new Set(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict').map(call => call[2].id)).size).toBe(1)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each([['kept', 'X'], ['kept', 'W'], ['carried', 'X'], ['carried', 'W']] as const)('%s worker W, owner %s: no false conflict for a sibling that never touched x', async (kind, owner) => {
+    const f = fixture({ x: 'l1\nl2\nl3\n' })
+    const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+    f.holder('W'); f.holder('X')
+    writeFileSync(join(f.dir, 'x'), 'l1\nDELIVERED\nl3\n'); run('add', 'x')
+    const wBase = run('commit-tree', run('write-tree'), '-p', f.base, '-m', kind === 'kept' ? 'room: kept collection baseline' : 'room: carried work')
+    run('reset', '-q', '--hard', f.base)
+    f.entry('W', 'l1\nDELIVERED fixed\nl3\n'); f.entry('X', undefined)
+    f.room.participants.set('W\0git', { ...f.room.participants.get('W\0git')!, base: wBase, head: wBase })
+    f.room.manifestHead.set('W', { ...f.room.manifestHead.get('W')!, base: wBase })
+    const baselines: Record<string, Baseline> = {
+      W: { worker: 'W', sha: wBase, dir: f.dir, carriedCommit: kind === 'carried', untracked: new Map() },
+      X: { worker: 'X', sha: f.base, dir: f.dir, carriedCommit: false, untracked: new Map() },
+    }
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0,
+      person => baselines[person] ? { baseline: baselines[person], lead: 'L' } : undefined)
+    try {
+      await set.reconcile('sibling check')
+      const other = owner === 'W' ? 'X' : 'W'
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', other, 'x'))?.status).not.toBe('conflict')
+      expect(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict')).toEqual([])
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['W', 'L'])('uses the kept worker baseline for live merge comparison from %s', async owner => {
+    const f = fixture()
+    const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+    f.holder('W'); f.holder('L')
+    writeFileSync(join(f.dir, 'x'), 'delivered\n'); run('add', 'x')
+    const kept = run('commit-tree', run('write-tree'), '-p', f.base, '-m', 'room: kept collection baseline')
+    run('commit', '-qm', 'lead committed delivered work')
+    const leadHead = run('rev-parse', 'HEAD')
+    f.entry('W', undefined); f.entry('L', 'lead revision\n')
+    for (const [name, sha] of [['W', kept], ['L', leadHead]]) {
+      f.room.participants.set(`${name}\0git`, { ...f.room.participants.get(`${name}\0git`)!, base: sha, head: sha })
+      f.room.manifestHead.set(name, { ...f.room.manifestHead.get(name)!, base: sha })
+    }
+    const baseline = { worker: 'W', sha: kept, dir: f.dir, carriedCommit: false, untracked: new Map() }
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0,
+      person => person === 'W' ? { baseline, lead: 'L' } : undefined)
+    try {
+      await set.reconcile('lead revises delivered work')
+      expect(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict')).toEqual([])
+      expect(f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', owner === 'W' ? 'L' : 'W', 'x'))?.status).not.toBe('conflict')
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each([
+    ['-- shared header\nreturn ours\n', '-- shared header\nreturn theirs\n', 2],
+    ['', 'return theirs\n', 1],
+    ['-- shared header\n', '-- shared header\nreturn theirs\n', 2],
+  ] as const)('reports divergent new peer copies at their first differing line (case %#) and clears only the reported conflict', async (ours, theirs, line) => {
+    const path = 'copied.lua'
+    const f = fixture()
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    const publish = (name: string, text: string) => {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+    }
+    publish('A', ours); publish('B', theirs)
+    const set = new ConflictSet(f.session('A'))
+    try {
+      await set.reconcile('divergent peer copies')
+      const notices = () => [...new Map(f.post.mock.calls.map(c => [c[2].id, c[1]])).values()]
+      expect(notices()).toEqual([expect.objectContaining({ type: 'merge-conflict', priority: 'notify', path,
+        text: `${path} conflicts with B's version at lines ${line}` })])
+      publish('A', theirs)
+      await set.reconcile('copies converge')
+      await set.reconcile('still identical')
+      expect(notices()).toHaveLength(2)
+      expect(notices()[1]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict', text: 'the conflict with B cleared' })
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it.each(['between checks', 'during a version read', 'revision during a version read'])('checks a completed peer from cold memory and withdraws lost authority (%s)', async when => {
     const f = fixture(), restored = new RoomDoc()
     f.holder('L'); f.holder('B'); f.entry('B', 'worker\n')
@@ -597,7 +771,8 @@ describe('derived pair slots', () => {
       const idleWork = work()
       console.log(JSON.stringify({ overlapRuns: idle, work: idleWork }))
       expect(idle).toEqual([1, 1, 0, 0, 0, 0])
-      expect(idleWork).toEqual({ comparisons: 40, gitDiffs: 80, reads: 4, merges: 2 })
+      // Add/add pairs are decided from their contents without invoking the merge engine.
+      expect(idleWork).toEqual({ comparisons: 40, gitDiffs: 80, reads: 4, merges: 0 })
       await new Promise(resolve => setTimeout(resolve, 100))
       expect(runs.map(run => run.mock.calls.length)).toEqual(idle)
       expect(work()).toEqual(idleWork)
@@ -2017,5 +2192,135 @@ describe('derived pair slots', () => {
       expect(degraded.length).toBe(2)
       expect(degraded[0][2].id).toBe(degraded[1][2].id)
     } finally { f.cleanup() }
+  })
+})
+
+
+describe('worker pair baselines', () => {
+  function pairFixture(baseFiles: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), 'room-pair-baselines-'))
+    const run = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+    run('init', '-q'); run('config', 'user.email', 't@t'); run('config', 'user.name', 't')
+    for (const [path, content] of Object.entries(baseFiles)) writeFileSync(join(dir, path), content)
+    run('add', '.'); run('commit', '-qm', 'init')
+    const base = run('rev-parse', 'HEAD')
+    const room = new RoomDoc()
+    room.ensureRoomSalt()
+    const states = new Map<number, unknown>()
+    let next = 1
+    const holder = (name: string) => {
+      epochPublication(room, name, base, 1)
+      room.participants.set(`${name}\0id`, { name, kind: 'agent' })
+      states.set(next++, { user: { name, kind: 'agent' }, sessionId: `session-${name}` })
+    }
+    const entry = (name: string, text: string | undefined, at = base) => {
+      const fence = '1'
+      room.manifestHead.set(name, { base: at, fence, coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+      const values = new Y.Map<any>()
+      if (text !== undefined) values.set('x', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence })
+      room.manifest.set(manifestKey(name, fence), values)
+      if (text !== undefined) room.setOverlay(manifestKey(name, fence), 'x', text)
+      if (at !== base) room.participants.set(`${name}\0git`, { ...room.participants.get(`${name}\0git`)!, base: at, head: at })
+    }
+    /** A commit on top of base with x replaced, not checked out. */
+    const commitX = (text: string, message: string, parent = base) => {
+      writeFileSync(join(dir, 'x'), text); run('add', 'x')
+      const sha = run('commit-tree', run('write-tree'), '-p', parent, '-m', message)
+      run('reset', '-q', '--hard', base)
+      return sha
+    }
+    const post = vi.fn().mockImplementation((from, body, opts) => Promise.resolve({ ok: true, msg: { ...body, ...opts } }))
+    const session = (name: string) => ({ room, awareness: { getStates: () => states } as unknown as Awareness,
+      provider: { synced: true, on() {}, off() {} }, me: { name, kind: 'agent' }, dir, post,
+      lease: { fence: () => '1' } }) as unknown as Session
+    return { room, base, dir, holder, entry, commitX, post, session, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  type F = ReturnType<typeof pairFixture>
+  async function checkPair(f: F, owner: string, other: string, carried: Record<string, { sha: string; lead: string; carriedCommit: boolean }>) {
+    const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0, person => carried[person]
+      ? { baseline: { worker: person, sha: carried[person].sha, dir: f.dir, carriedCommit: carried[person].carriedCommit, untracked: new Map() }, lead: carried[person].lead }
+      : undefined)
+    try {
+      await set.reconcile('worker pair baseline')
+      const slot = f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', other, 'x'))
+      const notices = f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict').map(call => call[1].text)
+      return { status: slot?.status as string | undefined, notices }
+    } finally { set.stop() }
+  }
+
+  it.each(['Lw', 'G'])('worker-lead Lw with a private commit vs its grand-worker G forked from it, owner %s', async owner => {
+    const f = pairFixture({ x: 'l1\nl2\nl3\n' })
+    try {
+      const c1 = f.commitX('l1\nCOMMITTED\nl3\n', 'private checkpoint')
+      f.holder('Lw'); f.holder('G')
+      f.entry('Lw', 'l1\nCOMMITTED\nl3\n')            // Lw's overlay is against its recorded base H
+      f.entry('G', 'l1\nCOMMITTED fixed\nl3\n', c1)   // G forked from C1 (carry=false)
+      const carried = { Lw: { sha: f.base, lead: 'human', carriedCommit: false }, G: { sha: c1, lead: 'Lw', carriedCommit: false } }
+      const r = await checkPair(f, owner, owner === 'G' ? 'Lw' : 'G', carried)
+      expect(r.status).not.toBe('conflict')
+      expect(r.notices).toEqual([])
+    } finally { f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['W1', 'W2'])('two carried siblings of one lead, only W1 edits a carried line, owner %s', async owner => {
+    const f = pairFixture({ x: 'l1\nl2\nl3\n' })
+    try {
+      const c1 = f.commitX('l1\nCARRIED\nl3\n', 'room: carried-in uncommitted work from L (1)')
+      const c2 = f.commitX('l1\nCARRIED\nl3\n', 'room: carried-in uncommitted work from L (2)')
+      f.holder('W1'); f.holder('W2')
+      f.entry('W1', 'l1\nCARRIED fixed\nl3\n', c1)
+      f.entry('W2', undefined, c2)
+      const carried = { W1: { sha: c1, lead: 'L', carriedCommit: true }, W2: { sha: c2, lead: 'L', carriedCommit: true } }
+      const r = await checkPair(f, owner, owner === 'W1' ? 'W2' : 'W1', carried)
+      expect(r.status).not.toBe('conflict')
+      expect(r.notices).toEqual([])
+    } finally { f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['W1', 'W2'])('does not use matching inherited blobs without ancestry on both sides, owner %s', async owner => {
+    const f = pairFixture({ x: 'l1\nl2\nl3\n' })
+    try {
+      const c1 = f.commitX('l1\nCARRIED\nl3\n', 'carried one')
+      const c2 = f.commitX('l1\nCARRIED\nl3\n', 'carried two')
+      const run = (...args: string[]) => execFileSync('git', ['-C', f.dir, ...args], { encoding: 'utf8' }).trim()
+      // The same tree on an unrelated root must not substitute for the pair's ancestor.
+      const unrelated = run('commit-tree', run('rev-parse', c2 + '^{tree}'), '-m', 'unrelated baseline')
+      f.holder('W1'); f.holder('W2')
+      f.entry('W1', 'l1\nCARRIED fixed\nl3\n', c1); f.entry('W2', undefined, c2)
+      const carried = { W1: { sha: c1, lead: 'L', carriedCommit: true }, W2: { sha: unrelated, lead: 'L', carriedCommit: true } }
+      const r = await checkPair(f, owner, owner === 'W1' ? 'W2' : 'W1', carried)
+      expect(r.status).toBe('conflict')
+      // settle and replay post the same id; the hub deduplicates this single notice.
+      expect(new Set(r.notices).size).toBe(1)
+    } finally { f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['G', 'X'])('grand-worker G carried from W vs W\'s sibling X (untouched), owner %s', async owner => {
+    const f = pairFixture({ x: 'l1\nl2\nl3\n' })
+    try {
+      const cg = f.commitX('l1\nW-WIP\nl3\n', 'room: carried-in uncommitted work from W')
+      f.holder('G'); f.holder('X')
+      f.entry('G', 'l1\nW-WIP fixed\nl3\n', cg)
+      f.entry('X', undefined)
+      const carried = { G: { sha: cg, lead: 'W', carriedCommit: true }, X: { sha: f.base, lead: 'L', carriedCommit: false } }
+      const r = await checkPair(f, owner, owner === 'G' ? 'X' : 'G', carried)
+      expect(r.status).not.toBe('conflict')
+      expect(r.notices).toEqual([])
+    } finally { f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['G', 'W'])('grand-worker G carried from its worker-lead W (W uncommitted WIP unchanged), owner %s', async owner => {
+    const f = pairFixture({ x: 'l1\nl2\nl3\n' })
+    try {
+      const cg = f.commitX('l1\nW-WIP\nl3\n', 'room: carried-in uncommitted work from W')
+      f.holder('G'); f.holder('W')
+      f.entry('G', 'l1\nW-WIP fixed\nl3\n', cg)
+      f.entry('W', 'l1\nW-WIP\nl3\n')
+      const carried = { G: { sha: cg, lead: 'W', carriedCommit: true }, W: { sha: f.base, lead: 'L', carriedCommit: false } }
+      const r = await checkPair(f, owner, owner === 'G' ? 'W' : 'G', carried)
+      expect(r.status).not.toBe('conflict')
+      expect(r.notices).toEqual([])
+    } finally { f.room.doc.destroy(); f.cleanup() }
   })
 })

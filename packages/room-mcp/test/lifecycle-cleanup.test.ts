@@ -139,7 +139,7 @@ describe('worker lifecycle cleanup', () => {
     expect(workerProcessEnv({ threads: 1, memGb: 1, host: 'codex', server: 'local', room: 'room', dir: '/tmp/a', tag: 'a', lead: 'lead', owner: 'lead', share: 'intent', gen: 1, id: 'id', logDir: '/tmp', isWorker: false, port: 4402 }).PORT).toBe('4402')
     const prompt = workerPrompt('lead', 'a', 'task', { threads: 1, memGb: 1, nice: 10, port: 4402 })
     expect(prompt).toContain('Your dev-server port is 4402')
-    expect(prompt).toContain('Report progress in room_done; send notes only when the lead must know before you finish.')
+    expect(prompt).toContain('Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.')
   })
 
   it('room_leave waits for cwd cleanup and names stopped processes', async () => {

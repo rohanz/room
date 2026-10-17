@@ -104,7 +104,7 @@ describe('unavailable addressed recipients', () => {
     addWorker(ws, w)
     retire(ws, w, { summary: 'Archived fix', outcome: 'merged' })
     const sent = await tools.room_send({ type: 'question', to: w.name, text: 'More?' })
-    expect(sent).toBe('error: lead+state was collected or discarded and cannot be resumed')
+    expect(sent).toBe('error: lead+state was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable')
     expect(ws.room.messages().some(m => m.type === 'question')).toBe(false)
   })
 
@@ -156,7 +156,9 @@ describe('unavailable addressed recipients', () => {
     expect(await tools.room_send({ type: 'question', to: 'Ada', text: 'Review?' })).toContain('Ada is offline; it will see this when it returns')
     const waiting = tools.room_wait({ questionId: s.room.messages().at(-1)!.id, timeoutMs: 10 })
     await vi.advanceTimersByTimeAsync(10)
-    expect(await waiting).toContain('timeout after 10ms')
+    const timeout = await waiting
+    expect(timeout).toContain('timeout after 10ms')
+    expect(timeout).toContain('A timeout is not an answer or approval')
     const original = hubAppend(s.room, { name: 'Ada', kind: 'agent' }, { type: 'question', to: 'lead', text: 'why?' })
     expect(await tools.room_send({ type: 'answer', inReplyTo: original.id, text: 'because' })).toContain('Ada is offline')
   })
@@ -261,7 +263,7 @@ describe('finishing claim notices', () => {
    for (const tag of ['a', 'b', 'c']) addWorker(s, worker({ tag, name: 'lead+' + tag, status: 'running', exitCode: undefined }))
    const waiting = tools.room_wait({ timeoutMs: 10 })
    await vi.advanceTimersByTimeAsync(10)
-   expect(await waiting).toContain('nothing yet; 3 workers still running (a, b, c); nothing needs you')
+   expect(await waiting).toContain('nothing yet; 3 workers still running (a, b, c); nothing in the room needs you')
  })
 
  it('releases another worker selectively while preserving its scope and other owners', async () => {

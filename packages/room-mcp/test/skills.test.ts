@@ -40,11 +40,48 @@ it('lists TypeScript incremental state among regenerable worker output', () => {
   expect(skill).toContain('`*.tsbuildinfo`')
 })
 
-it('tells workers, and leads briefing them, that background jobs die when the turn ends', () => {
-  expect(workerPrompt('lead', 'a', 'task')).toContain('Run tests and builds in the foreground and wait for them')
-  for (const name of ['room-workers', 'room-etiquette']) {
-    const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
-    expect(skill, name).toMatch(/tests and builds in the foreground[^.]*kills (its )?background jobs/)
+it('requires actual completion and limits background advice to a verified host', () => {
+  for (const text of [workerPrompt('lead', 'a', 'task'), ...['room-workers', 'room-etiquette'].map(name =>
+    readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8').replace(/\s+/g, ' '))]) {
+    expect(text).toContain('(verified on 2.1.300)')
+    expect(text).toContain('when responsiveness matters')
+    expect(text).toMatch(/actual result before room_done/)
+    expect(text).toContain('unverified hosts, including Codex')
+    expect(text).toContain('background lifetime and completion delivery are verified')
+  }
+  const etiquette = readFileSync(new URL('../../../plugins/room/skills/room-etiquette/SKILL.md', import.meta.url), 'utf8')
+  for (const limit of ['2.1.285', '10 minutes', '30 minutes', '2 hours', 'BASH_DEFAULT_TIMEOUT_MS', 'BASH_MAX_TIMEOUT_MS']) expect(etiquette).toContain(limit)
+  expect(etiquette).toContain('A timeout, interruption or missing result is not a pass')
+})
+
+it('distinguishes matching preview inputs from independently established integrated-tree equivalence', () => {
+  for (const [text, tree] of [[AGENT_INSTRUCTIONS(), 'integrated'], ...['room-etiquette', 'room-workers'].map(name =>
+    [readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8').replace(/\s+/g, ' '), name === 'room-workers' ? 'collected' : 'integrated'])]) {
+    expect(text).toContain('Reuse a complete passing preview only for identical preview inputs, command and relevant environment')
+    expect(text).toContain(`Its input hash does not establish equivalence with the ${tree} tree`)
+    expect(text).toContain(`Validate the ${tree} tree unless exact equivalence is independently established`)
+    expect(text).toContain('CI checks the change requires')
+  }
+})
+
+it('uses task-appropriate checks and does not assign independent peers a worker lifecycle', () => {
+  const etiquette = readFileSync(new URL('../../../plugins/room/skills/room-etiquette/SKILL.md', import.meta.url), 'utf8').replace(/\s+/g, ' ')
+  expect(etiquette).toContain('source review or document checks where applicable')
+  expect(etiquette).toContain('Whoever integrates owns comprehensive relevant validation')
+  expect(etiquette).toContain('independent peers manage their own sessions')
+  expect(etiquette).not.toContain("the lead's integrated tree")
+  expect(AGENT_INSTRUCTIONS()).toContain('Choose task-appropriate evidence')
+  expect(AGENT_INSTRUCTIONS()).toContain('Without a lead, agree scope with affected peers')
+  expect(etiquette).toContain('Without a lead, agree scope with affected peers')
+  expect(workerPrompt('lead', 'a', 'task')).toContain('focused checks for your changes')
+})
+
+it('reserves room_wait for Room dependencies, with one wait at a time', () => {
+  for (const name of ['room-etiquette', 'room-workers']) {
+    const text = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8').replace(/\s+/g, ' ')
+    expect(text).toContain('room_wait observes Room dependencies only')
+    expect(text).toContain('use host task completion for your own commands')
+    expect(text).toContain('one room_wait at a time')
   }
 })
 
@@ -53,5 +90,32 @@ it('teaches that the lead can resume a finished worker', () => {
     const skill = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8')
     expect(skill, name).toMatch(/[Aa] message from its lead to a finished worker resumes its retained session/)
     expect(skill, name).not.toContain('Finished headless workers cannot answer new questions')
+  }
+})
+
+// Text consistency checks only; these do not establish live host coordination behavior.
+it('keeps peer questions, independent progress and permission boundaries consistent', () => {
+  const prompt = workerPrompt('lead', 'a', 'task')
+  expect(prompt).toContain('Ask the peer responsible for a dependency directly')
+  expect(prompt).toContain('ask lead for scope decisions or unresolved ownership')
+  expect(prompt).toContain('Continue independent work while an answer is pending')
+  expect(prompt).toContain('room_wait(questionId)')
+  expect(prompt).toContain('send failures to their owner')
+  expect(prompt).not.toContain('up to three times')
+  for (const text of [prompt, AGENT_INSTRUCTIONS(), ...['room-etiquette', 'room-workers'].map(name =>
+    readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8').replace(/\s+/g, ' '))]) {
+    expect(text).toMatch(/[Aa] timeout is not an answer or approval/)
+    expect(text).toMatch(/[Pp]ermission decisions stay with the human/)
+  }
+})
+
+it('limits preview reuse and does not describe own-worker completion as idle-only', () => {
+  for (const name of ['room-etiquette', 'room-workers']) {
+    const text = readFileSync(new URL(`../../../plugins/room/skills/${name}/SKILL.md`, import.meta.url), 'utf8').replace(/\s+/g, ' ')
+    expect(text).toContain('Reuse a complete passing preview only for identical preview inputs, command and relevant environment')
+    expect(text).toContain('output-limited runs do not validate the whole tree')
+    expect(text).toContain('completion from their own registered workers mid-turn as tool output')
+    expect(text).toContain('not proof that content was read or acted on')
+    expect(text).not.toContain('completion is `fyi` and waits for idle')
   }
 })

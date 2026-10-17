@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { setImmediate } from 'node:timers/promises'
 import { claimsOverlap, type RetiredWorker } from '@room/shared'
 import { git, gitWholeTree } from '@room/roomd/git'
-import { carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
+import { boundedGit, boundedGitSync, carriedContentHashes, carriedUnchangedPaths, workerBaseline } from '@room/roomd/baseline'
 import { MATERIALIZED_PATH, containedRepoPath, realGitCommonDir, validRepoPath } from '@room/roomd'
 import { cleanupWorker, cleanupWorkerLogs, collectBaseRef, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree, saveDiscardPatch, saveWorkerScratch, workerOwnedPaths, type WorkerCleanupPreservation } from '../worker-git.js'
 import { signalWorker, pidPresent, terminateWorktreeProcesses, stopWorkerWithEscalation, type CwdProcessLister, type ProcessProbe } from '../worker-process.js'
@@ -19,13 +20,15 @@ import { realStateInput, type LocalWorker } from '../worker-status.js'
 import { currentToolTiming } from '../timing.js'
 import { CollectionReview } from '../collection-review.js'
 import { createSessionBinding } from '../binding.js'
+import { acknowledgeKeptPublication } from '../kept-publication.js'
 
 export const defs: ToolDef[] = [{
   name: 'room_collect', annotations: { ...RW, destructiveHint: true },
-  description: 'Use to "bring in their work" as unstaged edits or "throw away the worker". checkpoint gates collection. Conflicts write nothing.',
+  description: 'Use to "bring in their work" unstaged or discard. Defer until follow-ups end, or keep=true for resumption (apply only). Conflicts write nothing; checkpoint gates collection.',
   inputSchema: { ...{ additionalProperties: false }, type: 'object', properties: {
     tag: str('worker tag'), mode: { type: 'string', enum: ['apply', 'copy'] },
     discard: { type: 'boolean' },
+    keep: { type: 'boolean' },
     paths: strs('copy mode: repo-relative files or directories'),
     force: { type: 'boolean', description: 'overwrite copies; discard ignored files' },
     checkpoint: { type: 'string', enum: ['hold', 'release', 'status'] },
@@ -144,6 +147,29 @@ async function assertNoOperation(dir: string): Promise<void> {
   }
 }
 
+/** Capture the worker's source, not the combined result: follow-ups continue in its own checkout. */
+async function keptSnapshot(w: LocalWorker, root: string, head: string, paths: string[], scratch: ReadonlySet<string> = new Set()) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-index-'))
+  const env = { ...process.env, GIT_INDEX_FILE: path.join(temp, 'index') }
+  const run = async (args: string[], count?: number) => (await boundedGit(root, ['-c', 'core.hooksPath=/dev/null', ...args], count, env)).toString().trim()
+  try {
+    await run(['read-tree', head], paths.length)
+    // Fold the lead's carried untracked blobs into the private tree before updating changed paths.
+    const entries = new Map((w.carriedUntracked ?? []).map(p => [p.path, `${p.mode && (p.mode & 0o111) ? '100755' : '100644'} ${p.sha}\t${p.path}\0`]))
+    const sources = paths.filter(p => !scratch.has(p) && !workerOwnedPaths(w).includes(p)).map(p => ({ p, identity: fileIdentity(safePath(root, p)) }))
+    const present = sources.filter(source => source.identity !== null)
+    const hashes = carriedContentHashes(root, present.map(source => source.p), true)
+    for (const [index, source] of present.entries()) entries.set(source.p, `${source.identity!.mode & 0o111 ? '100755' : '100644'} ${hashes[index]}\t${source.p}\0`)
+    for (const source of sources) if (!source.identity) entries.set(source.p, `0 ${'0'.repeat(head.length)}\t${source.p}\0`)
+    const info = path.join(temp, 'entries')
+    fs.writeFileSync(info, [...entries.values()].join(''), { mode: 0o600 })
+    boundedGitSync(root, ['update-index', '-z', '--index-info'], { env, stdinFile: info, wholeTreePaths: entries.size })
+    const tree = await run(['write-tree'], entries.size)
+    const sha = await run(['-c', 'user.name=Room', '-c', 'user.email=room@localhost', 'commit-tree', tree, '-p', head, '-m', 'room: kept collection baseline'])
+    return { sha, sources }
+  } finally { fs.rmSync(temp, { recursive: true, force: true }) }
+}
+
 export function handlers(state: HandlerState): Record<string, Handler> {
   const cleanRetiredSharedOwner = async (s: Session, borrower: LocalWorker): Promise<string | undefined> => {
     const registry = await registryForDir(s.dir)
@@ -243,11 +269,12 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   const roomCollect = async (a: Record<string, unknown>, discarding = new Set<string>(), actingLead?: Session): Promise<string> => {
     const { rooms } = state, lead = actingLead ?? state.S()
     const registry = await registryForDir(lead.dir)
-    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force'].includes(key))
+    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'keep', 'paths', 'force'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
     if (a.tag !== undefined && (typeof a.tag !== 'string' || !/^[a-zA-Z0-9_-]{1,40}$/.test(a.tag))) return 'error: valid worker tag required'
     if (a.mode !== undefined && a.mode !== 'apply' && a.mode !== 'copy') return 'error: mode must be apply or copy'
-    for (const key of ['discard', 'force']) if (a[key] !== undefined && typeof a[key] !== 'boolean') return 'error: ' + key + ' must be a boolean'
+    for (const key of ['discard', 'force', 'keep']) if (a[key] !== undefined && typeof a[key] !== 'boolean') return 'error: ' + key + ' must be a boolean'
+    if (a.keep === true && (a.discard || a.mode === 'copy')) return 'error: keep is only supported in apply mode without discard'
     if ((a.discard || a.mode === 'copy') && !a.tag) return 'error: tag required for copy or discard'
     if (a.paths !== undefined && a.mode !== 'copy') return 'error: paths is only supported in copy mode'
     if (a.discard) {
@@ -532,7 +559,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const files = await copyFiles(workerRoot, a.paths as string[])
         // Installation must have no await between its final gate and last rename.
         if (files.length > COPY_INSTALL_LIMIT) return `error: copy has more than ${COPY_INSTALL_LIMIT} files; split the selection`
-        const modified = new Set(split(await gitWholeTree(lead.dir, ['diff', '--name-only', '-z', 'HEAD', '--'])))
+        const modified = new Set(split(await gitWholeTree(lead.dir, ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--'])))
         const tracked = new Set(split(await gitWholeTree(lead.dir, ['ls-files', '-z'])))
         const copyPlan: { p: string; source: NonNullable<FileIdentity>; destination: FileIdentity }[] = []
         for (const [index, p] of files.entries()) {
@@ -613,10 +640,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           diskOnly: true, encoding: 'latin1', skipCallerOnly: true,
           roots: new Map([[path.resolve(lead.dir), leadRoot], ...selected.map(({ w }) => [path.resolve(w.dir), workerRoots.get(w)!] as const)]),
         })
+      const provenance = result.gaps.filter(gap => gap.kind === 'provenance')
+      if (provenance.length) return [...out, 'Nothing written; preview provenance is incomplete: ' + provenance.map(gap => `${gap.person}${gap.path ? ': ' + gap.path : ''}: ${gap.why}`).join('; ') + '. All selected workers kept.'].join('\n')
       const unsupported = result.ignoredNotes.filter(note => !note.includes('gitignored') && !note.includes('linked input'))
       if (unsupported.length) return [...out, 'Nothing written; files need manual collection: ' + unsupported.join('; ') + '. All selected workers kept.'].join('\n')
       const tags = (names: string[]) => names.map(name => selected.find(x => x.w.name === name)?.w.tag ?? 'your edits').join(', ')
       if (result.conflictingPaths.size) return [...out, 'Nothing written; conflicting files: ' + [...result.conflictingPaths].map(([p, names]) => p + ' (' + tags(names) + ')').join('; '), 'Collect one at a time, or resolve by hand using room_read.'].join('\n')
+      const snapshots = new Map<string, Awaited<ReturnType<typeof keptSnapshot>>>()
+      if (a.keep === true) for (const { w } of selected) snapshots.set(w.id,
+        await keptSnapshot(w, workerRoots.get(w)!, heads.get(w.name)!, result.paths, result.scratch.get(w.name)))
       const changes: { p: string; file: string; before: Buffer | null; after: Buffer | null; mode: number; oldMode: number }[] = []
       nextPhase('prepare')
       // A worker's mode change is judged against its own base, like its text.
@@ -652,13 +684,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // Keep the exact source HEAD and merge baseline used by this collection. A
       // retained shared checkout may receive another commit before its last user exits.
       for (const { w } of selected) {
-        await git(lead.dir, ['update-ref', collectHeadRef(w.tag, w.id), heads.get(w.name)!])
+        await git(lead.dir, ['update-ref', collectHeadRef(w.tag, w.id), snapshots.get(w.id)?.sha ?? heads.get(w.name)!])
         await git(lead.dir, ['update-ref', collectBaseRef(w.tag, w.id), result.deltaBases.get(w.name)!])
       }
       // No await from this final identity gate through the last destination write.
       // Restore originals on any write failure.
       for (const { p, identity } of destinations) {
         if (!sameIdentity(identity, fileIdentity(safePath(leadRoot, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
+      }
+      for (const { w } of selected) for (const { p, identity } of snapshots.get(w.id)?.sources ?? []) {
+        if (!sameIdentity(identity, fileIdentity(safePath(workerRoots.get(w)!, p)))) throw new Error(p + ' changed during collection; nothing written, retry')
       }
       const written: typeof changes = []
       try {
@@ -679,7 +714,27 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         saveWorkerScratch(leadRoot, scratchSelected.map(({ w }) => ({ tag: w.tag, root: workerRoots.get(w)!, paths: result.scratch.get(w.name)! }))))
       if (scratchNote) out.push(scratchNote)
       nextPhase('cleanup')
+      let keptPublication: import('../worker-status.js').WorkerRecord['keptPublication']
+      if (a.keep === true) {
+        const previous = selected.map(({ w }) => registry.read(w.id)?.keptPublication).filter(value => value !== undefined)
+        keptPublication = await acknowledgeKeptPublication(lead, {
+          paths: [...new Set(previous.flatMap(value => value.paths))], pending: true,
+          ...(previous.some(value => value.overflow) ? { overflow: true } : {}),
+        }, changes.map(change => change.p), changes)
+        if (keptPublication.pending) out.push('kept preview freshness pending: the lead has not acknowledged a complete post-application publication; plain resume retries it')
+      }
       for (const { s, w } of selected) {
+        const snapshot = snapshots.get(w.id)
+        if (snapshot) {
+          // After keep, preview/collect measure the worker from this snapshot. Its collected
+          // edits are now in the lead's working tree and participate through the lead's overlay.
+          await registry.update(w.id, old => ({ ...old, base: snapshot.sha, collectedKeep: true, carriedBase: undefined,
+            carriedUntracked: undefined, keptPublication: keptPublication && { ...keptPublication, base: snapshot.sha }, phase: 'active', seq: old.seq + 1 }))
+          collectStarted.delete(w.id)
+          releaseClaimsOnDone(s, () => false, w.name, false)
+          out.push(`kept ${w.tag}: finished and resumable; worktree, branch, logs and host session retained`)
+          continue
+        }
         let archived: { entry: RetiredWorker; keptWorktree?: string } | undefined
         const finishOne = async (success = true) => {
           if (success && archived) {
@@ -766,10 +821,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   return { room_collect: async a => {
     const session = state.S()
-    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'paths', 'force', 'checkpoint', 'reason', 'reviewToken'].includes(key))
+    const unknown = Object.keys(a).find(key => !['tag', 'mode', 'discard', 'keep', 'paths', 'force', 'checkpoint', 'reason', 'reviewToken'].includes(key))
     if (unknown) return 'error: unknown argument ' + unknown
     if (a.checkpoint !== undefined && (!['hold', 'release', 'status'].includes(String(a.checkpoint))
-      || ['tag', 'mode', 'discard', 'paths', 'force'].some(key => a[key] !== undefined))) return 'error: use checkpoint hold, release or status in a separate call without collection arguments'
+      || ['tag', 'mode', 'discard', 'keep', 'paths', 'force'].some(key => a[key] !== undefined))) return 'error: use checkpoint hold, release or status in a separate call without collection arguments'
     if (a.reason !== undefined && (a.checkpoint !== 'hold' || typeof a.reason !== 'string')) return 'error: reason is only for checkpoint hold'
     if (a.reviewToken !== undefined && (a.checkpoint !== 'release' || typeof a.reviewToken !== 'string' || !/^[a-f0-9]{64}$/.test(a.reviewToken))) return 'error: reviewToken is only for checkpoint release and must be the private recovery token'
     if (a.checkpoint === 'hold' && (typeof a.reason !== 'string' || !a.reason.trim() || a.reason.length > 1000)) return 'error: checkpoint hold requires a reason of 1–1000 characters'

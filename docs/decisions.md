@@ -343,7 +343,7 @@ not OSI open source. Releases up to 0.6.8 stay MIT.
 ## 2026-09-21 — Invisibility batch (0.9.0)
 **Decision:** Make collection uncommitted by default; coordinate only on overlap; disclose team
 sharing once; report missing coordination coverage; simplify setup and terminology.
-**Why:** The [0.8.0 audit](audit-2026-09-21-invisibility.md) found Room imposing work on people
+**Why:** The [0.8.0 audit](archive/reports/audit-2026-09-21-invisibility.md) found Room imposing work on people
 and agents that did not help them coordinate.
 **Built when:** 21 Sep, post-hackathon: consent/configuration, collection/cleanup, lean tools and
 skills, failure notices and documentation, split across five Room workers.

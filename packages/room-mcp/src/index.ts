@@ -106,7 +106,7 @@ async function main() {
       const wake = createWakeSender({ channel: startup.claudeChannel, notify: notification => mcp.notification(notification) })
       let presence: PresenceEnd | undefined
       const midTurn = createMidTurnSender({ log, clientVersion: RELEASE_VERSION })
-      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs() })
+      const wakeProbe = new CodexTurnProbe({ contactAgeMs: () => presence?.idleMs(), clientVersion: RELEASE_VERSION })
       const tools = createTools({ completionReady: async () => {
         const bound = sessionBinding.bound()
         if (bound && session?.lease && bound.id !== session.lease.sessionId) await rebindHost(bound.id)

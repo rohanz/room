@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, digestPath, gitBlobHash, manifestKey, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
+import { RoomDoc, liveHolder, digestPath, gitBlobHash, manifestKey, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
 import type { Identity, ClaimMsg, ManifestEntry, ManifestHead, NoteMsg, PlanMsg, ReleaseMsg } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { Bridge } from '../src/bridge.js'
@@ -29,17 +29,20 @@ const TEAM = 'github.com/rohanz/x/main', LOCAL = 'local/x/main'
 const LEAD_FENCE = '1'
 const lead: Identity = { name: 'rohanz', kind: 'agent', owner: 'rohanz' }
 const worker: Identity = { name: 'rohanz+money', kind: 'agent', owner: 'rohanz', label: 'money' }
+const fixtureCleanup: (() => void)[] = []
 const kieran: Identity = { name: 'kieran', kind: 'agent', owner: 'kieran' }
 const git = (...a: string[]) => execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' }).toString()
 
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
+  fixtureCleanup.push(() => { a.destroy(); b.destroy() })
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
 }
 function fakeSession(room: RoomDoc, me: Identity, roomName: string, local: boolean, policy = testPolicyStore()): Session {
   const awareness = new Awareness(room.doc)
+  fixtureCleanup.push(() => awareness.destroy())
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle', sessionId: LEAD_FENCE })
   return {
     policyStore: policy,
@@ -52,12 +55,18 @@ function fakeSession(room: RoomDoc, me: Identity, roomName: string, local: boole
   } as Session
 }
 /** A participant whose holder session is present in `s`'s awareness, as the hub and its presence would show it. */
-function present(s: Session, who: Identity, sessionId: string): void {
+function present(s: Session, who: Identity, sessionId: string): Awareness | undefined {
   s.room.participants.set(`${who.name}\u0000holder`, { sessionId, epoch: 1, machine: 'm', pid: 1, startTime: 't', executable: 'e' })
   if (who.name === s.me.name) return
   const other = new Awareness(new Y.Doc())
   other.setLocalState({ user: { ...who, color: '#111' }, status: 'idle', sessionId })
-  applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(other, [other.clientID]), 'test')
+  // Forward same-state heartbeat clocks too, just as a connected provider does.
+  // A one-shot update expires after 30 s even though this fixture's peer is alive.
+  const forward = () => applyAwarenessUpdate(s.awareness, encodeAwarenessUpdate(other, [other.clientID]), 'test')
+  other.on('update', forward)
+  forward()
+  fixtureCleanup.push(() => { other.off('update', forward); other.destroy(); other.doc.destroy() })
+  return other
 }
 /** The worker's own workers-room manifest (against C), as its daemon publishes it. */
 function publishSource(room: RoomDoc, entries: Record<string, Omit<ManifestEntry, 'fence' | 'at'>>, head: Partial<ManifestHead> = {}): void {
@@ -83,7 +92,10 @@ beforeEach(() => {
   C = git('rev-parse', 'HEAD').trim()
   git('reset', '-q', '--hard', B)
 })
-afterEach(async () => { await closeRegistryForDir(dir) })
+afterEach(async () => {
+  for (const cleanup of fixtureCleanup.splice(0).reverse()) cleanup()
+  await closeRegistryForDir(dir)
+})
 
 /** Let the bridge's posts and projection passes settle. */
 const settle = () => new Promise(r => setTimeout(r, 20))
@@ -102,10 +114,11 @@ async function setup(options: { policy?: ReturnType<typeof testPolicyStore>; sta
   const record = await localWorker(registry)
   team.a.participants.set(`${lead.name}\u0000git`, { branch: 'main', head: B, base: B, anchored: true, rev: 1, fence: LEAD_FENCE })
   present(teamLead, lead, LEAD_FENCE)
-  present(localLead, worker, 'worker-session')
+  const workerPresence = present(localLead, worker, 'worker-session')!
   const bridge = new Bridge(teamLead, localLead, { debounceMs: 0, registry })
+  fixtureCleanup.push(() => bridge.stop())
   if (options.start !== false) { bridge.start(); await bridge.sync() }
-  return { team, local, teamLead, localLead, bridge, registry, record }
+  return { team, local, teamLead, localLead, bridge, registry, record, workerPresence }
 }
 
 describe('Bridge: a lead in a team room with a local workers room', () => {
@@ -318,6 +331,31 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     expect(map.size).toBe(0)
     expect(t.team.a.manifestHead.get(worker.name)?.level).toBe('intent')
   })
+  it('withdraws stale worker projection and restores it on a same-state heartbeat', async () => {
+    const t = await setup({ start: false })
+    publishSource(t.local.b, {})
+    await t.bridge.sync()
+    const key = manifestKey(worker.name, LEAD_FENCE)
+    const map = t.team.a.manifest.get(key)!
+    expect(map.size).toBe(1) // carried.py
+
+    // Age only the receiver's metadata: no real sleep, frozen clock or relaxed guard.
+    const client = t.workerPresence.clientID
+    const previous = t.localLead.awareness.meta.get(client)!
+    t.localLead.awareness.meta.set(client, { ...previous, lastUpdated: Date.now() - 30_001 })
+    expect(t.localLead.awareness.getStates().has(client)).toBe(true)
+    expect(liveHolder(participantsView(t.local.a, t.localLead.awareness, Date.now()), worker.name)).toBeUndefined()
+    await t.bridge.sync()
+    expect(map.size).toBe(0)
+    expect(t.team.a.manifestHead.get(worker.name)?.coverage).toEqual({ kind: 'none', reason: 'starting' })
+
+    // Heartbeats emit update, not change, when the presence content is unchanged.
+    t.workerPresence.setLocalState(t.workerPresence.getLocalState())
+    expect(liveHolder(participantsView(t.local.a, t.localLead.awareness, Date.now()), worker.name)).toBe('1')
+    await t.bridge.sync()
+    expect(map.size).toBe(1)
+    expect(t.team.a.manifestHead.get(worker.name)?.coverage).toEqual({ kind: 'all' })
+  })
   it('F5 yields while preparing 3,000 B..C paths and does no map reads inside the atomic apply', async () => {
     const t = await setup({ start: false })
     git('checkout', '-q', C)
@@ -354,8 +392,9 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     await t.bridge.sync()
     expect(map.size).toBe(0)
     expect(t.team.a.manifestHead.get(worker.name)).toMatchObject({ level: 'intent', complete: false })
-    // This checks yielding and atomic reads, not disk throughput. Seeding and
-    // projecting 3,000 real files can exceed 30 s alongside the full suite.
+    // This checks yielding and atomic reads, not disk throughput. The fixture
+    // forwards heartbeats so slow seeding/projection does not manufacture a
+    // disconnected worker at the unchanged 30 s awareness freshness deadline.
   }, 60_000)
   it('F5 rechecks a narrowing policy after a preparation yield before writing hashes', async () => {
     const policy = testPolicyStore()

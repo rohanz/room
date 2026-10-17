@@ -256,12 +256,56 @@ export function carriedUnchangedPaths(baseline: Baseline | undefined): Set<strin
   return unchanged
 }
 
+/**
+ * The tracked `paths` the carry commit changed that the worker's tree still holds exactly as that commit does,
+ * proven like carriedUnchangedPaths and never from the index: a path the commit lacks only when nothing is on
+ * disk there; a file only when its blob id and executable bit match the commit's entry; a link only when its
+ * text hashes to the commit's blob. Anything else (a submodule, an unreadable or escaping path) is changed.
+ */
+export async function carriedCommitUnchangedPaths(baseline: Baseline, paths: readonly string[]): Promise<Set<string>> {
+  const unchanged = new Set<string>()
+  if (!paths.length) return unchanged
+  let root: string
+  try { root = fs.realpathSync(baseline.dir) } catch (e) { if (['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return unchanged; throw e }
+  const wanted = new Set(paths)
+  const tree = new Map<string, { mode: string; type: string; sha: string }>()
+  for (const entry of (await boundedGit(root, ['ls-tree', '-r', '-z', baseline.sha], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0')) {
+    const tab = entry.indexOf('\t')
+    if (tab < 0 || !wanted.has(entry.slice(tab + 1))) continue
+    const [mode, type, sha] = entry.slice(0, tab).split(' ')
+    tree.set(entry.slice(tab + 1), { mode, type, sha })
+  }
+  const files: string[] = []
+  for (const path of wanted) {
+    if (!validRepoPath(path, CARRIED_PATH)) continue
+    const entry = tree.get(path)
+    let stat: fs.Stats | undefined
+    try {
+      if (!containedRepoPath(root, nodePath.join(root, path), { leaf: 'replace-link' }).ok) continue
+      stat = fs.lstatSync(nodePath.join(root, path))
+    } catch (e) { if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e }
+    if (!entry) { if (!stat) unchanged.add(path); continue }
+    if (!stat || entry.type !== 'blob') continue
+    if (entry.mode === '120000') { if (stat.isSymbolicLink() && carriedContentHash(root, path) === entry.sha) unchanged.add(path); continue }
+    if (stat.isFile() && ((stat.mode & 0o100) !== 0) === (entry.mode === '100755')) files.push(path)
+  }
+  let hashes: (string | undefined)[]
+  // A file removed after its stat fails the batch; per-file hashing then reports the rest exactly.
+  try { hashes = carriedContentHashes(root, files) }
+  catch (e) {
+    if (/timed out/.test(String(e))) throw e
+    hashes = files.map(path => { try { return carriedContentHash(root, path) } catch { return undefined } })
+  }
+  files.forEach((path, i) => { if (hashes[i] === tree.get(path)!.sha) unchanged.add(path) })
+  return unchanged
+}
+
 /** Paths changed by a worker from its own recorded base, excluding unchanged carried inputs. */
 export async function workerChangedPaths(worker: BaselineSource): Promise<string[]> {
   const baseline = workerBaseline(worker)
   const base = baseline?.sha ?? 'HEAD'
   const exclusions = ['.room', ...(worker.link ?? [])].map(p => `:(exclude,literal)${p}`)
-  const tracked = (await boundedGit(worker.dir, ['diff', '--name-only', '-z', base, '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
+  const tracked = (await boundedGit(worker.dir, ['diff', '--no-renames', '--name-only', '-z', base, '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
   const untracked = (await boundedGit(worker.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions], UNKNOWN_WHOLE_TREE_PATHS)).toString().split('\0').filter(Boolean)
   const unchanged = carriedUnchangedPaths(baseline)
   return [...new Set([...tracked, ...untracked, ...baseline?.untracked.keys() ?? []])].filter(p => !unchanged.has(p)).sort()

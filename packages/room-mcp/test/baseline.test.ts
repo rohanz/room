@@ -12,6 +12,7 @@ import { carriedUnchanged, carriedUnchangedPaths, workerBaseline } from '@room/r
 import { addCarriedUntrackedModes, mergedFileMode } from '../src/tools/files.js'
 import { saveDiscardPatch } from '../src/worker-git.js'
 import { buildCombinedTree } from '../src/tools/combined-tree.js'
+import { acknowledgeKeptPublication } from '../src/kept-publication.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
 
@@ -51,11 +52,23 @@ async function spawn(files: Record<string, string>, wip: Record<string, string>,
   const dirOf = (person: string) => person === LEAD ? lead : wdir
   const baseOf = (person: string) => person === LEAD ? head : base
   /** Publish a side's changed files the way its daemon would. */
-  const publish = (person: string, files: string[]) => { for (const file of files) publishFixture(room, person, file, read(dirOf(person), file) ?? '') }
+  const publish = (person: string, files: string[]) => {
+    for (const file of files) publishFixture(room, person, file, read(dirOf(person), file) ?? '', { base: baseOf(person) })
+    room.participants.set(`${person}\0git`, { ...room.participants.get(`${person}\0git`)!, head: git(dirOf(person), 'rev-parse', 'HEAD') })
+  }
   const session = (name: string) => ({ me: { name, kind: 'agent' }, dir: dirOf(name), room, roomName: 'local/test/main', local: true, awareness: { getStates: () => new Map() }, daemon: {}, ...hubSeam(room) }) as unknown as Session
   const sessions = { [LEAD]: session(LEAD), [WORKER]: session(WORKER) }
   // The carried baseline is a local fact of the lead's registry, which the worker's worktree shares.
-  await registerWorkers(sessions[LEAD], [record])
+  const registry = await registerWorkers(sessions[LEAD], [record])
+  const carried = Object.keys({ ...wip, ...untracked })
+  if (carried.length) {
+    // Spawn persists a verified post-carry publication, including for untracked-only carry.
+    Object.assign(sessions[LEAD].daemon, { fence: '1', settle: async () => {}, reconcileGitChanges: async () => publish(LEAD, carried) })
+    const proof = await acknowledgeKeptPublication(sessions[LEAD], undefined, carried)
+    expect(proof.pending).toBe(false)
+    const saved = registry.reservedByTagOrName(WORKER)!
+    await registry.update(saved.id, old => ({ ...old, keptPublication: { ...proof, base }, seq: old.seq + 1 }))
+  }
   const state = {
     rooms: { holding: (name: string) => sessions[name as keyof typeof sessions] },
     liveText: async (_s: Session, file: string, person: string) => read(dirOf(person), file),
@@ -106,6 +119,7 @@ describe('a carried worker\'s own changes', () => {
     put(wdir, 'mine.txt', 'worker\n'); put(wdir, 'both.txt', text({ 9: 'WORKER' }))
     t.publish(LEAD, ['notes.txt', 'mine.txt', 'both.txt']); t.publish(WORKER, ['notes.txt', 'mine.txt', 'both.txt'])
     for (const result of [await t.preview(LEAD, WORKER), await t.preview(WORKER, LEAD)]) {
+      expect(result.complete, result.out.join('\n')).toBe(true)
       expect(result.conflictCount).toBe(0)
       expect(result.merged.get('notes.txt')).toBe('draft 2\n')
       expect(result.owners.get('notes.txt')).not.toContain(WORKER)

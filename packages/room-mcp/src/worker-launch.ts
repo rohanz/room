@@ -113,7 +113,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     catch (e) { throw new WorkerLaunchError('budget', String(e instanceof Error ? e.message : e)) }
     const built = workerCommand(policy.host, policy.model, prompt, policy.claudeChannel,
       policy.effort, { tag, sessionId: command.sessionId, resume: command.mode === 'resume',
-        maxBudgetUsd, shellEnvHook: shellEnv.hook, wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: policy.host === 'claude' ? leadClaudePluginDir() : undefined })
+        maxBudgetUsd, shellEnvHook: policy.host === 'claude', wakeChannels: process.env.ROOM_WAKE === 'channels', pluginDir: policy.host === 'claude' ? leadClaudePluginDir() : undefined })
     const priority = workerPriority(built, niceEnv)
     const logFile = path.join(s.dir, '.room', 'workers', `${tag}.log`)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled')
@@ -139,7 +139,7 @@ export async function launchWorkerProcess(policy: Policy, command: Command, host
     if ((policy.platform ?? process.platform) === 'win32' && !exited && !host.aborted() && proc.isRunning?.() !== false && !identity) {
       throw new WorkerLaunchError('start', 'could not verify the Windows worker process identity; stopping its retained child handle')
     }
-    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(tag, policy.host, shellEnv),
+    const result = { proc, port, env, nice: priority.nice, logFile, portChanged, warnings: await workerShellEnvWarnings(policy.host, shellEnv),
       startedAt: (policy.at ?? Date.now)(), processStartTime: identity?.startTime, processExecutable: identity?.executable }
     await onSpawn(result)
     if (host.aborted()) throw new WorkerLaunchError('cancelled', 'tool call cancelled', true)

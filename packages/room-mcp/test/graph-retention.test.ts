@@ -214,8 +214,13 @@ it('coalesces 500 published-path withdrawals into one immediate guarded snapshot
   } finally { gi.stop(); f.cleanup() }
 })
 
-it('rebuilds 3000 paths and 20 claims with linear priority scans in under one second', async () => {
-  const f = fixture(3000), parser = cheapParser()
+it('rebuilds 3000 paths and 20 claims with linear priority scans in under one second', async ({ task }) => {
+  const timings: Record<string, number> = {}
+  const profile = Object.assign(task.meta, { phase: 'fixture', timings, claimScans: 0 })
+  // The injected reader/parser already use identical content. Keep 3000 real
+  // Git paths but share one blob instead of writing 3000 unused loose objects.
+  const setup = performance.now(), f = fixture(3000, () => 'function synthetic() {}'), parser = cheapParser()
+  timings.fixture = performance.now() - setup
   for (let i = 0; i < 20; i++) f.room.addClaim({ path: `base${i}.js`, from: 1, to: 1, by: 'A', byKind: 'agent', intent: 'priority scale' })
   const original = f.room.openClaims.bind(f.room)
   let calls = 0
@@ -226,10 +231,20 @@ it('rebuilds 3000 paths and 20 claims with linear priority scans in under one se
   const gi = new GraphIndex(f.room, 'A', f.dir, undefined,
     { random: () => 0, minPublishMs: 0, parser, read: async () => 'function synthetic() {}' })
   try {
+    profile.phase = 'rebuild'
     const start = performance.now()
     gi.start(); await gi.whenIdle()
+    timings.rebuild = performance.now() - start
+    profile.claimScans = calls
     expect(gi.graph.size).toBe(3000)
+    expect(parser.parse).toHaveBeenCalledTimes(3000)
     expect(calls).toBeLessThanOrEqual(3000)
     expect(performance.now() - start).toBeLessThan(1000)
-  } finally { claims.mockRestore(); gi.stop(); f.cleanup() }
+  } finally {
+    profile.phase = 'cleanup'
+    const start = performance.now()
+    claims.mockRestore(); gi.stop(); f.cleanup()
+    timings.cleanup = performance.now() - start
+    profile.phase = 'finished'
+  }
 })

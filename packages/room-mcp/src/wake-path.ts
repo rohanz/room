@@ -20,8 +20,23 @@ type Mode = 'auto' | 'socket' | 'channels' | 'off'
 
 export interface WakeTarget { id: string; host: 'claude' | 'codex' }
 export type WakeVia = 'queue' | 'socket' | 'channel' | 'turn'
+/** One bounded observation, never peer content, host error text, paths or credentials. */
+export interface WakeAttempt {
+  via: WakeVia
+  at: number
+  outcome: 'attempting' | 'written' | 'queued' | 'submitted' | 'uncertain' | 'failed' | 'unavailable' | 'skipped-idle'
+  fallback?: 'socket-failed'
+}
+export interface WakePathStatus {
+  mode: Mode
+  transport: 'turn/queue' | 'legacy/queue' | 'socket' | 'channel' | 'none'
+  availability: 'configured' | 'unknown' | 'off' | 'unavailable'
+}
 /** Resolves with the path that took the wake, or undefined when this host has none; rejects when the path failed. */
-export type SendWake = (target: WakeTarget, text: string) => Promise<WakeVia | undefined>
+export type SendWake = ((target: WakeTarget, text: string) => Promise<WakeVia | undefined>) & {
+  describe?: (target: WakeTarget) => WakePathStatus
+  lastAttempt?: (target?: WakeTarget) => WakeAttempt | undefined
+}
 
 const SOCKET_POST_TIMEOUT_MS = 1_500
 
@@ -65,6 +80,18 @@ export function claudeWakeAvailable(o: WakeAvailability): boolean {
   return selected === 'channels' ? channel : socket || channel
 }
 
+/** Configuration evidence only: this does not contact the host or prove acceptance. */
+export function wakePathStatus(o: WakeAvailability): WakePathStatus {
+  const env = o.env ?? process.env, selected = mode(env)
+  if (selected === 'off') return { mode: selected, transport: 'none', availability: 'off' }
+  if (o.host === 'codex') return { mode: selected, transport: codexControlSocket(env) ? 'turn/queue' : 'legacy/queue', availability: 'unknown' }
+  const socket = !!env.CLAUDE_CODE_MESSAGING_SOCKET
+  if (selected !== 'channels' && socket) return { mode: selected, transport: 'socket', availability: 'configured' }
+  if (selected === 'channels' && o.channel !== '') return { mode: selected, transport: 'channel', availability: 'configured' }
+  if (selected === 'auto' && channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)) return { mode: selected, transport: 'channel', availability: 'configured' }
+  return { mode: selected, transport: 'none', availability: 'unavailable' }
+}
+
 /** The inbox protocol is newline-delimited JSON. No acknowledgement exists, so a clean close means only that bytes were handed to the socket. */
 function postSocketWake(socketPath: string, token: string | undefined, content: string, timeoutMs = SOCKET_POST_TIMEOUT_MS): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -106,43 +133,72 @@ export interface WakeSenderOptions {
 
 /** Codex: the queue. Claude: the socket, then the channel if the socket fails and the channel is admitted. ROOM_WAKE=off sends nothing. */
 export function createWakeSender(o: WakeSenderOptions): SendWake {
-  return async (target, text) => {
+  let last: WakeAttempt | undefined
+  let lastTarget: string | undefined
+  const attempt = async (via: WakeVia, run: () => Promise<unknown>): Promise<WakeVia> => {
+    last = { via, at: Date.now(), outcome: 'attempting' }
+    try { await run(); last = { ...last, outcome: via === 'queue' ? 'queued' : 'written' }; return via }
+    catch (e) { last = { ...last, outcome: 'failed' }; throw e }
+  }
+  const send: SendWake = async (target, text) => {
+    const key = `${target.host}\0${target.id}`
+    if (lastTarget !== key) last = undefined
+    lastTarget = key
     const env = o.env ?? process.env
     const selected = mode(env)
     // ROOM_WAKE=off is the user's switch for every host; the ledger still owes the message.
     if (selected === 'off') return undefined
-    if (target.host === 'codex') { await (o.queue ?? codexQueue)(target.id, text); return 'queue' }
+    if (target.host === 'codex') return attempt('queue', () => (o.queue ?? codexQueue)(target.id, text))
     const admitted = () => channelAdmitted(env, o.parentArgs ?? claudeParentArgs(), o.channel)
-    const channel = async (): Promise<WakeVia> => { await sendChannelNotification(text, o.notify); return 'channel' }
+    const channel = () => attempt('channel', () => sendChannelNotification(text, o.notify))
     if (selected === 'channels') return o.channel === '' ? undefined : channel()
     const socket = env.CLAUDE_CODE_MESSAGING_SOCKET
     if (!socket) return selected === 'auto' && admitted() ? channel() : undefined
-    try { await (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text); return 'socket' }
+    try { return await attempt('socket', () => (o.post ?? postSocketWake)(socket, env.CLAUDE_CODE_MESSAGING_TOKEN, text)) }
     catch (error) {
-      if (selected === 'auto' && admitted()) return channel()
+      if (selected === 'auto' && admitted()) {
+        try { return await channel() } finally { if (last) last = { ...last, fallback: 'socket-failed' } }
+      }
       throw error
     }
   }
+  send.describe = target => wakePathStatus({ ...o, host: target.host })
+  send.lastAttempt = target => (!target || `${target.host}\0${target.id}` === lastTarget) && last ? { ...last } : undefined
+  return send
 }
 
-export type SendMidTurn = (target: WakeTarget, text: string) => Promise<WakeVia | undefined>
+export type SendMidTurn = ((target: WakeTarget, text: string) => Promise<WakeVia | 'uncertain-turn' | 'idle' | undefined>)
+  & Pick<SendWake, 'describe' | 'lastAttempt'>
 
 export function createMidTurnSender(o: { env?: WakeEnv; post?: typeof postCodexToolOutput; log?: (line: string) => void; clientVersion?: string } = {}): SendMidTurn {
-  const reasons = new Map<string, Set<string>>()
-  return async (target, text) => {
+  let last: WakeAttempt | undefined
+  let lastTarget: string | undefined
+  let lastFailure: string | undefined
+  const send: SendMidTurn = async (target, text) => {
+    const key = `${target.host}\0${target.id}`
+    if (lastTarget !== key) last = undefined
+    lastTarget = key
     const env = o.env ?? process.env
     if (target.host !== 'codex' || mode(env) === 'off') return undefined
-    const result = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text, clientVersion: o.clientVersion })
+    last = { via: 'turn', at: Date.now(), outcome: 'attempting' }
+    let result
+    try { result = await (o.post ?? postCodexToolOutput)({ socketPath: codexControlSocket(env), threadId: target.id, text, clientVersion: o.clientVersion }) }
+    catch (e) { last = { ...last, outcome: 'failed' }; throw e }
+    last = { ...last, outcome: result.kind === 'joined' ? 'submitted' : result.kind === 'idle' ? 'skipped-idle' : result.kind }
     if (result.kind === 'joined') {
-      reasons.delete(target.id)
+      lastFailure = undefined
       o.log?.(`wake: Codex mid-turn joined turn ${result.turnId} of session ${target.id}`)
       return 'turn'
     }
+    if (result.kind === 'uncertain') return 'uncertain-turn'
+    if (result.kind === 'idle') return 'idle'
     if (result.kind === 'unavailable') {
-      const seen = reasons.get(target.id) ?? new Set<string>()
-      if (!seen.has(result.reason)) o.log?.(`wake: Codex mid-turn unavailable for session ${target.id}: ${result.reason}`)
-      seen.add(result.reason); reasons.set(target.id, seen)
+      const key = `${target.id}\0${result.reason}`
+      if (key !== lastFailure) o.log?.(`wake: Codex mid-turn unavailable for session ${target.id}: ${result.reason}`)
+      lastFailure = key
     }
     return undefined
   }
+  send.lastAttempt = target => (!target || `${target.host}\0${target.id}` === lastTarget) && last ? { ...last } : undefined
+  return send
 }

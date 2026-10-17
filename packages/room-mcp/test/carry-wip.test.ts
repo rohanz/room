@@ -1,7 +1,7 @@
 import { setParticipantBase } from '@room/shared/testing'
 import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { patchPublisher, workerByTag } from './registry-fixture.js'
-import { registryForDir } from '../src/worker-registry.js'
+import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 // Acceptance test for carrying the lead's uncommitted work into a new worker worktree, end to end through
 // createTools with real git repositories and the real prepareWorktree; only the process spawner is stubbed.
 // The worker is simulated by editing its worktree and calling room_done through a worker session.
@@ -31,6 +31,7 @@ const lines = (...edits: [number, string][]) => { const l = [...SHARED]; for (co
 
 let root: string, repo: string, head: string
 const cleanups: (() => Promise<void>)[] = []
+const fixtureDisposals: (() => void)[] = []
 let roomEnv: Record<string, string | undefined>
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
 const put = (dir: string, p: string, text: string, mode?: number) => {
@@ -58,12 +59,27 @@ beforeEach(() => {
   // roomd adds Room's directory to the private exclude file when a session joins.
   fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '.room/\n')
 })
-afterEach(async () => {
+afterEach(async ({ task }) => {
+  const timings: Record<string, number> = {}
+  const profile = Object.assign(task.meta, { cleanupPhase: 'tools', cleanupTimings: timings })
+  let start = performance.now()
   for (const c of cleanups.splice(0)) await c().catch(() => {})
+  timings.tools = performance.now() - start
+  profile.cleanupPhase = 'fixture-resources'
+  start = performance.now()
+  // The fake daemon does not own these real resources as a production daemon does.
+  // Stop graphs/awareness before destroying their documents and deleting the checkout.
+  for (const dispose of fixtureDisposals.splice(0).reverse()) dispose()
+  await closeRegistryForDir(repo)
+  timings.resources = performance.now() - start
   vi.unstubAllEnvs()
+  profile.cleanupPhase = 'remove'
+  start = performance.now()
   fs.rmSync(root, { recursive: true, force: true })
+  timings.remove = performance.now() - start
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
   Object.assign(process.env, roomEnv)
+  profile.cleanupPhase = 'finished'
 })
 
 /** Tracked (unstaged), staged modification, staged addition, deletion, untracked and executable untracked WIP, plus ignored and Room files. */
@@ -80,6 +96,7 @@ function leadWip() {
 
 function pair() {
   const a = new Y.Doc(), b = new Y.Doc()
+  fixtureDisposals.push(() => { a.destroy(); b.destroy() })
   a.on('update', (u: Uint8Array) => Y.applyUpdate(b, u))
   b.on('update', (u: Uint8Array) => Y.applyUpdate(a, u))
   return { a: new RoomDoc(a), b: new RoomDoc(b) }
@@ -88,6 +105,7 @@ function fakeSession(room: RoomDoc, me: Identity, dir: string): Session {
   const awareness = new Awareness(room.doc)
   awareness.setLocalState({ user: { ...me, color: '#000' }, status: 'idle' })
   const graph = new GraphIndex(room, me.name, dir); graph.start()
+  fixtureDisposals.push(() => { graph.stop(); awareness.destroy() })
   return {
     graph, room, awareness, me, dir, roomUrl: 'ws://127.0.0.1:1/local%2Fx', roomName: 'local/x', browserUrl: 'http://x',
     ...hubSeam(room), policyStore: testPolicyStore(), provider: { synced: true, awareness } as unknown as Session['provider'],
@@ -149,7 +167,15 @@ function world() {
     try { return await tools.call('room_preview_merge', { person: 'rohanz', ...(run ? { run } : {}) }) as string }
     finally { await tools.shutdown(); ws.graph?.stop() }
   }
-  return { a, b, call, spawn, finish, prompts, workerPreview }
+  /** One worker previews a sibling, which it sees only through the sibling's published snapshot. */
+  async function siblingPreview(tag: string, person: string, run?: string) {
+    const w = workerByTag(repo, tag)!
+    const ws = fakeSession(b, { name: `rohanz+${tag}`, kind: 'agent', owner: 'rohanz', label: tag }, w.dir)
+    const tools = createTools({ getSession: () => ws, setSession: () => {}, cwd: w.dir })
+    try { return await tools.call('room_preview_merge', { person, ...(run ? { run } : {}) }) as string }
+    finally { await tools.shutdown(); ws.graph?.stop() }
+  }
+  return { a, b, call, spawn, finish, prompts, workerPreview, siblingPreview }
 }
 
 /** The files a collect reply says it wrote for the workers. */
@@ -513,8 +539,9 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     put(dir, 'shared.txt', lines([2, 'lead carried'], [9, 'worker appended']))
     const preview = await t.workerPreview('unshared-lead', 'cat shared.txt', 'declared')
     expect(preview).toContain('no conflicts')
-    expect(preview).toContain("PARTIAL preview: rohanz: no manifest record; shared.txt: rohanz's version not included (version unknown: no manifest record)")
-    expect(preview).toContain('Tests ran on a partial tree')
+    expect(preview).toContain('PARTIAL preview: rohanz: no manifest record')
+    expect(preview).toContain("shared.txt: rohanz's version not included (version unknown: no manifest record)")
+    expect(preview).toContain('Tests ran on a partial tree; this does not verify the combined work')
     expect(preview).not.toContain('assumed unchanged since your spawn')
   })
 
@@ -559,6 +586,97 @@ describe('carrying the lead\'s uncommitted work into a worker (acceptance)', () 
     expect(preview).toContain('final combined tree: 1 path(s) applied')
     expect(preview).toContain('CONFLICTS:')
     expect(preview).toContain('shared.txt')
+  })
+
+  it('(G1) a sibling preview keeps carried untracked files the sibling left as carried', async () => {
+    leadWip()
+    const t = world()
+    const one = await t.spawn('one'), two = await t.spawn('two')
+    expect(read(two.dir, 'notes.txt')).toBe('untracked\n')
+    put(one.dir, 'shared.txt', lines([2, 'W'], [9, 'one9']))
+    put(two.dir, 'keep.txt', 'k1\nk2\nK3\n')
+    // The sibling's daemon counts its carried untracked files as base: its manifest lists only its own change.
+    publishFixture(t.b, 'rohanz+two', 'keep.txt', 'k1\nk2\nK3\n', { base: two.w.base })
+    const preview = await t.siblingPreview('one', 'rohanz+two', 'cat notes.txt run.sh keep.txt')
+    expect(preview).not.toMatch(/notes\.txt \(rohanz\+two only\)|run\.sh \(rohanz\+two only\)/)
+    expect(previewed(preview)).toEqual(['keep.txt'])
+    expect(preview).not.toContain('No such file')
+    expect(preview).toMatch(/: exit 0;/)
+  })
+
+  it('(G2) collect leaves a large carried tracked file the worker never changed to the lead', async () => {
+    const big = Array.from({ length: 40_000 }, (_, i) => `generated line ${i}`).join('\n') + '\n'
+    put(repo, 'bundle.mjs', big); git(repo, 'add', 'bundle.mjs'); git(repo, 'commit', '-qm', 'bundle'); head = git(repo, 'rev-parse', 'HEAD')
+    expect(Buffer.byteLength(big)).toBeGreaterThan(512 * 1024)
+    put(repo, 'bundle.mjs', big + '// lead rebuild\n')
+    const t = world()
+    const { dir } = await t.spawn('small')
+    expect(read(dir, 'bundle.mjs')).toBe(big + '// lead rebuild\n')
+    put(dir, 'keep.txt', 'k1\nk2\nK3\n')
+    await t.finish('small')
+    put(repo, 'bundle.mjs', big + '// lead rebuild again\n')
+    const reply = await t.call('room_collect', {})
+    expect(reply).not.toMatch(/Nothing written|manual collection|error:/)
+    expect(collected(reply)).toEqual(['keep.txt'])
+    expect(read(repo, 'bundle.mjs')).toBe(big + '// lead rebuild again\n')
+    expect(read(repo, 'keep.txt')).toBe('k1\nk2\nK3\n')
+  })
+
+  it('(G2) collect still refuses a large carried tracked file the worker changed', async () => {
+    const big = Array.from({ length: 40_000 }, (_, i) => `generated line ${i}`).join('\n') + '\n'
+    put(repo, 'bundle.mjs', big); git(repo, 'add', 'bundle.mjs'); git(repo, 'commit', '-qm', 'bundle'); head = git(repo, 'rev-parse', 'HEAD')
+    put(repo, 'bundle.mjs', big + '// lead rebuild\n')
+    const t = world()
+    const { dir } = await t.spawn('rebuilt')
+    put(dir, 'bundle.mjs', big + '// worker rebuild\n')
+    await t.finish('rebuilt')
+    const reply = await t.call('room_collect', {})
+    expect(reply).toContain('Nothing written; files need manual collection')
+    expect(reply).toContain('bundle.mjs')
+    expect(read(repo, 'bundle.mjs')).toBe(big + '// lead rebuild\n')
+  })
+
+  it('(R1) collect keeps a worker file recreated (untracked) at a path the carry commit deleted', async () => {
+    leadWip()
+    const t = world()
+    const { dir } = await t.spawn('recreate')
+    expect(exists(dir, 'gone.txt')).toBe(false)
+    put(dir, 'gone.txt', 'worker recreated\n')
+    await t.finish('recreate')
+    const reply = await t.call('room_collect', {})
+    expect(read(repo, 'gone.txt'), reply).toBe('worker recreated\n')
+  })
+
+  it('(R2) preview shows a worker file recreated (untracked) at a path the carry commit deleted', async () => {
+    leadWip()
+    const t = world()
+    const { dir } = await t.spawn('recreate2')
+    put(dir, 'gone.txt', 'worker recreated\n')
+    const preview = await t.call('room_preview_merge', { person: 'rohanz+recreate2', run: 'cat gone.txt' })
+    expect(preview).toContain('worker recreated')
+  })
+
+  it('(R3) collect keeps a committed worker change of a carried tracked file', async () => {
+    leadWip()
+    const t = world()
+    const { dir } = await t.spawn('commit')
+    put(dir, 'staged.txt', 'worker\n'); git(dir, 'commit', '-qam', 'w')
+    fs.chmodSync(path.join(dir, 'staged-new.txt'), 0o755)
+    await t.finish('commit')
+    const reply = await t.call('room_collect', {})
+    expect(read(repo, 'staged.txt'), reply).toBe('worker\n')
+    expect(fs.statSync(path.join(repo, 'staged-new.txt')).mode & 0o111, reply).not.toBe(0)
+  })
+
+  it('(R4) collect keeps a worker change hidden by assume-unchanged on a carried tracked file', async () => {
+    leadWip()
+    const t = world()
+    const { dir } = await t.spawn('assume')
+    git(dir, 'update-index', '--assume-unchanged', 'shared.txt')
+    put(dir, 'shared.txt', lines([2, 'W'], [9, 'worker9']))
+    await t.finish('assume')
+    const reply = await t.call('room_collect', {})
+    expect(read(repo, 'shared.txt'), reply).toBe(lines([2, 'W'], [9, 'worker9']))
   })
 
   it('(7) a clean lead behaves exactly as 0.10.2: base is HEAD, no carried commit, no carried line', async () => {

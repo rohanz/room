@@ -208,7 +208,7 @@ export async function pushHistory(dir: string, remote: string | undefined, oldSh
 }
 
 export async function pushedFacts(dir: string, fromSha: string, toSha: string): Promise<{ commits: number; paths: string[]; summary: string }> {
-  const [commits, paths, summary] = await Promise.all([gitCountBetween(dir, fromSha, toSha), gitPathsBetween(dir, fromSha, toSha), gitSubject(dir, toSha)])
+  const [commits, paths, summary] = await Promise.all([gitCountBetween(dir, fromSha, toSha), gitPathsBetween(dir, fromSha, toSha, true), gitSubject(dir, toSha)])
   return { commits, paths, summary }
 }
 

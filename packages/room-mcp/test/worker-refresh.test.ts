@@ -14,10 +14,21 @@ import { Awareness } from 'y-protocols/awareness'
 import { RoomDoc } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
+import { autoRetire } from '../src/retire.js'
 import type { Session } from '../src/session.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { hubSeam } from './fixtures/hub.js'
+import { publishFixture } from './fixtures/manifest.js'
+import { keptPublicationMatches } from '../src/kept-publication.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { clearFixtureProcesses, fixtureLiveness } from './fixtures/process-liveness.js'
+
+// The launcher is this test runner, which is alive even when sandboxed OS probes
+// cannot identify it. Synthetic worker handles still exit through their callbacks.
+vi.mock('../src/leases.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/leases.js')>()
+  return { ...actual, liveness: (identity: Parameters<typeof actual.liveness>[0]) => fixtureLiveness(identity, actual.liveness) }
+})
 
 vi.setConfig({ testTimeout: 30_000 })
 // These sessions have synthetic publication; real daemon completion is covered in done-publication.test.ts.
@@ -34,6 +45,7 @@ const status = (dir: string) => git(dir, 'status', '--porcelain', '--untracked-f
 const commit = (dir: string, message: string) => { git(dir, 'add', '-A'); git(dir, 'commit', '-qm', message); return git(dir, 'rev-parse', 'HEAD') }
 
 beforeEach(() => {
+  clearFixtureProcesses()
   roomEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('ROOM_')))
   for (const key of Object.keys(roomEnv)) delete process.env[key]
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-refresh-')))
@@ -46,6 +58,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   for (const c of cleanups.splice(0)) await c().catch(() => {})
+  clearFixtureProcesses()
   vi.unstubAllEnvs()
   fs.rmSync(root, { recursive: true, force: true })
   for (const key of Object.keys(process.env)) if (key.startsWith('ROOM_')) delete process.env[key]
@@ -121,18 +134,476 @@ function world() {
     exits.get(tag)!(0)
     await vi.waitFor(() => expect(workerByTag(repo, tag)).toMatchObject({ status: 'done', exitCode: 0 }), { timeout: 15_000 })
   }
-  return { call, spawn, finish, launches, messages: () => ra.messages() }
+  return { call, spawn, finish, launches, leadSession: () => ls!, messages: () => ra.messages(),
+    retire: () => autoRetire(ls!, { probe: () => undefined, hasHandle: () => false, tracking: () => true, project: async () => {} } as never) }
 }
 
 /** Everything about a worker that a refused refresh must leave as it was. */
-const snapshot = (dir: string, tag: string) => ({
+const snapshot = (dir: string, tag: string, extraPaths: string[] = []) => ({
   head: git(dir, 'rev-parse', 'HEAD'), status: status(dir), index: git(dir, 'write-tree'),
-  files: Object.fromEntries(['shared.txt', 'keep.txt'].map(p => [p, read(dir, p)])),
+  files: Object.fromEntries(['shared.txt', 'keep.txt', 'follow-up.txt', ...extraPaths].map(p => [p, fs.existsSync(path.join(dir, p)) ? read(dir, p) : null])),
   base: workerByTag(repo, tag)!.base, carriedBase: workerByTag(repo, tag)!.carriedBase,
   rebasing: fs.existsSync(path.join(git(dir, 'rev-parse', '--absolute-git-dir'), 'rebase-merge')),
 })
 
+const collectionRefs = async (tag: string) => {
+  const record = (await registryForDir(repo)).list().find(r => r.tag === tag)!
+  return Object.fromEntries(['collect-head', 'collect-base'].map(kind => [kind,
+    git(repo, 'rev-parse', `refs/room/${kind}/${tag}/${record.id}`)]))
+}
+
+async function expectKeptRefreshRefused(t: ReturnType<typeof world>, dir: string, reason: string, paths: string[] = []) {
+  const before = snapshot(dir, 'kept', paths), refsBefore = await collectionRefs('kept')
+  const leadBefore = snapshot(repo, 'kept', paths), launchesBefore = t.launches.get('kept')!.length
+  const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+  expect(reply).toContain('did not refresh kept')
+  expect(reply).toContain(reason)
+  expect(snapshot(dir, 'kept', paths)).toEqual(before)
+  expect(await collectionRefs('kept')).toEqual(refsBefore)
+  expect(snapshot(repo, 'kept', paths)).toEqual(leadBefore)
+  expect(t.launches.get('kept')).toHaveLength(launchesBefore)
+  expect(workerByTag(repo, 'kept')?.status).toBe('done')
+}
+
 describe('room_send refresh=true', () => {
+  it('preserves tracked and untracked carried WIP through refused kept refresh, plain resume and commit-then-accept (CARRY)', async () => {
+    put(repo, 'shared.txt', 'a\ncarried\nc\n'); put(repo, 'notes.md', 'lead scratch\n')
+    const t = world(), w = await t.spawn('kept')
+    expect(w.carriedBase).toBeTruthy()
+    expect(read(w.dir, 'shared.txt')).toBe('a\ncarried\nc\n')
+    expect(read(w.dir, 'notes.md')).toBe('lead scratch\n')
+    put(w.dir, 'keep.txt', 'k1\ndelivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    git(repo, 'add', '--', 'keep.txt'); git(repo, 'commit', '-qm', 'delivered only')
+    await expectKeptRefreshRefused(t, w.dir, 'snapshot changes not contained in your HEAD: notes.md, shared.txt', ['notes.md'])
+    const before = snapshot(w.dir, 'kept', ['notes.md']), refsBefore = await collectionRefs('kept')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'plain resume' })).toContain('resumed kept')
+    expect(snapshot(w.dir, 'kept', ['notes.md'])).toEqual(before)
+    expect(await collectionRefs('kept')).toEqual(refsBefore)
+    await t.finish('kept')
+    const target = commit(repo, 'commit carried WIP')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'refresh', refresh: true })).toContain('rebased kept onto your HEAD')
+    expect(read(w.dir, 'shared.txt')).toBe('a\ncarried\nc\n')
+    expect(read(w.dir, 'notes.md')).toBe('lead scratch\n')
+    expect(read(w.dir, 'keep.txt')).toBe('k1\ndelivered\n')
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(target)
+    expect(workerByTag(repo, 'kept')!.base).toBe(target)
+    expect(workerByTag(repo, 'kept')!.carriedBase).toBeUndefined()
+    expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
+    expect(status(w.dir)).toEqual([])
+    expect(status(repo)).toEqual([])
+  })
+
+  it('refuses kept refresh when the lead discards carried WIP and the worker holds its only copy (CARRY-STASHED)', async () => {
+    put(repo, 'shared.txt', 'a\ncarried\nc\n')
+    const t = world(), w = await t.spawn('kept')
+    expect(w.carriedBase).toBeTruthy()
+    put(w.dir, 'keep.txt', 'k1\ndelivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    git(repo, 'add', '--', 'keep.txt'); git(repo, 'commit', '-qm', 'delivered only')
+    git(repo, 'checkout', '--', 'shared.txt')
+    expect(status(repo)).toEqual([])
+    expect(read(repo, 'shared.txt')).toBe('a\nb\nc\n')
+    await expectKeptRefreshRefused(t, w.dir, 'snapshot changes not contained in your HEAD: shared.txt')
+    expect(read(w.dir, 'shared.txt')).toBe('a\ncarried\nc\n')
+  })
+
+  it('preserves an omitted middle round across three keeps, then accepts after it is committed (MULTI3)', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'r1.txt', 'one\n'); await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    git(repo, 'add', 'r1.txt'); git(repo, 'commit', '-qm', 'r1')
+    await t.call('room_send', { type: 'note', to: 'kept', text: 'round 2' })
+    put(w.dir, 'r2.txt', 'two\n'); await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    await t.call('room_send', { type: 'note', to: 'kept', text: 'round 3' })
+    put(w.dir, 'r3.txt', 'three\n'); await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    git(repo, 'add', 'r3.txt'); git(repo, 'commit', '-qm', 'r3')
+    const paths = ['r1.txt', 'r2.txt', 'r3.txt']
+    await expectKeptRefreshRefused(t, w.dir, 'snapshot changes not contained in your HEAD: r2.txt', paths)
+    const refsBefore = await collectionRefs('kept')
+    git(repo, 'add', 'r2.txt'); git(repo, 'commit', '-qm', 'r2')
+    const target = git(repo, 'rev-parse', 'HEAD')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'refresh', refresh: true })).toContain('rebased kept onto your HEAD')
+    expect(paths.map(p => read(w.dir, p))).toEqual(['one\n', 'two\n', 'three\n'])
+    expect(paths.map(p => read(repo, p))).toEqual(['one\n', 'two\n', 'three\n'])
+    expect(git(w.dir, 'rev-parse', 'HEAD')).toBe(target)
+    expect(workerByTag(repo, 'kept')!.base).toBe(target)
+    expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
+    expect(status(w.dir)).toEqual([])
+    expect(status(repo)).toEqual([])
+  })
+
+  it.each(['different paths', 'different hunks'] as const)('refuses refresh after two uncommitted keeps when only round 2 is committed (%s)', async mode => {
+    const t = world(), w = await t.spawn('kept')
+    const sameFile = mode === 'different hunks'
+    put(w.dir, sameFile ? 'shared.txt' : 'keep.txt', sameFile ? 'r1\nb\nc\n' : 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'round 2' })).toContain('resumed kept')
+    put(w.dir, 'shared.txt', sameFile ? 'r1\nb\nr2\n' : 'a\nb\nr2\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('Changes from kept: shared.txt')
+    if (sameFile) {
+      const blob = execFileSync('git', ['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'a\nb\nr2\n', encoding: 'utf8' }).trim()
+      git(repo, 'update-index', '--cacheinfo', '100644', blob, 'shared.txt')
+    } else git(repo, 'add', '--', 'shared.txt')
+    git(repo, 'commit', '-qm', 'round 2 only')
+    // Distinct staged and unstaged follow-up bytes must also survive refusal.
+    put(w.dir, 'follow-up.txt', 'staged follow-up\n'); git(w.dir, 'add', 'follow-up.txt')
+    put(w.dir, 'follow-up.txt', 'unstaged follow-up\n')
+    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept')
+    const leadBefore = snapshot(repo, 'kept'), launchesBefore = t.launches.get('kept')!.length
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'round 3', refresh: true })
+    expect(reply).toContain('did not refresh kept')
+    expect(reply).toContain(`snapshot changes not contained in your HEAD: ${sameFile ? 'shared.txt' : 'keep.txt'}`)
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(await collectionRefs('kept')).toEqual(refsBefore)
+    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+    expect(t.launches.get('kept')).toHaveLength(launchesBefore)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+  })
+
+  it.each([false, true])('reports cumulative uncommitted delivery on a no-op after a second keep with no new delta (worker committed: %s)', async committed => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    if (committed) commit(w.dir, 'worker round 1')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    await t.call('room_send', { type: 'note', to: 'kept', text: 'check again' })
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('Changes from kept: already present')
+    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept'), leadBefore = snapshot(repo, 'kept')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('already has your HEAD')
+    expect(reply).toContain('its kept snapshot is unchanged; collected output is still uncommitted in your checkout')
+    expect(reply).toContain('resumed kept')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(await collectionRefs('kept')).toEqual(refsBefore)
+    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+  })
+
+  it.each([false, true])('accepts cumulative delivery committed exactly after two keeps and replays follow-ups (worker committed: %s)', async committed => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'shared.txt', 'r1\nb\nc\n')
+    if (committed) commit(w.dir, 'worker round 1')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    await t.call('room_send', { type: 'note', to: 'kept', text: 'round 2' })
+    put(w.dir, 'shared.txt', 'r1\nb\nr2\n')
+    if (committed) commit(w.dir, 'worker round 2')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    const target = commit(repo, 'integrate both rounds')
+    put(w.dir, 'one.txt', 'post-keep\n'); commit(w.dir, 'post-keep commit')
+    put(w.dir, 'follow-up.txt', 'unstaged follow-up\n')
+    const refsBefore = await collectionRefs('kept')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('rebased kept onto your HEAD')
+    expect(read(w.dir, 'shared.txt')).toBe('r1\nb\nr2\n')
+    expect(read(w.dir, 'one.txt')).toBe('post-keep\n')
+    expect(read(w.dir, 'follow-up.txt')).toBe('unstaged follow-up\n')
+    expect(git(w.dir, 'log', '--format=%s', `${target}..HEAD`)).toBe('post-keep commit')
+    expect(status(w.dir)).toEqual(['?? follow-up.txt'])
+    expect(workerByTag(repo, 'kept')!.base).toBe(target)
+    expect(await collectionRefs('kept')).toEqual({ ...refsBefore, 'collect-head': target })
+  })
+
+  it.each(['missing', 'ambiguous'] as const)('refuses a kept refresh when the shared ancestor is %s', async mode => {
+    const t = world(), w = await t.spawn('kept')
+    await t.finish('kept')
+    const tree = git(repo, 'rev-parse', `${head}^{tree}`)
+    let parent = head, target: string
+    if (mode === 'ambiguous') {
+      const a = git(repo, 'commit-tree', tree, '-p', head, '-m', 'side a')
+      const b = git(repo, 'commit-tree', tree, '-p', head, '-m', 'side b')
+      parent = git(repo, 'commit-tree', tree, '-p', a, '-p', b, '-m', 'worker merge')
+      target = git(repo, 'commit-tree', tree, '-p', b, '-p', a, '-m', 'lead merge')
+    } else target = git(repo, 'commit-tree', tree, '-m', 'unrelated root')
+    git(w.dir, 'reset', '--hard', parent); git(repo, 'reset', '--hard', target)
+    const baseline = git(repo, 'commit-tree', tree, '-p', parent, '-m', 'room: kept collection baseline')
+    const registry = await registryForDir(repo)
+    await registry.update(w.id, old => ({ ...old, base: baseline, collectedKeep: true, seq: old.seq + 1 }))
+    git(repo, 'update-ref', `refs/room/collect-head/kept/${w.id}`, baseline)
+    git(repo, 'update-ref', `refs/room/collect-base/kept/${w.id}`, head)
+    const before = snapshot(w.dir, 'kept'), refsBefore = await collectionRefs('kept'), leadBefore = snapshot(repo, 'kept')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('did not refresh kept')
+    expect(reply).toContain('cannot verify a unique cumulative snapshot base')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(await collectionRefs('kept')).toEqual(refsBefore)
+    expect(snapshot(repo, 'kept')).toEqual(leadBefore)
+    expect(t.launches.get('kept')).toHaveLength(1)
+  })
+
+  it('refuses refresh when lead committed its own edit to the delivered path before keep; collected output uncommitted', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(repo, 'shared.txt', 'a\nb\nlead-own\n'); commit(repo, 'lead own edit before keep')
+    put(w.dir, 'shared.txt', 'delivered\nb\nc\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    expect(read(repo, 'shared.txt')).toBe('delivered\nb\nlead-own\n')
+    const before = snapshot(w.dir, 'kept')
+    const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
+    const launchesBefore = t.launches.get('kept')!.length
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('snapshot changes not contained in your HEAD')
+    expect(reply).toContain('snapshot changes not contained in your HEAD: shared.txt')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(launchesBefore)
+    expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
+    expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\nc\n')
+  })
+
+  it('refuses refresh when lead partially stages its own hunk after keep, leaving the delivered hunk uncommitted', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'shared.txt', 'delivered\nb\nc\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    put(repo, 'shared.txt', 'delivered\nb\nlead-own\n')
+    const blob = execFileSync('git', ['-C', repo, 'hash-object', '-w', '--stdin'], { input: 'a\nb\nlead-own\n', encoding: 'utf8' }).trim()
+    git(repo, 'update-index', '--cacheinfo', '100644', blob, 'shared.txt'); git(repo, 'commit', '-qm', 'lead own hunk only')
+    const before = snapshot(w.dir, 'kept')
+    const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
+    const launchesBefore = t.launches.get('kept')!.length
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('snapshot changes not contained in your HEAD')
+    expect(reply).toContain('snapshot changes not contained in your HEAD: shared.txt')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(launchesBefore)
+    expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
+    expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\nc\n')
+  })
+
+  it('refuses refresh after second keep on the same file; round 1 committed, plain resume, round 2 uncommitted', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    commit(repo, 'commit round 1')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'round 2' })).toContain('resumed kept')
+    put(w.dir, 'keep.txt', 'delivered\nround2\n')
+    await t.finish('kept')
+    const second = await t.call('room_collect', { tag: 'kept', keep: true })
+    expect(second).toContain('Changes from kept: keep.txt')
+    expect(read(repo, 'keep.txt')).toBe('delivered\nround2\n')
+    const before = snapshot(w.dir, 'kept')
+    const leadBefore = { head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }
+    const launchesBefore = t.launches.get('kept')!.length
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'round 3', refresh: true })
+    expect(reply).toContain('snapshot changes not contained in your HEAD')
+    expect(reply).toContain('snapshot changes not contained in your HEAD: keep.txt')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(launchesBefore)
+    expect({ head: git(repo, 'rev-parse', 'HEAD'), status: status(repo), index: git(repo, 'write-tree') }).toEqual(leadBefore)
+    expect(read(w.dir, 'keep.txt')).toBe('delivered\nround2\n')
+  })
+
+  it('accepts refresh when lead commits delivered output with an unrelated own hunk; refresh succeeds and keeps it', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'shared.txt', 'delivered\nb\nc\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    put(repo, 'shared.txt', 'delivered\nb\nlead-own\n'); commit(repo, 'commit delivered plus own')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('rebased kept onto your HEAD')
+    expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\nlead-own\n')
+  })
+  it.each([['unrelated lead commit', false], ['unrelated lead commit', true]] as const)('refuses a kept refresh with %s before collected output is committed (worker committed: %s)', async (mode, committed) => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    if (committed) commit(w.dir, 'worker delivered edit')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    expect(read(repo, 'keep.txt')).toBe('delivered\n')
+    if (mode === 'unrelated lead commit') {
+      put(repo, 'specs/later.md', 'spec\n')
+      git(repo, 'add', 'specs'); git(repo, 'commit', '-qm', 'spec only')
+    }
+    const before = snapshot(w.dir, 'kept')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'fix your keep.txt', refresh: true })
+    expect(reply).toContain('snapshot changes not contained in your HEAD')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(1)
+  })
+
+  it.each([false, true])('kept worker already current safely resumes without moving its snapshot (worker committed: %s)', async committed => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    if (committed) commit(w.dir, 'worker delivered edit')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    const before = snapshot(w.dir, 'kept')
+    const record = (await registryForDir(repo)).list().find(record => record.tag === 'kept')!
+    const ref = 'refs/room/collect-head/kept/' + record.id
+    const refBefore = git(repo, 'rev-parse', ref), leadBefore = status(repo)
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('already has your HEAD')
+    expect(reply).toContain('collected output is still uncommitted in your checkout')
+    expect(reply).toContain('resumed kept')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(git(repo, 'rev-parse', ref)).toBe(refBefore)
+    expect(status(repo)).toEqual(leadBefore)
+    put(w.dir, 'second.txt', 'second delta\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('Changes from kept: second.txt.')
+    expect(read(repo, 'keep.txt')).toBe('delivered\n')
+  })
+
+  it('keeps uncommitted delivered and independent lead edits through refused refresh, plain resume and second keep', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    put(repo, 'specs/later.md', 'spec\n')
+    git(repo, 'add', 'specs'); git(repo, 'commit', '-qm', 'unrelated spec')
+    const leadHead = git(repo, 'rev-parse', 'HEAD')
+    put(repo, 'shared.txt', 'independent lead edit\nb\nc\n')
+    const leadBefore = status(repo)
+    const workerBefore = snapshot(w.dir, 'kept')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true }))
+      .toContain('snapshot changes not contained in your HEAD')
+    expect(snapshot(w.dir, 'kept')).toEqual(workerBefore)
+    expect(status(repo)).toEqual(leadBefore)
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue without refresh' })).toContain('resumed kept')
+    expect(read(w.dir, 'keep.txt')).toBe('delivered\n')
+    put(w.dir, 'second.txt', 'second delta\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('Changes from kept: second.txt.')
+    expect(read(repo, 'keep.txt')).toBe('delivered\n')
+    expect(read(repo, 'shared.txt')).toBe('independent lead edit\nb\nc\n')
+    expect(read(repo, 'second.txt')).toBe('second delta\n')
+    expect(read(w.dir, 'keep.txt')).toBe('delivered\n')
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(leadHead)
+    expect(git(repo, 'diff', '--cached')).toBe('')
+  })
+
+  it('leaves the kept collection ref unchanged if recording the refreshed base fails', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    const registry = await registryForDir(repo)
+    const record = registry.list().find(record => record.tag === 'kept')!
+    const ref = `refs/room/collect-head/kept/${record.id}`
+    const before = git(repo, 'rev-parse', ref)
+    const target = commit(repo, 'commit collected output')
+    const real = WorkerRegistry.prototype.update
+    const spy = vi.spyOn(WorkerRegistry.prototype, 'update').mockImplementation(function (this: WorkerRegistry, id, edit) {
+      if (id === record.id && edit(this.read(id)!).base === target) return Promise.reject(new Error('injected base write failure'))
+      return real.call(this, id, edit)
+    })
+    try {
+      expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('could not record its new base')
+      expect(registry.read(record.id)?.base).toBe(record.base)
+      expect(git(repo, 'rev-parse', ref)).toBe(before)
+    } finally { spy.mockRestore() }
+  })
+
+  it('protects a refreshed kept worker without a host session from automatic retirement', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    const target = commit(repo, 'commit collected output')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('rebased kept onto your HEAD')
+    await t.finish('kept')
+    const registry = await registryForDir(repo)
+    const record = registry.list().find(record => record.tag === 'kept')!
+    await registry.update(record.id, old => ({ ...old, hostSessionId: undefined, seq: old.seq + 1 }))
+    expect(workerByTag(repo, 'kept')?.hostSessionId).toBeUndefined()
+    expect(git(repo, 'rev-parse', `refs/room/collect-head/kept/${record.id}`)).toBe(target)
+    await t.retire()
+    expect(registry.read(record.id)?.phase).toBe('active')
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(fs.existsSync(w.dir)).toBe(true)
+  })
+
+  it.each([false, true])('refuses a kept refresh when your HEAD revises delivered lines (committed before keep: %s)', async committed => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    if (committed) commit(w.dir, 'worker delivered edit')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    put(repo, 'keep.txt', 'lead revises delivered line\n')
+    put(repo, 'specs/later.md', 'new spec\n')
+    commit(repo, 'lead revises kept output and adds spec')
+    const before = snapshot(w.dir, 'kept')
+    const record = (await registryForDir(repo)).list().find(record => record.tag === 'kept')!
+    const ref = 'refs/room/collect-head/kept/' + record.id
+    const refBefore = git(repo, 'rev-parse', ref)
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'implement follow-up', refresh: true })
+    expect(reply).toContain('your HEAD revises snapshot lines in keep.txt; send without refresh')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(git(repo, 'rev-parse', ref)).toBe(refBefore)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(1)
+    expect(fs.existsSync(path.join(w.dir, 'specs/later.md'))).toBe(false)
+  })
+
+  it('preserves post-keep commits and uncommitted follow-ups when refreshing', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    put(w.dir, 'one.txt', 'post-keep one\n'); commit(w.dir, 'first follow-up')
+    put(w.dir, 'two.txt', 'post-keep two\n'); commit(w.dir, 'second follow-up')
+    put(w.dir, 'later.txt', 'uncommitted follow-up\n')
+    put(repo, 'specs/later.md', 'new spec\n')
+    const target = commit(repo, 'integrate kept work and spec')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('rebased kept onto your HEAD')
+    expect(git(w.dir, 'log', '--format=%s', `${target}..HEAD`)).toBe('second follow-up\nfirst follow-up')
+    expect(git(w.dir, 'diff', '--cached')).toBe('')
+    expect(status(w.dir)).toEqual(['?? later.txt'])
+    await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept' })).toContain('Changes from kept: later.txt, one.txt, two.txt')
+    expect(read(repo, 'keep.txt')).toBe('delivered\n')
+  })
+
+  it('refuses lead revisions while preserving a partially staged post-keep commit', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'shared.txt', 'delivered\nb\nc\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    put(w.dir, 'shared.txt', 'delivered\nb\npost-keep\n')
+    const blob = execFileSync('git', ['-C', w.dir, 'hash-object', '-w', '--stdin'], { input: 'a\nb\npost-keep\n', encoding: 'utf8' }).trim()
+    git(w.dir, 'update-index', '--cacheinfo', '100644', blob, 'shared.txt')
+    git(w.dir, 'commit', '-qm', 'stage only follow-up hunk')
+    put(repo, 'shared.txt', 'lead revised delivery\nb\nc\n')
+    commit(repo, 'revise delivery')
+    const before = snapshot(w.dir, 'kept')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('your HEAD revises snapshot lines in shared.txt; send without refresh')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(git(w.dir, 'log', '-1', '--format=%s')).toBe('stage only follow-up hunk')
+    expect(read(w.dir, 'shared.txt')).toBe('delivered\nb\npost-keep\n')
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+    expect(t.launches.get('kept')).toHaveLength(1)
+  })
+
+  it('refuses overlapping lead revisions before touching a kept worker follow-up', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivered\n')
+    await t.finish('kept')
+    await t.call('room_collect', { tag: 'kept', keep: true })
+    put(w.dir, 'keep.txt', 'worker follow-up\n')
+    git(w.dir, 'add', 'keep.txt')
+    const before = snapshot(w.dir, 'kept')
+    put(repo, 'keep.txt', 'lead conflicting follow-up\n'); commit(repo, 'lead revision')
+    const reply = await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })
+    expect(reply).toContain('your HEAD revises snapshot lines in keep.txt; send without refresh')
+    expect(snapshot(w.dir, 'kept')).toEqual(before)
+    expect(workerByTag(repo, 'kept')?.status).toBe('done')
+  })
+
   it('brings a lead commit made after spawn into a finished worker, keeps its edits, and tells it what came in', async () => {
     const t = world()
     const w = await t.spawn('fresh')
@@ -434,8 +905,12 @@ describe('every room_done reaches the lead once', () => {
     await t.spawn('again')
     await t.finish('again', 'FIRST_REPORT', how !== 'live')
     expect(await t.call('room_wait', { timeoutMs: 200 })).toContain('FIRST_REPORT')
+    const launchesBefore = t.launches.get('again')!.length
+    if (how === 'live') expect(workerByTag(repo, 'again')!.status).toBe('running')
     const sent = await t.call('room_send', { type: 'note', to: 'again', text: 'one more thing', ...how === 'refresh' ? { refresh: true } : {} })
     expect(sent).toContain(how === 'live' ? 'sent' : 'resumed again')
+    expect(t.launches.get('again')).toHaveLength(launchesBefore + (how === 'live' ? 0 : 1))
+    if (how === 'live') expect(sent).not.toContain('resumed again')
     await t.finish('again', 'SECOND_REPORT')
     const second = await t.call('room_wait', { timeoutMs: 200 })
     expect(second).toContain('SECOND_REPORT')
@@ -451,5 +926,40 @@ describe('every room_done reaches the lead once', () => {
     await t.finish('both', ['FIRST_REPORT', 'SECOND_REPORT'], true, 300)
     const done = t.messages().filter(m => m.type === 'done')
     expect(done.map(m => m.type === 'done' && m.summary).sort()).toEqual(['FIRST_REPORT', 'SECOND_REPORT'])
+  })
+})
+
+describe('refresh publication recovery', () => {
+  function publishLead(t: ReturnType<typeof world>) {
+    const s = t.leadSession()
+    s.daemon.reconcileGitChanges = async () => {
+      const base = git(repo, 'rev-parse', 'HEAD')
+      for (const p of ['shared.txt', 'keep.txt']) if (fs.existsSync(path.join(repo, p))) publishFixture(s.room, s.me.name, p, read(repo, p), { base })
+      s.room.participants.set(`${s.me.name}\0git`, { ...s.room.participants.get(`${s.me.name}\0git`)!, head: base })
+    }
+    s.daemon.settle = async () => {}
+  }
+  it('retries a pending kept proof during current refresh without moving kept refs or checkout bytes', async () => {
+    const t = world(), w = await t.spawn('kept')
+    put(w.dir, 'keep.txt', 'delivery\n'); await t.finish('kept')
+    expect(await t.call('room_collect', { tag: 'kept', keep: true })).toContain('kept kept')
+    publishLead(t)
+    const before = snapshot(w.dir, 'kept'), refs = await collectionRefs('kept')
+    expect(await t.call('room_send', { type: 'note', to: 'kept', text: 'continue', refresh: true })).toContain('already has your HEAD')
+    const registry = await registryForDir(repo), record = registry.reservedByTagOrName('kept')!
+    expect(keptPublicationMatches(t.leadSession(), record.keptPublication, undefined, record.base)).toBe(true)
+    expect(snapshot(w.dir, 'kept')).toEqual(before); expect(await collectionRefs('kept')).toEqual(refs)
+  })
+  it('retries publication for the new carried base after accepted refresh', async () => {
+    put(repo, 'shared.txt', 'a\ncarried\nc\n')
+    const t = world(), w = await t.spawn('carry')
+    await t.finish('carry'); put(repo, 'docs/new.md', 'docs only\n')
+    git(repo, 'add', '--', 'docs/new.md'); git(repo, 'commit', '-qm', 'docs only')
+    publishLead(t)
+    expect(await t.call('room_send', { type: 'note', to: 'carry', text: 'continue', refresh: true })).toContain('rebased carry onto your HEAD')
+    const record = (await registryForDir(repo)).reservedByTagOrName('carry')!
+    expect(record.carriedBase).toBe(record.base)
+    expect(keptPublicationMatches(t.leadSession(), record.keptPublication, undefined, record.base)).toBe(true)
+    expect(read(w.dir, 'shared.txt')).toBe('a\ncarried\nc\n')
   })
 })

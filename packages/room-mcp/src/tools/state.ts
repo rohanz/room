@@ -163,6 +163,8 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     ...claims,
     ...areas,
     ctx, now, log, doJoin, doLeave, doClose, ledger, rooms, S, isMe, mine, 
+    deliveryHealth: () => ctx.binding?.bound() ? wakes.health() : undefined,
+    deliveryDegradation: () => wakes.degradation(),
     hasCompany: company, audible: s => solo.audible(s), others, presences,
     shareOf, setPresence, baseFor, baseText, readVersion, readText, lines,
     workerPaths: () => roomBridge?.workerPaths() ?? [],

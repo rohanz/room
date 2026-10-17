@@ -42,7 +42,7 @@ describe('fencing (ledger test 13)', () => {
     const s = session(room, 'Rohan')
     const ledger = new Ledger({ sessionId: () => 'A', route: () => ({}) })
     const send = vi.fn(async () => 'queue' as const)
-    const wakes = new WakeReconciler({ ledger, bound: () => ({ id: 'A', host: 'codex' }), sessionDir: () => undefined, send })
+    const wakes = new WakeReconciler({ ledger, bound: () => ({ id: 'A', host: 'codex' }), sessionDir: () => undefined, send, codexTurn: { busy: async () => false } })
     ledger.bind(s); wakes.attach(s)
     try {
       const first = hubAppend<QuestionMsg>(room, { name: 'Kieran', kind: 'agent' }, { type: 'question', to: 'Rohan', text: 'first?' })

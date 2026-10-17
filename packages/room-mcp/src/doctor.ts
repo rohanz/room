@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { resolveConfig } from './config.js'
 import { getCredential, configureCredentials } from './credentials.js'
 import { createStaleVersionWarning } from './stale-version.js'
-import { claudeWakeAvailable } from './wake-path.js'
+import { claudeWakeAvailable, wakePathStatus, type WakePathStatus } from './wake-path.js'
+import type { DeliveryHealth } from './wake-reconciler.js'
 import { canonicalRelayWarning, cloneId, deterministicPort, legacyRelayRunning, readRelayInfo, relayFile, relayIdentity } from '@room/relay'
 import { gitCommonDir } from '@room/roomd'
 import manifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
@@ -27,9 +28,32 @@ export interface DoctorFacts {
   claudeListOk?: boolean; codexListOk?: boolean
   claude?: Plugin; codex?: Plugin; claudeVersion?: string; codexTrust?: string
   claudeHooks?: string; codexHooks?: string; wakeBound?: boolean; wakeSession?: boolean
+  deliveryPath?: WakePathStatus
+  deliveryHost?: string
   server?: string; serverHealth?: boolean; serverRedirect?: string; serverSchema?: number; serverHub?: number; serverStorage?: string
   credential?: boolean; sharedToken?: boolean; credentialStatus?: 'valid' | 'rejected' | 'unverified'; credentialLogin?: string
   relayFile?: string; relayHealth?: boolean; legacyRelay?: boolean; canonicalRelayWarning?: string; configError?: string; stale?: string; inSession?: boolean
+}
+
+/** Counts refer only to retained ledger entries. Handoff means host content, never model comprehension. */
+export function formatDeliveryHealth(h?: DeliveryHealth): string {
+  if (!h) return ''
+  const status = h.path
+  const mode = status ? `${status.mode}; ${status.transport} ${status.availability}` : 'transport unobserved'
+  const state = h.state ? `; last state ${h.state.kind} (${h.state.source}${h.state.reason ? `: ${h.state.reason}` : ''})` : ''
+  const attempt = h.attempt ? `${h.attempt.via} ${h.attempt.outcome} ${Math.max(0, Math.floor((Date.now() - h.attempt.at) / 1000))}s ago${h.attempt.fallback ? ` (${h.attempt.fallback})` : ''}` : 'none observed'
+  const pending = `${h.pendingAddressed}${h.oldestPendingMs === undefined ? '' : ` (oldest ${Math.floor(h.oldestPendingMs / 1000)}s)`}`
+  const limitation = h.host === 'claude' ? 'socket/channel writes do not confirm acceptance; inbound hold/refuse may prevent receipt'
+    : 'exec/--no-daemon and disconnected apps may need tool/hook handoff; no tool interruption'
+  return [
+    `${h.degraded || status?.availability === 'unavailable' ? 'WARN' : 'INFO'}  delivery: ${h.host}; ${mode}${state}${h.degraded ? `; ${h.degraded}` : ''}`,
+    `INFO  delivery evidence: retained addressed ${h.retainedAddressed}${h.sampled ? ' (sample capped at 1000 entries)' : ''}; pending ${pending}; retained wake records: submitted ${h.wakeRecorded}, uncertain ${h.uncertainWakeRecorded} (pruned after handoff); content handed to host ${h.handedToHost}; answers from requested recipients ${h.answersRecorded}; last wake attempt ${attempt}`,
+    `INFO  delivery limits: ${limitation}; wakes and handoffs do not prove reading or action`,
+  ].join('\n')
+}
+
+export function formatDeliveryDegradation(reason?: DeliveryHealth['degraded']): string {
+  return reason ? `WARN  delivery: ${reason}; pending content stays in Room (room_state check=true for details)` : ''
 }
 
 function triple(raw?: string): number[] | undefined {
@@ -85,7 +109,15 @@ export function evaluateDoctor(f: DoctorFacts, version = manifest.version): Resu
   if (f.claude) {
     const min = process.platform === 'win32' ? [2, 1, 234] : [2, 1, 224]
     add(atLeast(f.claudeVersion, min) ? 'PASS' : 'WARN', 'Claude wake', f.claudeVersion ? `Claude Code ${f.claudeVersion}` : 'version unknown', `Update Claude Code to ${min.join('.')} or newer`)
-    if (f.wakeSession) add(f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', f.wakeBound ? 'wake path bound' : 'wake path unavailable', 'Check /status for a Peer address, or start claude-room')
+    if (f.wakeSession) {
+      const disabled = f.deliveryPath?.mode === 'off'
+      add(disabled || f.wakeBound ? 'PASS' : 'WARN', 'Claude inbox', disabled ? 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff' : f.wakeBound ? 'wake path bound' : 'wake path unavailable', disabled ? undefined : 'Check /status for a Peer address, or start claude-room')
+    }
+  }
+  if (f.deliveryPath) {
+    const p = f.deliveryPath
+    add(p.availability === 'unavailable' ? 'WARN' : 'PASS', `${f.deliveryHost ?? 'Host'} delivery configuration`,
+      `${p.mode}; ${p.transport} ${p.availability}; configuration only, no receipt evidence${f.deliveryHost === 'Claude' ? '; inbound hold/refuse may prevent receipt' : '; exec/--no-daemon require tool/hook fallback when host state is unknown'}`)
   }
   if (f.configError) add('FAIL', 'Room config', f.configError, 'Correct ROOM_SERVER or ROOM_URL, then retry')
   else if (f.server) {
@@ -180,6 +212,9 @@ async function collectDoctorFacts(dir: string, inSession = false, selected?: Doc
     claudeListOk: Array.isArray(claudeList), codexListOk: Array.isArray((codexList as { installed?: unknown[] } | undefined)?.installed),
     claude, codex, claudeVersion, inSession, wakeSession: inSession && process.env.ROOM_HOST === 'claude',
     wakeBound: claudeWakeAvailable({ host: 'claude' }),
+    ...(inSession && (process.env.ROOM_HOST === 'codex' || process.env.ROOM_HOST === 'claude') ? {
+      deliveryPath: wakePathStatus({ host: process.env.ROOM_HOST }), deliveryHost: process.env.ROOM_HOST === 'claude' ? 'Claude' : 'Codex',
+    } : {}),
     claudeHooks: read(claude?.root && path.join(claude.root, 'hooks', 'common.mjs')),
     codexHooks: read(codex?.hooksRoot && path.join(codex.hooksRoot, 'hooks', 'common.mjs')),
     codexTrust: read(path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex'), 'config.toml')),

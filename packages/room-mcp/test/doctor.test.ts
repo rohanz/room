@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { CODEX_ROOM_HOOKS_FILE_SHA256, CODEX_ROOM_HOOK_HASHES, claudePlugin, codexPlugin, codexHooksRoot, codexRoomHookTrustStatus, codexRoomHooksTrusted, evaluateDoctor, formatDoctor, hookVersion, probeHealth, probeCredential, runDoctor, type DoctorFacts } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
+import { createWakeSender } from '../src/wake-path.js'
+import { handlers as scopeHandlers } from '../src/tools/scope.js'
+import type { HandlerState } from '../src/tools/context.js'
+import { RoomDoc } from '@room/shared'
+import { Awareness } from 'y-protocols/awareness'
 
 const { version } = JSON.parse(readFileSync(new URL('../../../plugins/room/.claude-plugin/plugin.json', import.meta.url), 'utf8')) as { version: string }
 const trust = `[hooks.state."room@room:hooks.json:pre_tool_use:0:0"]
@@ -19,6 +24,19 @@ const base = (): DoctorFacts => ({ node: 'v22.14.0', git: 'git version 2.39.0', 
   inSession: true })
 
 describe('doctor report', () => {
+  it('distinguishes configured Claude delivery from acceptance and respects off', () => {
+    const facts = { ...base(), deliveryHost: 'Claude', deliveryPath: { mode: 'auto' as const, transport: 'socket' as const, availability: 'configured' as const } }
+    const row = evaluateDoctor(facts).find(r => r.name === 'Claude delivery configuration')
+    expect(row?.finding).toContain('configuration only, no receipt evidence')
+    expect(row?.finding).toContain('hold/refuse')
+    const disabled = evaluateDoctor({ ...facts, wakeBound: false, deliveryPath: { mode: 'off', transport: 'none', availability: 'off' } })
+    expect(disabled.find(r => r.name === 'Claude delivery configuration')?.finding).toContain('off; none off')
+    expect(disabled.find(r => r.name === 'Claude inbox')).toMatchObject({ level: 'PASS', finding: 'disabled (ROOM_WAKE=off); messages wait for tool/hook handoff', fix: undefined })
+  })
+  it('reports Codex standalone limitations without treating socket availability as a receipt', () => {
+    const rows = evaluateDoctor({ ...base(), deliveryHost: 'Codex', deliveryPath: { mode: 'auto', transport: 'legacy/queue', availability: 'unknown' } })
+    expect(rows.find(r => r.name === 'Codex delivery configuration')?.finding).toContain('exec/--no-daemon require tool/hook fallback')
+  })
   it.each(['directory', 'git'])('reads the loaded plugin for %s marketplace installs on both hosts', source => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'room-doctor-versions-'))
     const marketRoot = path.join(root, 'marketplace')
@@ -188,6 +206,40 @@ it('room_state check works before a session joins', async () => {
   const { createTools } = await import('../src/tools.js')
   const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository' })
   expect(await tools.call('room_state', { check: true })).toContain('PASS  doctor: report from tool')
+})
+
+it('room_state check includes bounded runtime delivery evidence even before join', async () => {
+  const { createTools } = await import('../src/tools.js')
+  const wake = createWakeSender({ env: { ROOM_WAKE: 'off' }, notify: vi.fn() })
+  const tools = createTools({ getSession: () => null, setSession: () => {}, cwd: '/not/a/repository', wake,
+    binding: { bound: () => ({ host: 'codex', id: 'private-thread' }), id: () => 'private-thread', dir: () => undefined, commonDir: () => undefined } })
+  try {
+    const report = await tools.call('room_state', { check: true })
+    expect(report).toContain('delivery: codex; off; none off')
+    expect(report).toContain('last wake attempt none observed')
+    expect(report).not.toContain('private-thread')
+  } finally { await tools.shutdown() }
+})
+
+it('normal room_state avoids detailed health sampling and only shows concise degradation', async () => {
+  const room = new RoomDoc(), awareness = new Awareness(room.doc)
+  const s = { room, awareness, me: { name: 'Pat', kind: 'agent' }, local: {}, dir: '/fixture' } as Session
+  let degraded: 'transport-failed' | undefined
+  const sample = vi.fn(() => { throw new Error('normal state must not sample delivery history') })
+  const handlers = scopeHandlers({ S: () => s, loadAreas: async () => {}, presences: () => [],
+    ledger: { candidates: () => [] }, shareOf: () => 'intent', hasCompany: () => ({ company: false }),
+    deliveryHealth: sample, deliveryDegradation: () => degraded, readText: async () => null,
+    rooms: { all: () => [s] }, now: () => 0,
+  } as unknown as HandlerState)
+  try {
+    const healthy = await handlers.room_state({ path: 'work.ts' })
+    expect(healthy).not.toContain('delivery:')
+    degraded = 'transport-failed'
+    const report = await handlers.room_state({ path: 'work.ts' })
+    expect(report).toContain('WARN  delivery: transport-failed')
+    expect(report).not.toMatch(/retained addressed|last wake attempt|delivery limits/)
+    expect(sample).not.toHaveBeenCalled()
+  } finally { awareness.destroy(); room.doc.destroy() }
 })
 
 it.each(['in progress', 'failed'])('room_state check bypasses an %s automatic join', async state => {

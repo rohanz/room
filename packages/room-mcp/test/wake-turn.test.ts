@@ -14,12 +14,13 @@ import type { WakeReconcilerOptions } from '../src/wake-reconciler.js'
 import { createMidTurnSender, createWakeSender } from '../src/wake-path.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
 import { CodexTurnProbe } from '../src/codex-turn.js'
+import { formatDeliveryHealth } from '../src/doctor.js'
 import type { Session } from '../src/session.js'
 import { hubSeam } from './fixtures/hub.js'
 import { visiblePeer } from './fixtures/visible.js'
 
 const dirs: string[] = []
-afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
 function rig(started: boolean, options: Partial<WakeReconcilerOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'room-wake-turn-'))
@@ -31,7 +32,7 @@ function rig(started: boolean, options: Partial<WakeReconcilerOptions> = {}) {
   mkdirSync(join(home, 'sessions', '2026', '09', '30'), { recursive: true })
   const event = (type: string) => appendFileSync(rollout, JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n')
   if (started) event('task_started')
-  else writeFileSync(rollout, '')
+  else event('task_complete')
   execFileSync('git', ['init', '-q', dir])
   execFileSync('git', ['-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-qm', 'initial'])
   const head = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
@@ -55,6 +56,90 @@ function appendItems(rollout: string, count = 1_300) {
     type: 'response_item', payload: { n, text: 'x'.repeat(1_000) },
   }) + '\n').join(''))
 }
+
+it('queues a standalone idle thread when the daemon explicitly reports it not loaded', async () => {
+  const r = rig(false, { codexTurn: new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) }) })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(r.wakes.health().state).toMatchObject({ kind: 'idle', source: 'legacy' })
+  } finally { r.close() }
+})
+
+it('does not retry uncertain mid-turn submissions or count them as confirmed wakes', async () => {
+  const post = vi.fn(async () => ({ kind: 'uncertain' as const, reason: 'connection lost after submit' }))
+  const r = rig(true, { midTurn: createMidTurnSender({ env: {}, post }) })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce())
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(post).toHaveBeenCalledOnce()
+    expect(r.wakes.health()).toMatchObject({ handedToHost: 0, wakeRecorded: 0, uncertainWakeRecorded: 1,
+      attempt: { outcome: 'uncertain' } })
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+  } finally { r.close() }
+})
+
+it('treats active-to-idle between probes as a normal race with no degraded notice', async () => {
+  let active = true
+  const post = vi.fn(async () => { active = false; return { kind: 'idle' as const } })
+  const r = rig(true, { codexTurn: { busy: async () => active }, midTurn: createMidTurnSender({ env: {}, post }) })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(post).toHaveBeenCalledOnce()
+    expect(r.ledger.noticeCount()).toBe(0)
+    expect(r.wakes.health().degraded).toBeUndefined()
+  } finally { r.close() }
+})
+
+it('backs off unknown host probes even when unrelated document changes reconcile', async () => {
+  vi.useFakeTimers()
+  const state = vi.fn(async () => ({ kind: 'unknown' as const, source: 'host' as const, reason: 'status-unavailable' }))
+  const r = rig(false, { codexTurn: { state, busy: async () => true } })
+  try {
+    r.note()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(state).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(state).toHaveBeenCalledTimes(2)
+    r.note(); r.wakes.reconcile()
+    await vi.advanceTimersByTimeAsync(4_999)
+    expect(state).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(state).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(state).toHaveBeenCalledTimes(3)
+    expect(r.texts).toHaveLength(0)
+  } finally { r.close() }
+})
+
+it('offers a bounded notice for a new degradation reason and withdraws it on recovery', async () => {
+  vi.useFakeTimers()
+  let result: 'unavailable' | 'throw' | 'joined' = 'unavailable'
+  const post = vi.fn(async () => {
+    if (result === 'throw') throw new Error('private host error')
+    return result === 'joined' ? { kind: 'joined' as const, turnId: 'turn' } : { kind: 'unavailable' as const, reason: 'private error' }
+  })
+  const r = rig(true, { codexTurn: { busy: async () => true }, midTurn: createMidTurnSender({ env: {}, post }), busyPollMs: 1000 })
+  try {
+    r.note()
+    await vi.advanceTimersByTimeAsync(0)
+    const first = r.ledger.open('reply')
+    expect(r.ledger.notices(first).map(n => n.text).join()).toContain('transport-unavailable')
+    r.ledger.commit(first)
+    result = 'throw'
+    await vi.advanceTimersByTimeAsync(1000)
+    const second = r.ledger.open('reply')
+    expect(r.ledger.notices(second).map(n => n.text).join()).toContain('transport-failed')
+    r.ledger.release(second)
+    result = 'joined'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(r.ledger.noticeCount()).toBe(0)
+    expect(r.wakes.degradation()).toBeUndefined()
+  } finally { r.close() }
+})
 
 it('finds task_started in a cold rollout larger than the unread window', async () => {
   const r = rig(true)
@@ -99,7 +184,7 @@ it('stays busy while the backward scan budget is exhausted, then resolves', asyn
   } finally { r.close() }
 })
 
-it('uses recent Room tool or hook contact only when the rollout is unavailable', async () => {
+it('keeps unavailable state conservative even after the last Room contact ages out', async () => {
   const r = rig(false)
   try {
     rmSync(r.rollout)
@@ -107,7 +192,106 @@ it('uses recent Room tool or hook contact only when the rollout is unavailable',
     const probe = new CodexTurnProbe({ contactAgeMs: () => age })
     expect(await probe.busy(r.id)).toBe(true)
     age = 11_000
+    expect(await probe.busy(r.id)).toBe(true)
+  } finally { r.close() }
+})
+
+it('prefers supported thread status over contradictory private rollout events', async () => {
+  const r = rig(true)
+  try {
+    const status = vi.fn().mockResolvedValue({ kind: 'idle' })
+    const probe = new CodexTurnProbe({ status })
     expect(await probe.busy(r.id)).toBe(false)
+    r.event('task_complete')
+    status.mockResolvedValue({ kind: 'active', waiting: ['waitingOnApproval'] })
+    expect(await probe.busy(r.id)).toBe(true)
+    status.mockResolvedValue({ kind: 'unknown', reason: 'systemError' })
+    expect(await probe.busy(r.id)).toBe(true)
+    status.mockResolvedValue({ kind: 'unavailable', reason: 'disconnected' })
+    expect(await probe.busy(r.id)).toBe(true)
+    status.mockResolvedValue({ kind: 'idle' }) // reconnect uses fresh status
+    expect(await probe.busy(r.id)).toBe(false)
+  } finally { r.close() }
+})
+
+it('uses bounded legacy rollout inference only for a missing or unsupported status transport', async () => {
+  const r = rig(false)
+  try {
+    const status = vi.fn().mockResolvedValue({ kind: 'unavailable', reason: 'unsupported', legacy: true })
+    const probe = new CodexTurnProbe({ status })
+    expect(await probe.busy(r.id)).toBe(false)
+    r.event('task_started')
+    expect(await probe.busy(r.id)).toBe(true)
+  } finally { r.close() }
+})
+
+it('handles standalone threads alongside a daemon only with exact-thread lifecycle evidence', async () => {
+  const r = rig(false)
+  try {
+    const probe = new CodexTurnProbe({ status: async () => ({ kind: 'unknown', reason: 'notLoaded' }) })
+    expect(await probe.state(r.id)).toEqual({ kind: 'idle', source: 'legacy' })
+    r.event('task_started') // a stale completion cannot make the newer active turn idle
+    expect(await probe.state(r.id)).toEqual({ kind: 'active', source: 'legacy' })
+    writeFileSync(r.rollout, '')
+    expect(await probe.state(r.id)).toEqual({ kind: 'unknown', source: 'legacy', reason: 'no-turn-evidence' })
+    expect(await probe.state('another-thread')).toEqual({ kind: 'unknown', source: 'legacy', reason: 'no-turn-evidence' })
+  } finally { r.close() }
+})
+
+it('reports transport attempt separately from handoff and explicit answers without message content', async () => {
+  const post = vi.fn(async () => ({ kind: 'joined' as const, turnId: 'turn' }))
+  const midTurn = createMidTurnSender({ env: { CODEX_HOME: '/missing' }, post })
+  const r = rig(true, { midTurn })
+  try {
+    const m = r.note()
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce())
+    expect(r.wakes.health()).toMatchObject({ retainedAddressed: 1, pendingAddressed: 1, handedToHost: 0, wakeRecorded: 1,
+      attempt: { via: 'turn', outcome: 'submitted' } })
+    const batch = r.ledger.open('reply')
+    r.ledger.select(r.s, batch); r.ledger.commit(batch)
+    expect(r.wakes.health()).toMatchObject({ pendingAddressed: 0, handedToHost: 1, answersRecorded: 0 })
+    const q = hubAppend(r.room, r.s.me, { type: 'question', to: 'Ana', text: 'secret question' })
+    hubAppend(r.room, { name: 'Ana', kind: 'agent' }, { type: 'answer', to: 'Pat', inReplyTo: q.id, text: 'secret answer' })
+    expect(r.wakes.health().answersRecorded).toBe(1)
+    const report = formatDeliveryHealth(r.wakes.health())
+    expect(report).toContain('content handed to host 1')
+    expect(report).toContain('answers from requested recipients 1')
+    expect(report).toContain('do not prove reading or action')
+    expect(report).not.toMatch(/secret|please check|Ana|Pat|019a|m_\w+/)
+    expect(JSON.stringify(r.wakes.health())).not.toContain(m.id)
+  } finally { r.close() }
+})
+
+it('bounds failed mid-turn attempts per message even when new messages change the batch', async () => {
+  const midTurn = vi.fn(async (_target: unknown, _text: string) => undefined)
+  const r = rig(true, { midTurn })
+  try {
+    r.note()
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledTimes(3))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(midTurn).toHaveBeenCalledTimes(3)
+    expect(r.ledger.noticeCount()).toBe(1)
+    expect(r.wakes.health().degraded).toBe('mid-turn-retry-limit')
+    hubAppend(r.room, { name: 'Ben', kind: 'agent' }, { type: 'note', to: 'Pat', text: 'new content' })
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledTimes(6))
+    for (const [, text] of midTurn.mock.calls.slice(3)) { expect(text).toContain('Ben'); expect(text).not.toContain('Ana') }
+    expect(r.ledger.noticeCount()).toBe(1)
+    r.event('task_complete')
+    await vi.waitFor(() => expect(r.texts).toHaveLength(1)) // failed mid-turn attempts preserve idle fallback
+    expect(r.texts[0]).toContain('2 things')
+  } finally { r.close() }
+})
+
+it('keeps health sampling bounded while reporting all pending addressed work', () => {
+  const r = rig(true)
+  try {
+    r.room.doc.transact(() => {
+      for (let i = 0; i < 1001; i++) hubAppend(r.room, { name: 'Ana', kind: 'agent' }, { type: 'note', to: 'Pat', text: 'secret' })
+    })
+    const health = r.wakes.health()
+    expect(health).toMatchObject({ retainedAddressed: 1000, pendingAddressed: 1001, sampled: true })
+    expect(formatDeliveryHealth(health)).toContain('sample capped at 1000 entries')
+    expect(JSON.stringify(health).length).toBeLessThan(500)
   } finally { r.close() }
 })
 
@@ -264,15 +448,29 @@ it('joins notify once while busy, then queues each still-owed message once after
   } finally { r.close() }
 })
 
-it('keeps fyi completion out of a busy turn', async () => {
+it('coalesces addressed own-worker completions during a busy turn, without progress or duplicate wakes', async () => {
   const midTurn = vi.fn(async (_target: unknown, _text: string) => 'turn' as const)
-  const r = rig(true, { midTurn })
+  const r = rig(true, { midTurn, ownWorkers: () => new Set(['worker', 'worker2']), windowMs: 100 })
   try {
-    hubAppend(r.room, { name: 'worker', kind: 'agent' }, { type: 'done', to: 'Pat', tag: 'worker', summary: 'finished', changed: [] })
-    await new Promise(resolve => setTimeout(resolve, 80))
-    expect(midTurn).not.toHaveBeenCalled()
+    r.room.doc.transact(() => {
+      for (const name of ['worker', 'worker2']) {
+        hubAppend(r.room, { name, kind: 'agent' }, { type: 'note', to: 'Pat', text: 'private progress' })
+        hubAppend(r.room, { name, kind: 'agent' }, { type: 'done', to: 'Pat', tag: name, summary: 'private completion', changed: [] })
+      }
+      hubAppend(r.room, { name: 'other', kind: 'agent' }, { type: 'done', to: 'Pat', tag: 'other', summary: 'peer completion', changed: [] })
+    })
+    await vi.waitFor(() => expect(midTurn).toHaveBeenCalledOnce())
+    expect(midTurn.mock.calls[0][1]).toContain('2 things')
+    expect(midTurn.mock.calls[0][1]).toContain('worker finished; worker2 finished')
+    expect(midTurn.mock.calls[0][1]).not.toMatch(/private|progress|other/)
+    expect(r.ledger.candidates(r.s)).toHaveLength(5) // a wake is not a receipt
+    r.wakes.reconcile()
+    await new Promise(resolve => setTimeout(resolve, 140))
+    expect(midTurn).toHaveBeenCalledOnce()
     r.event('task_complete')
     await vi.waitFor(() => expect(r.texts).toHaveLength(1))
+    expect(r.texts[0]).toContain('3 things')
+    expect(r.texts[0]).not.toContain('progress')
   } finally { r.close() }
 })
 
@@ -360,7 +558,7 @@ it('mid-turn sender maps daemon outcomes, skips Claude and logs each failure rea
   expect(await send(target, 'pointer')).toBeUndefined()
   expect(log).toHaveBeenCalledOnce()
   post.mockResolvedValue({ kind: 'idle' })
-  expect(await send(target, 'pointer')).toBeUndefined()
+  expect(await send(target, 'pointer')).toBe('idle')
   post.mockResolvedValue({ kind: 'joined', turnId: 'turn' })
   expect(await send(target, 'pointer')).toBe('turn')
   expect(log).toHaveBeenLastCalledWith('wake: Codex mid-turn joined turn turn of session thread')

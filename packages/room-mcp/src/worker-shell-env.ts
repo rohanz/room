@@ -35,8 +35,8 @@ export function workerShellEnvScript(inherited?: string): string {
   ].join('\n')
 }
 
-// Standalone Node hook, installed only in this worker's settings. Exec-form args preserve Windows paths without
-// shell quoting. Do not hide the original command in a script/encoded payload: normal permission review must see
+// Inline Node hook, installed only in this worker's settings and run with `node -e`: a hook file in the lead's tree
+// would be linted, formatted and type-checked by the project as its own code. Exec-form args need no shell quoting. Do not hide the original command in a script/encoded payload: normal permission review must see
 // the modified command. No allow decision, no environment changes in the host/MCP/hook process.
 const POWERSHELL_HOOK = String.raw`import fs from 'node:fs'
 const deny = reason => console.log(JSON.stringify({ hookSpecificOutput: {
@@ -65,13 +65,14 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 } } }))
 `
 
-export interface WorkerShellEnv { file?: string; hook?: string; warning?: string }
+/** The exec-form `node` arguments of the worker's PowerShell PreToolUse hook. */
+export const POWERSHELL_HOOK_ARGS = ['--input-type=module', '-e', POWERSHELL_HOOK]
 
-/** Write shell artifacts beside the worker's log (cleanupWorkerLogs removes them), never through a planted link. */
+export interface WorkerShellEnv { file?: string; warning?: string }
+
+/** Write the env file beside the worker's log (cleanupWorkerLogs removes it), never through a planted link. */
 export function writeWorkerShellEnv(leadDir: string, tag: string, inherited = process.env.CLAUDE_ENV_FILE): WorkerShellEnv {
   const file = path.join(leadDir, '.room', 'workers', `${tag}.env.sh`)
-  const hook = path.join(leadDir, '.room', 'workers', `${tag}.shell-env.mjs`)
-  let writtenFile: string | undefined
   try {
     // `wx` guards only the last component: a linked `.room` or `workers` would move the write elsewhere.
     for (const dir of [path.join(leadDir, '.room'), path.dirname(file)]) {
@@ -80,12 +81,9 @@ export function writeWorkerShellEnv(leadDir: string, tag: string, inherited = pr
     }
     fs.rmSync(file, { force: true })
     fs.writeFileSync(file, workerShellEnvScript(inherited), { mode: 0o600, flag: 'wx' })
-    writtenFile = file
-    fs.rmSync(hook, { force: true })
-    fs.writeFileSync(hook, POWERSHELL_HOOK, { mode: 0o600, flag: 'wx' })
-    return { file, hook }
+    return { file }
   } catch (e) {
-    return { ...(writtenFile ? { file: writtenFile } : {}), warning: `warning: could not write ${writtenFile ? hook : file} (${e instanceof Error ? e.message : String(e)}); ${tag}'s ${writtenFile ? 'PowerShell' : 'shell'} commands still see Room's ROOM_* variables.` }
+    return { warning: `warning: could not write ${file} (${e instanceof Error ? e.message : String(e)}); ${tag}'s Bash commands still see Room's ROOM_* variables.` }
   }
 }
 
@@ -108,11 +106,8 @@ function installedCodexVersion(): Promise<string | undefined> {
 }
 
 /** What the spawn or resume reply says when the worker's shell commands will still see ROOM_ variables. */
-export async function workerShellEnvWarnings(tag: string, host: WorkerHost, written: WorkerShellEnv,
-  platform: NodeJS.Platform = process.platform, codex: () => Promise<string | undefined> = installedCodexVersion): Promise<string[]> {
+export async function workerShellEnvWarnings(host: WorkerHost, written: WorkerShellEnv,
+  codex: () => Promise<string | undefined> = installedCodexVersion): Promise<string[]> {
   if (host === 'codex') return [codexShellFilterWarning(await codex())].filter((w): w is string => !!w)
-  return [
-    ...(written.warning ? [written.warning] : []),
-    ...(platform === 'win32' && !written.hook ? [`note: Claude's PowerShell tool does not run CLAUDE_ENV_FILE and its scrub hook is unavailable, so ${tag}'s PowerShell commands still see Room's ROOM_* variables.`] : []),
-  ]
+  return written.warning ? [written.warning] : []
 }

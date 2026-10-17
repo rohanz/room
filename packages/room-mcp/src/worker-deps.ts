@@ -2,7 +2,8 @@
  * A worker worktree lives inside the lead's clone, so with no node_modules of its own Node resolves
  * packages from the lead's install, and a workspace package resolves to the lead's sources. This gives
  * the worktree its own node_modules: a directory of links to the lead's installed packages, except that
- * workspace packages link to the worktree's own package directories. Nothing is installed or copied.
+ * workspace packages link to the worktree's own package directories. A repository without workspaces gets
+ * the same links to the lead's install, so `./node_modules/.bin` scripts run there. Nothing is installed or copied.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -19,6 +20,8 @@ interface WorkspaceLinkResult {
   linked: boolean
   /** Workspace package names; empty when the repository declares no workspaces. */
   names: string[]
+  /** The repository declares workspaces (package.json or pnpm-workspace.yaml). */
+  workspaces: boolean
   /** Why nothing was linked. */
   reason?: string
   /** Editable installs in the lead's .venv of packages whose sources are the lead's checkout. */
@@ -29,6 +32,8 @@ class TimedOut extends Error {}
 
 const lstat = (p: string) => { try { return fs.lstatSync(p) } catch { return undefined } }
 const isRealDir = (p: string) => !!lstat(p)?.isDirectory()
+/** A directory, or a link to one: the lead's install may be a link to a shared node_modules. */
+const isDir = (p: string) => { try { return fs.statSync(p).isDirectory() } catch { return false } }
 const inside = (root: string, p: string) => { const rel = path.relative(root, p); return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel) }
 
 /** Patterns from package.json `workspaces` (npm, yarn: array or {packages}) and pnpm-workspace.yaml. */
@@ -148,47 +153,55 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
   }
   let python: string[] = []
   try { python = editablePythonInstalls(leadDir, workerDir) } catch { /* reported only when found */ }
-  const result = (r: WorkspaceLinkResult): WorkspaceLinkResult => python.length ? { ...r, python } : r
   const created: string[] = []
   let names: string[] = []
+  const patterns = workspacePatterns(leadDir)
+  const workspaces = !!patterns
+  const result = (r: Omit<WorkspaceLinkResult, 'names' | 'workspaces'>): WorkspaceLinkResult =>
+    ({ ...r, names, workspaces, ...(python.length ? { python } : {}) })
   try {
-    const patterns = workspacePatterns(leadDir)
-    if (!patterns) return result({ linked: false, names })
-    // Only `*`, `?` and `**` are expanded; any other glob syntax could miss packages that then resolve to the lead.
-    const unsupported = patterns.filter(p => /[{}[\]()]/.test(p))
-    if (unsupported.length) return result({ linked: false, names, reason: `workspace pattern ${unsupported.join(', ')} is not supported` })
-    const packages = await workspacePackages(leadDir, patterns, tick)
-    names = [...packages.keys()].sort()
-    const declared = patterns.filter(p => !p.startsWith('!'))
-    if (!names.length) return result(declared.length ? { linked: false, names, reason: `no workspace package matches ${declared.join(', ')}` } : { linked: false, names })
-    // A workspace only the lead's checkout has (uncommitted, or renamed since HEAD) would otherwise link back to the lead.
-    const absent = [...packages.values()].filter(rel => !isRealDir(path.join(workerDir, rel)))
-    if (absent.length) return result({ linked: false, names, reason: `${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not in the worktree` })
-    if (!isRealDir(path.join(leadDir, 'node_modules'))) return result({ linked: false, names, reason: 'your clone has no node_modules' })
-    if (!LOCKFILES.some(f => lstat(path.join(leadDir, f)))) return result({ linked: false, names, reason: `your clone has no lockfile (${LOCKFILES.join(', ')})` })
-    const dirs = ['', ...[...packages.values()].filter(rel => isRealDir(path.join(leadDir, rel, 'node_modules')) && isRealDir(path.join(workerDir, rel)))]
+    let packages = new Map<string, string>()
+    if (patterns) {
+      // Only `*`, `?` and `**` are expanded; any other glob syntax could miss packages that then resolve to the lead.
+      const unsupported = patterns.filter(p => /[{}[\]()]/.test(p))
+      if (unsupported.length) return result({ linked: false, reason: `workspace pattern ${unsupported.join(', ')} is not supported` })
+      packages = await workspacePackages(leadDir, patterns, tick)
+      names = [...packages.keys()].sort()
+      const declared = patterns.filter(p => !p.startsWith('!'))
+      if (!names.length) return result(declared.length ? { linked: false, reason: `no workspace package matches ${declared.join(', ')}` } : { linked: false })
+      // A workspace only the lead's checkout has (uncommitted, or renamed since HEAD) would otherwise link back to the lead.
+      const absent = [...packages.values()].filter(rel => !isRealDir(path.join(workerDir, rel)))
+      if (absent.length) return result({ linked: false, reason: `${absent.join(', ')} ${absent.length === 1 ? 'is' : 'are'} not in the worktree` })
+    }
+    // Without workspaces and without an install there is nothing to link and nothing to warn about.
+    if (!isDir(path.join(leadDir, 'node_modules'))) return result(workspaces ? { linked: false, reason: 'your clone has no node_modules' } : { linked: false })
+    if (!LOCKFILES.some(f => lstat(path.join(leadDir, f)))) return result({ linked: false, reason: `your clone has no lockfile (${LOCKFILES.join(', ')})` })
+    const dirs = ['', ...[...packages.values()].filter(rel => isDir(path.join(leadDir, rel, 'node_modules')) && isRealDir(path.join(workerDir, rel)))]
     // A node_modules holding only tool caches (vitest's .vite, .cache) is not an install; link beside them.
     const cachesOnly = (dir: string) => !lstat(dir) || (isRealDir(dir) && fs.readdirSync(dir).every(e => e.startsWith('.') && e !== '.bin'))
     for (const rel of dirs) {
-      if (!cachesOnly(path.join(workerDir, rel, 'node_modules'))) return result({ linked: false, names, reason: `${path.join(rel, 'node_modules')} already exists in the worktree` })
+      // Without workspaces, a worktree that already has its own node_modules (a tracked one) needs no note.
+      if (!cachesOnly(path.join(workerDir, rel, 'node_modules'))) return result(workspaces ? { linked: false, reason: `${path.join(rel, 'node_modules')} already exists in the worktree` } : { linked: false })
     }
     // Links Git could see would be collected into the lead; only link where Git ignores node_modules.
     const probes = dirs.map(rel => path.posix.join(rel, 'node_modules', '.room-probe'))
     const ignored = new Set((await git(workerDir, ['check-ignore', '--', ...probes], Math.max(1, deadline - now())).catch(() => '')).split('\n').filter(Boolean))
     const tracked = probes.filter(p => !ignored.has(p))
-    if (tracked.length) return result({ linked: false, names, reason: `Git does not ignore ${path.posix.dirname(tracked[0])}` })
+    if (tracked.length) return result({ linked: false, reason: `Git does not ignore ${path.posix.dirname(tracked[0])}` })
     const link = (target: string, at: string) => {
       const type = process.platform === 'win32' ? (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() ? 'junction' : 'file') : undefined
       fs.symlinkSync(target, at, type)
     }
+    const leadReal = fs.realpathSync(leadDir)
     const linkPackage = (from: string, to: string, name: string) => {
       const own = packages.get(name)
       let target = own !== undefined && isRealDir(path.join(workerDir, own)) ? path.join(workerDir, own) : from
       if (target === from && lstat(from)?.isSymbolicLink()) {
         // A link into the lead's own sources that the manifest does not name (file: or link: dependencies).
+        // `from` is under the install's real path, so compare with the lead's real path too (/tmp vs /private/tmp).
         const resolved = path.resolve(path.dirname(from), fs.readlinkSync(from))
-        const rel = path.relative(leadDir, resolved)
-        if (inside(leadDir, resolved) && !rel.split(path.sep).some(p => p === 'node_modules' || p === '.room') && lstat(path.join(workerDir, rel))) target = path.join(workerDir, rel)
+        const rel = path.relative(leadReal, resolved)
+        if (inside(leadReal, resolved) && !rel.split(path.sep).some(p => p === 'node_modules' || p === '.room') && lstat(path.join(workerDir, rel))) target = path.join(workerDir, rel)
       }
       link(target, to)
     }
@@ -220,13 +233,14 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
         } else linkPackage(from, to, entry.name)
       }
     }
-    for (const rel of dirs) await mirror(path.join(leadDir, rel, 'node_modules'), path.join(workerDir, rel, 'node_modules'))
-    return result({ linked: true, names })
+    // Mirror from the install's real location, so its relative links resolve as they do for the lead; nothing is written there.
+    for (const rel of dirs) await mirror(fs.realpathSync(path.join(leadDir, rel, 'node_modules')), path.join(workerDir, rel, 'node_modules'))
+    return result({ linked: true })
   } catch (error) {
     // Remove only what this step made. fs.rmSync removes links without following them, so the lead's install is never touched.
     for (const made of created.reverse()) try { fs.rmSync(made, { recursive: true, force: true }) } catch { /* reported below */ }
     const reason = error instanceof TimedOut ? `linking timed out after ${timeoutMs} ms` : `linking failed: ${error instanceof Error ? error.message : String(error)}`
-    return result({ linked: false, names, reason })
+    return result({ linked: false, reason })
   }
 }
 
@@ -234,7 +248,16 @@ export async function linkWorkspaceDeps(leadDir: string, workerDir: string,
 export function workspaceDepsNotes(result: WorkspaceLinkResult): { reply: string[]; prompt?: string } {
   const list = (names: string[]) => names.length > 8 ? `${names.slice(0, 8).join(', ')} and ${names.length - 8} more` : names.join(', ')
   const reply: string[] = [], prompt: string[] = []
-  if (result.names.length && result.linked) {
+  if (!result.workspaces) {
+    if (result.linked) {
+      reply.push('node_modules: links to your install')
+      prompt.push(`node_modules here links the lead's installed packages. To change dependencies, delete node_modules first (that removes only the links), then install.`)
+    } else if (result.reason) {
+      const warning = 'this worktree has no node_modules of its own, so `./node_modules/.bin/...` scripts fail there'
+      reply.push(`warning: ${warning} (${result.reason})`)
+      prompt.push(`Warning: ${warning} (${result.reason}); install dependencies in this worktree before relying on them.`)
+    }
+  } else if (result.names.length && result.linked) {
     reply.push(`node_modules: links to your install, with workspace packages ${list(result.names)} pointing at the worktree's own sources`)
     prompt.push(`node_modules here links the lead's installed packages, with workspace packages (${list(result.names)}) pointing at this worktree. To change dependencies, delete node_modules first (that removes only the links), then install.`)
   } else if (result.names.length || result.reason) {

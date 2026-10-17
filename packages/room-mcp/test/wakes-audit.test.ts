@@ -284,7 +284,8 @@ describe('wakes (ledger test 11, MF8)', () => {
     const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: sdir, commonDir: () => join(dir, '.git') }
     // Kieran is here, as whoever posts is in a real room: a room is silent while alone (solo-quiet.test.ts).
     const leave = presentPeer(room, s.awareness, kieran.name)
-    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, hookLeaseMs })
+    // These ledger/receipt scenarios start with an idle host; unknown-state policy lives in wake-turn.
+    const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, hookLeaseMs, wakeProbe: { busy: async () => false } })
     tools.attachHooks(s)
     const arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => tools.hookSelect(), hookLeaseMs })
     return { s, tools, async close() { await arbitration.close(); await tools.shutdown(); leave(); s.awareness.destroy() } }

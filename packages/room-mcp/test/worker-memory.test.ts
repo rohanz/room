@@ -16,6 +16,7 @@ import { handlers as joinHandlers } from '../src/tools/join.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { registerWorkers } from './registry-fixture.js'
+import { readDiffCache } from '../src/read-diff-cache.js'
 
 let dir: string, workerDir: string, session: Session, awareness: Awareness
 const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim()
@@ -30,13 +31,13 @@ beforeEach(async () => {
   git('worktree', 'add', '-q', '-b', 'room/worker', workerDir, base)
   fs.writeFileSync(path.join(workerDir, 'file.txt'), 'worker edit\n')
   const doc = new Y.Doc(), room = new RoomDoc(doc)
-  room.setMeta({ base })
+  setParticipantBase(room, 'lead', base)
   setParticipantBase(room, 'worker', base)
   awareness = new Awareness(doc); awareness.setLocalState({ user: { name: 'lead', kind: 'agent' } })
   session = { dir, room, awareness, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main', local: {}, daemon: {} } as Session
   await registerWorkers(session, [{ tag: 'worker', name: 'worker', lead: 'lead', host: 'codex', task: 't', dir: workerDir, branch: 'room/worker', base, pid: 0, startedAt: 1, status: 'done' }])
 })
-afterEach(async () => { await closeRegistryForDir(dir); awareness.destroy(); session.room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks() })
+afterEach(async () => { readDiffCache.clear(session); await closeRegistryForDir(dir); awareness.destroy(); session.room.doc.destroy(); fs.rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks() })
 function setup() {
   const state = createHandlerState({ cwd: dir, getSession: () => session, setSession() {} })
   state.ledgerLines = () => []
@@ -52,10 +53,28 @@ it('reads disconnected worker text from disk and labels read and diff', async ()
   fs.writeFileSync(path.join(workerDir, 'new.txt'), 'new\n')
   expect(await handlers.room_read({ diff: true, person: 'worker' })).toContain('+new')
 })
+it.each(['changed bytes', 'outside symlink'])('revalidates trusted worker disk before a cached page: %s', async change => {
+  const { handlers } = setup(), file = path.join(workerDir, 'file.txt')
+  const text = 'worker content\n'.repeat(3_000)
+  fs.writeFileSync(file, text)
+  const request = { diff: true, person: 'worker', path: 'file.txt' }
+  const first = await handlers.room_read(request)
+  expect(first).toContain(WORKTREE_NOTE)
+  const cursor = /cursor="([^"]+)"/.exec(first)![1]
+  expect(await handlers.room_read({ ...request, cursor })).toContain('diff page')
+  if (change === 'changed bytes') {
+    fs.writeFileSync(file, text.replace('worker', 'WORKER'))
+    expect(await handlers.room_read({ ...request, cursor })).toContain('diff changed')
+  } else {
+    fs.unlinkSync(file)
+    fs.symlinkSync(path.join(dir, 'file.txt'), file)
+    await expect(handlers.room_read({ ...request, cursor })).rejects.toThrow('unsafe room symlink')
+  }
+})
 it('uses the worker base rather than the lead base and reports deleted files', async () => {
   const { handlers } = await setup()
   execFileSync('git', ['add', '.'], { cwd: workerDir }); execFileSync('git', ['commit', '-qm', 'worker commit'], { cwd: workerDir })
-  session.room.setMeta({ base: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerDir, encoding: 'utf8' }).trim() })
+  setParticipantBase(session.room, 'lead', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workerDir, encoding: 'utf8' }).trim())
   expect(await handlers.room_read({ diff: true, person: 'worker', path: 'file.txt' })).toContain('-base')
   fs.unlinkSync(path.join(workerDir, 'file.txt'))
   expect(await handlers.room_read({ person: 'worker', path: 'file.txt' })).toContain(WORKTREE_NOTE)

@@ -3,11 +3,11 @@ import { createHash, randomUUID } from 'node:crypto'
 import { acceptedGit, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
 import type { Post } from './post.js'
 import type { Session } from './session.js'
-import { git } from '@room/roomd/git'
+import { git, gitBlobInfoMany } from '@room/roomd/git'
 import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
-import { carriedPaths, carriesWork, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
+import { carriedPaths, carriesWork, pairBaseline, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
 import { parseInWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import { consumesSymbol } from './graph-index.js'
@@ -412,7 +412,8 @@ export class ConflictSet {
     return hash(JSON.stringify([metadata(mine), metadata(theirs), room.roomSalt, claims, entries(mine), entries(theirs), graphFacts,
       worker ? [worker.id, worker.lead, worker.status, worker.run] : undefined,
       contracts || carried && carriesWork(carried) ? this.team.graph?.resolutionRevision : undefined,
-      carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : undefined]))
+      carried ? [carried.sha, carried.carriedCommit, [...carried.untracked]] : undefined,
+      this.carriedFrom?.(other)?.baseline.sha]))
   }
 
   private inputsKey(): string {
@@ -613,9 +614,9 @@ export class ConflictSet {
         if (ownNonPublisher) {
           const pair = !theirs || theirGit === 'updating' ? undefined : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
           if (pair && !('cannotCompare' in pair)) {
-            const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`])
+            const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${pair.mergeBase}..${ownGit.base}`])
             await this.claims(ownPublisher!, theirs!, other, pair.mergeBase,
-              new Set([...ownPublisher!.entries.keys(), ...committed.split('\n').filter(Boolean)]))
+              new Set([...ownPublisher!.entries.keys(), ...committed.split('\0').filter(Boolean)]))
           } else replayable = false // no completed evaluation; the periodic pass retries
           continue // only the checkout publisher owns the merge pair
         }
@@ -627,8 +628,8 @@ export class ConflictSet {
             this.guard = () => !!priorGuard?.() && snapshotStillCurrent(room, published, participantsView(room, this.team.awareness, Date.now()))
             const pair = await comparePair(this.team.dir, ownGit.remote ?? publishedGit.remote, ownGit, publishedGit)
             if (!('cannotCompare' in pair)) {
-              const committed = await git(this.team.dir, ['diff', '--name-only', `${pair.mergeBase}..${ownGit.base}`])
-              await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\n').filter(Boolean)]))
+              const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${pair.mergeBase}..${ownGit.base}`])
+              await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\0').filter(Boolean)]))
             } else replayable = false
           } else replayable = false
           continue // a non-publisher contributes claims, never a merge pair
@@ -653,11 +654,24 @@ export class ConflictSet {
         }
         await this.contracts(other, new Set([...mine.entries.keys(), ...room.openClaims().filter(c => c.by === this.owner).map(c => c.path)]), mine, theirs)
         this.drop(slotKey(this.owner, 'merge', other, '*'))
-        const mergeBase = pair.mergeBase
+        // Delivered/carried edits belong to the lead only in that worker's own lead pair.
+        // Other pairs may share inherited blobs, but only with ancestry proved on both sides.
+        const ours = this.carriedFrom?.(this.owner), theirsCarried = this.carriedFrom?.(other)
+        const leadPair = ours?.lead === other || theirsCarried?.lead === this.owner
+        const descends = (sha: string) => sha === pair.mergeBase || git(this.team.dir, ['merge-base', '--is-ancestor', pair.mergeBase, sha]).then(() => true, () => false)
+        const baseline = leadPair
+          ? await pairBaseline(ours?.lead === other ? ours.baseline : undefined,
+            theirsCarried?.lead === this.owner ? theirsCarried.baseline : undefined,
+            pair.mergeBase, (ancestor, sha) => git(this.team.dir, ['merge-base', '--is-ancestor', ancestor, sha]).then(() => true, () => false))
+          : undefined
+        const sharedBaselines = !leadPair && ours && theirsCarried &&
+          (await Promise.all([descends(ours.baseline.sha), descends(theirsCarried.baseline.sha)])).every(Boolean)
+          ? [ours.baseline, theirsCarried.baseline] : undefined
+        const mergeBase = baseline?.sha ?? pair.mergeBase
         const changed = async (snap: ParticipantSnapshot, base: string) => {
           try {
-            const committed = await git(this.team.dir, ['diff', '--name-only', `${mergeBase}..${base}`])
-            return new Set([...snap.entries.keys(), ...committed.split('\n').filter(Boolean)])
+            const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${mergeBase}..${base}`])
+            return new Set([...snap.entries.keys(), ...committed.split('\0').filter(Boolean)])
           } catch { return undefined }
         }
         const [aPaths, bPaths] = await Promise.all([changed(mine, ownGit.base), changed(theirs, theirGit.base)])
@@ -693,12 +707,27 @@ export class ConflictSet {
         }
         const candidates = new Set([...ownMergePaths].filter(p => bPaths.has(p)))
         for (const [, slot] of existing) if (slot.kind === 'merge' && slot.path !== '*') candidates.add(slot.path)
+        // Batch blob metadata once per side; never read whole file text to prove identity.
+        const sharedPaths = new Set<string>()
+        if (sharedBaselines) {
+          try {
+            const [aBase, bBase] = sharedBaselines
+            const [aInfo, bInfo] = await Promise.all([gitBlobInfoMany(this.team.dir, aBase.sha, candidates), gitBlobInfoMany(this.team.dir, bBase.sha, candidates)])
+            for (const path of candidates) {
+              const aHash = aBase.untracked.get(path)?.sha ?? aInfo.get(path)?.hash
+              const bHash = bBase.untracked.get(path)?.sha ?? bInfo.get(path)?.hash
+              if (aHash && aHash === bHash) sharedPaths.add(path)
+            }
+          } catch { /* unavailable proof: use the Git ancestor */ }
+        }
         for (const path of [...candidates].sort()) {
           await this.fileTurn()
           const key = slotKey(this.owner, 'merge', other, path)
           const bothChanged = ownMergePaths.has(path) && bPaths.has(path)
+          const sharedBase = sharedPaths.has(path) ? sharedBaselines![0] : undefined
           const inputs = hash(JSON.stringify([ownGit.base, theirGit.base, mergeBase, ownGit.anchored, theirGit.anchored,
             mine.head.semRev, theirs.head.semRev, sideInput(mine, path), sideInput(theirs, path),
+            sharedBase ? sharedBaselines!.map(base => [base.sha, base.untracked.get(path)?.sha]) : undefined,
             carried?.lead === other ? [carried.baseline.sha, unchangedCarried.has(path)] : undefined]))
           const prior = this.slots.get(key)
           // Unknown slots retain retry state, never completed merge evidence.
@@ -728,9 +757,31 @@ export class ConflictSet {
             await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'unknown', inputs, factId: '', why: `cannot read ${at === undefined ? this.owner : other}'s version` })
             continue
           }
-          let ancestor: string
-          try { ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? '' }
+          // Identical peer copies are a clean merge, including additions. Keep them silent like any
+          // other clean pair; epoch zero also prevents a later removal from emitting "cleared".
+          if (at === bt) {
+            await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '' })
+            continue
+          }
+          let ancestor: string | undefined
+          try {
+            if (sharedBase) {
+              const read = await boundedBaseline(this.team.dir, sharedBase, path)
+              if (read.kind === 'unavailable') throw read.error
+              ancestor = read.kind === 'available' ? read.text : undefined
+            } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path)
+          }
           catch { await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'unknown', inputs, factId: '', why: 'missing merge base' }); continue }
+          if (ancestor === undefined) {
+            // An add/add conflict has no base lines. Locate the first differing line in the new
+            // versions rather than reporting the empty ancestor's line 1 for every copied file.
+            const aLines = at.split('\n'), bLines = bt.split('\n')
+            let line = 0
+            while (aLines[line] === bLines[line]) line++
+            await this.settle(key, { owner: this.owner, other, kind: 'merge', path, status: 'conflict', inputs,
+              factId: hash(JSON.stringify([mergeBase, 'add/add'])), lines: [line + 1] })
+            continue
+          }
           await this.budget()
           const merged = await gitMergeFile(ancestor, at, bt, { ours: this.owner, base: 'base', theirs: other })
           const lines = merged.conflicts.map(c => c.from)
@@ -957,7 +1008,10 @@ export class ConflictSet {
           await this.settle(key, { owner: this.owner, other, kind: 'edit-in-claim', path, subject: claim.id, status: 'unknown', inputs, factId: '', why: 'cannot map claim' }); continue
         }
         const mapped = claim.path.endsWith('/') ? { from: 1, to: Math.max(1, ownText.split('\n').length), approximate: false } : claimInMyLines(claim, theirText, ownText)
-        const ranges = changed.has(path) ? changedRanges(ancestor, ownText) : []
+        // Copies between separate publishers create no competing edit. A non-publisher's claim
+        // still coordinates edits in its shared checkout, whose versions come from one publisher.
+        const identicalCopy = mine.name !== theirs.name && ownText === theirText
+        const ranges = changed.has(path) && !identicalCopy ? changedRanges(ancestor, ownText) : []
         const hit = ranges.find(r => claimsOverlap({ path, ...mapped }, { path, ...r }) && !ownClaims.some(c => claimsOverlap(c, { path, ...r })))
         let earlierSha: string | null | undefined
         let merges: 'clean' | undefined

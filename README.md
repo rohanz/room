@@ -42,7 +42,7 @@ One team room covers **every branch of a repository**. You need push access to i
 
 Team rooms are self-hosted; Room has no default public server. Say **“join the room at wss://room.example.com”** to choose and remember your team’s server. Alternatively launch Codex with `ROOM_SERVER=wss://room.example.com codex --no-daemon`; its shared app-server daemon does not inherit shell `ROOM_*` variables. The agent explains what the clone will share on its first team join. Say **“share plans only”** or **“only my declared files”** to narrow sharing.
 
-[Follow a first session](docs/onboarding.md) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
+[Documentation index](docs/README.md) · [Follow a first session](docs/onboarding.md) · [Reference and troubleshooting](docs/reference.md) · [Upgrade from 0.16](docs/upgrading.md)
 
 ## Defaults, and how to change them
 
@@ -55,6 +55,7 @@ Team rooms are self-hosted; Room has no default public server. Say **“join the
 | Eight concurrent workers | Room caps workers at eight. Its computed CPU and memory budget is shown to each worker; scheduling priority defaults to `nice 10`. | Set `ROOM_MAX_WORKERS` for the count, `ROOM_WORKER_THREADS` and `ROOM_WORKER_MEM_GB` for compute budgets, or pass `threads` to `room_spawn`. |
 | No Claude worker cost cap | Room does not set Claude's `--max-budget-usd` unless you choose a cap. | Set `ROOM_WORKER_MAX_BUDGET_USD` before launching the lead. |
 | Carry uncommitted work | New workers receive eligible tracked and non-ignored untracked edits: at most **5 MiB per file** and **50 MiB total**. `.roomlinks` lists input paths linked into worker worktrees. | Ask **“start the worker from HEAD”** or pass `carry=false` to `room_spawn`; pass `link=[]` to disable `.roomlinks` for that worker. |
+| Collection ends worker resumption | Default apply collection brings output back uncommitted and unstaged, then retires the finished worker. Keep it available while follow-ups or requirement revisions remain. | Defer collection or use `room_collect(keep=true)` (apply only) to retain the worker for follow-ups; later collection applies only new changes. |
 | Worker dependencies linked, Room's variables kept out | A worker's `node_modules` links to your installed packages, with workspace packages pointing at the worker's own sources, so its tests run its code; the spawn reply warns when Room cannot link. The worker's shell commands do not see Room's `ROOM_*` variables. See [workers](docs/reference.md#workers-and-previews). | A worker can delete its linked `node_modules` and install its own. |
 | Automatic wake | Claude Code 2.1.224+ (2.1.234+ on native Windows) uses its cross-session inbox when available, then an admitted channel if needed. Codex's shared app-server delivers urgent messages mid-turn as tool output after the running tool finishes; idle threads, worker completion and unavailable mid-turn delivery use its queue. See [wake paths](docs/reference.md#wake-paths). | Set `ROOM_WAKE=channels` for the optional Claude channel path or `ROOM_WAKE=off` to stop wakes on both hosts (messages still wait in the inbox); `ROOM_WAKE=auto` restores the default. |
 | 30-minute idle lease | An unheld Codex app-server session is retired after 30 minutes idle. | Set `ROOM_IDLE_LEASE_MS` to a positive number of milliseconds. |

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
@@ -189,41 +189,97 @@ describe('local relay credentials', () => {
     } finally { await new Promise<void>(resolve => impostor.close(() => resolve())) }
   })
 
-  it('closes state-request floods and a consumer sent more than its output budget', async () => {
-    const relay = await startRelay(0, { key, socketQueueBytes: 256 * 1024 })
-    const open = () => new Promise<WebSocket>((resolve, reject) => {
-      const Polyfill = authorizedWebSocket({ key })
-      const ws = new Polyfill(`ws://127.0.0.1:${relay.port}/${encodeURIComponent(room)}?schema=2`)
-      ws.once('open', () => { ws.send(Uint8Array.of(0, 0)); resolve(ws) }); ws.once('error', reject)
-    })
+  // Wait for attachReady's initial document frame, not just the secure hello.
+  const openClient = (port: number) => new Promise<WebSocket>((resolve, reject) => {
+    const Polyfill = authorizedWebSocket({ key })
+    const ws = new Polyfill(`ws://127.0.0.1:${port}/${encodeURIComponent(room)}?schema=2`)
+    ws.once('message', () => resolve(ws))
+    ws.once('open', () => ws.send(Uint8Array.of(0, 0)))
+    ws.once('error', reject)
+  })
+
+  it('closes state-request floods', async () => {
+    const relay = await startRelay(0, { key })
     try {
-      const flood = await open()
+      const flood = await openClient(relay.port)
       const flooded = new Promise<number>(resolve => flood.once('close', code => resolve(code)))
       for (let n = 0; n < 11; n++) flood.send(Uint8Array.of(0, 0))
       expect(await flooded).toBe(1013)
-      // A consumer that has stopped reading falls behind; once its queue passes the budget it is cut off,
-      // while a single large message into an empty queue (how a big document arrives) is still delivered.
-      const sender = await open()
-      const reader = await open()
-      const slow = await open()
-      const received = new Promise<number>(resolve => reader.on('message', data => { if ((data as Buffer).byteLength > 1024 * 1024) resolve((data as Buffer).byteLength) }))
-      const closed = new Promise<number>(resolve => slow.once('close', code => resolve(code)))
+    } finally { await relay.close() }
+  })
+
+  it('closes a consumer over its output budget while delivering to a healthy reader', async () => {
+    const relay = await startRelay(0, { key, socketQueueBytes: 256 * 1024 })
+    const sockets: WebSocket[] = []
+    let restoreSend: (() => void) | undefined, releaseWrite: (() => void) | undefined
+    try {
+      const open = async () => { const ws = await openClient(relay.port); sockets.push(ws); return ws }
+      const sender = await open(), reader = await open(), slow = await open()
+      const socket = (ws: WebSocket) => (ws as unknown as { _socket: import('node:net').Socket })._socket
+      const slowPort = socket(slow).localPort
+      expect(slowPort).toBeTypeOf('number')
+      let heldBytes = 0, slowSends = 0, held!: () => void, failed!: (error: Error) => void, forwarded!: () => void
+      const writeHeld = new Promise<void>((resolve, reject) => { held = resolve; failed = reject })
+      const overBudgetForwarded = new Promise<string>(resolve => { forwarded = () => resolve('forwarded over-budget output') })
+      const closed = new Promise<string>(resolve => slow.once('close', (code, reason) => resolve(`closed ${code}: ${reason}`)))
+      const realSend = WebSocket.prototype.send
+      // The relay owns bytes until ws's send callback completes. Hold exactly
+      // that boundary for one consumer, independent of TCP buffers and elapsed
+      // time; encrypted frames still travel through the real relay and clients.
+      const spy = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (this: WebSocket, data, options, callback) {
+        const done = typeof options === 'function' ? options : callback
+        const sendOptions = typeof options === 'function' ? {} : options
+        if (socket(this).remotePort === slowPort) {
+          if (++slowSends === 1) {
+            heldBytes = (data as Uint8Array).byteLength
+            realSend.call(this, data, sendOptions ?? {}, error => {
+              releaseWrite = () => done?.(error)
+              if (error) failed(error)
+              else held()
+            })
+            return
+          }
+          forwarded()
+        }
+        realSend.call(this, data, sendOptions ?? {}, done)
+      })
+      onTestFinished(() => spy.mockRestore())
+      restoreSend = () => spy.mockRestore()
+      const messageOver = (ws: WebSocket, bytes: number) => new Promise<number>(resolve => {
+        const receive = (data: WebSocket.RawData) => {
+          const size = (data as ArrayBuffer).byteLength
+          if (size > bytes) { ws.off('message', receive); resolve(size) }
+        }
+        ws.on('message', receive)
+      })
+      let sequence = 0
       const update = (text: string) => {
         const doc = new Y.Doc()
-        doc.getText(`t${Math.random()}`).insert(0, text)
-        const frame = encoding.createEncoder()
-        encoding.writeVarUint(frame, 0)
-        syncProtocol.writeUpdate(frame, Y.encodeStateAsUpdate(doc))
-        return encoding.toUint8Array(frame)
+        try {
+          doc.getText(`t${++sequence}`).insert(0, text)
+          const frame = encoding.createEncoder()
+          encoding.writeVarUint(frame, 0)
+          syncProtocol.writeUpdate(frame, Y.encodeStateAsUpdate(doc))
+          return encoding.toUint8Array(frame)
+        } finally { doc.destroy() }
       }
+      // A single large frame is allowed into an empty queue, even above its cap.
+      const large = Promise.all(sockets.map(ws => messageOver(ws, 2 * 1024 * 1024)))
       sender.send(update('x'.repeat(2 * 1024 * 1024)))
-      expect(await received).toBeGreaterThan(2 * 1024 * 1024)
-      ;(slow as unknown as { _socket: { pause(): void } })._socket.pause()
-      for (let n = 0; n < 200; n++) sender.send(update('y'.repeat(64 * 1024)))
-      await new Promise(resolve => setTimeout(resolve, 2500))
-      ;(slow as unknown as { _socket: { resume(): void } })._socket.resume()
-      expect([1013, 1006]).toContain(await closed)
-      sender.terminate(); reader.terminate()
-    } finally { await relay.close() }
+      await Promise.all([large, writeHeld])
+      expect(heldBytes).toBeGreaterThan(2 * 1024 * 1024)
+      expect(slow.readyState).toBe(WebSocket.OPEN)
+      const received = messageOver(reader, 64 * 1024)
+      sender.send(update('y'.repeat(64 * 1024)))
+      expect(await Promise.race([closed, overBudgetForwarded])).toBe('closed 1013: relay output queue full')
+      expect(await received).toBeGreaterThan(64 * 1024)
+      expect(slowSends).toBe(1)
+      expect(sender.readyState).toBe(WebSocket.OPEN)
+      expect(reader.readyState).toBe(WebSocket.OPEN)
+    } finally {
+      restoreSend?.(); releaseWrite?.()
+      for (const ws of sockets) ws.terminate()
+      await relay.close()
+    }
   })
 })

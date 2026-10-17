@@ -944,7 +944,12 @@ describe('reading', () => {
     const d = await t.tools.call('room_read', { diff: true, path: 'app.py' })
     expect(d).toContain('-    return 2\n')
     expect(d).toContain('+    return 22')
-    expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toContain('Kieran has no uncommitted changes')
+    expect(await t.tools.call('room_read', { diff: true, person: 'Kieran' })).toContain('nobody called Kieran')
+    publishFixture(t.other, 'Kieran', 'app.py', COMMITTED)
+    clearFixture(t.other, 'Kieran', 'app.py')
+    const unchanged = await t.tools.call('room_read', { diff: true, person: 'Kieran' })
+    expect(unchanged).toContain('Kieran coverage: all')
+    expect(unchanged).not.toContain('@@')
   })
 
   it('room_read shows my disk edit when another session publishes this checkout', async () => {
@@ -1530,7 +1535,7 @@ describe('preview merge', () => {
     publishFixture(t.other, 'Kieran', 'app.py', COMMITTED.replace('return x', 'return x + 1'))
     publishFixture(t.other, 'Ada', 'session.py', 'from app import validate\n# offline Ada\n')
     const nobody = await t.tools.call('room_preview_merge', {})
-    expect(nobody).toContain('no present participants to merge')
+    expect(nobody).toContain('no other participants are present in the room')
     expect(nobody).toContain('skipped 2 offline participants with manifest facts: Ada, Kieran')
     const kieran = addPresence(t.session!.awareness, 'Kieran')
     try {
@@ -1944,7 +1949,7 @@ it('summarises gitignored build output in one preview line and still names other
 describe('a preview waits for participants to settle', () => {
   const theirs = COMMITTED.replace('return x', 'return x + 1')
 
-  it('re-checks after a participant moves once mid-preview, as a finishing worker does', async () => {
+  it('reports the tested snapshot after a participant moves once during the command', async () => {
     let offset = 0
     const t = setup({ now: () => Date.now() + offset, sleep: async ms => { offset += ms; await new Promise(resolve => setImmediate(resolve)) } })
     const flag = join(mkdtempSync(join(tmpdir(), 'room-settle-')), 'moved')
@@ -1960,12 +1965,16 @@ describe('a preview waits for participants to settle', () => {
     try {
       const out = await t.tools.call('room_preview_merge', { person: 'Kieran', run: `touch '${flag}' && sleep 0.3 && cat app.py` })
       expect(moves).toBe(1)
-      expect(out).not.toContain('moved during the preview')
-      expect(out).toContain('tests: exit 0')
-      expect(out).toContain('rev 2')
+      expect(out).toContain('Kieran moved since this snapshot was built.')
+      expect(out).toContain('A pass is interim evidence for the recorded revisions.')
+      expect(out).toContain('Re-run room_preview_merge')
+      expect(out).toContain('The latest combined code was NOT checked')
+      expect(out).toContain('snapshot tests: exit 0')
+      expect(out).toContain('rev 1')
+      expect(out).not.toContain('rev 2')
       expect(out).toContain('return x + 1')
-      expect(offset).toBeGreaterThan(0)
-      expect(offset).toBeLessThanOrEqual(PREVIEW_SETTLE_MS)
+      expect(offset).toBe(0)
+      expect(t.session?.lastPreview).toMatchObject({ clean: false, complete: false, testsPassed: false })
     } finally {
       clearInterval(watch)
       rmSync(join(flag, '..'), { recursive: true, force: true })

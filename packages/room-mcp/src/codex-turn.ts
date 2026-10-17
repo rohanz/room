@@ -2,6 +2,7 @@
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { codexControlSocket, readCodexThreadStatus, type CodexThreadStatus } from './codex-app-server.js'
 
 const TAIL_BYTES = 64 * 1024
 const MAX_READ_BYTES = 1024 * 1024
@@ -13,25 +14,45 @@ type TurnCursor = { file: string; offset: number; lastEvent?: string; device?: n
 
 export interface CodexTurnProbeOptions {
   home?: () => string
+  clientVersion?: string
+  status?: (threadId: string) => Promise<CodexThreadStatus>
   /** Milliseconds since this bound host last called a Room tool or hook. */
   contactAgeMs?: () => number | undefined
 }
+
+export type CodexWakeProbe = Pick<CodexTurnProbe, 'busy'> & Partial<Pick<CodexTurnProbe, 'state'>>
 
 export class CodexTurnProbe {
   private readonly cursors = new Map<string, TurnCursor>()
   constructor(private readonly options: CodexTurnProbeOptions = {}) {}
 
   async busy(threadId: string): Promise<boolean> {
+    return (await this.state(threadId)).kind !== 'idle'
+  }
+
+  async state(threadId: string): Promise<{ kind: 'active' | 'idle' | 'unknown'; source: 'host' | 'legacy' | 'contact'; reason?: string }> {
+    let status: CodexThreadStatus
+    try {
+      status = await (this.options.status ?? (id => readCodexThreadStatus({
+        socketPath: codexControlSocket({ ...process.env, CODEX_HOME: this.options.home?.() ?? process.env.CODEX_HOME }), threadId: id, clientVersion: this.options.clientVersion,
+      })))(threadId)
+    } catch { return { kind: 'unknown', source: 'host', reason: 'status-unavailable' } }
+    if (status.kind === 'active' || status.kind === 'idle') return { kind: status.kind, source: 'host' }
+    if (!(status.kind === 'unknown' && status.reason === 'notLoaded') && !(status.kind === 'unavailable' && status.legacy)) return { kind: 'unknown', source: 'host',
+      reason: status.kind === 'unknown' ? status.reason : 'status-unavailable' }
+    // Absent/unsupported daemon transport or an explicitly unloaded thread can be a standalone host.
+    // Only exact-thread lifecycle evidence permits its legacy idle fallback; old contact never does.
     const file = await this.find(threadId)
     if (file) {
       try {
         const event = await this.lastTurnEvent(threadId, file)
-        if (event === null) return true // no turn event found within this call's scan budget
-        if (event) return event === 'task_started'
-      } catch { this.cursors.delete(threadId); return true }
+        if (event === null) return { kind: 'unknown', source: 'legacy', reason: 'scan-budget' }
+        if (event) return { kind: event === 'task_started' ? 'active' : 'idle', source: 'legacy' }
+      } catch { this.cursors.delete(threadId); return { kind: 'unknown', source: 'legacy', reason: 'rollout-unavailable' } }
     }
     const age = this.options.contactAgeMs?.()
-    return age !== undefined && age >= 0 && age < CONTACT_MS
+    return age !== undefined && age >= 0 && age < CONTACT_MS ? { kind: 'active', source: 'contact' }
+      : { kind: 'unknown', source: 'legacy', reason: 'no-turn-evidence' }
   }
 
   private async find(threadId: string): Promise<string | undefined> {

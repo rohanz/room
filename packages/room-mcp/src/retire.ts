@@ -8,7 +8,8 @@ import type { Session } from './session.js'
 import { registryForDir } from './worker-registry.js'
 import { realStateInput, type WorkerRecord } from './worker-status.js'
 import { decideRetire, processExited, workerRealState } from './worker-state.js'
-import { cleanupWorker, ignoredWorkerArtifacts, pruneMissingWorkerWorktree } from './worker-git.js'
+import { cleanupWorker, collectHeadRef, ignoredWorkerArtifacts, pruneMissingWorkerWorktree } from './worker-git.js'
+import { git } from '@room/roomd/git'
 
 /**
  * Remove the worker's local sharing authority, write `retiring` with its archive entry and a pending cleanup
@@ -39,6 +40,16 @@ export async function autoRetire(s: Session, rooms: Rooms): Promise<void> {
     // The next lead must be able to explain and resume intentionally stopped work.
     if (w.stopReason) continue
     if (w.status === 'done' && w.hostSessionId) continue
+    // keep:true explicitly preserves even a finished worker whose host did not record a session.
+    if (w.status === 'done' && record.collectedKeep) continue
+    // Older records identify keep through their private collection snapshot ref.
+    if (w.status === 'done' && w.base) {
+      try {
+        const ref = (await git(s.dir, ['rev-parse', '--verify', collectHeadRef(w.tag, w.id)])).trim()
+        if (ref === w.base && (await git(s.dir, ['log', '-1', '--format=%s', ref])).trim() === 'room: kept collection baseline') continue
+      }
+      catch { /* no kept collection baseline */ }
+    }
     if (rooms.hasHandle(s, w)) continue
     const state = await workerRealState(s.dir, w, { process: true, probe })
     if (!processExited(state)) continue

@@ -12,7 +12,15 @@ import { clearFixture, publishFixture } from './fixtures/manifest.js'
 import { visiblePeer } from './fixtures/visible.js'
 import { registerWorkers } from './registry-fixture.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { applyPatch } from 'diff'
 import { hubSeam } from './fixtures/hub.js'
+import { boundedTwoFilesPatch } from '../src/tools/reader-diff.js'
+import { readDiffCache } from '../src/read-diff-cache.js'
+
+vi.mock('../src/tools/reader-diff.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../src/tools/reader-diff.js')>()
+  return { ...original, boundedTwoFilesPatch: vi.fn(original.boundedTwoFilesPatch) }
+})
 
 const gitShowFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, onShow: undefined as ((ref: string, path: string) => void) | undefined }))
 const probeFailure = vi.hoisted(() => ({ error: undefined as Error | undefined, stderr: '' }))
@@ -97,7 +105,7 @@ function flaskChanges() {
   const readerBase = git('rev-parse', 'HEAD')
 
   const room = new RoomDoc(new Y.Doc())
-  room.setMeta({ repo: 'flask', branch: 'main' })
+  room.setMeta({ repo: 'flask' })
   visiblePeer(room, 'Ana')
   room.participants.set('Ana\0git', { base: readerBase, head: readerBase, fence: '1', rev: 1 })
   publishFixture(room, 'Ben', 'CHANGES.rst', original + benEntry, { base: oldBase })
@@ -114,6 +122,125 @@ function flaskChanges() {
   const tools = createTools({ getSession: () => session, setSession: () => {}, cwd: dir })
   return { tools, dir, git, oldBase, readerBase, anaEntry, benEntry, awareness, room, session }
 }
+
+it.each(['own', 'worker'] as const)('includes both sides of a staged rename in the %s all-path diff', async source => {
+  const t = flaskChanges()
+  try {
+    const dir = source === 'own' ? t.dir : join(t.dir, '.room', 'workers', 'w')
+    if (source === 'worker') {
+      mkdirSync(join(t.dir, '.room', 'workers'), { recursive: true })
+      t.git('worktree', 'add', '-qb', 'room/w', dir, t.readerBase)
+      await registerWorkers(t.session, [{ tag: 'w', name: 'Ana+w', lead: 'Ana', host: 'codex', task: 'rename', dir,
+        branch: 'room/w', pid: 0, startedAt: Date.now(), status: 'running', base: t.readerBase }])
+    }
+    const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim()
+    git('config', 'diff.renames', 'true')
+    git('mv', 'CHANGES.rst', 'RENAMED.rst')
+    expect(git('diff', '--name-status', 'HEAD')).toMatch(/^R100\s/)
+    const diff = await t.tools.call('room_read', { person: source === 'own' ? 'Ana' : 'Ana+w', diff: true })
+    expect(diff).toContain('--- a/CHANGES.rst')
+    expect(diff).toContain('+++ b/RENAMED.rst')
+    expect(diff).toContain('-Changelog')
+    expect(diff).toContain('+Changelog')
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
+
+it('directs a pathless text read to existing changed-path discovery and all diffs', async () => {
+  const t = flaskChanges()
+  try {
+    const result = await t.tools.call('room_read', { person: 'Ben' })
+    expect(result).toContain('room_state(all=true)')
+    expect(result).toContain('diff=true')
+    expect(await t.tools.call('room_read', { cursor: 'bad' })).toContain('cursor requires diff=true')
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
+
+it.each([{ path: 'NEW.txt' }, { path: 'NEW.txt', diff: true }, { diff: true }])('rejects an unregistered bare worker name instead of claiming no changes: %j', async args => {
+  const t = flaskChanges()
+  try {
+    publishFixture(t.room, 'Ben+api', 'NEW.txt', 'published edit\n', { base: t.oldBase })
+    const read = await t.tools.call('room_read', { person: 'api', ...args })
+    expect(read).toContain('nobody called api')
+    expect(read).toContain('Ben+api')
+    expect(read).not.toMatch(/no manifest|no uncommitted changes/)
+    expect(await t.tools.call('room_read', { person: 'Ben+api', ...args })).toContain('published edit')
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
+
+it.each(['single path', 'all paths'])('paginates %s diffs exactly and rejects a changed publication between pages', async shape => {
+  const t = flaskChanges()
+  try {
+    const text = Array.from({ length: 1_000 }, (_, i) => `Ben new line ${i}: ${'x'.repeat(40)}\n`).join('')
+    publishFixture(t.room, 'Ben', 'NEW.txt', text, { base: t.oldBase })
+    const args = { person: 'Ben', diff: true, ...(shape === 'single path' ? { path: 'NEW.txt' } : {}) }
+    const first = await t.tools.call('room_read', args)
+    const firstCursor = /cursor="([^"]+)"/.exec(first)![1]
+    let cursor: string | undefined, restored = ''
+    do {
+      const page = await t.tools.call('room_read', { ...args, ...(cursor ? { cursor } : {}) })
+      expect(page.length).toBeLessThan(13_000)
+      restored += page.slice(page.indexOf('\n') + 1, page.lastIndexOf('\n['))
+      cursor = /cursor="([^"]+)"/.exec(page)?.[1]
+    } while (cursor)
+    if (shape === 'single path') expect(applyPatch('', restored.slice(restored.indexOf('===================================================================')))).toBe(text)
+    else { expect(restored).toContain(`+${t.benEntry}`); expect(restored).toContain('+Ben new line 999:'); expect(restored).toContain('Ben coverage: all') }
+    publishFixture(t.room, 'Ben', 'NEW.txt', text + 'later edit\n', { base: t.oldBase })
+    expect(await t.tools.call('room_read', { ...args, cursor: firstCursor })).toContain('diff changed since the previous page')
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
+
+it('validates all inputs but does not regenerate any patches for multi-file continuations', async () => {
+  const t = flaskChanges()
+  try {
+    const text = 'long source line\n'.repeat(2_000)
+    for (const p of ['A.txt', 'B.txt']) publishFixture(t.room, 'Ben', p, text, { base: t.oldBase })
+    vi.mocked(boundedTwoFilesPatch).mockClear()
+    const args = { person: 'Ben', diff: true }
+    const first = await t.tools.call('room_read', args)
+    const initialCalls = vi.mocked(boundedTwoFilesPatch).mock.calls.length
+    expect(initialCalls).toBe(3)
+    let cursor = /cursor="([^"]+)"/.exec(first)![1]
+    for (let i = 0; i < 2; i++) {
+      const page = await t.tools.call('room_read', { ...args, cursor })
+      expect(page).toContain('diff page')
+      cursor = /cursor="([^"]+)"/.exec(page)![1]
+      expect(vi.mocked(boundedTwoFilesPatch).mock.calls).toHaveLength(initialCalls)
+    }
+    publishFixture(t.room, 'Ben', 'B.txt', text + 'later\n', { base: t.oldBase })
+    expect(await t.tools.call('room_read', { ...args, cursor })).toContain('diff changed')
+    expect(vi.mocked(boundedTwoFilesPatch).mock.calls).toHaveLength(initialCalls)
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
+
+it.each(['disk bytes', 'path set', 'publication policy', 'publication during validation', 'shutdown'])('invalidates cached continuations on %s changes', async change => {
+  const t = flaskChanges()
+  try {
+    const text = 'x'.repeat(30_000) + '\n'
+    const disk = change === 'disk bytes' || change === 'path set'
+    if (disk) writeFileSync(join(t.dir, 'NEW.txt'), text)
+    else publishFixture(t.room, 'Ben', 'NEW.txt', text, { base: t.oldBase })
+    const args = { person: disk ? 'Ana' : 'Ben', diff: true }
+    const first = await t.tools.call('room_read', args)
+    const cursor = /cursor="([^"]+)"/.exec(first)![1]
+    const calls = vi.mocked(boundedTwoFilesPatch).mock.calls.length
+    expect(await t.tools.call('room_read', { ...args, cursor })).toContain('diff page')
+    expect(vi.mocked(boundedTwoFilesPatch).mock.calls).toHaveLength(calls)
+    if (change === 'disk bytes') writeFileSync(join(t.dir, 'NEW.txt'), 'y'.repeat(30_000) + '\n')
+    if (change === 'path set') writeFileSync(join(t.dir, 'ADDED.txt'), 'new path\n')
+    if (change === 'publication policy') publishFixture(t.room, 'Ben', 'NEW.txt', text, { base: t.oldBase, level: 'intent' })
+    if (change === 'publication during validation') gitShowFailure.onShow = () => {
+      gitShowFailure.onShow = undefined
+      publishFixture(t.room, 'Ben', 'NEW.txt', text + 'raced\n', { base: t.oldBase })
+    }
+    if (change === 'shutdown') {
+      const request = JSON.stringify(['Ana', 'Ana', 'r', t.dir, 'Ben', null])
+      expect(readDiffCache.get(t.session, request, cursor)).toBeDefined()
+      await t.tools.shutdown()
+      expect(readDiffCache.get(t.session, request, cursor)).toBeUndefined()
+    } else expect(await t.tools.call('room_read', { ...args, cursor })).toContain('diff changed')
+    expect(vi.mocked(boundedTwoFilesPatch).mock.calls).toHaveLength(calls)
+  } finally { await t.tools.shutdown(); t.awareness.destroy(); t.room.doc.destroy() }
+})
 
 it.each([
   ['one file', { path: 'CHANGES.rst' }],

@@ -190,7 +190,7 @@ describe('git facts and lead evaluation', () => {
     appendFileSync(join(dir, '.git', 'info', 'exclude'), '.room/\n')
     writeFileSync(join(dir, 'a'), 'lead WIP')
     const prepared = await prepareWorktree(dir, 'w', 'lead')
-    const w = { ...worker(prepared.dir), base: prepared.base }
+    const w = { ...worker(prepared.dir), base: prepared.base, carriedBase: prepared.carriedBase, carriedUntracked: prepared.carriedUntracked }
     await registerWorkers(r.s, [w])
     let alive = true
     const state = {

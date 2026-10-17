@@ -1,69 +1,65 @@
-# aitinkerhackathon — "Agents leaving the chatbox" hackathon
+# Room — agent coordination for production use
 
-Rohan's entry. One-day build; a working prototype demoable by end of day.
+Room is a maintained tool for coordinating coding agents, both local workers and
+independent users' agents. It began as a hackathon project; the repository directory
+still has its original name. Hackathon deadlines, judging criteria and demo scope
+are historical context, not constraints on current engineering decisions.
 `CLAUDE.md` is a symlink to this file.
 
 ## Read first
 
-- `RULES.md` — the verbatim brief and the 4-criterion, 1–5 judging rubric. That file is
-  the rules; this file is how we work.
-- `docs/decisions.md` — what we're building and why (idea, environment, scope cuts).
-  Empty until the idea is locked. **Do not start coding before it has an entry.**
-- `docs/submission.md` — the deliverables checklist and demo script.
+- `README.md` — current product scope, installation and supported workflows.
+- `docs/reference.md` — tool behavior, coordination and worker lifecycle contracts.
+- `docs/roadmap.md` — planned work; distinguish proposals from shipped behavior.
+- Relevant design documents and `docs/decisions.md` for rationale. Check historical
+  decisions against current code, tests and documentation before relying on them.
+- `RULES.md` and `docs/submission.md` preserve the original hackathon brief and
+  submission history. Keep `RULES.md` unchanged; neither governs current priorities.
 
-## Hard constraints (from RULES.md)
+## Engineering priorities
 
-- **Build timing:** organiser confirmed (9 Sep) that pre-event building is fine; the "net-new during the event" text in RULES.md is from old rules. Keep a short "what was built when" note in `docs/decisions.md` anyway.
-- Repo must be **public** on GitHub at submission. Never commit secrets; `.env` is
-  gitignored, `.env.example` documents what's needed.
-- Submission also needs: title, written description, 2-minute demo video, social post
-  tagging event partners. See `docs/submission.md`.
-
-## How the rubric should shape decisions
-
-Each criterion is scored 1–5 and they're equally weighted, so a project that scores 4 on
-everything beats a 5/5/2/3. Practical rules:
-
-1. **End-to-end first, breadth never.** A 3 on "Core Requirements" needs the whole
-   workflow working inside the real environment. Get the thin vertical slice running in
-   the actual target (real Slack workspace, real browser extension, real device) before
-   adding any second feature.
-2. **The environment must be load-bearing.** The 1-score on Innovation is "the
-   environment is irrelevant"; the 5 is "could not be reproduced in a standalone
-   chatbox". Every feature should answer: what does the agent know or can it do *here*
-   that it couldn't in a chat window? If the answer is "nothing", cut it.
-3. **Failure handling is explicitly scored** (Technical Execution 5: "thoughtful failure
-   handling"). Timeouts, retries, and a graceful "I couldn't do that" path are worth more
-   than a fourth tool.
-4. **User control is scored** (Usefulness 3–5: "reasonable user control", "clear and
-   controllable"). Confirm-before-act for anything irreversible; show what the agent is
-   doing.
-5. Demo reliability beats capability. If a feature works 70% of the time it is a demo
-   liability; either harden it or cut it before recording.
+1. **Correctness and user control.** Protect users' files, work in progress, identity
+   and sharing boundaries. Make consequential actions explicit and respect the
+   user's authorization. Never commit secrets; keep configuration examples safe.
+2. **Reliable end-to-end behavior.** Validate in supported hosts and environments,
+   including failure, restart and recovery paths. A successful demo is evidence for
+   that run, not a production-readiness guarantee.
+3. **Simple, maintainable design.** Prefer existing host capabilities and clear
+   ownership over duplicate machinery. Reproduce a problem before changing its
+   mechanism; use focused tests to isolate causes before expensive full runs.
+4. **Appropriate verification.** Match checks to the change and its risks, preserve
+   required CI checks, and cover regressions and affected integrations. Neither
+   hackathon time pressure nor a benchmark target justifies weaker validation.
+5. **Measured efficiency.** Bound memory, CPU, disk use and background-process
+   lifetimes. Improve real coordination and latency without trading away correctness.
+   Report benchmark conditions, failed runs and uncertainty honestly.
+6. **Useful documentation and diagnostics.** Keep setup, tool descriptions, skills
+   and release notes aligned with actual behavior. Log enough to diagnose failures
+   while protecting private code, credentials and user data.
 
 ## Conventions
 
-- Python via `uv` only (deps and running). Other stacks are fine if the environment
-  demands it (e.g. a browser extension in TS); say so in `docs/decisions.md`.
-- Claude models: default to `claude-fable-5-1` for the agent loop, `claude-haiku-4-5-20251001`
-  for cheap classification/routing steps. Read the `claude-api` skill before writing
-  API code; don't work from memory.
-- Tests: pytest for anything non-trivial and testable offline. Under hackathon time
-  pressure, prioritize a smoke test of the end-to-end path over unit coverage.
-- Commit small and often on `main`. Commit messages state what changed and why.
-- Clean up dead code before the final commit; the repo is part of the submission and
-  judges read it.
-- Log agent actions (tool calls, decisions) to stdout or a file — this doubles as demo
-  material and as the "explain what it did" story.
+- Use the existing stack: TypeScript with the repository's npm workspaces and Vitest;
+  Python tooling and examples use `uv` and pytest. Explain substantial stack changes.
+- Choose models and effort according to the user's request and the task. Room itself
+  does not impose a worker model. Check current host/API documentation before relying
+  on model availability or host features.
+- Run focused checks during implementation and the relevant release checks before
+  shipping (see below). Preserve completed validation evidence; rerun when changed
+  inputs or unresolved concerns require it.
+- Commit only when authorized. Keep commits focused, explain what changed and why,
+  and preserve other contributors' work in shared checkouts.
+- Remove dead code as part of maintenance. Keep architecture and instructions clear
+  enough for another contributor to understand and safely extend.
 
 ## Layout
 
 ```
-RULES.md                 verbatim brief + rubric (do not edit)
+RULES.md                 historical hackathon brief + rubric (do not edit)
 AGENTS.md                this file (CLAUDE.md -> AGENTS.md)
 docs/decisions.md        idea, scope, findings from live runs, what-was-built-when
 docs/prior-art.md        AgentRoom, Zed Delta, etc. and the gap we fill
-docs/submission.md       deliverables checklist + demo script
+docs/submission.md       historical submission checklist + demo script
 docs/superpowers/        design specs (v2: 2026-09-12-room-v2-design.md) + plans
 packages/shared/         one Y.Doc schema: overlays, scopes, claims (with plans), rolling bus + ledger archive,
                          workers; messages.ts (every message kind: format/audience/wake/priority), views.ts
@@ -128,6 +124,8 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   A test worker whose event loop stands still for 120 s, or whose file runs past 15 minutes, is reported by
   `[test watchdog]` (`packages/shared/src/test-watchdog.ts`) with the test and the command it waits on, and the
   wait is ended: a blocked synchronous call cannot be timed out by vitest and would otherwise stall the run silently.
+- Release: `npm run bump -- <version>` stamps both plugin manifests, the marketplace entry and the hooks stamp
+  (`packages/room-mcp/test/release-version.test.ts` checks they agree and that CHANGELOG has the heading); then rebuild the plugin and tag `v<version>`.
 - `npm run typecheck`; `npm run build:plugin` after touching room-mcp, roomd, relay, shared or web
   (the bundle, `plugins/room/web` and tree-sitter grammars are committed; the build copies the
   grammars into `plugins/room/server/grammars`). Installed plugins copy the bundle: reinstall
@@ -152,7 +150,7 @@ in `~/.codex/config.toml`), and a change un-trusts them for every user. Claude C
   merging. A Room worker's worktree needs no install: its `node_modules` links to the lead's packages,
   with `@room/*` pointing at the worktree's own sources (see docs/reference.md, "Workers and previews"). Room batches: one lead (`claude -p` with the room plugin, no ROOM_SERVER) spawns
   Codex workers into worktrees, commits their worktrees itself, previews and octopus-merges.
-  The [2026-09-24 Codex host survey](docs/host-survey-2026-09-24-codex.md) reports that
+  The [2026-09-24 Codex host survey](docs/archive/reports/host-survey-2026-09-24-codex.md) reports that
   Codex 0.156.1 (2026-09-23) lists GPT-6 Sol and GPT-6 Luna (the 2026-09-24 batch ran
   codex-cli 0.155.1). Check `model/list` before choosing a model on a different installation.
 - Reviews alternate Fable and Codex; six rounds on 2026-09-15 found ~60 issues, none repeated.

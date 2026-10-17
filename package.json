@@ -14,6 +14,7 @@
     "mcp": "tsx packages/room-mcp/src/index.ts",
     "web": "npm run dev -w @room/web",
     "build:plugin": "node scripts/build-plugin.mjs",
+    "bump": "node scripts/bump-version.mjs",
     "eval:mocks": "node --import tsx scripts/eval-mocks.mts",
     "build:server": "node scripts/build-server.mjs",
     "server:dev": "tsx packages/server/src/index.ts"

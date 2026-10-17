@@ -9,6 +9,9 @@ import { knownNames, resolveDisplayedName } from './names.js'
 import { REPLY_BATCH, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { registryForDir } from '../worker-registry.js'
 import { refreshRefusal, refreshWorkerBase, refreshedCommits, type RefreshOutcome } from '../worker-refresh.js'
+import { collectHeadRef } from '../worker-git.js'
+import { git } from '@room/roomd/git'
+import { acknowledgeKeptPublication, keptPublicationMatches } from '../kept-publication.js'
 
 const WAIT_DEFAULT = 30_000
 const WAIT_MAX = 100_000
@@ -27,19 +30,19 @@ export function waitConsumesMessage(s: Session, m: Msg): boolean {
 }
 
 export const defs: ToolDef[] = [
-  { name: 'room_send', annotations: RW, description: 'Use to "tell X", "ask the worker a follow-up", or "interrupt the worker" (priority=interrupt); message a finished worker to resume it in its worktree.',
+  { name: 'room_send', annotations: RW, description: 'Use to "ask the worker a follow-up" or "interrupt the worker" (priority=interrupt); message a finished worker to resume it in its worktree. Send findings to the owning peer.',
     inputSchema: { type: 'object', properties: {
       type: { type: 'string', enum: ['changed', 'question', 'answer', 'note'] },
-      to: str('recipient; omit to broadcast'),
-      text: str('text or change summary'),
+      to: str('recipient; default broadcast'),
+      text: str('text'),
       message: str('alias for text'),
       paths: strs('changed paths'),
       symbols: strs('changed symbols'),
-      inReplyTo: str('question or addressed note id'),
+      inReplyTo: str('question/note id'),
       priority: { type: 'string', enum: ['fyi', 'notify', 'interrupt'], description: 'urgency' },
       refresh: { type: 'boolean', description: 'rebase stopped worker on your HEAD' },
     }, required: ['type'] } },
-  { name: 'room_wait', annotations: RO, description: 'Wait for answers, claim release, worker completion or interrupts; repeat on timeout if blocked.',
+  { name: 'room_wait', annotations: RO, description: 'Room dependencies only; one wait at a time. For your own commands use host task completion.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), questionId: str('question id'), timeoutMs: int('default 30000, max 100000') } } }
 ]
 
@@ -165,7 +168,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (sendType === 'note' && a.inReplyTo && (!repliedNote?.to || repliedNote.to !== byQuestion?.me.name)) return `error: inReplyTo ${String(a.inReplyTo)} must name a note addressed to you`
       if (repliedNote && a.to && to !== alias(s, repliedNote.from)) return `error: note reply must go to ${repliedNote.from}`
-      if (to && !s.room.workerViewOf(to) && !myWorkers(s).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed`
+      if (to && !s.room.workerViewOf(to) && !myWorkers(s).some(w => w.name === to) && s.room.retiredWorkers().some(w => w.name === to)) return `error: ${to} was collected or discarded and cannot be resumed; use room_collect with keep: true to collect and stay resumable`
       const pr = typeof a.priority === 'string' && ['fyi', 'notify', 'interrupt'].includes(a.priority) ? a.priority as Priority : undefined
       const withPr = <T extends object>(o: T) => (pr ? { ...o, priority: pr } : o)
       if (a.type === 'changed' && (!Array.isArray(a.paths) || !a.paths.some((x: unknown) => typeof x === 'string'))) return 'error: changed requires paths'
@@ -203,6 +206,25 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         return { ...fields, [field]: `${fields[field]}\n\n${baseNote}` } as unknown as PostBody
       }
       const post = async () => { posted = await s.post(s.me, sent()); return posted.ok ? undefined : posted.text }
+      const retryPublication = async (acceptedRefresh = false) => {
+        if ((refresh && !acceptedRefresh) || !addressedWorker || addressedWorker.lead !== s.me.name) return
+        try {
+          const registry = await registryForDir(s.dir), record = registry.read(addressedWorker.id)
+          if (!record?.base || keptPublicationMatches(s, record.keptPublication, undefined, record.base)) return
+          const kept = record.collectedKeep && (await git(s.dir, ['rev-parse', '--verify', collectHeadRef(record.tag, record.id)]).catch(() => '')).trim() === record.base
+            && (await git(s.dir, ['log', '-1', '--format=%s', record.base])).trim() === 'room: kept collection baseline'
+          const carried = record.carriedBase === record.base || !!record.carriedUntracked?.length
+          if (!kept && !carried) return
+          const parent = (kept || record.carriedBase === record.base) ? (await git(s.dir, ['rev-parse', `${record.base}^`])).trim() : record.base
+          const common = (await git(s.dir, ['merge-base', parent, 'HEAD'])).trim()
+          const paths = [...(await git(s.dir, ['diff', '--name-only', '--no-renames', '-z', common, record.base])).split('\0').filter(Boolean),
+            ...(record.carriedUntracked?.map(file => file.path) ?? [])]
+          const publication = await acknowledgeKeptPublication(s, record.keptPublication, paths, [], 5000, acceptedRefresh)
+          await registry.update(record.id, old => old.base === record.base
+            ? { ...old, keptPublication: { ...publication, base: record.base }, seq: old.seq + 1 } : old)
+          if (publication.pending) notes.push('worker preview freshness pending: publication could not be verified; previews including the lead report a gap')
+        } catch { notes.push('worker preview freshness pending: publication retry failed; message delivery continues') }
+      }
       let resumed = false
       if (resume) {
         const result = await rooms.resumeWorker(s, addressedWorker!, text, state.ctx?.spawner, state.ctx?.config?.claudeChannel, state.ctx?.maxWorkers, state.log, undefined, undefined, async () => {
@@ -219,16 +241,27 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             try { outcome = await refreshWorkerBase(s.dir, record) }
             catch (error) { return `error: could not refresh ${tag}: ${error instanceof Error ? error.message : String(error)}; nothing sent. Check ${record.dir} with git status before collecting.` }
             if (outcome.kind === 'refused') return `error: did not refresh ${tag}: ${outcome.reason}; nothing changed and nothing sent. Send without refresh to have it resolve this, or respawn it to start from your HEAD.`
-            if (outcome.kind === 'current') notes.push(`${tag} already has your HEAD ${outcome.head.slice(0, 10)}; nothing to rebase`)
+            if (outcome.kind === 'current') {
+              const collected = outcome.collectedUncommitted === true ? '; collected output is still uncommitted in your checkout'
+                : outcome.collectedUncommitted === false ? '; your HEAD contains the collected output' : '; containment of collected output could not be verified'
+              notes.push(`${tag} already has your HEAD ${outcome.head.slice(0, 10)}; nothing to rebase${outcome.kept ? `; its kept snapshot is unchanged${collected}` : ''}`)
+            }
             else {
               const moved = outcome
-              try { await registry.update(record.id, old => ({ ...old, base: moved.base, carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, seq: old.seq + 1 })) }
+              try { await registry.update(record.id, old => ({ ...old, base: moved.base, collectedKeep: old.collectedKeep || moved.kept || undefined,
+                carriedBase: moved.carriedBase, carriedUntracked: moved.carriedUntracked, keptPublication: undefined, seq: old.seq + 1 })) }
               catch (error) { return `error: rebased ${tag} onto your HEAD but could not record its new base (${error instanceof Error ? error.message : String(error)}); nothing sent. A preview or collect may count your commits as its changes.` }
+              // The registry base is durable before changing the legacy keep anchor.
+              if (moved.kept) {
+                try { await git(s.dir, ['update-ref', collectHeadRef(record.tag, record.id), moved.base]) }
+                catch (error) { return `error: rebased ${tag} and recorded its new base but could not update its collection ref (${error instanceof Error ? error.message : String(error)}); nothing sent. Send again to resume it.` }
+              }
               const came = refreshedCommits(moved.commits)
               notes.push(`rebased ${tag} onto your HEAD ${moved.to.slice(0, 10)}; ${came}${moved.carryDropped ? '; the work carried at spawn is now in your history' : ''}`)
               baseNote = `[Room] your base moved: your lead rebased your branch onto their HEAD ${moved.to.slice(0, 10)} before this message; ${came}. Your uncommitted edits are still uncommitted on top.`
             }
           }
+          await retryPublication(refresh)
           const refused = await post()
           if (refused) return refused
           const addressed = owed(s.room, { name: to! }, { frontier: 0, routed: new Set(), addressedFrom: state.ledger.spawnFrontier(s, addressedWorker!.id, to!) }, {})
@@ -251,6 +284,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         resumed = true
         notes.push(typeof result === 'string' ? result : result.reply)
       } else {
+        await retryPublication()
         const refused = await post()
         if (refused) return refused
       }
@@ -300,7 +334,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           return `${ready ? 'worker done, ready to collect' : 'worker reported done; its process is still exiting (room_collect waits up to 15 s for it)'}: ${formatMsg(m)}`
         }
         if (m.type === 'merge-conflict') return formatMsg(m)
-        if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then wait again): ${formatMsg(m)}`
+        if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then continue independent work or wait on the blocking dependency): ${formatMsg(m)}`
         return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
       }
       const rank = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2
@@ -352,10 +386,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           // Standalone handler callers may not have installed inbox delivery.
           const unread = state.inbox?.(s, batch) ?? ''
           finish(capNotice + unread + (unread
-            ? `timeout after ${timeoutMs}ms: unread messages delivered above. Continue independent work or wait again.`
+            ? `timeout after ${timeoutMs}ms: unread messages delivered above. Continue independent work or wait on the blocking dependency. A timeout is not an answer or approval.`
             : running.length
-              ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing needs you`
-              : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ''}nothing new. Continue independent work or wait again.`))
+              ? `nothing yet; ${running.length} worker${running.length === 1 ? '' : 's'} still running (${running.map(w => w.tag).join(', ')}); nothing in the room needs you. Continue independent work or wait for the needed result. A timeout is not an answer or approval.`
+              : `timeout after ${timeoutMs}ms: ${claimId ? `${claimId} still held; ` : questionId ? `no answer to ${questionId}; ` : ''}nothing new. Continue independent work or wait on the blocking dependency. A timeout is not an answer or approval.`))
         }, timeoutMs)
         const onClaims = () => { if (claimId && !s.room.claims.has(claimId)) finish(`released: ${claimId}`) }
         // Live observers run the same selection as the first look.

@@ -52,4 +52,4 @@ file collide, unlike Werkzeug's cross-file overlaps. Keep `--python 3.11`. `filt
 ## Before running
 
 Fix the triage items that `declared` would hit, first of all "declared-sharing output is lost on restart"
-(docs/triage-2026-09-26-roadmap.md, item 7).
+(docs/archive/reports/triage-2026-09-26-roadmap.md, item 7).

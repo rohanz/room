@@ -1,6 +1,8 @@
 import { git, gitCommitMissing, gitWholeTree, isGitTimeout } from '@room/roomd/git'
 import { ensureCommit, gitCommonDir, roomRemote } from '@room/roomd'
-import { createTwoFilesPatch, diffLines } from 'diff'
+import { boundedTwoFilesPatch } from './reader-diff.js'
+import { readDiffCache, DIFF_RESTART } from '../read-diff-cache.js'
+export { boundedTwoFilesPatch } from './reader-diff.js'
 import { execFile, spawn } from 'node:child_process'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomUUID } from 'node:crypto'
@@ -27,12 +29,12 @@ import { parsePsLstartUtc, pidAlive } from '@room/relay/process'
 import { trustedWorker, WORKTREE_NOTE, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_read', annotations: RO, description: 'Use to read a teammate’s live file or diff; omit path for all diffs.',
-    inputSchema: { type: 'object', properties: { path: str('repo-relative path'), person: str('default you'), diff: { type: 'boolean' } } } },
-  { name: 'room_impact', annotations: RO, description: 'Use before changing a public function or file: find who depends on it.',
+  { name: 'room_read', annotations: RO, description: 'Read peer text/diffs; omit path with diff=true for all diffs.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, person: { type: 'string' }, diff: { type: 'boolean' }, cursor: { type: 'string' } } } },
+  { name: 'room_impact', annotations: RO, description: 'Find consumers before public API edits.',
     inputSchema: { type: 'object', properties: { symbol: str('function/class/variable name'), path: str('repo-relative path') } } },
-  { name: 'room_preview_merge', annotations: RO, description: 'Use for "will our changes work together?" or "check for conflicts before I finish"; optionally run tests.',
-    inputSchema: { type: 'object', properties: { people: strs('participants in merge order; default all'), person: str('one participant'), includeOffline: { type: 'boolean', description: 'include offline overlays' }, run: str('test command'), resolve: { type: 'boolean', description: 'resolve superset conflicts' } } } }
+  { name: 'room_preview_merge', annotations: RO, description: 'For "will our changes work together?" Name peers incl. finished; never copy peers. Default: overlapping peers + own running workers. Snapshot passes are interim; rerun for relevant changes, failures or final current evidence.',
+    inputSchema: { type: 'object', properties: { people: strs('names; worker collect order'), person: str('one name'), includeOffline: { type: 'boolean', description: 'include offline' }, run: str('real test command; stops at 5 min/4 MB'), resolve: { type: 'boolean', description: 'superset resolution' } } } }
 ]
 
 /** Suggest a test command for a preview whose combined tree was not tested. */
@@ -71,23 +73,6 @@ async function ownDiskText(dir: string, rel: string): Promise<string | null> {
   }
 }
 
-/** A capped line probe keeps jsdiff's patch builder away from distant rewrites. */
-export function boundedTwoFilesPatch(p: string, before: string, after: string, person: string): string {
-  const a = before ? before.split('\n').length : 0
-  const b = after ? after.split('\n').length : 0
-  const edits = Math.max(1, Math.min(128, Math.floor(2_000_000 / Math.max(1, a + b))))
-  if (diffLines(before, after, { maxEditLength: edits }))
-    return createTwoFilesPatch(`a/${p}`, `b/${p}`, before, after, 'base', person, { context: 3 })
-  const patchLines = (value: string, prefix: '-' | '+') => {
-    if (!value) return ''
-    const complete = value.endsWith('\n')
-    const body = (complete ? value.slice(0, -1) : value).split('\n').map(line => `${prefix}${line}\n`).join('')
-    return complete ? body : body + '\\ No newline at end of file\n'
-  }
-  const count = (value: string) => value ? value.split('\n').length - Number(value.endsWith('\n')) : 0
-  return `===================================================================\n--- a/${p}\tbase\n+++ b/${p}\t${person}\n@@ -${before ? 1 : 0},${count(before)} +${after ? 1 : 0},${count(after)} @@\n${patchLines(before, '-')}${patchLines(after, '+')}`
-}
-
 const previewGenerations = new WeakMap<Session, number>()
 
 export function handlers(state: HandlerState): Record<string, Handler> {
@@ -106,6 +91,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const person = typeof a.person === 'string' && a.person ? a.person : caller.me.name
       const s = rooms.holding(person, caller)
       const ownDisk = person === s.me.name
+      const request = JSON.stringify([caller.me.name, s.me.name, s.roomName, s.dir, person, typeof a.path === 'string' && a.path ? a.path : null])
+      const cached = a.cursor === undefined ? undefined : readDiffCache.get(caller, request, a.cursor)
+      if (a.cursor !== undefined && !cached) return DIFF_RESTART
       for (let attempt = 0; attempt < 2; attempt++) {
         // One immutable publication view supplies the base, path set, text and coverage.
         const snap = ownDisk ? undefined : snapshot(s.room, person, participantsView(s.room, s.awareness, Date.now()))
@@ -117,6 +105,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           ? `note: ${person} is on base ${theirBase.slice(0, 10)} and you are on ${myBase.slice(0, 10)}; their files are compared with their own base, so commits only one of you has are not shown as their changes\n`
           : ''
         const label = (text: string) => `${worker ? WORKTREE_NOTE + '\n' : ''}${note}${text}`
+        const fingerprint = createHash('sha256')
+        const record = (...values: unknown[]) => { fingerprint.update(JSON.stringify(values)) }
+        record(label(''), theirBase, myBase, worker?.id, worker?.dir,
+          snap?.head, snap?.record, snap?.fenceValid, snap?.roomSalt,
+          callerSnap?.head, callerSnap?.record, callerSnap?.fenceValid, callerSnap?.roomSalt)
         const current = () => ownDisk || !!worker || ((snap
           ? snapshotStillCurrent(s.room, snap, participantsView(s.room, s.awareness, Date.now()))
           : !s.room.manifestHead.has(person)) && (callerSnap
@@ -128,6 +121,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           throw error
         }
         const one = async (p: string) => {
+          const gap = (text: string) => { record('gap', p, text); return cached ? '' : text }
           let version: Version | undefined
           try { version = ownDisk || worker ? undefined : await versionOf(snap, p, {
             gitAt: (sha, relpath) => readBoundedHistoricalText(s.dir, sha, relpath),
@@ -139,17 +133,18 @@ export function handlers(state: HandlerState): Record<string, Handler> {
             try { await readBoundedHistoricalText(s.dir, theirBase, p) }
             catch (error) { return reportGitFailure(error) }
           }
-          if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gapLine(person, p, version)
+          if (version && !['text', 'base', 'deleted'].includes(version.kind)) return gap(gapLine(person, p, version))
           const l = ownDisk || worker ? await ownDiskText(worker?.dir ?? s.dir, p)
             : version?.kind === 'text' ? version.text : version?.kind === 'base' ? version.text : null
           let b: string
           try { b = (await readBoundedHistoricalText(worker?.dir ?? s.dir, theirBase, p)) ?? '' }
           catch (error) {
-            if (error instanceof HistoricalTextTooLarge) return `${p}: ${person}'s historical text exceeds Room read limit; diff unavailable`
+            if (error instanceof HistoricalTextTooLarge) return gap(`${p}: ${person}'s historical text exceeds Room read limit; diff unavailable`)
             return reportGitFailure(error)
           }
           const live = l === null ? '' : l ?? b
-          return live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
+          record('file', p, b, live)
+          return cached || live === b ? '' : boundedTwoFilesPatch(p, b, live, person)
         }
         try {
           let result: string
@@ -157,7 +152,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           else {
             const parts: string[] = []
             const paths = worker || ownDisk ? new Set([
-              ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--name-only', '-z', theirBase, '--'])).split('\0'),
+              ...(await gitWholeTree(worker?.dir ?? s.dir, ['diff', '--no-renames', '--name-only', '-z', theirBase, '--'])).split('\0'),
               ...(await gitWholeTree(worker?.dir ?? s.dir, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0'),
             ].filter(Boolean)) : [...snap?.entries.keys() ?? []].sort()
             for (const p of paths) {
@@ -166,10 +161,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               if (d) parts.push(d)
             }
             const head = snap?.head
+            record('coverage', head?.coverage, head?.excluded)
             if (head) parts.push(`${person} coverage: ${head.coverage.kind}${head.coverage.kind === 'none' ? ` (${head.coverage.reason})` : ''}; ${head.excluded.length} changed path(s) excluded (names not shared)`)
             result = label(parts.length ? parts.join('\n') : `${person} has no uncommitted changes`)
           }
-          if (current()) return result
+          if (current()) {
+            const signature = fingerprint.digest('hex')
+            return cached ? readDiffCache.page(cached, a.cursor, signature) : readDiffCache.start(caller, request, result, signature)
+          }
         } catch (error) {
           if (current()) throw error
         }
@@ -178,8 +177,17 @@ export function handlers(state: HandlerState): Record<string, Handler> {
   }
   const handlers: Record<string, Handler> = {
     async room_read(a) {
+      const caller = S()
+      if (typeof a.person === 'string' && a.person && a.person !== caller.me.name) {
+        const known = new Set(rooms.all().flatMap(s => [...knownNames(s, presences)]))
+        // A disconnected local worker can still be read through its trusted registry.
+        // Do not interpret bare worker tags as identities or report unknown people as clean.
+        if (!known.has(a.person) && !await trustedWorker(rooms.holding(a.person, caller), a.person))
+          return `error: nobody called ${a.person} is or was in this room; use an exact participant name. Known names: ${[...known].sort().slice(0, 30).join(', ')}${known.size > 30 ? '; room_state(all=true) for more' : ''}`
+      }
       if (a.diff === true) return readDiff(a)
-      if (typeof a.path !== 'string' || !a.path) return 'error: path is required'
+      if (a.cursor !== undefined) return 'error: cursor requires diff=true'
+      if (typeof a.path !== 'string' || !a.path) return 'error: path is required for file text; use room_state(all=true) to discover changed paths, or room_read(person=..., diff=true) for all diffs'
       const p = a.path
       const person = typeof a.person === 'string' && a.person ? a.person : S().me.name
       const s = rooms.holding(person, S()) // a local worker's overlay lives in the workers room, not the team room
@@ -252,6 +260,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const available = Array.from(new Set(allSessions.flatMap(s => others(s)))).filter(p => p !== caller.me.name)
       const myPaths = [...manifestPaths(caller.room, caller.me.name), ...(caller.room.scope(caller.me.name)?.paths ?? [])]
       const unavailable: string[] = []
+      const uncertainOverlap = new Set<string>()
       const overlaps = async (person: string) => {
         const session = rooms.holding(person, caller)
         const worker = session.room.acceptedWorkerViewOf(person)
@@ -262,14 +271,19 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const remote = await roomRemote(caller.dir, caller.roomName)
           if (!await ensureCommit(caller.dir, remote, mineBase) || !await ensureCommit(caller.dir, remote, theirBase)) throw new Error('anchor commit unavailable')
           const ancestor = (await git(caller.dir, ['merge-base', mineBase, theirBase])).trim()
-          const changed = async (base: string) => base === ancestor ? [] : [...new Set((await gitWholeTree(caller.dir, ['diff', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean))]
+          // A rename overlaps edits to its removed source as well as its destination.
+          const changed = async (base: string) => base === ancestor ? [] : [...new Set((await gitWholeTree(caller.dir, ['diff', '--no-renames', '--name-only', '-z', ancestor, base])).split('\0').filter(Boolean))]
           const mineCommitted = await changed(mineBase), theirCommitted = await changed(theirBase)
           const overBound = mineCommitted.length > 2000 || theirCommitted.length > 2000
-          if (overBound) unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`)
+          if (overBound) {
+            uncertainOverlap.add(person)
+            unavailable.push(`${person}: committed path enumeration exceeds 2000; selecting from manifest paths only`)
+          }
           const mine = [...new Set([...myPaths, ...(!overBound ? mineCommitted : [])])]
           const peer = [...new Set([...theirs, ...(!overBound ? theirCommitted : [])])]
           return peer.some(p => mine.some(path => coversPath(p, path)))
         } catch (error) {
+          uncertainOverlap.add(person)
           unavailable.push(`${person}: committed changes unavailable (${error instanceof Error ? error.message : String(error)})`)
           return false
         }
@@ -292,9 +306,14 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const people = Array.from(new Set(explicit ? resolved : [...(a.includeOffline === true ? available : overlapping), ...runningWorkers].sort())).filter(p => p !== caller.me.name)
       const offlineWithFacts = available.filter(person => !present.includes(person) && manifestPaths(rooms.holding(person, caller).room, person).length > 0)
       const skipped = !explicit ? offlineWithFacts.filter(person => !people.includes(person)) : []
-      const skippedNote = skipped.length
+      const offlineNote = skipped.length
         ? `skipped ${skipped.length} offline participant${skipped.length === 1 ? '' : 's'} with manifest facts: ${skipped.join(', ')}; include with people: [${skipped.map(p => JSON.stringify(p)).join(', ')}] or includeOffline: true`
         : ''
+      const skippedPresent = !explicit ? available.filter(person => present.includes(person) && !people.includes(person) && !uncertainOverlap.has(person)).sort() : []
+      const presentNote = skippedPresent.length
+        ? `skipped ${skippedPresent.length} present participant${skippedPresent.length === 1 ? '' : 's'} without overlapping paths: ${skippedPresent.join(', ')}; include with people: [${skippedPresent.map(p => JSON.stringify(p)).join(', ')}]`
+        : ''
+      const skippedNote = [presentNote, offlineNote].filter(Boolean).join('\n')
       const recordPartial = async (names: string[], gaps: string[], command = '', ranOk?: boolean, anchors = '', applied = true) => {
         await caller.post<NoteMsg>(caller.me, {
           type: 'note', priority: 'fyi',
@@ -304,11 +323,15 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         })
       }
       if (!people.length) {
-        if (unavailable.length || skippedNote) {
+        if (unavailable.length || offlineNote) {
           recordPreview({ clean: false, complete: false, testsPassed: false })
-          await recordPartial([], [...unavailable, ...(skippedNote ? [skippedNote] : [])])
+          await recordPartial([], [...unavailable, ...(offlineNote ? [offlineNote] : [])])
         }
-        return [...dropped, 'no present participants to merge', skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
+        const emptyNote = explicit ? 'no other participants selected; you are always included'
+          : present.length ? unavailable.length ? `no participants selected by default; overlap could not be fully determined — select peers with people: [${[...uncertainOverlap].sort().map(p => JSON.stringify(p)).join(', ')}]`
+            : 'no overlapping present participants to merge'
+          : available.length ? 'no other participants are present in the room' : 'nobody else is in the room'
+        return [...dropped, emptyNote, skippedNote, ...(unavailable.length ? [`PARTIAL preview: skipped ${unavailable.join('; ')}`] : [])].filter(Boolean).join('\n')
       }
       const participants = people.map(person => ({ person, session: presentSession(person) ?? rooms.holding(person, caller) }))
       const anchorsFor = async (result: Awaited<ReturnType<typeof buildCombinedTree>>) => (await Promise.all(result.includedParticipants.map(async ({ person, base, gitRecord, liveShared }) => {
@@ -337,7 +360,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         recordPreview({ clean: false, complete: false, testsPassed: false, ...(run ? { testsCommand: run } : {}) })
         return `${(moved.length ? moved : people).join(', ')} moved during the preview; re-run. The combined code was NOT fully checked`
       }
-      // A move after the combined tree was built (during the test run, say) waits for the same bounded settle.
+      // Settle movements during construction; a command result belongs to the built snapshot.
       const settler = previewSettler(state, participants)
       try { for (;;) {
         const result = await previewPhase('merge', () => buildCombinedTree(state, caller, participants, { settler, resolve: a.resolve === true, ...(run ? { encoding: 'latin1' as const } : { skipCallerOnly: true }) }))
@@ -358,12 +381,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         out.push(`final combined tree: ${merged.size} path(s) applied${result.callerOnly ? ` (plus ${result.callerOnly} only you changed)` : ''} over ${ancestor.slice(0, 10)} from ${[caller.me.name, ...people].join(', ')}${hardCount ? `; excludes ${hardCount} unresolved conflict(s)` : ''}`)
         if (anchors.length) out.push(`included ${anchors.join(', ')}`)
         if (noTestsNote) out.push(noTestsNote)
+        if (run) out.push(`snapshot inputs: ${result.snapshotInputs.join(', ')}`, `preview coverage: ${complete && !hardCount ? 'complete for selected participants' : 'PARTIAL; combined work not verified'}`)
         const appliedFromOthers = [...result.owners.values()].some(owners => owners.some(owner => owner !== caller.me.name))
         let ranOk = !run
-        if (run && !hardCount && !result.isCurrent()) {
-          if (await settler.settle(result.settledWorkers())) continue
-          return movedReply(result.moved())
-        }
+        let verdictIndex: number | undefined
         if (run) {
           if (hardCount) out.push(`not running "${run}": ${hardCount} conflict(s) need a human first`)
           else {
@@ -382,16 +403,30 @@ export function handlers(state: HandlerState): Record<string, Handler> {
               try { const stat = fs.lstatSync(path.join(caller.dir, p)); if (stat.isFile()) leadMode = stat.mode & 0o777 } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e }
               modes.set(p, mergedFileMode(p, leadMode, modeParticipants))
             }
+            // Metadata/mode reads can outlast this build's currency. Settle before paying
+            // for a command; movements after it starts still produce a snapshot result.
+            if (!result.isCurrent()) {
+              if (await settler.settle(result.settledWorkers())) continue
+              return movedReply(result.moved())
+            }
             const verdict = await runInMergedTree(caller, ancestor, merged, run, modes)
             ranOk = verdict.passed
             const qualifier = !complete ? `; passed on a PARTIAL tree (excluded: ${gapLines.join('; ')})`
               : !appliedFromOthers ? '; passed on your own tree only' : ''
+            verdictIndex = out.length
             out.push(verdict.passed && qualifier ? verdict.text.replace(/tests: PASSED( \(exit 0\))?/, match => match + qualifier) : verdict.text)
             if (!appliedFromOthers) out.push(`no changes from ${people.join(', ')} to apply; ran the check on your own tree only`)
             if (!complete) out.push('Tests ran on a partial tree; this does not verify the combined work')
           }
         }
         if (!result.isCurrent()) {
+          if (verdictIndex !== undefined) {
+            recordPreview({ clean: false, complete: false, testsPassed: false, testsCommand: run })
+            out[verdictIndex] = out[verdictIndex].replace(/^tests:/gm, 'snapshot tests:')
+            out.unshift(`SNAPSHOT result for "${run}" (not the current combined code):`)
+            out.push(`${result.moved().join(', ')} moved since this snapshot was built. A pass is interim evidence for the recorded revisions. Re-run room_preview_merge with run="${run}" when your files change, a moved peer can affect this command, a failure needs confirmation, or for the final current preview before room_done. The latest combined code was NOT checked`)
+            return previewPhase('collect', () => out.join('\n'))
+          }
           if (await settler.settle(result.settledWorkers())) continue
           return movedReply(result.moved())
         }
@@ -591,6 +626,25 @@ async function rejectPreviewLink(file: string): Promise<void> {
 }
 
 const SETUP_TIMEOUT_MS = 10 * 60_000
+let checkLimits = { timeoutMs: 5 * 60_000, maxBuffer: 4 * 1024 * 1024 }
+export function setPreviewCheckLimitsForTests(limits?: { timeoutMs: number; maxBuffer: number }): void {
+  checkLimits = limits ?? { timeoutMs: 5 * 60_000, maxBuffer: 4 * 1024 * 1024 }
+}
+
+/** A tracked process stopped at its time limit or output cap; `out` keeps what it printed until then. */
+class PreviewProcessLimit extends Error {
+  out = ''
+  constructor(message: string, readonly limit: string) { super(message) }
+}
+const outputTail = (out: string) => stripVTControlCharacters(out).trim().split('\n').slice(-25).join('\n')
+const plainDuration = (ms: number) => ms % 60_000 ? `${ms / 1000}-second` : `${ms / 60_000}-minute`
+const timeLimit = (ms: number) => new PreviewProcessLimit(`timed out after ${ms}ms`, `the ${plainDuration(ms)} time limit`)
+const outputCap = (bytes: number) => new PreviewProcessLimit('output exceeded preview buffer',
+  `the ${bytes >= 1024 * 1024 ? `${+(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`} output cap`)
+/** Which limit stopped a Windows execFile check: Node reports the output cap by code and the timeout as a kill. */
+export function execFileLimit(err: { code?: unknown; killed?: boolean } | null, limits: { timeoutMs: number; maxBuffer: number }): PreviewProcessLimit | undefined {
+  return err?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? outputCap(limits.maxBuffer) : err?.killed ? timeLimit(limits.timeoutMs) : undefined
+}
 const previewProcesses = new AsyncLocalStorage<{ lock?: PreviewUnlock }>()
 const previewProcessGate = 'IFS= read -r permit || exit 1; [ "$permit" = GO ] || exit 1; exec "$@"'
 
@@ -620,10 +674,10 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
       failed = error
       terminate()
     }
-    const timer = setTimeout(() => stop(new Error(`timed out after ${timeout}ms`)), timeout)
+    const timer = setTimeout(() => stop(timeLimit(timeout)), timeout)
     const collect = (kind: 'stdout' | 'stderr', chunk: Buffer) => {
       bytes += chunk.length
-      if (bytes > maxBuffer) { stop(new Error('output exceeded preview buffer')); return }
+      if (bytes > maxBuffer) { stop(outputCap(maxBuffer)); return }
       if (kind === 'stdout') out.push(chunk)
       else err.push(chunk)
     }
@@ -632,12 +686,17 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
     child.stdin.on('error', stop)
     child.on('error', stop)
     let exited = false
+    const fail = () => {
+      if (failed instanceof PreviewProcessLimit) failed.out = Buffer.concat(out).toString() + Buffer.concat(err).toString()
+      reject(failed)
+    }
     const closed = new Promise<void>(done => child.once('close', () => done()))
     child.on('close', () => {
       if (!exited) {
         clearTimeout(timer)
         if (killTimer) clearTimeout(killTimer)
-        reject(failed ?? new Error('tracked preview process closed without exiting'))
+        if (failed) fail()
+        else reject(new Error('tracked preview process closed without exiting'))
       }
     })
     child.on('exit', code => {
@@ -652,7 +711,7 @@ function runTrackedProcess(file: string, args: string[], cwd: string, timeout: n
         await closed
         clearTimeout(timer)
         if (killTimer) clearTimeout(killTimer)
-        if (failed) reject(failed)
+        if (failed) fail()
         else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString(), stopped })
       })().catch(reject)
     })
@@ -1046,6 +1105,13 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
   let completed: TestResult | undefined
   let stage: 'setup' | 'check' = 'setup'
   const setupStart = performance.now()
+  let checkStart = 0
+  // This identifies logical source inputs, not mutable linked dependencies or the environment.
+  const inputHash = createHash('sha256').update(ancestor)
+  for (const [rel, value] of [...merged].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    inputHash.update(JSON.stringify([rel, value, modes.get(rel) ?? 0o644]))
+  }
+  const evidence = `snapshot inputs sha256: ${inputHash.digest('hex')}; command: ${JSON.stringify(cmd)}\nenvironment: ${process.platform}/${process.arch}, Node ${process.version}; inherited environment (ROOM_* removed, ROOM_MERGED_TREE set) and linked dependencies are not fingerprinted`
   try {
     await previewPhase('setup', async () => {
       let cache: string | undefined
@@ -1094,30 +1160,35 @@ async function runInMergedTreeAttempt(s: Session, ancestor: string, merged: Map<
     const bash = ['/bin/bash', '/usr/bin/bash'].find(candidate => fs.existsSync(candidate))
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ROOM_')))
     env.ROOM_MERGED_TREE = dir!
-    const checkStart = performance.now()
+    checkStart = performance.now()
     const result = await previewCheck(async () => {
       const command = bash ?? 'sh'
       const args = bash ? ['-o', 'pipefail', '-c', cmd] : ['-c', cmd]
       // Windows has no process groups to signal (and never caches): its check keeps execFile's own deadline.
-      if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>(resolve => {
-        execFile(command, args, { cwd: dir!, timeout: 5 * 60_000, maxBuffer: 4 * 1024 * 1024, env }, (err, stdout, stderr) => {
+      if (process.platform === 'win32') return new Promise<{ code: number; out: string; stopped: boolean }>((resolve, reject) => {
+        execFile(command, args, { cwd: dir!, timeout: checkLimits.timeoutMs, maxBuffer: checkLimits.maxBuffer, env }, (err, stdout, stderr) => {
           const raw = err ? (err as { code?: unknown }).code : 0
+          const limit = execFileLimit(err, checkLimits)
+          if (limit) { limit.out = `${stdout}${stderr}`; reject(limit); return }
           resolve({ code: typeof raw === 'number' ? raw : err ? 1 : 0, out: `${stdout}${stderr}`, stopped: false })
         })
       })
-      const tracked = await runTrackedProcess(command, args, dir!, 5 * 60_000, 4 * 1024 * 1024, previewProcesses.getStore()?.lock, env)
+      const tracked = await runTrackedProcess(command, args, dir!, checkLimits.timeoutMs, checkLimits.maxBuffer, previewProcesses.getStore()?.lock, env)
       return { code: tracked.code, out: tracked.stdout + tracked.stderr, stopped: tracked.stopped }
     })
     checkMs = performance.now() - checkStart
     completed = await previewPhase('collect', () => {
-      const tail = stripVTControlCharacters(result.out).trim().split('\n').slice(-25).join('\n')
+      const tail = outputTail(result.out)
       const verdict = testVerdict(result.out, result.code)
-      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
+      return { passed: verdict.passed, text: `ran "${cmd}" in the merged tree (${merged.size} file(s) applied over ${ancestor.slice(0, 10)}): exit ${result.code}; setup ${Math.round(setupMs)}ms (${reused ? 'cached base' : cacheFailure ? 'fresh base after cache failure' : 'fresh base'}), check ${Math.round(checkMs)}ms\n${evidence}; shell ${bash ?? 'sh'}\ncommand completion: finished (exit ${result.code}); output shows last 25 lines\n${tail}\n${verdict.text}${result.stopped ? '\nstopped leftover processes from the check' : ''}` }
     })
     return completed
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return { passed: false, text: stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}` }
+    if (stage === 'check' && error instanceof PreviewProcessLimit) {
+      return { passed: false, text: `merged-tree check did not finish: "${cmd}" was stopped at ${error.limit} (check ${Math.round(performance.now() - checkStart)}ms); this is NOT a pass.\n${evidence}\ncommand completion: incomplete\nLast output before it was stopped:\n${outputTail(error.out) || '(no output)'}` }
+    }
+    return { passed: false, text: `${stage === 'setup' ? `merged-tree setup failed after ${Math.round(performance.now() - setupStart)}ms: ${detail}; check was not run` : `merged-tree check failed: ${detail}`}\n${evidence}\ncommand completion: ${stage === 'setup' ? 'not run' : 'incomplete'}` }
   } finally {
     try {
       if (dir) {

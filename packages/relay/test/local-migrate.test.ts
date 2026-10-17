@@ -24,7 +24,8 @@ it('fsyncs the imported snapshot and its directory before committing the ledger'
   const steps: string[] = [], handles = new Map<number, string>()
   const write = fs.writeFileSync, open = fs.openSync, sync = fs.fsyncSync, rename = fs.renameSync
   vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: unknown) => {
-    if (String(file).includes('.ydoc.')) steps.push('write')
+    const name = typeof file === 'number' ? handles.get(file) ?? '' : String(file)
+    if (name.includes('.ydoc.')) steps.push('write')
     return write(file, data, options as never)
   }) as typeof fs.writeFileSync)
   vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: string | number, mode?: fs.Mode) => {
@@ -135,17 +136,23 @@ it('does not re-deliver a receipted question to an ambiguous migrated recipient'
   expect(new RoomDoc(loadMemory(common, room)).mail.has('seen-q')).toBe(false)
 })
 
-it('saves imported state before advancing the ledger on a failed save retry', () => {
+it.each(['rename', 'fsync'])('saves imported state before advancing the ledger after a %s failure', phase => {
   const room = 'local/shop', oldName = `${room}/main`
   fs.mkdirSync(path.join(common, 'room-local'), { recursive: true })
   const source = new RoomDoc(new Y.Doc())
   source.mail.set('retry-q', { id: 'retry-q', type: 'question', from: 'ada', fromKind: 'agent', to: 'ben', text: 'retry?', at: 1, priority: 'notify' })
   fs.writeFileSync(path.join(common, 'room-local', `${encodeURIComponent(oldName)}.ydoc`), Y.encodeStateAsUpdate(source.doc))
   const target = new RoomDoc(new Y.Doc()), file = memoryFile(common, room)
-  fs.mkdirSync(file, { recursive: true })
+  const sync = fs.fsyncSync
+  if (phase === 'rename') fs.mkdirSync(file, { recursive: true })
+  else vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isFile()) throw Object.assign(new Error('EPERM: fsync failed'), { code: 'EPERM' })
+    return sync(fd)
+  })
   expect(() => catchUpLocal(common, room, target.doc, () => {})).toThrow('could not save')
   expect(fs.existsSync(ledgerFile(room))).toBe(false)
-  fs.rmSync(file, { recursive: true })
+  if (phase === 'rename') fs.rmSync(file, { recursive: true })
+  else vi.restoreAllMocks()
   catchUpLocal(common, room, target.doc)
   expect(new RoomDoc(loadMemory(common, room)).mail.has('retry-q')).toBe(true)
   expect(JSON.parse(fs.readFileSync(ledgerFile(room), 'utf8')).messages).toContain('retry-q')

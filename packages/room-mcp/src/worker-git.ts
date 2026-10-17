@@ -87,9 +87,9 @@ export const collectBaseRef = (tag: string, id: string) => `refs/room/collect-ba
 async function uncollectedWorkerPaths(leadDir: string, w: LocalWorker, capturedHead?: string): Promise<string[]> {
   const exclusions = workerOwnedPaths(w).exclusions
   const [changed, untracked, committed] = await Promise.all([
-    git(w.dir, ['diff', '--name-only', '-z', 'HEAD', '--', '.', ...exclusions]),
+    git(w.dir, ['diff', '--no-renames', '--name-only', '-z', 'HEAD', '--', '.', ...exclusions]),
     git(w.dir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', ...exclusions]),
-    capturedHead ? git(w.dir, ['diff', '--name-only', '-z', capturedHead, 'HEAD', '--', '.', ...exclusions]) : '',
+    capturedHead ? git(w.dir, ['diff', '--no-renames', '--name-only', '-z', capturedHead, 'HEAD', '--', '.', ...exclusions]) : '',
   ])
   const paths = [...new Set((changed + untracked + committed).split('\0').filter(Boolean))]
   const same = async (rel: string): Promise<boolean> => {
@@ -354,7 +354,7 @@ export async function prepareWorktree(repoDir: string, tag: string, leadName = '
       return (await git(repoDir, ['rev-parse', 'HEAD'])).trim() === base && latestPatch === patch && latestUntracked.join('\0') === untracked.join('\0') && copiedStable
     }
     if (!await snapshotStable()) throw new Error('lead changed during carry; retrying snapshot')
-    const staged = (await internalGit(dir, ['diff', '--cached', '--name-only', '-z'])).split('\0').filter(Boolean)
+    const staged = (await internalGit(dir, ['diff', '--cached', '--no-renames', '--name-only', '-z'])).split('\0').filter(Boolean)
     if (staged.length) {
       await onStep?.('carry-commit', {})
       await git(dir, ['-c', 'core.hooksPath=/dev/null', '-c', `user.name=${ROOM_CARRY_IDENTITY.authorName}`, '-c', `user.email=${ROOM_CARRY_IDENTITY.authorEmail}`, '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', carriedSubject(leadName)])
@@ -436,7 +436,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
       const currentHead = (await git(w.dir, ['rev-parse', 'HEAD'])).trim()
       const [ignored, uncollected] = await Promise.all([ignoredWorkerArtifacts(w), uncollectedWorkerPaths(leadDir, w, capturedHead)])
       const committedPaths = capturedHead && capturedHead !== currentHead
-        ? (await git(w.dir, ['diff', '--name-only', '-z', capturedHead, currentHead, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort()
+        ? (await git(w.dir, ['diff', '--no-renames', '--name-only', '-z', capturedHead, currentHead, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort()
         : undefined
       if (preservation) {
         preservation.ignored = ignored; preservation.uncollected = uncollected
@@ -451,7 +451,7 @@ export async function cleanupWorker(leadDir: string, w: LocalWorker, collected =
     if (tip !== head && !discarded) {
       if (preservation) preservation.commitsAfterCollection = {
         sha: tip.slice(0, 12),
-        paths: (await git(w.dir, ['diff', '--name-only', '-z', head, tip, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort(),
+        paths: (await git(w.dir, ['diff', '--no-renames', '--name-only', '-z', head, tip, '--', '.', ...workerOwnedPaths(w).exclusions])).split('\0').filter(Boolean).sort(),
       }
       return false
     }

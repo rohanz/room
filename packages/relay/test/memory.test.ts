@@ -65,6 +65,46 @@ it('treats unreadable snapshots like corruption', () => {
   expect(log).toHaveBeenCalledTimes(1)
   expect(fs.existsSync(memoryFile(dir, room))).toBe(false)
 })
+it('flushes the snapshot with a writable handle, as Windows requires', () => {
+  const memory = open(); memory.doc.getArray('bus').push(['durable'])
+  const openFile = fs.openSync, sync = fs.fsyncSync
+  const flagsByFd = new Map<number, string | number>()
+  vi.spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
+    const fd = openFile(file, flags, mode)
+    flagsByFd.set(fd, flags)
+    return fd
+  })
+  vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    // Windows FlushFileBuffers requires write access even when the file is writable on disk.
+    if (fs.fstatSync(fd).isFile() && flagsByFd.get(fd) === 'r') {
+      throw Object.assign(new Error('EPERM: operation not permitted, fsync'), { code: 'EPERM' })
+    }
+    return sync(fd)
+  })
+  expect(saveMemory(dir, room, memory.doc, log)).toBe(true)
+  expect(load().getArray('bus').toArray()).toEqual(['durable'])
+  expect(log).not.toHaveBeenCalled()
+})
+it.each(['EPERM', 'EIO'])('preserves the old snapshot and closes the file when fsync fails with %s', code => {
+  const memory = open(); memory.doc.getArray('bus').push(['old']); memory.flush()
+  const original = fs.readFileSync(memoryFile(dir, room))
+  memory.doc.getArray('bus').push(['new'])
+  const sync = fs.fsyncSync, close = vi.spyOn(fs, 'closeSync')
+  let failedFd: number | undefined
+  vi.spyOn(fs, 'fsyncSync').mockImplementation(fd => {
+    if (fs.fstatSync(fd).isFile()) {
+      failedFd = fd
+      throw Object.assign(new Error(`${code}: fsync failed`), { code })
+    }
+    return sync(fd)
+  })
+  expect(saveMemory(dir, room, memory.doc, log)).toBe(false)
+  expect(failedFd).toBeDefined()
+  expect(close).toHaveBeenCalledWith(failedFd)
+  expect(fs.readFileSync(memoryFile(dir, room))).toEqual(original)
+  expect(fs.readdirSync(path.dirname(memoryFile(dir, room)))).toEqual([path.basename(memoryFile(dir, room))])
+  expect(log).toHaveBeenCalledWith(expect.stringContaining(`${code}: fsync failed`))
+})
 it.each(['write', 'rename'])('preserves the old file and removes temporary files when %s fails', phase => {
   const memory = open(); memory.doc.getArray('bus').push(['old']); memory.flush()
   const original = fs.readFileSync(memoryFile(dir, room))

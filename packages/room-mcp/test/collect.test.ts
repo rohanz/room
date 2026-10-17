@@ -5,6 +5,7 @@ import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handlers } from '../src/tools/collect.js'
+import { createTools } from '../src/tools.js'
 import { handlers as fileHandlers, linkSharedDirs, materializeMergedFile } from '../src/tools/files.js'
 import type { HandlerState } from '../src/tools/context.js'
 import type { Session } from '../src/session.js'
@@ -24,9 +25,16 @@ import { realGitCommonDir } from '@room/roomd'
 import { currentToolTiming, ToolTiming, ToolTimingTracker } from '../src/timing.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { clearFixtureProcesses, fixtureLiveness } from './fixtures/process-liveness.js'
 
 // Collection runs real Git and filesystem cleanup; wait for outcomes, not a 5 s wall-clock cap.
 vi.setConfig({ testTimeout: 30_000 })
+
+// Synthetic worker PIDs must use the same liveness facts as registerWorkers/finishWorker.
+vi.mock('../src/leases.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/leases.js')>()
+  return { ...actual, liveness: (identity: Parameters<typeof actual.liveness>[0]) => fixtureLiveness(identity, actual.liveness) }
+})
 
 const collectRefHook = vi.hoisted(() => ({ call: undefined as undefined | ((ref: string) => void) }))
 const gitPathCalls = vi.hoisted(() => [] as string[][])
@@ -40,12 +48,13 @@ vi.mock('@room/roomd/git', async importOriginal => {
   } }
 })
 const release = vi.hoisted(() => vi.fn())
-vi.mock('../src/tools/claims.js', () => ({ releaseClaimsOnDone: release }))
+vi.mock('../src/tools/claims.js', async importOriginal => ({ ...await importOriginal<typeof import('../src/tools/claims.js')>(), releaseClaimsOnDone: release }))
 let root: string, lead: string, worker: string, base: string
 const git = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim()
 const put = (dir: string, p: string, text: string) => { fs.mkdirSync(path.dirname(path.join(dir, p)), { recursive: true }); fs.writeFileSync(path.join(dir, p), text) }
 
 beforeEach(() => {
+  clearFixtureProcesses()
   release.mockReset()
   gitPathCalls.length = 0
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'room-collect-')))
@@ -107,6 +116,156 @@ async function startWorktreeProcess() {
 }
 
 describe('room_collect', () => {
+  it('keeps the finished worker and resumes its retained session with a delivered follow-up', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0, hostSessionId: 'session-test' })
+    put(worker, 'file.txt', 'collected output\n')
+    const log = path.join(lead, '.room/workers/test.log')
+    put(lead, '.room/workers/test.log', 'retained log\n')
+    expect(await t.call({ tag: 'test', keep: true })).toContain('Nothing committed or staged')
+    expect(workerByTag(lead, 'test')).toMatchObject({ status: 'done', hostSessionId: 'session-test' })
+    expect(t.s.room.retiredWorkers()).toEqual([])
+    expect(fs.readFileSync(log, 'utf8')).toBe('retained log\n')
+    expect(git(worker, 'rev-parse', 'HEAD')).toBe(base)
+    expect(git(worker, 'diff', '--cached')).toBe('')
+    expect(git(lead, 'diff', '--cached')).toBe('')
+    Object.assign(t.s.local!, { url: 'ws://127.0.0.1:1' })
+    Object.assign(t.s, { provider: { synced: true }, browserUrl: 'http://test' })
+    Object.assign(t.s.daemon, { touch() {} })
+    const spawner = vi.fn((_spec: import('../src/worker-process.js').SpawnSpec) => ({ pid: 6001, started: Promise.resolve(), onExit() {}, kill: () => true }))
+    const tools = createTools({ getSession: () => t.s, setSession() {}, leave: async () => {}, log() {}, cwd: lead, spawner, probe: () => undefined, listCwdProcesses: () => [] })
+    try {
+      expect(await tools.call('room_send', { type: 'note', to: 'test', text: 'revise the collected output' })).toContain('resumed test')
+      expect(spawner).toHaveBeenCalledOnce()
+      const spec = spawner.mock.calls[0]![0]
+      expect(spec.cwd).toBe(worker)
+      expect(spec.args.join(' ')).toContain('revise the collected output')
+      expect(t.s.room.messages().some(m => m.type === 'note' && m.to === t.w.name && m.text === 'revise the collected output')).toBe(true)
+      expect((await registryForDir(lead)).read('w_test')).toMatchObject({ phase: 'active', hostSessionId: 'session-test' })
+      expect(workerByTag(lead, 'test')?.status).toBe('running')
+      expect(fs.readFileSync(path.join(worker, 'file.txt'), 'utf8')).toBe('collected output\n')
+    } finally { await tools.drop(t.s, 'test complete') }
+  })
+
+  it.each([false, true])('collects only changes since keep, including uncommitted edits (commit follow-up: %s)', async commit => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'file.txt', 'first worker edit\n')
+    put(worker, 'new.txt', 'first new file\n')
+    expect(await t.call({ tag: 'test', keep: true })).toContain('Changes from test:')
+    const registry = await registryForDir(lead)
+    const kept = registry.read('w_test')!
+    expect(kept.phase).toBe('active')
+    expect(kept.base).toBe(git(lead, 'rev-parse', 'refs/room/collect-head/test/w_test'))
+    expect(git(lead, 'rev-parse', 'refs/room/collect-base/test/w_test')).toBe(base)
+    expect(git(lead, 'show', `${kept.base}:new.txt`)).toBe('first new file')
+    // A lead revision to previously collected work must not be overwritten or conflict.
+    put(lead, 'file.txt', 'lead revised the collected edit\n')
+    put(worker, 'new.txt', 'follow-up new file\n')
+    if (commit) { git(worker, 'add', '-A'); git(worker, 'commit', '-qm', 'follow-up') }
+    const result = await t.call({ tag: 'test' })
+    expect(result).toContain('Changes from test: new.txt')
+    expect(result).toContain('cleaned up test')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('lead revised the collected edit\n')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('follow-up new file\n')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(registry.read('w_test')?.phase).toBe('retired')
+    expect(git(lead, 'for-each-ref', '--format=%(refname)', 'refs/room/collect-head/test', 'refs/room/collect-base/test')).toBe('')
+  })
+
+  it('preserves scratch handling and stays finished through automatic retirement after keep', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'file.txt', 'worker output\n')
+    put(worker, 'debug.log', 'scratch output\n')
+    const result = await t.call({ tag: 'test', keep: true })
+    expect(result).toContain('scratch')
+    expect(fs.existsSync(path.join(lead, 'debug.log'))).toBe(false)
+    expect(fs.readFileSync(path.join(lead, '.room/scratch/test/debug.log'), 'utf8')).toBe('scratch output\n')
+    const rooms = { ...t.state.rooms, probe: () => undefined } as never
+    await autoRetire(t.s, rooms)
+    expect(workerByTag(lead, 'test')?.status).toBe('done')
+    expect(fs.existsSync(path.join(worker, 'debug.log'))).toBe(true)
+    const kept = (await registryForDir(lead)).read('w_test')!
+    expect(git(lead, 'ls-tree', '--name-only', kept.base!)).not.toContain('debug.log')
+    expect(await t.call({ tag: 'test' })).toContain('cleaned up test')
+  })
+
+  it('does not mistake an aborted normal collect ref for an intentional keep', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    await t.sync()
+    // A normal collect can publish this ref before the final destination gate aborts.
+    git(lead, 'update-ref', 'refs/room/collect-head/test/w_test', base)
+    await autoRetire(t.s, { ...t.state.rooms, probe: () => undefined } as never)
+    expect((await registryForDir(lead)).read('w_test')?.phase).toBe('retired')
+    expect(fs.existsSync(worker)).toBe(false)
+  })
+
+  it('absorbs carried baselines without applying the lead work again on repeated keep', async () => {
+    const t = setup()
+    carry(t, worker, 'test', { 'file.txt': 'lead carried edit\n' })
+    // Use a real carried untracked blob, as spawn does without adding it to the worker index.
+    put(worker, 'carried.txt', 'lead carried untracked\n')
+    const sha = git(worker, 'hash-object', '-w', 'carried.txt')
+    t.set('test', { ...t.get('test'), exitCode: 0, carriedUntracked: [{ path: 'carried.txt', sha, mode: 0o644 }] })
+    put(lead, 'file.txt', 'lead carried edit\n')
+    put(lead, 'carried.txt', 'lead carried untracked\n')
+    put(worker, 'new.txt', 'first output\n')
+    expect(await t.call({ keep: true })).toContain('Changes from test: new.txt')
+    const record = (await registryForDir(lead)).read('w_test')!
+    expect(record.carriedUntracked).toBeUndefined()
+    expect(record.carriedBase).toBeUndefined()
+    expect(git(lead, 'show', `${record.base}:carried.txt`)).toBe('lead carried untracked')
+    put(lead, 'carried.txt', 'lead revises carried work\n')
+    put(worker, 'new.txt', 'second output\n')
+    expect(await t.call({ keep: true })).toContain('Changes from test: new.txt')
+    expect(fs.readFileSync(path.join(lead, 'carried.txt'), 'utf8')).toBe('lead revises carried work\n')
+    expect(await t.call({})).toContain('cleaned up test')
+  })
+
+  it('cleans up a kept worker on discard while preserving collected lead edits', async () => {
+    const t = setup()
+    t.set('test', { ...t.w, exitCode: 0 })
+    put(worker, 'file.txt', 'collected output\n')
+    expect(await t.call({ tag: 'test', keep: true })).toContain('Changes from test:')
+    put(worker, 'new.txt', 'later uncollected output\n')
+    expect(await t.call({ tag: 'test', discard: true })).toContain('discarded test')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('collected output\n')
+    expect(fs.existsSync(worker)).toBe(false)
+    expect(git(lead, 'branch', '--list', 'room/test')).toBe('')
+    expect(workerByTag(lead, 'test')).toBeUndefined()
+    expect(fs.readFileSync(path.join(lead, '.git/room/registry/patches/w_test.patch'), 'utf8')).toContain('later uncollected output')
+  })
+
+  it.each([{ mode: 'copy', paths: ['file.txt'] }, { discard: true }])('refuses keep outside apply: %j', async args => {
+    const t = setup()
+    expect(await t.call({ tag: 'test', ...args, keep: true })).toContain('keep is only supported in apply mode without discard')
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
+  it('writes nothing and keeps the previous baseline when kept collection conflicts', async () => {
+    const t = setup()
+    put(worker, 'file.txt', 'worker edit\n')
+    put(lead, 'file.txt', 'conflicting lead edit\n')
+    expect(await t.call({ keep: true })).toContain('Nothing written; conflicting files: file.txt')
+    expect((await registryForDir(lead)).read('w_test')).toMatchObject({ phase: 'active', base })
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('conflicting lead edit\n')
+    expect(fs.existsSync(worker)).toBe(true)
+  })
+
+  it('refuses a source that changes after snapshot without advancing the kept baseline', async () => {
+    const t = setup()
+    put(worker, 'file.txt', 'first output\n')
+    collectRefHook.call = () => put(worker, 'file.txt', 'changed during collect\n')
+    expect(await t.call({ keep: true })).toContain('changed during collection; nothing written')
+    expect((await registryForDir(lead)).read('w_test')).toMatchObject({ phase: 'active', base })
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
+    collectRefHook.call = undefined
+    expect(await t.call({ keep: true })).toContain('Changes from test: file.txt')
+    expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('changed during collect\n')
+  })
+
   async function ownershipEvidence(t: ReturnType<typeof setup>): Promise<string | undefined> {
     if (process.platform !== 'win32') return undefined
     const registry = await registryForDir(lead)
@@ -703,6 +862,18 @@ describe('room_collect', () => {
     expect(fs.statSync(path.join(lead, 'run.sh')).mode & 0o111).toBe(0o111)
     expect(fs.readFileSync(path.join(lead, 'data/input'), 'utf8')).toBe('private')
   })
+  it('collects worker output despite more than 2000 unrelated paths committed by the lead', async () => {
+    const t = setup()
+    for (let i = 0; i < 2001; i++) put(lead, `unrelated/${i}.txt`, 'committed lead input\n')
+    git(lead, 'add', '--', 'unrelated'); git(lead, 'commit', '-qm', 'unrelated lead files')
+    const head = git(lead, 'rev-parse', 'HEAD'), index = git(lead, 'write-tree')
+    put(worker, 'new.txt', 'worker output\n')
+    expect(await t.call({ tag: 'test' })).toContain('Changes from test:')
+    expect(fs.readFileSync(path.join(lead, 'new.txt'), 'utf8')).toBe('worker output\n')
+    expect(fs.readFileSync(path.join(lead, 'unrelated/2000.txt'), 'utf8')).toBe('committed lead input\n')
+    expect(git(lead, 'rev-parse', 'HEAD')).toBe(head); expect(git(lead, 'write-tree')).toBe(index)
+    expect(git(lead, 'status', '--porcelain')).toBe('?? new.txt')
+  })
   it('skips failed workers without touching their output', async () => {
     const t = setup('failed'); t.set('test', { ...t.w, exitCode: 1 })
     put(worker, 'new.txt', 'new'); expect(await t.call({ tag: 'test' })).toContain('skipped test: failed')
@@ -973,6 +1144,33 @@ describe('room_collect', () => {
     expect(preservation).toEqual({ ignored: [], uncollected: ['late.txt'] })
     expect(fs.readFileSync(path.join(worker, 'late.txt'), 'utf8')).toBe('new borrower work')
   })
+  it.each(['staged', 'committed'] as const)('keeps an uncollected rename deletion after a retained owner is %s', async state => {
+    const t = httpxWorkers('running')
+    put(worker, 'new.txt', 'shared output')
+    expect(await t.call({ tag: 'port-fix' })).toContain("kept port-fix's worktree")
+    git(worker, 'config', 'diff.renames', 'true')
+    git(worker, 'mv', 'file.txt', 'renamed.txt')
+    expect(git(worker, 'diff', '--name-status', 'HEAD')).toMatch(/^R100\s/)
+    if (state === 'committed') git(worker, 'commit', '-qm', 'late rename')
+    // The lead has the destination bytes but has not collected the source deletion.
+    put(lead, 'renamed.txt', fs.readFileSync(path.join(worker, 'renamed.txt'), 'utf8'))
+    await finishWorker(t.s, 'port-bools', { status: 'done' })
+    expect(await t.call({ tag: 'port-bools', discard: true })).toContain('detached port-bools')
+    const registry = await registryForDir(lead)
+    const owner = registry.read('w_port-fix')!, status = registry.status(owner.id)!
+    const preservation: WorkerCleanupPreservation = { ignored: [], uncollected: [] }
+    await registry.beginOperation(owner.id, 'collect')
+    try {
+      expect(await cleanupWorker(lead, { ...realStateInput(owner, status), status: 'done', exitCode: 0 }, true, false, [], {}, 'lead', [owner], preservation)).toBe(false)
+    } finally { await registry.finishOperation(owner.id) }
+    expect(preservation.uncollected).toEqual(['file.txt'])
+    if (state === 'committed') expect(preservation.commitsAfterCollection?.paths).toEqual(['file.txt', 'renamed.txt'])
+    expect(fs.existsSync(worker)).toBe(true)
+    expect(fs.existsSync(path.join(worker, 'file.txt'))).toBe(false)
+    expect(fs.existsSync(path.join(lead, 'file.txt'))).toBe(true)
+    expect(fs.readFileSync(path.join(worker, 'renamed.txt'))).toEqual(fs.readFileSync(path.join(lead, 'renamed.txt')))
+  })
+
   it('deferred retirement keeps an owner checkout while its borrower runs', async () => {
     const t = httpxWorkers('running')
     await t.sync()
@@ -1129,7 +1327,9 @@ describe('room_collect', () => {
     put(lead, 'app.py', crlf(LINES.replace('two', 'W')))
     put(worker, 'app.py', crlf(LINES.replace('two', 'W')))
     git(worker, 'add', 'app.py'); git(worker, 'commit', '-qm', 'room: carried-in uncommitted work from lead')
-    t.set('test', { ...t.get('test'), base: git(worker, 'rev-parse', 'HEAD') })
+    const carriedBase = git(worker, 'rev-parse', 'HEAD')
+    t.set('test', { ...t.get('test'), base: carriedBase, carriedBase })
+    git(lead, 'update-ref', 'refs/room/carry/test', carriedBase)
     put(lead, 'app.py', crlf(LINES.replace('two', 'W2')))
     put(worker, 'new.txt', 'worker output\n')
     const result = await t.call({ tag: 'test' })
@@ -1276,6 +1476,22 @@ describe('room_collect', () => {
     expect(git(lead, 'rev-parse', 'HEAD')).toBe(before)
     expect(fs.existsSync(worker)).toBe(true)
   })
+  it('protects the source of a staged lead rename during copy collection', async () => {
+    const t = setup()
+    git(lead, 'config', 'diff.renames', 'true')
+    git(lead, 'mv', 'file.txt', 'renamed.txt')
+    expect(git(lead, 'diff', '--name-status', 'HEAD')).toMatch(/^R100\s/)
+    const before = { head: git(lead, 'rev-parse', 'HEAD'), index: git(lead, 'ls-files', '--stage'), status: git(lead, 'status', '--porcelain') }
+    put(worker, 'a.txt', 'earlier copy must not land')
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['a.txt', 'file.txt'] })).toContain('lead has modified file.txt')
+    expect(fs.existsSync(path.join(lead, 'file.txt'))).toBe(false)
+    expect(fs.existsSync(path.join(lead, 'a.txt'))).toBe(false)
+    expect({ head: git(lead, 'rev-parse', 'HEAD'), index: git(lead, 'ls-files', '--stage'), status: git(lead, 'status', '--porcelain') }).toEqual(before)
+    expect(fs.readFileSync(path.join(lead, 'renamed.txt'))).toEqual(fs.readFileSync(path.join(worker, 'file.txt')))
+    expect(release).not.toHaveBeenCalled()
+    expect(await t.call({ tag: 'test', mode: 'copy', paths: ['file.txt'], force: true })).toBe('copied file.txt')
+  })
+
   it('preflights the whole copy before releasing or writing, and requires force for modified destinations', async () => {
     put(worker, 'a.txt', 'a'); put(worker, 'file.txt', 'worker'); put(lead, 'file.txt', 'lead')
     const t = setup()
@@ -1666,7 +1882,7 @@ it('enforces a durable review hold before apply, copy, discard or force and pres
   const held = await t.call({ checkpoint: 'hold', reason: 'independent review before collection' })
   expect(held).toContain('hold active')
   reviewer = 'lead-thread'
-  for (const args of [{}, { tag: 'test' }, { tag: 'test', mode: 'copy', paths: ['file.txt'], force: true }, { tag: 'test', discard: true, force: true }]) {
+  for (const args of [{}, { tag: 'test' }, { tag: 'test', keep: true }, { tag: 'test', mode: 'copy', paths: ['file.txt'], force: true }, { tag: 'test', discard: true, force: true }]) {
     expect(await t.call(args)).toContain('held for review')
     expect(fs.readFileSync(path.join(lead, 'file.txt'), 'utf8')).toBe('base\n')
     expect(fs.existsSync(worker)).toBe(true)
@@ -1686,6 +1902,7 @@ it.each([
   { checkpoint: 'hold', reason: 'review', discard: true },
   { checkpoint: 'release', tag: 'test' },
   { checkpoint: 'status', force: false },
+  { checkpoint: 'status', keep: true },
   { checkpoint: 'hold', reason: '' },
   { checkpoint: 'hold', reason: 'review', reviewToken: '0'.repeat(64) },
   { checkpoint: 'release', reason: 'review' },

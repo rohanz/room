@@ -28,6 +28,7 @@ import { realStateInput, type LocalWorker, type WorkerRecord } from '../worker-s
 import { postWorkerMessage } from '../post.js'
 import { watcherExclusionWarning } from '../watcher-exclusions.js'
 import { currentToolTiming } from '../timing.js'
+import { acknowledgeKeptPublication } from '../kept-publication.js'
 import { settleWorkerPublication } from '../worker-publication.js'
 
 /** Repo paths a brief names that exist in the lead clone but not in the worker's worktree. */
@@ -49,8 +50,8 @@ function missingBriefPaths(task: string, leadDir: string, workerDir: string): st
 export const defs: ToolDef[] = [
   { name: 'room_done', annotations: RW, description: 'Use when finished: report one-line progress and tests, release claims, then exit if you are a worker.',
     inputSchema: { type: 'object', properties: { summary: str('one line: what landed and the test result'), pr_note: { type: 'boolean', description: 'post ledger on current branch PR' } }, required: ['summary'] } },
-  { name: 'room_spawn', annotations: RW, description: 'Only for explicitly requested Room workers or continued Room worker workflows; generic agent, parallel or background requests use host delegation; split by task, brief tasks, claim regions and preview; message a finished worker to resume it in its worktree.',
-    inputSchema: { type: 'object', properties: { tag: str('worker tag'), task: str('task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'default: caller host' }, model: str('host model override'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'reasoning effort' }, link: strs('input paths; default .roomlinks; [] disables'), carry: { type: 'boolean', description: 'false: start from HEAD' }, threads: { type: 'integer', minimum: 1, description: 'worker thread budget' }, share: SHARE, allowOutside: { type: 'boolean', description: 'allow a team worker outside this repo' }, dir: str('existing directory; no new worktree'), where: { type: 'string', enum: ['here', 'local'], description: 'here (default) or local workers room' } }, required: ['tag', 'task'] } },
+  { name: 'room_spawn', annotations: RW, description: 'Only for explicitly requested Room workers or continued Room worker workflows; other requests use host delegation; split by task; dispatch each part when its interfaces are agreed, with short briefs. Message finished workers to resume in their worktrees.',
+    inputSchema: { type: 'object', properties: { tag: str('tag'), task: str('task'), host: { type: 'string', enum: ['claude', 'codex'], description: 'default: caller host' }, model: str('model'), effort: { type: 'string', enum: [...WORKER_EFFORTS], description: 'effort' }, link: strs('paths; default .roomlinks; [] off'), carry: { type: 'boolean', description: 'false: start from HEAD' }, threads: { type: 'integer', minimum: 1, description: 'threads' }, share: SHARE, allowOutside: { type: 'boolean', description: 'allow outside repo' }, dir: str('existing checkout'), where: { type: 'string', enum: ['here', 'local'], description: 'default here; local workers room' } }, required: ['tag', 'task'] } },
 ]
 
 /** Save only local worker state when reconnect exceeded its bound; no room writes or claim release. */
@@ -157,7 +158,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
     async room_spawn(a) {
       const lead = S()
       const timing = currentToolTiming()
-      const timed = <T>(phase: 'lease' | 'prepare' | 'launch', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
+      const timed = <T>(phase: 'lease' | 'prepare' | 'launch' | 'carry-publication', work: () => Promise<T>): Promise<T> => timing ? timing.phase(phase, work) : work()
       if (a.effort !== undefined && !(WORKER_EFFORTS as readonly unknown[]).includes(a.effort)) return `error: effort must be ${WORKER_EFFORTS.join('|')}`
       const requestedEffort = a.effort as string | undefined
       if (a.threads !== undefined && (typeof a.threads !== 'number' || !Number.isSafeInteger(a.threads) || a.threads < 1)) return 'error: threads must be an integer >= 1'
@@ -260,9 +261,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           }
           catch (e) { throw new Error(`could not create a worktree for ${tag}: ${e instanceof Error ? e.message : String(e)}`) }
         }
+        const publication = base && carried?.paths?.length
+          ? await timed('carry-publication', () => acknowledgeKeptPublication(s, undefined, carried!.paths!)) : undefined
         await registry.update(id, old => ({ ...old, phase: 'prepared', prep: { ...old.prep, step: 'prepared', created,
           branchCreated: prepared?.branchCreated, branchExisted: old.prep.branchExisted ?? (prepared?.branchCreated ? false : undefined) },
-          base, carriedBase, carriedUntracked, skippedCarry, seq: old.seq + 1 }))
+          base, carriedBase, carriedUntracked, skippedCarry, keptPublication: publication ? { ...publication, base } : undefined, seq: old.seq + 1 }))
         if (toolCallAborted()) throw new Error('tool call cancelled')
         let link: string[]
         try { link = prepareWorkerLinks(lead.dir, dir, linkPaths) }
@@ -323,8 +326,9 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         if (wakeNote) out.unshift(wakeNote)
         out.push(`budget in prompt: ${threads} threads, ~${env.ROOM_WORKER_MEM_GB} GB · priority ${nice ? `nice ${nice}` : 'normal'}${link.length ? ` · inputs ${link.join(', ')}` : ''}`)
         out.push(`log: ${logFile}`)
+        if (publication?.pending) out.push('carried preview freshness pending: publication could not be verified; previews including the lead report a gap. Plain room_send retries.')
         if (!spawnExplained.has(lead)) out.push(`browser view: ${await refreshBrowserUrl(s)}`)
-        if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; block on room_wait and answer its questions promptly.`)
+        if (!spawnExplained.has(lead)) out.push(`it joins ${s === lead ? 'this room' : `the local workers room ${s.roomName} (not the team server; the team room sees its scope and claims as yours)`} and reports through room_done; answer its questions promptly.`)
         spawnExplained.add(lead)
         if (carried || skippedCarry?.length) {
           const copied = carriedUntracked?.length ?? 0

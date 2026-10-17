@@ -6,7 +6,7 @@ Decide the order after the trial with real users; see "What decides the order" a
 For current setup and behavior, use the [quickstart](../README.md#start-in-five-minutes)
 and [reference](reference.md); for the 0.16 cutover, use the [upgrade guide](upgrading.md).
 
-**Start here:** [the full review of 0.10.0](audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](audit-2026-09-21-qube.md) ranks what real
+**Start here:** [the full review of 0.10.0](archive/reports/audit-2026-09-21-review.md) (30 of its 33 findings fixed in 0.10.1, three partly; each is marked in the file), then [is Room invisible?](archive/reports/audit-2026-09-21-invisibility.md) (two independent audits of 0.8.0 against the product's own standard) and [the audit of the longest real use](archive/reports/audit-2026-09-21-qube.md) ranks what real
 use broke and proposes the order of work.
 
 ## Fixed in 0.17.0
@@ -85,7 +85,7 @@ use broke and proposes the order of work.
 
 ## Fixed in 0.16.12
 
-From the [2026-09-26 triage](triage-2026-09-26-roadmap.md):
+From the [2026-09-26 triage](archive/reports/triage-2026-09-26-roadmap.md):
 
 - **Claims revalidated after HEAD moves (triage 1):** your own claims follow their lines to the new HEAD, or are released with a note naming the commit.
 - **Notes to nobody (triage 2; carry-wip "broadcast rulings went out as fyi"):** an unaddressed notify or interrupt note reaches every other participant's inbox.
@@ -99,7 +99,7 @@ Proved fixed earlier by the triage and marked inline below: preview em dash (0.1
 
 ## Found 2026-09-29, left to the redesign
 
-From the [Werkzeug](rehearsal-2026-09-29-werkzeug.md), [httpx](rehearsal-2026-09-29-httpx.md) and [Flask](rehearsal-2026-09-29-flask.md) rehearsals on 0.16.37. The redesign (specs in `docs/superpowers/specs/2026-09-28-*.md`) replaces these mechanisms, so 0.16.38 does not patch them. 0.17.0 ships the redesign; rerun these rehearsals on it before marking them fixed:
+From the [Werkzeug](archive/reports/rehearsal-2026-09-29-werkzeug.md), [httpx](archive/reports/rehearsal-2026-09-29-httpx.md) and [Flask](archive/reports/rehearsal-2026-09-29-flask.md) rehearsals on 0.16.37. The redesign (specs in `docs/superpowers/specs/2026-09-28-*.md`) replaces these mechanisms, so 0.16.38 does not patch them. 0.17.0 ships the redesign; rerun these rehearsals on it before marking them fixed:
 
 - **Codex replays its queued inbox after finishing** (Werkzeug 3, httpx 3, Flask 2): answered questions and pulled base notices come back as new turns, and a base notice says "You have uncommitted work" on a clean tree. Covered by ledger.md "Wake (MF8)" (a content-free pointer, owed and not yet consumed messages only) and "The one selection function"; reporooms.md "B4. `pushed` notices" drops notices whose commit is already in HEAD.
 - **A quit Codex session stays in the room** (Werkzeug 4, httpx 1, Flask 4): its MCP server lives on under the shared `codex app-server` daemon. Covered by registry.md "18. Presence end and the idle lease" and "17. Host session binding". The spec keeps a quit session that still holds scope or claims present for up to 8 hours.
@@ -175,8 +175,8 @@ the server, not redesigning Room.
 Room runs on Claude Code and Codex. Its core (the MCP server, the git-watching daemon, the shared
 room, claims, previews, collect) is host-independent; each harness needs glue for instructions,
 packaging, a before-edit hook, waking an idle session, and headless workers with resume. Surveys:
-[OpenCode and Gemini CLI](host-survey-2026-09-24-gemini-opencode.md), [Cursor and Pi](host-survey-2026-09-24-cursor-pi.md),
-[the wider field](host-survey-2026-09-24-landscape.md). Adoption (JetBrains, Aug 2026, 15k devs): Claude Code 39%,
+[OpenCode and Gemini CLI](archive/reports/host-survey-2026-09-24-gemini-opencode.md), [Cursor and Pi](archive/reports/host-survey-2026-09-24-cursor-pi.md),
+[the wider field](archive/reports/host-survey-2026-09-24-landscape.md). Adoption (JetBrains, Aug 2026, 15k devs): Claude Code 39%,
 Copilot 21%, Codex 16%, Cursor 12%, OpenCode 7%.
 
 **First, one refactor:** a host adapter interface in room-mcp (identify the session, wake it, spawn and resume a
@@ -408,7 +408,7 @@ files, and large-repo collection and merge preview without a test command. Previ
 - **Nobody outside a batch can talk to it cleanly — partly fixed in 0.16.1.** The owner's session launched a detached batch lead
   (its own local room in its own clone) and later needed to tell one worker a root cause. Joining that room
   from the launching session would have made it a second participant in the lead's checkout (finding 4 of
-  docs/audit-2026-09-25-website-logs.md), so a script posted straight into the doc instead; the note was sent
+  docs/archive/reports/audit-2026-09-25-website-logs.md), so a script posted straight into the doc instead; the note was sent
   as "rohanz", the lead's own name, and the lead treated it as its own message. Wanted: join a room as an
   observer (distinct name, shares nothing, woken only by messages addressed to it). Same-named
   human messages now reach the agent inbox and wake paths; the observer join remains open.
@@ -583,7 +583,7 @@ list waits.
 
 ## Found 2026-09-27, after the trial
 
-- **Receipts are per participant, not per session.** A hook receipt written by one session can hide a message from another session with the same participant name in the same worktree. This belongs to the delivery-ledger redesign in docs/audit-2026-09-27-design.md.
+- **Receipts are per participant, not per session.** A hook receipt written by one session can hide a message from another session with the same participant name in the same worktree. This belongs to the delivery-ledger redesign in docs/archive/reports/audit-2026-09-27-design.md.
 - **An agent cannot reply to a note, only to a question.** In the httpx rerun, an agent could not acknowledge a status note. **Fixed in 0.16.33:** `inReplyTo` may name a note addressed to you; the reply goes to its author as a note with `inReplyTo` recorded and answers no question.
 - **Force-push recovery closes the room for everyone.** 0.16.29 lets `room_close` work unjoined, but a reset branch still needs close-and-reopen, and that drops the room's history. With repository-level rooms, re-base the room when its recorded base is gone from the remote (audit 2026-09-27, Fable 4).
 - **Duplicate delivery after a Codex queue wake.** Since 0.16.26 an agent can see a queued message twice. A registered prompt-submit hook could record receipts when Codex injects the message, but `hooks.json` is frozen, and changing it un-trusts the hooks for every Codex user.

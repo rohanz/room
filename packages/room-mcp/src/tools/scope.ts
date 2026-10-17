@@ -2,7 +2,7 @@ import path from 'node:path'
 import { gitCommonDir } from '@room/roomd'
 import { openRoomBrowser } from '../browser-open.js'
 import { sharingDescription, sharingHumanChoices } from '../config.js'
-import { runDoctor } from '../doctor.js'
+import { runDoctor, formatDeliveryHealth, formatDeliveryDegradation } from '../doctor.js'
 import { checkoutPublisher, publisherLine } from './share.js'
 import { claudeWakeNote } from '../prompt.js'
 import { offlineSince } from '../connection.js'
@@ -124,9 +124,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const active = state.ctx.getSession()
         const server = active ? active.local ? LOCAL : active.roomUrl.slice(0, active.roomUrl.lastIndexOf('/')) : undefined
         const destination = server ? { server, token: active?.token, credentialsPath: state.ctx.config?.credentialsPath } : undefined
-        return active?.local?.canonicalWarning
-          ? runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active.local.canonicalWarning)
-          : runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination)
+        const report = active?.local?.canonicalWarning
+          ? await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination, active.local.canonicalWarning)
+          : await runDoctor(active?.dir ?? state.ctx.cwd ?? process.cwd(), true, destination)
+        return [report, formatDeliveryHealth(state.deliveryHealth())].filter(Boolean).join('\n')
       }
       const s = S()
       await loadAreas(s)
@@ -142,6 +143,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (!s.local) out.push(`sharing level: ${sharingLevel}; ${sharingHumanChoices(sharingLevel)}`)
       if (s.local && publisher) out.push(publisher)
       if (s.local?.canonicalWarning) out.push(`WARN: ${s.local.canonicalWarning}`)
+      const delivery = formatDeliveryDegradation(state.deliveryDegradation())
+      if (delivery) out.push(delivery)
       if (state.hasCompany(s).company) {
         const wakeNote = claudeWakeNote(s, 'company')
         if (wakeNote) out.unshift(wakeNote)

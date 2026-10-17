@@ -50,8 +50,8 @@ export interface ToolCtx {
   /** How a content-free wake reaches the bound host session (default: the Codex queue or Claude Code's inbox socket). */
   wake?: import('../wake-path.js').SendWake
   midTurn?: import('../wake-path.js').SendMidTurn
-  /** Read-only Codex rollout probe; production supplies recent tool/hook contact for its fallback. */
-  wakeProbe?: Pick<import('../codex-turn.js').CodexTurnProbe, 'busy'>
+  /** Prefer supported host status; a bounded legacy probe is available for older/standalone hosts. */
+  wakeProbe?: import('../codex-turn.js').CodexWakeProbe
   /** Diagnostics (inbox deliveries etc.); default stderr. */
   log?: (line: string) => void
   /** Pull-request integration; injectable for tests. */
@@ -90,6 +90,8 @@ export interface HandlerState {
   doClose: (s: Session) => Promise<string[]>
   /** The session's delivery ledger: the only selector and receipt writer. */
   ledger: Ledger
+  deliveryHealth: () => import('../wake-reconciler.js').DeliveryHealth | undefined
+  deliveryDegradation: () => import('../wake-reconciler.js').DeliveryHealth['degraded']
   rooms: Rooms
   S: () => Session
   isMe: (s: Session, p: { name: string; kind: string }) => boolean

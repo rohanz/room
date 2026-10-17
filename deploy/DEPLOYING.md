@@ -1,4 +1,6 @@
-# Operating the hosted server
+# Operating Rohan’s Fly server
+
+This is the maintainer-specific runbook for the existing `room-rohanz` deployment. For your own server, follow [self-hosting](self-hosting.md). The checked-in `fly.toml` contains this deployment’s app name and operator settings; it is not a ready-to-use configuration for another account.
 
 The operator’s Room server is the Fly app `room-rohanz` (https://room-rohanz.fly.dev, region `sin`).
 Room clients no longer default to this server. `deploy/fly.toml` sets `ROOM_MANAGED_REPOS=true` and `ROOM_ADMINS=rohanz`: only Rohan can open or close repository rooms. Existing open rooms remain available to their GitHub collaborators with push access. Review the registered rooms before enabling this on a previously public server. Browser view links remain shareable bearer capabilities.

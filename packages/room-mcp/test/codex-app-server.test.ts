@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocketServer } from 'ws'
-import { codexControlSocket, postCodexToolOutput } from '../src/codex-app-server.js'
+import { codexControlSocket, postCodexToolOutput, readCodexThreadStatus } from '../src/codex-app-server.js'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
@@ -53,7 +53,8 @@ it('initializes and joins the active turn with tool authority', async () => {
 
 it.each(['idle', 'notLoaded', 'systemError'])('does not start a turn for %s', async status => {
   const d = await daemon(status)
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual({ kind: 'idle' })
+  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual(status === 'idle'
+    ? { kind: 'idle' } : { kind: 'unavailable', reason: `Codex thread is ${status}` })
   expect(d.calls.some(c => c.method === 'turn/start')).toBe(false)
 })
 
@@ -81,13 +82,13 @@ it('returns unavailable when active turn/start fails', async () => {
   expect(d.calls.map(c => c.method)).toContain('turn/start')
 })
 
-it('returns unavailable for a turn that is not inProgress', async () => {
+it('returns uncertain for a turn response that does not confirm an active join', async () => {
   const d = await daemon('active', undefined, false, undefined, 'completed')
-  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual({ kind: 'unavailable', reason: 'Codex app-server returned an invalid turn' })
+  expect(await postCodexToolOutput({ socketPath: d.socketPath, threadId: 'thread', text: 'pointer' })).toEqual({ kind: 'uncertain', reason: 'Codex app-server returned an invalid turn' })
 })
 
 describe('in-memory daemon protocol', () => {
-  function fake(status = 'active', error?: string, silent = false, turnError?: string, turnStatus = 'inProgress') {
+  function fake(status = 'active', error?: string, silent = false, turnError?: string, turnStatus = 'inProgress', errorCode?: number, afterSubmit?: 'silent' | 'close') {
     const calls: any[] = []
     let closed = false
     class Socket extends EventEmitter {
@@ -96,11 +97,15 @@ describe('in-memory daemon protocol', () => {
       send(data: string) {
         const request = JSON.parse(data); calls.push(request)
         if (silent || !request.id) return
+        if (request.method === 'turn/start' && afterSubmit) {
+          if (afterSubmit === 'close') queueMicrotask(() => this.emit('close'))
+          return
+        }
         queueMicrotask(() => this.emit('message', JSON.stringify(turnError && request.method === 'turn/start'
           ? { id: request.id, error: { message: turnError } } : error && request.method === 'thread/read'
-          ? { id: request.id, error: { message: error } }
+          ? { id: request.id, error: { message: error, code: errorCode } }
           : { id: request.id, result: request.method === 'initialize' ? {} : request.method === 'thread/read'
-            ? { thread: { status: { type: status } } } : { turn: { id: 'turn', status: turnStatus } } })))
+            ? { thread: { status: { type: status, activeFlags: ['waitingOnApproval', 'waitingOnUserInput'] } } } : { turn: { id: 'turn', status: turnStatus } } })))
       }
     }
     return { calls, closed: () => closed, WebSocket: Socket as unknown as typeof WebSocket }
@@ -115,7 +120,8 @@ describe('in-memory daemon protocol', () => {
   })
   it.each(['idle', 'notLoaded', 'systemError'])('closes without starting %s', async status => {
     const d = fake(status)
-    expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: d.WebSocket })).toEqual({ kind: 'idle' })
+    expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: d.WebSocket })).toEqual(status === 'idle'
+      ? { kind: 'idle' } : { kind: 'unavailable', reason: `Codex thread is ${status}` })
     expect(d.calls.map(c => c.method)).not.toContain('turn/start')
     expect(d.closed()).toBe(true)
   })
@@ -135,13 +141,41 @@ describe('in-memory daemon protocol', () => {
     expect(d.calls.map(c => c.method)).toContain('turn/start')
     expect(d.closed()).toBe(true)
   })
-  it('returns unavailable for a turn that is not inProgress and closes', async () => {
+  it('returns uncertain for a turn response that does not confirm an active join and closes', async () => {
     const d = fake('active', undefined, false, undefined, 'completed')
-    expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: d.WebSocket })).toEqual({ kind: 'unavailable', reason: 'Codex app-server returned an invalid turn' })
+    expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: d.WebSocket })).toEqual({ kind: 'uncertain', reason: 'Codex app-server returned an invalid turn' })
     expect(d.closed()).toBe(true)
   })
   it('handles constructor failure', async () => {
     class Socket { constructor() { throw new Error('connect failed') } }
     expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: Socket as unknown as typeof WebSocket })).toEqual({ kind: 'unavailable', reason: 'connect failed' })
+  })
+  it.each(['silent', 'close'] as const)('reports uncertain-after-submit on %s without claiming a join', async afterSubmit => {
+    const d = fake('active', undefined, false, undefined, undefined, undefined, afterSubmit)
+    expect(await postCodexToolOutput({ socketPath: '/fake', threadId: 'thread', text: 'pointer', WebSocket: d.WebSocket, timeoutMs: 5 }))
+      .toMatchObject({ kind: 'uncertain' })
+    expect(d.calls.filter(c => c.method === 'turn/start')).toHaveLength(1)
+    expect(d.closed()).toBe(true)
+  })
+  it.each(['idle', 'active', 'notLoaded', 'systemError', 'future-status'])('reads %s without starting or resuming a turn', async status => {
+    const d = fake(status)
+    const result = await readCodexThreadStatus({ socketPath: '/fake', threadId: 'thread', WebSocket: d.WebSocket })
+    expect(result).toEqual(status === 'active' ? { kind: 'active', waiting: ['waitingOnApproval', 'waitingOnUserInput'] }
+      : status === 'idle' ? { kind: 'idle' } : { kind: 'unknown', reason: status === 'future-status' ? 'unknown-status' : status })
+    expect(d.calls.map(c => c.method)).toEqual(['initialize', 'initialized', 'thread/read'])
+    expect(d.closed()).toBe(true)
+  })
+  it('allows legacy probing only for absent sockets or unsupported methods', async () => {
+    expect(await readCodexThreadStatus({ socketPath: undefined, threadId: 'thread' })).toMatchObject({ kind: 'unavailable', legacy: true })
+    const unsupported = fake('active', 'method missing', false, undefined, undefined, -32601)
+    expect(await readCodexThreadStatus({ socketPath: '/fake', threadId: 'thread', WebSocket: unsupported.WebSocket })).toMatchObject({ kind: 'unavailable', legacy: true })
+    const unknown = fake('active', 'thread not found', false, undefined, undefined, -32600)
+    expect(await readCodexThreadStatus({ socketPath: '/fake', threadId: 'thread', WebSocket: unknown.WebSocket })).toEqual({ kind: 'unknown', reason: 'notLoaded' })
+    for (const error of ['thread not found in remote service', 'thread not found: another-thread']) {
+      const other = fake('active', error, false, undefined, undefined, -32600)
+      expect(await readCodexThreadStatus({ socketPath: '/fake', threadId: 'thread', WebSocket: other.WebSocket })).toEqual({ kind: 'unavailable', reason: error })
+    }
+    const timeout = fake('active', undefined, true)
+    expect(await readCodexThreadStatus({ socketPath: '/fake', threadId: 'thread', WebSocket: timeout.WebSocket, timeoutMs: 5 })).toEqual({ kind: 'unavailable', reason: 'Codex app-server timed out' })
   })
 })

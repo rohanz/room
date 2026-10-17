@@ -41,6 +41,14 @@ export interface WorkerRecord {
   /** A dir= worker borrows another worker's checkout and must never remove it. */
   sharedWith?: string
   base?: string; carriedBase?: string; carriedUntracked?: { path: string; sha: string; mode?: number }[]
+  /** Explicit keep preserves resumption even when a refresh replaces the collection snapshot ref. */
+  collectedKeep?: boolean
+  /** A post-operation full scan proves the lead published the kept/carried input.
+   * Paths are bounded verification inputs, never a history of guessed stale hashes. */
+  keptPublication?: {
+    paths: string[]; pending: boolean; overflow?: boolean; base?: string
+    ack?: { publisher: string; sessionId: string; fence: string; rev: number; roomSalt?: string }
+  }
   skippedCarry?: { path: string; reason: string }[]; port?: number; hostSessionId?: string
   capabilities: { resume: boolean; signal: boolean; collect: 'delta' | 'copy' | 'none' }
   phase: 'intent' | 'preparing' | 'prepared' | 'active' | 'collecting' | 'discarding' | 'retiring' | 'retired' | 'abandoned'

@@ -74,6 +74,8 @@ function setupBridged(wake?: (id: string, text: string) => Promise<void>) {
   const exits: ((code: number | null) => void)[] = []
   const leadTools = createTools({
     getSession: () => ls, setSession: s => { ls = s }, cwd: dir, binding: { bound: () => ({ id: 'thread-lead', host: 'codex' as const }), id: () => 'thread-lead', dir: () => undefined, commonDir: () => undefined }, conflictDebounceMs: 0, probe: () => undefined, listCwdProcesses: () => [],
+    // An idle host isolates worker-exit routing from host-state discovery (covered by wake-turn).
+    wakeProbe: { busy: async () => false },
     ...(wake ? { wake: async (target: { id: string }, text: string) => { await wake(target.id, text); return 'queue' as const } } : {}),
     join: async () => fakeSession(local.a, lead),
     leave: async () => {},

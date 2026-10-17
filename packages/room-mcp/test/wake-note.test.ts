@@ -15,9 +15,13 @@ describe('Claude wake guidance', () => {
     const opts = { host: 'claude', parentArgs: plainClaude, shell: '/bin/zsh' }
     expect(claudeWakeNote(s, 'alone', opts)).toBe('')
     const first = claudeWakeNote(s, 'spawn', opts)
-    expect(first.split('\n')[0]).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(first.split('\n')[0]).toContain('Continue independent work while workers run.')
     expect(first.split('\n').slice(1).join('\n')).toBe(claudeWakeText('/bin/zsh'))
-    expect(first).toContain('messages reach it on its next turn')
+    expect(first).toContain('Pending messages can arrive on Room tool replies')
+    expect(first).toContain('room_wait(questionId/claimId)')
+    expect(first).toContain('Keep headless leads alive until supervision is complete')
+    expect(first).toContain('A timeout is not an answer or approval')
+    expect(first).not.toContain('Block on room_wait in a loop')
     expect(claudeWakeNote(s, 'spawn', opts)).toBe('')
   })
 
@@ -26,10 +30,10 @@ describe('Claude wake guidance', () => {
     const opts = { host: 'claude', parentArgs: plainClaude, shell: '/bin/zsh' }
     const first = claudeWakeNote(s, 'company', opts)
     expect(first).toContain('For your human:')
-    expect(first).not.toContain('room_wait in a loop')
+    expect(first).not.toContain('Continue independent work while workers run.')
     expect(claudeWakeNote(s, 'company', opts)).toBe('')
     const spawn = claudeWakeNote(s, 'spawn', opts)
-    expect(spawn).toBe('Block on room_wait in a loop to receive worker questions and completions.')
+    expect(spawn).toContain('Continue independent work while workers run.')
     expect(claudeWakeNote(s, 'spawn', opts)).toBe('')
   })
 
@@ -53,7 +57,7 @@ describe('Claude wake guidance', () => {
   it('prints a copyable alias for the current shell, defaulting to zsh', () => {
     for (const [shell, rc] of [['/bin/zsh', '~/.zshrc'], ['/bin/bash', '~/.bashrc'], [undefined, '~/.zshrc']] as const) {
       const note = claudeWakeText(shell)
-      expect(note.split('\n')[0]).toBe("For your human: this Claude Code session can't be woken instantly. Everything still works; messages reach it on its next turn.")
+      expect(note.split('\n')[0]).toContain('no wake path is available for this Claude Code session')
       expect(note.split('\n')[1]).toContain('2.1.224 or later')
       expect(note.split('\n')[2]).toBe(`If a socket is unavailable, start Claude Code with \`claude-room\`. If that command is not found, add it: \`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}\``)
       expect(note).toContain(`echo "alias claude-room='claude --dangerously-load-development-channels plugin:room@room'" >> ${rc}`)

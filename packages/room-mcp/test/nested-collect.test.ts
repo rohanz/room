@@ -150,7 +150,7 @@ it('collects grand-worker edits through a lead once while preserving the human c
   room.setMeta({ base: git(top, 'rev-parse', 'HEAD'), branch: 'shop', repo: 'shop' })
   const mk = (tag: string, owner: string, prepared: typeof lead): FixtureWorker => ({
     id: `${owner}/${tag}#1`, tag, name: `rohanz+${tag}`, lead: owner, host: 'codex', task: tag,
-    dir: prepared.dir, branch: prepared.branch, base: prepared.base, carriedUntracked: prepared.carriedUntracked,
+    dir: prepared.dir, branch: prepared.branch, base: prepared.base, carriedBase: prepared.carriedBase, carriedUntracked: prepared.carriedUntracked,
     pid: -1, startedAt: 1, finishedAt: 2, exitCode: 0, status: 'done',
   })
   await registerWorkers(session(room, top, 'rohanz'), [mk('lead', 'rohanz', lead), mk('cat', 'rohanz+lead', cat)])
@@ -174,6 +174,27 @@ it('collects grand-worker edits through a lead once while preserving the human c
     expect(git(top, 'for-each-ref', '--format=%(refname)', `refs/room/carry/${tag}`, `refs/room/carry-untracked/${tag}`)).toBe('')
     expect(fs.existsSync(path.join(top, '.git', 'room-carry', `${tag}.json`))).toBe(false)
   }
+})
+
+it('keeps both worker levels available, then collects only the grand-worker follow-up through its lead', async () => {
+  const { root, lead, cat, room, registry } = await batch()
+  const leadCollect = collect(room, lead.dir, 'rohanz+lead')
+  const humanCollect = collect(room, root, 'rohanz')
+  expect(await leadCollect({ tag: 'cat', keep: true })).toContain('Changes from cat:')
+  expect(await humanCollect({ tag: 'lead', keep: true })).toContain('Changes from lead:')
+  expect(workerByTag(root, 'lead')?.status).toBe('done')
+  expect(workerByTag(root, 'cat')?.status).toBe('done')
+  expect(room.retiredWorkers()).toEqual([])
+  put(root, 'lead.txt', 'human revised the collected lead edit\n')
+  put(cat.dir, 'cat.txt', 'grand-worker follow-up\n')
+  expect(await leadCollect({ tag: 'cat' })).toContain('cleaned up cat')
+  expect(await humanCollect({ tag: 'lead' })).toContain('cleaned up lead')
+  expect(read(root, 'lead.txt')).toBe('human revised the collected lead edit\n')
+  expect(read(root, 'cat.txt')).toBe('grand-worker follow-up\n')
+  expect(localWorkers(root)).toEqual([])
+  expect(registry.list().every(record => record.phase === 'retired')).toBe(true)
+  expect(fs.existsSync(lead.dir)).toBe(false)
+  expect(fs.existsSync(cat.dir)).toBe(false)
 })
 
 it('recovers the intentional shutdown reason for both worker levels after the relay disappears', async () => {

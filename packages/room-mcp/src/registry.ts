@@ -23,6 +23,7 @@ import { postWorkerMessage } from './post.js'
 import { realStateInput, type LocalWorker } from './worker-status.js'
 import { autoRetire } from './retire.js'
 import { WorkerProjector } from './worker-projector.js'
+import { readDiffCache } from './read-diff-cache.js'
 
 export type Role = 'primary' | 'workers'
 export interface DeliveredResume { delivered: true; reply: string }
@@ -132,6 +133,7 @@ export class Rooms {
   async flush(): Promise<void> { for (const e of this.entries.values()) await e.attachment?.flush?.() }
 
   private stopRetirement(s: Session): void {
+    readDiffCache.clear(s)
     clearInterval(this.autoRetireTimers.get(s))
     this.autoRetireTimers.delete(s)
     this.projectors.get(s)?.stop()
@@ -251,7 +253,7 @@ export class Rooms {
     if (toolCallAborted()) return 'error: tool call cancelled'
     const registry = await registryForDir(s.dir)
     const known = registry.reserved(w.tag)
-    if (known && ['retiring', 'retired'].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume`
+    if (known && ['retiring', 'retired'].includes(known.phase)) return `error: ${w.tag} was collected or discarded; it cannot resume; use room_collect with keep: true to collect and stay resumable`
     if (known && !fs.existsSync(known.dir)) return `error: cannot resume ${w.tag}: its worktree no longer exists`
     const trusted = await registry.trusted({ participant: s.me.name, room: s.roomName, dir: s.dir }, w.tag)
     if (!trusted || trusted.record.id !== w.id) return `error: ${w.tag} has no local worker capability; cannot resume`

@@ -18,3 +18,5 @@ dist/
 .room/
 # Compiled hosted server (built in the Docker build stage).
 packages/server/dist/
+# Private handoff notes (local paths; never committed).
+docs/handoff-*.md

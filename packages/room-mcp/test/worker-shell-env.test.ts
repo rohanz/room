@@ -21,10 +21,12 @@ function has(shell: string): boolean {
 const options = { threads: 2, memGb: 1, server: 'local', room: 'local/repo', dir: '/repo/.room/workers/w', tag: 'w', lead: 'l', owner: 'o',
   share: 'intent', run: 1, nonce: 'n', registry: '/repo/.git/room/registry', id: 'id', token: 'secret', logDir: '/repo', isWorker: true, port: 4414 }
 
+// Runs the hook exactly as a worker's settings install it: `node` with the exec-form args, event JSON on stdin.
 function powerShellHook(input: unknown) {
-  const written = writeWorkerShellEnv(tmp(), 'w', undefined)
-  expect(written.hook, 'Claude Bash-only env file leaves PowerShell ROOM_* untouched').toBeTypeOf('string')
-  return spawnSync(process.execPath, [written.hook!], {
+  const settings = JSON.parse(workerCommand('claude', undefined, 'task', undefined, undefined, { shellEnvHook: true }).args.find(a => a.includes('PreToolUse'))!)
+  const hook = settings.hooks.PreToolUse[0].hooks[0]
+  expect(hook.command).toBe('node')
+  return spawnSync(process.execPath, hook.args, {
     input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8', timeout: 5000,
     env: { ...process.env, ROOM_WORKER_ID: 'worker-id', ROOM_TOKEN: 'test-token', PORT: '4414', OMP_NUM_THREADS: '2' },
   })
@@ -84,15 +86,14 @@ it('denies malformed inputs and unsupported PowerShell declarations instead of r
   }
 })
 
-it('uses an exec-form worker hook on fresh/resumed Claude launches without replacing existing settings', () => {
-  const hook = "C:\\room space\\worker's $name `tick\\w.shell-env.mjs"
+it('uses an exec-form inline worker hook on fresh/resumed Claude launches without replacing existing settings', () => {
   for (const resume of [false, true]) for (const pluginDir of [undefined, 'C:\\plugin space']) {
     const args = workerCommand('claude', undefined, 'task', undefined, undefined,
-      { resume, sessionId: resume ? 's' : undefined, pluginDir, shellEnvHook: hook }).args
+      { resume, sessionId: resume ? 's' : undefined, pluginDir, shellEnvHook: true }).args
     expect(args.filter(v => v === '--settings')).toHaveLength(1)
     expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({
       ...(pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
-      hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [{ type: 'command', command: 'node', args: [hook], timeout: 5 }] }] },
+      hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [{ type: 'command', command: 'node', args: ['--input-type=module', '-e', expect.stringContaining('PreToolUse')], timeout: 5 }] }] },
     })
     expect(args).toContain('acceptEdits')
     expect(args).not.toContain('--dangerously-skip-permissions')
@@ -155,19 +156,19 @@ it('skips a lead env file that no longer exists instead of failing the command',
   expect(workerShellEnvScript()).not.toContain('[ -f')
 })
 
-it('writes both artifacts 0600 next to the worker log, replacing rather than following planted links', () => {
+it('writes only the env file, 0600 next to the worker log, replacing rather than following planted links', () => {
   const lead = tmp()
   const workers = path.join(lead, '.room', 'workers')
   fs.mkdirSync(workers, { recursive: true })
   const target = path.join(lead, 'elsewhere')
   fs.writeFileSync(target, 'untouched')
   fs.symlinkSync(target, path.join(workers, 'w.env.sh'))
-  fs.symlinkSync(target, path.join(workers, 'w.shell-env.mjs'))
   const written = writeWorkerShellEnv(lead, 'w', undefined)
-  expect(written).toEqual({ file: path.join(workers, 'w.env.sh'), hook: path.join(workers, 'w.shell-env.mjs') })
+  expect(written).toEqual({ file: path.join(workers, 'w.env.sh') })
   expect(fs.lstatSync(written.file!).isSymbolicLink()).toBe(false)
-  expect(fs.lstatSync(written.hook!).isSymbolicLink()).toBe(false)
-  if (process.platform !== 'win32') for (const file of [written.file!, written.hook!]) expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+  if (process.platform !== 'win32') expect(fs.statSync(written.file!).mode & 0o777).toBe(0o600)
+  // Nothing the project's own lint, format or type-check would pick up as source (2026-10-16: 80 eslint errors).
+  expect(fs.readdirSync(workers).filter(name => /\.[cm]?[jt]sx?$/.test(name))).toEqual([])
   expect(fs.readFileSync(target, 'utf8')).toBe('untouched')
   expect(fs.readFileSync(written.file!, 'utf8')).toBe(workerShellEnvScript())
 })
@@ -175,29 +176,16 @@ it('writes both artifacts 0600 next to the worker log, replacing rather than fol
 it('refuses a linked .room or workers directory instead of writing through it', () => {
   for (const linked of ['.room', 'workers']) {
     const lead = tmp(), outside = tmp()
-    for (const file of ['w.env.sh', 'w.shell-env.mjs']) fs.writeFileSync(path.join(outside, file), 'untouched')
+    fs.writeFileSync(path.join(outside, 'w.env.sh'), 'untouched')
     const type = process.platform === 'win32' ? 'junction' : 'dir'
     if (linked === '.room') fs.symlinkSync(outside, path.join(lead, '.room'), type)
     else { fs.mkdirSync(path.join(lead, '.room')); fs.symlinkSync(outside, path.join(lead, '.room', 'workers'), type) }
     const written = writeWorkerShellEnv(lead, 'w', undefined)
     expect(written.file).toBeUndefined()
-    expect(written.hook).toBeUndefined()
     expect(written.warning).toContain('still see Room')
     expect(fs.readFileSync(path.join(outside, 'w.env.sh'), 'utf8')).toBe('untouched')
-    expect(fs.readFileSync(path.join(outside, 'w.shell-env.mjs'), 'utf8')).toBe('untouched')
+    expect(fs.readdirSync(outside)).toEqual(['w.env.sh'])
   }
-})
-
-it('reports a partial hook write failure while retaining the working Bash env file', async () => {
-  const lead = tmp()
-  const workers = path.join(lead, '.room', 'workers')
-  fs.mkdirSync(path.join(workers, 'w.shell-env.mjs'), { recursive: true })
-  const written = writeWorkerShellEnv(lead, 'w', undefined)
-  expect(written.file).toBe(path.join(workers, 'w.env.sh'))
-  expect(written.hook).toBeUndefined()
-  expect(fs.readFileSync(written.file!, 'utf8')).toBe(workerShellEnvScript())
-  expect(written.warning).toMatch(/could not write .*w\.shell-env\.mjs .*PowerShell commands still see/)
-  expect(await workerShellEnvWarnings('w', 'claude', written, 'darwin')).toEqual([written.warning])
 })
 
 it('reports an env file it could not write instead of launching silently unscrubbed', () => {
@@ -205,10 +193,10 @@ it('reports an env file it could not write instead of launching silently unscrub
   fs.writeFileSync(path.join(lead, '.room'), 'not a directory')
   const written = writeWorkerShellEnv(lead, 'w', undefined)
   expect(written.file).toBeUndefined()
-  expect(written.warning).toMatch(/^warning: could not write .*w\.env\.sh .*; w's shell commands still see Room's ROOM_\* variables/)
+  expect(written.warning).toMatch(/^warning: could not write .*w\.env\.sh .*; w's Bash commands still see Room's ROOM_\* variables/)
 })
 
-it('removes the env file with the worker logs', () => {
+it('removes the env file with the worker logs, and hook files older versions left', () => {
   const lead = tmp()
   const workers = path.join(lead, '.room', 'workers')
   fs.mkdirSync(workers, { recursive: true })
@@ -244,12 +232,10 @@ it('warns when a host cannot apply the scrub', async () => {
   expect(codexShellFilterWarning('codex-cli 1.0.0-alpha.1')).toBeUndefined()
   // Unreadable versions are not a scrub failure: a codex that cannot print its version will not start the worker either.
   expect(codexShellFilterWarning(undefined)).toBeUndefined()
-  expect((await workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'win32', async () => undefined)).join('\n')).toMatch(/PowerShell/)
-  expect(await workerShellEnvWarnings('w', 'claude', { file: '/x', hook: '/h' }, 'win32')).toEqual([])
-  expect(await workerShellEnvWarnings('w', 'claude', { file: '/x' }, 'darwin', async () => undefined)).toEqual([])
-  expect(await workerShellEnvWarnings('w', 'claude', { warning: 'warning: x' }, 'darwin', async () => undefined)).toEqual(['warning: x'])
-  expect(await workerShellEnvWarnings('w', 'codex', {}, 'darwin', async () => 'codex-cli 0.140.0')).toHaveLength(1)
-  expect(await workerShellEnvWarnings('w', 'codex', {}, 'darwin', async () => 'codex-cli 0.159.2')).toEqual([])
+  expect(await workerShellEnvWarnings('claude', { file: '/x' }, async () => undefined)).toEqual([])
+  expect(await workerShellEnvWarnings('claude', { warning: 'warning: x' }, async () => undefined)).toEqual(['warning: x'])
+  expect(await workerShellEnvWarnings('codex', {}, async () => 'codex-cli 0.140.0')).toHaveLength(1)
+  expect(await workerShellEnvWarnings('codex', {}, async () => 'codex-cli 0.159.2')).toEqual([])
 })
 
 // rc11 rehearsal R4: the first spawn ran `codex --version` synchronously, stalling the lead's MCP (4.8 s in the
@@ -260,7 +246,7 @@ it.skipIf(process.platform === 'win32')('reads the installed Codex version witho
     fs.writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\nsleep 0.5\necho codex-cli 0.140.0\n', { mode: 0o755 })
     vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`)
     const started = performance.now()
-    const pending = workerShellEnvWarnings('w', 'codex', {}, 'darwin')
+    const pending = workerShellEnvWarnings('codex', {})
     expect(performance.now() - started).toBeLessThan(250)
     let timerRan = false
     setTimeout(() => { timerRan = true }, 10)

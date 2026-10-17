@@ -47,6 +47,20 @@ afterEach(() => {
 })
 
 describe('carry and discard safety', () => {
+  it('reports both sides of a carried rename without counting it as worker work', async () => {
+    run(root, 'config', 'diff.renames', 'true')
+    run(root, 'mv', 'base.txt', 'renamed.txt')
+    expect(run(root, 'diff', '--name-status', 'HEAD')).toMatch(/^R100\s/)
+    const prepared = await prepareWorktree(root, 'rename', 'lead', [])
+    expect(prepared.carried?.paths).toEqual(['base.txt', 'renamed.txt'])
+    expect(prepared.carried?.count).toBe(2)
+    const worker = { name: 'lead+rename', dir: prepared.dir, base: prepared.base, carriedBase: prepared.carried?.commit }
+    expect(await carriedPaths(workerBaseline(worker)!)).toEqual(['base.txt', 'renamed.txt'])
+    expect(await workerChangedPaths(worker)).toEqual([])
+    expect(fs.existsSync(path.join(prepared.dir, 'base.txt'))).toBe(false)
+    expect(fs.readFileSync(path.join(prepared.dir, 'renamed.txt'), 'utf8')).toBe('base\n')
+  })
+
   it('honors an explicit empty link list even when .roomlinks exists', async () => {
     fs.writeFileSync(path.join(root, '.roomlinks'), 'data.txt\n')
     fs.writeFileSync(path.join(root, 'data.txt'), 'lead data\n')

@@ -43,7 +43,8 @@ async function mcp() {
     shareMax: 'full', shareRequested: 'full', ...hubSeam(doc), policyStore: testPolicyStore(), provider: { synced: true }, daemon: { touch() {}, async stop() {} } } as unknown as Session
   s.awareness.setLocalState({ user: { name: 'Rohan', kind: 'agent', color: '#000' }, status: 'idle', lastActive: Date.now() })
   const binding: SessionBinding = { bound: () => ({ id: SID, host: 'codex' }), id: () => SID, dir: () => sessionDirectory(join(dir, '.git'), SID), commonDir: () => join(dir, '.git') }
-  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send })
+  // Company gates are tested with an explicitly idle host, not an absent host treated as idle.
+  const tools = createTools({ getSession: () => s, setSession: () => {}, cwd: dir, binding, wake: send, wakeProbe: { busy: async () => false } })
   tools.attachHooks(s)
   const arbitration = await startArbitration({ binding, ledger: tools.ledger, select: () => tools.hookSelect() })
   const peers: Awareness[] = []

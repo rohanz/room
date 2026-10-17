@@ -197,7 +197,7 @@ describe('claims on separate lines of a 3,000-line changelog (rehearsal R3)', ()
 /** Wakes for a bound Codex session, attached to `s`. */
 function wakes(s: Session, send: SendWake = async () => 'queue', ownWorkers: ReadonlySet<string> = new Set()) {
   const ledger = new Ledger({ sessionId: () => SID, route: () => ({}) })
-  const w = new WakeReconciler({ ledger, bound: () => ({ id: SID, host: 'codex' }), sessionDir: () => sdir(), send, ownWorkers: () => ownWorkers, windowMs: 0 })
+  const w = new WakeReconciler({ ledger, bound: () => ({ id: SID, host: 'codex' }), sessionDir: () => sdir(), send, ownWorkers: () => ownWorkers, windowMs: 0, codexTurn: { busy: async () => false } })
   ledger.bind(s); w.attach(s)
   return w
 }

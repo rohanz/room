@@ -83,6 +83,19 @@ it('words two different new files at one path as new files, not a line conflict'
   expect(session.lastPreview?.clean).toBe(false)
 })
 
+it('previews identical same-path additions cleanly and keeps one exact copy in the combined tree', async () => {
+  const repo = await small()
+  const text = 'int helper() { return 1; }\n'
+  for (const worker of repo.workers) put(worker.dir, 'Source/Helper.cpp', text)
+  const { state, session } = await juceSession(repo)
+  const result = await fileHandlers(state).room_preview_merge({ people: ['lead+w1', 'lead+w2'], run: 'cat Source/Helper.cpp' })
+  expect(result).toContain('lead+w1 and lead+w2 made the same change: Source/Helper.cpp')
+  expect(result).not.toContain('CONFLICTS')
+  expect(result).toContain('tests: exit 0')
+  expect(result).toContain(text.trim())
+  expect(session.lastPreview?.clean).toBe(true)
+})
+
 it('collects both workers past their scratch logs and saves each copy under .room/scratch', async () => {
   const repo = await small()
   const [w1, w2] = repo.workers

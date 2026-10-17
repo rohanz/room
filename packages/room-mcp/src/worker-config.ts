@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import pluginManifest from '../../../plugins/room/.claude-plugin/plugin.json' with { type: 'json' }
 import { DEFAULT_CLAUDE_CHANNEL } from './config.js'
 import { normalizeExplicitRoomName } from './room-name.js'
-import { CODEX_SHELL_FILTER } from './worker-shell-env.js'
+import { CODEX_SHELL_FILTER, POWERSHELL_HOOK_ARGS } from './worker-shell-env.js'
 
 export type WorkerHost = 'claude' | 'codex'
 
@@ -135,12 +135,13 @@ export function validTag(tag: unknown): string | undefined {
 export function workerPrompt(lead: string, tag: string, task: string, context?: { threads: number; memGb: number; nice: number; effort?: string; port?: number; link?: string[]; carriedPaths?: string[]; deps?: string }): string {
   return [
     `You are worker "${tag}", dispatched by ${lead} into the room for this repo. Follow the room-etiquette skill:`,
-    `room_scope first, claim before editing, ask ${lead} with room_send(type "question", to "${lead}") when unsure,`,
-    `if a room_wait for an answer times out, wait again (up to three times) before deciding on your own, and say what you assumed; room_preview_merge before finishing, and room_done with a one-line summary when finished; then finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
+    `room_scope first, claim before editing. Ask the peer responsible for a dependency directly with room_send(type "question", to "<returned peer name>"); ask ${lead} for scope decisions or unresolved ownership.`,
+    `Continue independent work while an answer is pending. If blocked, use room_wait(questionId) for that answer or room_wait(claimId) for the blocking claim; a timeout is not an answer or approval. Permission decisions stay with the human.`,
+    `Choose task-appropriate validation: focused checks for your changes and, when needed, room_preview_merge with named peers for affected interfaces; send failures to their owner. Preview current overlapping work before finishing, then room_done with a one-line summary and finish the headless process. Your lead can resume this session for a later follow-up while the worktree remains.`,
     `Do not commit or push unless the task says so. You are on your own git worktree and branch; the lead merges.`,
     `If you spawn workers, collect them before your own room_done.`,
-    `Report progress in room_done; send notes only when the lead must know before you finish.`,
-    `Run tests and builds in the foreground and wait for them: ending your turn ends this process and kills background jobs. Finish with room_done.`,
+    `Report progress in room_done; send dependency findings to their owning peer. Send a lead note only when it must know before you finish.`,
+    `On Claude Code with documented background-command lifetime and completion delivery (verified on 2.1.300), use host-managed background commands when responsiveness matters; await completion and inspect the actual result before room_done. On unverified hosts, including Codex, use foreground commands until background lifetime and completion delivery are verified. See room-etiquette for host limits; process exit can terminate unmanaged jobs.`,
     ...(context ? [
       `Compute budget: ${context.threads} threads, ~${context.memGb} GB RAM; scheduling priority: ${context.nice ? `nice ${context.nice}` : 'normal'}; reasoning effort: ${context.effort ?? 'host default'}. Stay within this budget and stagger heavy jobs.`,
       ...(context.port ? [`Your dev-server port is ${context.port} (PORT=${context.port}).`] : []),
@@ -156,7 +157,7 @@ export function workerPrompt(lead: string, tag: string, task: string, context?: 
 export const WORKER_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const
 export function hostWorkerEffort(host: WorkerHost, effort?: string): string | undefined { return host === 'claude' && effort === 'minimal' ? 'low' : effort }
 
-export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string; shellEnvHook?: string }
+export interface WorkerCommandOptions { tag?: string; sessionId?: string; resume?: boolean; maxBudgetUsd?: string; wakeChannels?: boolean; pluginDir?: string; shellEnvHook?: boolean }
 
 /** The bundle path identifies the plugin Claude actually loaded, even when its root env is absent. */
 export function leadClaudePluginDir(env: NodeJS.ProcessEnv = process.env, modulePath = fileURLToPath(import.meta.url), installedPath?: string): string | undefined {
@@ -196,7 +197,7 @@ export function workerCommand(host: WorkerHost, model: string | undefined, promp
   const settings = {
     ...(options.pluginDir ? { enabledPlugins: { 'room@room': false } } : {}),
     ...(options.shellEnvHook ? { hooks: { PreToolUse: [{ matcher: 'PowerShell', hooks: [
-      { type: 'command', command: 'node', args: [options.shellEnvHook], timeout: 5 },
+      { type: 'command', command: 'node', args: POWERSHELL_HOOK_ARGS, timeout: 5 },
     ] }] } } : {}),
   }
   return {
