@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { diffPage, PAGE_CHARS } from './tools/reader-diff.js'
 
-export const READ_DIFF_LIMITS = { entries: 4, bytes: 16 * 1024 * 1024, entryBytes: 8 * 1024 * 1024, idleMs: 120_000 } as const
+const READ_DIFF_LIMITS = { entries: 4, bytes: 16 * 1024 * 1024, entryBytes: 8 * 1024 * 1024, idleMs: 120_000 } as const
 export const DIFF_RESTART = 'error: diff cursor expired or does not match this request; restart room_read with diff=true and no cursor'
 type Entry = { owner: WeakRef<object>; request: string; text: string; fingerprint: string; digest: string; bytes: number; timer: ReturnType<typeof setTimeout> }
 
