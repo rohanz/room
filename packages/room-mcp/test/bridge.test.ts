@@ -363,6 +363,11 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
     git('add', '.'); git('commit', '-qm', 'many carried files')
     C = git('rev-parse', 'HEAD').trim()
     git('checkout', '-q', B)
+    // Writing and committing 3,000 files above is synchronous: on a loaded machine it can block the
+    // event loop past the 30 s awareness freshness window, so the worker's own renewal timer never
+    // ran. A connected provider's clock would have ticked; emit that heartbeat here before syncing.
+    const heartbeat = () => t.workerPresence.setLocalState(t.workerPresence.getLocalState())
+    heartbeat()
     await t.registry.update(t.record.id, old => ({ ...old, base: C, carriedBase: C, seq: old.seq + 1 }))
     publishSource(t.local.b, {}, { base: C })
     await t.bridge.sync() // create the previous Y map so its reads can be observed
@@ -384,6 +389,7 @@ describe('Bridge: the team projection of a local worker (manifest §5.5, registr
       if (!scheduled) { scheduled = true; setImmediate(() => { yielded = true }) }
       return originalIgnores(path)
     }
+    heartbeat()
     await t.bridge.sync()
     expect(map.size).toBe(3001) // the earlier carried.py plus the new B..C paths
     expect(turnAtApply).toBe(true)
