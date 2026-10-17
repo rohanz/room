@@ -22,6 +22,7 @@
 - Divergent add/add conflict notices keep a stable ID when the first differing line moves.
 - A preview whose inputs move before its test command starts is rebuilt before running the command.
 - Skills, shared prompt and tool text describe the intended flow: early independent work, interfaces agreed per task, parallel dispatch with short briefs, concurrent implementation, named-peer previews with a real test command, findings to the owning peer, no copying of peer files, deferred or kept collection. Rebuilt eval mocks.
+- Refuse to open the worker registry when the Git common dir resolves to something that is not a Git directory, and reject an empty `git rev-parse --git-common-dir` answer. A silent `git` on PATH once made Room write `room/registry` into the working tree.
 - Add `npm run bump <version>` to stamp the release version into both plugin manifests, the marketplace entry and the hooks stamp, with a test that they agree.
 
 Plugin-only update; restart sessions after updating. No server deployment or migration is needed.

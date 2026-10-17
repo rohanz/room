@@ -19584,7 +19584,9 @@ function commonGitDirFromDotGit(dir) {
   return gitDir;
 }
 async function gitCommonDir(dir) {
-  return path2.resolve(dir, (await git(dir, ["rev-parse", "--git-common-dir"])).trim());
+  const printed = (await git(dir, ["rev-parse", "--git-common-dir"])).trim();
+  if (!printed) throw new Error(`git rev-parse --git-common-dir in ${dir} printed an empty common dir`);
+  return path2.resolve(dir, printed);
 }
 async function realGitCommonDir(dir) {
   const common = await gitCommonDir(dir);
@@ -43065,6 +43067,7 @@ async function closeRegistryForDir(dir) {
 }
 async function registryForDir(dir, sessionId) {
   const common = await gitCommonDir(dir);
+  if (!fs41.existsSync(path38.join(common, "HEAD"))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`);
   let pending = registries.get(common);
   if (!pending) {
     if (registries.size >= MAX_PROCESS_REGISTRIES) {

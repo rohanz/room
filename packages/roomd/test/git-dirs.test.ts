@@ -96,3 +96,19 @@ it('matches the dependency-free hook over clones, nested worktrees, subdirectori
   expect(commonGitDirFromDotGit(malformed)).toBe(path.join(malformed, '.git'))
   expect(gitStatePath(malformed, 'room-state.json')).toBe(path.join(malformed, '.git', 'room-state.json'))
 })
+
+it.skipIf(process.platform === 'win32')('refuses a common dir when git prints nothing instead of resolving it to the checkout', async () => {
+  // A git that exits 0 with empty output (a stub on PATH) once made gitCommonDir resolve to the
+  // working tree itself, and the worker registry then wrote <repo>/room/registry.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'room-silent-git-'))
+  roots.push(root)
+  const bin = path.join(root, 'bin'), repo = path.join(root, 'repo')
+  fs.mkdirSync(bin); fs.mkdirSync(repo)
+  fs.writeFileSync(path.join(bin, 'git'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const previous = process.env.PATH
+  process.env.PATH = `${bin}${path.delimiter}${previous}`
+  try {
+    await expect(gitCommonDir(repo)).rejects.toThrow(/git rev-parse --git-common-dir .*empty/)
+    await expect(realGitCommonDir(repo)).rejects.toThrow(/empty/)
+  } finally { process.env.PATH = previous }
+})

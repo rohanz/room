@@ -35,7 +35,10 @@ export function commonGitDirFromDotGit(dir: string): string {
 
 /** Async callers retain git()'s deadline and error text; result is lexical, not realpathed. */
 export async function gitCommonDir(dir: string): Promise<string> {
-  return path.resolve(dir, (await git(dir, ['rev-parse', '--git-common-dir'])).trim())
+  const printed = (await git(dir, ['rev-parse', '--git-common-dir'])).trim()
+  // Empty output would resolve to `dir` itself, and Room state would land in the working tree.
+  if (!printed) throw new Error(`git rev-parse --git-common-dir in ${dir} printed an empty common dir`)
+  return path.resolve(dir, printed)
 }
 
 /** Worker ownership compares canonical common directories. */

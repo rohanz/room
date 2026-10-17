@@ -71,6 +71,9 @@ export async function closeRegistryForDir(dir: string): Promise<void> {
 /** One token and watcher per common dir for this MCP process. */
 export async function registryForDir(dir: string, sessionId?: string): Promise<WorkerRegistry> {
   const common = await gitCommonDir(dir)
+  // The registry writes under <common>/room; a Git directory always holds HEAD. Anything else (a
+  // resolution that landed on the working tree) must not be written to.
+  if (!fs.existsSync(path.join(common, 'HEAD'))) throw new Error(`worker registry: ${common} is not a Git directory (no HEAD); not writing room/registry there`)
   let pending = registries.get(common)
   if (!pending) {
     if (registries.size >= MAX_PROCESS_REGISTRIES) {
