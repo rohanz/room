@@ -347,6 +347,18 @@ describe('session gating', () => {
     expect(response).toContain('file claims need symbol or both from and to; to claim all of app.py, pass from=1 and to=<last line>')
   })
 
+  it('claims a whole file that is not at the base without a line range', async () => {
+    const t = setup()
+    t.other.setScope({ by: 'Kieran', byKind: 'agent', area: 'tests', summary: 'nearby', paths: ['tests/new_cases.py'] })
+    mkdirSync(join(dir, 'tests'), { recursive: true })
+    writeFileSync(join(dir, 'tests', 'new_cases.py'), 'def test_a():\n    pass\n\ndef test_b():\n    pass\n')
+    try {
+      const response = await t.tools.call('room_claim', { path: 'tests/new_cases.py', intent: 'new test file' })
+      expect(response).toMatch(/^claimed c\w+: Rohan's agent · tests\/new_cases.py:1-5 · new test file \(whole file: not at the base\)/)
+      expect(response).not.toContain('file claims need symbol')
+    } finally { rmSync(join(dir, 'tests'), { recursive: true, force: true }) }
+  })
+
   it('counts another agent as one other participant in sharing state', async () => {
     const t = setup()
     const peer = addPresence(t.session!.awareness, 'Kieran')

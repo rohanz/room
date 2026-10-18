@@ -56512,7 +56512,7 @@ var defs3 = [
   {
     name: "room_claim",
     annotations: RW,
-    description: "Use before editing a file near another participant. Claim a symbol, lines (whole file: from=1, to=last line) or directory; declare public API plans.",
+    description: "Use before editing a file near another participant. Claim a symbol, lines (from/to; a file you added needs none) or directory; declare public API plans.",
     inputSchema: { type: "object", properties: { path: str("repo-relative path; directory ends /"), symbol: str("definition name, or from/to"), from: int2("first line"), to: int2("last line"), intent: str("intent"), plans: PLANS }, required: ["path", "intent"] }
   },
   {
@@ -56523,7 +56523,7 @@ var defs3 = [
   }
 ];
 function handlers3(state) {
-  const { S, readText, lines: lines2, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state;
+  const { S, readText, baseText, lines: lines2, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state;
   const handlers10 = {
     async room_claim(a) {
       const s = S();
@@ -56547,6 +56547,7 @@ function handlers3(state) {
       const isNew = t === void 0 || t === null;
       const n = isNew ? 1 : lines2(t);
       let range;
+      let wholeNewFile = false;
       const symbol = typeof a.symbol === "string" && a.symbol.trim() ? a.symbol.trim() : void 0;
       if (directory) {
         range = { from: 1, to: Number.MAX_SAFE_INTEGER };
@@ -56555,9 +56556,12 @@ function handlers3(state) {
         const r0 = isNew ? void 0 : symbolRange(p, t, symbol, () => parsed);
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`;
         range = r0;
-      } else {
-        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`;
+      } else if (Number.isFinite(Number(a.from)) && Number.isFinite(Number(a.to))) {
         range = { from: Number(a.from), to: Number(a.to) };
+      } else {
+        if (!isNew && await baseText(s, p).catch(() => "") !== void 0) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`;
+        wholeNewFile = true;
+        range = { from: 1, to: n };
       }
       const r = directory ? range : clampRange(range.from, range.to, n);
       const localDigest = !isNew && !directory ? claimDigest(t, r.from, r.to) : void 0;
@@ -56570,7 +56574,7 @@ function handlers3(state) {
       const posted = await posting;
       s.daemon.touch();
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} \u2014 ${intent}` });
-      const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew && !directory ? " (new file)" : ""}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]];
+      const out = [`claimed ${claim2.id}: ${describeClaim(claim2)}${isNew && !directory ? " (new file)" : wholeNewFile ? " (whole file: not at the base)" : ""}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]];
       let superseded = 0;
       for (const pl2 of plans) {
         for (const other of mine(s)) {

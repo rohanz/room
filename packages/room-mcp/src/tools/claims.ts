@@ -9,14 +9,14 @@ import { carriedFrom } from '../worker-registry.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './disk-text.js'
 
 export const defs: ToolDef[] = [
-  { name: 'room_claim', annotations: RW, description: 'Use before editing a file near another participant. Claim a symbol, lines (whole file: from=1, to=last line) or directory; declare public API plans.',
+  { name: 'room_claim', annotations: RW, description: 'Use before editing a file near another participant. Claim a symbol, lines (from/to; a file you added needs none) or directory; declare public API plans.',
     inputSchema: { type: 'object', properties: { path: str('repo-relative path; directory ends /'), symbol: str('definition name, or from/to'), from: int('first line'), to: int('last line'), intent: str('intent'), plans: PLANS }, required: ['path', 'intent'] } },
   { name: 'room_release', annotations: RW, description: 'Release a claim early; room_done releases the rest. List completed symbols in done.',
     inputSchema: { type: 'object', properties: { claimId: str('claim id'), summary: str('what changed, one line'), done: strs('completed symbols') }, required: ['claimId'] } }
 ]
 
 export function handlers(state: HandlerState): Record<string, Handler> {
-  const { S, readText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state
+  const { S, readText, baseText, lines, isMe, mine, planChanged, setPresence, describeUsers, loadAreas, ownerHints, areasOf, upgrade } = state
   const handlers: Record<string, Handler> = {
     async room_claim(a) {
       const s = S()
@@ -42,6 +42,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const isNew = t === undefined || t === null
       const n = isNew ? 1 : lines(t)
       let range: { from: number; to: number }
+      let wholeNewFile = false
       const symbol = typeof a.symbol === 'string' && a.symbol.trim() ? a.symbol.trim() : undefined
       if (directory) {
         range = { from: 1, to: Number.MAX_SAFE_INTEGER }
@@ -50,9 +51,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const r0 = isNew ? undefined : symbolRange(p, t!, symbol, () => parsed)
         if (!r0) return `error: could not find a definition of ${symbol} in ${p}; pass from/to instead`
         range = r0
-      } else {
-        if (!Number.isFinite(Number(a.from)) || !Number.isFinite(Number(a.to))) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`
+      } else if (Number.isFinite(Number(a.from)) && Number.isFinite(Number(a.to))) {
         range = { from: Number(a.from), to: Number(a.to) }
+      } else {
+        // A file the claimant added has one plausible owner: claim all of it. Base files keep the range requirement.
+        if (!isNew && await baseText(s, p).catch(() => '') !== undefined) return `error: file claims need symbol or both from and to; to claim all of ${p}, pass from=1 and to=<last line>`
+        wholeNewFile = true
+        range = { from: 1, to: n }
       }
       const r = directory ? range : clampRange(range.from, range.to, n)
       const localDigest = !isNew && !directory ? claimDigest(t!, r.from, r.to) : undefined
@@ -67,7 +72,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       // A synchronous pass here traverses every comparable path and runs whole-tree git diffs.
       s.daemon.touch()
       setPresence(s, { cursor: { path: p, from: r.from, to: r.to }, status: `editing ${symbol ?? `${p}:${r.from}-${r.to}`} — ${intent}` })
-      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : ''}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]]
+      const out = [`claimed ${claim.id}: ${describeClaim(claim)}${isNew && !directory ? ' (new file)' : wholeNewFile ? ' (whole file: not at the base)' : ''}`, ...posted.ok ? [] : [`claim notice ${posted.text}`]]
       // A new plan on a symbol I already have an open plan for supersedes the old one.
       let superseded = 0
       for (const pl of plans) {

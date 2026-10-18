@@ -221,6 +221,8 @@ Origin: an untracked 31,871-line CSV in a repo with no ignore rules hung the cod
 
 ## Orchestration (a lead with workers)
 
+- **The lead's integrated run duplicates the integrator's validation (2026-10-18 benchmark t5).** The lead now awaits its own build, lint and full suite before exiting (seven minutes on BullMQ), and the harness then runs the same steps again. In real use the integrator's run is required; the open question is letting a lead start its integrated run while the last revision workers finish, or trusting a complete passing preview of exactly the final inputs, which the skills already allow only under proven equivalence. Also seen: the lead polled `room_wait` while its own command ran instead of host command completion.
+
 Seen in a real 17-worker session on 2026-09-21: the lead spawned, broadcast and answered well,
 but never called `room_wait`, never previewed a merge and integrated by copying folders. The
 `room-workers` skill (0.7.0) now spells out the finish. Beyond what a skill can fix:
@@ -328,6 +330,8 @@ saved with a local room's memory.
   banner prepended to tool output when tools are driven from a script.
 
 ### Uncommitted work and worker worktrees
+
+- **Project-generated ignored output keeps a collected worktree (2026-10-18 benchmark t5, open, small).** BullMQ's `yarn pretest` writes gitignored `rawScripts/`, `src/scripts/` and `src/postgres/sql-scripts.ts` into a worker's worktree; they are not in Room's regenerable list, so full collection kept two worktrees for them and `discard` was refused until `force=true`. Consider treating ignored paths that a committed script generates, or that the lead's own checkout also ignores and contains, as disposable; the protection for unknown ignored files stays.
 
 **Fixed in 0.11.0–0.11.1:** Workers start with the lead's eligible uncommitted work,
 and the worker prompt attributes carried paths to the lead. Lead-side previews and
