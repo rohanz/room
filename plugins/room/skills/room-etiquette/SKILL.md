@@ -115,7 +115,9 @@ and requires your human's explicit request. `room_leave` ends participation when
 
 Only when the human explicitly asks to delegate through Room, or continues an existing Room worker workflow, load [room-workers](../room-workers/SKILL.md). Generic requests for agents, parallel work or background work use the host’s normal delegation, even while joined to Room.
 Dispatch independent work early with short briefs that point at the spec rules each worker
-owns rather than paraphrasing them; peers agree the interfaces each task
+owns rather than paraphrasing them: every observable rule in exactly one brief, and a
+contract decision the spec does not state marked "decided, not in spec" for the test
+worker to check; peers agree the interfaces each task
 needs before implementing dependent parts. Claim the functions or line ranges you edit,
 ask about overlapping work, and preview combined changes while peers run. Sequence only
 same-line edits or work that truly needs a result first; workers may finish at different times.

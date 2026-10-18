@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Skills: before spawning, the lead lists the spec's observable rules (states, fields, counters, events, return values) and puts each in exactly one brief; the test or review worker gets the whole list. A contract decision the spec does not state is marked "decided, not in spec" for the test worker to check against the spec's caller-visible text, and "do X instead" means a normal return with state X, not a thrown error. On 2026-10-18 a lead's contract turned "finish the job as cancelled instead" into a thrown error and left the attempt counter rule in no brief, costing a repair round.
+
 ## 0.17.17
 
 - Local relay liveness tolerates a busy host: the joiner's probe allows 2.5 s (was 0.8 s) and declares the lead's relay lost only after three consecutive timed-out probes; a refused port (the owner's process is gone) is still acted on at the next tick, so takeover and rejoin stay within the 5 s retry budget of interrupted posts. On 2026-10-18 six workers running test suites lagged a healthy relay by 2-3 s, so every worker left and rejoined and in-flight previews were abandoned.

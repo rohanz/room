@@ -51,6 +51,7 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
     ] },
     { sources: ['workers'], phrases: [
       '`*.tsbuildinfo`', 'the spec sections or rules that are its slice', 'Never write "if relevant"',
+      'put each in exactly one brief', 'looks for rules no brief names', 'returns normally with state X, not',
       "same spec rules, not at an implementer's file list",
       "about twice another's effort", 'split a large set by member across two owners',
       'each told the same rule', 'ask the running worker what members remain',
@@ -74,6 +75,7 @@ it('preserves load-bearing coordination guidance across skills and prompts', () 
       ] }
     }),
     { sources: ['etiquette'], phrases: [
+      'every observable rule in exactly one brief',
       'A timeout, interruption or missing result is not a pass',
       'source review or document checks where applicable', 'Whoever integrates owns comprehensive relevant validation',
       'independent peers manage their own sessions', 'A brief is a slice of the task, not its edge',
